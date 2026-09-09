@@ -47,6 +47,11 @@ install -d -m 0700 -o root -g root /var/lib/moni-root
 touch /var/log/moni-root.log
 chmod 0600 /var/log/moni-root.log
 install -m 0644 "$SRC/deploy/moni-agent@.service" /etc/systemd/system/moni-agent@.service
+# The dashboard's own unit was installed by hand once and then never again, so
+# edits to it in the repo silently did nothing. Installing it here makes the
+# repo the source of truth for it, like every other unit.
+install -m 0644 "$SRC/deploy/moni-dashboard.service" /etc/systemd/system/moni-dashboard.service
+install -m 0644 "$SRC/deploy/moni-whatsapp@.service" /etc/systemd/system/moni-whatsapp@.service
 install -m 0440 "$SRC/deploy/moni-sudoers" /etc/sudoers.d/moni-dashboard
 visudo -cf /etc/sudoers.d/moni-dashboard >/dev/null
 systemctl daemon-reload
