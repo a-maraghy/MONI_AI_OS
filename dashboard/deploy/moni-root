@@ -339,7 +339,7 @@ def check_lockout():
     if remaining > 0:
         audit("locked_out", remaining=remaining)
         die(
-            "too many failed passphrase attempts; locked for another "
+            "too many wrong codes; locked for another "
             + str(remaining // 60 + 1)
             + " minute(s)"
         )
@@ -549,6 +549,53 @@ def cmd_show(args):
     )
 
 
+def cmd_verify(args):
+    """Check a code without approving anything. Runs nothing, ever.
+
+    Backs the bot's /test_totp: it answers "would this code have worked", which
+    is worth being able to ask before you are standing in front of a real
+    change at an awkward moment.
+
+    It goes through exactly the same checks as `approve` -- same secret, same
+    window, same lockout, same burn -- because a test that took an easier path
+    would be answering a different question. In particular the code IS spent:
+    testing a code and then approving with it would be reuse, and this program
+    does not have two opinions about that.
+    """
+    check_lockout()
+
+    approver = read_approver()
+    if not approver:
+        die("no approver is configured; root actions are disabled")
+    username = approver["username"]
+    secret = approver_secret(username)
+    if not secret:
+        die(
+            "the approver's account can no longer produce a code: it has been "
+            "disabled, removed, or had its authenticator reset"
+        )
+
+    code = sys.stdin.read().strip()
+    if not code:
+        die("no code supplied")
+
+    with Lock():
+        counter = verify_totp(secret, code)
+        if counter is None:
+            record_failure()
+            audit("verify_failed", approver=username, reason="bad code")
+            die("that code is not valid")
+        if is_burned(username, counter):
+            record_failure()
+            audit("verify_failed", approver=username, reason="code reused")
+            die("that code has already been used")
+        burn_step(username, counter)
+        clear_failures()
+
+    audit("verify_ok", approver=username)
+    ok({"approver": username, "verified": True})
+
+
 def cmd_pending(args):
     """List proposals waiting for approval.
 
@@ -713,6 +760,7 @@ COMMANDS = {
     "clear-approver": cmd_clear_approver,
     "propose": cmd_propose,
     "pending": cmd_pending,
+    "verify": cmd_verify,
     "show": cmd_show,
     "approve": cmd_approve,
     "deny": cmd_deny,
@@ -722,7 +770,7 @@ COMMANDS = {
 # Only the operator agent may propose; only the panel may change the
 # passphrase. Both arrive as root through sudo, so the separation is by
 # sudoers rule, and this list documents which is which.
-AGENT_COMMANDS = {"propose", "pending", "show", "approve", "deny", "status"}
+AGENT_COMMANDS = {"propose", "pending", "show", "approve", "deny", "status", "verify"}
 
 
 def parse_args(argv):
