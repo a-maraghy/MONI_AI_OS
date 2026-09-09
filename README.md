@@ -186,6 +186,15 @@ to `/opt/moni-agents/archived/<slug>-<timestamp>`.
 - **`NoNewPrivileges` must stay `false` in the *dashboard* unit** — the panel
   escalates via sudo. It is deliberately `true` in the *agent* unit, which does
   not.
+- **No inline styles either.** The CSP is `style-src 'self'`, so a `style=""`
+  attribute is blocked outright and shows up as a console violation. Use a class;
+  for a value computed at render time (the meter fill) use a `data-` attribute
+  with enumerated CSS rules.
+- **Vertical rhythm is one rule, not per-page margins.** `--gap` in
+  `style.css` is the single spacing value: `.content > *` gives every block that
+  bottom margin, grids use it as their gutter, and the last child clears it. Do
+  not add ad-hoc margins to space something out — it will disagree with the rest
+  of the app the moment the layout changes.
 - **No inline event handlers.** The CSP sets `script-src-attr 'none'`, so
   `onclick=` is dead. Use `data-confirm` and the delegated listener in
   `public/app.js`.

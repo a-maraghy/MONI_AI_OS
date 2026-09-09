@@ -139,7 +139,7 @@ exports.osDashboard = ({
       .join("")}
     ${statusError ? `<div class="alert bad">${icon("alert")}<div>Could not query privileged status: ${esc(statusError)}</div></div>` : ""}
 
-    <div class="statrow mb-18">
+    <div class="statrow">
       ${stat(running + " / " + agents.length, "agents running", "agents")}
       ${stat(channels.length, "channels connected", "channels")}
       ${stat(services.length - svcDown.length + " / " + services.length, "services healthy", "services")}

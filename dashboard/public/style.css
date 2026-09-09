@@ -27,6 +27,10 @@
   --bad: #b3261e;
 
   --radius: 4px;
+  /* One vertical rhythm for the whole app: every block-level element in the
+     content column leaves exactly this much space beneath it, and grids use it
+     as their gutter too, so nothing ever has to be spaced by hand. */
+  --gap: 18px;
   --sidebar-w: 232px;
   --topbar-h: 56px;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
@@ -163,12 +167,21 @@ h3 { font-size: 14px; margin: 22px 0 8px; }
 .side-item:hover { background: rgba(255,255,255,.08); color: #fff; text-decoration: none; }
 .side-item.on { background: var(--brand); color: #fff; font-weight: 600; }
 
-.content { flex: 1; min-width: 0; padding: 24px 28px 56px; max-width: 1180px; }
+.content { flex: 1; min-width: 0; padding: 24px 28px 56px; max-width: none; }
+
+/* Every direct child of the content column carries the same bottom margin, and
+   the last one carries none. This is what keeps the gap between a stat row and
+   a grid identical to the gap between two grids. */
+.content > * { margin-bottom: var(--gap); }
+.content > *:last-child { margin-bottom: 0; }
+/* A form is a wrapper, not a block: the cards inside it already space
+   themselves, so adding a margin here would double the gap. */
+.content > form { margin-bottom: 0; }
 .content.wide { max-width: none; }
 
 .page-head {
   display: flex; align-items: flex-start; justify-content: space-between;
-  gap: 16px; flex-wrap: wrap; margin-bottom: 20px;
+  gap: 16px; flex-wrap: wrap; margin-bottom: var(--gap);
 }
 .page-head .sub { margin: 5px 0 0; color: var(--muted); font-size: 13.5px; max-width: 70ch; }
 .page-actions { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -185,7 +198,7 @@ h3 { font-size: 14px; margin: 22px 0 8px; }
   border: 1px solid var(--line);
   border-radius: var(--radius);
   padding: 18px 20px;
-  margin-bottom: 18px;
+  margin-bottom: var(--gap);
 }
 .card-head {
   display: flex; align-items: center; justify-content: space-between;
@@ -194,13 +207,16 @@ h3 { font-size: 14px; margin: 22px 0 8px; }
 .card-head h2 { display: flex; align-items: center; gap: 8px; }
 .card-head h2 .ico { color: var(--brand); }
 
-.grid { display: grid; gap: 18px; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); }
-.grid.cols-2 { grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
+.grid { display: grid; gap: var(--gap); grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+/* Explicitly two, not auto-fit: now that the content column is full width,
+   auto-fit would spread a deliberate 2x2 layout into five columns. */
+.grid.cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (max-width: 900px) { .grid.cols-2 { grid-template-columns: 1fr; } }
 .grid .card { margin-bottom: 0; }
 
 /* --------------------------------------------------------------- stats --- */
 
-.statrow { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
+.statrow { display: grid; gap: var(--gap); grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
 .statbox {
   background: var(--surface); border: 1px solid var(--line);
   border-radius: var(--radius); padding: 14px 16px;
@@ -298,7 +314,7 @@ label.check input { width: auto; margin: 0; }
 .alert {
   display: flex; gap: 10px; align-items: flex-start;
   padding: 11px 14px; border-radius: var(--radius);
-  border: 1px solid; margin-bottom: 16px; font-size: 13.5px;
+  border: 1px solid; margin-bottom: var(--gap); font-size: 13.5px;
 }
 .alert .ico { margin-top: 2px; }
 .alert.good { background: var(--brand-tint); border-color: var(--brand-tint-2); color: var(--brand-dark); }
@@ -323,7 +339,7 @@ pre code { background: none; padding: 0; }
   border-radius: 50%; background: var(--brand-tint); color: var(--brand); margin-bottom: 10px; }
 .empty-title { font-weight: 700; color: var(--ink); margin: 0 0 4px; }
 
-.tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); margin-bottom: 20px; flex-wrap: wrap; }
+.tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); margin-bottom: var(--gap); flex-wrap: wrap; }
 .tabs a { padding: 9px 15px; color: var(--muted); border-bottom: 2px solid transparent; margin-bottom: -1px; font-size: 13.5px; font-weight: 600; }
 .tabs a:hover { color: var(--ink); text-decoration: none; }
 .tabs a.on { color: var(--brand-deep); border-bottom-color: var(--brand); }

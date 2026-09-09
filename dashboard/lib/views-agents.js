@@ -95,7 +95,7 @@ exports.dashboard = ({ csrf, user, agents, channels, probe, flash, err }) => {
         : ""
     }
 
-    <div class="statrow mb-18">
+    <div class="statrow">
       ${stat(running.length + " / " + agents.length, "agents running", "agents")}
       ${stat(channels.length, "channels", "channels")}
       ${stat(totalNotes, "memory notes", "memory")}
