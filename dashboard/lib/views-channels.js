@@ -252,7 +252,109 @@ function defaultChannelAddons() {
 
 /* --------------------------------------------------------------- detail --- */
 
-exports.detail = ({ csrf, user, channel, agents, qr, flash, err }) => {
+/**
+ * The WhatsApp linking panel.
+ *
+ * Four states, and it matters that they are distinguishable: not installed,
+ * nothing running, waiting for a scan, and linked. "It isn't working" is a
+ * different problem in each.
+ */
+function whatsappCard(csrf, c, wa) {
+  const slug = esc(c.slug);
+  const warning = `<div class="alert warn">${icon("alert")}<div>This uses an unofficial
+    library. Linking a number is against WhatsApp's terms of service and it can be banned
+    without warning — use a number you can afford to lose, not your main business
+    line.</div></div>`;
+
+  if (!wa) {
+    return card(
+      "WhatsApp",
+      `${warning}
+      <p class="muted">The WhatsApp bridge is not installed on this server.</p>
+      <pre>sudo bash /opt/moni-ai-os/deploy/install-whatsapp.sh</pre>`,
+      { icon: "whatsapp" }
+    );
+  }
+
+  if (!c.agent) {
+    return card(
+      "WhatsApp",
+      `${warning}
+      <p class="muted">Connect this channel to an agent first — the bridge does not run
+        without something to answer with, so that messages are never collected and
+        dropped.</p>`,
+      { icon: "whatsapp" }
+    );
+  }
+
+  const controls = `<div class="btn-row">
+    <a class="btn small" href="/channels/${slug}">${icon("restart")} Refresh</a>
+    <a class="btn small" href="/channels/${slug}/logs">${icon("logs")} Bridge logs</a>
+  </div>`;
+
+  if (wa.linked) {
+    return card(
+      "WhatsApp",
+      `<div class="alert good">${icon("check")}<div>Linked${
+        wa.me && wa.me.number ? " as <strong>+" + esc(wa.me.number) + "</strong>" : ""
+      }. The device session is stored on the server, so it survives restarts.</div></div>
+      <table class="kv">
+        <tr><td>Bridge</td><td>${esc((wa.unit && wa.unit.active) || "unknown")}</td></tr>
+        <tr><td>Last update</td><td class="mono small">${esc(stamp(wa.updated_at))}</td></tr>
+      </table>
+      ${controls}
+      <form method="post" action="/channels/${slug}/whatsapp/unlink" class="inline"
+            data-confirm="Unlink this number? You will need to scan a new QR code to reconnect."
+            style="margin-top:10px">
+        <input type="hidden" name="_csrf" value="${esc(csrf)}">
+        <button class="btn danger small">${icon("trash")} Unlink this number</button>
+      </form>`,
+      { icon: "whatsapp" }
+    );
+  }
+
+  if (wa.qr) {
+    return card(
+      "Link this number",
+      `${warning}
+      <p class="muted">On your phone: <strong>WhatsApp → Settings → Linked devices →
+        Link a device</strong>, then scan this code. It expires after about a minute —
+        reload the page for a fresh one.</p>
+      <p style="text-align:center"><img src="${esc(wa.qr)}" alt="WhatsApp pairing QR code"
+        width="300" height="300"></p>
+      ${controls}`,
+      { icon: "whatsapp" }
+    );
+  }
+
+  return card(
+    "WhatsApp",
+    `${warning}
+    <table class="kv">
+      <tr><td>Bridge</td><td>${esc((wa.unit && wa.unit.active) || "inactive")}</td></tr>
+      <tr><td>Status</td><td>${esc(wa.status || "stopped")}</td></tr>
+      ${
+        wa.last_error
+          ? `<tr><td>Last error</td><td class="small">${esc(wa.last_error)}</td></tr>`
+          : ""
+      }
+    </table>
+    ${
+      wa.status === "logged_out"
+        ? `<div class="alert bad">${icon("alert")}<div>The phone unlinked this device.
+           Unlink here and start again to scan a fresh code.</div></div>`
+        : ""
+    }
+    <form method="post" action="/channels/${slug}/whatsapp/link" class="inline">
+      <input type="hidden" name="_csrf" value="${esc(csrf)}">
+      <button class="btn primary small">${icon("link")} Start linking</button>
+    </form>
+    <a class="btn small" href="/channels/${slug}/logs">${icon("logs")} Bridge logs</a>`,
+    { icon: "whatsapp" }
+  );
+}
+
+exports.detail = ({ csrf, user, channel, agents, wa, flash, err }) => {
   const c = channel;
   const free = agents.filter((a) => !a.channel || a.channel.slug === c.slug);
   const isTelegram = c.type === "telegram";
@@ -326,32 +428,7 @@ exports.detail = ({ csrf, user, channel, agents, qr, flash, err }) => {
       )}
     </div>
 
-    ${
-      c.type === "whatsapp"
-        ? card(
-            "Link this number",
-            qr
-              ? `<p class="muted small">On your phone: WhatsApp → Settings → Linked devices →
-                 Link a device, then scan this code. It expires after about a minute.</p>
-               <div style="text-align:center"><img src="${esc(qr)}" alt="WhatsApp pairing QR"
-                 width="280" height="280"></div>`
-              : c.linked
-              ? `<div class="alert good">${icon("check")}<div>This number is linked. The
-                 session is stored on the server, so it survives restarts.</div></div>
-                 <form method="post" action="/channels/${esc(c.slug)}/whatsapp/unlink" class="inline"
-                       data-confirm="Unlink this number? You will have to scan a new QR code to reconnect.">
-                   <input type="hidden" name="_csrf" value="${esc(csrf)}">
-                   <button class="btn danger small">${icon("trash")} Unlink</button>
-                 </form>`
-              : `<p class="muted">Not linked yet.</p>
-                 <form method="post" action="/channels/${esc(c.slug)}/whatsapp/link" class="inline">
-                   <input type="hidden" name="_csrf" value="${esc(csrf)}">
-                   <button class="btn primary small">${icon("link")} Start linking</button>
-                 </form>`,
-            { icon: "whatsapp" }
-          )
-        : ""
-    }
+    ${c.type === "whatsapp" ? whatsappCard(csrf, c, wa) : ""}
 
     <form method="post" action="/channels/${esc(c.slug)}" autocomplete="off">
       <input type="hidden" name="_csrf" value="${esc(csrf)}">

@@ -175,6 +175,15 @@ module.exports = {
     }),
   channelDelete: (slug) => callHelper("channel-delete", [slug], { timeout: 60000 }),
 
+  /* ------------------------------------------------------------ whatsapp -- */
+  waStatus: (slug) => callHelper("channel-whatsapp-status", [slug]),
+  waLink: (slug) => callHelper("channel-whatsapp-link", [slug], { timeout: 90000 }),
+  waUnlink: (slug) => callHelper("channel-whatsapp-unlink", [slug], { timeout: 60000 }),
+  waLogs: (slug, lines = 200) =>
+    callHelper("channel-whatsapp-logs", [slug, String(lines)], { timeout: 40000 }).then(
+      redactDeep
+    ),
+
   /* ------------------------------------------------------------ services -- */
   serviceList: () => callHelper("service-list", [], { timeout: 30000 }),
   serviceAction: (unit, action) =>

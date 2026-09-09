@@ -1074,15 +1074,79 @@ app.get("/channels/:slug", requireAuth, async (req, res) => {
   } catch (_) {
     /* ignore */
   }
+  // The QR is only meaningful for a WhatsApp channel that is mid-link, and it
+  // expires in about a minute, so it is fetched per request rather than cached.
+  let wa = null;
+  if (channel.type === "whatsapp") {
+    try {
+      wa = await priv.waStatus(channel.slug);
+    } catch (_) {
+      /* the bridge may not be installed; the view handles that */
+    }
+  }
   res.send(
     channelViews.detail({
       csrf: res.locals.csrf,
       user: req.session.username,
       channel,
       agents,
-      qr: null,
+      wa,
       flash: req.query.msg || null,
       err: req.query.err || null,
+    })
+  );
+});
+
+app.post("/channels/:slug/whatsapp/link", requireAuth, requireCsrf, async (req, res) => {
+  const channel = await loadChannel(req, res);
+  if (!channel) return;
+  try {
+    await priv.waLink(channel.slug);
+    res.redirect(
+      channelRedirect(channel.slug, "", {
+        msg: "Bridge started. The QR code appears here within a few seconds — reload if it is not shown yet.",
+      })
+    );
+  } catch (e) {
+    res.redirect(channelRedirect(channel.slug, "", { err: e.message }));
+  }
+});
+
+app.post("/channels/:slug/whatsapp/unlink", requireAuth, requireCsrf, async (req, res) => {
+  const channel = await loadChannel(req, res);
+  if (!channel) return;
+  try {
+    const result = await priv.waUnlink(channel.slug);
+    res.redirect(
+      channelRedirect(channel.slug, "", {
+        msg:
+          "Unlinked. The device session was archived to " +
+          (result.archived_to || "the archive") +
+          "; scan a new code to reconnect.",
+      })
+    );
+  } catch (e) {
+    res.redirect(channelRedirect(channel.slug, "", { err: e.message }));
+  }
+});
+
+app.get("/channels/:slug/logs", requireAuth, async (req, res) => {
+  const channel = await loadChannel(req, res);
+  if (!channel) return;
+  let lines = [];
+  let err = null;
+  try {
+    lines = (await priv.waLogs(channel.slug, 300)).lines;
+  } catch (e) {
+    err = e.message;
+  }
+  res.send(
+    serviceViews.logs({
+      csrf: res.locals.csrf,
+      user: req.session.username,
+      unit: "moni-whatsapp@" + channel.slug,
+      lines,
+      err,
     })
   );
 });
