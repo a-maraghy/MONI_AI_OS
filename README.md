@@ -48,7 +48,7 @@ server by the bootstrap script. This repo drives it; it does not fork it.
 On a fresh Ubuntu 24.04 box, as root:
 
 ```bash
-git clone https://github.com/mo-zaghloul96/MONI_AI_OS.git /opt/moni-ai-os
+git clone https://github.com/a-maraghy/MONI_AI_OS.git /opt/moni-ai-os
 bash /opt/moni-ai-os/deploy/bootstrap.sh
 ```
 

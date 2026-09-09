@@ -7,7 +7,7 @@
 
 [Unit]
 Description=MONI agent %i (Telegram bridge to Claude Code)
-Documentation=https://github.com/mo-zaghloul96/MONI_AI_OS
+Documentation=https://github.com/a-maraghy/MONI_AI_OS
 After=network-online.target
 Wants=network-online.target
 StartLimitIntervalSec=300
