@@ -176,6 +176,32 @@ function lockScreen(csrf, s, err) {
   </div>`;
 }
 
+/** Confirming that root should be switched on, with a code. */
+exports.enableRoot = ({ csrf, user, session, err }) =>
+  shell(
+    "Turn root on",
+    `<div class="chat-lock">
+      <div class="lock-card">
+        <span class="lock-ico warn">${icon("lock", 26)}</span>
+        <h2>Turn root on for this chat?</h2>
+        <p class="muted">It will be able to change anything on this machine — install,
+          delete, restart, edit any file. Everything it reads is a way to influence what
+          it does, so this is worth meaning.</p>
+        ${err ? `<div class="alert bad">${icon("alert")}<div>${esc(err)}</div></div>` : ""}
+        <form method="post" action="/console/${session.id}/root" autocomplete="off">
+          <input type="hidden" name="_csrf" value="${esc(csrf)}">
+          <label>Authenticator code
+            <input name="code" inputmode="numeric" pattern="[0-9 ]*" placeholder="000000"
+                   autocomplete="one-time-code" required autofocus></label>
+          <button class="btn primary w-full" type="submit">${icon("lock", 15)} Turn root on</button>
+        </form>
+        <p class="muted small">The chat restarts and carries on where it left off.
+          <a href="/console/${session.id}">Leave it off</a>.</p>
+      </div>
+    </div>`,
+    { user, csrf, active: "console", dash: "console", heading: null, wide: true }
+  );
+
 exports.console = ({
   csrf,
   user,
@@ -347,30 +373,16 @@ exports.console = ({
                             <span class="toggle-label">root</span>
                           </button>
                         </form>`
-                      : `<details class="menu root-toggle">
-                          <!-- No aria-pressed: a summary is a disclosure, not a
-                               toggle button, and it already announces expanded
-                               state on its own. -->
-                          <summary class="toggle"
-                                   title="Root is off. Switching it on needs a code from your authenticator.">
-                            <span class="toggle-track"><span class="toggle-knob"></span></span>
-                            <span class="toggle-label">root</span>
-                          </summary>
-                          <div class="menu-pop root-pop">
-                            <form method="post" action="/console/${active.id}/root">
-                              <input type="hidden" name="_csrf" value="${esc(csrf)}">
-                              <p class="muted small">Turning root on lets this chat change
-                                anything on the machine. Confirm with a code from your
-                                authenticator.</p>
-                              <label>Authenticator code
-                                <input name="code" inputmode="numeric" pattern="[0-9 ]*"
-                                       placeholder="000000" autocomplete="one-time-code"
-                                       required></label>
-                              <button class="btn primary small" type="submit">
-                                ${icon("lock", 14)} Turn root on</button>
-                            </form>
-                          </div>
-                        </details>`
+                      : // A link to a page, not a panel that unfolds here. This
+                        // control sits at the bottom edge of the window inside a
+                        // pane that clips, which a popover kept losing an
+                        // argument with; and turning on root is a deliberate act
+                        // that reads better as a screen than as a hover.
+                        `<a class="toggle" href="/console/${active.id}/root"
+                            title="Root is off. Switching it on needs a code from your authenticator.">
+                          <span class="toggle-track"><span class="toggle-knob"></span></span>
+                          <span class="toggle-label">root</span>
+                        </a>`
                 }
 
                 <!--

@@ -857,6 +857,7 @@ label.addon:has(input[type="checkbox"]:checked) .addon-ico {
   box-shadow: var(--shadow-md);
   animation: rise 160ms var(--ease) both;
 }
+.lock-ico.warn { background: #fdf3e2; }
 .lock-ico {
   display: grid; place-items: center;
   width: 52px; height: 52px; margin: 0 auto 12px;
@@ -873,40 +874,17 @@ label.addon:has(input[type="checkbox"]:checked) .addon-ico {
 }
 .lock-card p.small { margin: 14px 0 0; }
 
-/* The code prompt on the root switch, sharing the menu's shape but not its
-   direction. This one hangs off a control at the bottom of the window, inside a
-   pane with overflow hidden -- dropping down put it past the edge and clipped
-   it, so the switch looked stuck rather than open. It opens upward. */
-.root-pop {
-  min-width: 246px;
-  top: auto; bottom: calc(100% + 8px);
-  animation-name: pop-up;
-}
-@keyframes pop-up {
-  from { opacity: 0; transform: translateY(4px) scale(.985); }
-  to   { opacity: 1; transform: none; }
-}
-.root-pop p { margin: 0 0 10px; }
-.root-pop label { margin: 0 0 10px; font-size: 11px; font-weight: 700;
-  text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
-.root-pop input {
-  margin-top: 5px; font-family: var(--mono); font-size: 16px;
-  letter-spacing: .22em; text-align: center; padding: 7px;
-}
-/* Three ways to remove a disclosure triangle, because browsers disagree about
-   which one works: the old WebKit pseudo-element, the modern ::marker, and the
-   display change that stops the summary being a list item at all. Without the
-   last one Chrome still drew a marker beside the switch -- the stray triangle
-   in "ROOT▷". */
-details.root-toggle > summary { display: inline-flex; list-style: none; }
-details.root-toggle > summary::-webkit-details-marker { display: none; }
-details.root-toggle > summary::marker { content: ""; }
-details.root-toggle[open] > summary { border-color: var(--line-strong); background: var(--bg); }
 
 /* Root on or off for this chat. A switch rather than another dropdown: it is
    the one control here with two states and real consequences, and it should
    look like something you flip deliberately. */
 .root-toggle { margin: 0; flex: none; }
+/* Off is a link to a confirmation page rather than a panel that unfolds in
+   place. This control sits on the bottom edge of a pane that clips, which a
+   popover kept losing an argument with, and turning root on reads better as a
+   screen than as a hover. */
+a.toggle { text-decoration: none; }
+a.toggle:hover { text-decoration: none; border-color: var(--line-strong); }
 .toggle {
   display: inline-flex; align-items: center; gap: 7px;
   padding: 3px 9px 3px 5px; border-radius: 999px;

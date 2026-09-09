@@ -140,6 +140,22 @@ function loadOrCreateSessionSecret() {
   }
 }
 
+/**
+ * Pages are never cached.
+ *
+ * Everything here is behind a session and specific to who is asking, so a
+ * cached copy is both wrong for the next person and stale for this one. It also
+ * kept the fix for a visual bug from arriving: the page came from cache, so it
+ * carried the old stylesheet URL, so the new stylesheet was never asked for --
+ * and the bug looked unfixed twice over.
+ *
+ * Static files are served before this and keep their own long, stamped cache.
+ */
+app.use((req, res, next) => {
+  res.setHeader("Cache-Control", "no-store, must-revalidate");
+  next();
+});
+
 /* ---------------------------------------------------------------- CSRF ---- */
 
 app.use((req, res, next) => {
@@ -1798,6 +1814,23 @@ app.post("/console/:id/settings", requireAuth, requirePerm("console.use"), requi
   res.redirect("/console/" + session.id);
 });
 
+app.get("/console/:id/root", requireAuth, requirePerm("console.use"), (req, res) => {
+  const session = loadConsoleSession(req, res);
+  if (!session) return;
+  // Already on, wrong sort of chat, or not permitted: nothing to confirm.
+  if (session.root_enabled === 1 || session.access !== "full" || !req.perm.can("console.full")) {
+    return res.redirect("/console/" + session.id);
+  }
+  res.send(
+    consoleViews.enableRoot({
+      csrf: res.locals.csrf,
+      user: ctx(req, "console"),
+      session,
+      err: req.query.err || null,
+    })
+  );
+});
+
 app.post("/console/:id/root", requireAuth, requirePerm("console.use"), requireCsrf, (req, res) => {
   const session = loadConsoleSession(req, res);
   if (!session) return;
@@ -1817,7 +1850,10 @@ app.post("/console/:id/root", requireAuth, requirePerm("console.use"), requireCs
   if (enabled) {
     if (!totp.verifyAndConsume(req.me, req.body.code)) {
       logAuthFailure(req.ip, "bad code enabling console root");
-      return back("err=" + encodeURIComponent("That code was not accepted. Try the next one."));
+      return res.redirect(
+        "/console/" + session.id + "/root?err=" +
+          encodeURIComponent("That code was not accepted. Try the next one.")
+      );
     }
     unlockRoot(req, session.id);
   }
