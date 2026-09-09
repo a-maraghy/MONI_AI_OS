@@ -364,6 +364,22 @@ def agent_dir(slug):
     return os.path.join(AGENTS_DIR, slug)
 
 
+def all_agent_slugs():
+    """Every agent that exists, by slug.
+
+    Not to be confused with agent_ids(), which returns the service account's
+    uid and gid. The two names are close enough that one has already been used
+    for the other; this one is the list of agents.
+    """
+    if not os.path.isdir(AGENTS_DIR):
+        return []
+    return [
+        slug
+        for slug in sorted(os.listdir(AGENTS_DIR))
+        if SLUG_RE.match(slug) and os.path.isdir(agent_dir(slug))
+    ]
+
+
 def check_slug(slug):
     if not isinstance(slug, str) or not SLUG_RE.match(slug):
         fail("invalid agent name: must be lowercase letters, digits and hyphens")
@@ -619,7 +635,7 @@ def validate_config(cfg, creating):
     # administrator's passphrase in chat before anything runs.
     operator = bool(cfg.get("server_operator"))
     if operator:
-        for other in agent_ids():
+        for other in all_agent_slugs():
             if other == slug:
                 continue
             if read_agent_json(other).get("server_operator"):
@@ -2198,7 +2214,7 @@ def cmd_operator_get(args):
     here: one program owns that secret, and it is not this one.
     """
     holder = None
-    for slug in agent_ids():
+    for slug in all_agent_slugs():
         if read_agent_json(slug).get("server_operator"):
             holder = slug
             break
