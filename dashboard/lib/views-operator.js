@@ -1,7 +1,7 @@
 "use strict";
 /**
  * The server-operator role: which agent may propose root actions, and the
- * passphrase that lets one actually run.
+ * authenticator code that lets one actually run.
  *
  * This page is written to be read by someone deciding whether to hand a
  * language model the keys to their machine. It therefore spends more space than
@@ -14,9 +14,9 @@ const { esc, shell, card, flashes, icon, stamp, ago, empty, can } = require("./u
 
 const SUMMARY = `The operator agent can <em>ask</em> to run commands as root. It cannot run
   one. Every request is shown to you in the chat with the exact command, and runs only after
-  you approve it with the passphrase below — which the agent never sees.`;
+  you approve it with a code from your authenticator app — which the agent never sees.`;
 
-exports.index = ({ csrf, user, operator, agents, audit, flash, err }) => {
+exports.index = ({ csrf, user, operator, agents, eligible = [], audit, flash, err }) => {
   const root = (operator && operator.root) || {};
   const holder = operator && operator.agent;
   const candidates = agents.filter((a) => a.channel);
@@ -29,9 +29,9 @@ exports.index = ({ csrf, user, operator, agents, audit, flash, err }) => {
       holder && !root.configured
         ? `<div class="alert warn">${icon("alert")}<div><strong>${esc(
             operator.agent_name || holder
-          )}</strong> holds the role but no approval passphrase is set, so no root action can
-          ever be approved. The agent is told this and will say so rather than proposing
-          anything. Set one below to make the role usable.</div></div>`
+          )}</strong> holds the role but nobody is set to approve, so no root action can ever
+          be approved. The agent is told this and will say so rather than proposing anything.
+          Choose an approver below to make the role usable.</div></div>`
         : ""
     }
     ${
@@ -46,7 +46,7 @@ exports.index = ({ csrf, user, operator, agents, audit, flash, err }) => {
       root.locked_for
         ? `<div class="alert warn">${icon("alert")}<div>The approval broker is locked for
           another ${Math.ceil(root.locked_for / 60)} minute(s) after repeated wrong
-          passphrases. If that was not you, change the passphrase.</div></div>`
+          codes. If that was not you, somebody is guessing at your approvals.</div></div>`
         : ""
     }
 
@@ -56,7 +56,8 @@ exports.index = ({ csrf, user, operator, agents, audit, flash, err }) => {
       <ol class="steps">
         <li>The agent proposes a command, with a written explanation of what it does.</li>
         <li>You are shown the explanation <em>and the exact command</em> in the chat.</li>
-        <li>You tap Approve and type the passphrase. Your message is deleted immediately and
+        <li>You tap Approve and type the six-digit code from your authenticator app. Your
+            message is deleted immediately and
             is never passed to the model.</li>
         <li>The command runs as root, once. The ticket cannot be reused.</li>
       </ol>
@@ -144,51 +145,79 @@ exports.index = ({ csrf, user, operator, agents, audit, flash, err }) => {
     )}
 
     ${
-      can(user, "operator.passphrase")
+      can(user, "operator.approver")
         ? card(
-            "Approval passphrase",
+            "Who approves",
             `<table class="kv">
-              <tr><td>Status</td><td>${
-                root.configured
-                  ? `<span class="pill ok">set</span>`
-                  : `<span class="pill bad">not set — root actions are disabled</span>`
+              <tr><td>Approver</td><td>${
+                root.approver
+                  ? `<code>${esc(root.approver)}</code>${
+                      root.approver_usable
+                        ? ` <span class="pill ok">ready</span>`
+                        : ` <span class="pill bad">cannot approve</span>`
+                    }`
+                  : `<span class="pill bad">nobody — root actions are disabled</span>`
               }</td></tr>
               <tr><td>Waiting proposals</td><td>${root.pending || 0}</td></tr>
             </table>
-            <form method="post" action="/operator/passphrase" autocomplete="off" class="mt-16">
-              <input type="hidden" name="_csrf" value="${esc(csrf)}">
-              <div class="grid cols-2">
-                <label>${root.configured ? "Replace passphrase" : "Set passphrase"}
-                  <span class="hint">at least 10 characters; a phrase beats a password</span>
-                  <input name="passphrase" type="password" minlength="10" required
-                         autocomplete="new-password"></label>
-                <label>Repeat
-                  <input name="passphrase2" type="password" minlength="10" required
-                         autocomplete="new-password"></label>
-              </div>
-              <p class="muted small">You will type this into the chat each time you approve
-                something. Changing it cancels every proposal currently waiting.</p>
-              <button class="btn primary" type="submit">${icon("save")} Save passphrase</button>
-            </form>
             ${
-              root.configured
-                ? `<form method="post" action="/operator/passphrase/clear" class="mt-12"
-                         data-confirm="Clear the approval passphrase? No root action can be approved until a new one is set.">
+              root.approver && !root.approver_usable
+                ? `<div class="alert bad">${icon("alert")}<div><strong>${esc(
+                    root.approver
+                  )}</strong> can no longer produce a code — the account has been disabled,
+                  removed, or had its authenticator reset without re-enrolling. Until that is
+                  fixed or somebody else is chosen, nothing can be approved.</div></div>`
+                : ""
+            }
+            ${
+              eligible.length
+                ? `<form method="post" action="/operator/approver" class="mt-16">
+                    <input type="hidden" name="_csrf" value="${esc(csrf)}">
+                    <label>Approvals use this person's authenticator
+                      <select name="username">
+                        ${eligible
+                          .map(
+                            (u) =>
+                              `<option value="${esc(u.username)}"${
+                                u.username === root.approver ? " selected" : ""
+                              }>${esc(u.display_name || u.username)} — ${esc(
+                                u.role ? u.role.label : "no role"
+                              )}</option>`
+                          )
+                          .join("")}
+                      </select></label>
+                    <p class="muted small">Only enabled accounts that have finished
+                      authenticator enrolment appear here — an account that cannot produce a
+                      code cannot approve anything. Changing the approver cancels every
+                      proposal currently waiting, since those were shown to somebody else.</p>
+                    <button class="btn primary" type="submit"
+                            data-confirm="Route root approvals through this person's authenticator?">
+                      ${icon("save")} Save approver</button>
+                  </form>`
+                : `<p class="muted mt-12">No account is eligible. An approver must be enabled
+                    and have finished authenticator enrolment.</p>`
+            }
+            ${
+              root.approver
+                ? `<form method="post" action="/operator/approver/clear" class="mt-12"
+                         data-confirm="Remove the approver? No root action can be approved until one is chosen.">
                     <input type="hidden" name="_csrf" value="${esc(csrf)}">
                     <button class="btn danger small" type="submit">${icon(
-                      "trash"
-                    )} Clear passphrase</button>
+                      "ban"
+                    )} Remove approver</button>
                   </form>`
                 : ""
             }`,
             { icon: "lock" }
           )
         : card(
-            "Approval passphrase",
+            "Who approves",
             `<p class="muted">${
-              root.configured
-                ? "A passphrase is set. Your role does not include changing it."
-                : "No passphrase is set, so no root action can be approved."
+              root.approver
+                ? "Approvals go through " +
+                  esc(root.approver) +
+                  "'s authenticator. Your role does not include changing that."
+                : "Nobody is set to approve, so no root action can be approved."
             }</p>`,
             { icon: "lock" }
           )
@@ -211,7 +240,7 @@ exports.index = ({ csrf, user, operator, agents, audit, flash, err }) => {
               )
               .join("")}</tbody></table>`
         : `<p class="muted">Nothing has been proposed yet. Every proposal, approval, refusal and
-            failed passphrase appears here — written by the broker as root, where the agent
+            rejected code appears here — written by the broker as root, where the agent
             cannot edit it.</p>`,
       { icon: "audit" }
     )}`,
@@ -221,7 +250,8 @@ exports.index = ({ csrf, user, operator, agents, audit, flash, err }) => {
       active: "operator",
       dash: "os",
       heading: "Server operator",
-      subtitle: "One agent may propose root commands. You approve each one, in chat, with a passphrase.",
+      subtitle:
+        "One agent may propose root commands. You approve each one in chat, with a code from your authenticator.",
     }
   );
 };

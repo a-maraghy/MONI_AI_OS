@@ -11,28 +11,38 @@ keep those two facts apart.
       |<-- ticket id --------------|                             |
       |                            |                             |
       |                    (bot shows the ticket) --------------->|
-      |                            |<---- approve(id, passphrase)-|
-      |                            |  verify, then execute        |
+      |                            |<-- approve(id, 6-digit code)-|
+      |                            |  verify TOTP, then execute   |
       |<-- result -----------------|                             |
 
-Three properties hold this together, and each one is enforced here rather than
-asked for in a prompt:
+Approval is a code from the authenticator app of a named panel user -- the same
+one they sign in to the dashboard with. Not a shared passphrase: a passphrase is
+a standing secret that has to be stored, typed repeatedly into a chat, and
+remembered by whoever might need it, and one that leaks stays leaked. A TOTP
+code is single-use, expires in seconds, and proves possession of the phone that
+enrolled rather than knowledge of a string.
+
+Four properties hold this together, and each is enforced here rather than asked
+for in a prompt:
 
   1. The agent can only PROPOSE. `propose` never executes anything; it writes a
-     ticket and returns an id. Execution happens in `approve`, which requires a
-     passphrase the agent has never seen.
+     ticket and returns an id. Execution happens in `approve`.
 
-  2. The passphrase is verified inside this program, as root, against a hash in
-     a root-only file. The agent's account cannot read the hash, so it cannot
-     test guesses offline, and it cannot forge an approval by computing one.
+  2. The code is verified inside this program, as root, against the TOTP secret
+     in the panel's own user database -- a file the agent account cannot read.
+     So the agent cannot compute a valid code, and cannot test guesses offline.
 
-  3. Approval is bound to the exact command that was proposed. The ticket stores
-     an HMAC of the command; `approve` recomputes it. A ticket cannot be
-     approved and then quietly pointed at a different command.
+  3. Every accepted code is burned. A code already used cannot be replayed
+     inside its own validity window, which is what makes it safe for the code
+     to travel through a chat message at all.
 
-Tickets are single-use and expire. Failed passphrase attempts are counted and
-lock the broker for a while, because the agent -- or anything that has taken it
-over -- can call this in a loop.
+  4. Approval is bound to the exact command proposed. The ticket stores an HMAC
+     of the command; `approve` recomputes it. A ticket cannot be approved and
+     then quietly pointed at a different command.
+
+Tickets are single-use and expire. Failed codes are counted and lock the broker
+for a while, because the agent -- or anything that has taken it over -- can call
+this in a loop, and six digits do not survive an unthrottled loop.
 
 Invoked only through one sudoers rule:
 
@@ -51,6 +61,8 @@ import json
 import os
 import re
 import secrets
+import sqlite3
+import struct
 import shlex
 import subprocess
 import sys
@@ -58,40 +70,42 @@ import time
 import uuid
 
 STATE_DIR = "/var/lib/moni-root"
-SECRET_FILE = os.path.join(STATE_DIR, "passphrase")      # 0600 root:root
+APPROVER_FILE = os.path.join(STATE_DIR, "approver")      # 0600 root:root
+TICKET_KEY_FILE = os.path.join(STATE_DIR, "ticket.key")  # 0600 root:root
 TICKET_DIR = os.path.join(STATE_DIR, "tickets")          # 0700 root:root
 LOCK_FILE = os.path.join(STATE_DIR, "lock")
 ATTEMPT_FILE = os.path.join(STATE_DIR, "attempts")
+BURNED_FILE = os.path.join(STATE_DIR, "burned")
 AUDIT_LOG = "/var/log/moni-root.log"
+
+# The panel's user database. Read here, as root, and never copied: the approver's
+# authenticator secret must always be the one they are actually using, so that
+# resetting their two-factor in the panel takes effect on the next approval
+# rather than leaving a stale copy that still works.
+PANEL_DB = os.environ.get("MONI_DASHBOARD_DB", "/var/lib/moni-dashboard/moni.db")
 
 # A ticket is meant to be approved while the administrator is looking at it. An
 # hour-old proposal is not something anyone still has in mind.
 TICKET_TTL_SECONDS = 900
 MAX_PENDING = 20
 
-# Wrong passphrases are rate limited hard. The agent can call this in a loop,
-# and a four-word passphrase does not survive an unthrottled loop.
+# Wrong codes are rate limited hard. Six digits is a million possibilities, but
+# a caller that can loop uncontested gets through a million in far less time
+# than a code stays valid, so the limit is what makes the length sufficient.
 MAX_ATTEMPTS = 5
 LOCKOUT_SECONDS = 900
 
-# Argon2 if it is available -- it is, since the dashboard depends on it -- and
-# scrypt otherwise. Both are memory-hard; neither is a bare SHA.
-try:
-    from argon2 import PasswordHasher
-    from argon2.exceptions import VerifyMismatchError, VerificationError
-
-    _ARGON = PasswordHasher()
-except Exception:  # pragma: no cover - depends on host packages
-    _ARGON = None
-
-# scrypt parameters for the fallback. OpenSSL enforces its own memory ceiling
-# and refuses outright rather than degrading, so maxmem is raised to match what
-# these parameters actually need -- roughly 2 * N * r * 64 bytes. Leaving it at
-# the default makes hashing fail with "memory limit exceeded" instead of being
-# merely slower, which is a confusing way to discover a tuning mistake.
-SCRYPT_N = 2 ** 15
-SCRYPT_R = 8
-SCRYPT_MAXMEM = 128 * 1024 * 1024
+# TOTP, RFC 6238: SHA1, 30-second steps, six digits -- the parameters every
+# authenticator app assumes, and the ones the panel enrols with.
+TOTP_STEP = 30
+TOTP_DIGITS = 6
+# One step either side, so a code is accepted for about ninety seconds. Wide
+# enough for a phone with a drifting clock and a person typing; narrow enough
+# that a code read over someone's shoulder is stale before it is useful.
+TOTP_WINDOW = 1
+# Burned codes are kept a little longer than they can possibly be accepted, so
+# the replay check cannot be beaten by waiting.
+BURN_RETENTION = TOTP_STEP * (TOTP_WINDOW * 2 + 4)
 
 TICKET_ID_RE = re.compile(r"^[0-9a-f]{32}$")
 
@@ -146,64 +160,158 @@ class Lock:
         os.close(self.fd)
 
 
-# ------------------------------------------------------------- passphrase ---
+# ---------------------------------------------------------------- approver ---
 
 
-def read_secret():
+def read_approver():
+    """The panel user whose authenticator approves root actions."""
     try:
-        with open(SECRET_FILE) as fh:
-            return json.load(fh)
+        with open(APPROVER_FILE) as fh:
+            record = json.load(fh)
     except (OSError, ValueError):
         return None
+    return record if record.get("username") else None
 
 
-def hash_passphrase(passphrase):
-    if _ARGON is not None:
-        return {"algo": "argon2", "hash": _ARGON.hash(passphrase)}
-    salt = secrets.token_bytes(16)
-    digest = hashlib.scrypt(
-        passphrase.encode(), salt=salt, n=SCRYPT_N, r=SCRYPT_R, p=1,
-        dklen=32, maxmem=SCRYPT_MAXMEM,
-    )
-    return {
-        "algo": "scrypt",
-        "salt": base64.b64encode(salt).decode(),
-        "hash": base64.b64encode(digest).decode(),
-    }
+def approver_secret(username):
+    """That user's TOTP secret, read live from the panel's database.
 
+    Read rather than copied on purpose. If the approver loses their phone and
+    an administrator resets their two-factor in the panel, the new secret has
+    to take effect immediately -- a copy taken when the binding was made would
+    keep honouring the authenticator they no longer control.
 
-def verify_passphrase(record, passphrase):
-    if not record:
-        return False
-    if record.get("algo") == "argon2" and _ARGON is not None:
-        try:
-            _ARGON.verify(record["hash"], passphrase)
-            return True
-        except (VerifyMismatchError, VerificationError, Exception):
-            return False
-    if record.get("algo") == "scrypt":
-        try:
-            salt = base64.b64decode(record["salt"])
-            expected = base64.b64decode(record["hash"])
-        except Exception:
-            return False
-        digest = hashlib.scrypt(
-            passphrase.encode(), salt=salt, n=SCRYPT_N, r=SCRYPT_R, p=1,
-            dklen=32, maxmem=SCRYPT_MAXMEM,
-        )
-        return hmac.compare_digest(digest, expected)
-    return False
-
-
-def ticket_key(record):
-    """Key for the ticket HMAC, derived from the stored passphrase record.
-
-    Derived rather than stored separately so that changing the passphrase
-    invalidates every outstanding ticket -- which is what you want, since
-    changing it is what you do when you think something has gone wrong.
+    Opened read-only. This program has no business writing to the panel's data,
+    and read-only means a bug here cannot corrupt the account table.
     """
-    material = json.dumps(record, sort_keys=True).encode()
-    return hashlib.sha256(b"moni-root-ticket\x00" + material).digest()
+    try:
+        uri = "file:" + PANEL_DB + "?mode=ro"
+        conn = sqlite3.connect(uri, uri=True, timeout=5)
+    except sqlite3.Error:
+        return None
+    try:
+        row = conn.execute(
+            "SELECT totp_secret, totp_confirmed, disabled FROM users WHERE username = ?",
+            (username,),
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+
+    if not row:
+        return None
+    secret, confirmed, disabled = row
+    # A disabled account cannot sign in to the panel; it must not be able to
+    # approve a root command either. An unenrolled one has no usable secret.
+    if disabled or not confirmed or not secret:
+        return None
+    return secret
+
+
+# -------------------------------------------------------------------- TOTP ---
+
+
+def totp_candidates(secret_b32, at):
+    """Every code valid at `at`, mapped to the time step that produced it.
+
+    Implemented here rather than pulled from a library: it is twenty lines of
+    RFC 6238, and this program runs as root through sudo, where every import is
+    a file somebody else might one day be able to write.
+    """
+    padded = secret_b32.strip().replace(" ", "").upper()
+    padded += "=" * ((8 - len(padded) % 8) % 8)
+    try:
+        key = base64.b32decode(padded)
+    except Exception:
+        return {}
+
+    out = {}
+    current = int(at // TOTP_STEP)
+    for drift in range(-TOTP_WINDOW, TOTP_WINDOW + 1):
+        counter = current + drift
+        digest = hmac.new(key, struct.pack(">Q", counter), hashlib.sha1).digest()
+        offset = digest[-1] & 0x0F
+        code = struct.unpack(">I", digest[offset : offset + 4])[0] & 0x7FFFFFFF
+        out[str(code % (10 ** TOTP_DIGITS)).zfill(TOTP_DIGITS)] = counter
+    return out
+
+
+def verify_totp(secret, supplied):
+    """Return the time step a code belongs to, or None.
+
+    Compared with compare_digest against every candidate rather than by
+    dictionary lookup, so the time taken does not depend on how nearly right
+    the guess was.
+    """
+    supplied = "".join(ch for ch in str(supplied) if ch.isdigit())
+    if len(supplied) != TOTP_DIGITS:
+        return None
+    matched = None
+    for code, counter in totp_candidates(secret, time.time()).items():
+        if hmac.compare_digest(code, supplied):
+            matched = counter
+    return matched
+
+
+def burned_steps():
+    try:
+        with open(BURNED_FILE) as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    cutoff = time.time() - BURN_RETENTION
+    return {k: v for k, v in data.items() if v > cutoff}
+
+
+def burn_step(username, counter):
+    """Record a code as spent so it cannot be replayed while still valid.
+
+    Without this, a code is a bearer token for its whole window -- and it
+    travels through a chat message, which is exactly where something might be
+    watching. Burning it makes the window irrelevant.
+    """
+    data = burned_steps()
+    data[username + ":" + str(counter)] = time.time()
+    tmp = BURNED_FILE + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(data, fh)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, BURNED_FILE)
+
+
+def is_burned(username, counter):
+    return (username + ":" + str(counter)) in burned_steps()
+
+
+def ticket_key():
+    """Key for the ticket HMAC.
+
+    A random key of its own, rotated whenever the approver binding changes, so
+    that re-pointing approvals at a different person invalidates every proposal
+    that was waiting for the previous one.
+    """
+    try:
+        with open(TICKET_KEY_FILE, "rb") as fh:
+            key = fh.read()
+            if len(key) == 32:
+                return key
+    except OSError:
+        pass
+    key = secrets.token_bytes(32)
+    fd = os.open(TICKET_KEY_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(key)
+    return key
+
+
+def rotate_ticket_key():
+    try:
+        os.unlink(TICKET_KEY_FILE)
+    except OSError as e:
+        if e.errno != errno.ENOENT:
+            raise
+    ticket_key()
 
 
 # ---------------------------------------------------------------- lockout ---
@@ -283,56 +391,74 @@ def ticket_path(ticket_id):
 
 
 def cmd_status(args):
-    record = read_secret()
+    approver = read_approver()
+    username = (approver or {}).get("username", "")
+    # "Bound" is not the same as "usable": the account may since have been
+    # disabled, deleted, or had its two-factor reset without re-enrolling. The
+    # panel needs to be able to say which, so both are reported.
+    usable = bool(username) and bool(approver_secret(username))
     state = attempts_state()
     with Lock():
         pending = prune_tickets()
     ok(
         {
-            "configured": bool(record),
-            "algo": (record or {}).get("algo"),
+            "configured": usable,
+            "approver": username,
+            "approver_usable": usable,
             "pending": len(pending),
             "locked_for": max(0, int(state.get("locked_until", 0) - time.time())),
         }
     )
 
 
-def cmd_set_passphrase(args):
-    """Set or replace the approval passphrase. Read from stdin, never argv."""
-    passphrase = sys.stdin.read().strip()
-    if len(passphrase) < 10:
-        die("passphrase must be at least 10 characters")
-    if len(passphrase) > 256:
-        die("passphrase is too long")
+def cmd_set_approver(args):
+    """Name the panel user whose authenticator approves root actions.
 
-    record = hash_passphrase(passphrase)
-    tmp = SECRET_FILE + ".tmp"
+    The user must exist, be enabled, and have finished two-factor enrolment --
+    checked here rather than trusted from the caller, because binding approvals
+    to an account that cannot produce a code would disable root actions in a way
+    that only shows up when somebody urgently needs one.
+    """
+    username = (args.get("username") or "").strip()
+    if not username:
+        die("no username given")
+    if not re.match(r"^[A-Za-z0-9._-]{3,32}$", username):
+        die("that is not a valid username")
+    if not approver_secret(username):
+        die(
+            "that account cannot approve: it does not exist, is disabled, or has "
+            "not finished authenticator enrolment"
+        )
+
+    tmp = APPROVER_FILE + ".tmp"
     with open(tmp, "w") as fh:
-        json.dump(record, fh)
+        json.dump({"username": username, "bound_at": time.time()}, fh)
     os.chmod(tmp, 0o600)
-    os.replace(tmp, SECRET_FILE)
+    os.replace(tmp, APPROVER_FILE)
 
-    # Changing the passphrase revokes every outstanding proposal, both because
-    # the ticket HMAC key is derived from it and, explicitly, here.
+    # Re-pointing approvals at somebody else revokes everything the previous
+    # approver had waiting: those proposals were shown to a different person.
     with Lock():
         for name in os.listdir(TICKET_DIR):
             os.unlink(os.path.join(TICKET_DIR, name))
+        rotate_ticket_key()
         clear_failures()
-    audit("passphrase_set")
-    ok({"configured": True})
+    audit("approver_set", username=username)
+    ok({"configured": True, "approver": username})
 
 
-def cmd_clear_passphrase(args):
-    """Remove the passphrase, which disables root execution entirely."""
+def cmd_clear_approver(args):
+    """Unbind the approver, which disables root execution entirely."""
     try:
-        os.unlink(SECRET_FILE)
+        os.unlink(APPROVER_FILE)
     except OSError as e:
         if e.errno != errno.ENOENT:
             raise
     with Lock():
         for name in os.listdir(TICKET_DIR):
             os.unlink(os.path.join(TICKET_DIR, name))
-    audit("passphrase_cleared")
+        rotate_ticket_key()
+    audit("approver_cleared")
     ok({"configured": False})
 
 
@@ -342,9 +468,9 @@ def cmd_propose(args):
     Called by the agent. The reason is stored alongside the command so the
     administrator approves a described action rather than a bare shell line.
     """
-    record = read_secret()
-    if not record:
-        die("no approval passphrase is set; root actions are disabled")
+    approver = read_approver()
+    if not approver or not approver_secret(approver["username"]):
+        die("no approver is configured; root actions are disabled")
 
     command = sys.stdin.read()
     if not command.strip():
@@ -377,7 +503,7 @@ def cmd_propose(args):
             # Binds the approval to this exact command. approve() recomputes it
             # from the stored command, so a tampered ticket file fails closed.
             "mac": hmac.new(
-                ticket_key(record), command.encode(), hashlib.sha256
+                ticket_key(), command.encode(), hashlib.sha256
             ).hexdigest(),
         }
         path = ticket_path(ticket_id)
@@ -450,22 +576,30 @@ def cmd_pending(args):
 
 
 def cmd_approve(args):
-    """Verify the passphrase and run the proposed command as root.
+    """Verify an authenticator code and run the proposed command as root.
 
-    The passphrase arrives on stdin from the bot's transport layer. It must
-    never have passed through the model: the point of the whole mechanism is
-    that approval comes from a person, and a secret the model has read is a
-    secret the model can replay.
+    The code arrives on stdin from the bot's transport layer. It must never have
+    passed through the model: the point of the whole mechanism is that approval
+    comes from a person, and a code the model has read is a code the model can
+    replay inside its window. Burning the code closes that window too, but the
+    first defence is that the model never sees it.
     """
     check_lockout()
 
-    record = read_secret()
-    if not record:
-        die("no approval passphrase is set; root actions are disabled")
+    approver = read_approver()
+    if not approver:
+        die("no approver is configured; root actions are disabled")
+    username = approver["username"]
+    secret = approver_secret(username)
+    if not secret:
+        die(
+            "the approver's account can no longer produce a code: it has been "
+            "disabled, removed, or had its authenticator reset"
+        )
 
-    passphrase = sys.stdin.read().strip()
-    if not passphrase:
-        die("no passphrase supplied")
+    code = sys.stdin.read().strip()
+    if not code:
+        die("no code supplied")
 
     with Lock():
         prune_tickets()
@@ -476,13 +610,22 @@ def cmd_approve(args):
         except (OSError, ValueError):
             die("no such proposal, or it has expired")
 
-        if not verify_passphrase(record, passphrase):
+        counter = verify_totp(secret, code)
+        if counter is None:
             record_failure()
-            audit("approval_rejected", ticket=ticket["id"], reason="bad passphrase")
-            die("passphrase is not correct")
+            audit("approval_rejected", ticket=ticket["id"], reason="bad code")
+            die("that code is not valid — check the app and try the next one")
+
+        # A code is a bearer token for its whole window, and this one travelled
+        # through a chat. Spending it here is what stops it being spent twice.
+        if is_burned(username, counter):
+            record_failure()
+            audit("approval_rejected", ticket=ticket["id"], reason="code reused")
+            die("that code has already been used — wait for the next one")
+        burn_step(username, counter)
 
         expected = hmac.new(
-            ticket_key(record), ticket["command"].encode(), hashlib.sha256
+            ticket_key(), ticket["command"].encode(), hashlib.sha256
         ).hexdigest()
         if not hmac.compare_digest(expected, ticket.get("mac", "")):
             os.unlink(path)
@@ -497,6 +640,7 @@ def cmd_approve(args):
     audit(
         "approved",
         ticket=ticket["id"],
+        approver=username,
         requested_by=ticket.get("requested_by", ""),
         command=ticket["command"][:500],
     )
@@ -565,8 +709,8 @@ def cmd_audit(args):
 
 COMMANDS = {
     "status": cmd_status,
-    "set-passphrase": cmd_set_passphrase,
-    "clear-passphrase": cmd_clear_passphrase,
+    "set-approver": cmd_set_approver,
+    "clear-approver": cmd_clear_approver,
     "propose": cmd_propose,
     "pending": cmd_pending,
     "show": cmd_show,

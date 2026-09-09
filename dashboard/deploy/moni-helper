@@ -92,6 +92,7 @@ SLUG_RE = re.compile(r"^[a-z][a-z0-9-]{1,30}$")
 # files: quotes, angle brackets, newlines, backslashes.
 NAME_RE = re.compile(r"^[\w .,'()&/@:+#!?-]{1,64}$", re.UNICODE)
 BOT_TOKEN_RE = re.compile(r"^\d{6,12}:[A-Za-z0-9_-]{30,60}$")
+USERNAME_RE = re.compile(r"^[A-Za-z0-9._-]{3,32}$")
 BOT_USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{4,32}$")
 USER_ID_RE = re.compile(r"^\d{4,15}$")
 USER_IDS_RE = re.compile(r"^\d{4,15}(,\d{4,15})*$")
@@ -2220,13 +2221,16 @@ def cmd_operator_get(args):
             break
 
     channel = channel_bound_to(holder) if holder else None
-    root_state = {"configured": False, "pending": 0, "locked_for": 0}
+    root_state = {"configured": False, "approver": "", "approver_usable": False,
+                  "pending": 0, "locked_for": 0}
     try:
         result = run(["/usr/local/sbin/moni-root", "status"], timeout=15)
         parsed = json.loads(result.stdout or "{}")
         if parsed.get("ok"):
             root_state = {
                 "configured": bool(parsed.get("configured")),
+                "approver": parsed.get("approver", ""),
+                "approver_usable": bool(parsed.get("approver_usable")),
                 "pending": parsed.get("pending", 0),
                 "locked_for": parsed.get("locked_for", 0),
             }
@@ -2256,27 +2260,33 @@ def cmd_operator_get(args):
     )
 
 
-def cmd_root_set_passphrase(args):
-    """Set the approval passphrase. Reaches moni-root on stdin, never in argv."""
-    passphrase = read_stdin_text()
+def cmd_root_set_approver(args):
+    """Name the panel user whose authenticator approves root actions.
+
+    moni-root re-checks that the account exists, is enabled and has finished
+    enrolment; the username is passed straight through rather than validated
+    twice against a copy of the rules that could drift.
+    """
+    username = args[0] if args else ""
+    if not USERNAME_RE.match(username or ""):
+        fail("that is not a valid username")
     result = run(
-        ["/usr/local/sbin/moni-root", "set-passphrase"],
-        input=passphrase,
+        ["/usr/local/sbin/moni-root", "set-approver", "--username", username],
         timeout=30,
     )
     parsed = json.loads(result.stdout or "{}")
     if not parsed.get("ok"):
-        fail(parsed.get("error", "could not set the passphrase"))
-    audit("root-passphrase-set", "approval passphrase changed")
-    ok({"configured": True})
+        fail(parsed.get("error", "could not set the approver"))
+    audit("root-approver-set", "root approvals now use " + username + "'s authenticator")
+    ok({"configured": True, "approver": username})
 
 
-def cmd_root_clear_passphrase(args):
-    result = run(["/usr/local/sbin/moni-root", "clear-passphrase"], timeout=30)
+def cmd_root_clear_approver(args):
+    result = run(["/usr/local/sbin/moni-root", "clear-approver"], timeout=30)
     parsed = json.loads(result.stdout or "{}")
     if not parsed.get("ok"):
-        fail(parsed.get("error", "could not clear the passphrase"))
-    audit("root-passphrase-cleared", "root actions disabled")
+        fail(parsed.get("error", "could not clear the approver"))
+    audit("root-approver-cleared", "root actions disabled")
     ok({"configured": False})
 
 
@@ -2332,8 +2342,8 @@ COMMANDS = {
     "credential-clear": cmd_credential_clear,
     "system-probe": cmd_system_probe,
     "operator-get": cmd_operator_get,
-    "root-set-passphrase": cmd_root_set_passphrase,
-    "root-clear-passphrase": cmd_root_clear_passphrase,
+    "root-set-approver": cmd_root_set_approver,
+    "root-clear-approver": cmd_root_clear_approver,
     "root-audit": cmd_root_audit,
 }
 

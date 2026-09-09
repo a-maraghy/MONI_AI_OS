@@ -88,9 +88,9 @@ const PERMISSION_GROUPS = [
       { key: "operator.view", label: "View the operator role", hint: "Which agent holds it, and the root action log." },
       { key: "operator.assign", label: "Assign and remove the role", hint: "Decides which agent can propose root actions at all." },
       {
-        key: "operator.passphrase",
-        label: "Set the approval passphrase",
-        hint: "This is the secret that turns a proposal into a root command. Grant it to nobody you would not give root.",
+        key: "operator.approver",
+        label: "Choose who approves root actions",
+        hint: "Names the panel user whose authenticator turns a proposal into a root command. Grant it to nobody you would not give root.",
       },
     ],
   },
@@ -140,7 +140,7 @@ const IMPLIES = {
   "roles.manage": ["roles.view"],
   "operator.view": ["agents.view"],
   "operator.assign": ["operator.view", "agents.view"],
-  "operator.passphrase": ["operator.view"],
+  "operator.approver": ["operator.view"],
 };
 
 /** Expand a permission list to include everything it implies. */

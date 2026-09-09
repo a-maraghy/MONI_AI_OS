@@ -1633,6 +1633,12 @@ app.get("/operator", requireAuth, requirePerm("operator.view"), async (req, res)
       user: ctx(req, "os"),
       operator: data.operator || null,
       agents: scopeAgents(req, data.agents),
+      // Only accounts that could actually produce a code are offered. Binding
+      // approvals to an account that cannot is a failure you would discover at
+      // the worst possible moment.
+      eligible: req.perm.can("operator.approver")
+        ? db.listUsers().filter((u) => !u.disabled && u.totp_confirmed)
+        : [],
       audit: (data.audit && data.audit.entries) || [],
       flash: req.query.msg || null,
       err: req.query.err || data.errors.operator || null,
@@ -1679,31 +1685,47 @@ app.post("/operator/assign", requireAuth, requirePerm("operator.assign"), requir
   }
 });
 
-app.post("/operator/passphrase", requireAuth, requirePerm("operator.passphrase"), requireCsrf, async (req, res) => {
-  const passphrase = String(req.body.passphrase || "");
+app.post("/operator/approver", requireAuth, requirePerm("operator.approver"), requireCsrf, async (req, res) => {
+  const username = field(req.body, "username");
   const back = (q) => res.redirect("/operator?" + q);
 
-  if (passphrase.length < 10)
-    return back("err=" + encodeURIComponent("The passphrase must be at least 10 characters."));
-  if (passphrase !== String(req.body.passphrase2 || ""))
-    return back("err=" + encodeURIComponent("The two passphrases do not match."));
+  // Checked here so the page can explain itself, and again inside moni-root,
+  // which is the layer that has to hold if this one is wrong.
+  const target = db.getUserByName(username);
+  if (!target || target.disabled || !target.totp_confirmed)
+    return back(
+      "err=" +
+        encodeURIComponent(
+          "That account cannot approve: it must be enabled and have finished authenticator enrolment."
+        )
+    );
 
   try {
-    await priv.rootSetPassphrase(passphrase);
-    // Recorded, never the value. This log is readable by anyone with audit
-    // access, who is not necessarily anyone with root.
-    db.logLogin(req.ip, req.me.username, "admin", "set the root approval passphrase");
-    back("msg=" + encodeURIComponent("Passphrase saved. Any waiting proposals were cancelled."));
+    await priv.rootSetApprover(username);
+    db.logLogin(
+      req.ip,
+      req.me.username,
+      "admin",
+      "root approvals now use " + username + "'s authenticator"
+    );
+    back(
+      "msg=" +
+        encodeURIComponent(
+          "Root actions are now approved with " +
+            username +
+            "'s authenticator. Waiting proposals were cancelled."
+        )
+    );
   } catch (e) {
     back("err=" + encodeURIComponent(e.message));
   }
 });
 
-app.post("/operator/passphrase/clear", requireAuth, requirePerm("operator.passphrase"), requireCsrf, async (req, res) => {
+app.post("/operator/approver/clear", requireAuth, requirePerm("operator.approver"), requireCsrf, async (req, res) => {
   try {
-    await priv.rootClearPassphrase();
-    db.logLogin(req.ip, req.me.username, "admin", "cleared the root approval passphrase");
-    res.redirect("/operator?msg=" + encodeURIComponent("Passphrase cleared. Root actions are disabled."));
+    await priv.rootClearApprover();
+    db.logLogin(req.ip, req.me.username, "admin", "removed the root approver");
+    res.redirect("/operator?msg=" + encodeURIComponent("Approver removed. Root actions are disabled."));
   } catch (e) {
     res.redirect("/operator?err=" + encodeURIComponent(e.message));
   }

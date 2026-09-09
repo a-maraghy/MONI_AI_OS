@@ -202,11 +202,10 @@ module.exports = {
 
   /* ----------------------------------------------------- server operator -- */
   operatorGet: () => callHelper("operator-get", [], { timeout: 30000 }),
-  // The passphrase goes over stdin, like every other secret here, so it never
-  // appears in a process listing.
-  rootSetPassphrase: (passphrase) =>
-    callHelper("root-set-passphrase", [], { stdin: passphrase }),
-  rootClearPassphrase: () => callHelper("root-clear-passphrase"),
+  // A username, not a secret: the authenticator secret it points at is read by
+  // moni-root from the panel's own database and never travels through here.
+  rootSetApprover: (username) => callHelper("root-set-approver", [username]),
+  rootClearApprover: () => callHelper("root-clear-approver"),
   rootAudit: (lines = 100) =>
     callHelper("root-audit", ["--lines", String(lines)], { timeout: 20000 }),
 
