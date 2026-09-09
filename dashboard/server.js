@@ -1584,6 +1584,11 @@ app.get("/addons", requireAuth, requirePerm("addons.view"), async (req, res) => 
 
 /* -------------------------------------------------------------- console --- */
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+// How long a chat's process is kept alive with nobody talking to it. Long
+// enough to step away and come back mid-thought; short enough that an idle tab
+// does not hold a process overnight.
+const CONSOLE_IDLE_MS = 30 * 60 * 1000;
 const CONSOLE_MODELS = consoleViews.MODELS.map((m) => m[0]);
 const CONSOLE_EFFORTS = consoleViews.EFFORTS.map((e) => e[0]);
 const CONSOLE_ACCESS = consoleViews.ACCESS.map((a) => a[0]);
@@ -1682,33 +1687,58 @@ app.post("/console/:id/settings", requireAuth, requirePerm("console.use"), requi
   if (/^\/[A-Za-z0-9._/-]{0,200}$/.test(cwd)) fields.cwd = cwd;
 
   db.updateConsoleSession(session.id, req.me.id, fields);
+  // Model, effort, directory and access are all fixed when the process starts,
+  // so a change to any of them only takes effect on a fresh one. Closing it here
+  // means the next message uses what the page is showing, rather than what it
+  // was showing when the chat began.
+  closeConsoleChat(session.id);
   res.redirect("/console/" + session.id);
 });
 
 app.post("/console/:id/delete", requireAuth, requirePerm("console.use"), requireCsrf, (req, res) => {
   const session = loadConsoleSession(req, res);
   if (!session) return;
-  stopConsoleTurn(session.id);
+  closeConsoleChat(session.id);
   db.deleteConsoleSession(session.id, req.me.id);
   res.redirect("/console");
 });
 
-function stopConsoleTurn(sessionId) {
-  const child = consoleTurns.get(sessionId);
-  if (child) {
-    try {
-      child.kill("SIGTERM");
-    } catch (_) {
-      /* already gone */
-    }
-    consoleTurns.delete(sessionId);
+/** End a chat's process, whether it is mid-turn or merely idle. */
+function closeConsoleChat(sessionId) {
+  const entry = consoleTurns.get(sessionId);
+  if (!entry) return;
+  clearTimeout(entry.idle);
+  try {
+    entry.child.kill("SIGTERM");
+  } catch (_) {
+    /* already gone */
   }
+  consoleTurns.delete(sessionId);
+}
+
+/**
+ * Close a chat that nobody has spoken to for a while.
+ *
+ * These processes hold a conversation in memory and cost nothing to restart,
+ * so there is no reason to keep one alive overnight. Losing it costs the
+ * model's memory of the chat, not the chat itself -- the transcript is in the
+ * database either way.
+ */
+function touchConsoleChat(sessionId) {
+  const entry = consoleTurns.get(sessionId);
+  if (!entry) return;
+  clearTimeout(entry.idle);
+  entry.idle = setTimeout(() => closeConsoleChat(sessionId), CONSOLE_IDLE_MS);
+  entry.idle.unref();
 }
 
 app.post("/console/:id/stop", requireAuth, requirePerm("console.use"), requireCsrf, (req, res) => {
   const session = loadConsoleSession(req, res);
   if (!session) return;
-  stopConsoleTurn(session.id);
+  // Stopping a turn ends the conversation with it. Interrupting Claude
+  // mid-tool-call and then continuing would leave it holding a half-finished
+  // action it believes succeeded, which is worse than starting again.
+  closeConsoleChat(session.id);
   res.json({ stopped: true });
 });
 
@@ -1726,7 +1756,9 @@ app.post("/console/:id/send", requireAuth, requirePerm("console.use"), requireCs
 
   const prompt = String(req.body.prompt || "").trim();
   if (!prompt) return res.status(400).json({ error: "Say something first." });
-  if (consoleTurns.has(session.id))
+
+  let entry = consoleTurns.get(session.id);
+  if (entry && entry.busy)
     return res.status(409).json({ error: "This chat is already working on something." });
 
   if (session.access === "full" && !req.perm.can("console.full")) {
@@ -1736,14 +1768,9 @@ app.post("/console/:id/send", requireAuth, requirePerm("console.use"), requireCs
   }
 
   db.addConsoleMessage(session.id, "user", prompt);
-  // The first turn names the session id; later ones resume it. `started` is
-  // what tells them apart, and it is set before the child runs so a crashed
-  // first turn does not leave the next one trying to create the same id twice.
-  const resume = !!session.started;
-  db.updateConsoleSession(session.id, req.me.id, { started: 1 });
 
-  // Recorded because a full-access turn is a root shell, and root shells should
-  // leave a trace even when the person opening one is entitled to.
+  // Recorded because a full-access chat has the run of the machine, and that
+  // should leave a trace even when the person opening one is entitled to.
   db.logLogin(
     req.ip,
     req.me.username,
@@ -1751,16 +1778,41 @@ app.post("/console/:id/send", requireAuth, requirePerm("console.use"), requireCs
     `turn in chat ${session.id} (${session.access}, ${session.model}, ${session.effort})`
   );
 
-  const child = priv.consoleSend({
-    session_id: session.uuid,
-    prompt,
-    model: session.model,
-    effort: session.effort,
-    access: session.access,
-    cwd: session.cwd,
-    resume,
-  });
-  consoleTurns.set(session.id, child);
+  // One process per chat, kept alive between turns. The context lives in it:
+  // `claude -p` writes no transcript to disk, so a fresh process per message
+  // would start every turn from nothing however the session was named.
+  if (!entry) {
+    const child = priv.consoleOpen({
+      model: session.model,
+      effort: session.effort,
+      access: session.access,
+      cwd: session.cwd,
+    });
+    entry = { child, busy: false, idle: null, buffer: "", listeners: [] };
+    consoleTurns.set(session.id, entry);
+
+    child.stdout.on("data", (chunk) => {
+      entry.buffer += chunk;
+      const lines = entry.buffer.split("\n");
+      entry.buffer = lines.pop();
+      for (const line of lines) if (line.trim()) entry.listeners.forEach((fn) => fn(line));
+    });
+    child.stderr.on("data", (chunk) => {
+      console.error("console stderr:", priv.redact(String(chunk)).slice(0, 500));
+    });
+    child.on("close", () => {
+      entry.listeners.forEach((fn) => fn(null));
+      consoleTurns.delete(session.id);
+    });
+    child.on("error", (e) => {
+      console.error("console spawn failed:", e.message);
+      entry.listeners.forEach((fn) => fn(null));
+      consoleTurns.delete(session.id);
+    });
+  }
+
+  entry.busy = true;
+  clearTimeout(entry.idle);
 
   res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
   res.setHeader("Cache-Control", "no-store");
@@ -1768,43 +1820,22 @@ app.post("/console/:id/send", requireAuth, requirePerm("console.use"), requireCs
 
   let assistantText = "";
   let result = null;
-  let buffer = "";
+  let done = false;
+  // The browser can leave before the turn does. When it does we stop writing,
+  // but keep listening: the answer is still being paid for and still belongs in
+  // the transcript, so it must reach the database even with nobody watching.
+  let watching = true;
 
-  const forward = (line) => {
-    if (!line.trim()) return;
-    let event;
-    try {
-      event = JSON.parse(line);
-    } catch (_) {
-      return; // a partial or non-JSON line is not ours to interpret
-    }
-
-    // Accumulate the assistant's prose so the finished turn can be stored and
-    // redisplayed on reload without replaying the whole event stream.
-    if (event.type === "assistant" && event.message && Array.isArray(event.message.content)) {
-      for (const block of event.message.content) {
-        if (block.type === "text" && block.text) assistantText += block.text;
-      }
-    }
-    if (event.type === "result") result = event;
-
-    res.write(priv.redact(JSON.stringify(event)) + "\n");
+  const write = (line) => {
+    if (watching) res.write(line + "\n");
   };
 
-  child.stdout.on("data", (chunk) => {
-    buffer += chunk;
-    const lines = buffer.split("\n");
-    buffer = lines.pop();
-    for (const line of lines) forward(line);
-  });
-
-  child.stderr.on("data", (chunk) => {
-    console.error("console turn stderr:", priv.redact(String(chunk)).slice(0, 500));
-  });
-
-  const finish = (code) => {
-    if (buffer) forward(buffer);
-    consoleTurns.delete(session.id);
+  const finish = (reason) => {
+    if (done) return;
+    done = true;
+    entry.listeners = entry.listeners.filter((fn) => fn !== onLine);
+    entry.busy = false;
+    touchConsoleChat(session.id);
 
     if (assistantText.trim()) {
       db.addConsoleMessage(session.id, "assistant", assistantText, {
@@ -1812,30 +1843,73 @@ app.post("/console/:id/send", requireAuth, requirePerm("console.use"), requireCs
         cost_usd: result && result.total_cost_usd,
         model: session.model,
       });
-      // Name the chat from its opening exchange, so the list is readable
+      // Name the chat from its opening message, so the list is readable
       // without opening anything.
       if (!session.title || session.title === "New chat") {
         db.updateConsoleSession(session.id, req.me.id, {
           title: prompt.replace(/\s+/g, " ").slice(0, 60),
         });
       }
-    } else if (code !== 0) {
+      db.updateConsoleSession(session.id, req.me.id, { started: 1 });
+    } else if (reason === "closed") {
       db.addConsoleMessage(session.id, "system", "That turn ended without an answer.");
     }
-
-    db.updateConsoleSession(session.id, req.me.id, {});
-    res.end();
+    if (watching) res.end();
   };
 
-  child.on("close", finish);
-  child.on("error", (e) => {
-    res.write(JSON.stringify({ type: "moni_error", error: e.message }) + "\n");
-    finish(1);
-  });
+  function onLine(line) {
+    // A null line means the process went away underneath us.
+    if (line === null) {
+      write(JSON.stringify({ type: "moni_done", exit_code: 1 }));
+      return finish("closed");
+    }
 
-  // If the browser goes away mid-turn, stop paying for it.
+    let event;
+    try {
+      event = JSON.parse(line);
+    } catch (_) {
+      return; // not an event we emitted
+    }
+
+    // Accumulate the prose so a finished turn can be stored and redisplayed on
+    // reload without replaying the whole event stream.
+    if (event.type === "assistant" && event.message && Array.isArray(event.message.content)) {
+      for (const block of event.message.content) {
+        if (block.type === "text" && block.text) assistantText += block.text;
+      }
+    }
+    if (event.session_id && UUID_RE.test(event.session_id) && event.session_id !== session.uuid) {
+      db.setConsoleSessionUuid(session.id, req.me.id, event.session_id);
+      session.uuid = event.session_id;
+    }
+
+    write(priv.redact(JSON.stringify(event)));
+
+    // `result` ends the turn but not the conversation: the response closes and
+    // the process stays up holding the context for the next message.
+    if (event.type === "result") {
+      result = event;
+      finish("result");
+    }
+  }
+
+  entry.listeners.push(onLine);
+
+  // The CLI's streaming-input format. One line per message.
+  entry.child.stdin.write(
+    JSON.stringify({
+      type: "user",
+      message: { role: "user", content: [{ type: "text", text: prompt }] },
+      parent_tool_use_id: null,
+      session_id: session.uuid,
+    }) + "\n"
+  );
+
+  // If the browser goes away mid-turn, stop waiting on its behalf -- but leave
+  // the process running, because the turn is still being paid for and its
+  // answer belongs in the transcript when it arrives.
   req.on("close", () => {
-    if (consoleTurns.get(session.id) === child) stopConsoleTurn(session.id);
+    watching = false;
   });
 });
 

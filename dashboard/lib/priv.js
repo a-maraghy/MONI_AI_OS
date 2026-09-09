@@ -203,21 +203,23 @@ module.exports = {
   /* -------------------------------------------------------------- console -- */
 
   /**
-   * Start a console turn and hand back the live child process.
+   * Open a long-lived console conversation and hand back the live process.
    *
-   * Unlike every other call here this does not resolve with a parsed result:
-   * a turn can run for minutes and the whole point of the console is watching
-   * it work, so the caller streams stdout itself and keeps the handle in order
-   * to kill it when the user presses Stop.
+   * Unlike every other call here this does not resolve with a parsed result.
+   * The process stays up between turns -- that is where the conversation's
+   * context lives, since `claude -p` persists no transcript to disk -- so the
+   * caller writes each message into its stdin and reads events off its stdout
+   * for as long as the chat is in use.
    *
-   * The prompt goes over stdin with the rest of the request, so a message the
-   * administrator typed never appears in the process table.
+   * The configuration goes over stdin rather than argv, and so does every
+   * message after it: what the administrator types never appears in the
+   * process table.
    */
-  consoleSend: (request) => {
-    const child = spawn("sudo", ["-n", HELPER, "console-send"], {
+  consoleOpen: (config) => {
+    const child = spawn("sudo", ["-n", HELPER, "console-open"], {
       stdio: ["pipe", "pipe", "pipe"],
     });
-    child.stdin.end(JSON.stringify(request));
+    child.stdin.write(JSON.stringify(config) + "\n");
     return child;
   },
 

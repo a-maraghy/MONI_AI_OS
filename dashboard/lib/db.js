@@ -364,6 +364,18 @@ module.exports = {
     ).run({ ...fields, id, user_id: userId, updated_at: nowIso() });
   },
 
+  /**
+   * Record the conversation id Claude actually created.
+   *
+   * Kept apart from updateConsoleSession because this is not a preference: it
+   * is the identity of the conversation, and the only thing --resume will
+   * accept later.
+   */
+  setConsoleSessionUuid: (id, userId, uuid) =>
+    db
+      .prepare("UPDATE console_sessions SET uuid = ? WHERE id = ? AND user_id = ?")
+      .run(uuid, id, userId),
+
   deleteConsoleSession: (id, userId) =>
     db
       .prepare("DELETE FROM console_sessions WHERE id = ? AND user_id = ?")

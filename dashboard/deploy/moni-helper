@@ -28,6 +28,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 from datetime import datetime, timezone
 
 ALLOWED_USERS = ("root", "ubuntu")
@@ -2283,13 +2284,37 @@ def console_config_dir(access):
     """
     path = os.path.join(CONSOLE_STATE, access)
     profile = CONSOLE_ACCESS[access]
+    try:
+        pw = pwd.getpwnam(profile["user"])
+    except KeyError:
+        return path
+
     for directory in (profile["home"], path):
         os.makedirs(directory, mode=0o700, exist_ok=True)
         try:
-            pw = pwd.getpwnam(profile["user"])
             os.chown(directory, pw.pw_uid, pw.pw_gid)
-        except (KeyError, OSError):
+        except OSError:
             pass
+
+    # Repair anything inside that the console cannot write.
+    #
+    # Claude Code saves conversations under this directory, and it does so
+    # silently: a sessions/ folder owned by somebody else does not raise an
+    # error, it just means every chat forgets everything between turns. That is
+    # a miserable thing to debug from the symptom, so the ownership is checked
+    # rather than assumed. One stat per child, and a full pass only when a child
+    # is actually wrong.
+    try:
+        misowned = any(
+            os.stat(os.path.join(path, name)).st_uid != pw.pw_uid
+            for name in os.listdir(path)
+        )
+    except OSError:
+        misowned = False
+
+    if misowned:
+        chown_tree(path, pw.pw_uid, pw.pw_gid, dir_mode=0o700, file_mode=0o600)
+
     return path
 
 
@@ -2323,24 +2348,27 @@ def console_env(access):
     return env
 
 
-def cmd_console_send(args):
-    """Run one console turn, streaming Claude's JSON events to stdout.
+def cmd_console_open(args):
+    """Open a long-lived console conversation and relay it.
 
-    Streams rather than buffers: a turn can run for minutes and the point of the
-    console is watching it work. Output is newline-delimited JSON straight from
-    the CLI, which the dashboard forwards to the browser as it arrives.
+    The first line of stdin configures the session; everything after it is a
+    user message in the CLI's streaming-input format, and everything the CLI
+    emits goes straight to stdout. The process stays up between turns, which is
+    what makes the conversation a conversation.
+
+    It works this way because `claude -p` does not persist a transcript
+    anywhere: --resume with the id it reports finds nothing afterwards, so a
+    second turn always began again from nothing. Holding the process open keeps
+    the context where the CLI actually keeps it, and has the side benefit of
+    skipping a cold start on every message.
     """
-    payload = read_stdin_json()
-
-    session_id = str(payload.get("session_id") or "").strip()
-    if session_id and not UUID_RE.match(session_id):
-        fail("malformed session id")
-
-    prompt = str(payload.get("prompt") or "")
-    if not prompt.strip():
-        fail("empty prompt")
-    if len(prompt) > 200000:
-        fail("prompt is too long")
+    first = sys.stdin.readline()
+    if not first:
+        fail("no session configuration received")
+    try:
+        payload = json.loads(first)
+    except ValueError:
+        fail("session configuration was not valid JSON")
 
     access = str(payload.get("access") or "full")
     if access not in CONSOLE_ACCESS:
@@ -2363,11 +2391,10 @@ def cmd_console_send(args):
     if not os.path.isdir(cwd):
         fail("no such directory: " + cwd)
 
-    resume = bool(payload.get("resume")) and bool(session_id)
-
     argv = [
         "claude",
         "-p",
+        "--input-format", "stream-json",
         "--output-format", "stream-json",
         "--include-partial-messages",
         "--verbose",
@@ -2375,33 +2402,45 @@ def cmd_console_send(args):
         "--effort", effort,
         "--permission-mode", "bypassPermissions",
     ]
-    argv += ["--resume", session_id] if resume else ["--session-id", session_id]
-    argv += ["--", prompt]
 
     profile = CONSOLE_ACCESS[access]
     try:
         pw = pwd.getpwnam(profile["user"])
     except KeyError:
-        fail(
-            "account " + profile["user"] + " does not exist; run the deploy script"
-        )
-    preexec = _drop_to(pw.pw_uid, pw.pw_gid)
+        fail("account " + profile["user"] + " does not exist; run the deploy script")
 
     proc = subprocess.Popen(
         argv,
         cwd=cwd,
         env=console_env(access),
-        stdin=subprocess.DEVNULL,
+        stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
         bufsize=1,
-        preexec_fn=preexec,
+        preexec_fn=_drop_to(pw.pw_uid, pw.pw_gid),
     )
 
-    # Forwarded line by line, unparsed. This helper is a pipe here, not an
-    # interpreter: anything it tried to summarise would be a second place for
-    # the event format to drift out of date.
+    # Two pumps: our stdin into Claude's, and Claude's stdout into ours. Both
+    # relay bytes without interpreting them -- anything this helper tried to
+    # summarise would be a second place for the event format to drift out of
+    # date, and it has no reason to know what a turn means.
+    def feed():
+        try:
+            for line in sys.stdin:
+                proc.stdin.write(line)
+                proc.stdin.flush()
+        except (BrokenPipeError, ValueError):
+            pass
+        finally:
+            try:
+                proc.stdin.close()
+            except Exception:
+                pass
+
+    pump = threading.Thread(target=feed, daemon=True)
+    pump.start()
+
     try:
         for line in proc.stdout:
             sys.stdout.write(line)
@@ -2415,8 +2454,11 @@ def cmd_console_send(args):
     trailer = {"type": "moni_done", "exit_code": proc.returncode}
     if proc.returncode != 0 and stderr:
         trailer["stderr"] = stderr[-4000:]
-    sys.stdout.write(json.dumps(trailer) + "\n")
-    sys.stdout.flush()
+    try:
+        sys.stdout.write(json.dumps(trailer) + "\n")
+        sys.stdout.flush()
+    except BrokenPipeError:
+        pass
 
 
 def _drop_to(uid, gid):
@@ -2572,7 +2614,7 @@ COMMANDS = {
     "credential-set": cmd_credential_set,
     "credential-clear": cmd_credential_clear,
     "system-probe": cmd_system_probe,
-    "console-send": cmd_console_send,
+    "console-open": cmd_console_open,
     "console-dirs": cmd_console_dirs,
     "operator-get": cmd_operator_get,
     "root-set-approver": cmd_root_set_approver,
