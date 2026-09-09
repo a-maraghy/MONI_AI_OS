@@ -844,6 +844,45 @@ label.addon:has(input[type="checkbox"]:checked) .addon-ico {
 .chat-controls { display: flex; align-items: center; gap: 4px; margin: 0; min-width: 0; flex: none; flex-wrap: wrap; }
 .chat-controls.grow { flex: 1; }
 
+/* The gate on a root-enabled chat. Centred and alone, because it is the whole
+   page: the transcript behind it was never sent. */
+.chat-lock { flex: 1; display: grid; place-items: center; padding: 24px; }
+.lock-card {
+  width: 100%; max-width: 380px; text-align: center;
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: 12px; padding: 26px 24px;
+  box-shadow: var(--shadow-md);
+  animation: rise 160ms var(--ease) both;
+}
+.lock-ico {
+  display: grid; place-items: center;
+  width: 52px; height: 52px; margin: 0 auto 12px;
+  border-radius: 50%; background: #fdf9f0; color: var(--warn);
+  border: 1px solid #f0dcb4;
+}
+.lock-card h2 { margin-bottom: 8px; }
+.lock-card p { margin: 0 0 16px; }
+.lock-card form { margin: 0; text-align: left; }
+.lock-card .alert { text-align: left; margin-bottom: 14px; }
+.lock-card input {
+  font-family: var(--mono); font-size: 20px; letter-spacing: .3em;
+  text-align: center; padding: 10px;
+}
+.lock-card p.small { margin: 14px 0 0; }
+
+/* The code prompt on the root switch, sharing the menu's shape. */
+.root-pop { min-width: 246px; }
+.root-pop p { margin: 0 0 10px; }
+.root-pop label { margin: 0 0 10px; font-size: 11px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+.root-pop input {
+  margin-top: 5px; font-family: var(--mono); font-size: 16px;
+  letter-spacing: .22em; text-align: center; padding: 7px;
+}
+details.root-toggle > summary { list-style: none; }
+details.root-toggle > summary::-webkit-details-marker { display: none; }
+details.root-toggle[open] > summary { border-color: var(--line-strong); background: var(--bg); }
+
 /* Root on or off for this chat. A switch rather than another dropdown: it is
    the one control here with two states and real consequences, and it should
    look like something you flip deliberately. */

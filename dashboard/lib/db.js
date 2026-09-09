@@ -134,7 +134,9 @@ function addColumn(table, column, definition) {
 
 addColumn("console_sessions", "permission_mode", "TEXT NOT NULL DEFAULT 'auto'");
 addColumn("console_sessions", "archived", "INTEGER NOT NULL DEFAULT 0");
-addColumn("console_sessions", "root_enabled", "INTEGER NOT NULL DEFAULT 1");
+// Existing chats keep whatever they had; new ones start without root, which is
+// why the column default is 0 while the migration below leaves old rows alone.
+addColumn("console_sessions", "root_enabled", "INTEGER NOT NULL DEFAULT 0");
 
 /* --------------------------------------------------------------- roles --- */
 
@@ -381,8 +383,8 @@ module.exports = {
       .prepare(
         `INSERT INTO console_sessions
            (uuid, user_id, title, model, effort, access, cwd, permission_mode,
-            started, created_at, updated_at)
-         VALUES (?, ?, 'New chat', ?, ?, ?, ?, 'auto', 0, ?, ?)`
+            root_enabled, started, created_at, updated_at)
+         VALUES (?, ?, 'New chat', ?, ?, ?, ?, 'auto', 0, 0, ?, ?)`
       )
       .run(uuid, userId, model, effort, access, cwd, nowIso(), nowIso()),
 

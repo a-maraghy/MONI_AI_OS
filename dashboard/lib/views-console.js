@@ -144,7 +144,50 @@ function renderMessage(m) {
   </div>`;
 }
 
-exports.console = ({ csrf, user, sessions, archived = [], session, messages, dirs, flash, err }) => {
+/**
+ * The screen a root-enabled chat shows before it will open.
+ *
+ * The transcript is not rendered behind this -- there is nothing to reveal by
+ * inspecting the page, because the server did not send it.
+ */
+function lockScreen(csrf, s, err) {
+  return `<div class="chat-lock">
+    <div class="lock-card">
+      <span class="lock-ico">${icon("lock", 26)}</span>
+      <h2>${esc(s.title || "New chat")}</h2>
+      <p class="muted">This chat can change anything on this machine, so opening it
+        takes a code as well as a session. Signing in proved who you are; this proves
+        you are still the one at the keyboard.</p>
+      ${
+        err
+          ? `<div class="alert bad">${icon("alert")}<div>${esc(err)}</div></div>`
+          : ""
+      }
+      <form method="post" action="/console/${s.id}/unlock" autocomplete="off">
+        <input type="hidden" name="_csrf" value="${esc(csrf)}">
+        <label>Authenticator code
+          <input name="code" inputmode="numeric" pattern="[0-9 ]*" placeholder="000000"
+                 autocomplete="one-time-code" required autofocus></label>
+        <button class="btn primary w-full" type="submit">${icon("lock", 15)} Unlock</button>
+      </form>
+      <p class="muted small">Good for 20 minutes. Turning root off from another chat
+        removes the need for this one entirely.</p>
+    </div>
+  </div>`;
+}
+
+exports.console = ({
+  csrf,
+  user,
+  sessions,
+  archived = [],
+  session,
+  messages,
+  dirs,
+  locked = false,
+  flash,
+  err,
+}) => {
   const active = session || null;
   // Root is on unless it has been turned off, and is meaningless outside a
   // whole-server chat -- the workspace profile has no sudo to withdraw.
@@ -200,7 +243,9 @@ exports.console = ({ csrf, user, sessions, archived = [], session, messages, dir
                 "MONI Bot",
                 "Your direct line to this machine. Start a chat to run anything Claude Code can run, here rather than over SSH."
               )}</div>`
-            : `
+            : locked
+              ? lockScreen(csrf, active, err)
+              : `
           <div class="chat-topline">
             <span class="chat-name">${esc(active.title || "New chat")}</span>
             ${
@@ -290,25 +335,39 @@ exports.console = ({ csrf, user, sessions, archived = [], session, messages, dir
                 </form>
 
                 ${
-                  active.access === "full"
-                    ? `<form method="post" action="/console/${active.id}/root" class="root-toggle"${
-                        rootOn
-                          ? ` data-confirm="Turn root off for this chat? sudo stops working here. The conversation carries over."`
-                          : ` data-confirm="Turn root on for this chat? It will be able to change anything on this machine."`
-                      }>
-                        <input type="hidden" name="_csrf" value="${esc(csrf)}">
-                        <button class="toggle${rootOn ? " on" : ""}" type="submit"
-                                aria-pressed="${rootOn ? "true" : "false"}"
-                                title="${
-                                  rootOn
-                                    ? "Root is on — this chat can change anything. Click to switch it off."
-                                    : "Root is off — sudo is blocked for this chat. Click to switch it on."
-                                }">
-                          <span class="toggle-track"><span class="toggle-knob"></span></span>
-                          <span class="toggle-label">root</span>
-                        </button>
-                      </form>`
-                    : ""
+                  active.access !== "full"
+                    ? ""
+                    : rootOn
+                      ? `<form method="post" action="/console/${active.id}/root" class="root-toggle"
+                              data-confirm="Turn root off for this chat? sudo stops working here. The conversation carries over.">
+                          <input type="hidden" name="_csrf" value="${esc(csrf)}">
+                          <button class="toggle on" type="submit" aria-pressed="true"
+                                  title="Root is on. Click to switch it off — no code needed to give it up.">
+                            <span class="toggle-track"><span class="toggle-knob"></span></span>
+                            <span class="toggle-label">root</span>
+                          </button>
+                        </form>`
+                      : `<details class="menu root-toggle">
+                          <summary class="toggle" aria-pressed="false"
+                                   title="Root is off. Switching it on needs a code from your authenticator.">
+                            <span class="toggle-track"><span class="toggle-knob"></span></span>
+                            <span class="toggle-label">root</span>
+                          </summary>
+                          <div class="menu-pop root-pop">
+                            <form method="post" action="/console/${active.id}/root">
+                              <input type="hidden" name="_csrf" value="${esc(csrf)}">
+                              <p class="muted small">Turning root on lets this chat change
+                                anything on the machine. Confirm with a code from your
+                                authenticator.</p>
+                              <label>Authenticator code
+                                <input name="code" inputmode="numeric" pattern="[0-9 ]*"
+                                       placeholder="000000" autocomplete="one-time-code"
+                                       required></label>
+                              <button class="btn primary small" type="submit">
+                                ${icon("lock", 14)} Turn root on</button>
+                            </form>
+                          </div>
+                        </details>`
                 }
 
                 <!--

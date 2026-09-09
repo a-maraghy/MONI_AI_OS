@@ -34,6 +34,7 @@ const accessViews = require("./lib/views-access");
 const operatorViews = require("./lib/views-operator");
 const consoleViews = require("./lib/views-console");
 const rbac = require("./lib/rbac");
+const totp = require("./lib/totp");
 
 const PORT = Number(process.env.MONI_PORT || 3000);
 const BIND = process.env.MONI_BIND || "127.0.0.1";
@@ -384,8 +385,12 @@ app.post("/login", loginLimiter, requireCsrf, async (req, res) => {
   }
   if (!passwordOk) return reject("bad password");
 
-  if (!authenticator.check(String(token).replace(/\s/g, ""), account.totp_secret))
-    return reject("bad totp");
+  // Checked and spent in one step. A code stayed usable for its whole
+   // ninety-second life before, so one seen over a shoulder -- or in a screen
+  // share -- was worth a session to anyone who also had the password. Only a
+  // successful sign-in spends one, so retrying after a mistyped password still
+  // works with the code already on screen.
+  if (!totp.verifyAndConsume(account, token)) return reject("bad totp");
 
   // First successful sign-in also completes enrolment: producing a valid code
   // is the proof that the authenticator was set up correctly.
@@ -1668,6 +1673,28 @@ function consoleLists(req) {
   };
 }
 
+/**
+ * How long a code buys before another is asked for.
+ *
+ * Long enough to do a piece of work without being interrupted, short enough
+ * that a laptop left open does not stay a root shell all afternoon. It is not
+ * extended by use: the question is how long ago somebody proved they were
+ * there, and typing does not answer it.
+ */
+const ROOT_UNLOCK_MS = 20 * 60 * 1000;
+
+function unlockRoot(req, sessionId) {
+  if (!req.session.rootUnlocked) req.session.rootUnlocked = {};
+  req.session.rootUnlocked[String(sessionId)] = Date.now() + ROOT_UNLOCK_MS;
+}
+
+/** Whether this chat needs a code before it can be opened or spoken to. */
+function rootLocked(req, session) {
+  if (!session || session.root_enabled !== 1) return false;
+  const until = (req.session.rootUnlocked || {})[String(session.id)] || 0;
+  return Date.now() >= until;
+}
+
 function loadConsoleSession(req, res) {
   const session = db.getConsoleSession(Number(req.params.id), req.me.id);
   if (!session) {
@@ -1708,14 +1735,20 @@ app.post("/console/new", requireAuth, requirePerm("console.use"), requireCsrf, (
 app.get("/console/:id", requireAuth, requirePerm("console.use"), async (req, res) => {
   const session = loadConsoleSession(req, res);
   if (!session) return;
+  // A root chat shows its transcript only once somebody has proved they are
+  // here. The lock screen is the page, not an overlay on it -- there is no
+  // point rendering the conversation and then hiding it.
+  const locked = rootLocked(req, session);
   res.send(
     consoleViews.console({
       csrf: res.locals.csrf,
       user: ctx(req, "console"),
       ...consoleLists(req),
       session,
-      messages: db.listConsoleMessages(session.id),
+      locked,
+      messages: locked ? [] : db.listConsoleMessages(session.id),
       dirs: await consoleDirs(),
+      err: req.query.err || null,
     })
   );
 });
@@ -1759,6 +1792,20 @@ app.post("/console/:id/root", requireAuth, requirePerm("console.use"), requireCs
   }
 
   const enabled = session.root_enabled === 0;
+  const back = (q) => res.redirect("/console/" + session.id + (q ? "?" + q : ""));
+
+  // Switching root ON is the privilege change, so that is the direction that
+  // asks for a code. Switching it OFF gives something up, and a control that
+  // makes you prove yourself before you may reduce your own reach is a control
+  // people learn to leave alone.
+  if (enabled) {
+    if (!totp.verifyAndConsume(req.me, req.body.code)) {
+      logAuthFailure(req.ip, "bad code enabling console root");
+      return back("err=" + encodeURIComponent("That code was not accepted. Try the next one."));
+    }
+    unlockRoot(req, session.id);
+  }
+
   // Fixed at spawn, so the running process has to go. It is asked to exit
   // rather than killed, so the conversation is on disk and the next message
   // resumes it: flipping this costs you nothing but the wait.
@@ -1770,6 +1817,26 @@ app.post("/console/:id/root", requireAuth, requirePerm("console.use"), requireCs
     "console",
     (enabled ? "enabled" : "disabled") + ` root for chat ${session.id}`
   );
+  back();
+});
+
+/**
+ * Unlock a root-enabled chat for a while.
+ *
+ * The code proves somebody is at the keyboard now. Sign-in proved it hours ago
+ * on a machine that has been left alone since, which is a different claim.
+ */
+app.post("/console/:id/unlock", requireAuth, requirePerm("console.use"), requireCsrf, (req, res) => {
+  const session = loadConsoleSession(req, res);
+  if (!session) return;
+  if (!totp.verifyAndConsume(req.me, req.body.code)) {
+    logAuthFailure(req.ip, "bad code unlocking a root console chat");
+    return res.redirect(
+      "/console/" + session.id + "?err=" + encodeURIComponent("That code was not accepted. Try the next one.")
+    );
+  }
+  unlockRoot(req, session.id);
+  db.logLogin(req.ip, req.me.username, "console", `unlocked root chat ${session.id}`);
   res.redirect("/console/" + session.id);
 });
 
@@ -2017,6 +2084,16 @@ app.post("/console/:id/send", requireAuth, requirePerm("console.use"), requireCs
     return res
       .status(403)
       .json({ error: "Your role does not allow whole-server chats." });
+  }
+
+  // Checked again here, not only on the page. The page is a courtesy; this is
+  // the thing that actually stops a message reaching a root shell after the
+  // unlock has run out.
+  if (rootLocked(req, session)) {
+    return res.status(401).json({
+      error: "This chat needs an authenticator code again. Reload the page.",
+      locked: true,
+    });
   }
 
   db.addConsoleMessage(session.id, "user", prompt);
