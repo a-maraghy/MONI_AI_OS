@@ -158,6 +158,7 @@
     if (running || !text.trim()) return;
     addMessage("user", text);
     input.value = "";
+    input.style.height = "";
     setRunning(true);
     status.textContent = "working…";
 
@@ -216,10 +217,17 @@
       });
   }
 
-  compose.addEventListener("submit", function (ev) {
-    ev.preventDefault();
+  sendBtn.addEventListener("click", function () {
     send(input.value);
   });
+
+  /* The textarea grows with the message, up to a point, so a long paste is
+     readable without pushing the transcript off screen. */
+  function resize() {
+    input.style.height = "auto";
+    input.style.height = Math.min(input.scrollHeight, 220) + "px";
+  }
+  input.addEventListener("input", resize);
 
   /* Enter sends, Shift+Enter breaks the line -- the convention every chat uses,
      and the reason this is a textarea rather than an input. */

@@ -44,13 +44,21 @@ function sessionRow(s, activeId) {
   </a>`;
 }
 
-const optionList = (items, current) =>
+/**
+ * Options for the composer's inline pickers.
+ *
+ * Short labels, because these sit in a strip under the message box where the
+ * current value has to read as a word rather than a sentence. The explanation
+ * still travels with them as the option's title, so the reasoning is a hover
+ * away rather than gone.
+ */
+const shortOptions = (items, current) =>
   items
     .map(
       ([value, label, hint]) =>
-        `<option value="${esc(value)}"${value === current ? " selected" : ""}>${esc(
-          label
-        )} — ${esc(hint)}</option>`
+        `<option value="${esc(value)}"${
+          value === current ? " selected" : ""
+        } title="${esc(hint)}">${esc(label)}</option>`
     )
     .join("");
 
@@ -111,46 +119,13 @@ exports.console = ({ csrf, user, sessions, session, messages, dirs, flash, err }
                 "Your direct line to this machine. Start a chat to run anything Claude Code can run, here rather than over SSH."
               )}</div>`
             : `
-          <div class="chat-head">
-            <form method="post" action="/console/${active.id}/settings" class="chat-controls">
+          <div class="chat-topline">
+            <span class="chat-name">${esc(active.title || "New chat")}</span>
+            <form method="post" action="/console/${active.id}/delete" class="inline"
+                  data-confirm="Delete this chat?">
               <input type="hidden" name="_csrf" value="${esc(csrf)}">
-              <label class="tight">Model
-                <select name="model" data-autosubmit>${optionList(MODELS, active.model)}</select>
-              </label>
-              <label class="tight">Effort
-                <select name="effort" data-autosubmit>${optionList(EFFORTS, active.effort)}</select>
-              </label>
-              <label class="tight">Access
-                <select name="access" data-autosubmit${
-                  active.started ? " disabled" : ""
-                }>${optionList(ACCESS, active.access)}</select>
-              </label>
-              <label class="tight grow">Directory
-                <select name="cwd" data-autosubmit>
-                  ${dirs
-                    .map(
-                      (d) =>
-                        `<option value="${esc(d)}"${
-                          d === active.cwd ? " selected" : ""
-                        }>${esc(d)}</option>`
-                    )
-                    .join("")}
-                  ${
-                    dirs.includes(active.cwd)
-                      ? ""
-                      : `<option value="${esc(active.cwd)}" selected>${esc(active.cwd)}</option>`
-                  }
-                </select>
-              </label>
-              <noscript><button class="btn small" type="submit">Apply</button></noscript>
+              <button class="btn danger small" type="submit">${icon("trash")}</button>
             </form>
-            <div class="chat-head-right">
-              <form method="post" action="/console/${active.id}/delete" class="inline"
-                    data-confirm="Delete this chat?">
-                <input type="hidden" name="_csrf" value="${esc(csrf)}">
-                <button class="btn danger small" type="submit">${icon("trash")}</button>
-              </form>
-            </div>
           </div>
 
           ${
@@ -187,18 +162,79 @@ exports.console = ({ csrf, user, sessions, session, messages, dirs, flash, err }
             }
           </div>
 
-          <form class="chat-compose" id="chat-compose" data-session="${active.id}"
-                data-csrf="${esc(csrf)}" method="post" action="/console/${active.id}/send">
-            <input type="hidden" name="_csrf" value="${esc(csrf)}">
-            <textarea name="prompt" id="chat-input" rows="3"
-                      placeholder="Message MONI Bot…  (Enter to send, Shift+Enter for a new line)"
-                      required></textarea>
-            <div class="chat-send-row">
-              <span class="muted small" id="chat-status"></span>
-              <button class="btn" type="button" id="chat-stop" hidden>${icon("stop")} Stop</button>
-              <button class="btn primary" type="submit" id="chat-send">${icon("play")} Send</button>
+          <!--
+            The composer is a div, not a form, because the settings controls sit
+            inside it and a form cannot contain another form. The console needs
+            JavaScript to work at all -- it reads a streaming response -- so
+            there is no no-script behaviour being given up here.
+          -->
+          <div class="chat-compose" id="chat-compose" data-session="${active.id}"
+               data-csrf="${esc(csrf)}">
+            <div class="composer">
+              <textarea id="chat-input" rows="2"
+                        placeholder="Message MONI Bot…"></textarea>
+
+              <div class="composer-bar">
+                <form method="post" action="/console/${active.id}/settings" class="chat-controls">
+                  <input type="hidden" name="_csrf" value="${esc(csrf)}">
+                  <span class="pick" title="Model">
+                    ${icon("cpu", 13)}
+                    <select name="model" data-autosubmit aria-label="Model">
+                      ${shortOptions(MODELS, active.model)}
+                    </select>
+                  </span>
+                  <span class="pick" title="Thinking effort">
+                    ${icon("activity", 13)}
+                    <select name="effort" data-autosubmit aria-label="Thinking effort">
+                      ${shortOptions(EFFORTS, active.effort)}
+                    </select>
+                  </span>
+                  <span class="pick${active.access === "full" ? " hot" : ""}"
+                        title="${
+                          active.started
+                            ? "Fixed once a chat has started"
+                            : "Where this chat can reach"
+                        }">
+                    ${icon(active.access === "full" ? "lock" : "shield", 13)}
+                    <select name="access" data-autosubmit aria-label="Access"${
+                      active.started ? " disabled" : ""
+                    }>${shortOptions(ACCESS, active.access)}</select>
+                  </span>
+                  <span class="pick wide" title="Working directory">
+                    ${icon("file", 13)}
+                    <select name="cwd" data-autosubmit aria-label="Working directory">
+                      ${dirs
+                        .map(
+                          (d) =>
+                            `<option value="${esc(d)}"${
+                              d === active.cwd ? " selected" : ""
+                            }>${esc(d)}</option>`
+                        )
+                        .join("")}
+                      ${
+                        dirs.includes(active.cwd)
+                          ? ""
+                          : `<option value="${esc(active.cwd)}" selected>${esc(
+                              active.cwd
+                            )}</option>`
+                      }
+                    </select>
+                  </span>
+                </form>
+
+                <span class="muted small composer-status" id="chat-status"></span>
+                <button class="btn small" type="button" id="chat-stop" hidden>${icon(
+                  "stop",
+                  14
+                )} Stop</button>
+                <button class="btn primary small" type="button" id="chat-send">${icon(
+                  "play",
+                  14
+                )} Send</button>
+              </div>
             </div>
-          </form>`
+            <p class="composer-hint muted small">Enter to send · Shift+Enter for a new line</p>
+          </div>`
         }
       </section>
     </div>`,

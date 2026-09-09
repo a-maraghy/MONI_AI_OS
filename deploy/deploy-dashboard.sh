@@ -47,8 +47,15 @@ install -d -m 0700 -o root -g root /var/lib/moni-root
 # and an agent must never inherit it.
 if ! id -u moniconsole >/dev/null 2>&1; then
   useradd --system --create-home --home-dir /var/lib/moni-console/home \
-          --shell /usr/sbin/nologin moniconsole
+          --shell /bin/bash moniconsole
 fi
+# A real shell, not nologin: the console's Bash tool runs commands through one,
+# and nologin made every command trip over a profile it could not read.
+usermod --shell /bin/bash moniconsole
+# Reading the journal is most of what "check why this is unhappy" means. These
+# groups grant it directly, so ordinary log reading does not need sudo and does
+# not fill the sudo log with noise that hides the escalations worth seeing.
+usermod -aG adm,systemd-journal moniconsole
 install -d -m 0700 -o root -g root /var/lib/moni-console
 install -d -m 0700 -o moniconsole -g moniconsole /var/lib/moni-console/home
 # Created here so the operator drop-in can name it as a ReadWritePath; systemd
