@@ -2041,21 +2041,13 @@ def check_ban_target(value, requester):
     except ValueError:
         fail("not an IP address or CIDR block: " + repr(text[:40]))
 
-    if (net.is_loopback or net.is_link_local or net.is_multicast
-            or net.is_unspecified or net.is_reserved):
-        fail("that is not a public address, so blocking it would achieve nothing")
-    if net.is_private:
-        fail("that is a private range. Nobody on the internet reaches this machine "
-             "from it, and blocking it can cut the host off from its own network.")
-
-    limit = MIN_PREFIX[net.version]
-    if net.prefixlen < limit:
-        fail("that block is wider than /%d. Ban the address itself, or its /%d."
-             % (limit, limit))
-
     # The two easy ways to lock yourself out are to block the address you are
     # sitting at and to block one of the machine's own. Neither is recoverable
     # from this panel afterwards -- it would be behind the rule it just wrote.
+    #
+    # Checked before the range rules below so that somebody reaching the panel
+    # over a VPN or a LAN is told "that is you" rather than "that is private",
+    # which is true but is not the reason they need to hear.
     here = str(requester or "").strip()
     if here:
         try:
@@ -2067,6 +2059,18 @@ def check_ban_target(value, requester):
     for addr in host_addresses():
         if addr in net:
             fail("that covers " + str(addr) + ", an address of this machine.")
+
+    if (net.is_loopback or net.is_link_local or net.is_multicast
+            or net.is_unspecified or net.is_reserved):
+        fail("that is not a public address, so blocking it would achieve nothing")
+    if net.is_private:
+        fail("that is a private range. Nobody on the internet reaches this machine "
+             "from it, and blocking it can cut the host off from its own network.")
+
+    limit = MIN_PREFIX[net.version]
+    if net.prefixlen < limit:
+        fail("that block is wider than /%d. Ban the address itself, or its /%d."
+             % (limit, limit))
     return net
 
 
