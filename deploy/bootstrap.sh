@@ -162,6 +162,11 @@ python3 -m py_compile /usr/local/sbin/moni-helper
 install -m 0755 "$REPO_DIR/dashboard/deploy/moni-root" /usr/local/sbin/moni-root
 python3 -m py_compile /usr/local/sbin/moni-root
 install -d -m 0700 -o root -g root /var/lib/moni-root
+# Created here so the operator drop-in can name it as a ReadWritePath; systemd
+# skips a missing path silently, and a silently skipped audit log is worse than
+# a noisy one.
+touch /var/log/moni-root.log
+chmod 0600 /var/log/moni-root.log
 install -m 0440 "$REPO_DIR/dashboard/deploy/moni-sudoers" /etc/sudoers.d/moni-dashboard
 visudo -cf /etc/sudoers.d/moni-dashboard >/dev/null
 

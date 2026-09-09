@@ -916,6 +916,17 @@ ProtectHome=read-only
 ReadWritePaths=-/opt/projects
 ReadWritePaths=-/srv
 ReadWritePaths=-/var/tmp
+
+# The broker writes tickets, burned codes and its audit log. Those writes happen
+# inside this unit's mount namespace -- sudo's child inherits it -- so without
+# these two lines ProtectSystem=strict makes them fail with EROFS even as root.
+#
+# This grants the *namespace* write access, not the agent. Both paths are
+# 0700/0600 root:root, so the moniagent user still cannot read a ticket, see
+# which codes have been spent, or edit the audit log. Only moni-root, which is
+# root, can -- which is the whole arrangement.
+ReadWritePaths=/var/lib/moni-root
+ReadWritePaths=-/var/log/moni-root.log
 """
 
 
