@@ -361,6 +361,9 @@ table { width: 100%; border-collapse: collapse; }
 .btn[disabled] { opacity: .5; cursor: not-allowed; }
 
 .btn-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+/* In a card head the row is one flex item among the head's own, so the gap
+   above it that separates it from body content is wrong there. */
+.card-head .btn-row { margin-top: 0; }
 form.inline { display: inline; margin: 0; }
 
 /* --------------------------------------------------------------- forms --- */

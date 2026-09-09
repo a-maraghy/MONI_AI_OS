@@ -16,6 +16,7 @@ const {
   flashes,
   empty,
   icon,
+  can,
 } = require("./ui");
 
 exports.error = (title, msg) =>
@@ -311,7 +312,18 @@ exports.osDashboard = ({
               : `<span class="pill ok">none recently</span>`
           }</td></tr>
         </table>`,
-        { icon: "shield", actions: `<a class="btn small" href="/audit">Audit log</a>` }
+        {
+          icon: "shield",
+          // These counts are the firewall's, so the page that can act on them is
+          // one click away rather than something to go looking for.
+          // Wrapped: the head is a space-between flex, so two loose buttons
+          // would be pushed to opposite ends of it.
+          actions: `<div class="btn-row">${
+            can(user, "firewall.view")
+              ? `<a class="btn small" href="/firewall">${icon("ban")} Firewall</a>`
+              : ""
+          }<a class="btn small" href="/audit">Audit log</a></div>`,
+        }
       )}
     </div>
 
