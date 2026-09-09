@@ -225,6 +225,20 @@ module.exports = {
 
   consoleDirs: () => callHelper("console-dirs", [], { timeout: 15000 }),
 
+  consoleUpload: (request) =>
+    callHelper("console-upload", [], {
+      stdin: JSON.stringify(request),
+      timeout: 60000,
+    }),
+
+  // Whisper on a long recording is not quick, and the alternative to waiting is
+  // an error the person cannot act on.
+  consoleTranscribe: (path) =>
+    callHelper("console-transcribe", [], {
+      stdin: JSON.stringify({ path }),
+      timeout: 300000,
+    }),
+
   /* ----------------------------------------------------- server operator -- */
   operatorGet: () => callHelper("operator-get", [], { timeout: 30000 }),
   // A username, not a secret: the authenticator secret it points at is read by

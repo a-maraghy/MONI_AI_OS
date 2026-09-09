@@ -87,6 +87,7 @@ db.exec(`
     model       TEXT NOT NULL DEFAULT 'claude-opus-5',
     effort      TEXT NOT NULL DEFAULT 'medium',
     access      TEXT NOT NULL DEFAULT 'full',
+    permission_mode TEXT NOT NULL DEFAULT 'auto',
     cwd         TEXT NOT NULL DEFAULT '/',
     started     INTEGER NOT NULL DEFAULT 0,
     created_at  TEXT NOT NULL,
@@ -116,6 +117,22 @@ db.exec(`
 `);
 
 const nowIso = () => new Date().toISOString();
+
+/**
+ * Add a column to a table that already exists.
+ *
+ * CREATE TABLE IF NOT EXISTS does nothing to a table that is already there, so
+ * a column added to the schema above reaches new installs and no others. This
+ * is how it reaches the rest, and it is written to be safe to run every start.
+ */
+function addColumn(table, column, definition) {
+  const has = db
+    .prepare(`SELECT COUNT(*) AS n FROM pragma_table_info(?) WHERE name = ?`)
+    .get(table, column).n;
+  if (!has) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}
+
+addColumn("console_sessions", "permission_mode", "TEXT NOT NULL DEFAULT 'auto'");
 
 /* --------------------------------------------------------------- roles --- */
 
@@ -348,13 +365,14 @@ module.exports = {
     db
       .prepare(
         `INSERT INTO console_sessions
-           (uuid, user_id, title, model, effort, access, cwd, started, created_at, updated_at)
-         VALUES (?, ?, 'New chat', ?, ?, ?, ?, 0, ?, ?)`
+           (uuid, user_id, title, model, effort, access, cwd, permission_mode,
+            started, created_at, updated_at)
+         VALUES (?, ?, 'New chat', ?, ?, ?, ?, 'auto', 0, ?, ?)`
       )
       .run(uuid, userId, model, effort, access, cwd, nowIso(), nowIso()),
 
   updateConsoleSession: (id, userId, fields) => {
-    const allowed = ["title", "model", "effort", "access", "cwd", "started"];
+    const allowed = ["title", "model", "effort", "access", "cwd", "started", "permission_mode"];
     const keys = Object.keys(fields).filter((k) => allowed.includes(k));
     if (!keys.length) return;
     const sets = keys.map((k) => `${k} = @${k}`).join(", ");

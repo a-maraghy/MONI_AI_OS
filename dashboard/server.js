@@ -1592,6 +1592,7 @@ const CONSOLE_IDLE_MS = 30 * 60 * 1000;
 const CONSOLE_MODELS = consoleViews.MODELS.map((m) => m[0]);
 const CONSOLE_EFFORTS = consoleViews.EFFORTS.map((e) => e[0]);
 const CONSOLE_ACCESS = consoleViews.ACCESS.map((a) => a[0]);
+const CONSOLE_PERMISSION_MODES = consoleViews.MODES.map((m) => m[0]);
 
 /**
  * Turns in flight, keyed by console session id.
@@ -1680,6 +1681,8 @@ app.post("/console/:id/settings", requireAuth, requirePerm("console.use"), requi
 
   if (CONSOLE_MODELS.includes(model)) fields.model = model;
   if (CONSOLE_EFFORTS.includes(effort)) fields.effort = effort;
+  const mode = field(req.body, "permission_mode");
+  if (CONSOLE_PERMISSION_MODES.includes(mode)) fields.permission_mode = mode;
   // Access is fixed once a session has run a turn: Claude resumes the same
   // conversation, and moving that conversation from the agent account to root
   // half way through would be a privilege change disguised as a preference.
@@ -1731,6 +1734,113 @@ function touchConsoleChat(sessionId) {
   entry.idle = setTimeout(() => closeConsoleChat(sessionId), CONSOLE_IDLE_MS);
   entry.idle.unref();
 }
+
+/**
+ * Attachments arrive base64 in a JSON body, so this route needs a far larger
+ * limit than the 64kb the rest of the panel accepts. Scoped to the route rather
+ * than raised globally: nowhere else has any business receiving 40MB.
+ */
+const consoleUploadBody = express.json({ limit: "44mb" });
+
+app.post("/console/:id/upload", requireAuth, requirePerm("console.use"), consoleUploadBody, requireCsrf, async (req, res) => {
+  const session = loadConsoleSession(req, res);
+  if (!session) return;
+  try {
+    const saved = await priv.consoleUpload({
+      chat: String(session.id),
+      access: session.access,
+      name: String(req.body.name || "file"),
+      data: String(req.body.data || ""),
+    });
+    res.json(saved);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+app.post("/console/:id/transcribe", requireAuth, requirePerm("console.use"), consoleUploadBody, requireCsrf, async (req, res) => {
+  const session = loadConsoleSession(req, res);
+  if (!session) return;
+  try {
+    // Saved first, then transcribed: whisper reads a file, and keeping the
+    // recording means a transcription that comes out wrong can be checked
+    // against what was actually said.
+    const saved = await priv.consoleUpload({
+      chat: String(session.id),
+      access: session.access,
+      name: "voice-note.webm",
+      data: String(req.body.data || ""),
+    });
+    const out = await priv.consoleTranscribe(saved.path);
+    res.json({ text: out.text, path: saved.path });
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
+
+/** Answer the CLI's permission question. */
+function answerPermission(entry, requestId, behavior, input, message) {
+  const response =
+    behavior === "allow"
+      ? { behavior: "allow", updatedInput: input || {} }
+      : { behavior: "deny", message: message || "The administrator declined." };
+  try {
+    entry.child.stdin.write(
+      JSON.stringify({
+        type: "control_response",
+        response: { subtype: "success", request_id: requestId, response },
+      }) + "\n"
+    );
+  } catch (_) {
+    /* the process went away; the turn is over anyway */
+  }
+}
+
+/**
+ * Decide what to do when Claude asks to use a tool.
+ *
+ * Nothing reaches this today: driven non-interactively the CLI does not send
+ * permission requests, which is why the mode picker offers Auto and Plan rather
+ * than a per-action prompt. It is kept because answering is the correct
+ * response to a request that may start arriving -- a future CLI that does send
+ * one would otherwise wait forever for a reply nobody was writing.
+ */
+function handlePermissionRequest(session, entry, event, write) {
+  const requestId = event.request_id;
+  const req = event.request;
+
+  if (entry.mode !== "ask") {
+    return answerPermission(entry, requestId, "allow", req.input);
+  }
+
+  entry.pending.set(String(requestId), { input: req.input });
+  write(
+    JSON.stringify({
+      type: "moni_permission",
+      request_id: requestId,
+      tool: req.tool_name,
+      input: req.input,
+      title: req.title || null,
+      description: req.description || null,
+    })
+  );
+}
+
+app.post("/console/:id/permission", requireAuth, requirePerm("console.use"), requireCsrf, (req, res) => {
+  const session = loadConsoleSession(req, res);
+  if (!session) return;
+  const entry = consoleTurns.get(session.id);
+  if (!entry) return res.status(409).json({ error: "That chat is no longer running." });
+
+  const requestId = String(req.body.request_id || "");
+  const pending = entry.pending.get(requestId);
+  if (!pending) return res.status(404).json({ error: "That question has already been answered." });
+  entry.pending.delete(requestId);
+
+  const allow = field(req.body, "decision") === "allow";
+  answerPermission(entry, requestId, allow ? "allow" : "deny", pending.input);
+  res.json({ ok: true });
+});
 
 app.post("/console/:id/stop", requireAuth, requirePerm("console.use"), requireCsrf, (req, res) => {
   const session = loadConsoleSession(req, res);
@@ -1787,9 +1897,30 @@ app.post("/console/:id/send", requireAuth, requirePerm("console.use"), requireCs
       effort: session.effort,
       access: session.access,
       cwd: session.cwd,
+      permission_mode: session.permission_mode || "auto",
     });
-    entry = { child, busy: false, idle: null, buffer: "", listeners: [] };
+    entry = {
+      child,
+      busy: false,
+      idle: null,
+      buffer: "",
+      listeners: [],
+      mode: session.permission_mode || "auto",
+      // Permission questions the CLI has asked and the person has not answered.
+      pending: new Map(),
+    };
     consoleTurns.set(session.id, entry);
+
+    // The CLI only routes permission prompts to the host once the host has
+    // introduced itself. Without this handshake "ask" silently behaves like
+    // "auto", which is the wrong way round for a mistake to go.
+    child.stdin.write(
+      JSON.stringify({
+        type: "control_request",
+        request_id: "init",
+        request: { subtype: "initialize", hooks: null },
+      }) + "\n"
+    );
 
     child.stdout.on("data", (chunk) => {
       entry.buffer += chunk;
@@ -1870,6 +2001,13 @@ app.post("/console/:id/send", requireAuth, requirePerm("console.use"), requireCs
     } catch (_) {
       return; // not an event we emitted
     }
+
+    // The CLI asking whether it may use a tool.
+    if (event.type === "control_request" && event.request) {
+      if (event.request.subtype !== "can_use_tool") return;
+      return handlePermissionRequest(session, entry, event, write);
+    }
+    if (event.type === "control_response") return; // our own handshake echoing back
 
     // Accumulate the prose so a finished turn can be stored and redisplayed on
     // reload without replaying the whole event stream.

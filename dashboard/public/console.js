@@ -48,11 +48,28 @@
     return wrap.firstChild;
   }
 
-  function addTool(name, summary) {
+  /* Tool calls are folded into one line per turn -- "Ran 8 commands", click to
+     expand. The full list is noise while you are reading an answer, but it is
+     the only record of what actually happened, so it is hidden rather than
+     discarded. */
+  function addTool(ctx, name, summary) {
+    if (!ctx.activity) {
+      var box = el("details", "activity");
+      var head = el("summary", null, "");
+      box.appendChild(head);
+      var body = el("div", "activity-body");
+      box.appendChild(body);
+      scroll.appendChild(box);
+      ctx.activity = { box: box, head: head, body: body, count: 0 };
+    }
+    var a = ctx.activity;
+    a.count += 1;
+    a.head.textContent = a.count === 1 ? "1 step" : a.count + " steps";
+
     var row = el("div", "tool-row");
     row.appendChild(el("span", "tool-name", name));
     if (summary) row.appendChild(el("span", "tool-arg", summary));
-    scroll.appendChild(row);
+    a.body.appendChild(row);
     toBottom();
   }
 
@@ -103,7 +120,7 @@
       ev.message.content.forEach(function (block) {
         if (block.type === "tool_use") {
           status.textContent = block.name + "…";
-          addTool(block.name, summarise(block.input));
+          addTool(ctx, block.name, summarise(block.input));
           // A tool call closes the current prose block, so the next text opens
           // a new bubble beneath it and the order on screen matches reality.
           ctx.bubble = null;
@@ -124,6 +141,49 @@
       if (bits.length) scroll.appendChild(el("div", "msg-meta", bits.join(" · ")));
       if (ev.is_error) addMessage("system", "That turn reported an error.");
       toBottom();
+      return;
+    }
+
+    /* Ask-first mode: the turn is paused until this is answered, so the
+       question is a card in the transcript rather than a dialog somewhere
+       else. It disappears the moment it is answered. */
+    if (ev.type === "moni_permission") {
+      var card = el("div", "permission");
+      card.appendChild(el("div", "perm-title", ev.title || "May it run this?"));
+      var what = el("div", "perm-what");
+      what.appendChild(el("span", "tool-name", ev.tool));
+      what.appendChild(el("span", "tool-arg", summarise(ev.input)));
+      card.appendChild(what);
+      if (ev.description) card.appendChild(el("div", "perm-desc", ev.description));
+
+      var row = el("div", "perm-actions");
+      var allow = el("button", "btn primary small", "Allow");
+      var deny = el("button", "btn small", "Skip");
+      allow.type = "button";
+      deny.type = "button";
+
+      function answer(decision) {
+        allow.disabled = true;
+        deny.disabled = true;
+        card.className = "permission answered";
+        row.textContent = decision === "allow" ? "Allowed" : "Skipped";
+        status.textContent = "working…";
+        post("/console/" + sessionId + "/permission", {
+          request_id: String(ev.request_id),
+          decision: decision,
+        }).catch(function () {
+          addMessage("system", "Could not send that answer.");
+        });
+      }
+
+      allow.addEventListener("click", function () { answer("allow"); });
+      deny.addEventListener("click", function () { answer("deny"); });
+      row.appendChild(allow);
+      row.appendChild(deny);
+      card.appendChild(row);
+      scroll.appendChild(card);
+      status.textContent = "waiting for you…";
+      toBottom(true);
       return;
     }
 
@@ -155,16 +215,34 @@
   }
 
   function send(text) {
-    if (running || !text.trim()) return;
-    addMessage("user", text);
+    var ready = attached.filter(function (a) { return !a.pending && a.path; });
+    if (running || (!text.trim() && !ready.length)) return;
+    if (attached.some(function (a) { return a.pending; })) {
+      status.textContent = "still uploading…";
+      return;
+    }
+
+    // Attachments reach the model as paths it can open with its own tools,
+    // listed above the message so it knows they belong to what was just said.
+    var body = text;
+    if (ready.length) {
+      body =
+        "Attached files:\n" +
+        ready.map(function (a) { return "- " + a.path; }).join("\n") +
+        (text.trim() ? "\n\n" + text : "");
+    }
+
+    addMessage("user", body);
     input.value = "";
     input.style.height = "";
+    attached = [];
+    drawAttachments();
     setRunning(true);
     status.textContent = "working…";
 
-    var ctx = { bubble: null };
+    var ctx = { bubble: null, activity: null };
 
-    post("/console/" + sessionId + "/send", { prompt: text })
+    post("/console/" + sessionId + "/send", { prompt: body })
       .then(function (res) {
         if (!res.ok) {
           return res.json().then(
@@ -216,6 +294,148 @@
         toBottom(true);
       });
   }
+
+  /* ------------------------------------------------------- attachments -- */
+
+  var attachBox = document.getElementById("chat-attachments");
+  var fileInput = document.getElementById("chat-file");
+  var attachBtn = document.getElementById("chat-attach");
+  var micBtn = document.getElementById("chat-mic");
+  var attached = [];
+
+  function drawAttachments() {
+    attachBox.textContent = "";
+    attachBox.hidden = attached.length === 0;
+    attached.forEach(function (item, i) {
+      var chip = el("span", "attachment" + (item.pending ? " pending" : ""));
+      chip.appendChild(el("span", "attachment-name", item.name));
+      if (!item.pending) {
+        var x = el("button", "attachment-x", "×");
+        x.type = "button";
+        x.title = "Remove";
+        x.addEventListener("click", function () {
+          attached.splice(i, 1);
+          drawAttachments();
+        });
+        chip.appendChild(x);
+      }
+      attachBox.appendChild(chip);
+    });
+  }
+
+  /* Uploaded rather than inlined: the console reads files from disk with its
+     own tools, exactly as it would a file that was already there, so a path is
+     more useful to it than a blob would be. */
+  function upload(file) {
+    var item = { name: file.name || "file", pending: true };
+    attached.push(item);
+    drawAttachments();
+
+    var reader = new FileReader();
+    reader.onload = function () {
+      var b64 = String(reader.result).split(",")[1] || "";
+      post("/console/" + sessionId + "/upload", { name: item.name, data: b64 })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          if (d.error) throw new Error(d.error);
+          item.pending = false;
+          item.path = d.path;
+          drawAttachments();
+        })
+        .catch(function (e) {
+          attached.splice(attached.indexOf(item), 1);
+          drawAttachments();
+          addMessage("system", "Could not attach " + item.name + ": " + e.message);
+        });
+    };
+    reader.readAsDataURL(file);
+  }
+
+  attachBtn.addEventListener("click", function () { fileInput.click(); });
+  fileInput.addEventListener("change", function () {
+    Array.prototype.forEach.call(fileInput.files, upload);
+    fileInput.value = "";
+  });
+
+  input.addEventListener("paste", function (ev) {
+    var items = (ev.clipboardData && ev.clipboardData.files) || [];
+    if (!items.length) return;
+    ev.preventDefault();
+    Array.prototype.forEach.call(items, upload);
+  });
+
+  ["dragover", "drop"].forEach(function (name) {
+    compose.addEventListener(name, function (ev) {
+      ev.preventDefault();
+      compose.classList.toggle("dropping", name === "dragover");
+      if (name === "drop" && ev.dataTransfer && ev.dataTransfer.files) {
+        Array.prototype.forEach.call(ev.dataTransfer.files, upload);
+      }
+    });
+  });
+  compose.addEventListener("dragleave", function () {
+    compose.classList.remove("dropping");
+  });
+
+  /* -------------------------------------------------------------- voice -- */
+
+  var recorder = null;
+  var chunks = [];
+
+  function stopRecording() {
+    if (recorder && recorder.state !== "inactive") recorder.stop();
+  }
+
+  micBtn.addEventListener("click", function () {
+    if (recorder && recorder.state === "recording") return stopRecording();
+    if (!navigator.mediaDevices || !window.MediaRecorder) {
+      return addMessage("system", "This browser cannot record audio.");
+    }
+
+    navigator.mediaDevices
+      .getUserMedia({ audio: true })
+      .then(function (stream) {
+        chunks = [];
+        recorder = new MediaRecorder(stream);
+        recorder.ondataavailable = function (e) {
+          if (e.data.size) chunks.push(e.data);
+        };
+        recorder.onstop = function () {
+          stream.getTracks().forEach(function (t) { t.stop(); });
+          micBtn.classList.remove("recording");
+          status.textContent = "transcribing…";
+
+          var blob = new Blob(chunks, { type: "audio/webm" });
+          var reader = new FileReader();
+          reader.onload = function () {
+            post("/console/" + sessionId + "/transcribe", {
+              data: String(reader.result).split(",")[1] || "",
+            })
+              .then(function (r) { return r.json(); })
+              .then(function (d) {
+                status.textContent = "";
+                if (d.error) throw new Error(d.error);
+                // Dropped into the box rather than sent, so a mis-heard word
+                // can be fixed before it goes anywhere.
+                input.value = input.value ? input.value + " " + d.text : d.text;
+                resize();
+                input.focus();
+              })
+              .catch(function (e) {
+                status.textContent = "";
+                addMessage("system", "Could not transcribe that: " + e.message);
+              });
+          };
+          reader.readAsDataURL(blob);
+        };
+        recorder.start();
+        micBtn.classList.add("recording");
+        status.textContent = "recording — tap the mic to stop";
+      })
+      .catch(function () {
+        addMessage("system", "Microphone access was refused.");
+      });
+  });
 
   sendBtn.addEventListener("click", function () {
     send(input.value);

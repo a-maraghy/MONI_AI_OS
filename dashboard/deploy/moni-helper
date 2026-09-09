@@ -2292,6 +2292,24 @@ CONSOLE_PROMPT = {
     ),
 }
 
+# How the console behaves when Claude wants to change something.
+#
+# There is no per-action "ask me first" here, and not for want of trying: driven
+# non-interactively the CLI never sends the permission requests a host would
+# answer, even in its own manual mode and after the documented initialize
+# handshake. The dashboard still answers can_use_tool if one ever arrives, so a
+# future version that does send them will work rather than hang.
+CONSOLE_PERMISSION_MODES = {
+    "auto": "bypassPermissions",
+    "plan": "plan",
+}
+
+# Where files pasted into the composer land. Per chat, so one conversation
+# cannot read what was attached to another.
+CONSOLE_UPLOADS = os.path.join(CONSOLE_STATE, "uploads")
+MAX_UPLOAD_BYTES = 32 * 1024 * 1024
+UPLOAD_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
+
 CONSOLE_MODELS = (
     "claude-opus-5",
     "claude-sonnet-5",
@@ -2413,6 +2431,10 @@ def cmd_console_open(args):
     if effort not in EFFORT_LEVELS:
         fail("unknown effort level")
 
+    permission_mode = str(payload.get("permission_mode") or "auto")
+    if permission_mode not in CONSOLE_PERMISSION_MODES:
+        fail("unknown permission mode")
+
     # Its own pattern rather than ABS_PATH_RE, which requires at least one
     # character after the slash and so rejects the root directory -- which is
     # precisely where a whole-server console starts.
@@ -2431,7 +2453,7 @@ def cmd_console_open(args):
         "--verbose",
         "--model", model,
         "--effort", effort,
-        "--permission-mode", "bypassPermissions",
+        "--permission-mode", CONSOLE_PERMISSION_MODES[permission_mode],
         "--append-system-prompt", CONSOLE_PROMPT[access],
     ]
 
@@ -2509,6 +2531,109 @@ def _drop_to(username, uid, gid):
         os.setuid(uid)
 
     return apply
+
+
+def cmd_console_upload(args):
+    """Save a file pasted into the composer where the console can read it.
+
+    Arrives base64 on stdin rather than as a path, because the dashboard runs
+    as a different unprivileged user and has nowhere the console could read
+    from. The name is reduced to something harmless and made unique -- it ends
+    up in a prompt as a path, and a name that could traverse or collide is a
+    name worth not having.
+    """
+    payload = read_stdin_json()
+
+    chat = str(payload.get("chat") or "")
+    if not re.match(r"^[0-9]{1,12}$", chat):
+        fail("malformed chat id")
+
+    access = str(payload.get("access") or "full")
+    if access not in CONSOLE_ACCESS:
+        fail("unknown access level")
+
+    raw_name = str(payload.get("name") or "file")
+    name = UPLOAD_NAME_RE.sub("_", os.path.basename(raw_name)).strip("._-")[:80]
+    if not name:
+        name = "file"
+
+    try:
+        data = base64.b64decode(str(payload.get("data") or ""), validate=True)
+    except Exception:
+        fail("attachment was not valid base64")
+    if not data:
+        fail("attachment is empty")
+    if len(data) > MAX_UPLOAD_BYTES:
+        fail("attachment is larger than 32 MB")
+
+    profile = CONSOLE_ACCESS[access]
+    try:
+        pw = pwd.getpwnam(profile["user"])
+    except KeyError:
+        fail("console account does not exist; run the deploy script")
+
+    directory = os.path.join(CONSOLE_UPLOADS, chat)
+    os.makedirs(directory, mode=0o700, exist_ok=True)
+    os.chown(directory, pw.pw_uid, pw.pw_gid)
+    os.chown(CONSOLE_UPLOADS, pw.pw_uid, pw.pw_gid)
+
+    stem, ext = os.path.splitext(name)
+    path = os.path.join(directory, stem + "-" + uuid.uuid4().hex[:6] + ext)
+    with open(path, "wb") as fh:
+        fh.write(data)
+    os.chown(path, pw.pw_uid, pw.pw_gid)
+    os.chmod(path, 0o600)
+
+    ok({"path": path, "name": name, "bytes": len(data)})
+
+
+def cmd_console_transcribe(args):
+    """Turn a recorded voice note into text with the local whisper build.
+
+    Local rather than an API: whisper.cpp is already on this machine for the
+    agents' voice notes, and a message dictated to your own server has no
+    business making a round trip to somebody else's.
+    """
+    payload = read_stdin_json()
+    path = str(payload.get("path") or "")
+    if not path.startswith(CONSOLE_UPLOADS + os.sep) or ".." in path:
+        fail("that file is not a console attachment")
+    if not os.path.isfile(path):
+        fail("no such attachment")
+
+    binary = os.path.join(SHARED_DIR, "whisper.cpp", "build", "bin", "whisper-cli")
+    model = os.path.join(SHARED_DIR, "whisper.cpp", "models", "ggml-base.bin")
+    if not os.path.isfile(binary) or not os.path.isfile(model):
+        fail("voice transcription is not installed on this host")
+
+    # whisper.cpp wants 16 kHz mono PCM; browsers record webm/opus.
+    wav = path + ".16k.wav"
+    convert = run(
+        ["ffmpeg", "-nostdin", "-y", "-i", path, "-ar", "16000", "-ac", "1", "-f", "wav", wav],
+        timeout=120,
+    )
+    if convert.returncode != 0 or not os.path.isfile(wav):
+        fail("could not decode that recording")
+
+    try:
+        result = run([binary, "-m", model, "-f", wav, "-nt", "-np", "-otxt", "-of", wav], timeout=300)
+        text = ""
+        transcript = wav + ".txt"
+        if os.path.isfile(transcript):
+            with open(transcript, encoding="utf-8", errors="replace") as fh:
+                text = fh.read().strip()
+        if not text:
+            text = (result.stdout or "").strip()
+    finally:
+        for tmp in (wav, wav + ".txt"):
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+    if not text:
+        fail("nothing was said, or it could not be made out")
+    ok({"text": text[:20000]})
 
 
 def cmd_console_dirs(args):
@@ -2657,6 +2782,8 @@ COMMANDS = {
     "system-probe": cmd_system_probe,
     "console-open": cmd_console_open,
     "console-dirs": cmd_console_dirs,
+    "console-upload": cmd_console_upload,
+    "console-transcribe": cmd_console_transcribe,
     "operator-get": cmd_operator_get,
     "root-set-approver": cmd_root_set_approver,
     "root-clear-approver": cmd_root_clear_approver,

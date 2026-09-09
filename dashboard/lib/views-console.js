@@ -35,6 +35,22 @@ const ACCESS = [
   ["workspace", "Agent workspace", "Runs as the agent account, confined to its tree."],
 ];
 
+/**
+ * What happens when it wants to change something.
+ *
+ * Two options, not three. Per-action approval -- "stop and ask me before each
+ * command" -- is missing because the CLI does not offer it here: driven
+ * non-interactively it never sends the permission requests a host would answer,
+ * even in its own manual mode and after the documented handshake. Shipping a
+ * third option that silently behaved like Auto would be worse than not having
+ * one, so Plan is the way to look before leaping: it works the whole thing out
+ * and changes nothing, and you switch to Auto when you are happy.
+ */
+const MODES = [
+  ["auto", "Auto", "Acts without asking. Fastest, and the one to think about."],
+  ["plan", "Plan first", "Works out what it would do and reports back. Changes nothing."],
+];
+
 const modelLabel = (id) => (MODELS.find((m) => m[0] === id) || [id, id])[1];
 
 function sessionRow(s, activeId) {
@@ -130,19 +146,19 @@ exports.console = ({ csrf, user, sessions, session, messages, dirs, flash, err }
 
           ${
             active.access === "full"
-              ? `<div class="alert warn chat-notice">${icon("alert")}<div>
-                  This chat runs as <strong>root on the whole machine</strong>, with tool
-                  permissions bypassed — the same reach you have over SSH. Signing in took a
-                  password and a code, so that part is covered. What it does not cover is that
-                  the model acts on what it reads: a file, a page, or a log containing
-                  instructions is a way to make it act. Point it at untrusted content with that
-                  in mind.
+              ? `<details class="chat-notice" id="chat-notice">
+                  <summary>${icon("lock", 13)} Runs as root on this machine — what that means</summary>
+                  <p>The same reach you have over SSH, with tool permissions decided by the
+                    mode below. Signing in took a password and a code, so that part is
+                    covered. What it does not cover is that the model acts on what it
+                    <em>reads</em>: a file, a page or a log containing instructions is a way to
+                    make it act. Point it at untrusted content with that in mind.</p>
                   ${
                     active.started
                       ? ""
-                      : ` <a href="#" data-set-access="workspace">Confine to the agent workspace instead</a>.`
+                      : `<p><a href="#" data-set-access="workspace">Confine this chat to the agent workspace instead</a>.</p>`
                   }
-                </div></div>`
+                </details>`
               : ""
           }
 
@@ -171,8 +187,12 @@ exports.console = ({ csrf, user, sessions, session, messages, dirs, flash, err }
           <div class="chat-compose" id="chat-compose" data-session="${active.id}"
                data-csrf="${esc(csrf)}">
             <div class="composer">
+              <div class="attachments" id="chat-attachments" hidden></div>
+
               <textarea id="chat-input" rows="2"
-                        placeholder="Message MONI Bot…"></textarea>
+                        placeholder="Message MONI Bot…  Paste or drop files, or hold the mic."></textarea>
+
+              <input type="file" id="chat-file" multiple hidden>
 
               <div class="composer-bar">
                 <form method="post" action="/console/${active.id}/settings" class="chat-controls">
@@ -200,6 +220,12 @@ exports.console = ({ csrf, user, sessions, session, messages, dirs, flash, err }
                       active.started ? " disabled" : ""
                     }>${shortOptions(ACCESS, active.access)}</select>
                   </span>
+                  <span class="pick${active.permission_mode === "plan" ? " plan" : ""}" title="What happens when it wants to change something">
+                    ${icon(active.permission_mode === "plan" ? "guide" : "play", 13)}
+                    <select name="permission_mode" data-autosubmit aria-label="Permission mode">
+                      ${shortOptions(MODES, active.permission_mode || "auto")}
+                    </select>
+                  </span>
                   <span class="pick wide" title="Working directory">
                     ${icon("file", 13)}
                     <select name="cwd" data-autosubmit aria-label="Working directory">
@@ -223,6 +249,10 @@ exports.console = ({ csrf, user, sessions, session, messages, dirs, flash, err }
                 </form>
 
                 <span class="muted small composer-status" id="chat-status"></span>
+                <button class="icon-btn" type="button" id="chat-attach"
+                        title="Attach files (or just paste them)">${icon("plus", 15)}</button>
+                <button class="icon-btn" type="button" id="chat-mic"
+                        title="Record a voice message">${icon("voice", 15)}</button>
                 <button class="btn small" type="button" id="chat-stop" hidden>${icon(
                   "stop",
                   14
@@ -252,3 +282,4 @@ exports.console = ({ csrf, user, sessions, session, messages, dirs, flash, err }
 exports.MODELS = MODELS;
 exports.EFFORTS = EFFORTS;
 exports.ACCESS = ACCESS;
+exports.MODES = MODES;

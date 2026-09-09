@@ -510,7 +510,26 @@ label.addon:has(input[type="checkbox"]:checked) .addon-ico {
   font-size: 13.5px; font-weight: 600; color: var(--ink);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.chat-notice { margin: 12px 18px 0; }
+/* The full-access warning, folded away. It matters once -- when you first
+   realise what this chat can do -- and after that it is a line you scroll past
+   every time. So: one quiet line, open it if you want it. */
+.chat-notice {
+  margin: 10px 18px 0;
+  border: 1px solid #f0dcb4; border-radius: var(--radius);
+  background: #fdf9f0;
+  font-size: 12.5px;
+}
+.chat-notice > summary {
+  display: flex; align-items: center; gap: 7px;
+  padding: 6px 12px; cursor: pointer;
+  color: var(--warn); font-weight: 600;
+  list-style: none;
+}
+.chat-notice > summary::-webkit-details-marker { display: none; }
+.chat-notice > summary:hover { background: #fdf3e2; border-radius: var(--radius); }
+.chat-notice > summary svg { flex: none; }
+.chat-notice p { margin: 0 12px 10px; color: var(--body); line-height: 1.55; }
+.chat-notice p:first-of-type { margin-top: 2px; }
 
 .chat-scroll {
   flex: 1; min-height: 0; overflow-y: auto;
@@ -540,6 +559,26 @@ label.addon:has(input[type="checkbox"]:checked) .addon-ico {
   white-space: pre-wrap;
 }
 .msg-meta { font-size: 11px; color: var(--muted); padding-left: 4px; }
+
+/* What it did, folded to one line. The steps are the only record of what
+   actually happened, so they are hidden rather than dropped. */
+.activity { font-size: 12px; }
+.activity > summary {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 10px; border-radius: 999px;
+  background: var(--surface); border: 1px solid var(--line);
+  color: var(--muted); cursor: pointer; list-style: none;
+  font-variant-numeric: tabular-nums;
+}
+.activity > summary::-webkit-details-marker { display: none; }
+.activity > summary::before { content: "▸"; font-size: 10px; }
+.activity[open] > summary::before { content: "▾"; }
+.activity > summary:hover { border-color: var(--brand); color: var(--brand-deep); }
+.activity-body {
+  margin: 6px 0 0 10px; padding-left: 10px;
+  border-left: 2px solid var(--line);
+  display: flex; flex-direction: column; gap: 2px;
+}
 
 /* One line per tool call. Deliberately quiet: it is context, not content. */
 .tool-row {
@@ -615,6 +654,61 @@ label.addon:has(input[type="checkbox"]:checked) .addon-ico {
 .pick.hot { color: var(--warn); }
 .pick.hot svg { opacity: 1; }
 .pick.hot select { color: var(--warn); }
+
+/* Ask-first: the turn is genuinely paused here, so the question belongs in the
+   transcript at the point it was asked, not in a dialog over the top of it. */
+.permission {
+  align-self: flex-start; max-width: min(700px, 88%);
+  border: 1px solid var(--brand); border-radius: 12px;
+  background: var(--brand-tint);
+  padding: 12px 14px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.permission.answered { border-color: var(--line); background: var(--surface); opacity: .7; }
+.perm-title { font-size: 13.5px; font-weight: 700; color: var(--ink); }
+.perm-what { display: flex; gap: 8px; align-items: baseline; font-size: 12px; min-width: 0; }
+.perm-what .tool-arg { white-space: pre-wrap; word-break: break-word; color: var(--body); }
+.perm-desc { font-size: 12.5px; color: var(--body); }
+.perm-actions { display: flex; gap: 8px; align-items: center; font-size: 12.5px; color: var(--muted); }
+
+/* Attachments waiting to be sent. */
+.attachments { display: flex; flex-wrap: wrap; gap: 6px; padding: 10px 12px 0; }
+.attachment {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 12px; padding: 3px 6px 3px 10px; border-radius: 999px;
+  background: var(--brand-tint); color: var(--brand-deep);
+  border: 1px solid var(--brand-tint-2);
+  max-width: 260px;
+}
+.attachment.pending { opacity: .55; }
+.attachment-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.attachment-x {
+  border: 0; background: none; cursor: pointer; padding: 0 2px;
+  color: var(--brand-deep); font-size: 15px; line-height: 1;
+}
+.attachment-x:hover { color: var(--bad); }
+
+.chat-compose.dropping .composer { border-color: var(--brand); background: var(--brand-tint); }
+
+/* Icon-only actions in the composer bar: the same target size as a button
+   without the width a label would cost in an already busy strip. */
+.icon-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; flex: none;
+  border: 1px solid transparent; border-radius: 8px;
+  background: none; color: var(--muted); cursor: pointer;
+}
+.icon-btn:hover { border-color: var(--line); background: var(--bg); color: var(--ink); }
+.icon-btn.recording {
+  color: #fff; background: var(--bad); border-color: var(--bad);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+@keyframes pulse { 50% { opacity: .55; } }
+@media (prefers-reduced-motion: reduce) { .icon-btn.recording { animation: none; } }
+
+.pick.ask { color: var(--brand-deep); }
+.pick.ask select { color: var(--brand-deep); }
+.pick.plan { color: var(--muted); }
 
 .composer-status { margin-left: auto; padding-right: 4px; white-space: nowrap; }
 .composer-bar .btn { flex: none; }
