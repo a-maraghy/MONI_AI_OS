@@ -1030,6 +1030,28 @@ fieldset.scope legend { font-size: 12px; font-weight: 700; color: var(--ink); pa
 
 /* The enrolment screen shows a password and a TOTP secret exactly once, so
    they are set large enough to read off a screen and copy without error. */
+/* The WhatsApp pairing code, kept current. The countdown is there so a code
+   about to turn over visibly is, rather than the reader wondering whether the
+   scan failed or the picture was simply stale. */
+.qr-live { display: flex; flex-direction: column; align-items: center; gap: 10px; margin: 4px 0 14px; }
+.qr-frame {
+  position: relative;
+  padding: 14px; border-radius: 12px;
+  background: #fff; border: 1px solid var(--line);
+  box-shadow: var(--shadow-sm);
+  line-height: 0;
+}
+.qr-frame img { border-radius: 4px; }
+.qr-age {
+  position: absolute; right: 8px; bottom: 8px;
+  min-width: 30px; padding: 2px 7px; border-radius: 999px;
+  background: var(--brand-tint); color: var(--brand-deep);
+  font-size: 11px; font-weight: 700; line-height: 1.5;
+  font-variant-numeric: tabular-nums; text-align: center;
+}
+.qr-live p { max-width: 44ch; margin: 0; }
+.center { text-align: center; }
+
 .qr-wrap { text-align: center; }
 .qr { border: 1px solid var(--line); border-radius: var(--radius); background: #fff; padding: 8px; }
 

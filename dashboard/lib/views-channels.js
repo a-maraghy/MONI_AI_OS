@@ -428,11 +428,21 @@ function whatsappCard(csrf, c, wa) {
     return card(
       "Link this number",
       `${warning}
-      <p class="muted">On your phone: <strong>WhatsApp → Settings → Linked devices →
-        Link a device</strong>, then scan this code. It expires after about a minute —
-        reload the page for a fresh one.</p>
-      <p class="center"><img src="${esc(wa.qr)}" alt="WhatsApp pairing QR code"
-        width="300" height="300"></p>
+      <ol class="steps">
+        <li>Open <strong>WhatsApp</strong> on the phone that owns the number.</li>
+        <li>Go to <strong>Settings → Linked devices → Link a device</strong>.</li>
+        <li>Point it at the code below.</li>
+      </ol>
+      <div class="qr-live" id="wa-link" data-slug="${slug}">
+        <div class="qr-frame">
+          <img id="wa-qr" src="${esc(wa.qr)}" alt="WhatsApp pairing code"
+               width="272" height="272">
+          <div class="qr-age"><span id="wa-age"></span></div>
+        </div>
+        <p class="muted small center" id="wa-hint">
+          WhatsApp replaces this code every 20 seconds. It refreshes here on its own —
+          get to the scanning screen first, then look back.</p>
+      </div>
       ${controls}`,
       { icon: "whatsapp" }
     );

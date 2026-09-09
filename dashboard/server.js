@@ -1281,6 +1281,35 @@ app.get("/channels/:slug", requireAuth, requirePerm("channels.view"), requireCha
   );
 });
 
+/**
+ * The bridge's live state, for the linking page to poll.
+ *
+ * WhatsApp rotates its pairing code every twenty seconds. A code rendered when
+ * the page loaded is dead long before anyone has found Linked Devices on their
+ * phone, which is why linking appeared not to work at all: the mechanism was
+ * fine and the picture was stale. The page now asks for the current one.
+ */
+app.get("/channels/:slug/whatsapp/status", requireAuth, requirePerm("channels.view"), requireChannelScope, async (req, res) => {
+  const channel = await loadChannel(req, res);
+  if (!channel) return;
+  if (channel.type !== "whatsapp") return res.status(404).json({ error: "Not a WhatsApp channel." });
+
+  try {
+    const wa = await priv.waStatus(channel.slug);
+    res.set("Cache-Control", "no-store").json({
+      status: wa.status || "stopped",
+      linked: !!wa.linked,
+      qr: wa.qr || null,
+      number: (wa.me && wa.me.number) || null,
+      active: (wa.unit && wa.unit.active) || "inactive",
+      updated_at: wa.updated_at || null,
+      last_error: wa.last_error || null,
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.post("/channels/:slug/whatsapp/link", requireAuth, requirePerm("channels.edit"), requireChannelScope, requireCsrf, async (req, res) => {
   const channel = await loadChannel(req, res);
   if (!channel) return;

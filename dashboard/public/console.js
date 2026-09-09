@@ -747,3 +747,73 @@ var MD = (function () {
     }
   );
 })();
+
+/* ------------------------------------------------------- WhatsApp linking --
+ *
+ * WhatsApp rotates its pairing code every twenty seconds, so a code rendered
+ * when the page loaded is dead before most people have found Linked Devices on
+ * their phone. That is what made linking look broken: the bridge was fine, the
+ * picture was stale. This keeps the picture current, and reloads the page the
+ * moment the phone accepts it.
+ */
+(function () {
+  var box = document.getElementById("wa-link");
+  if (!box) return;
+
+  var img = document.getElementById("wa-qr");
+  var age = document.getElementById("wa-age");
+  var hint = document.getElementById("wa-hint");
+  var slug = box.getAttribute("data-slug");
+  var seen = img.getAttribute("src");
+  var since = Date.now();
+  var failures = 0;
+
+  /* A ring that empties over the code's twenty-second life, so a code about to
+     turn over is visibly about to turn over. */
+  function tick() {
+    var left = Math.max(0, 20 - Math.round((Date.now() - since) / 1000));
+    age.textContent = left ? left + "s" : "…";
+  }
+
+  function poll() {
+    fetch("/channels/" + encodeURIComponent(slug) + "/whatsapp/status", {
+      credentials: "same-origin",
+      headers: { Accept: "application/json" },
+    })
+      .then(function (r) {
+        if (!r.ok) throw new Error("status " + r.status);
+        return r.json();
+      })
+      .then(function (d) {
+        failures = 0;
+
+        // Linked: the rest of the page is now wrong, so let the server draw it.
+        if (d.linked) {
+          hint.textContent = "Linked" + (d.number ? " as +" + d.number : "") + ". Reloading…";
+          return window.location.reload();
+        }
+
+        if (d.status === "logged_out") return window.location.reload();
+
+        if (d.qr && d.qr !== seen) {
+          seen = d.qr;
+          img.src = d.qr;
+          since = Date.now();
+        }
+        // The bridge dropped the code entirely -- reconnecting, usually. The
+        // page it draws for that state explains itself better than this one.
+        if (!d.qr && d.status !== "qr") return window.location.reload();
+        tick();
+      })
+      .catch(function () {
+        // A blip is not worth alarming anyone over; a run of them is.
+        if (++failures >= 4) {
+          hint.textContent = "Lost contact with the bridge. Check its logs.";
+        }
+      });
+  }
+
+  setInterval(tick, 1000);
+  setInterval(poll, 2500);
+  tick();
+})();

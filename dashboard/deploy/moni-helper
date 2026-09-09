@@ -1730,11 +1730,27 @@ def cmd_channel_whatsapp_status(args):
 
 
 def cmd_channel_whatsapp_link(args):
-    """Start the bridge so it produces a QR code to scan."""
+    """Start the bridge so it produces a code to scan.
+
+    Refuses rather than reporting success when there is nothing to start. The
+    previous version returned ok for a channel with no agent, which meant
+    pressing the button appeared to work and produced no code, with nothing
+    saying why.
+    """
     if not args:
         fail("usage: channel-whatsapp-link <slug>")
     slug = check_channel_slug(args[0])
     existing_channel(slug)
+
+    meta = read_channel_json(slug)
+    if meta.get("type") != "whatsapp":
+        fail("that is not a WhatsApp channel")
+    if not meta.get("agent"):
+        fail("connect this channel to an agent first; the bridge does not run "
+             "without something to answer with")
+    if not os.path.isfile(os.path.join(WHATSAPP_DIR, "bridge.mjs")):
+        fail("the WhatsApp bridge is not installed; run deploy/install-whatsapp.sh")
+
     result = reconcile_whatsapp(slug)
     audit("channel-whatsapp-link", {"slug": slug, **result})
     ok({"slug": slug, **result})
