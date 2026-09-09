@@ -20,7 +20,13 @@ import json
 import os
 from typing import List, Optional
 
-from mcp.server.fastmcp import FastMCP
+try:
+    # mcp >= 2.0 renamed FastMCP to MCPServer. The surface we use -- the
+    # constructor, the .tool() decorator and .run(transport=...) -- is identical
+    # in both, so one import is the whole compatibility story.
+    from mcp.server.mcpserver import MCPServer as _Server
+except ImportError:  # mcp 1.x
+    from mcp.server.fastmcp import FastMCP as _Server
 
 from .indexer import sync
 from .store import MemoryStore
@@ -29,7 +35,7 @@ from .vault import Vault
 VAULT_PATH = os.environ.get("MONI_VAULT", "")
 DB_PATH = os.environ.get("MONI_VECTOR_DB", "")
 
-mcp = FastMCP("memory")
+mcp = _Server("memory")
 
 _vault: Optional[Vault] = None
 _store: Optional[MemoryStore] = None

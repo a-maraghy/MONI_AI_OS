@@ -744,6 +744,7 @@ def cmd_agent_create(args):
         fail("could not create agent: " + type(exc).__name__ + ": " + str(exc))
 
     run(["systemctl", "daemon-reload"])
+    run(["systemctl", "reset-failed", unit_name(slug)])  # clear any stale state
     r = run(["systemctl", "enable", "--now", unit_name(slug)], timeout=30)
     started = r.returncode == 0
     audit("agent-create", {"slug": slug, "name": cfg["name"], "started": started})
@@ -838,6 +839,9 @@ def cmd_agent_delete(args):
     slug = check_slug(args[0])
     path = existing_agent(slug)
     run(["systemctl", "disable", "--now", unit_name(slug)], timeout=45)
+    # Without this the unit's failed state outlives the agent, so a later agent
+    # reusing the name shows up as already broken before it has run once.
+    run(["systemctl", "reset-failed", unit_name(slug)])
     shutil.rmtree(drop_in_path(slug), ignore_errors=True)
     run(["systemctl", "daemon-reload"])
 

@@ -11,7 +11,11 @@
 
 set -euo pipefail
 
-RUNTIME_REPO="${RUNTIME_REPO:-https://github.com/mo-zaghloul96/Claude_VPS.git}"
+# Claude_VPS is private, so this is the SSH remote: the server authenticates with
+# a deploy key rather than a password it cannot be given. Generate one with
+#   ssh-keygen -t ed25519 -f /root/.ssh/github_deploy -N ''
+# and add the public half to the repo under Settings -> Deploy keys (read-only).
+RUNTIME_REPO="${RUNTIME_REPO:-git@github.com:mo-zaghloul96/Claude_VPS.git}"
 RUNTIME_REF="${RUNTIME_REF:-main}"
 
 ROOT=/opt/moni-agents
@@ -69,11 +73,21 @@ chmod 0750 "$ROOT/agents" "$ROOT/archived"
 
 # ----------------------------------------------------------------- runtime --
 
+git config --global --add safe.directory "$RUNTIME" 2>/dev/null || true
+
 if [[ -d "$RUNTIME/.git" ]]; then
   say "Updating the agent runtime"
-  git -C "$RUNTIME" fetch --quiet origin
-  git -C "$RUNTIME" checkout --quiet "$RUNTIME_REF"
-  git -C "$RUNTIME" pull --quiet --ff-only origin "$RUNTIME_REF"
+  # A failed fetch must not abort the run: the checkout on disk is still
+  # perfectly serviceable, and the usual cause is a deploy key that has not been
+  # added to GitHub yet. Report it and carry on with what is there.
+  if git -C "$RUNTIME" fetch --quiet origin 2>/dev/null; then
+    git -C "$RUNTIME" checkout --quiet "$RUNTIME_REF" || true
+    git -C "$RUNTIME" pull --quiet --ff-only origin "$RUNTIME_REF" || \
+      warn "could not fast-forward; leaving the checkout as it is"
+  else
+    warn "could not reach $RUNTIME_REPO -- using the existing checkout."
+    warn "Add /root/.ssh/github_deploy.pub to the repo's Deploy keys to fix this."
+  fi
 else
   say "Cloning the agent runtime from $RUNTIME_REPO"
   rm -rf "$RUNTIME"

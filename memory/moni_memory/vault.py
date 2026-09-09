@@ -24,7 +24,10 @@ from typing import Any, Dict, Iterator, List, Optional
 
 MAX_CHUNK_CHARS = 1000
 CHUNK_OVERLAP_CHARS = 150
-MIN_CHUNK_CHARS = 40
+# Low on purpose. A one-line fact ("the prod DB password rotates on the 1st") is
+# exactly the kind of memory worth retrieving, and a higher floor silently drops
+# it.
+MIN_CHUNK_CHARS = 20
 SKIP_DIRS = {".obsidian", ".git", ".trash", "node_modules", "__pycache__", ".venv"}
 INDEX_MARKER = "## Memory index"
 
@@ -256,9 +259,17 @@ class Vault:
         insert = at + 1
         # Skip the italic explainer and any blank lines directly under the
         # heading, then land above the existing pointers.
-        while insert < len(lines) and (not lines[insert].strip() or lines[insert].lstrip().startswith("_")):
+        while insert < len(lines) and (
+            not lines[insert].strip() or lines[insert].lstrip().startswith("_")
+        ):
             insert += 1
-        lines.insert(insert, line)
+        block = [line]
+        # Keep a blank line before whatever follows. Without it the first
+        # pointer ends up flush against the section's --- rule, and MEMORY.md is
+        # read by a human as often as by the agent.
+        if insert < len(lines) and lines[insert].strip():
+            block.append("")
+        lines[insert:insert] = block
         memory_md.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     def append_worklog(self, entry: str) -> Dict[str, Any]:
