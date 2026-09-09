@@ -95,7 +95,7 @@ exports.dashboard = ({ csrf, user, agents, channels, probe, flash, err }) => {
         : ""
     }
 
-    <div class="statrow" style="margin-bottom:18px">
+    <div class="statrow mb-18">
       ${stat(running.length + " / " + agents.length, "agents running", "agents")}
       ${stat(channels.length, "channels", "channels")}
       ${stat(totalNotes, "memory notes", "memory")}
@@ -356,7 +356,7 @@ exports.detail = ({ csrf, user, agent, notes = [], flash, err }) => {
             </table>
             ${
               ch.telegram_bot_username
-                ? `<p class="muted small" style="margin-top:10px">Open the chat:
+                ? `<p class="muted small mt-8">Open the chat:
                    <code>https://t.me/${esc(ch.telegram_bot_username)}</code></p>`
                 : ""
             }`

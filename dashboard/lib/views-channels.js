@@ -19,7 +19,7 @@ const TYPES = {
 
 function typeBadge(type) {
   const t = TYPES[type] || { label: type, icon: "channels" };
-  return `<span class="strong" style="display:inline-flex;align-items:center;gap:6px">
+  return `<span class="strong inline-badge">
     ${icon(t.icon)} ${esc(t.label)}</span>`;
 }
 
@@ -142,20 +142,20 @@ exports.create = ({ csrf, user, agents, form = {}, errors = [], botInfo = null }
       ${card(
         "Type",
         `<div class="addon-grid">
-          <label class="addon${type === "telegram" ? " on" : ""}" style="cursor:pointer">
+          <label class="addon clickable${type === "telegram" ? " on" : ""}">
             <span class="addon-top">
               <input type="radio" name="type" value="telegram" ${type === "telegram" ? "checked" : ""}
-                     style="width:auto;margin:0">
+                     class="pick">
               <span class="addon-ico">${icon("telegram")}</span>
               <span><span class="addon-name">Telegram</span>
                 <span class="addon-cat">bot token</span></span>
             </span>
             <p class="addon-desc">A bot from @BotFather. Works immediately, no phone needed.</p>
           </label>
-          <label class="addon${type === "whatsapp" ? " on" : ""}" style="cursor:pointer">
+          <label class="addon clickable${type === "whatsapp" ? " on" : ""}">
             <span class="addon-top">
               <input type="radio" name="type" value="whatsapp" ${type === "whatsapp" ? "checked" : ""}
-                     style="width:auto;margin:0">
+                     class="pick">
               <span class="addon-ico">${icon("whatsapp")}</span>
               <span><span class="addon-name">WhatsApp</span>
                 <span class="addon-cat">linked device</span></span>
@@ -305,7 +305,7 @@ function whatsappCard(csrf, c, wa) {
       ${controls}
       <form method="post" action="/channels/${slug}/whatsapp/unlink" class="inline"
             data-confirm="Unlink this number? You will need to scan a new QR code to reconnect."
-            style="margin-top:10px">
+            class="mt-8">
         <input type="hidden" name="_csrf" value="${esc(csrf)}">
         <button class="btn danger small">${icon("trash")} Unlink this number</button>
       </form>`,
@@ -320,7 +320,7 @@ function whatsappCard(csrf, c, wa) {
       <p class="muted">On your phone: <strong>WhatsApp → Settings → Linked devices →
         Link a device</strong>, then scan this code. It expires after about a minute —
         reload the page for a fresh one.</p>
-      <p style="text-align:center"><img src="${esc(wa.qr)}" alt="WhatsApp pairing QR code"
+      <p class="center"><img src="${esc(wa.qr)}" alt="WhatsApp pairing QR code"
         width="300" height="300"></p>
       ${controls}`,
       { icon: "whatsapp" }
@@ -405,7 +405,7 @@ exports.detail = ({ csrf, user, channel, agents, wa, flash, err }) => {
         </table>
         ${
           isTelegram && c.telegram_bot_username
-            ? `<p class="muted small" style="margin-top:12px">Open the chat:
+            ? `<p class="muted small mt-12">Open the chat:
                <code>https://t.me/${esc(c.telegram_bot_username)}</code></p>`
             : ""
         }`,

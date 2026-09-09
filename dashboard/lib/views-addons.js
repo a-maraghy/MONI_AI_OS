@@ -40,8 +40,7 @@ function renderAddons(list, enabledIds, probe) {
       const missing = missingFor(a, probe);
       const unavailable = missing.length > 0;
       const on = a.locked || enabled.has(a.id);
-      return `<label class="addon${on ? " on" : ""}${unavailable ? " unavailable" : ""}"
-                     style="cursor:${a.locked ? "default" : "pointer"}">
+      return `<label class="addon${on ? " on" : ""}${unavailable ? " unavailable" : ""} ${a.locked ? "static-cursor" : "clickable"}">
         <span class="addon-top">
           ${
             a.locked
@@ -49,7 +48,7 @@ function renderAddons(list, enabledIds, probe) {
                  <span title="Always on">${icon("check")}</span>`
               : `<input type="checkbox" name="addons" value="${esc(a.id)}"
                         ${on ? "checked" : ""} ${unavailable ? "disabled" : ""}
-                        style="width:auto;margin:0">`
+                        class="pick">`
           }
           <span class="addon-ico">${icon(a.icon)}</span>
           <span>
@@ -60,7 +59,7 @@ function renderAddons(list, enabledIds, probe) {
         <p class="addon-desc">${esc(a.summary)}</p>
         ${
           unavailable
-            ? `<p class="addon-desc" style="color:var(--warn)">Needs ${esc(
+            ? `<p class="addon-desc warn-text">Needs ${esc(
                 missing.join(", ")
               )}, which is not installed on this server.</p>`
             : ""
@@ -93,7 +92,7 @@ exports.catalogue = ({ csrf, user, query, scope, results, probe, agents, channel
     "Add-ons",
     `<form method="get" action="/addons" class="searchbar">
       <input name="q" value="${esc(query || "")}" placeholder="Search — try 'excel', 'voice', 'schedule'…">
-      <select name="scope" style="width:auto;margin:0">
+      <select name="scope" class="pick">
         <option value="">Everything</option>
         <option value="channel" ${scope === "channel" ? "selected" : ""}>Channel add-ons</option>
         <option value="agent" ${scope === "agent" ? "selected" : ""}>Agent add-ons</option>
@@ -175,7 +174,7 @@ function renderCatalogueCard(a, probe, users) {
     <p class="addon-desc muted">${esc(a.detail)}</p>
     ${
       unavailable
-        ? `<p class="addon-desc" style="color:var(--warn)">Needs ${esc(missing.join(", "))}.</p>`
+        ? `<p class="addon-desc warn-text">Needs ${esc(missing.join(", "))}.</p>`
         : ""
     }
     <div class="addon-foot">

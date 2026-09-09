@@ -28,7 +28,7 @@ function controls(csrf, action, target, state) {
   if (running && state.stoppable !== false) {
     parts.push(button("stop", "Stop", "danger", "Stop " + target + "?"));
   }
-  return `<div style="display:flex;gap:6px;justify-content:flex-end">${parts.join("")}</div>`;
+  return `<div class="row-end">${parts.join("")}</div>`;
 }
 
 /* ------------------------------------------------------- system services -- */
@@ -65,7 +65,7 @@ exports.system = ({ csrf, user, services, flash, err }) =>
               <td class="mono small">${esc((s.since || "").slice(0, 19) || "—")}</td>
               <td class="right">
                 ${controls(csrf, "/services/action", s.unit, s)}
-                <div style="margin-top:6px"><a class="btn small" href="/services/logs?unit=${encodeURIComponent(
+                <div class="stack-actions"><a class="btn small" href="/services/logs?unit=${encodeURIComponent(
                   s.unit
                 )}">Logs</a></div>
               </td>
@@ -112,7 +112,7 @@ exports.agents = ({ csrf, user, agents, flash, err }) =>
                   <td class="mono small">${esc(((a.state && a.state.since) || "").slice(0, 19) || "—")}</td>
                   <td class="right">
                     ${controls(csrf, "/services/agent-action", a.slug, (a.state || {}))}
-                    <div style="margin-top:6px"><a class="btn small" href="/agents/${esc(
+                    <div class="stack-actions"><a class="btn small" href="/agents/${esc(
                       a.slug
                     )}/logs">Logs</a></div>
                   </td>

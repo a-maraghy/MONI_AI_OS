@@ -34,7 +34,7 @@ exports.login = ({ csrf, error }) =>
   shell(
     "Sign in",
     `<div class="card">
-      <h2 style="margin-bottom:14px">Sign in to MONI AI OS</h2>
+      <h2 class="mb-14">Sign in to MONI AI OS</h2>
       ${error ? `<div class="alert bad">${icon("alert")}<div>${esc(error)}</div></div>` : ""}
       <form method="post" action="/login" autocomplete="off">
         <input type="hidden" name="_csrf" value="${esc(csrf)}">
@@ -43,7 +43,7 @@ exports.login = ({ csrf, error }) =>
         <label>Authenticator code
           <input name="token" inputmode="numeric" pattern="[0-9 ]*" placeholder="000000"
                  autocomplete="one-time-code" required></label>
-        <button class="btn primary" type="submit" style="width:100%">Sign in</button>
+        <button class="btn primary" type="submit" class="w-full">Sign in</button>
       </form>
     </div>`
   );
@@ -62,7 +62,7 @@ exports.setup = ({ csrf, token, errors = [] }) =>
         <label>Password <span class="hint">minimum 12 characters</span>
           <input name="password" type="password" required></label>
         <label>Repeat password<input name="password2" type="password" required></label>
-        <button class="btn primary" type="submit" style="width:100%">Create account</button>
+        <button class="btn primary" type="submit" class="w-full">Create account</button>
       </form>
     </div>`
   );
@@ -74,7 +74,7 @@ exports.totpEnroll = ({ csrf, qr, secret, error }) =>
       <h2>Set up two-factor authentication</h2>
       <p class="muted small">Scan with Google Authenticator, Authy, 1Password, or any TOTP app.</p>
       ${error ? `<div class="alert bad">${icon("alert")}<div>${esc(error)}</div></div>` : ""}
-      <p style="text-align:center"><img src="${esc(qr)}" alt="TOTP QR code" width="240" height="240"></p>
+      <p class="center"><img src="${esc(qr)}" alt="TOTP QR code" width="240" height="240"></p>
       <p class="muted small">Can't scan? Enter this secret manually:</p>
       <p><code class="secret">${esc(secret)}</code></p>
       <div class="alert warn">${icon("alert")}<div>Save this secret somewhere safe. If you
@@ -83,7 +83,7 @@ exports.totpEnroll = ({ csrf, qr, secret, error }) =>
         <input type="hidden" name="_csrf" value="${esc(csrf)}">
         <label>Enter the current 6-digit code to confirm
           <input name="token" inputmode="numeric" pattern="[0-9 ]*" placeholder="000000" required autofocus></label>
-        <button class="btn primary" type="submit" style="width:100%">Confirm and finish</button>
+        <button class="btn primary" type="submit" class="w-full">Confirm and finish</button>
       </form>
     </div>`
   );
@@ -139,14 +139,14 @@ exports.osDashboard = ({
       .join("")}
     ${statusError ? `<div class="alert bad">${icon("alert")}<div>Could not query privileged status: ${esc(statusError)}</div></div>` : ""}
 
-    <div class="statrow" style="margin-bottom:18px">
+    <div class="statrow mb-18">
       ${stat(running + " / " + agents.length, "agents running", "agents")}
       ${stat(channels.length, "channels connected", "channels")}
       ${stat(services.length - svcDown.length + " / " + services.length, "services healthy", "services")}
       ${stat(sshd.banned, "IPs banned right now", "shield")}
     </div>
 
-    <div class="grid">
+    <div class="grid cols-2">
       ${card(
         "Machine",
         `<table class="kv">
@@ -155,7 +155,7 @@ exports.osDashboard = ({
           <tr><td>CPU</td><td>${stats.cpus} vCPU · load ${stats.loadavg.map((n) => n.toFixed(2)).join("  ")}</td></tr>
           <tr><td>Runtime</td><td class="mono small">${esc((probe && probe.runtime_revision) || "—")}</td></tr>
         </table>
-        <div style="margin-top:16px">
+        <div class="mt-16">
           ${meter("memory", "Memory", stats.memUsed, stats.memTotal)}
           ${stats.diskTotal != null ? meter("disk", "Disk /", stats.diskUsed, stats.diskTotal) : ""}
         </div>`,
@@ -180,6 +180,9 @@ exports.osDashboard = ({
         }
       )}
 
+    </div>
+
+    <div class="grid cols-2">
       ${card(
         "Capabilities",
         `<table class="kv">
@@ -191,7 +194,6 @@ exports.osDashboard = ({
         </table>`,
         { icon: "check" }
       )}
-
       ${card(
         "Security",
         `<table class="kv">
@@ -403,7 +405,7 @@ exports.pair = ({ csrf, error }) =>
       <p class="muted small">Enter the pairing code from the dashboard, and this device's
         <strong>public</strong> key. Never paste a private key here — or anywhere.</p>
       ${error ? `<div class="alert bad">${icon("alert")}<div>${esc(error)}</div></div>` : ""}
-      <details style="margin-bottom:14px">
+      <details class="mb-14">
         <summary class="muted small">How do I get my public key?</summary>
         <p class="small">Windows PowerShell:</p>
         <pre>ssh-keygen -t ed25519 -f $env:USERPROFILE\\.ssh\\contabo_vps
@@ -416,7 +418,7 @@ cat ~/.ssh/contabo_vps.pub</pre>
         <input type="hidden" name="_csrf" value="${esc(csrf)}">
         <label>Pairing code<input name="code" placeholder="XXXX-XXXX-XXXX" required autofocus></label>
         <label>Public key<textarea name="pubkey" rows="3" placeholder="ssh-ed25519 AAAAC3..." required></textarea></label>
-        <button class="btn primary" type="submit" style="width:100%">Pair device</button>
+        <button class="btn primary" type="submit" class="w-full">Pair device</button>
       </form>
     </div>`
   );

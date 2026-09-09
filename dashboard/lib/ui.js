@@ -229,7 +229,7 @@ function meter(name, label, used, total) {
   return `<div class="meter" data-meter="${esc(name)}">
     <div class="meter-head"><span>${esc(label)}</span>
       <span class="muted">${bytes(used)} / ${bytes(total)}</span></div>
-    <div class="bar"><div class="fill ${level}" style="width:${pct}%"></div></div>
+    <div class="bar"><div class="fill ${level}" data-w="${pct}"></div></div>
   </div>`;
 }
 

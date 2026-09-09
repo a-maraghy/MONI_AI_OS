@@ -107,7 +107,7 @@ exports.detail = ({ csrf, user, credential, flash, err }) => {
           <input name="value" type="password" placeholder="sk-ant-..." required></label>
         <button class="btn primary" type="submit">${icon("save")} Save credential</button>
       </form>
-      <p class="muted small" style="margin-top:14px">Setting one key clears the other —
+      <p class="muted small mt-12">Setting one key clears the other —
         the runtime uses whichever it finds, and having both set makes it ambiguous which
         one is actually in use.</p>`,
       { icon: "credentials" }
