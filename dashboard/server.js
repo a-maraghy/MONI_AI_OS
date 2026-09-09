@@ -151,7 +151,10 @@ function loadActor(req, res, next) {
   if (req.session && req.session.authed && req.session.userId) {
     const me = db.getUser(req.session.userId);
     if (!me || me.disabled) {
-      return req.session.destroy(() => res.redirect("/login?err=Your+access+has+been+revoked."));
+      // `revoked` is a flag, not a message: anything rendered on the sign-in
+      // page that came out of a URL is text an attacker can put in front of
+      // someone who is about to type their password.
+      return req.session.destroy(() => res.redirect("/login?revoked=1"));
     }
     req.me = me;
     req.perm = rbac.actor(me.role);
@@ -337,7 +340,12 @@ app.post("/setup/confirm", requireCsrf, async (req, res) => {
 app.get("/login", (req, res) => {
   if (noUsersYet()) return res.redirect("/setup");
   if (req.me) return res.redirect("/");
-  res.send(views.login({ csrf: res.locals.csrf, error: req.query.err || null }));
+  res.send(
+    views.login({
+      csrf: res.locals.csrf,
+      error: req.query.revoked ? "Your access has been changed. Sign in again." : null,
+    })
+  );
 });
 
 app.post("/login", loginLimiter, requireCsrf, async (req, res) => {

@@ -43,7 +43,7 @@ exports.login = ({ csrf, error }) =>
         <label>Authenticator code
           <input name="token" inputmode="numeric" pattern="[0-9 ]*" placeholder="000000"
                  autocomplete="one-time-code" required></label>
-        <button class="btn primary" type="submit" class="w-full">Sign in</button>
+        <button class="btn primary w-full" type="submit">Sign in</button>
       </form>
     </div>`
   );
