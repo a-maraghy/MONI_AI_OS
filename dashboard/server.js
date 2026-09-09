@@ -80,6 +80,17 @@ app.use(express.urlencoded({ extended: false, limit: "64kb" }));
 app.use(express.json({ limit: "64kb" }));
 app.use("/static", express.static(path.join(__dirname, "public"), { maxAge: "1h" }));
 
+// Browsers and bookmark managers ask for /favicon.ico at the root regardless of
+// what the document declares, so serve it there rather than let it 404 on every
+// page load. Public on purpose: it is a logo, and requiring a session for it
+// would put a 302 in the console instead of a 404.
+app.get("/favicon.ico", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "favicon.ico"), {
+    maxAge: "7d",
+    headers: { "Content-Type": "image/x-icon" },
+  });
+});
+
 app.use(
   session({
     store: new SQLiteStore({ db: "sessions.db", dir: DATA_DIR }),

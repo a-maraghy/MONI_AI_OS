@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="MONI AI OS">
+  <!-- Brand mark: the same four-panel glyph as the panel's top-left logo, on the
+       Giza Seeds primary green. Deliberately blunt shapes — a favicon is read at
+       16px, where anything finer than this turns to mush. -->
+  <rect width="32" height="32" rx="6" fill="#47723E"/>
+  <g fill="#ffffff">
+    <rect x="6"  y="6"  width="9" height="9"  rx="1.5"/>
+    <rect x="17" y="6"  width="9" height="5"  rx="1.5"/>
+    <rect x="17" y="13" width="9" height="13" rx="1.5"/>
+    <rect x="6"  y="17" width="9" height="9"  rx="1.5"/>
+  </g>
+</svg>
