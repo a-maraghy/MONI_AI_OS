@@ -13,7 +13,37 @@
  * scripts off a CDN.
  */
 
+const fs = require("fs");
+const path = require("path");
 const { icon } = require("./icons");
+
+/**
+ * Cache-busting stamps for the static files.
+ *
+ * /static is served with a long cache, which is right for bytes that do not
+ * change and wrong for bytes that just did: a deployed stylesheet could take an
+ * hour to reach a browser that already had the old one, so a fix looked like it
+ * had not shipped. The stamp changes when the file does, which makes the URL
+ * change, which is the only thing a cache reliably notices.
+ *
+ * Read once at startup. These files are only replaced by a deploy, and a deploy
+ * restarts the process.
+ */
+const ASSET_VERSIONS = new Map();
+
+function asset(file) {
+  if (!ASSET_VERSIONS.has(file)) {
+    let stamp = "0";
+    try {
+      const { mtimeMs, size } = fs.statSync(path.join(__dirname, "..", "public", file));
+      stamp = Math.round(mtimeMs).toString(36) + "-" + size.toString(36);
+    } catch (_) {
+      /* a missing file is the static handler's problem to report, not ours */
+    }
+    ASSET_VERSIONS.set(file, stamp);
+  }
+  return "/static/" + file + "?v=" + ASSET_VERSIONS.get(file);
+}
 
 function esc(s) {
   return String(s == null ? "" : s)
@@ -323,12 +353,12 @@ function page(title, inner) {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)} — MONI AI OS</title>
-<link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="${asset("favicon.svg")}" type="image/svg+xml">
 <link rel="alternate icon" href="/favicon.ico" sizes="48x48 32x32 16x16">
-<link rel="apple-touch-icon" href="/static/favicon.svg">
-<link rel="stylesheet" href="/static/style.css">
-<script src="/static/app.js" defer></script>
-<script src="/static/console.js" defer></script>
+<link rel="apple-touch-icon" href="${asset("favicon.svg")}">
+<link rel="stylesheet" href="${asset("style.css")}">
+<script src="${asset("app.js")}" defer></script>
+<script src="${asset("console.js")}" defer></script>
 </head><body>
 ${inner}
 </body></html>`;

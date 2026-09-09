@@ -83,7 +83,23 @@ app.use(
 
 app.use(express.urlencoded({ extended: false, limit: "64kb" }));
 app.use(express.json({ limit: "64kb" }));
-app.use("/static", express.static(path.join(__dirname, "public"), { maxAge: "1h" }));
+// Long-lived, because every reference carries a stamp that changes when the
+// file does (see asset() in lib/ui.js). The previous hour-long cache with plain
+// URLs meant a deployed stylesheet reached a browser that already had the old
+// one only when that hour was up -- so a fix could look like it had not shipped.
+app.use(
+  "/static",
+  express.static(path.join(__dirname, "public"), {
+    maxAge: "30d",
+    setHeaders: (res, filePath) => {
+      // A request without a stamp is a bookmark or a hand-typed URL, and must
+      // not be cached for a month under a name that will not change.
+      if (!/[?&]v=/.test(res.req.originalUrl || "")) {
+        res.setHeader("Cache-Control", "public, max-age=300");
+      }
+    },
+  })
+);
 
 // Browsers and bookmark managers ask for /favicon.ico at the root regardless of
 // what the document declares, so serve it there rather than let it 404 on every

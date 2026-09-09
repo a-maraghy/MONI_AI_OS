@@ -841,8 +841,11 @@ label.addon:has(input[type="checkbox"]:checked) .addon-ico {
   display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
   padding: 6px 8px 8px 10px;
 }
-.chat-controls { display: flex; align-items: center; gap: 4px; margin: 0; min-width: 0; flex: none; flex-wrap: wrap; }
-.chat-controls.grow { flex: 1; }
+.chat-controls { display: flex; align-items: center; gap: 4px; margin: 0; min-width: 0; flex: 0 1 auto; flex-wrap: wrap; }
+/* Nothing in the strip stretches. The gap between the settings and the buttons
+   is made by the status text's auto margin, so each control stays the width of
+   what it says. */
+.chat-controls.grow { flex: 0 1 auto; }
 
 /* The gate on a root-enabled chat. Centred and alone, because it is the whole
    page: the transcript behind it was never sent. */
@@ -951,10 +954,15 @@ details.root-toggle[open] > summary { border-color: var(--line-strong); backgrou
 }
 .pick select:focus { outline: none; box-shadow: none; }
 .pick select:disabled { cursor: default; opacity: .8; }
-.pick.wide { flex: 1; min-width: 90px; }
+/* The directory picker gets room for a path and no more. Letting it take the
+   whole remaining row stretched the select across the bar and left its chevron
+   stranded against the buttons, reading as a stray control rather than as part
+   of the field. */
+.pick.wide { flex: 0 1 auto; min-width: 0; }
 .pick.wide select {
-  max-width: 100%; width: 100%;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 500;
+  width: auto; max-width: 210px;
+  font-family: var(--mono); font-weight: 500;
+  text-overflow: ellipsis;
 }
 /* Whole-server reach is worth a glance from across the room. */
 .pick.hot { color: var(--warn); }
