@@ -41,6 +41,16 @@ python3 -m py_compile /usr/local/sbin/moni-helper
 install -m 0755 "$SRC/deploy/moni-root" /usr/local/sbin/moni-root
 python3 -m py_compile /usr/local/sbin/moni-root
 install -d -m 0700 -o root -g root /var/lib/moni-root
+
+# The account the panel's console runs as. Separate from moniagent so the two
+# entitlements can never be confused for one another: this one holds full sudo,
+# and an agent must never inherit it.
+if ! id -u moniconsole >/dev/null 2>&1; then
+  useradd --system --create-home --home-dir /var/lib/moni-console/home \
+          --shell /usr/sbin/nologin moniconsole
+fi
+install -d -m 0700 -o root -g root /var/lib/moni-console
+install -d -m 0700 -o moniconsole -g moniconsole /var/lib/moni-console/home
 # Created here so the operator drop-in can name it as a ReadWritePath; systemd
 # skips a missing path silently, and a silently skipped audit log is worse than
 # a noisy one.

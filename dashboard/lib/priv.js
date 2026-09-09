@@ -200,6 +200,29 @@ module.exports = {
     callHelper("credential-set", [name, key], { stdin: value }),
   credentialClear: (name, key) => callHelper("credential-clear", [name, key]),
 
+  /* -------------------------------------------------------------- console -- */
+
+  /**
+   * Start a console turn and hand back the live child process.
+   *
+   * Unlike every other call here this does not resolve with a parsed result:
+   * a turn can run for minutes and the whole point of the console is watching
+   * it work, so the caller streams stdout itself and keeps the handle in order
+   * to kill it when the user presses Stop.
+   *
+   * The prompt goes over stdin with the rest of the request, so a message the
+   * administrator typed never appears in the process table.
+   */
+  consoleSend: (request) => {
+    const child = spawn("sudo", ["-n", HELPER, "console-send"], {
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    child.stdin.end(JSON.stringify(request));
+    return child;
+  },
+
+  consoleDirs: () => callHelper("console-dirs", [], { timeout: 15000 }),
+
   /* ----------------------------------------------------- server operator -- */
   operatorGet: () => callHelper("operator-get", [], { timeout: 30000 }),
   // A username, not a secret: the authenticator secret it points at is read by

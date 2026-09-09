@@ -22,8 +22,29 @@ const { renderAddons } = require("./views-addons");
 const MODELS = [
   ["claude-opus-5", "Opus 5 — most capable"],
   ["claude-sonnet-5", "Sonnet 5 — faster, cheaper"],
+  ["claude-fable-5-1", "Fable 5.1 — tuned for writing"],
   ["claude-haiku-4-5-20251001", "Haiku 4.5 — fastest"],
 ];
+
+/** How hard the agent thinks before answering. */
+const EFFORTS = [
+  ["low", "Low — answers fast, thinks little"],
+  ["medium", "Medium — the default, right for most agents"],
+  ["high", "High — thinks longer on hard problems"],
+  ["xhigh", "Extra high — slower and dearer again"],
+  ["max", "Max — everything it has, for genuinely hard reasoning"],
+];
+
+const effortSelect = (current) =>
+  `<label>Thinking effort <span class="hint">higher levels cost noticeably more time and tokens on every turn, so raise it for agents that reason rather than agents that answer</span>
+    <select name="effort">
+      ${EFFORTS.map(
+        ([id, label]) =>
+          `<option value="${id}"${
+            (current || "medium") === id ? " selected" : ""
+          }>${label}</option>`
+      ).join("")}
+    </select></label>`;
 
 function tabs(slug, active) {
   const items = [
@@ -280,6 +301,7 @@ exports.create = ({ csrf, user, form = {}, errors = [], probe }) => {
                 `<option value="${id}" ${form.model === id ? "selected" : ""}>${label}</option>`
             ).join("")}
           </select></label>
+        ${effortSelect(form.effort)}
         <label>Verbosity <span class="hint">how much of its own work it narrates in chat</span>
           <select name="verbose_level">
             <option value="0" ${form.verbose_level === "0" ? "selected" : ""}>Quiet — final answer only</option>
@@ -414,6 +436,7 @@ exports.detail = ({ csrf, user, agent, notes = [], flash, err }) => {
         "Configuration",
         `<table class="kv">
           <tr><td>Model</td><td class="mono small">${esc(agent.model || "—")}</td></tr>
+          <tr><td>Thinking effort</td><td>${esc(agent.effort || "medium")}</td></tr>
           <tr><td>Verbosity</td><td>${esc(String(agent.verbose_level))}</td></tr>
           <tr><td>Max turns</td><td>${esc(String(agent.max_turns || "—"))}</td></tr>
           <tr><td>Timeout</td><td>${esc(String(agent.timeout_seconds || "—"))}s</td></tr>
@@ -672,6 +695,7 @@ exports.settings = ({ csrf, user, agent, probe, flash, err }) =>
                 `<option value="${id}" ${agent.model === id ? "selected" : ""}>${label}</option>`
             ).join("")}
           </select></label>
+        ${effortSelect(agent.effort)}
         <label>Verbosity
           <select name="verbose_level">
             <option value="0" ${agent.verbose_level === 0 ? "selected" : ""}>Quiet</option>

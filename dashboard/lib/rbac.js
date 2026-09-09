@@ -81,6 +81,23 @@ const PERMISSION_GROUPS = [
     ],
   },
   {
+    key: "console",
+    label: "MONI Bot console",
+    blurb: "Chatting with Claude Code from inside the panel.",
+    perms: [
+      {
+        key: "console.use",
+        label: "Use the console",
+        hint: "Confined to the agent workspace, running as the agent account.",
+      },
+      {
+        key: "console.full",
+        label: "Run it against the whole server",
+        hint: "Root, anywhere, tool permissions bypassed. This is shell access to the host.",
+      },
+    ],
+  },
+  {
     key: "operator",
     label: "Server operator",
     blurb: "The agent allowed to propose commands that run as root on this host.",
@@ -138,6 +155,7 @@ const IMPLIES = {
   "devices.manage": ["devices.view"],
   "users.manage": ["users.view", "roles.view"],
   "roles.manage": ["roles.view"],
+  "console.full": ["console.use"],
   "operator.view": ["agents.view"],
   "operator.assign": ["operator.view", "agents.view"],
   "operator.approver": ["operator.view"],
@@ -242,7 +260,9 @@ function actor(role) {
     seesChannel: (slug) => inScope(channelScope, slug),
     /** True if the actor can reach anything at all on that dashboard. */
     canDash: (key) =>
-      key === "agents"
+      key === "console"
+        ? can("console.use")
+        : key === "agents"
         ? can("agents.view") || can("channels.view") || can("addons.view")
         : can("os.view") ||
           can("credentials.view") ||

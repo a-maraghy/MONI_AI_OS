@@ -118,6 +118,9 @@ MAX_STDIN_BYTES = 1024 * 1024
 
 ACTIONS = ("start", "stop", "restart", "enable", "disable")
 
+# Effort levels the Claude CLI and SDK accept, cheapest first.
+EFFORT_LEVELS = ("low", "medium", "high", "xhigh", "max")
+
 
 def fail(msg, code=2):
     print(json.dumps({"ok": False, "error": msg}))
@@ -588,6 +591,15 @@ def validate_config(cfg, creating):
         fail("invalid model id")
     out["model"] = model
 
+    # How hard the model thinks before answering. Medium is the default because
+    # it is the right trade for the conversational work most agents do; the
+    # higher levels cost noticeably more time and tokens per turn and are worth
+    # it only for agents doing genuinely hard reasoning.
+    effort = str(cfg.get("effort") or "medium").strip().lower()
+    if effort not in EFFORT_LEVELS:
+        fail("effort must be one of: " + ", ".join(EFFORT_LEVELS))
+    out["effort"] = effort
+
     try:
         verbose = int(cfg.get("verbose_level", 1))
     except (TypeError, ValueError):
@@ -750,6 +762,7 @@ def render_env(cfg, channel=None):
         "RATE_LIMIT_WINDOW": "60",
         "RATE_LIMIT_BURST": "60",
         "CLAUDE_MODEL": cfg["model"],
+        "CLAUDE_EFFORT": cfg.get("effort", "medium"),
         "CLAUDE_MAX_TURNS": str(cfg["max_turns"]),
         "CLAUDE_TIMEOUT_SECONDS": str(cfg["timeout_seconds"]),
         "VERBOSE_LEVEL": str(cfg["verbose_level"]),
@@ -2216,6 +2229,213 @@ def cmd_system_probe(args):
     )
 
 
+# --------------------------------------------------------------- console ---
+#
+# The panel's own chat with Claude Code. Unlike an agent, this is not a bot
+# somebody messages -- it is the administrator sitting at a keyboard, already
+# past a password and a TOTP code, so it runs with the access they already have
+# by other means. There is no approval broker in this path and there is not
+# meant to be: it is a shell, not a delegation.
+
+CONSOLE_STATE = "/var/lib/moni-console"
+CONSOLE_USER = "moniconsole"
+
+CONSOLE_ACCESS = {
+    # Full run of the machine, via a dedicated account that holds unrestricted
+    # sudo. Not root directly: Claude Code refuses to bypass tool permissions
+    # when it is already running as root, and reasonably so. A normal user who
+    # can sudo is the shape it expects and is how it runs on any dev box -- the
+    # reach is the same, and the sudo log gains a record of every escalation.
+    "full": {
+        "user": CONSOLE_USER,
+        "home": os.path.join(CONSOLE_STATE, "home"),
+        "cwd": "/",
+    },
+    # The agent service account, confined to its own tree by the same rules
+    # every agent lives under.
+    "workspace": {
+        "user": AGENT_USER,
+        "home": os.path.join(SHARED_DIR, "home"),
+        "cwd": AGENTS_DIR,
+    },
+}
+
+CONSOLE_MODELS = (
+    "claude-opus-5",
+    "claude-sonnet-5",
+    "claude-fable-5-1",
+    "claude-haiku-4-5-20251001",
+)
+
+UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+CONSOLE_PATH_RE = re.compile(r"^/[A-Za-z0-9._/-]{0,200}$")
+
+
+def console_config_dir(access):
+    """Where Claude Code keeps this console's own settings and session history.
+
+    Deliberately not root's ~/.claude. The console is the panel's, not a
+    person's interactive shell: sharing a config directory would mean the
+    panel's chats and somebody's SSH session competing over the same session
+    index, and it made the first turn fail outright because root's config had
+    been left in a half-restored state. A directory we create ourselves is one
+    we know the state of.
+    """
+    path = os.path.join(CONSOLE_STATE, access)
+    profile = CONSOLE_ACCESS[access]
+    for directory in (profile["home"], path):
+        os.makedirs(directory, mode=0o700, exist_ok=True)
+        try:
+            pw = pwd.getpwnam(profile["user"])
+            os.chown(directory, pw.pw_uid, pw.pw_gid)
+        except (KeyError, OSError):
+            pass
+    return path
+
+
+def console_env(access):
+    """Environment for a console turn, including the shared Claude credential.
+
+    The credential is read here rather than left to the child's environment
+    because the dashboard runs as an unprivileged user that cannot read the
+    file, so it could not pass it through even if we wanted it to.
+    """
+    profile = CONSOLE_ACCESS[access]
+    env = {
+        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "HOME": profile["home"],
+        "TERM": "dumb",
+        "LANG": os.environ.get("LANG", "C.UTF-8"),
+        "DEBIAN_FRONTEND": "noninteractive",
+        "CLAUDE_CONFIG_DIR": console_config_dir(access),
+    }
+    try:
+        with open(CLAUDE_AUTH) as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                if key in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY") and value:
+                    env[key] = value
+    except OSError:
+        pass
+    return env
+
+
+def cmd_console_send(args):
+    """Run one console turn, streaming Claude's JSON events to stdout.
+
+    Streams rather than buffers: a turn can run for minutes and the point of the
+    console is watching it work. Output is newline-delimited JSON straight from
+    the CLI, which the dashboard forwards to the browser as it arrives.
+    """
+    payload = read_stdin_json()
+
+    session_id = str(payload.get("session_id") or "").strip()
+    if session_id and not UUID_RE.match(session_id):
+        fail("malformed session id")
+
+    prompt = str(payload.get("prompt") or "")
+    if not prompt.strip():
+        fail("empty prompt")
+    if len(prompt) > 200000:
+        fail("prompt is too long")
+
+    access = str(payload.get("access") or "full")
+    if access not in CONSOLE_ACCESS:
+        fail("unknown access level")
+
+    model = str(payload.get("model") or "claude-opus-5")
+    if model not in CONSOLE_MODELS:
+        fail("unknown model")
+
+    effort = str(payload.get("effort") or "medium")
+    if effort not in EFFORT_LEVELS:
+        fail("unknown effort level")
+
+    # Its own pattern rather than ABS_PATH_RE, which requires at least one
+    # character after the slash and so rejects the root directory -- which is
+    # precisely where a whole-server console starts.
+    cwd = str(payload.get("cwd") or "").strip() or CONSOLE_ACCESS[access]["cwd"]
+    if not CONSOLE_PATH_RE.match(cwd) or ".." in cwd:
+        fail("working directory must be a plain absolute path")
+    if not os.path.isdir(cwd):
+        fail("no such directory: " + cwd)
+
+    resume = bool(payload.get("resume")) and bool(session_id)
+
+    argv = [
+        "claude",
+        "-p",
+        "--output-format", "stream-json",
+        "--include-partial-messages",
+        "--verbose",
+        "--model", model,
+        "--effort", effort,
+        "--permission-mode", "bypassPermissions",
+    ]
+    argv += ["--resume", session_id] if resume else ["--session-id", session_id]
+    argv += ["--", prompt]
+
+    profile = CONSOLE_ACCESS[access]
+    try:
+        pw = pwd.getpwnam(profile["user"])
+    except KeyError:
+        fail(
+            "account " + profile["user"] + " does not exist; run the deploy script"
+        )
+    preexec = _drop_to(pw.pw_uid, pw.pw_gid)
+
+    proc = subprocess.Popen(
+        argv,
+        cwd=cwd,
+        env=console_env(access),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+        preexec_fn=preexec,
+    )
+
+    # Forwarded line by line, unparsed. This helper is a pipe here, not an
+    # interpreter: anything it tried to summarise would be a second place for
+    # the event format to drift out of date.
+    try:
+        for line in proc.stdout:
+            sys.stdout.write(line)
+            sys.stdout.flush()
+    except BrokenPipeError:
+        proc.kill()
+        return
+
+    proc.wait()
+    stderr = (proc.stderr.read() or "").strip()
+    trailer = {"type": "moni_done", "exit_code": proc.returncode}
+    if proc.returncode != 0 and stderr:
+        trailer["stderr"] = stderr[-4000:]
+    sys.stdout.write(json.dumps(trailer) + "\n")
+    sys.stdout.flush()
+
+
+def _drop_to(uid, gid):
+    def apply():
+        os.setgid(gid)
+        os.setgroups([gid])
+        os.setuid(uid)
+
+    return apply
+
+
+def cmd_console_dirs(args):
+    """Directories worth offering as a working directory in the console."""
+    roots = ["/", "/opt", "/opt/projects", "/srv", "/etc", "/var/log", AGENTS_DIR]
+    for slug in all_agent_slugs():
+        roots.append(os.path.join(agent_dir(slug), "vault"))
+    ok([p for p in roots if os.path.isdir(p)])
+
+
 # ------------------------------------------------------- server operator ---
 
 
@@ -2352,6 +2572,8 @@ COMMANDS = {
     "credential-set": cmd_credential_set,
     "credential-clear": cmd_credential_clear,
     "system-probe": cmd_system_probe,
+    "console-send": cmd_console_send,
+    "console-dirs": cmd_console_dirs,
     "operator-get": cmd_operator_get,
     "root-set-approver": cmd_root_set_approver,
     "root-clear-approver": cmd_root_clear_approver,

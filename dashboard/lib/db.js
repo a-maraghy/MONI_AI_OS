@@ -75,6 +75,36 @@ db.exec(`
     paired_ip   TEXT
   );
 
+  -- The panel's own chats with Claude Code. One row per conversation; the
+  -- uuid column is Claude's own session id, which is what --resume takes, so
+  -- the CLI keeps the real history and this table keeps what to show and how
+  -- the session is configured.
+  CREATE TABLE IF NOT EXISTS console_sessions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    uuid        TEXT NOT NULL UNIQUE,
+    user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title       TEXT NOT NULL DEFAULT 'New chat',
+    model       TEXT NOT NULL DEFAULT 'claude-opus-5',
+    effort      TEXT NOT NULL DEFAULT 'medium',
+    access      TEXT NOT NULL DEFAULT 'full',
+    cwd         TEXT NOT NULL DEFAULT '/',
+    started     INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+  );
+
+  CREATE TABLE IF NOT EXISTS console_messages (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id  INTEGER NOT NULL REFERENCES console_sessions(id) ON DELETE CASCADE,
+    role        TEXT NOT NULL,
+    content     TEXT NOT NULL,
+    meta        TEXT,
+    ts          TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS console_messages_session
+    ON console_messages(session_id, id);
+
   CREATE TABLE IF NOT EXISTS login_log (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     ts         TEXT NOT NULL,
@@ -296,6 +326,64 @@ module.exports = {
 
   deleteDeviceByFp: (fingerprint) =>
     db.prepare("DELETE FROM devices WHERE fingerprint = ?").run(fingerprint),
+
+  /* --- console ---------------------------------------------------------- */
+
+  listConsoleSessions: (userId) =>
+    db
+      .prepare(
+        `SELECT s.*, (SELECT COUNT(*) FROM console_messages m WHERE m.session_id = s.id) AS message_count
+           FROM console_sessions s WHERE s.user_id = ?
+          ORDER BY s.updated_at DESC LIMIT 100`
+      )
+      .all(userId),
+
+  /** Scoped by user: one administrator's chats are not another's to read. */
+  getConsoleSession: (id, userId) =>
+    db
+      .prepare("SELECT * FROM console_sessions WHERE id = ? AND user_id = ?")
+      .get(id, userId),
+
+  createConsoleSession: ({ uuid, userId, model, effort, access, cwd }) =>
+    db
+      .prepare(
+        `INSERT INTO console_sessions
+           (uuid, user_id, title, model, effort, access, cwd, started, created_at, updated_at)
+         VALUES (?, ?, 'New chat', ?, ?, ?, ?, 0, ?, ?)`
+      )
+      .run(uuid, userId, model, effort, access, cwd, nowIso(), nowIso()),
+
+  updateConsoleSession: (id, userId, fields) => {
+    const allowed = ["title", "model", "effort", "access", "cwd", "started"];
+    const keys = Object.keys(fields).filter((k) => allowed.includes(k));
+    if (!keys.length) return;
+    const sets = keys.map((k) => `${k} = @${k}`).join(", ");
+    db.prepare(
+      `UPDATE console_sessions SET ${sets}, updated_at = @updated_at
+        WHERE id = @id AND user_id = @user_id`
+    ).run({ ...fields, id, user_id: userId, updated_at: nowIso() });
+  },
+
+  deleteConsoleSession: (id, userId) =>
+    db
+      .prepare("DELETE FROM console_sessions WHERE id = ? AND user_id = ?")
+      .run(id, userId),
+
+  listConsoleMessages: (sessionId, limit = 400) =>
+    db
+      .prepare(
+        `SELECT * FROM console_messages WHERE session_id = ?
+          ORDER BY id DESC LIMIT ?`
+      )
+      .all(sessionId, limit)
+      .reverse(),
+
+  addConsoleMessage: (sessionId, role, content, meta) =>
+    db
+      .prepare(
+        "INSERT INTO console_messages (session_id, role, content, meta, ts) VALUES (?, ?, ?, ?, ?)"
+      )
+      .run(sessionId, role, content, meta ? JSON.stringify(meta) : null, nowIso()),
 
   /* --- log -------------------------------------------------------------- */
 

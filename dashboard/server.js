@@ -32,6 +32,7 @@ const addonViews = require("./lib/views-addons");
 const guideViews = require("./lib/views-guide");
 const accessViews = require("./lib/views-access");
 const operatorViews = require("./lib/views-operator");
+const consoleViews = require("./lib/views-console");
 const rbac = require("./lib/rbac");
 
 const PORT = Number(process.env.MONI_PORT || 3000);
@@ -784,6 +785,7 @@ app.post("/agents/new", requireAuth, requirePerm("agents.create"), requireCsrf, 
     slug: field(req.body, "slug").toLowerCase(),
     role: String(req.body.role || "").trim(),
     model: field(req.body, "model") || "claude-opus-5",
+    effort: field(req.body, "effort") || "medium",
     verbose_level: field(req.body, "verbose_level") || "1",
     project_dir: field(req.body, "project_dir"),
     addons,
@@ -813,6 +815,7 @@ app.post("/agents/new", requireAuth, requirePerm("agents.create"), requireCsrf, 
       name: form.name,
       role: form.role,
       model: form.model,
+      effort: form.effort,
       verbose_level: Number(form.verbose_level),
       project_dir: form.project_dir,
       addons,
@@ -1040,6 +1043,7 @@ app.post("/agents/:slug/settings", requireAuth, requirePerm("agents.edit"), requ
       name: field(req.body, "name"),
       role: agent.role || "",
       model: field(req.body, "model"),
+      effort: field(req.body, "effort") || "medium",
       verbose_level: Number(field(req.body, "verbose_level") || 1),
       max_turns: Number(field(req.body, "max_turns") || 100),
       timeout_seconds: Number(field(req.body, "timeout_seconds") || 1800),
@@ -1576,6 +1580,263 @@ app.get("/addons", requireAuth, requirePerm("addons.view"), async (req, res) => 
       channels: (data.channels || []).map((c) => ({ ...c, name: c.name || c.slug })),
     })
   );
+});
+
+/* -------------------------------------------------------------- console --- */
+
+const CONSOLE_MODELS = consoleViews.MODELS.map((m) => m[0]);
+const CONSOLE_EFFORTS = consoleViews.EFFORTS.map((e) => e[0]);
+const CONSOLE_ACCESS = consoleViews.ACCESS.map((a) => a[0]);
+
+/**
+ * Turns in flight, keyed by console session id.
+ *
+ * Held in memory on purpose: a turn belongs to the process that started it, and
+ * if the panel restarts mid-turn the child dies with it. Persisting a pid to
+ * adopt later would mean reattaching to a stream nobody is reading.
+ */
+const consoleTurns = new Map();
+
+/** The access levels this actor may actually choose. */
+function allowedAccess(req) {
+  return CONSOLE_ACCESS.filter((a) => a !== "full" || req.perm.can("console.full"));
+}
+
+async function consoleDirs() {
+  try {
+    return await priv.consoleDirs();
+  } catch (_) {
+    return ["/"];
+  }
+}
+
+function loadConsoleSession(req, res) {
+  const session = db.getConsoleSession(Number(req.params.id), req.me.id);
+  if (!session) {
+    res.status(404).send(views.error("Not found", "No such chat."));
+    return null;
+  }
+  return session;
+}
+
+app.get("/console", requireAuth, requirePerm("console.use"), async (req, res) => {
+  const sessions = db.listConsoleSessions(req.me.id);
+  res.send(
+    consoleViews.console({
+      csrf: res.locals.csrf,
+      user: ctx(req, "console"),
+      sessions,
+      session: null,
+      messages: [],
+      dirs: await consoleDirs(),
+    })
+  );
+});
+
+app.post("/console/new", requireAuth, requirePerm("console.use"), requireCsrf, (req, res) => {
+  // Default to the widest access the actor is entitled to. Someone without
+  // console.full gets a workspace chat rather than an error.
+  const access = req.perm.can("console.full") ? "full" : "workspace";
+  const info = db.createConsoleSession({
+    uuid: crypto.randomUUID(),
+    userId: req.me.id,
+    model: "claude-opus-5",
+    effort: "medium",
+    access,
+    cwd: access === "full" ? "/" : "/opt/moni-agents/agents",
+  });
+  res.redirect("/console/" + info.lastInsertRowid);
+});
+
+app.get("/console/:id", requireAuth, requirePerm("console.use"), async (req, res) => {
+  const session = loadConsoleSession(req, res);
+  if (!session) return;
+  res.send(
+    consoleViews.console({
+      csrf: res.locals.csrf,
+      user: ctx(req, "console"),
+      sessions: db.listConsoleSessions(req.me.id),
+      session,
+      messages: db.listConsoleMessages(session.id),
+      dirs: await consoleDirs(),
+    })
+  );
+});
+
+app.post("/console/:id/settings", requireAuth, requirePerm("console.use"), requireCsrf, (req, res) => {
+  const session = loadConsoleSession(req, res);
+  if (!session) return;
+
+  const fields = {};
+  const model = field(req.body, "model");
+  const effort = field(req.body, "effort");
+  const access = field(req.body, "access");
+  const cwd = field(req.body, "cwd");
+
+  if (CONSOLE_MODELS.includes(model)) fields.model = model;
+  if (CONSOLE_EFFORTS.includes(effort)) fields.effort = effort;
+  // Access is fixed once a session has run a turn: Claude resumes the same
+  // conversation, and moving that conversation from the agent account to root
+  // half way through would be a privilege change disguised as a preference.
+  if (!session.started && allowedAccess(req).includes(access)) fields.access = access;
+  if (/^\/[A-Za-z0-9._/-]{0,200}$/.test(cwd)) fields.cwd = cwd;
+
+  db.updateConsoleSession(session.id, req.me.id, fields);
+  res.redirect("/console/" + session.id);
+});
+
+app.post("/console/:id/delete", requireAuth, requirePerm("console.use"), requireCsrf, (req, res) => {
+  const session = loadConsoleSession(req, res);
+  if (!session) return;
+  stopConsoleTurn(session.id);
+  db.deleteConsoleSession(session.id, req.me.id);
+  res.redirect("/console");
+});
+
+function stopConsoleTurn(sessionId) {
+  const child = consoleTurns.get(sessionId);
+  if (child) {
+    try {
+      child.kill("SIGTERM");
+    } catch (_) {
+      /* already gone */
+    }
+    consoleTurns.delete(sessionId);
+  }
+}
+
+app.post("/console/:id/stop", requireAuth, requirePerm("console.use"), requireCsrf, (req, res) => {
+  const session = loadConsoleSession(req, res);
+  if (!session) return;
+  stopConsoleTurn(session.id);
+  res.json({ stopped: true });
+});
+
+/**
+ * Run one turn, streaming Claude's events to the browser as they arrive.
+ *
+ * The response is newline-delimited JSON rather than SSE: the client reads it
+ * with a streaming fetch, which lets the request be a POST carrying the CSRF
+ * token in the body. An EventSource cannot POST, and putting a prompt in a
+ * query string would write it into the access log.
+ */
+app.post("/console/:id/send", requireAuth, requirePerm("console.use"), requireCsrf, async (req, res) => {
+  const session = loadConsoleSession(req, res);
+  if (!session) return;
+
+  const prompt = String(req.body.prompt || "").trim();
+  if (!prompt) return res.status(400).json({ error: "Say something first." });
+  if (consoleTurns.has(session.id))
+    return res.status(409).json({ error: "This chat is already working on something." });
+
+  if (session.access === "full" && !req.perm.can("console.full")) {
+    return res
+      .status(403)
+      .json({ error: "Your role does not allow whole-server chats." });
+  }
+
+  db.addConsoleMessage(session.id, "user", prompt);
+  // The first turn names the session id; later ones resume it. `started` is
+  // what tells them apart, and it is set before the child runs so a crashed
+  // first turn does not leave the next one trying to create the same id twice.
+  const resume = !!session.started;
+  db.updateConsoleSession(session.id, req.me.id, { started: 1 });
+
+  // Recorded because a full-access turn is a root shell, and root shells should
+  // leave a trace even when the person opening one is entitled to.
+  db.logLogin(
+    req.ip,
+    req.me.username,
+    "console",
+    `turn in chat ${session.id} (${session.access}, ${session.model}, ${session.effort})`
+  );
+
+  const child = priv.consoleSend({
+    session_id: session.uuid,
+    prompt,
+    model: session.model,
+    effort: session.effort,
+    access: session.access,
+    cwd: session.cwd,
+    resume,
+  });
+  consoleTurns.set(session.id, child);
+
+  res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("X-Accel-Buffering", "no"); // nginx would otherwise hold the stream
+
+  let assistantText = "";
+  let result = null;
+  let buffer = "";
+
+  const forward = (line) => {
+    if (!line.trim()) return;
+    let event;
+    try {
+      event = JSON.parse(line);
+    } catch (_) {
+      return; // a partial or non-JSON line is not ours to interpret
+    }
+
+    // Accumulate the assistant's prose so the finished turn can be stored and
+    // redisplayed on reload without replaying the whole event stream.
+    if (event.type === "assistant" && event.message && Array.isArray(event.message.content)) {
+      for (const block of event.message.content) {
+        if (block.type === "text" && block.text) assistantText += block.text;
+      }
+    }
+    if (event.type === "result") result = event;
+
+    res.write(priv.redact(JSON.stringify(event)) + "\n");
+  };
+
+  child.stdout.on("data", (chunk) => {
+    buffer += chunk;
+    const lines = buffer.split("\n");
+    buffer = lines.pop();
+    for (const line of lines) forward(line);
+  });
+
+  child.stderr.on("data", (chunk) => {
+    console.error("console turn stderr:", priv.redact(String(chunk)).slice(0, 500));
+  });
+
+  const finish = (code) => {
+    if (buffer) forward(buffer);
+    consoleTurns.delete(session.id);
+
+    if (assistantText.trim()) {
+      db.addConsoleMessage(session.id, "assistant", assistantText, {
+        duration_ms: result && result.duration_ms,
+        cost_usd: result && result.total_cost_usd,
+        model: session.model,
+      });
+      // Name the chat from its opening exchange, so the list is readable
+      // without opening anything.
+      if (!session.title || session.title === "New chat") {
+        db.updateConsoleSession(session.id, req.me.id, {
+          title: prompt.replace(/\s+/g, " ").slice(0, 60),
+        });
+      }
+    } else if (code !== 0) {
+      db.addConsoleMessage(session.id, "system", "That turn ended without an answer.");
+    }
+
+    db.updateConsoleSession(session.id, req.me.id, {});
+    res.end();
+  };
+
+  child.on("close", finish);
+  child.on("error", (e) => {
+    res.write(JSON.stringify({ type: "moni_error", error: e.message }) + "\n");
+    finish(1);
+  });
+
+  // If the browser goes away mid-turn, stop paying for it.
+  req.on("close", () => {
+    if (consoleTurns.get(session.id) === child) stopConsoleTurn(session.id);
+  });
 });
 
 /* ------------------------------------------------------- server operator --- */

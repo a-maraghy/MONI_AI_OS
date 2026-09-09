@@ -78,6 +78,18 @@ function stamp(iso) {
  */
 const NAV = [
   {
+    // The main point of contact, so it sits first in the bar. It carries its
+    // own conversation list inside the page, which is why it asks for no
+    // sidebar -- two lists side by side would be one too many.
+    key: "console",
+    href: "/console",
+    label: "MONI Bot",
+    icon: "agents",
+    noSidebar: true,
+    home: { key: "console", href: "/console", label: "Chat", icon: "agents" },
+    categories: [],
+  },
+  {
     key: "os",
     href: "/",
     label: "OS Dashboard",
@@ -249,6 +261,9 @@ function shell(title, body, opts = {}) {
 
   const perm = who.perm || opts.perm || null;
   const dash = dashboardFor(opts.active, who.dash || opts.dash) || "os";
+  // A dashboard that carries its own navigation inside the page gets the full
+  // width instead of a sidebar it would only duplicate.
+  const bare = !!(NAV.find((d) => d.key === dash) || {}).noSidebar;
 
   // A dashboard the actor cannot reach at all is hidden rather than shown as a
   // link into a permission error.
@@ -282,11 +297,11 @@ function shell(title, body, opts = {}) {
       </div>
     </header>
 
-    <div class="layout">
-      <aside class="sidebar">${renderSidebar(opts.active, dash, perm)}</aside>
-      <main class="content${opts.wide ? " wide" : ""}">
+    <div class="layout${bare ? " bare" : ""}">
+      ${bare ? "" : `<aside class="sidebar">${renderSidebar(opts.active, dash, perm)}</aside>`}
+      <main class="content${opts.wide ? " wide" : ""}${bare ? " flush" : ""}">
         ${
-          title
+          !bare && opts.heading !== null
             ? `<div class="page-head">
                  <div>
                    <h1>${esc(opts.heading || title)}</h1>
@@ -313,6 +328,7 @@ function page(title, inner) {
 <link rel="apple-touch-icon" href="/static/favicon.svg">
 <link rel="stylesheet" href="/static/style.css">
 <script src="/static/app.js" defer></script>
+<script src="/static/console.js" defer></script>
 </head><body>
 ${inner}
 </body></html>`;
