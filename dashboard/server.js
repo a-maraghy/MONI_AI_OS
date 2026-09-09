@@ -30,6 +30,8 @@ const serviceViews = require("./lib/views-services");
 const credentialViews = require("./lib/views-credentials");
 const addonViews = require("./lib/views-addons");
 const guideViews = require("./lib/views-guide");
+const accessViews = require("./lib/views-access");
+const rbac = require("./lib/rbac");
 
 const PORT = Number(process.env.MONI_PORT || 3000);
 const BIND = process.env.MONI_BIND || "127.0.0.1";
@@ -137,10 +139,88 @@ function requireCsrf(req, res, next) {
 
 /* ---------------------------------------------------------------- auth ---- */
 
+/**
+ * Resolve the signed-in user on every request rather than trusting the session
+ * copy. A role edit, a disabled account, or a deleted user has to take effect
+ * on the very next request -- caching permissions in the session would leave a
+ * revoked operator holding their old powers until they happened to sign out.
+ */
+function loadActor(req, res, next) {
+  req.me = null;
+  req.perm = rbac.actor(null);
+  if (req.session && req.session.authed && req.session.userId) {
+    const me = db.getUser(req.session.userId);
+    if (!me || me.disabled) {
+      return req.session.destroy(() => res.redirect("/login?err=Your+access+has+been+revoked."));
+    }
+    req.me = me;
+    req.perm = rbac.actor(me.role);
+  }
+  next();
+}
+app.use(loadActor);
+
 function requireAuth(req, res, next) {
-  if (req.session && req.session.authed) return next();
+  if (req.me) return next();
   return res.redirect("/login");
 }
+
+/** The viewer context every view forwards into the page shell. */
+function ctx(req, dash) {
+  return {
+    name: req.me ? req.me.display_name || req.me.username : "",
+    roleLabel: req.me && req.me.role ? req.me.role.label : null,
+    perm: req.perm,
+    dash: dash || null,
+  };
+}
+
+/**
+ * Guard a route with a permission. Denial renders a page rather than a bare
+ * 403: the person hitting it is signed in and legitimate, and "your role does
+ * not include this" is a far more actionable answer than a status code.
+ */
+function requirePerm(perm) {
+  return (req, res, next) => {
+    if (!req.me) return res.redirect("/login");
+    if (req.perm.can(perm)) return next();
+    return res
+      .status(403)
+      .send(accessViews.denied({ csrf: res.locals.csrf, user: ctx(req), perm }));
+  };
+}
+
+/**
+ * Scope guard for the per-agent and per-channel routes. Out-of-scope resources
+ * are reported as absent rather than forbidden -- telling someone an agent
+ * exists but is not theirs leaks the fleet's shape to a role that was
+ * deliberately narrowed.
+ */
+function requireAgentScope(req, res, next) {
+  if (req.perm.seesAgent(req.params.slug)) return next();
+  return res.status(404).send(views.error("Not found", "No such agent."));
+}
+
+function requireChannelScope(req, res, next) {
+  if (req.perm.seesChannel(req.params.slug)) return next();
+  return res.status(404).send(views.error("Not found", "No such channel."));
+}
+
+/** Drop anything the actor's role does not scope them to. */
+const scopeAgents = (req, agents) => (agents || []).filter((a) => req.perm.seesAgent(a.slug));
+const scopeChannels = (req, channels) =>
+  (channels || []).filter((c) => req.perm.seesChannel(c.slug));
+
+/**
+ * An argon2id hash of a random value nobody knows. When a login names a
+ * username that does not exist we verify against this instead of returning
+ * early, so a missing account and a wrong password cost the same wall-clock
+ * time. A hand-written constant would not do: argon2 rejects a malformed
+ * digest immediately, which is exactly the timing signal we are removing.
+ */
+const decoyHash = argon2
+  .hash(crypto.randomBytes(32).toString("hex"), { type: argon2.argon2id })
+  .catch(() => null);
 
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
@@ -186,15 +266,18 @@ function setupTokenValid(supplied) {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
+/** True until the very first account exists. */
+const noUsersYet = () => db.userCount() === 0;
+
 app.get("/setup", async (req, res) => {
-  if (db.getAdmin()) return res.redirect("/login");
+  if (!noUsersYet()) return res.redirect("/login");
   if (!setupTokenValid(req.query.token))
     return res.status(404).send(views.error("Not found", "No such page."));
   res.send(views.setup({ csrf: res.locals.csrf, token: req.query.token }));
 });
 
 app.post("/setup", requireCsrf, async (req, res) => {
-  if (db.getAdmin()) return res.redirect("/login");
+  if (!noUsersYet()) return res.redirect("/login");
   if (!setupTokenValid(req.body.token))
     return res.status(404).send(views.error("Not found", "No such page."));
   const { username, password, password2 } = req.body;
@@ -211,45 +294,54 @@ app.post("/setup", requireCsrf, async (req, res) => {
 
   const hash = await argon2.hash(password, { type: argon2.argon2id });
   const secret = authenticator.generateSecret();
-  db.createAdmin(username, hash, secret);
+  const role = db.getRoleByName("administrator");
+  db.createUser({
+    username,
+    displayName: username,
+    passwordHash: hash,
+    totpSecret: secret,
+    roleId: role.id,
+    createdBy: "setup",
+  });
 
-  const otpauth = authenticator.keyuri(username, "MONI VPS", secret);
+  const otpauth = authenticator.keyuri(username, "MONI AI OS", secret);
   const qr = await QRCode.toDataURL(otpauth, { margin: 1, width: 240 });
-  req.session.pendingTotpUser = username;
   res.send(views.totpEnroll({ csrf: res.locals.csrf, qr, secret }));
 });
 
 app.post("/setup/confirm", requireCsrf, async (req, res) => {
-  const admin = db.getAdmin();
-  if (!admin || admin.totp_confirmed) return res.redirect("/login");
+  // Only ever completes the very first account; every later user enrols by
+  // signing in, so this stays a one-shot endpoint rather than a way to confirm
+  // an arbitrary account's second factor.
+  const first = db.listUsers()[0];
+  if (!first || db.userCount() !== 1 || first.totp_confirmed) return res.redirect("/login");
   const token = String(req.body.token || "").replace(/\s/g, "");
-  if (!authenticator.check(token, admin.totp_secret)) {
-    const otpauth = authenticator.keyuri(admin.username, "MONI VPS", admin.totp_secret);
+  if (!authenticator.check(token, first.totp_secret)) {
+    const otpauth = authenticator.keyuri(first.username, "MONI AI OS", first.totp_secret);
     const qr = await QRCode.toDataURL(otpauth, { margin: 1, width: 240 });
     return res.status(400).send(
       views.totpEnroll({
         csrf: res.locals.csrf,
         qr,
-        secret: admin.totp_secret,
+        secret: first.totp_secret,
         error: "That code was not accepted. Check your device clock and try the next code.",
       })
     );
   }
-  db.confirmTotp();
+  db.confirmUserTotp(first.id);
   res.send(views.setupDone());
 });
 
 /* --------------------------------------------------------------- login ---- */
 
 app.get("/login", (req, res) => {
-  if (!db.getAdmin()) return res.redirect("/setup");
-  if (req.session.authed) return res.redirect("/");
-  res.send(views.login({ csrf: res.locals.csrf }));
+  if (noUsersYet()) return res.redirect("/setup");
+  if (req.me) return res.redirect("/");
+  res.send(views.login({ csrf: res.locals.csrf, error: req.query.err || null }));
 });
 
 app.post("/login", loginLimiter, requireCsrf, async (req, res) => {
-  const admin = db.getAdmin();
-  if (!admin) return res.redirect("/setup");
+  if (noUsersYet()) return res.redirect("/setup");
 
   const ip = req.ip;
   const { username, password, token } = req.body;
@@ -262,28 +354,45 @@ app.post("/login", loginLimiter, requireCsrf, async (req, res) => {
   };
 
   if (!username || !password || !token) return reject("missing field");
-  if (username !== admin.username) return reject("unknown user");
+  const account = db.getUserByName(String(username));
+
+  // Verify a throwaway hash for an unknown username so a missing account and a
+  // wrong password take the same time. Argon2 is slow enough that skipping it
+  // would make user enumeration trivial from a stopwatch.
+  if (!account) {
+    const decoy = await decoyHash;
+    if (decoy) await argon2.verify(decoy, String(password)).catch(() => false);
+    return reject("unknown user");
+  }
+  if (account.disabled) return reject("account disabled");
 
   let passwordOk = false;
   try {
-    passwordOk = await argon2.verify(admin.password_hash, password);
+    passwordOk = await argon2.verify(account.password_hash, password);
   } catch (_) {
     passwordOk = false;
   }
   if (!passwordOk) return reject("bad password");
 
-  if (!authenticator.check(String(token).replace(/\s/g, ""), admin.totp_secret))
+  if (!authenticator.check(String(token).replace(/\s/g, ""), account.totp_secret))
     return reject("bad totp");
+
+  // First successful sign-in also completes enrolment: producing a valid code
+  // is the proof that the authenticator was set up correctly.
+  if (!account.totp_confirmed) db.confirmUserTotp(account.id);
+  db.touchUserLogin(account.id);
 
   // Regenerate the session on privilege change to prevent fixation.
   const csrf = req.session.csrf;
   req.session.regenerate((err) => {
     if (err) return res.status(500).send(views.error("Session error", String(err)));
     req.session.authed = true;
-    req.session.username = admin.username;
+    req.session.userId = account.id;
+    req.session.username = account.username;
     req.session.csrf = csrf;
-    db.logLogin(ip, username, "success", null);
-    res.redirect("/");
+    db.logLogin(ip, account.username, "success", null);
+    const actor = rbac.actor(account.role);
+    res.redirect(actor.can("os.view") ? "/" : "/agents/dashboard");
   });
 });
 
@@ -305,11 +414,20 @@ function systemStats() {
   } catch (_) {
     /* statfsSync needs Node 18.15+; degrade gracefully */
   }
+  const cpus = os.cpus();
   return {
     hostname: os.hostname(),
     uptimeSec: os.uptime(),
     loadavg: os.loadavg(),
-    cpus: os.cpus().length,
+    cpus: cpus.length,
+    cpuModel: cpus.length ? cpus[0].model.replace(/\s+/g, " ").trim() : null,
+    platform: `${os.type()} ${os.release()}`,
+    arch: os.arch(),
+    node: process.version,
+    // The panel's own uptime, which is not the machine's: a dashboard that
+    // restarted an hour ago on a host up for 40 days is worth being able to see.
+    panelUptimeSec: Math.floor(process.uptime()),
+    panelRssBytes: process.memoryUsage().rss,
     memTotal: total,
     memUsed: total - free,
     diskTotal,
@@ -334,7 +452,7 @@ async function gather(map) {
   return out;
 }
 
-app.get("/", requireAuth, async (req, res) => {
+app.get("/", requireAuth, requirePerm("os.view"), async (req, res) => {
   const data = await gather({
     status: () => priv.status(),
     services: () => priv.serviceList(),
@@ -345,7 +463,7 @@ app.get("/", requireAuth, async (req, res) => {
   res.send(
     views.osDashboard({
       csrf: res.locals.csrf,
-      user: req.session.username,
+      user: ctx(req),
       stats: systemStats(),
       status: data.status || { services: {}, jails: {} },
       statusError: data.errors.status || null,
@@ -354,11 +472,14 @@ app.get("/", requireAuth, async (req, res) => {
       channels: data.channels || [],
       probe: data.probe || null,
       logins: db.recentLogins(8),
+      users: req.perm.can("users.view") ? db.listUsers() : null,
+      roles: req.perm.can("roles.view") ? db.listRoles() : null,
+      devices: req.perm.can("devices.view") ? db.listDevices() : null,
     })
   );
 });
 
-app.get("/api/stats", requireAuth, async (req, res) => {
+app.get("/api/stats", requireAuth, requirePerm("os.view"), async (req, res) => {
   try {
     res.json({ stats: systemStats(), status: await priv.status() });
   } catch (e) {
@@ -368,13 +489,13 @@ app.get("/api/stats", requireAuth, async (req, res) => {
 
 /* ---------------------------------------------------------------- keys ---- */
 
-app.get("/keys", requireAuth, async (req, res) => {
+app.get("/keys", requireAuth, requirePerm("keys.view"), async (req, res) => {
   try {
     const keys = await priv.listAllKeys();
     res.send(
       views.keys({
         csrf: res.locals.csrf,
-        user: req.session.username,
+        user: ctx(req),
         keys,
         devices: db.listDevices(),
         flash: req.query.msg || null,
@@ -386,7 +507,7 @@ app.get("/keys", requireAuth, async (req, res) => {
   }
 });
 
-app.post("/keys/add", requireAuth, requireCsrf, async (req, res) => {
+app.post("/keys/add", requireAuth, requirePerm("keys.manage"), requireCsrf, async (req, res) => {
   const { target_user, pubkey, label } = req.body;
   const parsed = parsePublicKey(pubkey);
   if (!parsed)
@@ -399,7 +520,7 @@ app.post("/keys/add", requireAuth, requireCsrf, async (req, res) => {
   }
 });
 
-app.post("/keys/remove", requireAuth, requireCsrf, async (req, res) => {
+app.post("/keys/remove", requireAuth, requirePerm("keys.manage"), requireCsrf, async (req, res) => {
   const { target_user, fingerprint } = req.body;
   try {
     await priv.removeKey(target_user, fingerprint);
@@ -434,11 +555,11 @@ function sanitiseLabel(label) {
 
 /* -------------------------------------------------------------- pairing --- */
 
-app.get("/devices", requireAuth, (req, res) => {
+app.get("/devices", requireAuth, requirePerm("devices.view"), (req, res) => {
   res.send(
     views.devices({
       csrf: res.locals.csrf,
-      user: req.session.username,
+      user: ctx(req),
       codes: db.listPairingCodes(),
       devices: db.listDevices(),
       publicHost: PUBLIC_HOST,
@@ -448,7 +569,7 @@ app.get("/devices", requireAuth, (req, res) => {
   );
 });
 
-app.post("/devices/code", requireAuth, requireCsrf, (req, res) => {
+app.post("/devices/code", requireAuth, requirePerm("devices.manage"), requireCsrf, (req, res) => {
   // Crockford-ish base32, no vowels, to avoid ambiguity and accidental words.
   const alphabet = "0123456789BCDFGHJKLMNPQRSTVWXZ";
   let code = "";
@@ -463,7 +584,7 @@ app.post("/devices/code", requireAuth, requireCsrf, (req, res) => {
   res.redirect("/devices?msg=" + encodeURIComponent(code));
 });
 
-app.post("/devices/code/revoke", requireAuth, requireCsrf, (req, res) => {
+app.post("/devices/code/revoke", requireAuth, requirePerm("devices.manage"), requireCsrf, (req, res) => {
   db.deletePairingCode(String(req.body.code || ""));
   res.redirect("/devices");
 });
@@ -508,7 +629,7 @@ app.post("/pair", pairLimiter, requireCsrf, async (req, res) => {
 
 /* ---------------------------------------------------------------- audit --- */
 
-app.get("/audit", requireAuth, async (req, res) => {
+app.get("/audit", requireAuth, requirePerm("audit.view"), async (req, res) => {
   let entries = [];
   let err = null;
   try {
@@ -519,7 +640,7 @@ app.get("/audit", requireAuth, async (req, res) => {
   res.send(
     views.audit({
       csrf: res.locals.csrf,
-      user: req.session.username,
+      user: ctx(req),
       entries,
       err,
       logins: db.recentLogins(50),
@@ -600,7 +721,7 @@ async function probeQuietly() {
   }
 }
 
-app.get("/agents/dashboard", requireAuth, async (req, res) => {
+app.get("/agents/dashboard", requireAuth, requirePerm("agents.view"), async (req, res) => {
   const data = await gather({
     agents: () => priv.agentList(),
     channels: () => priv.channelList(),
@@ -609,9 +730,9 @@ app.get("/agents/dashboard", requireAuth, async (req, res) => {
   res.send(
     agentViews.dashboard({
       csrf: res.locals.csrf,
-      user: req.session.username,
-      agents: data.agents || [],
-      channels: data.channels || [],
+      user: ctx(req),
+      agents: scopeAgents(req, data.agents),
+      channels: scopeChannels(req, data.channels),
       probe: data.probe || null,
       flash: req.query.msg || null,
       err: req.query.err || data.errors.agents || null,
@@ -619,13 +740,13 @@ app.get("/agents/dashboard", requireAuth, async (req, res) => {
   );
 });
 
-app.get("/agents", requireAuth, async (req, res) => {
+app.get("/agents", requireAuth, requirePerm("agents.view"), async (req, res) => {
   try {
-    const agents = await priv.agentList();
+    const agents = scopeAgents(req, await priv.agentList());
     res.send(
       agentViews.list({
         csrf: res.locals.csrf,
-        user: req.session.username,
+        user: ctx(req),
         agents,
         flash: req.query.msg || null,
         err: req.query.err || null,
@@ -636,18 +757,18 @@ app.get("/agents", requireAuth, async (req, res) => {
   }
 });
 
-app.get("/agents/new", requireAuth, async (req, res) => {
+app.get("/agents/new", requireAuth, requirePerm("agents.create"), async (req, res) => {
   res.send(
     agentViews.create({
       csrf: res.locals.csrf,
-      user: req.session.username,
+      user: ctx(req),
       form: {},
       probe: await probeQuietly(),
     })
   );
 });
 
-app.post("/agents/new", requireAuth, requireCsrf, async (req, res) => {
+app.post("/agents/new", requireAuth, requirePerm("agents.create"), requireCsrf, async (req, res) => {
   const addons = pickAddons(req.body, "agent");
   const form = {
     name: field(req.body, "name"),
@@ -669,7 +790,7 @@ app.post("/agents/new", requireAuth, requireCsrf, async (req, res) => {
     return res.status(400).send(
       agentViews.create({
         csrf: res.locals.csrf,
-        user: req.session.username,
+        user: ctx(req),
         form,
         errors,
         probe: await probeQuietly(),
@@ -698,7 +819,7 @@ app.post("/agents/new", requireAuth, requireCsrf, async (req, res) => {
     return res.status(400).send(
       agentViews.create({
         csrf: res.locals.csrf,
-        user: req.session.username,
+        user: ctx(req),
         form,
         errors: [e.message],
         probe: await probeQuietly(),
@@ -707,7 +828,7 @@ app.post("/agents/new", requireAuth, requireCsrf, async (req, res) => {
   }
 });
 
-app.get("/agents/:slug", requireAuth, async (req, res) => {
+app.get("/agents/:slug", requireAuth, requirePerm("agents.view"), requireAgentScope, async (req, res) => {
   const agent = await loadAgent(req, res);
   if (!agent) return;
   let notes = [];
@@ -719,7 +840,7 @@ app.get("/agents/:slug", requireAuth, async (req, res) => {
   res.send(
     agentViews.detail({
       csrf: res.locals.csrf,
-      user: req.session.username,
+      user: ctx(req),
       agent,
       notes,
       flash: req.query.msg || null,
@@ -728,7 +849,7 @@ app.get("/agents/:slug", requireAuth, async (req, res) => {
   );
 });
 
-app.post("/agents/:slug/action", requireAuth, requireCsrf, async (req, res) => {
+app.post("/agents/:slug/action", requireAuth, requirePerm("agents.control"), requireAgentScope, requireCsrf, async (req, res) => {
   const agent = await loadAgent(req, res);
   if (!agent) return;
   try {
@@ -741,7 +862,7 @@ app.post("/agents/:slug/action", requireAuth, requireCsrf, async (req, res) => {
   }
 });
 
-app.get("/agents/:slug/instructions", requireAuth, async (req, res) => {
+app.get("/agents/:slug/instructions", requireAuth, requirePerm("agents.view"), requireAgentScope, async (req, res) => {
   const agent = await loadAgent(req, res);
   if (!agent) return;
   let content = "";
@@ -753,7 +874,7 @@ app.get("/agents/:slug/instructions", requireAuth, async (req, res) => {
   res.send(
     agentViews.instructions({
       csrf: res.locals.csrf,
-      user: req.session.username,
+      user: ctx(req),
       agent,
       content,
       flash: req.query.msg || null,
@@ -762,7 +883,7 @@ app.get("/agents/:slug/instructions", requireAuth, async (req, res) => {
   );
 });
 
-app.post("/agents/:slug/instructions", requireAuth, requireCsrf, async (req, res) => {
+app.post("/agents/:slug/instructions", requireAuth, requirePerm("agents.edit"), requireAgentScope, requireCsrf, async (req, res) => {
   const agent = await loadAgent(req, res);
   if (!agent) return;
   try {
@@ -773,7 +894,7 @@ app.post("/agents/:slug/instructions", requireAuth, requireCsrf, async (req, res
   }
 });
 
-app.get("/agents/:slug/memory", requireAuth, async (req, res) => {
+app.get("/agents/:slug/memory", requireAuth, requirePerm("agents.memory.read"), requireAgentScope, async (req, res) => {
   const agent = await loadAgent(req, res);
   if (!agent) return;
   const query = String(req.query.q || "").slice(0, 500).trim();
@@ -796,7 +917,7 @@ app.get("/agents/:slug/memory", requireAuth, async (req, res) => {
   res.send(
     agentViews.memory({
       csrf: res.locals.csrf,
-      user: req.session.username,
+      user: ctx(req),
       agent,
       notes,
       query,
@@ -807,7 +928,7 @@ app.get("/agents/:slug/memory", requireAuth, async (req, res) => {
   );
 });
 
-app.post("/agents/:slug/memory/reindex", requireAuth, requireCsrf, async (req, res) => {
+app.post("/agents/:slug/memory/reindex", requireAuth, requirePerm("agents.memory.write"), requireAgentScope, requireCsrf, async (req, res) => {
   const agent = await loadAgent(req, res);
   if (!agent) return;
   try {
@@ -822,7 +943,7 @@ app.post("/agents/:slug/memory/reindex", requireAuth, requireCsrf, async (req, r
   }
 });
 
-app.get("/agents/:slug/memory/note", requireAuth, async (req, res) => {
+app.get("/agents/:slug/memory/note", requireAuth, requirePerm("agents.memory.read"), requireAgentScope, async (req, res) => {
   const agent = await loadAgent(req, res);
   if (!agent) return;
   const path = String(req.query.path || "");
@@ -831,7 +952,7 @@ app.get("/agents/:slug/memory/note", requireAuth, async (req, res) => {
     res.send(
       agentViews.note({
         csrf: res.locals.csrf,
-        user: req.session.username,
+        user: ctx(req),
         agent,
         path,
         content: file.content,
@@ -844,7 +965,7 @@ app.get("/agents/:slug/memory/note", requireAuth, async (req, res) => {
   }
 });
 
-app.post("/agents/:slug/memory/note", requireAuth, requireCsrf, async (req, res) => {
+app.post("/agents/:slug/memory/note", requireAuth, requirePerm("agents.memory.write"), requireAgentScope, requireCsrf, async (req, res) => {
   const agent = await loadAgent(req, res);
   if (!agent) return;
   const path = field(req.body, "path");
@@ -863,7 +984,7 @@ app.post("/agents/:slug/memory/note", requireAuth, requireCsrf, async (req, res)
   }
 });
 
-app.get("/agents/:slug/logs", requireAuth, async (req, res) => {
+app.get("/agents/:slug/logs", requireAuth, requirePerm("agents.logs"), requireAgentScope, async (req, res) => {
   const agent = await loadAgent(req, res);
   if (!agent) return;
   let lines = [];
@@ -876,7 +997,7 @@ app.get("/agents/:slug/logs", requireAuth, async (req, res) => {
   res.send(
     agentViews.logs({
       csrf: res.locals.csrf,
-      user: req.session.username,
+      user: ctx(req),
       agent,
       lines,
       err,
@@ -884,13 +1005,13 @@ app.get("/agents/:slug/logs", requireAuth, async (req, res) => {
   );
 });
 
-app.get("/agents/:slug/settings", requireAuth, async (req, res) => {
+app.get("/agents/:slug/settings", requireAuth, requirePerm("agents.view"), requireAgentScope, async (req, res) => {
   const agent = await loadAgent(req, res);
   if (!agent) return;
   res.send(
     agentViews.settings({
       csrf: res.locals.csrf,
-      user: req.session.username,
+      user: ctx(req),
       agent,
       probe: await probeQuietly(),
       flash: req.query.msg || null,
@@ -899,7 +1020,7 @@ app.get("/agents/:slug/settings", requireAuth, async (req, res) => {
   );
 });
 
-app.post("/agents/:slug/settings", requireAuth, requireCsrf, async (req, res) => {
+app.post("/agents/:slug/settings", requireAuth, requirePerm("agents.edit"), requireAgentScope, requireCsrf, async (req, res) => {
   const agent = await loadAgent(req, res);
   if (!agent) return;
   const addons = pickAddons(req.body, "agent");
@@ -922,7 +1043,7 @@ app.post("/agents/:slug/settings", requireAuth, requireCsrf, async (req, res) =>
   }
 });
 
-app.post("/agents/:slug/delete", requireAuth, requireCsrf, async (req, res) => {
+app.post("/agents/:slug/delete", requireAuth, requirePerm("agents.delete"), requireAgentScope, requireCsrf, async (req, res) => {
   const agent = await loadAgent(req, res);
   if (!agent) return;
   if (field(req.body, "confirm") !== agent.slug)
@@ -944,7 +1065,7 @@ app.post("/agents/:slug/delete", requireAuth, requireCsrf, async (req, res) => {
 
 /* ------------------------------------------------------------- channels --- */
 
-app.get("/channels", requireAuth, async (req, res) => {
+app.get("/channels", requireAuth, requirePerm("channels.view"), async (req, res) => {
   const data = await gather({
     channels: () => priv.channelList(),
     agents: () => priv.agentList(),
@@ -952,16 +1073,16 @@ app.get("/channels", requireAuth, async (req, res) => {
   res.send(
     channelViews.list({
       csrf: res.locals.csrf,
-      user: req.session.username,
-      channels: data.channels || [],
-      agents: data.agents || [],
+      user: ctx(req),
+      channels: scopeChannels(req, data.channels),
+      agents: scopeAgents(req, data.agents),
       flash: req.query.msg || null,
       err: req.query.err || data.errors.channels || null,
     })
   );
 });
 
-app.get("/channels/new", requireAuth, async (req, res) => {
+app.get("/channels/new", requireAuth, requirePerm("channels.create"), async (req, res) => {
   let agents = [];
   try {
     agents = await priv.agentList();
@@ -971,14 +1092,14 @@ app.get("/channels/new", requireAuth, async (req, res) => {
   res.send(
     channelViews.create({
       csrf: res.locals.csrf,
-      user: req.session.username,
+      user: ctx(req),
       agents,
       form: { agent: req.query.agent || "" },
     })
   );
 });
 
-app.post("/channels/new", requireAuth, requireCsrf, async (req, res) => {
+app.post("/channels/new", requireAuth, requirePerm("channels.create"), requireCsrf, async (req, res) => {
   const type = field(req.body, "type") === "whatsapp" ? "whatsapp" : "telegram";
   const addons = pickAddons(req.body, "channel");
   const form = {
@@ -1013,7 +1134,7 @@ app.post("/channels/new", requireAuth, requireCsrf, async (req, res) => {
     return res.status(400).send(
       channelViews.create({
         csrf: res.locals.csrf,
-        user: req.session.username,
+        user: ctx(req),
         agents,
         form,
         errors: errors.concat(extra),
@@ -1076,7 +1197,7 @@ app.post("/channels/new", requireAuth, requireCsrf, async (req, res) => {
   }
 });
 
-app.get("/channels/:slug", requireAuth, async (req, res) => {
+app.get("/channels/:slug", requireAuth, requirePerm("channels.view"), requireChannelScope, async (req, res) => {
   const channel = await loadChannel(req, res);
   if (!channel) return;
   let agents = [];
@@ -1098,7 +1219,7 @@ app.get("/channels/:slug", requireAuth, async (req, res) => {
   res.send(
     channelViews.detail({
       csrf: res.locals.csrf,
-      user: req.session.username,
+      user: ctx(req),
       channel,
       agents,
       wa,
@@ -1108,7 +1229,7 @@ app.get("/channels/:slug", requireAuth, async (req, res) => {
   );
 });
 
-app.post("/channels/:slug/whatsapp/link", requireAuth, requireCsrf, async (req, res) => {
+app.post("/channels/:slug/whatsapp/link", requireAuth, requirePerm("channels.edit"), requireChannelScope, requireCsrf, async (req, res) => {
   const channel = await loadChannel(req, res);
   if (!channel) return;
   try {
@@ -1123,7 +1244,7 @@ app.post("/channels/:slug/whatsapp/link", requireAuth, requireCsrf, async (req, 
   }
 });
 
-app.post("/channels/:slug/whatsapp/unlink", requireAuth, requireCsrf, async (req, res) => {
+app.post("/channels/:slug/whatsapp/unlink", requireAuth, requirePerm("channels.edit"), requireChannelScope, requireCsrf, async (req, res) => {
   const channel = await loadChannel(req, res);
   if (!channel) return;
   try {
@@ -1141,7 +1262,7 @@ app.post("/channels/:slug/whatsapp/unlink", requireAuth, requireCsrf, async (req
   }
 });
 
-app.get("/channels/:slug/logs", requireAuth, async (req, res) => {
+app.get("/channels/:slug/logs", requireAuth, requirePerm("channels.logs"), requireChannelScope, async (req, res) => {
   const channel = await loadChannel(req, res);
   if (!channel) return;
   let lines = [];
@@ -1154,7 +1275,7 @@ app.get("/channels/:slug/logs", requireAuth, async (req, res) => {
   res.send(
     serviceViews.logs({
       csrf: res.locals.csrf,
-      user: req.session.username,
+      user: ctx(req),
       unit: "moni-whatsapp@" + channel.slug,
       lines,
       err,
@@ -1162,7 +1283,7 @@ app.get("/channels/:slug/logs", requireAuth, async (req, res) => {
   );
 });
 
-app.post("/channels/:slug", requireAuth, requireCsrf, async (req, res) => {
+app.post("/channels/:slug", requireAuth, requirePerm("channels.edit"), requireChannelScope, requireCsrf, async (req, res) => {
   const channel = await loadChannel(req, res);
   if (!channel) return;
   const token = String(req.body.token || "").trim();
@@ -1205,7 +1326,7 @@ app.post("/channels/:slug", requireAuth, requireCsrf, async (req, res) => {
   }
 });
 
-app.post("/channels/:slug/delete", requireAuth, requireCsrf, async (req, res) => {
+app.post("/channels/:slug/delete", requireAuth, requirePerm("channels.delete"), requireChannelScope, requireCsrf, async (req, res) => {
   const channel = await loadChannel(req, res);
   if (!channel) return;
   if (field(req.body, "confirm") !== channel.slug)
@@ -1227,13 +1348,13 @@ app.post("/channels/:slug/delete", requireAuth, requireCsrf, async (req, res) =>
 
 /* ------------------------------------------------------------- services --- */
 
-app.get("/services", requireAuth, async (req, res) => {
+app.get("/services", requireAuth, requirePerm("services.view"), async (req, res) => {
   try {
     const services = await priv.serviceList();
     res.send(
       serviceViews.system({
         csrf: res.locals.csrf,
-        user: req.session.username,
+        user: ctx(req),
         services,
         flash: req.query.msg || null,
         err: req.query.err || null,
@@ -1244,7 +1365,7 @@ app.get("/services", requireAuth, async (req, res) => {
   }
 });
 
-app.post("/services/action", requireAuth, requireCsrf, async (req, res) => {
+app.post("/services/action", requireAuth, requirePerm("services.control"), requireCsrf, async (req, res) => {
   const unit = field(req.body, "target");
   const action = field(req.body, "action");
   try {
@@ -1255,7 +1376,7 @@ app.post("/services/action", requireAuth, requireCsrf, async (req, res) => {
   }
 });
 
-app.get("/services/logs", requireAuth, async (req, res) => {
+app.get("/services/logs", requireAuth, requirePerm("services.logs"), async (req, res) => {
   const unit = String(req.query.unit || "");
   let lines = [];
   let err = null;
@@ -1267,7 +1388,7 @@ app.get("/services/logs", requireAuth, async (req, res) => {
   res.send(
     serviceViews.logs({
       csrf: res.locals.csrf,
-      user: req.session.username,
+      user: ctx(req),
       unit,
       lines,
       err,
@@ -1275,13 +1396,13 @@ app.get("/services/logs", requireAuth, async (req, res) => {
   );
 });
 
-app.get("/services/agents", requireAuth, async (req, res) => {
+app.get("/services/agents", requireAuth, requirePerm("agents.view"), async (req, res) => {
   try {
-    const agents = await priv.agentList();
+    const agents = scopeAgents(req, await priv.agentList());
     res.send(
       serviceViews.agents({
         csrf: res.locals.csrf,
-        user: req.session.username,
+        user: ctx(req),
         agents,
         flash: req.query.msg || null,
         err: req.query.err || null,
@@ -1292,10 +1413,12 @@ app.get("/services/agents", requireAuth, async (req, res) => {
   }
 });
 
-app.post("/services/agent-action", requireAuth, requireCsrf, async (req, res) => {
+app.post("/services/agent-action", requireAuth, requirePerm("agents.control"), requireCsrf, async (req, res) => {
   const slug = field(req.body, "target");
   const action = field(req.body, "action");
-  if (!SLUG_RE.test(slug))
+  // Scope is re-checked here because the slug arrives in the body rather than
+  // the path, so requireAgentScope never sees it.
+  if (!SLUG_RE.test(slug) || !req.perm.seesAgent(slug))
     return res.redirect("/services/agents?err=" + encodeURIComponent("Unknown agent."));
   try {
     await priv.agentAction(slug, action);
@@ -1307,7 +1430,7 @@ app.post("/services/agent-action", requireAuth, requireCsrf, async (req, res) =>
 
 /* ---------------------------------------------------------- credentials --- */
 
-app.get("/credentials", requireAuth, async (req, res) => {
+app.get("/credentials", requireAuth, requirePerm("credentials.view"), async (req, res) => {
   const data = await gather({
     credentials: () => priv.credentialList(),
     probe: () => priv.systemProbe(),
@@ -1315,7 +1438,7 @@ app.get("/credentials", requireAuth, async (req, res) => {
   res.send(
     credentialViews.index({
       csrf: res.locals.csrf,
-      user: req.session.username,
+      user: ctx(req),
       credentials: data.credentials || [],
       probe: data.probe || null,
       flash: req.query.msg || null,
@@ -1324,14 +1447,14 @@ app.get("/credentials", requireAuth, async (req, res) => {
   );
 });
 
-app.get("/credentials/:name", requireAuth, async (req, res) => {
+app.get("/credentials/:name", requireAuth, requirePerm("credentials.view"), async (req, res) => {
   const name = String(req.params.name || "");
   try {
     const credential = await priv.credentialGet(name);
     res.send(
       credentialViews.detail({
         csrf: res.locals.csrf,
-        user: req.session.username,
+        user: ctx(req),
         credential,
         flash: req.query.msg || null,
         err: req.query.err || null,
@@ -1342,7 +1465,7 @@ app.get("/credentials/:name", requireAuth, async (req, res) => {
   }
 });
 
-app.post("/credentials/:name", requireAuth, requireCsrf, async (req, res) => {
+app.post("/credentials/:name", requireAuth, requirePerm("credentials.edit"), requireCsrf, async (req, res) => {
   const name = String(req.params.name || "");
   const key = field(req.body, "key");
   const value = String(req.body.value || "").trim();
@@ -1363,7 +1486,7 @@ app.post("/credentials/:name", requireAuth, requireCsrf, async (req, res) => {
   }
 });
 
-app.post("/credentials/:name/clear", requireAuth, requireCsrf, async (req, res) => {
+app.post("/credentials/:name/clear", requireAuth, requirePerm("credentials.edit"), requireCsrf, async (req, res) => {
   const name = String(req.params.name || "");
   const key = field(req.body, "key");
   try {
@@ -1380,7 +1503,7 @@ app.post("/credentials/:name/clear", requireAuth, requireCsrf, async (req, res) 
 
 /* --------------------------------------------------------------- addons --- */
 
-app.get("/addons", requireAuth, async (req, res) => {
+app.get("/addons", requireAuth, requirePerm("addons.view"), async (req, res) => {
   const query = String(req.query.q || "").slice(0, 120).trim();
   const scope = ["agent", "channel"].includes(String(req.query.scope))
     ? String(req.query.scope)
@@ -1393,7 +1516,7 @@ app.get("/addons", requireAuth, async (req, res) => {
   res.send(
     addonViews.catalogue({
       csrf: res.locals.csrf,
-      user: req.session.username,
+      user: ctx(req),
       query,
       scope,
       results: catalog.search(query, scope || null),
@@ -1404,13 +1527,361 @@ app.get("/addons", requireAuth, async (req, res) => {
   );
 });
 
+/* ---------------------------------------------------------------- users --- */
+
+const USERNAME_RE = /^[a-zA-Z0-9._-]{3,32}$/;
+const ROLE_NAME_RE = /^[a-z0-9_-]{2,32}$/;
+
+/** Scope inputs arrive as a mode radio plus a checkbox list. */
+function readScope(body, name) {
+  if (field(body, name + "_mode") !== "list") return "*";
+  const raw = body[name];
+  const list = (Array.isArray(raw) ? raw : raw ? [raw] : [])
+    .map((s) => String(s).trim())
+    .filter((s) => SLUG_RE.test(s));
+  return [...new Set(list)].join(",");
+}
+
+/** Only slugs and display names reach the role editor's scope pickers. */
+async function scopeOptions() {
+  const data = await gather({
+    agents: () => priv.agentList(),
+    channels: () => priv.channelList(),
+  });
+  return {
+    agents: (data.agents || []).map((a) => ({ slug: a.slug, name: a.name })),
+    channels: (data.channels || []).map((c) => ({ slug: c.slug, name: c.name })),
+  };
+}
+
+app.get("/users", requireAuth, requirePerm("users.view"), (req, res) => {
+  res.send(
+    accessViews.users({
+      csrf: res.locals.csrf,
+      user: ctx(req, "os"),
+      users: db.listUsers(),
+      roles: db.listRoles(),
+      flash: req.query.msg || null,
+      err: req.query.err || null,
+    })
+  );
+});
+
+app.get("/users/new", requireAuth, requirePerm("users.manage"), (req, res) => {
+  res.send(
+    accessViews.userNew({
+      csrf: res.locals.csrf,
+      user: ctx(req, "os"),
+      roles: db.listRoles(),
+    })
+  );
+});
+
+app.post("/users/new", requireAuth, requirePerm("users.manage"), requireCsrf, async (req, res) => {
+  const username = field(req.body, "username");
+  const displayName = field(req.body, "display_name");
+  const password = String(req.body.password || "");
+  const roleId = Number(field(req.body, "role_id"));
+
+  const errors = [];
+  if (!USERNAME_RE.test(username))
+    errors.push("Username must be 3-32 characters (letters, digits, . _ -).");
+  if (db.getUserByName(username)) errors.push("That username is already taken.");
+  if (password.length < 12) errors.push("Password must be at least 12 characters.");
+  if (!db.getRole(roleId)) errors.push("Pick a role.");
+  if (errors.length)
+    return res.status(400).send(
+      accessViews.userNew({
+        csrf: res.locals.csrf,
+        user: ctx(req, "os"),
+        roles: db.listRoles(),
+        form: { username, display_name: displayName, role_id: roleId },
+        errors,
+      })
+    );
+
+  const hash = await argon2.hash(password, { type: argon2.argon2id });
+  const secret = authenticator.generateSecret();
+  const info = db.createUser({
+    username,
+    displayName,
+    passwordHash: hash,
+    totpSecret: secret,
+    roleId,
+    createdBy: req.me.username,
+  });
+  const target = db.getUser(info.lastInsertRowid);
+  const qr = await QRCode.toDataURL(authenticator.keyuri(username, "MONI AI OS", secret), {
+    margin: 1,
+    width: 240,
+  });
+  // Rendered directly rather than redirected to: the password and the secret
+  // exist only in this response, and a redirect would have to carry them in a
+  // URL, which is the one place they must never be.
+  res.send(
+    accessViews.userEnrol({
+      csrf: res.locals.csrf,
+      user: ctx(req, "os"),
+      target,
+      qr,
+      secret,
+      password,
+    })
+  );
+});
+
+/** Load the target user and work out what may be done to them. */
+function userContext(req) {
+  const target = db.getUser(Number(req.params.id));
+  if (!target) return null;
+  const isSelf = req.me.id === target.id;
+  const isAdmin = target.role && target.role.permissions.includes("*");
+  return { target, isSelf, lastAdmin: isAdmin && db.countActiveAdmins() <= 1 };
+}
+
+app.get("/users/:id", requireAuth, requirePerm("users.view"), (req, res) => {
+  const c = userContext(req);
+  if (!c) return res.status(404).send(views.error("Not found", "No such user."));
+  res.send(
+    accessViews.userDetail({
+      csrf: res.locals.csrf,
+      user: ctx(req, "os"),
+      ...c,
+      roles: db.listRoles(),
+      flash: req.query.msg || null,
+      err: req.query.err || null,
+    })
+  );
+});
+
+app.post("/users/:id", requireAuth, requirePerm("users.manage"), requireCsrf, (req, res) => {
+  const c = userContext(req);
+  if (!c) return res.status(404).send(views.error("Not found", "No such user."));
+  const back = "/users/" + c.target.id;
+
+  const roleId = c.lastAdmin ? c.target.role_id : Number(field(req.body, "role_id"));
+  const disabled = !c.lastAdmin && !c.isSelf && field(req.body, "disabled") === "1";
+  if (!db.getRole(roleId))
+    return res.redirect(back + "?err=" + encodeURIComponent("Unknown role."));
+
+  db.updateUser(c.target.id, {
+    displayName: field(req.body, "display_name") || c.target.username,
+    roleId,
+    disabled,
+  });
+  res.redirect(back + "?msg=" + encodeURIComponent("Saved."));
+});
+
+app.post("/users/:id/password", requireAuth, requirePerm("users.manage"), requireCsrf, async (req, res) => {
+  const c = userContext(req);
+  if (!c) return res.status(404).send(views.error("Not found", "No such user."));
+  const back = "/users/" + c.target.id;
+  const password = String(req.body.password || "");
+  if (password.length < 12)
+    return res.redirect(back + "?err=" + encodeURIComponent("Password must be at least 12 characters."));
+  db.setUserPassword(c.target.id, await argon2.hash(password, { type: argon2.argon2id }));
+  db.logLogin(req.ip, req.me.username, "admin", "reset password for " + c.target.username);
+  res.redirect(back + "?msg=" + encodeURIComponent("Password reset. Give them the new one directly."));
+});
+
+app.post("/users/:id/totp", requireAuth, requirePerm("users.manage"), requireCsrf, async (req, res) => {
+  const c = userContext(req);
+  if (!c) return res.status(404).send(views.error("Not found", "No such user."));
+  const secret = authenticator.generateSecret();
+  db.setUserTotp(c.target.id, secret, false);
+  db.logLogin(req.ip, req.me.username, "admin", "reset 2FA for " + c.target.username);
+  const qr = await QRCode.toDataURL(
+    authenticator.keyuri(c.target.username, "MONI AI OS", secret),
+    { margin: 1, width: 240 }
+  );
+  res.send(
+    accessViews.userEnrol({
+      csrf: res.locals.csrf,
+      user: ctx(req, "os"),
+      target: c.target,
+      qr,
+      secret,
+      password: "(unchanged — reset it separately if they also lost that)",
+    })
+  );
+});
+
+app.post("/users/:id/delete", requireAuth, requirePerm("users.manage"), requireCsrf, (req, res) => {
+  const c = userContext(req);
+  if (!c) return res.status(404).send(views.error("Not found", "No such user."));
+  if (c.isSelf || c.lastAdmin)
+    return res.redirect(
+      "/users/" + c.target.id + "?err=" + encodeURIComponent("That account cannot be deleted.")
+    );
+  db.deleteUser(c.target.id);
+  db.logLogin(req.ip, req.me.username, "admin", "deleted user " + c.target.username);
+  res.redirect("/users?msg=" + encodeURIComponent(c.target.username + " removed."));
+});
+
+/* ---------------------------------------------------------------- roles --- */
+
+app.get("/roles", requireAuth, requirePerm("roles.view"), (req, res) => {
+  res.send(
+    accessViews.roles({
+      csrf: res.locals.csrf,
+      user: ctx(req, "os"),
+      roles: db.listRoles(),
+      flash: req.query.msg || null,
+      err: req.query.err || null,
+    })
+  );
+});
+
+app.get("/roles/new", requireAuth, requirePerm("roles.manage"), async (req, res) => {
+  const opts = await scopeOptions();
+  res.send(
+    accessViews.roleEdit({
+      csrf: res.locals.csrf,
+      user: ctx(req, "os"),
+      role: { permissions: [], agent_scope: "*", channel_scope: "*" },
+      isNew: true,
+      readOnly: false,
+      ...opts,
+    })
+  );
+});
+
+app.post("/roles/new", requireAuth, requirePerm("roles.manage"), requireCsrf, async (req, res) => {
+  const name = field(req.body, "name").toLowerCase();
+  const label = field(req.body, "label");
+  const description = field(req.body, "description");
+  const raw = req.body.permissions;
+  const permissions = rbac.closure(Array.isArray(raw) ? raw : raw ? [raw] : []);
+
+  const errors = [];
+  if (!ROLE_NAME_RE.test(name)) errors.push("Name must be 2-32 lowercase letters, digits, - or _.");
+  if (db.getRoleByName(name)) errors.push("A role with that name already exists.");
+  if (!label) errors.push("Give the role a label.");
+  if (errors.length) {
+    const opts = await scopeOptions();
+    return res.status(400).send(
+      accessViews.roleEdit({
+        csrf: res.locals.csrf,
+        user: ctx(req, "os"),
+        role: {
+          name,
+          label,
+          description,
+          permissions,
+          agent_scope: readScope(req.body, "agent_scope"),
+          channel_scope: readScope(req.body, "channel_scope"),
+        },
+        isNew: true,
+        readOnly: false,
+        errors,
+        ...opts,
+      })
+    );
+  }
+
+  db.createRole({
+    name,
+    label,
+    description,
+    permissions,
+    agentScope: readScope(req.body, "agent_scope"),
+    channelScope: readScope(req.body, "channel_scope"),
+  });
+  res.redirect("/roles?msg=" + encodeURIComponent(label + " created."));
+});
+
+app.get("/roles/:id", requireAuth, requirePerm("roles.view"), async (req, res) => {
+  const role = db.getRole(Number(req.params.id));
+  if (!role) return res.status(404).send(views.error("Not found", "No such role."));
+  const opts = await scopeOptions();
+  res.send(
+    accessViews.roleEdit({
+      csrf: res.locals.csrf,
+      user: ctx(req, "os"),
+      role: { ...role, user_count: db.roleUserCount(role.id) },
+      isNew: false,
+      // Viewing without roles.manage, and the built-in administrator for
+      // anyone, are both read-only.
+      readOnly: role.builtin || !req.perm.can("roles.manage"),
+      flash: req.query.msg || null,
+      ...opts,
+    })
+  );
+});
+
+app.post("/roles/:id", requireAuth, requirePerm("roles.manage"), requireCsrf, (req, res) => {
+  const role = db.getRole(Number(req.params.id));
+  if (!role) return res.status(404).send(views.error("Not found", "No such role."));
+  if (role.builtin)
+    return res.redirect("/roles/" + role.id + "?err=" + encodeURIComponent("Built-in roles cannot be edited."));
+
+  const raw = req.body.permissions;
+  db.updateRole(role.id, {
+    label: field(req.body, "label") || role.label,
+    description: field(req.body, "description"),
+    permissions: rbac.closure(Array.isArray(raw) ? raw : raw ? [raw] : []),
+    agentScope: readScope(req.body, "agent_scope"),
+    channelScope: readScope(req.body, "channel_scope"),
+  });
+  db.logLogin(req.ip, req.me.username, "admin", "edited role " + role.name);
+  res.redirect("/roles/" + role.id + "?msg=" + encodeURIComponent("Role saved."));
+});
+
+app.post("/roles/:id/delete", requireAuth, requirePerm("roles.manage"), requireCsrf, (req, res) => {
+  const role = db.getRole(Number(req.params.id));
+  if (!role) return res.status(404).send(views.error("Not found", "No such role."));
+  if (role.builtin || db.roleUserCount(role.id) > 0)
+    return res.redirect(
+      "/roles/" + role.id + "?err=" + encodeURIComponent("That role cannot be deleted right now.")
+    );
+  db.deleteRole(role.id);
+  res.redirect("/roles?msg=" + encodeURIComponent(role.label + " deleted."));
+});
+
+/* -------------------------------------------------------------- account --- */
+
+app.get("/account", requireAuth, (req, res) => {
+  res.send(
+    accessViews.account({
+      csrf: res.locals.csrf,
+      user: ctx(req),
+      me: req.me,
+      flash: req.query.msg || null,
+      err: req.query.err || null,
+    })
+  );
+});
+
+app.post("/account/password", requireAuth, requireCsrf, async (req, res) => {
+  const current = String(req.body.current || "");
+  const password = String(req.body.password || "");
+  const fail = (m) => res.redirect("/account?err=" + encodeURIComponent(m));
+
+  if (password.length < 12) return fail("New password must be at least 12 characters.");
+  if (password !== String(req.body.password2 || "")) return fail("New passwords do not match.");
+
+  let ok = false;
+  try {
+    ok = await argon2.verify(req.me.password_hash, current);
+  } catch (_) {
+    ok = false;
+  }
+  if (!ok) {
+    logAuthFailure(req.ip, "password change with wrong current password");
+    return fail("Current password is not correct.");
+  }
+
+  db.setUserPassword(req.me.id, await argon2.hash(password, { type: argon2.argon2id }));
+  res.redirect("/account?msg=" + encodeURIComponent("Password changed."));
+});
+
 /* ---------------------------------------------------------------- guide --- */
 
 app.get("/guide", requireAuth, (req, res) => {
   res.send(
     guideViews.guide({
       csrf: res.locals.csrf,
-      user: req.session.username,
+      user: ctx(req),
       publicHost: PUBLIC_HOST,
       publicPort: PUBLIC_PORT,
       sshHost: process.env.MONI_SSH_HOST || PUBLIC_HOST,
@@ -1431,7 +1902,7 @@ app.use((err, req, res, next) => {
 
 app.listen(PORT, BIND, () => {
   console.log(`moni-dashboard listening on ${BIND}:${PORT}`);
-  if (!db.getAdmin()) {
+  if (noUsersYet()) {
     // Materialise the token at startup so an operator with shell access can read
     // it, rather than having to hit the endpoint first to bring it into being.
     getSetupToken();

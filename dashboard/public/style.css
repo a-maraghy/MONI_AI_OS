@@ -123,12 +123,24 @@ h3 { font-size: 14px; margin: 22px 0 8px; }
   border-radius: 999px;
   white-space: nowrap;
 }
+/* Name over role, so the top bar answers "who am I signed in as, and with what
+   powers" without a click -- which matters far more once more than one person
+   has an account. */
+.whoami {
+  display: flex; flex-direction: column; line-height: 1.25;
+  padding: 4px 10px; border-radius: var(--radius);
+  color: var(--ink);
+}
+.whoami:hover { background: var(--brand-tint); text-decoration: none; }
+.whoami-name { font-size: 13px; font-weight: 600; }
+.whoami-role { font-size: 11px; color: var(--muted); }
+
 .logout { margin: 0; }
 .logout button {
   display: flex; align-items: center; gap: 7px;
   background: none; border: 1px solid var(--line);
   color: var(--body); font: inherit; font-size: 13px;
-  padding: 6px 12px; border-radius: var(--radius); cursor: pointer;
+  padding: 6px 10px; border-radius: var(--radius); cursor: pointer;
 }
 .logout button:hover { border-color: var(--bad); color: var(--bad); }
 
@@ -148,14 +160,28 @@ h3 { font-size: 14px; margin: 22px 0 8px; }
   border-right: 1px solid var(--line);
 }
 
-.side-group + .side-group { margin-top: 20px; }
+/* The sidebar is three levels: the dashboard's own landing link, then
+   categories, then sections inside them. The two label tiers are separated by
+   weight and a rule rather than by indentation -- indenting the items would
+   push 13px text against the right edge on a 232px rail. */
+.side-home { padding-bottom: 14px; margin-bottom: 14px; border-bottom: 1px solid rgba(255,255,255,.12); }
+.side-group + .side-group { margin-top: 22px; }
 .side-label {
   font-size: 10.5px;
   letter-spacing: 0.09em;
   text-transform: uppercase;
-  color: rgba(255,255,255,.45);
-  padding: 0 10px 7px;
+  color: rgba(255,255,255,.5);
+  padding: 0 10px 8px;
   font-weight: 700;
+}
+.side-section + .side-section { margin-top: 12px; }
+.side-sublabel {
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgba(255,255,255,.34);
+  padding: 0 10px 5px;
+  font-weight: 600;
 }
 .side-item {
   display: flex; align-items: center; gap: 10px;
@@ -437,6 +463,43 @@ label.addon:has(input[type="checkbox"]:checked) .addon-ico {
 
 /* Radios and checkboxes must not stretch like text inputs. */
 .pick { width: auto; margin: 0; }
+
+/* ------------------------------------------------- users, roles, access --- */
+
+.pill.brand { background: var(--brand); color: #fff; }
+
+.row-title { font-weight: 600; color: var(--ink); }
+
+.chips { display: flex; flex-wrap: wrap; gap: 7px; }
+.chip-link, .chip-static {
+  display: inline-flex; align-items: baseline; gap: 6px;
+  font-size: 12.5px; padding: 4px 11px; border-radius: 999px;
+  border: 1px solid var(--line); background: var(--surface); color: var(--body);
+}
+.chip-link:hover { border-color: var(--brand); color: var(--brand-deep); text-decoration: none; }
+
+/* The permission editor. One column of checkboxes per group: the labels are
+   sentences, and two columns of sentences is a wall rather than a list. */
+.perm-group + .perm-group { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--line); }
+.perm-head h3 { font-size: 14px; margin: 0 0 2px; color: var(--ink); }
+.perm-head { margin-bottom: 10px; }
+label.check.perm { align-items: flex-start; padding: 5px 0; }
+label.check.perm input { margin-top: 3px; }
+label.check.perm > span { display: flex; flex-direction: column; gap: 1px; }
+.perm-label { font-size: 13.5px; color: var(--ink); }
+
+fieldset.scope { border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; margin: 0; }
+fieldset.scope legend { font-size: 12px; font-weight: 700; color: var(--ink); padding: 0 6px; }
+.scope-list {
+  margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line);
+  display: flex; flex-direction: column; gap: 5px;
+  max-height: 260px; overflow-y: auto;
+}
+
+/* The enrolment screen shows a password and a TOTP secret exactly once, so
+   they are set large enough to read off a screen and copy without error. */
+.qr-wrap { text-align: center; }
+.qr { border: 1px solid var(--line); border-radius: var(--radius); background: #fff; padding: 8px; }
 
 /* Meter fill. A percentage cannot be a class name computed at render time
    without an inline style, so the widths are enumerated and the value is

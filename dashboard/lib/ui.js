@@ -62,92 +62,201 @@ function stamp(iso) {
 
 /* ------------------------------------------------------- navigation model - */
 
-// Which top-bar dashboard a sidebar item belongs to. An item with no dashboard
-// shows in both, because things like the guide and sign-out are not about
-// either world in particular.
-const SIDEBAR = [
+/**
+ * The two dashboards, each owning its own sidebar.
+ *
+ * The top bar answers "which world am I in" -- the machine, or the agents
+ * running on it -- and the sidebar shows only that world's actions. An earlier
+ * version listed everything on both, which meant the OS view carried five items
+ * that had nothing to do with the OS and the two views were indistinguishable
+ * at a glance. Two clean contexts beat one crowded one.
+ *
+ * Each sidebar is three levels: the dashboard's own landing item, then
+ * categories, then sections inside them. Every item names the permission that
+ * reveals it, and empty sections and categories collapse away, so a viewer's
+ * sidebar is genuinely short rather than mostly dead links.
+ */
+const NAV = [
   {
-    group: "Manage",
-    items: [
-      { key: "agents", href: "/agents", label: "Agents", icon: "agents", dash: "agents" },
-      { key: "channels", href: "/channels", label: "Channels", icon: "channels", dash: "agents" },
-      { key: "addons", href: "/addons", label: "Add-ons", icon: "addons", dash: "agents" },
-      { key: "agent-services", href: "/services/agents", label: "Agent services", icon: "services", dash: "agents" },
+    key: "os",
+    href: "/",
+    label: "OS Dashboard",
+    icon: "cpu",
+    home: { key: "os", href: "/", label: "Dashboard", icon: "overview", perm: "os.view" },
+    categories: [
+      {
+        label: "Manage",
+        sections: [
+          {
+            label: "Access",
+            items: [
+              { key: "users", href: "/users", label: "Users", icon: "users", perm: "users.view" },
+              { key: "roles", href: "/roles", label: "Roles", icon: "shield", perm: "roles.view" },
+            ],
+          },
+          {
+            label: "Security",
+            items: [
+              { key: "credentials", href: "/credentials", label: "Credentials", icon: "credentials", perm: "credentials.view" },
+              { key: "keys", href: "/keys", label: "SSH keys", icon: "keys", perm: "keys.view" },
+              { key: "devices", href: "/devices", label: "Devices", icon: "devices", perm: "devices.view" },
+            ],
+          },
+          {
+            label: "Platform",
+            items: [
+              { key: "services", href: "/services", label: "Services", icon: "services", perm: "services.view" },
+              { key: "audit", href: "/audit", label: "Audit log", icon: "audit", perm: "audit.view" },
+            ],
+          },
+        ],
+      },
+      {
+        label: "Help",
+        sections: [
+          { items: [{ key: "guide", href: "/guide", label: "Guide", icon: "guide" }] },
+        ],
+      },
     ],
   },
   {
-    group: "System",
-    items: [
-      { key: "services", href: "/services", label: "Services", icon: "services", dash: "os" },
-      { key: "credentials", href: "/credentials", label: "Credentials", icon: "credentials", dash: "os" },
-      { key: "keys", href: "/keys", label: "SSH keys", icon: "keys", dash: "os" },
-      { key: "devices", href: "/devices", label: "Devices", icon: "devices", dash: "os" },
-      { key: "audit", href: "/audit", label: "Audit log", icon: "audit", dash: "os" },
+    key: "agents",
+    href: "/agents/dashboard",
+    label: "Agents Dashboard",
+    icon: "agents",
+    home: {
+      key: "agents-dashboard",
+      href: "/agents/dashboard",
+      label: "Dashboard",
+      icon: "overview",
+      perm: "agents.view",
+    },
+    categories: [
+      {
+        label: "Manage",
+        sections: [
+          {
+            label: "Fleet",
+            items: [
+              { key: "agents", href: "/agents", label: "Agents", icon: "agents", perm: "agents.view" },
+              { key: "channels", href: "/channels", label: "Channels", icon: "channels", perm: "channels.view" },
+            ],
+          },
+          {
+            label: "Capabilities",
+            items: [
+              { key: "addons", href: "/addons", label: "Add-ons", icon: "addons", perm: "addons.view" },
+              { key: "agent-services", href: "/services/agents", label: "Agent services", icon: "services", perm: "agents.view" },
+            ],
+          },
+        ],
+      },
+      {
+        label: "Help",
+        sections: [
+          { items: [{ key: "guide", href: "/guide", label: "Guide", icon: "guide" }] },
+        ],
+      },
     ],
   },
-  {
-    group: "Help",
-    items: [{ key: "guide", href: "/guide", label: "Guide", icon: "guide" }],
-  },
 ];
 
-const DASHBOARDS = [
-  { key: "os", href: "/", label: "OS Dashboard", icon: "cpu" },
-  { key: "agents", href: "/agents/dashboard", label: "Agents Dashboard", icon: "agents" },
-];
+const DASHBOARDS = NAV.map((d) => ({ key: d.key, href: d.href, label: d.label, icon: d.icon }));
 
-/** Which top-bar tab should look active, given the current sidebar key. */
-function dashboardFor(active) {
-  if (active === "os" || active === "home") return "os";
-  if (active === "agents-dashboard") return "agents";
-  for (const group of SIDEBAR) {
-    for (const item of group.items) {
-      if (item.key === active) return item.dash || null;
+/** Every item on a dashboard, flattened -- used to resolve the active tab. */
+function itemsOf(dash) {
+  const out = dash.home ? [{ ...dash.home, dash: dash.key }] : [];
+  for (const cat of dash.categories) {
+    for (const sec of cat.sections) {
+      for (const item of sec.items) out.push({ ...item, dash: dash.key });
     }
   }
-  return null;
+  return out;
 }
 
-function renderSidebar(active) {
-  // Everything is always listed. Filtering the sidebar by the selected
-  // dashboard was tidier but meant that reaching Channels from the OS view took
-  // two clicks and a context switch, which is a bad trade for tidiness in a
-  // panel this small.
-  return SIDEBAR.map(
-    (group) => `<div class="side-group">
-      <div class="side-label">${esc(group.group)}</div>
-      ${group.items
-        .map(
-          (i) =>
-            `<a href="${i.href}" class="side-item${active === i.key ? " on" : ""}">
-               ${icon(i.icon)}<span>${esc(i.label)}</span>
-             </a>`
-        )
-        .join("")}
-    </div>`
-  ).join("");
+/**
+ * Which top-bar tab should look active. The guide appears on both dashboards,
+ * so it resolves to whichever one the visitor came from -- passed in as
+ * `opts.dash` -- rather than always snapping to the OS tab.
+ */
+function dashboardFor(active, hint) {
+  for (const dash of NAV) {
+    if (itemsOf(dash).some((i) => i.key === active)) {
+      // A shared item (the guide) defers to the hint.
+      const shared = NAV.filter((d) => itemsOf(d).some((i) => i.key === active)).length > 1;
+      if (shared && hint) return hint;
+      return dash.key;
+    }
+  }
+  return hint || null;
+}
+
+function renderSidebar(active, dashKey, perm) {
+  const dash = NAV.find((d) => d.key === dashKey) || NAV[0];
+  const allow = (item) => !item.perm || !perm || perm.can(item.perm);
+
+  const link = (i) =>
+    `<a href="${i.href}" class="side-item${active === i.key ? " on" : ""}">
+       ${icon(i.icon)}<span>${esc(i.label)}</span>
+     </a>`;
+
+  const home = dash.home && allow(dash.home) ? `<div class="side-home">${link(dash.home)}</div>` : "";
+
+  const categories = dash.categories
+    .map((cat) => {
+      const sections = cat.sections
+        .map((sec) => {
+          const items = sec.items.filter(allow);
+          if (!items.length) return "";
+          return `<div class="side-section">
+            ${sec.label ? `<div class="side-sublabel">${esc(sec.label)}</div>` : ""}
+            ${items.map(link).join("")}
+          </div>`;
+        })
+        .filter(Boolean)
+        .join("");
+      if (!sections) return "";
+      return `<div class="side-group">
+        <div class="side-label">${esc(cat.label)}</div>
+        ${sections}
+      </div>`;
+    })
+    .filter(Boolean)
+    .join("");
+
+  return home + categories;
 }
 
 /**
  * @param title   browser title
  * @param body    page markup
- * @param opts    { user, csrf, active, subtitle, actions, wide }
+ * @param opts    { user, csrf, active, subtitle, actions, wide, perm, dash }
  */
 function shell(title, body, opts = {}) {
-  if (!opts.user) {
+  // `user` is the viewer context: routes pass the object built by ctx(), but a
+  // bare username string still works, which keeps the signed-out and setup
+  // pages -- the only callers that have no actor -- unchanged.
+  const who = typeof opts.user === "string" ? { name: opts.user } : opts.user || null;
+
+  if (!who || !who.name) {
     // Signed out: no chrome at all, just the card. Showing navigation you
     // cannot use is noise on the one screen that has to be unambiguous.
     return page(title, `<main class="auth-wrap">${body}</main>`);
   }
 
-  const dash = dashboardFor(opts.active);
+  const perm = who.perm || opts.perm || null;
+  const dash = dashboardFor(opts.active, who.dash || opts.dash) || "os";
 
-  const tabs = DASHBOARDS.map(
-    (d) =>
-      `<a href="${d.href}" class="top-tab${dash === d.key ? " on" : ""}">
+  // A dashboard the actor cannot reach at all is hidden rather than shown as a
+  // link into a permission error.
+  const tabs = DASHBOARDS.filter((d) => !perm || perm.canDash(d.key))
+    .map(
+      (d) =>
+        `<a href="${d.href}" class="top-tab${dash === d.key ? " on" : ""}">
          ${icon(d.icon, 17)}<span>${esc(d.label)}</span>
        </a>`
-  ).join("");
+    )
+    .join("");
 
   return page(
     title,
@@ -158,22 +267,20 @@ function shell(title, body, opts = {}) {
       </a>
       <nav class="top-tabs">${tabs}</nav>
       <div class="top-right">
-        ${
-          opts.statusChip
-            ? `<span class="chip">${opts.statusChip}</span>`
-            : ""
-        }
+        ${opts.statusChip ? `<span class="chip">${opts.statusChip}</span>` : ""}
+        <a class="whoami" href="/account" title="Your account">
+          <span class="whoami-name">${esc(who.name)}</span>
+          ${who.roleLabel ? `<span class="whoami-role">${esc(who.roleLabel)}</span>` : ""}
+        </a>
         <form method="post" action="/logout" class="logout">
           <input type="hidden" name="_csrf" value="${esc(opts.csrf)}">
-          <button type="submit" title="Sign out">${icon("power")}<span>${esc(
-      opts.user
-    )}</span></button>
+          <button type="submit" title="Sign out">${icon("power")}</button>
         </form>
       </div>
     </header>
 
     <div class="layout">
-      <aside class="sidebar">${renderSidebar(opts.active)}</aside>
+      <aside class="sidebar">${renderSidebar(opts.active, dash, perm)}</aside>
       <main class="content${opts.wide ? " wide" : ""}">
         ${
           title
@@ -209,6 +316,24 @@ ${inner}
 }
 
 /* ------------------------------------------------------------ components - */
+
+/**
+ * Permission check for a view, given the viewer context it was handed.
+ *
+ * Views use this to hide buttons; routes enforce the same permission again
+ * before acting. Hiding a control is a courtesy, not a boundary -- the boundary
+ * is the guard on the route, and it is checked whether or not the button was
+ * ever rendered. A missing context (the setup pages) allows everything, because
+ * there is no actor to restrict yet.
+ */
+function can(user, perm, scopeSlug) {
+  const p = user && typeof user === "object" ? user.perm : null;
+  if (!p) return true;
+  if (scopeSlug === undefined) return p.can(perm);
+  return perm.startsWith("channels.")
+    ? p.canChannel(perm, scopeSlug)
+    : p.canAgent(perm, scopeSlug);
+}
 
 function statusPill(state) {
   const good = state === "active";
@@ -288,6 +413,7 @@ module.exports = {
   flashes,
   empty,
   icon,
-  SIDEBAR,
+  can,
+  NAV,
   DASHBOARDS,
 };

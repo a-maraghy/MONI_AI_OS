@@ -100,6 +100,14 @@ exports.setupDone = () =>
 
 /* -------------------------------------------------------- OS dashboard --- */
 
+/**
+ * The OS dashboard: the machine, not the fleet.
+ *
+ * Since the sidebar split, this page is the whole of the OS story -- so it
+ * carries the detail that used to be a click away. It still opens with what is
+ * wrong rather than what is fine, because a green wall of statistics is the
+ * least useful thing an operations page can show you.
+ */
 exports.osDashboard = ({
   csrf,
   user,
@@ -111,17 +119,34 @@ exports.osDashboard = ({
   channels,
   probe,
   logins,
+  users,
+  roles,
+  devices,
 }) => {
   const svcDown = services.filter((s) => s.active !== "active");
   const running = agents.filter((a) => a.state && a.state.active === "active").length;
   const jails = (status && status.jails) || {};
   const sshd = jails.sshd || { banned: 0, total_failed: 0 };
+  const panelJail = jails["moni-dashboard"] || { banned: 0, total_failed: 0 };
+  const files = (probe && probe.files) || {};
+  const binaries = (probe && probe.binaries) || {};
+
+  const failedLogins = logins.filter((l) => l.outcome === "fail").length;
+  const pendingEnrol = users ? users.filter((u) => !u.totp_confirmed && !u.disabled).length : 0;
+  const disabledUsers = users ? users.filter((u) => u.disabled).length : 0;
 
   const warnings = [];
   if (probe && !probe.claude_credential) {
     warnings.push(
       `No Claude credential is set, so agents can receive messages but cannot answer.
        <a href="/credentials">Add one</a>.`
+    );
+  }
+  if (probe && (probe.credential_stale_agents || []).length) {
+    warnings.push(
+      `${probe.credential_stale_agents.map(esc).join(", ")} started before the credential was
+       last changed and ${probe.credential_stale_agents.length === 1 ? "is" : "are"} still using
+       the old one. <a href="/services/agents">Restart</a>.`
     );
   }
   if (svcDown.length) {
@@ -131,6 +156,29 @@ exports.osDashboard = ({
        <a href="/services">Check services</a>.`
     );
   }
+  if (pendingEnrol) {
+    warnings.push(
+      `${pendingEnrol} account${pendingEnrol === 1 ? " has" : "s have"} not finished
+       two-factor enrolment and cannot sign in yet. <a href="/users">Users</a>.`
+    );
+  }
+
+  const capabilities = [
+    ["Claude credential", probe && probe.claude_credential, "Every agent authenticates with this."],
+    [
+      "Voice transcription",
+      files.whisper_binary && files.whisper_model && binaries.ffmpeg,
+      "whisper.cpp, its model, and ffmpeg — all three are needed.",
+    ],
+    ["Vector memory model", files.embedding_model, "Local ONNX embeddings for agent memory."],
+    ["Agent runtime", files.runtime_venv, "The Python environment the Telegram agents run in."],
+    ["Vault template", files.vault_template, "Skeleton copied into each new agent's memory vault."],
+    ["Obsidian", binaries.obsidian, "Desktop editor for the memory vaults."],
+    ["Claude CLI", binaries.claude, "Used for credential checks and one-shot prompts."],
+    ["Node", binaries.node, "Runs this panel and the WhatsApp bridge."],
+    ["git", binaries.git, "Pulls runtime updates."],
+  ];
+  const missing = capabilities.filter(([, ok]) => !ok).length;
 
   return shell(
     "OS Dashboard",
@@ -140,10 +188,10 @@ exports.osDashboard = ({
     ${statusError ? `<div class="alert bad">${icon("alert")}<div>Could not query privileged status: ${esc(statusError)}</div></div>` : ""}
 
     <div class="statrow">
-      ${stat(running + " / " + agents.length, "agents running", "agents")}
-      ${stat(channels.length, "channels connected", "channels")}
       ${stat(services.length - svcDown.length + " / " + services.length, "services healthy", "services")}
-      ${stat(sshd.banned, "IPs banned right now", "shield")}
+      ${stat(capabilities.length - missing + " / " + capabilities.length, "capabilities installed", "check")}
+      ${stat(users ? users.length : "—", "user accounts", "users")}
+      ${stat(sshd.banned + panelJail.banned, "IPs banned right now", "shield")}
     </div>
 
     <div class="grid cols-2">
@@ -151,9 +199,14 @@ exports.osDashboard = ({
         "Machine",
         `<table class="kv">
           <tr><td>Host</td><td class="mono">${esc(stats.hostname)}</td></tr>
+          <tr><td>OS</td><td class="small">${esc(stats.platform)} · ${esc(stats.arch)}</td></tr>
           <tr><td>Uptime</td><td>${esc(duration(stats.uptimeSec))}</td></tr>
-          <tr><td>CPU</td><td>${stats.cpus} vCPU · load ${stats.loadavg.map((n) => n.toFixed(2)).join("  ")}</td></tr>
-          <tr><td>Runtime</td><td class="mono small">${esc((probe && probe.runtime_revision) || "—")}</td></tr>
+          <tr><td>CPU</td><td>${stats.cpus} vCPU${
+            stats.cpuModel ? ` <span class="muted small">${esc(stats.cpuModel)}</span>` : ""
+          }</td></tr>
+          <tr><td>Load</td><td class="mono small">${stats.loadavg
+            .map((n) => n.toFixed(2))
+            .join("  ")} <span class="muted">(1m 5m 15m)</span></td></tr>
         </table>
         <div class="mt-16">
           ${meter("memory", "Memory", stats.memUsed, stats.memTotal)}
@@ -168,43 +221,97 @@ exports.osDashboard = ({
           ? `<table class="kv">
               ${services
                 .map(
-                  (s) =>
-                    `<tr><td>${esc(s.unit)}</td><td>${statusPill(s.active)}</td></tr>`
+                  (s) => `<tr><td>${esc(s.unit)}</td><td>${statusPill(s.active)}</td></tr>`
                 )
                 .join("")}
             </table>`
           : `<p class="muted">No services reported.</p>`,
-        {
-          icon: "services",
-          actions: `<a class="btn small" href="/services">Manage</a>`,
-        }
+        { icon: "services", actions: `<a class="btn small" href="/services">Manage</a>` }
       )}
-
     </div>
 
     <div class="grid cols-2">
       ${card(
         "Capabilities",
         `<table class="kv">
-          ${capRow("Claude credential", probe && probe.claude_credential)}
-          ${capRow("Voice transcription", probe && probe.files && probe.files.whisper_binary && probe.files.whisper_model && probe.binaries.ffmpeg)}
-          ${capRow("Vector memory model", probe && probe.files && probe.files.embedding_model)}
-          ${capRow("Agent runtime", probe && probe.files && probe.files.runtime_venv)}
-          ${capRow("Obsidian", probe && probe.binaries && probe.binaries.obsidian)}
-        </table>`,
-        { icon: "check" }
+          ${capabilities.map(([label, ok, note]) => capRow(label, ok, note)).join("")}
+        </table>
+        ${
+          missing
+            ? `<p class="muted small mt-12">Missing pieces are installed by the deploy scripts in
+               <code>deploy/</code>; the guide says which script covers which.</p>`
+            : ""
+        }`,
+        { icon: "check", actions: `<a class="btn small" href="/guide">Guide</a>` }
       )}
+
+      ${card(
+        "Platform",
+        `<table class="kv">
+          <tr><td>Runtime revision</td><td class="mono small">${esc(
+            (probe && probe.runtime_revision) || "—"
+          )}</td></tr>
+          <tr><td>Node</td><td class="mono small">${esc(stats.node)}</td></tr>
+          <tr><td>Panel uptime</td><td>${esc(duration(stats.panelUptimeSec))}
+            <span class="muted small">${esc(bytes(stats.panelRssBytes))} resident</span></td></tr>
+          <tr><td>Agents</td><td>${running} running of ${agents.length}
+            ${
+              agents.length
+                ? `<a class="muted small" href="/agents/dashboard">agents dashboard</a>`
+                : ""
+            }</td></tr>
+          <tr><td>Channels</td><td>${channels.length} configured</td></tr>
+        </table>`,
+        { icon: "activity" }
+      )}
+    </div>
+
+    <div class="grid cols-2">
+      ${card(
+        "Access",
+        users
+          ? `<table class="kv">
+              <tr><td>Users</td><td>${users.length}
+                ${disabledUsers ? `<span class="muted small">${disabledUsers} disabled</span>` : ""}</td></tr>
+              <tr><td>Awaiting enrolment</td><td>${
+                pendingEnrol
+                  ? `<span class="pill warn">${pendingEnrol}</span>`
+                  : `<span class="pill ok">none</span>`
+              }</td></tr>
+              <tr><td>Roles</td><td>${roles ? roles.length : "—"}</td></tr>
+              <tr><td>Paired devices</td><td>${devices ? devices.length : "—"}</td></tr>
+            </table>
+            ${
+              roles
+                ? `<div class="chips mt-12">${roles
+                    .map(
+                      (r) =>
+                        `<a class="chip-link" href="/roles/${r.id}">${esc(r.label)}
+                           <span class="muted">${r.user_count}</span></a>`
+                    )
+                    .join("")}</div>`
+                : ""
+            }`
+          : `<p class="muted">Your role does not include viewing users.</p>`,
+        {
+          icon: "users",
+          actions: users ? `<a class="btn small" href="/users">Manage</a>` : "",
+        }
+      )}
+
       ${card(
         "Security",
         `<table class="kv">
           <tr><td>IPs banned (SSH)</td><td>${sshd.banned}</td></tr>
           <tr><td>Failed SSH auths</td><td>${sshd.total_failed}</td></tr>
-          <tr><td>Panel bans</td><td>${(jails["moni-dashboard"] || {}).banned || 0}</td></tr>
+          <tr><td>Panel bans</td><td>${panelJail.banned}</td></tr>
+          <tr><td>Failed panel sign-ins</td><td>${
+            failedLogins
+              ? `<span class="pill warn">${failedLogins} of the last ${logins.length}</span>`
+              : `<span class="pill ok">none recently</span>`
+          }</td></tr>
         </table>`,
-        {
-          icon: "shield",
-          actions: `<a class="btn small" href="/audit">Audit log</a>`,
-        }
+        { icon: "shield", actions: `<a class="btn small" href="/audit">Audit log</a>` }
       )}
     </div>
 
@@ -219,7 +326,9 @@ exports.osDashboard = ({
                   <td class="mono small">${esc(stamp(l.ts))}</td>
                   <td class="mono small">${esc(l.ip || "—")}</td>
                   <td>${esc(l.username || "—")}</td>
-                  <td><span class="pill ${l.outcome === "success" ? "ok" : "bad"}">${esc(l.outcome)}</span>
+                  <td><span class="pill ${
+                    l.outcome === "success" ? "ok" : l.outcome === "admin" ? "neutral" : "bad"
+                  }">${esc(l.outcome)}</span>
                     ${l.detail ? `<span class="muted small"> ${esc(l.detail)}</span>` : ""}</td>
                 </tr>`
               )
@@ -232,18 +341,20 @@ exports.osDashboard = ({
       csrf,
       active: "os",
       heading: "OS Dashboard",
-      subtitle: "The machine everything runs on.",
-      statusChip: running + " agent" + (running === 1 ? "" : "s") + " running",
+      subtitle: "The machine everything runs on — host health, capabilities, and who can reach it.",
+      statusChip: esc(stats.hostname) + " · up " + esc(duration(stats.uptimeSec)),
     }
   );
 };
 
-function capRow(label, present) {
-  return `<tr><td>${esc(label)}</td><td>${
-    present
-      ? `<span class="pill ok">installed</span>`
-      : `<span class="pill neutral">missing</span>`
-  }</td></tr>`;
+function capRow(label, present, note) {
+  return `<tr>
+    <td>${esc(label)}${note ? `<div class="muted small">${esc(note)}</div>` : ""}</td>
+    <td>${
+      present
+        ? `<span class="pill ok">installed</span>`
+        : `<span class="pill neutral">missing</span>`
+    }</td></tr>`;
 }
 
 /* ----------------------------------------------------------------- keys --- */
