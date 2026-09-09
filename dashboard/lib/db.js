@@ -134,6 +134,7 @@ function addColumn(table, column, definition) {
 
 addColumn("console_sessions", "permission_mode", "TEXT NOT NULL DEFAULT 'auto'");
 addColumn("console_sessions", "archived", "INTEGER NOT NULL DEFAULT 0");
+addColumn("console_sessions", "root_enabled", "INTEGER NOT NULL DEFAULT 1");
 
 /* --------------------------------------------------------------- roles --- */
 
@@ -395,6 +396,7 @@ module.exports = {
       "started",
       "permission_mode",
       "archived",
+      "root_enabled",
     ];
     const keys = Object.keys(fields).filter((k) => allowed.includes(k));
     if (!keys.length) return;

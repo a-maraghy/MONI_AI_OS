@@ -146,6 +146,9 @@ function renderMessage(m) {
 
 exports.console = ({ csrf, user, sessions, archived = [], session, messages, dirs, flash, err }) => {
   const active = session || null;
+  // Root is on unless it has been turned off, and is meaningless outside a
+  // whole-server chat -- the workspace profile has no sudo to withdraw.
+  const rootOn = !!active && active.access === "full" && active.root_enabled !== 0;
 
   return shell(
     active ? active.title || "MONI Bot" : "MONI Bot",
@@ -209,7 +212,7 @@ exports.console = ({ csrf, user, sessions, archived = [], session, messages, dir
           </div>
 
           ${
-            active.access === "full"
+            active.access === "full" && rootOn
               ? `<details class="chat-notice" id="chat-notice">
                   <summary>${icon("lock", 13)} Runs as root on this machine — what that means</summary>
                   <p>The same reach you have over SSH, with tool permissions decided by the
@@ -273,7 +276,7 @@ exports.console = ({ csrf, user, sessions, archived = [], session, messages, dir
                       ${shortOptions(EFFORTS, active.effort)}
                     </select>
                   </span>
-                  <span class="pick${active.access === "full" ? " hot" : ""}"
+                  <span class="pick${rootOn ? " hot" : ""}"
                         title="${
                           active.started
                             ? "Fixed once a chat has started"
@@ -284,6 +287,39 @@ exports.console = ({ csrf, user, sessions, archived = [], session, messages, dir
                       active.started ? " disabled" : ""
                     }>${shortOptions(ACCESS, active.access)}</select>
                   </span>
+                </form>
+
+                ${
+                  active.access === "full"
+                    ? `<form method="post" action="/console/${active.id}/root" class="root-toggle"${
+                        rootOn
+                          ? ` data-confirm="Turn root off for this chat? The conversation restarts, so it forgets what you have discussed."`
+                          : ` data-confirm="Turn root on for this chat? It will be able to change anything on this machine. The conversation restarts."`
+                      }>
+                        <input type="hidden" name="_csrf" value="${esc(csrf)}">
+                        <button class="toggle${rootOn ? " on" : ""}" type="submit"
+                                aria-pressed="${rootOn ? "true" : "false"}"
+                                title="${
+                                  rootOn
+                                    ? "Root is on — this chat can change anything. Click to switch it off."
+                                    : "Root is off — sudo is blocked for this chat. Click to switch it on."
+                                }">
+                          <span class="toggle-track"><span class="toggle-knob"></span></span>
+                          <span class="toggle-label">root</span>
+                        </button>
+                      </form>`
+                    : ""
+                }
+
+                <!--
+                  A second settings form rather than one wrapping the toggle:
+                  the toggle is its own POST, and forms cannot nest. Each form
+                  carries only its own fields, and the route applies only values
+                  it recognises, so a partial submission changes only what it
+                  actually named.
+                -->
+                <form method="post" action="/console/${active.id}/settings" class="chat-controls grow">
+                  <input type="hidden" name="_csrf" value="${esc(csrf)}">
                   <span class="pick${active.permission_mode === "plan" ? " plan" : ""}" title="What happens when it wants to change something">
                     ${icon(active.permission_mode === "plan" ? "guide" : "play", 13)}
                     <select name="permission_mode" data-autosubmit aria-label="Permission mode">

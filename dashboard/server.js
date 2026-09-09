@@ -1711,6 +1711,29 @@ app.post("/console/:id/settings", requireAuth, requirePerm("console.use"), requi
   res.redirect("/console/" + session.id);
 });
 
+app.post("/console/:id/root", requireAuth, requirePerm("console.use"), requireCsrf, (req, res) => {
+  const session = loadConsoleSession(req, res);
+  if (!session) return;
+  // Only a whole-server chat has root to switch. The workspace profile never
+  // had any, so a toggle there would be a control that does nothing.
+  if (session.access !== "full" || !req.perm.can("console.full")) {
+    return res.redirect("/console/" + session.id);
+  }
+
+  const enabled = session.root_enabled === 0;
+  // Fixed at spawn, so the running process has to go. The transcript stays; the
+  // model's memory of the conversation does not.
+  closeConsoleChat(session.id);
+  db.updateConsoleSession(session.id, req.me.id, { root_enabled: enabled ? 1 : 0 });
+  db.logLogin(
+    req.ip,
+    req.me.username,
+    "console",
+    (enabled ? "enabled" : "disabled") + ` root for chat ${session.id}`
+  );
+  res.redirect("/console/" + session.id);
+});
+
 app.post("/console/:id/rename", requireAuth, requirePerm("console.use"), requireCsrf, (req, res) => {
   const session = loadConsoleSession(req, res);
   if (!session) return;
@@ -1932,6 +1955,7 @@ app.post("/console/:id/send", requireAuth, requirePerm("console.use"), requireCs
       access: session.access,
       cwd: session.cwd,
       permission_mode: session.permission_mode || "auto",
+      root_enabled: session.root_enabled !== 0,
     });
     entry = {
       child,
