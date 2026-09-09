@@ -7,7 +7,7 @@ panel is not enough or is not reachable.
 
 ```
 /opt/moni-agents/
-├── runtime/              shared Python runtime (a clone of Claude_VPS + venv)
+├── runtime/              shared Python runtime (a clone of Claude_Agents + venv)
 ├── shared/
 │   ├── claude-auth.env   Claude credential, 0640 root:moniagent
 │   ├── models/           the embedding model, downloaded once
@@ -70,7 +70,7 @@ All of them print a single JSON object: `{"ok": true, "data": …}` or
 ## Upgrading the runtime
 
 ```bash
-sudo bash /opt/moni-ai-os/deploy/bootstrap.sh   # pulls Claude_VPS, rebuilds the venv
+sudo bash /opt/moni-ai-os/deploy/bootstrap.sh   # pulls Claude_Agents, rebuilds the venv
 sudo systemctl restart 'moni-agent@*'
 ```
 

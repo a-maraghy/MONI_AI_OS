@@ -38,8 +38,9 @@ You on Telegram
 | `ops/` | Local helper scripts (RDP launcher) |
 
 The agent runtime itself — the Telegram↔Claude bridge — is a **separate repo**,
-[`Claude_VPS`](https://github.com/mo-zaghloul96/Claude_VPS), cloned onto the
-server by the bootstrap script. This repo drives it; it does not fork it.
+[`Claude_Agents`](https://github.com/a-maraghy/Claude_Agents), cloned onto the
+server by the bootstrap script. This repo drives it; it does not vendor it.
+Point `RUNTIME_REPO` elsewhere if you want a different fork.
 
 ---
 

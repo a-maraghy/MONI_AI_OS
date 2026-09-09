@@ -11,11 +11,12 @@
 
 set -euo pipefail
 
-# Claude_VPS is private, so this is the SSH remote: the server authenticates with
-# a deploy key rather than a password it cannot be given. Generate one with
+# The runtime repo is private, so this is the SSH remote: the server
+# authenticates with a deploy key rather than a password it cannot be given.
+# Generate one with
 #   ssh-keygen -t ed25519 -f /root/.ssh/github_deploy -N ''
 # and add the public half to the repo under Settings -> Deploy keys (read-only).
-RUNTIME_REPO="${RUNTIME_REPO:-git@github.com:mo-zaghloul96/Claude_VPS.git}"
+RUNTIME_REPO="${RUNTIME_REPO:-git@github.com:a-maraghy/Claude_Agents.git}"
 RUNTIME_REF="${RUNTIME_REF:-main}"
 
 ROOT=/opt/moni-agents
