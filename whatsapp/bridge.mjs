@@ -270,9 +270,45 @@ function numberOf(jid) {
   return String(jid || "").split("@")[0].split(":")[0].replace(/[^\d]/g, "");
 }
 
-function allowed(jid) {
+/**
+ * The phone number behind a message, which is not always in the chat's address.
+ *
+ * WhatsApp now addresses many chats by LID -- `<opaque digits>@lid` -- rather
+ * than by phone number. A LID looks like a number and is not one: taking the
+ * digits out of the address gets you something like 129789717430357, which
+ * matches no allow-list and is rejected. That is why a linked number could sit
+ * there sending messages to silence.
+ *
+ * Three sources, in order of how directly they answer the question: the address
+ * itself when it is a phone number, the phone number the message carries
+ * alongside a LID, and failing both, the mapping Baileys keeps between the two.
+ */
+async function senderNumber(sock, msg) {
+  const jid = msg.key?.remoteJid || "";
+
+  if (jid.endsWith("@s.whatsapp.net")) return numberOf(jid);
+
+  // Present on LID-addressed messages; the field is written by Baileys even
+  // where its type definitions do not mention it.
+  const carried = msg.key?.senderPn || msg.key?.participantPn || msg.participantPn;
+  if (carried) return numberOf(carried);
+
+  if (jid.endsWith("@lid")) {
+    try {
+      const pn = await sock?.signalRepository?.lidMapping?.getPNForLID(jid);
+      if (pn) return numberOf(pn);
+    } catch (err) {
+      log("lid_lookup_failed", { error: String(err?.message || err).slice(0, 200) });
+    }
+  }
+
+  return numberOf(jid);
+}
+
+function allowed(number) {
   if (!ALLOWED.length) return false;
-  const n = numberOf(jid);
+  const n = String(number || "");
+  if (!n) return false;
   // Match on suffix so a stored number works whether or not it carries a
   // country code the way WhatsApp reports it.
   return ALLOWED.some((a) => a === n || n.endsWith(a) || a.endsWith(n));
@@ -358,8 +394,12 @@ async function handleMessage(sock, msg) {
   // group chat is rarely what anyone wants, and never by default.
   if (jid.endsWith("@g.us") || jid === "status@broadcast") return;
 
-  if (!allowed(jid)) {
-    log("rejected_sender", { number: numberOf(jid) });
+  const from = await senderNumber(sock, msg);
+  if (!allowed(from)) {
+    // Both the resolved number and the raw address, because when these differ
+    // the difference is the whole explanation -- and the previous version
+    // logged only the address, which is what made this hard to see.
+    log("rejected_sender", { number: from, jid, allowed: ALLOWED });
     return;
   }
 
@@ -391,7 +431,7 @@ async function handleMessage(sock, msg) {
 
   const sessions = await readSessions();
   try {
-    log("prompt", { number: numberOf(jid), chars: prompt.length });
+    log("prompt", { number: from, chars: prompt.length });
     const { text, sessionId } = await ask(prompt, sessions[jid]);
     if (sessionId && sessionId !== sessions[jid]) {
       sessions[jid] = sessionId;
@@ -400,7 +440,7 @@ async function handleMessage(sock, msg) {
     await sock.sendMessage(jid, {
       text: text || "(the agent finished without saying anything)",
     });
-    log("replied", { number: numberOf(jid), chars: text.length });
+    log("replied", { number: from, chars: text.length });
   } catch (e) {
     log("agent_failed", { error: e.message });
     await sock.sendMessage(jid, {
