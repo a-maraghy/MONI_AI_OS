@@ -6,7 +6,7 @@
  * moment you are looking at the panel wondering why the bot is silent.
  */
 
-const { esc, shell } = require("./ui");
+const { esc, shell, icon } = require("./ui");
 
 exports.guide = ({ csrf, user, publicHost, publicPort, sshHost }) => {
   const host = esc(publicHost);
@@ -14,16 +14,13 @@ exports.guide = ({ csrf, user, publicHost, publicPort, sshHost }) => {
 
   return shell(
     "Guide",
-    `<h1>Guide</h1>
-    <p class="muted">How this system is put together, and how to get an agent talking to
-      you on Telegram.</p>
-
-    <nav class="toc card">
+    `<nav class="toc card">
       <a href="#how">How it works</a>
       <a href="#bot">1 · Create a Telegram bot</a>
       <a href="#userid">2 · Find your user ID</a>
-      <a href="#create">3 · Create the agent</a>
+      <a href="#create">3 · Create the agent and its channel</a>
       <a href="#talk">4 · Talk to it</a>
+      <a href="#addons">Add-ons</a>
       <a href="#topics">Groups &amp; topics</a>
       <a href="#channels">Channels</a>
       <a href="#memory">Memory</a>
@@ -102,8 +99,15 @@ exports.guide = ({ csrf, user, publicHost, publicPort, sshHost }) => {
     </div>
 
     <div class="card" id="create">
-      <h2>3 · Create the agent</h2>
-      <p>Go to <a href="/agents/new">Agents → Create agent</a> and fill in:</p>
+      <h2>3 · Create the agent and its channel</h2>
+      <p>These are two separate things, on purpose. The <strong>agent</strong> is the mind:
+        its brief, its workspace, its memory. The <strong>channel</strong> is how people
+        reach it: a bot token, a list of who may talk to it. Keeping them apart means you
+        can swap the bot an agent answers on, or move it to WhatsApp, without rebuilding
+        the agent or losing a word of its memory.</p>
+
+      <h3>First the agent</h3>
+      <p><a href="/agents/new">Agents → New agent</a>:</p>
       <table class="kv">
         <tr><td>Display name</td><td class="muted">What you call it. Cosmetic.</td></tr>
         <tr><td>Short name</td><td class="muted">Lowercase, becomes the folder and the
@@ -112,19 +116,56 @@ exports.guide = ({ csrf, user, publicHost, publicPort, sshHost }) => {
           loaded on every request. This is the field that decides whether the agent is
           useful. Be specific about what it owns, what it may do unattended, and what it
           must ask about first.</td></tr>
-        <tr><td>Bot token</td><td class="muted">From step 1.</td></tr>
-        <tr><td>Allowed user IDs</td><td class="muted">From step 2.</td></tr>
         <tr><td>Project directory</td><td class="muted">Optional. An existing folder under
           <code>/opt/projects</code>, <code>/srv</code> or
-          <code>/opt/moni-agents/workspaces</code> that the agent should work on. It appears
-          inside the vault as <code>project/</code>.</td></tr>
+          <code>/opt/moni-agents/workspaces</code>. It appears inside the vault as
+          <code>project/</code>.</td></tr>
+        <tr><td>Add-ons</td><td class="muted">What the agent can do — git, scheduled jobs,
+          webhooks. Memory is always on.</td></tr>
       </table>
-      <p>On save the panel scaffolds the vault, builds the vector index, writes a systemd
-        unit and starts it. Ten seconds or so, then the agent is live.</p>
-      <div class="alert">A good role brief beats every other setting on this page. "You
-        maintain the Odoo 17 instance at /opt/projects/odoo; you may edit modules and run
-        tests unattended; ask before restarting the service during working hours" produces
-        a far better agent than "You are a helpful assistant".</div>
+
+      <h3>Then the channel</h3>
+      <p><a href="/channels/new">Channels → Add channel</a>:</p>
+      <table class="kv">
+        <tr><td>Type</td><td class="muted">Telegram or WhatsApp.</td></tr>
+        <tr><td>Bot token</td><td class="muted">From step 1. Verified with Telegram before
+          anything is written, so a mistyped token fails here rather than in the logs.</td></tr>
+        <tr><td>Allowed user IDs</td><td class="muted">From step 2. Empty means nobody.</td></tr>
+        <tr><td>Connect to agent</td><td class="muted">The agent you just made.</td></tr>
+        <tr><td>Add-ons</td><td class="muted">What it can receive — voice notes, files,
+          images — and how replies feel.</td></tr>
+      </table>
+      <p>On save the panel writes the agent's environment, enables a systemd unit and
+        starts it. An agent with no channel stays stopped rather than crash-looping.</p>
+
+      <div class="alert info">A good role brief beats every other setting on this page.
+        "You maintain the Odoo 17 instance at /opt/projects/odoo; you may edit modules and
+        run tests unattended; ask before restarting the service during working hours"
+        produces a far better agent than "You are a helpful assistant".</div>
+    </div>
+
+    <div class="card" id="addons">
+      <h2>Add-ons</h2>
+      <p>An add-on is a capability with a switch, not a plugin you install. Turning one on
+        writes configuration the runtime already understands and restarts the affected
+        process. Browse them all under <a href="/addons">Add-ons</a>.</p>
+      <table class="kv">
+        <tr><td><strong>Channel</strong></td><td class="muted">What arrives and how it
+          feels: voice notes, file capture, image capture, live typing, quick actions.</td></tr>
+        <tr><td><strong>Agent</strong></td><td class="muted">What the agent does with it:
+          memory (always on), git, scheduled jobs, webhooks, telemetry.</td></tr>
+      </table>
+      <h3>Voice notes</h3>
+      <p>Send a voice message and the agent hears it. Transcription runs on this server
+        with whisper.cpp — no API key, no per-minute cost, and the recording never leaves
+        the box.</p>
+      <h3>Files</h3>
+      <p>Send a spreadsheet, a PDF, a Word document, a photo, a CSV. The file is saved into
+        the agent's workspace under <code>attachments/inbox/</code> and the agent gets the
+        path, so it can open a spreadsheet with pandas or pull the text out of a PDF —
+        and it is still there tomorrow if you want to ask a follow-up question.</p>
+      <p class="muted small">Executables, libraries, installers and key material are
+        refused regardless of what is switched on.</p>
     </div>
 
     <div class="card" id="talk">
@@ -287,6 +328,13 @@ exports.guide = ({ csrf, user, publicHost, publicPort, sshHost }) => {
         another local user could read them from <code>/proc</code>.</p>
       <p class="muted small">Full architecture and threat model: the repository README.</p>
     </div>`,
-    { user, csrf, active: "guide" }
+    {
+      user,
+      csrf,
+      active: "guide",
+      heading: "Guide",
+      subtitle:
+        "How this system is put together, and how to get an agent talking to you.",
+    }
   );
 };

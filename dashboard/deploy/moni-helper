@@ -18,6 +18,7 @@ Design rules:
 """
 
 import base64
+import grp
 import hashlib
 import json
 import os
@@ -44,8 +45,44 @@ RUNTIME_DIR = os.path.join(AGENTS_ROOT, "runtime")
 SHARED_DIR = os.path.join(AGENTS_ROOT, "shared")
 ARCHIVE_DIR = os.path.join(AGENTS_ROOT, "archived")
 TEMPLATE_DIR = os.path.join(AGENTS_ROOT, "vault-template")
+CHANNELS_DIR = os.path.join(AGENTS_ROOT, "channels")
 AGENT_USER = "moniagent"
 UNIT_PREFIX = "moni-agent@"
+
+CLAUDE_AUTH = os.path.join(SHARED_DIR, "claude-auth.env")
+
+# Credential files the panel may read and write. A whitelist rather than a path
+# argument: the dashboard has no business editing arbitrary files as root, and
+# "which files are credentials" is a decision that belongs in code review.
+CREDENTIAL_FILES = {
+    "claude": {
+        "path": CLAUDE_AUTH,
+        "label": "Claude authentication",
+        "owner": "root",
+        "group": AGENT_USER,
+        "mode": 0o640,
+        "keys": ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY"),
+    },
+}
+
+# System units the panel may act on. Anything not listed here is untouchable,
+# so a bug in the web app cannot stop an arbitrary service.
+MANAGED_UNITS = (
+    "moni-dashboard",
+    "nginx",
+    "ssh",
+    "fail2ban",
+    "ufw",
+    "xrdp",
+    "xrdp-sesman",
+)
+
+# Stopping these takes the machine or the panel off the network, so the helper
+# refuses -- restart is allowed, stop is not. Recovering from "I stopped sshd
+# through the web panel" needs physical console access.
+UNSTOPPABLE_UNITS = ("ssh", "nginx", "ufw", "moni-dashboard")
+
+CHANNEL_TYPES = ("telegram", "whatsapp")
 
 SLUG_RE = re.compile(r"^[a-z][a-z0-9-]{1,30}$")
 NAME_RE = re.compile(r"^[\w .,'()&/-]{1,64}$", re.UNICODE)
@@ -56,6 +93,14 @@ MODEL_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{2,60}$")
 CHAT_ID_RE = re.compile(r"^-?\d{4,20}$")
 ABS_PATH_RE = re.compile(r"^/[A-Za-z0-9._/-]{1,200}$")
 VAULT_REL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/ -]{0,180}\.(md|json|txt)$")
+ADDON_ID_RE = re.compile(r"^[a-z][a-z0-9_]{1,40}$")
+ENV_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]{1,60}$")
+# Env values are written into a systemd EnvironmentFile, so a newline would let
+# a value inject a second variable. Everything else is permitted.
+ENV_VALUE_RE = re.compile(r"^[^\r\n\x00]{0,400}$")
+PHONE_RE = re.compile(r"^\+?\d{6,20}$")
+PHONES_RE = re.compile(r"^\+?\d{6,20}(,\+?\d{6,20})*$")
+OAUTH_TOKEN_RE = re.compile(r"^sk-ant-[A-Za-z0-9_\-]{20,300}$")
 
 # A project directory can only be attached from one of these roots. Without this
 # an operator could point an agent at /etc and hand the model the host.
@@ -447,8 +492,22 @@ def agent_summary(slug):
     meta["state"] = unit_state(slug)
     meta["memory"] = memory_counts(slug)
     meta["notes"] = vault_counts(slug)
-    meta["token_set"] = has_token(slug)
     meta["dir"] = agent_dir(slug)
+    # The credential lives on the channel now, so "can this agent be reached"
+    # is a question about its channel, not about the agent.
+    channel = channel_bound_to(slug)
+    if channel:
+        meta["channel"] = {
+            "slug": channel.get("slug"),
+            "name": channel.get("name"),
+            "type": channel.get("type"),
+            "token_set": bool(channel.get("_token")),
+            "telegram_bot_username": channel.get("telegram_bot_username", ""),
+            "allowed_users": channel.get("allowed_users", ""),
+            "addons": channel.get("addons", []),
+        }
+    else:
+        meta["channel"] = None
     return meta
 
 
@@ -494,16 +553,6 @@ def validate_config(cfg, creating):
         fail("role description is too long (max 4000 characters)")
     out["role"] = role
 
-    username = str(cfg.get("telegram_bot_username") or "").lstrip("@").strip()
-    if username and not BOT_USERNAME_RE.match(username):
-        fail("bot username must be 4-32 characters of letters, digits or underscore")
-    out["telegram_bot_username"] = username
-
-    allowed = str(cfg.get("allowed_users") or "").replace(" ", "")
-    if allowed and not USER_IDS_RE.match(allowed):
-        fail("allowed users must be comma-separated numeric Telegram IDs")
-    out["allowed_users"] = allowed
-
     model = str(cfg.get("model") or "claude-opus-5").strip()
     if not MODEL_RE.match(model):
         fail("invalid model id")
@@ -545,73 +594,150 @@ def validate_config(cfg, creating):
         project = real
     out["project_dir"] = project
 
-    threads = bool(cfg.get("enable_project_threads"))
-    chat_id = str(cfg.get("project_threads_chat_id") or "").strip()
-    if chat_id and not CHAT_ID_RE.match(chat_id):
-        fail("Telegram chat id must be numeric (groups start with -100)")
-    if threads and not chat_id:
-        fail("group topic mode needs the group chat id")
-    out["enable_project_threads"] = threads
-    out["project_threads_chat_id"] = chat_id
-
-    token = cfg.get("telegram_bot_token") or ""
-    if token and not BOT_TOKEN_RE.match(token):
-        fail("that does not look like a Telegram bot token")
-    if creating and not token:
-        fail("a Telegram bot token is required to create an agent")
-    out["_token"] = token
+    # Add-ons are named capabilities; the environment they imply is computed by
+    # the dashboard from its catalogue and passed here as a flat map. The helper
+    # does not trust that map -- it revalidates every key and value, because
+    # these end up in a systemd EnvironmentFile read by a process that runs
+    # model-authored commands.
+    out["addons"] = validate_addon_ids(cfg.get("addons"))
+    out["addon_env"] = validate_env_map(cfg.get("addon_env"))
 
     return out
 
 
-def render_env(cfg):
+def validate_addon_ids(raw):
+    if raw in (None, ""):
+        return []
+    if not isinstance(raw, list):
+        fail("addons must be a list of ids")
+    if len(raw) > 60:
+        fail("too many add-ons")
+    out = []
+    for item in raw:
+        item = str(item)
+        if not ADDON_ID_RE.match(item):
+            fail("invalid add-on id: " + repr(item[:40]))
+        if item not in out:
+            out.append(item)
+    return sorted(out)
+
+
+def validate_env_map(raw):
+    """Validate a dashboard-supplied environment fragment.
+
+    A newline in a value would let one setting inject another into the
+    EnvironmentFile, so it is rejected rather than escaped.
+    """
+    if raw in (None, ""):
+        return {}
+    if not isinstance(raw, dict):
+        fail("addon_env must be an object")
+    if len(raw) > 80:
+        fail("too many environment entries")
+    out = {}
+    for key, value in raw.items():
+        key = str(key)
+        value = "" if value is None else str(value)
+        if not ENV_KEY_RE.match(key):
+            fail("invalid environment key: " + repr(key[:40]))
+        if not ENV_VALUE_RE.match(value):
+            fail("environment value for " + key + " contains a newline or null byte")
+        if key in PROTECTED_ENV_KEYS:
+            fail(key + " is set by the panel and cannot be overridden by an add-on")
+        out[key] = value
+    return out
+
+
+# Keys the helper computes itself. An add-on that could set these could point an
+# agent at another agent's vault, or hand it someone else's bot token.
+PROTECTED_ENV_KEYS = {
+    "TELEGRAM_BOT_TOKEN",
+    "TELEGRAM_BOT_USERNAME",
+    "APPROVED_DIRECTORY",
+    "ALLOWED_USERS",
+    "DATABASE_URL",
+    "MCP_CONFIG_PATH",
+    "MONI_VAULT",
+    "MONI_VECTOR_DB",
+    "MONI_AGENT_SLUG",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "ANTHROPIC_API_KEY",
+    "ENVIRONMENT",
+    "DEVELOPMENT_MODE",
+}
+
+
+def render_env(cfg, channel=None):
     """Build the agent's systemd EnvironmentFile.
 
-    Every value here has already been through validate_config, so none of them
-    can contain a newline or a quote that would break the format.
+    Three sources merge here, in increasing order of precedence:
+
+      1. baseline    what every agent needs to run at all
+      2. add-ons     capability switches chosen in the panel
+      3. identity    paths and credentials the helper computes itself
+
+    Identity comes last on purpose: an add-on cannot redirect an agent at
+    another agent's vault or bot token, whatever the dashboard sends. Every
+    value has been through validate_config, so none can contain a newline that
+    would inject a second variable.
     """
     d = agent_dir(cfg["slug"])
     vault = os.path.join(d, "vault")
+
+    env = {
+        # --- baseline -------------------------------------------------------
+        "USE_SDK": "true",
+        "AGENTIC_MODE": "true",
+        "ENABLE_TOKEN_AUTH": "false",
+        "DISABLE_SECURITY_PATTERNS": "true",
+        "DISABLE_TOOL_VALIDATION": "false",
+        "SESSION_TIMEOUT_HOURS": "720",
+        "MAX_SESSIONS_PER_USER": "10",
+        "RATE_LIMIT_REQUESTS": "30",
+        "RATE_LIMIT_WINDOW": "60",
+        "RATE_LIMIT_BURST": "60",
+        "CLAUDE_MODEL": cfg["model"],
+        "CLAUDE_MAX_TURNS": str(cfg["max_turns"]),
+        "CLAUDE_TIMEOUT_SECONDS": str(cfg["timeout_seconds"]),
+        "VERBOSE_LEVEL": str(cfg["verbose_level"]),
+    }
+
+    # --- add-ons ------------------------------------------------------------
+    env.update(cfg.get("addon_env") or {})
+    if channel:
+        env.update(channel.get("addon_env") or {})
+
+    # --- identity: computed here, never overridable -------------------------
+    env.update(
+        {
+            "APPROVED_DIRECTORY": vault,
+            "DATABASE_URL": "sqlite:///" + os.path.join(d, "data", "bot.db"),
+            "MCP_CONFIG_PATH": os.path.join(d, "mcp.json"),
+            "MONI_AGENT_SLUG": cfg["slug"],
+            "MONI_VAULT": vault,
+            "MONI_VECTOR_DB": os.path.join(d, "vectors", "memory.db"),
+            "ENVIRONMENT": "production",
+            "DEVELOPMENT_MODE": "false",
+        }
+    )
+
+    if channel and channel.get("type") == "telegram":
+        env["TELEGRAM_BOT_TOKEN"] = channel.get("_token", "")
+        env["TELEGRAM_BOT_USERNAME"] = channel.get("telegram_bot_username", "")
+        env["ALLOWED_USERS"] = channel.get("allowed_users", "")
+        if channel.get("topics_enabled"):
+            env["ENABLE_PROJECT_THREADS"] = "true"
+            env["PROJECT_THREADS_MODE"] = "group"
+            env["PROJECT_THREADS_CHAT_ID"] = channel.get("topics_chat_id", "")
+        else:
+            env["ENABLE_PROJECT_THREADS"] = "false"
+
     lines = [
         "# Generated by the MONI dashboard. Edit through the panel, not by hand.",
-        "# Regenerated on every configuration change.",
-        "TELEGRAM_BOT_TOKEN=" + cfg["_token"],
-        "TELEGRAM_BOT_USERNAME=" + cfg["telegram_bot_username"],
-        "APPROVED_DIRECTORY=" + vault,
-        "ALLOWED_USERS=" + cfg["allowed_users"],
-        "ENABLE_TOKEN_AUTH=false",
-        "DATABASE_URL=sqlite:///" + os.path.join(d, "data", "bot.db"),
-        "CLAUDE_MODEL=" + cfg["model"],
-        "CLAUDE_MAX_TURNS=" + str(cfg["max_turns"]),
-        "CLAUDE_TIMEOUT_SECONDS=" + str(cfg["timeout_seconds"]),
-        "VERBOSE_LEVEL=" + str(cfg["verbose_level"]),
-        "USE_SDK=true",
-        "AGENTIC_MODE=true",
-        "ENABLE_PERSISTENT_MEMORY=true",
-        "MEMORY_SCAFFOLD_ON_START=true",
-        "CONTEXT_FILE_MAX_CHARS=24000",
-        "ENABLE_MCP=true",
-        "MCP_CONFIG_PATH=" + os.path.join(d, "mcp.json"),
-        "ENABLE_GIT_INTEGRATION=true",
-        "DISABLE_SECURITY_PATTERNS=true",
-        "DISABLE_TOOL_VALIDATION=false",
-        "SESSION_TIMEOUT_HOURS=720",
-        "MAX_SESSIONS_PER_USER=10",
-        "RATE_LIMIT_REQUESTS=30",
-        "RATE_LIMIT_WINDOW=60",
-        "RATE_LIMIT_BURST=60",
-        "ENVIRONMENT=production",
-        "DEVELOPMENT_MODE=false",
-        "MONI_AGENT_SLUG=" + cfg["slug"],
-        "MONI_VAULT=" + vault,
-        "MONI_VECTOR_DB=" + os.path.join(d, "vectors", "memory.db"),
+        "# Regenerated on every configuration change to this agent or its channel.",
     ]
-    if cfg["enable_project_threads"]:
-        lines += [
-            "ENABLE_PROJECT_THREADS=true",
-            "PROJECT_THREADS_MODE=group",
-            "PROJECT_THREADS_CHAT_ID=" + cfg["project_threads_chat_id"],
-        ]
+    for key in sorted(env):
+        lines.append(key + "=" + env[key])
     return "\n".join(lines) + "\n"
 
 
@@ -668,7 +794,7 @@ def scaffold_vault(cfg, uid, gid):
             os.symlink(cfg["project_dir"], link)
 
 
-def write_agent_files(cfg, uid, gid):
+def write_agent_files(cfg, uid, gid, channel=None):
     d = agent_dir(cfg["slug"])
     for sub in ("", "data", "logs", "vectors"):
         os.makedirs(os.path.join(d, sub), exist_ok=True)
@@ -678,7 +804,7 @@ def write_agent_files(cfg, uid, gid):
     env_path = os.path.join(d, "agent.env")
     fd, tmp = tempfile.mkstemp(dir=d)
     with os.fdopen(fd, "w") as fh:
-        fh.write(render_env(cfg))
+        fh.write(render_env(cfg, channel))
     os.chown(tmp, uid, gid)
     os.chmod(tmp, 0o600)  # holds the bot token
     os.replace(tmp, env_path)
@@ -785,7 +911,7 @@ def cmd_agent_create(args):
     uid, gid = agent_ids()
     os.makedirs(AGENTS_DIR, exist_ok=True)
     try:
-        write_agent_files(cfg, uid, gid)
+        write_agent_files(cfg, uid, gid, channel_bound_to(slug))
         meta = public_meta(cfg)
         meta["created_at"] = now_iso()
         write_agent_json(slug, meta, uid, gid)
@@ -800,15 +926,23 @@ def cmd_agent_create(args):
 
     run(["systemctl", "daemon-reload"])
     run(["systemctl", "reset-failed", unit_name(slug)])  # clear any stale state
-    r = run(["systemctl", "enable", "--now", unit_name(slug)], timeout=30)
-    started = r.returncode == 0
     registered = register_obsidian_vault(slug)
+
+    # An agent with no channel has nothing to listen to, so starting it would
+    # only produce a crash loop and a misleading "failed" badge. It waits.
+    started = False
+    message = "No channel is connected yet, so the agent is not running."
+    if channel_bound_to(slug):
+        r = run(["systemctl", "enable", "--now", unit_name(slug)], timeout=30)
+        started = r.returncode == 0
+        message = "" if started else r.stderr.strip()
+
     audit("agent-create", {"slug": slug, "name": cfg["name"], "started": started})
     ok({
         "slug": slug,
         "started": started,
         "obsidian_registered": registered,
-        "message": r.stderr.strip() if not started else "",
+        "message": message,
         "state": unit_state(slug),
     })
 
@@ -819,18 +953,13 @@ def cmd_agent_update(args):
     existing_agent(slug)
     current = read_agent_json(slug)
 
-    # An update with no token keeps the stored one; the dashboard never reads it
-    # back, so it cannot resubmit what it does not have.
     merged = dict(current)
     merged.update({k: v for k, v in payload.items() if v is not None})
     cfg = validate_config(merged, creating=False)
-    if not cfg["_token"]:
-        cfg["_token"] = read_stored_token(slug)
-        if not cfg["_token"]:
-            fail("this agent has no bot token stored; supply one")
 
     uid, gid = agent_ids()
-    write_agent_files(cfg, uid, gid)
+    channel = channel_bound_to(slug)
+    write_agent_files(cfg, uid, gid, channel)
     meta = public_meta(cfg)
     meta["created_at"] = current.get("created_at", now_iso())
     write_agent_json(slug, meta, uid, gid)
@@ -842,8 +971,7 @@ def cmd_agent_update(args):
     restarted = False
     if unit_state(slug)["active"] == "active":
         restarted = run(["systemctl", "restart", unit_name(slug)], timeout=30).returncode == 0
-    audit("agent-update", {"slug": slug, "restarted": restarted,
-                           "token_changed": bool(payload.get("telegram_bot_token"))})
+    audit("agent-update", {"slug": slug, "restarted": restarted})
     ok({"slug": slug, "restarted": restarted, "state": unit_state(slug)})
 
 
@@ -1078,6 +1206,584 @@ def cmd_agent_memory_stats(args):
     ok(memory_counts(slug))
 
 
+# ============================================================== channels =====
+#
+# A channel is a way for messages to reach an agent: a Telegram bot, or a linked
+# WhatsApp number. It is separate from the agent on purpose -- the credential
+# belongs to the transport, not to the mind behind it, and the same agent should
+# be able to change how people reach it without being rebuilt.
+#
+# Exactly one channel binds to one agent. That is not a modelling preference: the
+# Telegram Bot API allows a single poller per token, so two agents sharing a
+# channel would make both drop messages at random.
+
+
+def channel_dir(slug):
+    return os.path.join(CHANNELS_DIR, slug)
+
+
+def check_channel_slug(slug):
+    if not isinstance(slug, str) or not SLUG_RE.match(slug):
+        fail("invalid channel name: must be lowercase letters, digits and hyphens")
+    return slug
+
+
+def existing_channel(slug):
+    check_channel_slug(slug)
+    if not os.path.isdir(channel_dir(slug)):
+        fail("no such channel: " + slug)
+    return channel_dir(slug)
+
+
+def read_channel_json(slug):
+    try:
+        with open(os.path.join(channel_dir(slug), "channel.json")) as fh:
+            return json.load(fh)
+    except Exception:
+        return {"slug": slug, "name": slug, "type": "telegram", "broken": True}
+
+
+def channel_token(slug):
+    path = os.path.join(channel_dir(slug), "channel.env")
+    try:
+        with open(path) as fh:
+            for line in fh:
+                if line.startswith("CHANNEL_TOKEN="):
+                    return line.split("=", 1)[1].strip()
+    except Exception:
+        return ""
+    return ""
+
+
+def all_channels():
+    if not os.path.isdir(CHANNELS_DIR):
+        return []
+    out = []
+    for slug in sorted(os.listdir(CHANNELS_DIR)):
+        if SLUG_RE.match(slug) and os.path.isdir(channel_dir(slug)):
+            out.append(read_channel_json(slug))
+    return out
+
+
+def channel_bound_to(agent_slug):
+    """The channel feeding this agent, with its token, or None."""
+    for meta in all_channels():
+        if meta.get("agent") == agent_slug:
+            meta = dict(meta)
+            meta["_token"] = channel_token(meta["slug"])
+            return meta
+    return None
+
+
+def channel_summary(slug):
+    meta = read_channel_json(slug)
+    meta["token_set"] = bool(channel_token(slug))
+    meta["dir"] = channel_dir(slug)
+    if meta.get("type") == "whatsapp":
+        meta["linked"] = os.path.isfile(
+            os.path.join(channel_dir(slug), "session", "creds.json")
+        )
+    agent = meta.get("agent")
+    if agent and os.path.isdir(agent_dir(agent)):
+        meta["agent_state"] = unit_state(agent)
+        meta["agent_name"] = read_agent_json(agent).get("name", agent)
+    return meta
+
+
+def validate_channel(cfg, creating):
+    out = {}
+    slug = cfg.get("slug", "")
+    check_channel_slug(slug)
+    out["slug"] = slug
+
+    name = str(cfg.get("name") or slug).strip()
+    if not NAME_RE.match(name):
+        fail("channel name contains disallowed characters")
+    out["name"] = name
+
+    ctype = str(cfg.get("type") or "telegram").strip()
+    if ctype not in CHANNEL_TYPES:
+        fail("channel type must be one of: " + ", ".join(CHANNEL_TYPES))
+    out["type"] = ctype
+
+    agent = str(cfg.get("agent") or "").strip()
+    if agent:
+        check_slug(agent)
+        if not os.path.isdir(agent_dir(agent)):
+            fail("no such agent: " + agent)
+        # One poller per token, so one channel per agent.
+        for other in all_channels():
+            if other.get("agent") == agent and other.get("slug") != slug:
+                fail(
+                    "agent " + agent + " is already connected to channel "
+                    + str(other.get("slug"))
+                    + "; disconnect it first"
+                )
+    out["agent"] = agent
+
+    out["addons"] = validate_addon_ids(cfg.get("addons"))
+    out["addon_env"] = validate_env_map(cfg.get("addon_env"))
+
+    if ctype == "telegram":
+        username = str(cfg.get("telegram_bot_username") or "").lstrip("@").strip()
+        if username and not BOT_USERNAME_RE.match(username):
+            fail("bot username must be 4-32 characters of letters, digits or underscore")
+        out["telegram_bot_username"] = username
+
+        allowed = str(cfg.get("allowed_users") or "").replace(" ", "")
+        if allowed and not USER_IDS_RE.match(allowed):
+            fail("allowed users must be comma-separated numeric Telegram IDs")
+        out["allowed_users"] = allowed
+
+        topics = bool(cfg.get("topics_enabled"))
+        chat_id = str(cfg.get("topics_chat_id") or "").strip()
+        if chat_id and not CHAT_ID_RE.match(chat_id):
+            fail("Telegram chat id must be numeric (groups start with -100)")
+        if topics and not chat_id:
+            fail("group topic mode needs the group chat id")
+        out["topics_enabled"] = topics
+        out["topics_chat_id"] = chat_id
+
+        token = cfg.get("token") or ""
+        if token and not BOT_TOKEN_RE.match(token):
+            fail("that does not look like a Telegram bot token")
+        if creating and not token:
+            fail("a Telegram bot token is required to create a Telegram channel")
+        out["_token"] = token
+    else:
+        numbers = str(cfg.get("allowed_numbers") or "").replace(" ", "")
+        if numbers and not PHONES_RE.match(numbers):
+            fail("allowed numbers must be comma-separated phone numbers in E.164 form")
+        out["allowed_numbers"] = numbers
+        out["_token"] = ""
+
+    return out
+
+
+def write_channel_files(cfg, uid, gid, keep_token=""):
+    d = channel_dir(cfg["slug"])
+    os.makedirs(d, exist_ok=True)
+
+    token = cfg.get("_token") or keep_token
+    env_path = os.path.join(d, "channel.env")
+    fd, tmp = tempfile.mkstemp(dir=d)
+    with os.fdopen(fd, "w") as fh:
+        fh.write("# Generated by the MONI dashboard.\n")
+        fh.write("CHANNEL_TOKEN=" + token + "\n")
+    os.chown(tmp, uid, gid)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, env_path)
+
+    meta = {k: v for k, v in cfg.items() if not k.startswith("_")}
+    meta["updated_at"] = now_iso()
+    meta_path = os.path.join(d, "channel.json")
+    with open(meta_path, "w") as fh:
+        json.dump(meta, fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    os.chown(meta_path, uid, gid)
+    os.chmod(meta_path, 0o640)
+    os.chown(d, uid, gid)
+    os.chmod(d, 0o770)
+
+
+def reconfigure_agent(agent_slug):
+    """Regenerate an agent's environment from its current channel and restart it.
+
+    Called whenever a channel changes, because the agent's EnvironmentFile is
+    derived from the channel and would otherwise still hold the old token.
+    """
+    if not agent_slug or not os.path.isdir(agent_dir(agent_slug)):
+        return {"reconfigured": False}
+    cfg = validate_config(read_agent_json(agent_slug), creating=False)
+    uid, gid = agent_ids()
+    channel = channel_bound_to(agent_slug)
+    write_agent_files(cfg, uid, gid, channel)
+    chown_tree(agent_dir(agent_slug), uid, gid)
+    os.chmod(os.path.join(agent_dir(agent_slug), "agent.env"), 0o600)
+
+    run(["systemctl", "daemon-reload"])
+    run(["systemctl", "reset-failed", unit_name(agent_slug)])
+    if channel:
+        r = run(["systemctl", "enable", "--now", unit_name(agent_slug)], timeout=45)
+        if unit_state(agent_slug)["active"] == "active":
+            run(["systemctl", "restart", unit_name(agent_slug)], timeout=45)
+        return {"reconfigured": True, "running": r.returncode == 0}
+    # No channel left: stop rather than leave it polling a revoked token.
+    run(["systemctl", "disable", "--now", unit_name(agent_slug)], timeout=45)
+    return {"reconfigured": True, "running": False}
+
+
+def cmd_channel_list(args):
+    if not os.path.isdir(CHANNELS_DIR):
+        ok([])
+    ok([channel_summary(m["slug"]) for m in all_channels()])
+
+
+def cmd_channel_get(args):
+    if not args:
+        fail("usage: channel-get <slug>")
+    existing_channel(args[0])
+    ok(channel_summary(args[0]))
+
+
+def cmd_channel_create(args):
+    payload = read_stdin_json()
+    cfg = validate_channel(payload, creating=True)
+    slug = cfg["slug"]
+    if os.path.exists(channel_dir(slug)):
+        fail("a channel called " + slug + " already exists")
+    uid, gid = agent_ids()
+    os.makedirs(CHANNELS_DIR, exist_ok=True)
+    os.chmod(CHANNELS_DIR, 0o750)
+    try:
+        write_channel_files(cfg, uid, gid)
+    except Exception as exc:
+        shutil.rmtree(channel_dir(slug), ignore_errors=True)
+        fail("could not create channel: " + type(exc).__name__ + ": " + str(exc))
+    result = reconfigure_agent(cfg.get("agent"))
+    audit("channel-create", {"slug": slug, "type": cfg["type"], "agent": cfg.get("agent")})
+    ok({"slug": slug, "agent": cfg.get("agent"), **result})
+
+
+def cmd_channel_update(args):
+    payload = read_stdin_json()
+    slug = check_channel_slug(payload.get("slug", ""))
+    existing_channel(slug)
+    current = read_channel_json(slug)
+    previous_agent = current.get("agent") or ""
+
+    merged = dict(current)
+    merged.update({k: v for k, v in payload.items() if v is not None})
+    cfg = validate_channel(merged, creating=False)
+
+    uid, gid = agent_ids()
+    write_channel_files(cfg, uid, gid, keep_token=channel_token(slug))
+
+    results = {}
+    # Order matters: rebuild the agent that lost the channel first, so it stops
+    # before the new one starts polling the same token.
+    if previous_agent and previous_agent != cfg.get("agent"):
+        results["previous"] = reconfigure_agent(previous_agent)
+    results["current"] = reconfigure_agent(cfg.get("agent"))
+    audit("channel-update", {"slug": slug, "agent": cfg.get("agent"),
+                             "token_changed": bool(cfg.get("_token"))})
+    ok({"slug": slug, **results})
+
+
+def cmd_channel_delete(args):
+    if not args:
+        fail("usage: channel-delete <slug>")
+    slug = check_channel_slug(args[0])
+    path = existing_channel(slug)
+    agent = read_channel_json(slug).get("agent") or ""
+    os.makedirs(ARCHIVE_DIR, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    target = os.path.join(ARCHIVE_DIR, "channel-" + slug + "-" + stamp)
+    shutil.move(path, target)
+    os.chmod(target, 0o700)
+    result = reconfigure_agent(agent)
+    audit("channel-delete", {"slug": slug, "archived_to": target, "agent": agent})
+    ok({"slug": slug, "archived_to": target, **result})
+
+
+# ========================================================= system services ===
+
+
+def check_unit(unit):
+    if unit not in MANAGED_UNITS:
+        fail("service not managed by this panel: " + repr(unit))
+    return unit
+
+
+def service_state(unit):
+    active = run(["systemctl", "is-active", unit]).stdout.strip() or "unknown"
+    enabled = run(["systemctl", "is-enabled", unit]).stdout.strip() or "unknown"
+    since = run(
+        ["systemctl", "show", unit, "-p", "ActiveEnterTimestamp", "--value"]
+    ).stdout.strip()
+    mem = run(["systemctl", "show", unit, "-p", "MemoryCurrent", "--value"]).stdout.strip()
+    try:
+        mem_bytes = int(mem)
+        if mem_bytes < 0:
+            mem_bytes = None
+    except (TypeError, ValueError):
+        mem_bytes = None
+    return {
+        "unit": unit,
+        "active": active,
+        "enabled": enabled,
+        "since": since,
+        "memory": mem_bytes,
+        "stoppable": unit not in UNSTOPPABLE_UNITS,
+    }
+
+
+def cmd_service_list(args):
+    ok([service_state(u) for u in MANAGED_UNITS])
+
+
+def cmd_service_action(args):
+    if len(args) < 2:
+        fail("usage: service-action <unit> <" + "|".join(ACTIONS) + ">")
+    unit = check_unit(args[0])
+    action = args[1]
+    if action not in ACTIONS:
+        fail("action not permitted: " + repr(action))
+    if action in ("stop", "disable") and unit in UNSTOPPABLE_UNITS:
+        fail(
+            unit + " cannot be stopped from the panel -- doing so would cut off "
+            "access to the machine or to this panel. Use a console if you really "
+            "mean it."
+        )
+    r = run(["systemctl", action, unit], timeout=45)
+    audit("service-" + action, {"unit": unit, "rc": r.returncode})
+    if r.returncode != 0:
+        fail((r.stderr.strip() or "systemctl " + action + " failed")[:400])
+    ok(service_state(unit))
+
+
+def cmd_service_logs(args):
+    if not args:
+        fail("usage: service-logs <unit> [lines]")
+    unit = check_unit(args[0])
+    n = 200
+    if len(args) > 1:
+        try:
+            n = max(10, min(2000, int(args[1])))
+        except ValueError:
+            fail("bad line count")
+    r = run(
+        ["journalctl", "-u", unit, "-n", str(n), "--no-pager", "--output", "short-iso"],
+        timeout=30,
+    )
+    ok({"unit": unit, "lines": r.stdout.splitlines()[-n:]})
+
+
+# ============================================================ credentials ====
+
+
+def check_credential(name):
+    spec = CREDENTIAL_FILES.get(name)
+    if not spec:
+        fail("unknown credential file: " + repr(name))
+    return spec
+
+
+def cmd_credential_get(args):
+    """Return a credential file with the secret values masked.
+
+    The panel needs to show whether a credential is set and let it be replaced.
+    It does not need to display the secret, and a token echoed into a browser is
+    a token in a screenshot, a proxy log and a scrollback buffer.
+    """
+    if not args:
+        fail("usage: credential-get <name>")
+    spec = check_credential(args[0])
+    path = spec["path"]
+    exists = os.path.isfile(path)
+    lines = []
+    present = {}
+    if exists:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            for raw in fh.read().splitlines():
+                stripped = raw.strip()
+                if not stripped or stripped.startswith("#"):
+                    lines.append(raw)
+                    continue
+                key, _, value = stripped.partition("=")
+                key = key.strip()
+                value = value.strip()
+                if key in spec["keys"] and value:
+                    present[key] = {
+                        "length": len(value),
+                        "preview": value[:8] + "…" + value[-4:] if len(value) > 16 else "set",
+                    }
+                    lines.append(key + "=" + "•" * 40)
+                else:
+                    lines.append(raw)
+    st = os.stat(path) if exists else None
+    ok(
+        {
+            "name": args[0],
+            "label": spec["label"],
+            "path": path,
+            "exists": exists,
+            "masked": "\n".join(lines),
+            "keys": list(spec["keys"]),
+            "present": present,
+            "configured": bool(present),
+            "mode": oct(st.st_mode & 0o777) if st else None,
+            "modified": datetime.fromtimestamp(st.st_mtime, timezone.utc).isoformat(
+                timespec="seconds"
+            )
+            if st
+            else None,
+        }
+    )
+
+
+def cmd_credential_set(args):
+    """Replace one key in a credential file. Value arrives on stdin."""
+    if len(args) < 2:
+        fail("usage: credential-set <name> <KEY>   (value on stdin)")
+    spec = check_credential(args[0])
+    key = args[1]
+    if key not in spec["keys"]:
+        fail("key not permitted in " + args[0] + ": " + repr(key))
+    value = read_stdin_text().strip()
+    if not value:
+        fail("empty value; use credential-clear to remove a key")
+    if not ENV_VALUE_RE.match(value):
+        fail("value contains a newline or null byte")
+    if key in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY") and not OAUTH_TOKEN_RE.match(value):
+        fail("that does not look like an Anthropic credential (expected sk-ant-…)")
+    _write_credential(spec, {key: value}, drop=[k for k in spec["keys"] if k != key])
+    audit("credential-set", {"name": args[0], "key": key})
+    ok({"name": args[0], "key": key, "configured": True})
+
+
+def cmd_credential_clear(args):
+    if len(args) < 2:
+        fail("usage: credential-clear <name> <KEY>")
+    spec = check_credential(args[0])
+    key = args[1]
+    if key not in spec["keys"]:
+        fail("key not permitted in " + args[0] + ": " + repr(key))
+    _write_credential(spec, {}, drop=[key])
+    audit("credential-clear", {"name": args[0], "key": key})
+    ok({"name": args[0], "key": key, "configured": False})
+
+
+def _write_credential(spec, updates, drop=()):
+    """Rewrite a credential file, preserving comments and ownership.
+
+    Written through a temp file in the same directory and renamed, so a crash
+    mid-write cannot leave agents with a truncated credential.
+    """
+    path = spec["path"]
+    directory = os.path.dirname(path)
+    os.makedirs(directory, exist_ok=True)
+
+    existing = []
+    if os.path.isfile(path):
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            existing = fh.read().splitlines()
+
+    out = []
+    written = set()
+    for raw in existing:
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
+            out.append(raw)
+            continue
+        key = stripped.partition("=")[0].strip()
+        if key in drop and key not in updates:
+            continue
+        if key in updates:
+            out.append(key + "=" + updates[key])
+            written.add(key)
+            continue
+        out.append(raw)
+    for key, value in updates.items():
+        if key not in written:
+            out.append(key + "=" + value)
+
+    fd, tmp = tempfile.mkstemp(dir=directory)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(out).rstrip() + "\n")
+    uid = pwd.getpwnam(spec["owner"]).pw_uid
+    gid = grp.getgrnam(spec["group"]).gr_gid
+    os.chown(tmp, uid, gid)
+    os.chmod(tmp, spec["mode"])
+    os.replace(tmp, path)
+
+
+def cmd_credential_list(args):
+    out = []
+    for name in sorted(CREDENTIAL_FILES):
+        spec = CREDENTIAL_FILES[name]
+        configured = False
+        if os.path.isfile(spec["path"]):
+            with open(spec["path"], encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    key, _, value = line.strip().partition("=")
+                    if key.strip() in spec["keys"] and value.strip():
+                        configured = True
+                        break
+        out.append(
+            {
+                "name": name,
+                "label": spec["label"],
+                "path": spec["path"],
+                "configured": configured,
+                "keys": list(spec["keys"]),
+            }
+        )
+    ok(out)
+
+
+# =============================================================== probing =====
+
+
+def cmd_system_probe(args):
+    """Report which optional capabilities are actually installed.
+
+    The add-on catalogue claims things like voice transcription are available;
+    this is what lets the panel show that as a fact rather than a hope.
+    """
+    def have_binary(name):
+        return bool(shutil.which(name))
+
+    whisper_bin = os.path.join(SHARED_DIR, "whisper.cpp", "build", "bin", "whisper-cli")
+    whisper_model = os.path.join(SHARED_DIR, "whisper.cpp", "models", "ggml-base.bin")
+    models_dir = os.path.join(SHARED_DIR, "models")
+
+    claude_configured = False
+    if os.path.isfile(CLAUDE_AUTH):
+        with open(CLAUDE_AUTH, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                key, _, value = line.strip().partition("=")
+                if key.strip() in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY") and value.strip():
+                    claude_configured = True
+                    break
+
+    runtime_rev = ""
+    r = run(["git", "-C", RUNTIME_DIR, "rev-parse", "--short", "HEAD"])
+    if r.returncode == 0:
+        runtime_rev = r.stdout.strip()
+
+    ok(
+        {
+            "files": {
+                "whisper_binary": os.path.isfile(whisper_bin),
+                "whisper_model": os.path.isfile(whisper_model),
+                "embedding_model": os.path.isdir(models_dir) and bool(os.listdir(models_dir)),
+                "vault_template": os.path.isdir(TEMPLATE_DIR),
+                "runtime_venv": os.path.isfile(
+                    os.path.join(RUNTIME_DIR, "venv", "bin", "claude-telegram-bot")
+                ),
+            },
+            "binaries": {
+                "ffmpeg": have_binary("ffmpeg"),
+                "claude": have_binary("claude"),
+                "obsidian": have_binary("obsidian"),
+                "node": have_binary("node"),
+                "git": have_binary("git"),
+            },
+            "claude_credential": claude_configured,
+            "runtime_revision": runtime_rev,
+            "counts": {
+                "agents": len(
+                    [s for s in os.listdir(AGENTS_DIR) if SLUG_RE.match(s)]
+                )
+                if os.path.isdir(AGENTS_DIR)
+                else 0,
+                "channels": len(all_channels()),
+            },
+        }
+    )
+
+
 COMMANDS = {
     "list-keys": cmd_list_keys,
     "list-all-keys": cmd_list_all_keys,
@@ -1098,6 +1804,19 @@ COMMANDS = {
     "agent-memory-index": cmd_agent_memory_index,
     "agent-memory-search": cmd_agent_memory_search,
     "agent-memory-stats": cmd_agent_memory_stats,
+    "channel-list": cmd_channel_list,
+    "channel-get": cmd_channel_get,
+    "channel-create": cmd_channel_create,
+    "channel-update": cmd_channel_update,
+    "channel-delete": cmd_channel_delete,
+    "service-list": cmd_service_list,
+    "service-action": cmd_service_action,
+    "service-logs": cmd_service_logs,
+    "credential-list": cmd_credential_list,
+    "credential-get": cmd_credential_get,
+    "credential-set": cmd_credential_set,
+    "credential-clear": cmd_credential_clear,
+    "system-probe": cmd_system_probe,
 }
 
 if __name__ == "__main__":

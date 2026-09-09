@@ -1,7 +1,21 @@
 "use strict";
-/** Agent management pages. */
+/** Agent management, and the Agents Dashboard. */
 
-const { esc, bytes, shell, agentPill, flashes, stamp, ago } = require("./ui");
+const {
+  esc,
+  bytes,
+  shell,
+  agentPill,
+  card,
+  stat,
+  flashes,
+  empty,
+  icon,
+  stamp,
+  ago,
+} = require("./ui");
+const { byScope } = require("./catalog");
+const { renderAddons } = require("./views-addons");
 
 const MODELS = [
   ["claude-opus-5", "Opus 5 — most capable"],
@@ -26,137 +40,224 @@ function tabs(slug, active) {
 }
 
 function controls(csrf, agent) {
-  const running = agent.state && agent.state.active === "active";
-  const button = (action, label, cls) => `
+  const state = agent.state || {};
+  const running = state.active === "active";
+  const button = (action, label, cls, iconName) => `
     <form method="post" action="/agents/${esc(agent.slug)}/action" class="inline">
       <input type="hidden" name="_csrf" value="${esc(csrf)}">
       <input type="hidden" name="action" value="${action}">
-      <button class="btn ${cls} small" type="submit">${label}</button>
+      <button class="btn ${cls} small" type="submit">${icon(iconName)} ${label}</button>
     </form>`;
-  return `<div class="btn-row">
-    ${running ? button("restart", "Restart", "") : button("start", "Start", "primary")}
-    ${running ? button("stop", "Stop", "danger") : ""}
-    ${
-      agent.state && agent.state.enabled === "enabled"
-        ? button("disable", "Disable at boot", "")
-        : button("enable", "Enable at boot", "")
-    }
-  </div>`;
+  const parts = [];
+  if (running) {
+    parts.push(button("restart", "Restart", "", "restart"));
+    parts.push(button("stop", "Stop", "danger", "stop"));
+  } else {
+    parts.push(button("start", "Start", "primary", "play"));
+  }
+  return `<div class="btn-row">${parts.join("")}</div>`;
 }
 
-/* ----------------------------------------------------------------- list --- */
+/* ------------------------------------------------------ agents dashboard - */
 
-exports.list = ({ csrf, user, agents, flash, err }) => {
-  const rows = agents
-    .map((a) => {
-      const mem = a.memory || {};
-      return `<tr>
-        <td>
-          <a class="strong" href="/agents/${esc(a.slug)}">${esc(a.name || a.slug)}</a>
-          <div class="muted small mono">${esc(a.slug)}</div>
-        </td>
-        <td>${
-          a.telegram_bot_username
-            ? `<span class="mono small">@${esc(a.telegram_bot_username)}</span>`
-            : `<span class="muted small">not set</span>`
-        }${a.token_set ? "" : `<div class="tag warn-tag">no token</div>`}</td>
-        <td>${agentPill(a.state && a.state.active)}
-          ${
-            a.state && a.state.enabled !== "enabled"
-              ? `<div class="muted small">not enabled at boot</div>`
-              : ""
-          }</td>
-        <td class="mono small">${a.notes || 0} notes · ${mem.chunks || 0} chunks</td>
-        <td class="mono small">${esc(a.model || "—")}</td>
-        <td class="right">${controls(csrf, a)}</td>
-      </tr>`;
-    })
-    .join("");
+exports.dashboard = ({ csrf, user, agents, channels, probe, flash, err }) => {
+  const running = agents.filter((a) => a.state && a.state.active === "active");
+  const failed = agents.filter((a) => a.state && a.state.active === "failed");
+  const noChannel = agents.filter((a) => !a.channel);
+  const totalNotes = agents.reduce((n, a) => n + (a.notes || 0), 0);
+  const totalChunks = agents.reduce((n, a) => n + ((a.memory || {}).chunks || 0), 0);
 
   return shell(
-    "Agents",
-    `<h1>Agents</h1>
-    <p class="muted">Each agent is a Telegram bot with its own Claude session, its own
-      Obsidian memory vault, and its own vector index. They cannot see each other.</p>
-    ${flashes({ msg: flash, err })}
+    "Agents Dashboard",
+    `${flashes({ msg: flash, err })}
+    ${
+      probe && !probe.claude_credential
+        ? `<div class="alert warn">${icon("alert")}<div>No Claude credential is set, so
+           agents can receive messages but cannot answer.
+           <a href="/credentials">Set one now</a>.</div></div>`
+        : ""
+    }
+    ${
+      failed.length
+        ? `<div class="alert bad">${icon("alert")}<div>${failed.length} agent${
+            failed.length === 1 ? " is" : "s are"
+          } in a failed state:
+           ${failed.map((a) => `<a href="/agents/${esc(a.slug)}/logs">${esc(a.name || a.slug)}</a>`).join(", ")}</div></div>`
+        : ""
+    }
+    ${
+      noChannel.length
+        ? `<div class="alert warn">${icon("alert")}<div>${noChannel.length} agent${
+            noChannel.length === 1 ? " has" : "s have"
+          } no channel and cannot be reached:
+           ${noChannel.map((a) => `<a href="/agents/${esc(a.slug)}">${esc(a.name || a.slug)}</a>`).join(", ")}.
+           <a href="/channels/new">Add a channel</a>.</div></div>`
+        : ""
+    }
 
-    <div class="card">
-      <div class="card-head">
-        <h2>Running agents</h2>
-        <a class="btn primary small" href="/agents/new">Create agent</a>
-      </div>
-      ${
-        agents.length
-          ? `<table class="rows">
-              <thead><tr><th>Agent</th><th>Bot</th><th>State</th><th>Memory</th><th>Model</th><th></th></tr></thead>
-              <tbody>${rows}</tbody></table>`
-          : `<p class="muted">No agents yet. <a href="/agents/new">Create the first one</a> —
-             it takes a bot token from <a href="/guide">@BotFather</a> and about a minute.</p>`
-      }
+    <div class="statrow" style="margin-bottom:18px">
+      ${stat(running.length + " / " + agents.length, "agents running", "agents")}
+      ${stat(channels.length, "channels", "channels")}
+      ${stat(totalNotes, "memory notes", "memory")}
+      ${stat(totalChunks, "indexed chunks", "search")}
     </div>
 
-    <div class="card">
-      <h2>What an agent gets</h2>
-      <table class="kv">
-        <tr><td>Telegram bot</td><td class="muted">Its own bot token, its own chat. One bot, one agent.</td></tr>
-        <tr><td>Workspace</td><td class="muted">An isolated directory it may read and write. Nothing outside it.</td></tr>
-        <tr><td>Memory vault</td><td class="muted">CLAUDE.md, MEMORY.md, WORKLOG.md and memory/ — a real Obsidian vault.</td></tr>
-        <tr><td>Vector index</td><td class="muted">Local embeddings over that vault, searchable by the agent itself.</td></tr>
-        <tr><td>systemd unit</td><td class="muted">Restarts on crash, starts on boot, logs to the journal.</td></tr>
-      </table>
-      <p class="muted">Full walkthrough on the <a href="/guide">Guide</a> page.</p>
-    </div>`,
-    { user, csrf, active: "agents" }
+    ${
+      agents.length
+        ? card(
+            "Fleet",
+            `<table class="rows">
+              <thead><tr><th>Agent</th><th>State</th><th>Channel</th><th>Memory</th><th>Model</th><th></th></tr></thead>
+              <tbody>${agents
+                .map(
+                  (a) => `<tr>
+                  <td>
+                    <a class="strong" href="/agents/${esc(a.slug)}">${esc(a.name || a.slug)}</a>
+                    <div class="muted small mono">${esc(a.slug)}</div>
+                  </td>
+                  <td>${agentPill(a.state && a.state.active)}</td>
+                  <td class="small">${
+                    a.channel
+                      ? `<a href="/channels/${esc(a.channel.slug)}">${esc(a.channel.name)}</a>
+                         ${
+                           a.channel.telegram_bot_username
+                             ? `<div class="muted small mono">@${esc(a.channel.telegram_bot_username)}</div>`
+                             : ""
+                         }`
+                      : `<span class="muted">none</span>`
+                  }</td>
+                  <td class="mono small">${a.notes || 0} notes · ${(a.memory || {}).chunks || 0} chunks</td>
+                  <td class="mono small">${esc(a.model || "—")}</td>
+                  <td class="right">${controls(csrf, a)}</td>
+                </tr>`
+                )
+                .join("")}</tbody></table>`,
+            {
+              icon: "agents",
+              actions: `<a class="btn primary small" href="/agents/new">${icon("plus")} New agent</a>`,
+            }
+          )
+        : card(
+            "",
+            empty(
+              "agents",
+              "No agents yet",
+              'An agent is a Claude session with its own memory. <a href="/agents/new">Create the first one</a>.'
+            )
+          )
+    }`,
+    {
+      user,
+      csrf,
+      active: "agents-dashboard",
+      heading: "Agents Dashboard",
+      subtitle: "Every agent on this machine, and what it can reach.",
+      statusChip: running.length + " running",
+      actions: `<a class="btn primary" href="/agents/new">${icon("plus")} New agent</a>`,
+    }
   );
 };
 
+/* ----------------------------------------------------------------- list --- */
+
+exports.list = ({ csrf, user, agents, flash, err }) =>
+  shell(
+    "Agents",
+    `${flashes({ msg: flash, err })}
+    ${
+      agents.length
+        ? card(
+            "All agents",
+            `<table class="rows">
+              <thead><tr><th>Agent</th><th>State</th><th>Channel</th><th>Memory</th><th>Model</th><th></th></tr></thead>
+              <tbody>${agents
+                .map(
+                  (a) => `<tr>
+                  <td>
+                    <a class="strong" href="/agents/${esc(a.slug)}">${esc(a.name || a.slug)}</a>
+                    <div class="muted small mono">${esc(a.slug)}</div>
+                  </td>
+                  <td>${agentPill(a.state && a.state.active)}</td>
+                  <td class="small">${
+                    a.channel
+                      ? `<a href="/channels/${esc(a.channel.slug)}">${esc(a.channel.name)}</a>`
+                      : `<span class="muted">none</span>`
+                  }</td>
+                  <td class="mono small">${a.notes || 0} notes · ${(a.memory || {}).chunks || 0} chunks</td>
+                  <td class="mono small">${esc(a.model || "—")}</td>
+                  <td class="right">${controls(csrf, a)}</td>
+                </tr>`
+                )
+                .join("")}</tbody></table>`,
+            { icon: "agents" }
+          )
+        : card(
+            "",
+            empty(
+              "agents",
+              "No agents yet",
+              'An agent is one Claude session with its own workspace and memory. <a href="/agents/new">Create the first one</a>.'
+            )
+          )
+    }
+
+    ${card(
+      "What an agent gets",
+      `<table class="kv">
+        <tr><td>Workspace</td><td class="muted">An isolated directory it may read and write. Nothing outside it.</td></tr>
+        <tr><td>Memory vault</td><td class="muted">CLAUDE.md, MEMORY.md, WORKLOG.md and memory/ — a real Obsidian vault.</td></tr>
+        <tr><td>Vector index</td><td class="muted">Local embeddings over that vault, which the agent searches itself.</td></tr>
+        <tr><td>systemd unit</td><td class="muted">Restarts on crash, starts on boot, logs to the journal.</td></tr>
+        <tr><td>A channel</td><td class="muted">Added separately, so you can change how it is reached without rebuilding it.</td></tr>
+      </table>`,
+      { icon: "info" }
+    )}`,
+    {
+      user,
+      csrf,
+      active: "agents",
+      heading: "Agents",
+      subtitle:
+        "Each agent is one Claude session with its own memory. They cannot see each other.",
+      actions: `<a class="btn primary" href="/agents/new">${icon("plus")} New agent</a>`,
+    }
+  );
+
 /* ------------------------------------------------------------------ new --- */
 
-exports.create = ({ csrf, user, form = {}, errors = [], botInfo = null }) => {
+exports.create = ({ csrf, user, form = {}, errors = [], probe }) => {
   const v = (k, d) => esc(form[k] != null && form[k] !== "" ? form[k] : d == null ? "" : d);
-  return shell(
-    "Create agent",
-    `<h1>Create an agent</h1>
-    <p class="muted">You need a bot token first. If you have not made one yet, the
-      <a href="/guide#bot">Guide</a> walks through @BotFather in four steps — come back
-      when you have a line that looks like <code class="mono">8123456789:AA…</code></p>
+  const chosen =
+    form.addons ||
+    byScope("agent")
+      .filter((a) => a.default || a.locked)
+      .map((a) => a.id);
 
-    ${errors.length ? `<div class="alert bad">${errors.map(esc).join("<br>")}</div>` : ""}
-    ${
-      botInfo
-        ? `<div class="alert good">Token verified — this is
-           <strong>@${esc(botInfo.username)}</strong> (${esc(botInfo.name)}).</div>`
-        : ""
-    }
+  return shell(
+    "New agent",
+    `${errors.length ? `<div class="alert bad">${icon("alert")}<div>${errors.map(esc).join("<br>")}</div></div>` : ""}
+    <div class="alert info">${icon("info")}<div>An agent has no way to be reached until you
+      connect a channel to it. Create the agent first, then add a channel — or pick one
+      below if you have a spare.</div></div>
 
     <form method="post" action="/agents/new" autocomplete="off">
       <input type="hidden" name="_csrf" value="${esc(csrf)}">
 
-      <div class="card">
-        <h2>Identity</h2>
-        <label>Display name <span class="hint">what you call it</span>
+      ${card(
+        "Identity",
+        `<label>Display name <span class="hint">what you call it</span>
           <input name="name" value="${v("name")}" placeholder="e.g. Odoo Dev" maxlength="64" required autofocus></label>
-        <label>Short name <span class="hint">lowercase, used for the folder and the systemd unit; cannot be changed later</span>
-          <input name="slug" value="${v("slug")}" placeholder="odoo-dev" pattern="[a-z][a-z0-9-]{1,30}" maxlength="31" required></label>
-        <label>Role <span class="hint">goes into CLAUDE.md — this is the agent's standing brief, so be specific</span>
-          <textarea name="role" rows="6" placeholder="You maintain the Odoo 17 instance at /opt/projects/odoo. You handle module changes, migrations and deployment. Ask before restarting the service in working hours.">${v("role")}</textarea></label>
-      </div>
+        <label>Short name <span class="hint">lowercase; names the folder and the systemd unit, and cannot be changed later</span>
+          <input name="slug" value="${v("slug")}" placeholder="odoo-dev"
+                 pattern="[a-z][a-z0-9-]{1,30}" maxlength="31" required></label>
+        <label>Role <span class="hint">written into CLAUDE.md and loaded on every request — this is the field that decides whether the agent is useful</span>
+          <textarea name="role" rows="7" placeholder="You maintain the Odoo 17 instance at /opt/projects/odoo. You handle module changes, migrations and deployment. You may edit code and run tests unattended. Ask before restarting the service during working hours.">${v("role")}</textarea></label>`,
+        { icon: "agents" }
+      )}
 
-      <div class="card">
-        <h2>Telegram</h2>
-        <label>Bot token <span class="hint">from @BotFather; stored 0600 and never shown again</span>
-          <input name="telegram_bot_token" type="password" placeholder="8123456789:AAH..." required></label>
-        <label>Bot username <span class="hint">optional — filled in automatically from the token</span>
-          <input name="telegram_bot_username" value="${v("telegram_bot_username")}" placeholder="my_odoo_bot" maxlength="32"></label>
-        <label>Allowed Telegram user IDs <span class="hint">comma separated. Leave empty and nobody can talk to it.</span>
-          <input name="allowed_users" value="${v("allowed_users")}" placeholder="123456789" pattern="[0-9, ]*"></label>
-        <p class="muted small">Don't know your ID? Message <code>@userinfobot</code> on Telegram
-          and it replies with it. See the <a href="/guide#userid">Guide</a>.</p>
-      </div>
-
-      <div class="card">
-        <h2>Behaviour</h2>
-        <label>Model
+      ${card(
+        "Behaviour",
+        `<label>Model
           <select name="model">
             ${MODELS.map(
               ([id, label]) =>
@@ -170,29 +271,33 @@ exports.create = ({ csrf, user, form = {}, errors = [], botInfo = null }) => {
             <option value="2" ${form.verbose_level === "2" ? "selected" : ""}>Detailed — tools with inputs</option>
           </select></label>
         <label>Project directory <span class="hint">optional. Must be under /opt/projects, /srv or /opt/moni-agents/workspaces. Appears inside the vault as <code>project/</code>.</span>
-          <input name="project_dir" value="${v("project_dir")}" placeholder="/opt/projects/odoo"></label>
-      </div>
+          <input name="project_dir" value="${v("project_dir")}" placeholder="/opt/projects/odoo"></label>`,
+        { icon: "settings" }
+      )}
 
-      <div class="card">
-        <h2>Group topics <span class="muted">(optional)</span></h2>
-        <p class="muted">Off by default: the agent talks to you in a private chat. Turn this
-          on to run it in a group where each project gets its own topic thread. The group
-          must be a forum and the bot must be an admin — see the
-          <a href="/guide#topics">Guide</a>.</p>
-        <label class="check"><input type="checkbox" name="enable_project_threads" value="1"
-          ${form.enable_project_threads ? "checked" : ""}> Route conversations into group topics</label>
-        <label>Group chat ID <span class="hint">starts with -100</span>
-          <input name="project_threads_chat_id" value="${v("project_threads_chat_id")}" placeholder="-1001234567890" pattern="-?[0-9]*"></label>
-      </div>
+      ${card(
+        "Add-ons",
+        `<p class="muted small">What this agent can do once a message reaches it. What it
+          can <em>receive</em> is set on its channel.</p>
+        ${renderAddons(byScope("agent"), chosen, probe)}`,
+        { icon: "addons" }
+      )}
 
-      <div class="card">
-        <p class="muted">On save: the vault is scaffolded, the vector index is created,
-          a systemd unit is enabled and the bot starts answering. Roughly ten seconds.</p>
-        <button class="btn primary" type="submit">Create agent</button>
-        <a class="btn" href="/agents">Cancel</a>
-      </div>
+      ${card(
+        "",
+        `<p class="muted small">On save the vault is scaffolded and the vector index is
+          built. Takes a few seconds.</p>
+        <button class="btn primary" type="submit">${icon("plus")} Create agent</button>
+        <a class="btn" href="/agents">Cancel</a>`
+      )}
     </form>`,
-    { user, csrf, active: "agents" }
+    {
+      user,
+      csrf,
+      active: "agents",
+      heading: "Create an agent",
+      subtitle: "The mind. The channel it answers on comes next.",
+    }
   );
 };
 
@@ -201,121 +306,133 @@ exports.create = ({ csrf, user, form = {}, errors = [], botInfo = null }) => {
 exports.detail = ({ csrf, user, agent, notes = [], flash, err }) => {
   const mem = agent.memory || {};
   const state = agent.state || {};
+  const ch = agent.channel;
+
   return shell(
-    esc(agent.name || agent.slug),
-    `<h1>${esc(agent.name || agent.slug)} ${agentPill(state.active)}</h1>
-    <p class="muted mono small">${esc(agent.slug)} · ${esc(agent.dir || "")}</p>
-    ${tabs(agent.slug, "overview")}
+    agent.name || agent.slug,
+    `${tabs(agent.slug, "overview")}
     ${flashes({ msg: flash, err })}
 
     ${
-      !agent.token_set
-        ? `<div class="alert bad">No bot token is stored for this agent, so it cannot
-           connect to Telegram. Add one under <a href="/agents/${esc(agent.slug)}/settings">Settings</a>.</div>`
+      !ch
+        ? `<div class="alert warn">${icon("alert")}<div>No channel is connected, so this
+           agent cannot receive messages and is not running.
+           <a href="/channels/new">Add a channel</a>.</div></div>`
         : ""
     }
     ${
       state.active === "failed"
-        ? `<div class="alert bad">This agent is in a failed state. The
-           <a href="/agents/${esc(agent.slug)}/logs">logs</a> will say why — a bad token and a
-           missing Claude credential are the two usual causes.</div>`
+        ? `<div class="alert bad">${icon("alert")}<div>This agent is in a failed state. The
+           <a href="/agents/${esc(agent.slug)}/logs">logs</a> will say why — a rejected bot
+           token and a missing Claude credential are the two usual causes.</div></div>`
         : ""
     }
 
     <div class="grid">
-      <div class="card">
-        <h2>Service</h2>
-        <table class="kv">
+      ${card(
+        "Service",
+        `<table class="kv">
           <tr><td>State</td><td>${agentPill(state.active)}</td></tr>
           <tr><td>At boot</td><td>${esc(state.enabled || "—")}</td></tr>
-          <tr><td>Since</td><td class="mono small">${esc(state.since || "—")}</td></tr>
+          <tr><td>Since</td><td class="mono small">${esc((state.since || "").slice(0, 19) || "—")}</td></tr>
           <tr><td>Unit</td><td class="mono small">moni-agent@${esc(agent.slug)}</td></tr>
         </table>
-        ${controls(csrf, agent)}
-      </div>
+        ${controls(csrf, agent)}`,
+        { icon: "services" }
+      )}
 
-      <div class="card">
-        <h2>Telegram</h2>
-        <table class="kv">
-          <tr><td>Bot</td><td class="mono small">${
-            agent.telegram_bot_username ? "@" + esc(agent.telegram_bot_username) : "—"
-          }</td></tr>
-          <tr><td>Token</td><td>${
-            agent.token_set
-              ? `<span class="pill ok">stored</span>`
-              : `<span class="pill bad">missing</span>`
-          }</td></tr>
-          <tr><td>Allowed users</td><td class="mono small">${esc(agent.allowed_users || "nobody")}</td></tr>
-          <tr><td>Topics</td><td>${
-            agent.enable_project_threads
-              ? `on · <span class="mono small">${esc(agent.project_threads_chat_id)}</span>`
-              : "off (private chat)"
-          }</td></tr>
-        </table>
-        ${
-          agent.telegram_bot_username
-            ? `<p class="muted small">Open the chat:
-               <code class="mono">https://t.me/${esc(agent.telegram_bot_username)}</code></p>`
-            : ""
-        }
-      </div>
+      ${card(
+        "Channel",
+        ch
+          ? `<table class="kv">
+              <tr><td>Channel</td><td><a href="/channels/${esc(ch.slug)}">${esc(ch.name)}</a></td></tr>
+              <tr><td>Type</td><td>${esc(ch.type)}</td></tr>
+              ${
+                ch.telegram_bot_username
+                  ? `<tr><td>Bot</td><td class="mono small">@${esc(ch.telegram_bot_username)}</td></tr>`
+                  : ""
+              }
+              <tr><td>Allowed</td><td class="mono small">${esc(ch.allowed_users || "nobody")}</td></tr>
+            </table>
+            ${
+              ch.telegram_bot_username
+                ? `<p class="muted small" style="margin-top:10px">Open the chat:
+                   <code>https://t.me/${esc(ch.telegram_bot_username)}</code></p>`
+                : ""
+            }`
+          : `<p class="muted">Not connected.</p>
+             <div class="btn-row"><a class="btn primary small" href="/channels/new">${icon(
+               "plus"
+             )} Add a channel</a></div>`,
+        { icon: "channels" }
+      )}
 
-      <div class="card">
-        <h2>Memory</h2>
-        <table class="kv">
+      ${card(
+        "Memory",
+        `<table class="kv">
           <tr><td>Notes</td><td>${agent.notes || 0} markdown files</td></tr>
           <tr><td>Indexed</td><td>${mem.files || 0} files · ${mem.chunks || 0} chunks</td></tr>
           <tr><td>Index size</td><td>${bytes(mem.bytes || 0)}</td></tr>
           <tr><td>Last indexed</td><td class="mono small">${esc(ago(mem.last_indexed))}</td></tr>
         </table>
         <div class="btn-row">
-          <a class="btn small" href="/agents/${esc(agent.slug)}/memory">Browse &amp; search</a>
+          <a class="btn small" href="/agents/${esc(agent.slug)}/memory">${icon("search")} Browse</a>
           <form method="post" action="/agents/${esc(agent.slug)}/memory/reindex" class="inline">
             <input type="hidden" name="_csrf" value="${esc(csrf)}">
-            <button class="btn small" type="submit">Reindex</button>
+            <button class="btn small" type="submit">${icon("reindex")} Reindex</button>
           </form>
-        </div>
-      </div>
+        </div>`,
+        { icon: "memory" }
+      )}
 
-      <div class="card">
-        <h2>Configuration</h2>
-        <table class="kv">
+      ${card(
+        "Configuration",
+        `<table class="kv">
           <tr><td>Model</td><td class="mono small">${esc(agent.model || "—")}</td></tr>
           <tr><td>Verbosity</td><td>${esc(String(agent.verbose_level))}</td></tr>
           <tr><td>Max turns</td><td>${esc(String(agent.max_turns || "—"))}</td></tr>
           <tr><td>Timeout</td><td>${esc(String(agent.timeout_seconds || "—"))}s</td></tr>
           <tr><td>Project</td><td class="mono small">${esc(agent.project_dir || "none")}</td></tr>
+          <tr><td>Add-ons</td><td class="small">${
+            (agent.addons || []).length ? (agent.addons || []).map(esc).join(", ") : "—"
+          }</td></tr>
           <tr><td>Created</td><td class="mono small">${esc(stamp(agent.created_at))}</td></tr>
-        </table>
-      </div>
+        </table>`,
+        { icon: "settings" }
+      )}
     </div>
 
-    <div class="card">
-      <div class="card-head">
-        <h2>Recently written memories</h2>
-        <a class="btn small" href="/agents/${esc(agent.slug)}/memory">All notes</a>
-      </div>
-      ${
-        notes.length
-          ? `<table class="rows">
-              <thead><tr><th>Note</th><th>Size</th><th>Modified</th></tr></thead>
-              <tbody>${notes
-                .slice(0, 8)
-                .map(
-                  (n) => `<tr>
-                  <td><a class="mono small" href="/agents/${esc(agent.slug)}/memory/note?path=${encodeURIComponent(
-                    n.path
-                  )}">${esc(n.path)}</a></td>
-                  <td class="mono small">${bytes(n.bytes)}</td>
-                  <td class="mono small">${esc(ago(n.modified))}</td>
-                </tr>`
-                )
-                .join("")}</tbody></table>`
-          : `<p class="muted">Nothing written yet. The agent creates notes as it works —
-             or you can write the first one yourself in the vault.</p>`
+    ${card(
+      "Recently written memories",
+      notes.length
+        ? `<table class="rows">
+            <thead><tr><th>Note</th><th>Size</th><th>Modified</th></tr></thead>
+            <tbody>${notes
+              .slice(0, 8)
+              .map(
+                (n) => `<tr>
+                <td><a class="mono small" href="/agents/${esc(agent.slug)}/memory/note?path=${encodeURIComponent(
+                  n.path
+                )}">${esc(n.path)}</a></td>
+                <td class="mono small">${bytes(n.bytes)}</td>
+                <td class="mono small">${esc(ago(n.modified))}</td>
+              </tr>`
+              )
+              .join("")}</tbody></table>`
+        : `<p class="muted">Nothing written yet. The agent creates notes as it works — or
+           you can write the first one yourself in the vault.</p>`,
+      {
+        icon: "memory",
+        actions: `<a class="btn small" href="/agents/${esc(agent.slug)}/memory">All notes</a>`,
       }
-    </div>`,
-    { user, csrf, active: "agents" }
+    )}`,
+    {
+      user,
+      csrf,
+      active: "agents",
+      heading: agent.name || agent.slug,
+      subtitle: `<span class="mono small">${esc(agent.slug)}</span> · ${esc(agent.dir || "")}`,
+    }
   );
 };
 
@@ -323,24 +440,29 @@ exports.detail = ({ csrf, user, agent, notes = [], flash, err }) => {
 
 exports.instructions = ({ csrf, user, agent, content, flash, err }) =>
   shell(
-    "Instructions — " + esc(agent.name || agent.slug),
-    `<h1>${esc(agent.name || agent.slug)} <span class="muted">instructions</span></h1>
-    ${tabs(agent.slug, "instructions")}
+    "Instructions — " + (agent.name || agent.slug),
+    `${tabs(agent.slug, "instructions")}
     ${flashes({ msg: flash, err })}
-    <div class="card">
-      <p class="muted">This is <code>CLAUDE.md</code> from the agent's vault. It is loaded
-        into the system prompt on every single request, so it is the right place for who
-        the agent is, what it may do, and how it should behave — and the wrong place for
-        anything that changes often. Saving takes effect on the agent's next message; no
-        restart needed.</p>
+    ${card(
+      "CLAUDE.md",
+      `<p class="muted small">Loaded into the system prompt on every single request. The
+        right place for who the agent is, what it may do, and how it should behave — and
+        the wrong place for anything that changes often. Saving takes effect on the next
+        message; no restart needed.</p>
       <form method="post" action="/agents/${esc(agent.slug)}/instructions">
         <input type="hidden" name="_csrf" value="${esc(csrf)}">
-        <label>CLAUDE.md
-          <textarea name="content" rows="30" class="mono code" spellcheck="false">${esc(content)}</textarea></label>
-        <button class="btn primary" type="submit">Save instructions</button>
-      </form>
-    </div>`,
-    { user, csrf, active: "agents" }
+        <textarea name="content" rows="30" class="code" spellcheck="false">${esc(content)}</textarea>
+        <button class="btn primary" type="submit">${icon("save")} Save instructions</button>
+      </form>`,
+      { icon: "guide" }
+    )}`,
+    {
+      user,
+      csrf,
+      active: "agents",
+      heading: agent.name || agent.slug,
+      subtitle: "Standing instructions.",
+    }
   );
 
 /* --------------------------------------------------------------- memory --- */
@@ -348,19 +470,18 @@ exports.instructions = ({ csrf, user, agent, content, flash, err }) =>
 exports.memory = ({ csrf, user, agent, notes, query, hits, flash, err }) => {
   const mem = agent.memory || {};
   return shell(
-    "Memory — " + esc(agent.name || agent.slug),
-    `<h1>${esc(agent.name || agent.slug)} <span class="muted">memory</span></h1>
-    ${tabs(agent.slug, "memory")}
+    "Memory — " + (agent.name || agent.slug),
+    `${tabs(agent.slug, "memory")}
     ${flashes({ msg: flash, err })}
 
-    <div class="card">
-      <h2>Search the vault</h2>
-      <p class="muted">Hybrid search — the same index the agent itself queries. Vector
-        similarity finds paraphrase, keyword matching finds exact tokens, and the two
-        rankings are merged. Everything is embedded locally; no text leaves this machine.</p>
+    ${card(
+      "Search the vault",
+      `<p class="muted small">The same index the agent queries. Vector similarity finds
+        paraphrase, keyword matching finds exact tokens, and the two rankings are merged.
+        Everything is embedded locally — no text leaves this machine.</p>
       <form method="get" action="/agents/${esc(agent.slug)}/memory" class="searchbar">
         <input name="q" value="${esc(query || "")}" placeholder="what did we decide about deployments?" autofocus>
-        <button class="btn primary" type="submit">Search</button>
+        <button class="btn primary" type="submit">${icon("search")} Search</button>
       </form>
       ${
         query
@@ -372,7 +493,7 @@ exports.memory = ({ csrf, user, agent, notes, query, hits, flash, err }) => {
                       <a class="mono small" href="/agents/${esc(agent.slug)}/memory/note?path=${encodeURIComponent(
                     h.path
                   )}">${esc(h.path)}</a>
-                      ${h.heading ? `<span class="muted small"> › ${esc(h.heading)}</span>` : ""}
+                      ${h.heading ? `<span class="muted small">› ${esc(h.heading)}</span>` : ""}
                       <span class="muted small right">${esc(h.score.toFixed(4))}</span>
                     </div>
                     <pre class="snippet">${esc(h.text)}</pre>
@@ -382,139 +503,144 @@ exports.memory = ({ csrf, user, agent, notes, query, hits, flash, err }) => {
             : `<p class="muted">Nothing matched. If the vault has notes but search finds
                none, the index may be empty — try Reindex.</p>`
           : ""
-      }
-    </div>
+      }`,
+      { icon: "search" }
+    )}
 
-    <div class="card">
-      <div class="card-head">
-        <h2>Notes <span class="muted">${notes.length} files · ${mem.chunks || 0} indexed chunks</span></h2>
+    ${card(
+      "Notes",
+      notes.length
+        ? `<table class="rows">
+            <thead><tr><th>Path</th><th>Size</th><th>Modified</th></tr></thead>
+            <tbody>${notes
+              .map(
+                (n) => `<tr>
+                <td><a class="mono small" href="/agents/${esc(agent.slug)}/memory/note?path=${encodeURIComponent(
+                  n.path
+                )}">${esc(n.path)}</a></td>
+                <td class="mono small">${bytes(n.bytes)}</td>
+                <td class="mono small">${esc(stamp(n.modified))}</td>
+              </tr>`
+              )
+              .join("")}</tbody></table>`
+        : `<p class="muted">The vault is empty.</p>`,
+      {
+        icon: "memory",
+        actions: `<span class="muted small">${notes.length} files · ${
+          mem.chunks || 0
+        } indexed chunks</span>
         <form method="post" action="/agents/${esc(agent.slug)}/memory/reindex" class="inline">
           <input type="hidden" name="_csrf" value="${esc(csrf)}">
-          <button class="btn small" type="submit">Reindex</button>
-        </form>
-      </div>
-      ${
-        notes.length
-          ? `<table class="rows">
-              <thead><tr><th>Path</th><th>Size</th><th>Modified</th></tr></thead>
-              <tbody>${notes
-                .map(
-                  (n) => `<tr>
-                  <td><a class="mono small" href="/agents/${esc(agent.slug)}/memory/note?path=${encodeURIComponent(
-                    n.path
-                  )}">${esc(n.path)}</a></td>
-                  <td class="mono small">${bytes(n.bytes)}</td>
-                  <td class="mono small">${esc(stamp(n.modified))}</td>
-                </tr>`
-                )
-                .join("")}</tbody></table>`
-          : `<p class="muted">The vault is empty.</p>`
+          <button class="btn small" type="submit">${icon("reindex")} Reindex</button>
+        </form>`,
       }
-    </div>
+    )}
 
-    <div class="card">
-      <h2>Open this vault in Obsidian</h2>
-      <p class="muted">The vault is a plain folder of Markdown. Open it on the server's
-        desktop over RDP — Obsidian is installed there and every agent vault is already
-        registered.</p>
-      <pre>${esc((agent.dir || "") + "/vault")}</pre>
-      <p class="muted small">See the <a href="/guide#obsidian">Guide</a> for the RDP tunnel command.</p>
-    </div>`,
-    { user, csrf, active: "agents" }
+    ${card(
+      "Open in Obsidian",
+      `<p class="muted small">The vault is a plain folder of Markdown, already registered
+        in Obsidian on this server's desktop. Reach it over an SSH tunnel to RDP — see the
+        <a href="/guide#obsidian">Guide</a>.</p>
+      <pre>${esc((agent.dir || "") + "/vault")}</pre>`,
+      { icon: "guide" }
+    )}`,
+    {
+      user,
+      csrf,
+      active: "agents",
+      heading: agent.name || agent.slug,
+      subtitle: "What this agent remembers.",
+    }
   );
 };
 
 exports.note = ({ csrf, user, agent, path, content, flash, err }) =>
   shell(
-    esc(path),
-    `<h1>${esc(agent.name || agent.slug)} <span class="muted">memory</span></h1>
-    ${tabs(agent.slug, "memory")}
+    path,
+    `${tabs(agent.slug, "memory")}
     ${flashes({ msg: flash, err })}
-    <div class="card">
-      <div class="card-head">
-        <h2 class="mono">${esc(path)}</h2>
-        <a class="btn small" href="/agents/${esc(agent.slug)}/memory">Back to notes</a>
-      </div>
-      <p class="muted">Edit freely — the agent reads these files, and the index catches up
-        on its next search. Correcting a wrong memory here is the fastest way to fix an
-        agent that keeps repeating a mistake.</p>
+    ${card(
+      path,
+      `<p class="muted small">Edit freely — the agent reads these files and the index
+        catches up on its next search. Correcting a wrong memory here is the fastest way to
+        fix an agent that keeps repeating a mistake.</p>
       <form method="post" action="/agents/${esc(agent.slug)}/memory/note">
         <input type="hidden" name="_csrf" value="${esc(csrf)}">
         <input type="hidden" name="path" value="${esc(path)}">
-        <textarea name="content" rows="28" class="mono code" spellcheck="false">${esc(content)}</textarea>
-        <button class="btn primary" type="submit">Save note</button>
-      </form>
-    </div>`,
-    { user, csrf, active: "agents" }
+        <textarea name="content" rows="26" class="code" spellcheck="false">${esc(content)}</textarea>
+        <button class="btn primary" type="submit">${icon("save")} Save note</button>
+      </form>`,
+      {
+        icon: "file",
+        actions: `<a class="btn small" href="/agents/${esc(agent.slug)}/memory">${icon(
+          "chevron"
+        )} Back to notes</a>`,
+      }
+    )}`,
+    {
+      user,
+      csrf,
+      active: "agents",
+      heading: agent.name || agent.slug,
+      subtitle: `<span class="mono">${esc(path)}</span>`,
+    }
   );
 
 /* ----------------------------------------------------------------- logs --- */
 
 exports.logs = ({ csrf, user, agent, lines, err }) =>
   shell(
-    "Logs — " + esc(agent.name || agent.slug),
-    `<h1>${esc(agent.name || agent.slug)} <span class="muted">logs</span></h1>
-    ${tabs(agent.slug, "logs")}
+    "Logs — " + (agent.name || agent.slug),
+    `${tabs(agent.slug, "logs")}
     ${flashes({ err })}
-    <div class="card">
-      <div class="card-head">
-        <h2>Last ${lines.length} journal lines</h2>
-        <a class="btn small" href="/agents/${esc(agent.slug)}/logs">Refresh</a>
-      </div>
-      ${
-        lines.length
-          ? `<pre class="logs">${esc(lines.join("\n"))}</pre>`
-          : `<p class="muted">Nothing logged yet.</p>`
+    ${card(
+      "Last " + lines.length + " journal lines",
+      lines.length
+        ? `<pre class="logs">${esc(lines.join("\n"))}</pre>`
+        : `<p class="muted">Nothing logged yet.</p>`,
+      {
+        icon: "logs",
+        actions: `<a class="btn small" href="/agents/${esc(agent.slug)}/logs">${icon(
+          "restart"
+        )} Refresh</a>`,
       }
-      <p class="muted small">Live tail from a shell:
-        <code class="mono">journalctl -u moni-agent@${esc(agent.slug)} -f</code></p>
-    </div>`,
-    { user, csrf, active: "agents" }
+    )}
+    <p class="muted small">Secrets are stripped from this view before it reaches the
+      browser. Live tail from a shell:
+      <code>journalctl -u moni-agent@${esc(agent.slug)} -f</code></p>`,
+    {
+      user,
+      csrf,
+      active: "agents",
+      heading: agent.name || agent.slug,
+      subtitle: "Journal output.",
+    }
   );
 
 /* ------------------------------------------------------------- settings --- */
 
-exports.settings = ({ csrf, user, agent, flash, err }) =>
+exports.settings = ({ csrf, user, agent, probe, flash, err }) =>
   shell(
-    "Settings — " + esc(agent.name || agent.slug),
-    `<h1>${esc(agent.name || agent.slug)} <span class="muted">settings</span></h1>
-    ${tabs(agent.slug, "settings")}
+    "Settings — " + (agent.name || agent.slug),
+    `${tabs(agent.slug, "settings")}
     ${flashes({ msg: flash, err })}
 
     <form method="post" action="/agents/${esc(agent.slug)}/settings" autocomplete="off">
       <input type="hidden" name="_csrf" value="${esc(csrf)}">
 
-      <div class="card">
-        <h2>Identity</h2>
-        <label>Display name<input name="name" value="${esc(agent.name || "")}" maxlength="64" required></label>
-        <p class="muted small">The short name <code class="mono">${esc(agent.slug)}</code>
-          is fixed — it names the directory and the systemd unit.</p>
+      ${card(
+        "Identity",
+        `<label>Display name<input name="name" value="${esc(agent.name || "")}" maxlength="64" required></label>
+        <p class="muted small">The short name <code>${esc(agent.slug)}</code> is fixed — it
+          names the directory and the systemd unit.</p>
         <p class="muted small">The agent's brief lives in
-          <a href="/agents/${esc(agent.slug)}/instructions">CLAUDE.md</a>, not here.</p>
-      </div>
+          <a href="/agents/${esc(agent.slug)}/instructions">CLAUDE.md</a>, not here.</p>`,
+        { icon: "agents" }
+      )}
 
-      <div class="card">
-        <h2>Telegram</h2>
-        <label>Replace bot token <span class="hint">leave empty to keep the stored one</span>
-          <input name="telegram_bot_token" type="password" placeholder="${
-            agent.token_set ? "•••••••• stored" : "no token stored"
-          }"></label>
-        <label>Bot username<input name="telegram_bot_username" value="${esc(
-          agent.telegram_bot_username || ""
-        )}" maxlength="32"></label>
-        <label>Allowed Telegram user IDs<input name="allowed_users" value="${esc(
-          agent.allowed_users || ""
-        )}" pattern="[0-9, ]*"></label>
-        <label class="check"><input type="checkbox" name="enable_project_threads" value="1"
-          ${agent.enable_project_threads ? "checked" : ""}> Route conversations into group topics</label>
-        <label>Group chat ID<input name="project_threads_chat_id" value="${esc(
-          agent.project_threads_chat_id || ""
-        )}" pattern="-?[0-9]*"></label>
-      </div>
-
-      <div class="card">
-        <h2>Behaviour</h2>
-        <label>Model
+      ${card(
+        "Behaviour",
+        `<label>Model
           <select name="model">
             ${MODELS.map(
               ([id, label]) =>
@@ -532,29 +658,45 @@ exports.settings = ({ csrf, user, agent, flash, err }) =>
         <label>Request timeout (seconds)<input name="timeout_seconds" type="number" min="60" max="7200"
           value="${esc(String(agent.timeout_seconds || 1800))}"></label>
         <label>Project directory<input name="project_dir" value="${esc(agent.project_dir || "")}"
-          placeholder="/opt/projects/odoo"></label>
-      </div>
+          placeholder="/opt/projects/odoo"></label>`,
+        { icon: "settings" }
+      )}
 
-      <div class="card">
-        <p class="muted">Saving rewrites the agent's environment and restarts it if it is
-          running. In-flight conversations resume — sessions are on disk, not in memory.</p>
-        <button class="btn primary" type="submit">Save settings</button>
-      </div>
+      ${card(
+        "Add-ons",
+        `<p class="muted small">What this agent can do. What it can receive is set on
+          <a href="${agent.channel ? "/channels/" + esc(agent.channel.slug) : "/channels"}">its channel</a>.</p>
+        ${renderAddons(byScope("agent"), agent.addons || [], probe)}`,
+        { icon: "addons" }
+      )}
+
+      ${card(
+        "",
+        `<p class="muted small">Saving rewrites the agent's environment and restarts it if
+          it is running. Conversations resume — sessions are on disk, not in memory.</p>
+        <button class="btn primary" type="submit">${icon("save")} Save settings</button>`
+      )}
     </form>
 
-    <div class="card danger-zone">
-      <h2>Delete this agent</h2>
-      <p class="muted">Stops the service and moves the whole agent directory — vault,
-        vector index, session history — into <code class="mono">/opt/moni-agents/archived/</code>.
-        Nothing is erased, but the bot stops answering immediately. The Telegram bot itself
-        still exists; delete it in @BotFather if you are done with it.</p>
+    ${card(
+      "Delete this agent",
+      `<p class="muted small">Stops the service and moves the whole agent directory — vault,
+        vector index, session history — into <code>/opt/moni-agents/archived/</code>.
+        Nothing is erased, but the agent stops answering immediately.</p>
       <form method="post" action="/agents/${esc(agent.slug)}/delete"
             data-confirm="Delete ${esc(agent.slug)}? The service stops and the agent is archived.">
         <input type="hidden" name="_csrf" value="${esc(csrf)}">
         <label>Type the agent's short name to confirm
           <input name="confirm" placeholder="${esc(agent.slug)}" autocomplete="off"></label>
-        <button class="btn danger" type="submit">Delete agent</button>
-      </form>
-    </div>`,
-    { user, csrf, active: "agents" }
+        <button class="btn danger" type="submit">${icon("trash")} Delete agent</button>
+      </form>`,
+      { icon: "trash", className: "danger-zone" }
+    )}`,
+    {
+      user,
+      csrf,
+      active: "agents",
+      heading: agent.name || agent.slug,
+      subtitle: "Configuration.",
+    }
   );

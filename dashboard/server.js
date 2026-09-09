@@ -21,10 +21,15 @@ const path = require("path");
 
 const db = require("./lib/db");
 const priv = require("./lib/priv");
+const catalog = require("./lib/catalog");
+const telegram = require("./lib/telegram");
 const views = require("./lib/views");
 const agentViews = require("./lib/views-agents");
+const channelViews = require("./lib/views-channels");
+const serviceViews = require("./lib/views-services");
+const credentialViews = require("./lib/views-credentials");
+const addonViews = require("./lib/views-addons");
 const guideViews = require("./lib/views-guide");
-const telegram = require("./lib/telegram");
 
 const PORT = Number(process.env.MONI_PORT || 3000);
 const BIND = process.env.MONI_BIND || "127.0.0.1";
@@ -301,21 +306,42 @@ function systemStats() {
   };
 }
 
+/**
+ * Fetch several privileged facts at once, tolerating individual failures.
+ *
+ * A dashboard that 500s because one helper call failed is worse than one that
+ * renders with a gap: the whole point of the page is to tell you what is wrong.
+ */
+async function gather(map) {
+  const keys = Object.keys(map);
+  const settled = await Promise.allSettled(keys.map((k) => map[k]()));
+  const out = { errors: {} };
+  settled.forEach((result, i) => {
+    if (result.status === "fulfilled") out[keys[i]] = result.value;
+    else out.errors[keys[i]] = result.reason.message;
+  });
+  return out;
+}
+
 app.get("/", requireAuth, async (req, res) => {
-  let status = { services: {}, jails: {} };
-  let statusError = null;
-  try {
-    status = await priv.status();
-  } catch (e) {
-    statusError = e.message;
-  }
+  const data = await gather({
+    status: () => priv.status(),
+    services: () => priv.serviceList(),
+    agents: () => priv.agentList(),
+    channels: () => priv.channelList(),
+    probe: () => priv.systemProbe(),
+  });
   res.send(
-    views.dashboard({
+    views.osDashboard({
       csrf: res.locals.csrf,
       user: req.session.username,
       stats: systemStats(),
-      status,
-      statusError,
+      status: data.status || { services: {}, jails: {} },
+      statusError: data.errors.status || null,
+      services: data.services || [],
+      agents: data.agents || [],
+      channels: data.channels || [],
+      probe: data.probe || null,
       logins: db.recentLogins(8),
     })
   );
@@ -495,38 +521,92 @@ app.get("/audit", requireAuth, async (req, res) => {
 const SLUG_RE = /^[a-z][a-z0-9-]{1,30}$/;
 
 /**
- * Resolve :slug into the agent record, or end the response.
+ * Resolve :slug into a record, or end the response.
  *
- * Every agent route needs the same three things -- a validated slug, the record
- * from the privileged helper, and a 404 that does not leak whether a given slug
- * exists -- so they are done once here.
+ * Every agent and channel route needs the same three things -- a validated
+ * slug, the record from the privileged helper, and a 404 that does not leak
+ * whether a given slug exists -- so they are done once here.
  */
-async function loadAgent(req, res) {
-  const slug = String(req.params.slug || "");
-  if (!SLUG_RE.test(slug)) {
-    res.status(404).send(views.error("Not found", "No such agent."));
-    return null;
-  }
-  try {
-    return await priv.agentGet(slug);
-  } catch (e) {
-    res.status(404).send(views.error("Not found", e.message));
-    return null;
-  }
+function loader(fetch) {
+  return async function (req, res) {
+    const slug = String(req.params.slug || "");
+    if (!SLUG_RE.test(slug)) {
+      res.status(404).send(views.error("Not found", "No such item."));
+      return null;
+    }
+    try {
+      return await fetch(slug);
+    } catch (e) {
+      res.status(404).send(views.error("Not found", e.message));
+      return null;
+    }
+  };
 }
 
-function agentRedirect(slug, suffix, params) {
+const loadAgent = loader((slug) => priv.agentGet(slug));
+const loadChannel = loader((slug) => priv.channelGet(slug));
+
+function redirectTo(base, slug, suffix, params) {
   const query = Object.entries(params || {})
     .filter(([, v]) => v)
     .map(([k, v]) => k + "=" + encodeURIComponent(v))
     .join("&");
-  return "/agents/" + slug + (suffix || "") + (query ? "?" + query : "");
+  return base + "/" + slug + (suffix || "") + (query ? "?" + query : "");
 }
 
-/** Trim and collapse a form field to a plain single-line string. */
+const agentRedirect = (slug, suffix, params) =>
+  redirectTo("/agents", slug, suffix, params);
+const channelRedirect = (slug, suffix, params) =>
+  redirectTo("/channels", slug, suffix, params);
+
+/** Trim a form field to a plain single-line string. */
 function field(body, name) {
   return String((body && body[name]) || "").trim();
 }
+
+/** Checkbox groups arrive as a string when one is ticked, an array when several. */
+function multi(body, name) {
+  const value = body && body[name];
+  if (value == null) return [];
+  return (Array.isArray(value) ? value : [value]).map(String);
+}
+
+/** Keep only ids that exist in the catalogue for that scope. */
+function pickAddons(body, scope) {
+  const valid = new Set(catalog.byScope(scope).map((a) => a.id));
+  const chosen = multi(body, "addons").filter((id) => valid.has(id));
+  for (const a of catalog.byScope(scope)) {
+    if (a.locked && !chosen.includes(a.id)) chosen.push(a.id);
+  }
+  return chosen.sort();
+}
+
+async function probeQuietly() {
+  try {
+    return await priv.systemProbe();
+  } catch (_) {
+    return null;
+  }
+}
+
+app.get("/agents/dashboard", requireAuth, async (req, res) => {
+  const data = await gather({
+    agents: () => priv.agentList(),
+    channels: () => priv.channelList(),
+    probe: () => priv.systemProbe(),
+  });
+  res.send(
+    agentViews.dashboard({
+      csrf: res.locals.csrf,
+      user: req.session.username,
+      agents: data.agents || [],
+      channels: data.channels || [],
+      probe: data.probe || null,
+      flash: req.query.msg || null,
+      err: req.query.err || data.errors.agents || null,
+    })
+  );
+});
 
 app.get("/agents", requireAuth, async (req, res) => {
   try {
@@ -545,104 +625,74 @@ app.get("/agents", requireAuth, async (req, res) => {
   }
 });
 
-app.get("/agents/new", requireAuth, (req, res) => {
+app.get("/agents/new", requireAuth, async (req, res) => {
   res.send(
-    agentViews.create({ csrf: res.locals.csrf, user: req.session.username, form: {} })
+    agentViews.create({
+      csrf: res.locals.csrf,
+      user: req.session.username,
+      form: {},
+      probe: await probeQuietly(),
+    })
   );
 });
 
 app.post("/agents/new", requireAuth, requireCsrf, async (req, res) => {
+  const addons = pickAddons(req.body, "agent");
   const form = {
     name: field(req.body, "name"),
     slug: field(req.body, "slug").toLowerCase(),
     role: String(req.body.role || "").trim(),
-    telegram_bot_username: field(req.body, "telegram_bot_username").replace(/^@/, ""),
-    allowed_users: field(req.body, "allowed_users").replace(/\s/g, ""),
     model: field(req.body, "model") || "claude-opus-5",
     verbose_level: field(req.body, "verbose_level") || "1",
     project_dir: field(req.body, "project_dir"),
-    enable_project_threads: !!req.body.enable_project_threads,
-    project_threads_chat_id: field(req.body, "project_threads_chat_id"),
+    addons,
   };
-  const token = String(req.body.telegram_bot_token || "").trim();
   const errors = [];
-
   if (!SLUG_RE.test(form.slug))
     errors.push(
       "Short name must start with a letter and contain only lowercase letters, digits and hyphens."
     );
   if (!form.name) errors.push("A display name is required.");
-  if (!telegram.looksLikeToken(token))
-    errors.push("That does not look like a bot token. It should read 8123456789:AA…");
 
-  const render = (extra = [], botInfo = null) =>
-    res
-      .status(400)
-      .send(
-        agentViews.create({
-          csrf: res.locals.csrf,
-          user: req.session.username,
-          form,
-          errors: errors.concat(extra),
-          botInfo,
-        })
-      );
-
-  if (errors.length) return render();
-
-  // Verify the token before writing anything. A bot that Telegram rejects is
-  // the single most common way a new agent ends up silently dead, and finding
-  // out here costs one API call instead of a trip through the logs.
-  let bot;
-  try {
-    bot = await telegram.getMe(token);
-  } catch (e) {
-    return render(["Telegram rejected that token: " + e.message]);
-  }
-  if (!form.telegram_bot_username) form.telegram_bot_username = bot.username;
-
-  if (form.enable_project_threads && !req.body.ignore_telegram_warnings) {
-    try {
-      const check = await telegram.checkGroup(token, form.project_threads_chat_id);
-      if (check.problems.length) {
-        return render(
-          check.problems.concat([
-            "Fix these in Telegram and submit again, or tick nothing and create the agent " +
-              "in private-chat mode instead.",
-          ]),
-          bot
-        );
-      }
-    } catch (e) {
-      return render(["Could not check that group: " + e.message], bot);
-    }
+  if (errors.length) {
+    return res.status(400).send(
+      agentViews.create({
+        csrf: res.locals.csrf,
+        user: req.session.username,
+        form,
+        errors,
+        probe: await probeQuietly(),
+      })
+    );
   }
 
   try {
-    const result = await priv.agentCreate({
+    await priv.agentCreate({
       slug: form.slug,
       name: form.name,
       role: form.role,
-      telegram_bot_token: token,
-      telegram_bot_username: form.telegram_bot_username,
-      allowed_users: form.allowed_users,
       model: form.model,
       verbose_level: Number(form.verbose_level),
       project_dir: form.project_dir,
-      enable_project_threads: form.enable_project_threads,
-      project_threads_chat_id: form.project_threads_chat_id,
+      addons,
+      addon_env: catalog.envFor(addons, "agent", req.body),
     });
-
-    // Build the index now so the first search is not the one that pays for it.
-    // Failure here is not fatal: the agent indexes on demand anyway.
     priv.agentMemoryIndex(form.slug).catch(() => {});
-
-    const message = result.started
-      ? "Agent created and started. Say hello to @" + form.telegram_bot_username + " on Telegram."
-      : "Agent created, but the service did not start. Check the logs.";
-    res.redirect(agentRedirect(form.slug, "", { msg: message }));
+    res.redirect(
+      agentRedirect(form.slug, "", {
+        msg: "Agent created. Connect a channel so it can be reached.",
+      })
+    );
   } catch (e) {
-    return render([e.message], bot);
+    return res.status(400).send(
+      agentViews.create({
+        csrf: res.locals.csrf,
+        user: req.session.username,
+        form,
+        errors: [e.message],
+        probe: await probeQuietly(),
+      })
+    );
   }
 });
 
@@ -670,10 +720,11 @@ app.get("/agents/:slug", requireAuth, async (req, res) => {
 app.post("/agents/:slug/action", requireAuth, requireCsrf, async (req, res) => {
   const agent = await loadAgent(req, res);
   if (!agent) return;
-  const action = field(req.body, "action");
   try {
-    await priv.agentAction(agent.slug, action);
-    res.redirect(agentRedirect(agent.slug, "", { msg: "Agent " + action + "ed." }));
+    await priv.agentAction(agent.slug, field(req.body, "action"));
+    res.redirect(
+      agentRedirect(agent.slug, "", { msg: "Agent " + field(req.body, "action") + "ed." })
+    );
   } catch (e) {
     res.redirect(agentRedirect(agent.slug, "", { err: e.message }));
   }
@@ -685,7 +736,7 @@ app.get("/agents/:slug/instructions", requireAuth, async (req, res) => {
   let content = "";
   try {
     content = (await priv.agentReadFile(agent.slug, "CLAUDE.md")).content;
-  } catch (e) {
+  } catch (_) {
     content = "";
   }
   res.send(
@@ -705,9 +756,7 @@ app.post("/agents/:slug/instructions", requireAuth, requireCsrf, async (req, res
   if (!agent) return;
   try {
     await priv.agentWriteFile(agent.slug, "CLAUDE.md", String(req.body.content || ""));
-    res.redirect(
-      agentRedirect(agent.slug, "/instructions", { msg: "Instructions saved." })
-    );
+    res.redirect(agentRedirect(agent.slug, "/instructions", { msg: "Instructions saved." }));
   } catch (e) {
     res.redirect(agentRedirect(agent.slug, "/instructions", { err: e.message }));
   }
@@ -832,6 +881,7 @@ app.get("/agents/:slug/settings", requireAuth, async (req, res) => {
       csrf: res.locals.csrf,
       user: req.session.username,
       agent,
+      probe: await probeQuietly(),
       flash: req.query.msg || null,
       err: req.query.err || null,
     })
@@ -841,45 +891,23 @@ app.get("/agents/:slug/settings", requireAuth, async (req, res) => {
 app.post("/agents/:slug/settings", requireAuth, requireCsrf, async (req, res) => {
   const agent = await loadAgent(req, res);
   if (!agent) return;
-  const token = String(req.body.telegram_bot_token || "").trim();
-
-  const update = {
-    slug: agent.slug,
-    name: field(req.body, "name"),
-    role: agent.role || "",
-    telegram_bot_username: field(req.body, "telegram_bot_username").replace(/^@/, ""),
-    allowed_users: field(req.body, "allowed_users").replace(/\s/g, ""),
-    model: field(req.body, "model"),
-    verbose_level: Number(field(req.body, "verbose_level") || 1),
-    max_turns: Number(field(req.body, "max_turns") || 100),
-    timeout_seconds: Number(field(req.body, "timeout_seconds") || 1800),
-    project_dir: field(req.body, "project_dir"),
-    enable_project_threads: !!req.body.enable_project_threads,
-    project_threads_chat_id: field(req.body, "project_threads_chat_id"),
-  };
-
-  const bail = (msg) =>
-    res.redirect(agentRedirect(agent.slug, "/settings", { err: msg }));
-
-  if (token) {
-    if (!telegram.looksLikeToken(token)) return bail("That does not look like a bot token.");
-    try {
-      const bot = await telegram.getMe(token);
-      if (!update.telegram_bot_username) update.telegram_bot_username = bot.username;
-      update.telegram_bot_token = token;
-    } catch (e) {
-      return bail("Telegram rejected that token: " + e.message);
-    }
-  }
-
-  if (update.enable_project_threads && !update.project_threads_chat_id)
-    return bail("Group topic mode needs the group chat id.");
-
+  const addons = pickAddons(req.body, "agent");
   try {
-    await priv.agentUpdate(update);
+    await priv.agentUpdate({
+      slug: agent.slug,
+      name: field(req.body, "name"),
+      role: agent.role || "",
+      model: field(req.body, "model"),
+      verbose_level: Number(field(req.body, "verbose_level") || 1),
+      max_turns: Number(field(req.body, "max_turns") || 100),
+      timeout_seconds: Number(field(req.body, "timeout_seconds") || 1800),
+      project_dir: field(req.body, "project_dir"),
+      addons,
+      addon_env: catalog.envFor(addons, "agent", req.body),
+    });
     res.redirect(agentRedirect(agent.slug, "/settings", { msg: "Settings saved." }));
   } catch (e) {
-    return bail(e.message);
+    res.redirect(agentRedirect(agent.slug, "/settings", { err: e.message }));
   }
 });
 
@@ -896,13 +924,409 @@ app.post("/agents/:slug/delete", requireAuth, requireCsrf, async (req, res) => {
     const result = await priv.agentDelete(agent.slug);
     res.redirect(
       "/agents?msg=" +
-        encodeURIComponent(
-          agent.slug + " stopped and archived to " + result.archived_to + "."
-        )
+        encodeURIComponent(agent.slug + " stopped and archived to " + result.archived_to + ".")
     );
   } catch (e) {
     res.redirect(agentRedirect(agent.slug, "/settings", { err: e.message }));
   }
+});
+
+/* ------------------------------------------------------------- channels --- */
+
+app.get("/channels", requireAuth, async (req, res) => {
+  const data = await gather({
+    channels: () => priv.channelList(),
+    agents: () => priv.agentList(),
+  });
+  res.send(
+    channelViews.list({
+      csrf: res.locals.csrf,
+      user: req.session.username,
+      channels: data.channels || [],
+      agents: data.agents || [],
+      flash: req.query.msg || null,
+      err: req.query.err || data.errors.channels || null,
+    })
+  );
+});
+
+app.get("/channels/new", requireAuth, async (req, res) => {
+  let agents = [];
+  try {
+    agents = await priv.agentList();
+  } catch (_) {
+    /* rendering the form with no agents is still useful */
+  }
+  res.send(
+    channelViews.create({
+      csrf: res.locals.csrf,
+      user: req.session.username,
+      agents,
+      form: { agent: req.query.agent || "" },
+    })
+  );
+});
+
+app.post("/channels/new", requireAuth, requireCsrf, async (req, res) => {
+  const type = field(req.body, "type") === "whatsapp" ? "whatsapp" : "telegram";
+  const addons = pickAddons(req.body, "channel");
+  const form = {
+    name: field(req.body, "name"),
+    slug: field(req.body, "slug").toLowerCase(),
+    type,
+    agent: field(req.body, "agent"),
+    allowed_users: field(req.body, "allowed_users").replace(/\s/g, ""),
+    allowed_numbers: field(req.body, "allowed_numbers").replace(/\s/g, ""),
+    topics_enabled: !!req.body.topics_enabled,
+    topics_chat_id: field(req.body, "topics_chat_id"),
+    addons,
+  };
+  const token = String(req.body.token || "").trim();
+  const errors = [];
+
+  if (!SLUG_RE.test(form.slug))
+    errors.push(
+      "Short name must start with a letter and contain only lowercase letters, digits and hyphens."
+    );
+  if (!form.name) errors.push("A channel name is required.");
+  if (type === "telegram" && !telegram.looksLikeToken(token))
+    errors.push("That does not look like a bot token. It should read 8123456789:AA…");
+
+  const rerender = async (extra = [], botInfo = null) => {
+    let agents = [];
+    try {
+      agents = await priv.agentList();
+    } catch (_) {
+      /* ignore */
+    }
+    return res.status(400).send(
+      channelViews.create({
+        csrf: res.locals.csrf,
+        user: req.session.username,
+        agents,
+        form,
+        errors: errors.concat(extra),
+        botInfo,
+      })
+    );
+  };
+
+  if (errors.length) return rerender();
+
+  let bot = null;
+  if (type === "telegram") {
+    // Verify before writing anything. A token Telegram rejects is the most
+    // common way a new channel ends up silently dead, and finding out here
+    // costs one API call instead of a trip through the logs.
+    try {
+      bot = await telegram.getMe(token);
+    } catch (e) {
+      return rerender(["Telegram rejected that token: " + e.message]);
+    }
+    if (form.topics_enabled && !req.body.ignore_telegram_warnings) {
+      try {
+        const check = await telegram.checkGroup(token, form.topics_chat_id);
+        if (check.problems.length) {
+          return rerender(
+            check.problems.concat([
+              "Fix these in Telegram and submit again, or untick topics to use a private chat.",
+            ]),
+            bot
+          );
+        }
+      } catch (e) {
+        return rerender(["Could not check that group: " + e.message], bot);
+      }
+    }
+  }
+
+  try {
+    await priv.channelCreate({
+      slug: form.slug,
+      name: form.name,
+      type,
+      agent: form.agent,
+      token,
+      telegram_bot_username: bot ? bot.username : "",
+      allowed_users: form.allowed_users,
+      allowed_numbers: form.allowed_numbers,
+      topics_enabled: form.topics_enabled,
+      topics_chat_id: form.topics_chat_id,
+      addons,
+      addon_env: catalog.envFor(addons, "channel", req.body),
+    });
+    const msg = form.agent
+      ? "Channel created and connected." +
+        (bot ? " Say hello to @" + bot.username + " on Telegram." : "")
+      : "Channel created. Connect it to an agent to bring it to life.";
+    res.redirect(channelRedirect(form.slug, "", { msg }));
+  } catch (e) {
+    return rerender([e.message], bot);
+  }
+});
+
+app.get("/channels/:slug", requireAuth, async (req, res) => {
+  const channel = await loadChannel(req, res);
+  if (!channel) return;
+  let agents = [];
+  try {
+    agents = await priv.agentList();
+  } catch (_) {
+    /* ignore */
+  }
+  res.send(
+    channelViews.detail({
+      csrf: res.locals.csrf,
+      user: req.session.username,
+      channel,
+      agents,
+      qr: null,
+      flash: req.query.msg || null,
+      err: req.query.err || null,
+    })
+  );
+});
+
+app.post("/channels/:slug", requireAuth, requireCsrf, async (req, res) => {
+  const channel = await loadChannel(req, res);
+  if (!channel) return;
+  const token = String(req.body.token || "").trim();
+  const addons = pickAddons(req.body, "channel");
+
+  const update = {
+    slug: channel.slug,
+    name: field(req.body, "name"),
+    type: channel.type,
+    agent: field(req.body, "agent"),
+    allowed_users: field(req.body, "allowed_users").replace(/\s/g, ""),
+    allowed_numbers: field(req.body, "allowed_numbers").replace(/\s/g, ""),
+    topics_enabled: !!req.body.topics_enabled,
+    topics_chat_id: field(req.body, "topics_chat_id"),
+    addons,
+    addon_env: catalog.envFor(addons, "channel", req.body),
+  };
+
+  const bail = (msg) => res.redirect(channelRedirect(channel.slug, "", { err: msg }));
+
+  if (token) {
+    if (!telegram.looksLikeToken(token))
+      return bail("That does not look like a bot token.");
+    try {
+      const bot = await telegram.getMe(token);
+      update.telegram_bot_username = bot.username;
+      update.token = token;
+    } catch (e) {
+      return bail("Telegram rejected that token: " + e.message);
+    }
+  }
+  if (update.topics_enabled && !update.topics_chat_id)
+    return bail("Group topic mode needs the group chat id.");
+
+  try {
+    await priv.channelUpdate(update);
+    res.redirect(channelRedirect(channel.slug, "", { msg: "Channel saved." }));
+  } catch (e) {
+    return bail(e.message);
+  }
+});
+
+app.post("/channels/:slug/delete", requireAuth, requireCsrf, async (req, res) => {
+  const channel = await loadChannel(req, res);
+  if (!channel) return;
+  if (field(req.body, "confirm") !== channel.slug)
+    return res.redirect(
+      channelRedirect(channel.slug, "", {
+        err: "Type the channel's short name exactly to confirm deletion.",
+      })
+    );
+  try {
+    const result = await priv.channelDelete(channel.slug);
+    res.redirect(
+      "/channels?msg=" +
+        encodeURIComponent(channel.slug + " archived to " + result.archived_to + ".")
+    );
+  } catch (e) {
+    res.redirect(channelRedirect(channel.slug, "", { err: e.message }));
+  }
+});
+
+/* ------------------------------------------------------------- services --- */
+
+app.get("/services", requireAuth, async (req, res) => {
+  try {
+    const services = await priv.serviceList();
+    res.send(
+      serviceViews.system({
+        csrf: res.locals.csrf,
+        user: req.session.username,
+        services,
+        flash: req.query.msg || null,
+        err: req.query.err || null,
+      })
+    );
+  } catch (e) {
+    res.status(500).send(views.error("Could not list services", e.message));
+  }
+});
+
+app.post("/services/action", requireAuth, requireCsrf, async (req, res) => {
+  const unit = field(req.body, "target");
+  const action = field(req.body, "action");
+  try {
+    await priv.serviceAction(unit, action);
+    res.redirect("/services?msg=" + encodeURIComponent(unit + " " + action + "ed."));
+  } catch (e) {
+    res.redirect("/services?err=" + encodeURIComponent(e.message));
+  }
+});
+
+app.get("/services/logs", requireAuth, async (req, res) => {
+  const unit = String(req.query.unit || "");
+  let lines = [];
+  let err = null;
+  try {
+    lines = (await priv.serviceLogs(unit, 300)).lines;
+  } catch (e) {
+    err = e.message;
+  }
+  res.send(
+    serviceViews.logs({
+      csrf: res.locals.csrf,
+      user: req.session.username,
+      unit,
+      lines,
+      err,
+    })
+  );
+});
+
+app.get("/services/agents", requireAuth, async (req, res) => {
+  try {
+    const agents = await priv.agentList();
+    res.send(
+      serviceViews.agents({
+        csrf: res.locals.csrf,
+        user: req.session.username,
+        agents,
+        flash: req.query.msg || null,
+        err: req.query.err || null,
+      })
+    );
+  } catch (e) {
+    res.status(500).send(views.error("Could not list agents", e.message));
+  }
+});
+
+app.post("/services/agent-action", requireAuth, requireCsrf, async (req, res) => {
+  const slug = field(req.body, "target");
+  const action = field(req.body, "action");
+  if (!SLUG_RE.test(slug))
+    return res.redirect("/services/agents?err=" + encodeURIComponent("Unknown agent."));
+  try {
+    await priv.agentAction(slug, action);
+    res.redirect("/services/agents?msg=" + encodeURIComponent(slug + " " + action + "ed."));
+  } catch (e) {
+    res.redirect("/services/agents?err=" + encodeURIComponent(e.message));
+  }
+});
+
+/* ---------------------------------------------------------- credentials --- */
+
+app.get("/credentials", requireAuth, async (req, res) => {
+  const data = await gather({
+    credentials: () => priv.credentialList(),
+    probe: () => priv.systemProbe(),
+  });
+  res.send(
+    credentialViews.index({
+      csrf: res.locals.csrf,
+      user: req.session.username,
+      credentials: data.credentials || [],
+      probe: data.probe || null,
+      flash: req.query.msg || null,
+      err: req.query.err || data.errors.credentials || null,
+    })
+  );
+});
+
+app.get("/credentials/:name", requireAuth, async (req, res) => {
+  const name = String(req.params.name || "");
+  try {
+    const credential = await priv.credentialGet(name);
+    res.send(
+      credentialViews.detail({
+        csrf: res.locals.csrf,
+        user: req.session.username,
+        credential,
+        flash: req.query.msg || null,
+        err: req.query.err || null,
+      })
+    );
+  } catch (e) {
+    res.status(404).send(views.error("Not found", e.message));
+  }
+});
+
+app.post("/credentials/:name", requireAuth, requireCsrf, async (req, res) => {
+  const name = String(req.params.name || "");
+  const key = field(req.body, "key");
+  const value = String(req.body.value || "").trim();
+  try {
+    await priv.credentialSet(name, key, value);
+    res.redirect(
+      "/credentials/" +
+        encodeURIComponent(name) +
+        "?msg=" +
+        encodeURIComponent(
+          key + " saved. Restart your agents for them to pick it up."
+        )
+    );
+  } catch (e) {
+    res.redirect(
+      "/credentials/" + encodeURIComponent(name) + "?err=" + encodeURIComponent(e.message)
+    );
+  }
+});
+
+app.post("/credentials/:name/clear", requireAuth, requireCsrf, async (req, res) => {
+  const name = String(req.params.name || "");
+  const key = field(req.body, "key");
+  try {
+    await priv.credentialClear(name, key);
+    res.redirect(
+      "/credentials/" + encodeURIComponent(name) + "?msg=" + encodeURIComponent(key + " cleared.")
+    );
+  } catch (e) {
+    res.redirect(
+      "/credentials/" + encodeURIComponent(name) + "?err=" + encodeURIComponent(e.message)
+    );
+  }
+});
+
+/* --------------------------------------------------------------- addons --- */
+
+app.get("/addons", requireAuth, async (req, res) => {
+  const query = String(req.query.q || "").slice(0, 120).trim();
+  const scope = ["agent", "channel"].includes(String(req.query.scope))
+    ? String(req.query.scope)
+    : "";
+  const data = await gather({
+    agents: () => priv.agentList(),
+    channels: () => priv.channelList(),
+    probe: () => priv.systemProbe(),
+  });
+  res.send(
+    addonViews.catalogue({
+      csrf: res.locals.csrf,
+      user: req.session.username,
+      query,
+      scope,
+      results: catalog.search(query, scope || null),
+      probe: data.probe || null,
+      agents: data.agents || [],
+      channels: (data.channels || []).map((c) => ({ ...c, name: c.name || c.slug })),
+    })
+  );
 });
 
 /* ---------------------------------------------------------------- guide --- */

@@ -17,6 +17,41 @@ const { spawn } = require("child_process");
 const HELPER = "/usr/local/sbin/moni-helper";
 const MAX_OUTPUT = 8 * 1024 * 1024;
 
+/**
+ * Patterns for secrets that must never reach a browser.
+ *
+ * The runtime is configured not to log bot tokens, but a log view is exactly
+ * the wrong place to rely on a single upstream fix: any library that logs a
+ * request URL at INFO puts a Telegram token straight into the journal, and from
+ * there into a screenshot or a scrollback buffer. Redacting on the way out
+ * costs nothing and does not depend on every dependency behaving.
+ */
+const SECRET_PATTERNS = [
+  [/\b\d{6,12}:[A-Za-z0-9_-]{30,60}\b/g, "«bot-token»"],
+  [/\bsk-ant-[A-Za-z0-9_-]{20,}/g, "«anthropic-key»"],
+  [/\bsk-[A-Za-z0-9]{32,}/g, "«api-key»"],
+  [/\bgh[pousr]_[A-Za-z0-9]{20,}/g, "«github-token»"],
+];
+
+function redact(text) {
+  let out = String(text == null ? "" : text);
+  for (const [pattern, replacement] of SECRET_PATTERNS) {
+    out = out.replace(pattern, replacement);
+  }
+  return out;
+}
+
+function redactDeep(value) {
+  if (typeof value === "string") return redact(value);
+  if (Array.isArray(value)) return value.map(redactDeep);
+  if (value && typeof value === "object") {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) out[k] = redactDeep(v);
+    return out;
+  }
+  return value;
+}
+
 function callHelper(subcommand, args = [], opts = {}) {
   const { stdin = null, timeout = 20000 } = opts;
 
@@ -104,7 +139,9 @@ module.exports = {
   agentAction: (slug, action) =>
     callHelper("agent-action", [slug, action], { timeout: 60000 }),
   agentLogs: (slug, lines = 200) =>
-    callHelper("agent-logs", [slug, String(lines)], { timeout: 40000 }),
+    callHelper("agent-logs", [slug, String(lines)], { timeout: 40000 }).then(
+      redactDeep
+    ),
   agentDelete: (slug) => callHelper("agent-delete", [slug], { timeout: 60000 }),
 
   /* --------------------------------------------------------------- vault -- */
@@ -122,4 +159,40 @@ module.exports = {
   agentMemorySearch: (slug, query) =>
     callHelper("agent-memory-search", [slug], { stdin: query, timeout: 120000 }),
   agentMemoryStats: (slug) => callHelper("agent-memory-stats", [slug]),
+
+  /* ------------------------------------------------------------ channels -- */
+  channelList: () => callHelper("channel-list", [], { timeout: 30000 }),
+  channelGet: (slug) => callHelper("channel-get", [slug]),
+  channelCreate: (config) =>
+    callHelper("channel-create", [], {
+      stdin: JSON.stringify(config),
+      timeout: 90000,
+    }),
+  channelUpdate: (config) =>
+    callHelper("channel-update", [], {
+      stdin: JSON.stringify(config),
+      timeout: 90000,
+    }),
+  channelDelete: (slug) => callHelper("channel-delete", [slug], { timeout: 60000 }),
+
+  /* ------------------------------------------------------------ services -- */
+  serviceList: () => callHelper("service-list", [], { timeout: 30000 }),
+  serviceAction: (unit, action) =>
+    callHelper("service-action", [unit, action], { timeout: 60000 }),
+  serviceLogs: (unit, lines = 200) =>
+    callHelper("service-logs", [unit, String(lines)], { timeout: 40000 }).then(
+      redactDeep
+    ),
+
+  /* --------------------------------------------------------- credentials -- */
+  credentialList: () => callHelper("credential-list"),
+  credentialGet: (name) => callHelper("credential-get", [name]),
+  credentialSet: (name, key, value) =>
+    callHelper("credential-set", [name, key], { stdin: value }),
+  credentialClear: (name, key) => callHelper("credential-clear", [name, key]),
+
+  /* -------------------------------------------------------------- probes -- */
+  systemProbe: () => callHelper("system-probe", [], { timeout: 30000 }),
+
+  redact,
 };
