@@ -293,8 +293,8 @@ exports.console = ({ csrf, user, sessions, archived = [], session, messages, dir
                   active.access === "full"
                     ? `<form method="post" action="/console/${active.id}/root" class="root-toggle"${
                         rootOn
-                          ? ` data-confirm="Turn root off for this chat? The conversation restarts, so it forgets what you have discussed."`
-                          : ` data-confirm="Turn root on for this chat? It will be able to change anything on this machine. The conversation restarts."`
+                          ? ` data-confirm="Turn root off for this chat? sudo stops working here. The conversation carries over."`
+                          : ` data-confirm="Turn root on for this chat? It will be able to change anything on this machine."`
                       }>
                         <input type="hidden" name="_csrf" value="${esc(csrf)}">
                         <button class="toggle${rootOn ? " on" : ""}" type="submit"

@@ -1603,6 +1603,15 @@ const CONSOLE_PERMISSION_MODES = consoleViews.MODES.map((m) => m[0]);
  */
 const consoleTurns = new Map();
 
+/**
+ * Chats whose process is shutting down, keyed by chat id.
+ *
+ * A restart has to wait for the old process to finish writing its transcript,
+ * or the new one resumes a conversation that is still mid-flush and comes back
+ * missing the last thing that was said.
+ */
+const consoleClosing = new Map();
+
 /** The access levels this actor may actually choose. */
 function allowedAccess(req) {
   return CONSOLE_ACCESS.filter((a) => a !== "full" || req.perm.can("console.full"));
@@ -1703,10 +1712,10 @@ app.post("/console/:id/settings", requireAuth, requirePerm("console.use"), requi
   if (/^\/[A-Za-z0-9._/-]{0,200}$/.test(cwd)) fields.cwd = cwd;
 
   db.updateConsoleSession(session.id, req.me.id, fields);
-  // Model, effort, directory and access are all fixed when the process starts,
-  // so a change to any of them only takes effect on a fresh one. Closing it here
-  // means the next message uses what the page is showing, rather than what it
-  // was showing when the chat began.
+  // These are all fixed when the process starts, so a change only takes effect
+  // on a fresh one. Closing it here means the next message uses what the page is
+  // showing -- and because the close is graceful, the replacement resumes the
+  // same conversation rather than starting a new one.
   closeConsoleChat(session.id);
   res.redirect("/console/" + session.id);
 });
@@ -1721,8 +1730,9 @@ app.post("/console/:id/root", requireAuth, requirePerm("console.use"), requireCs
   }
 
   const enabled = session.root_enabled === 0;
-  // Fixed at spawn, so the running process has to go. The transcript stays; the
-  // model's memory of the conversation does not.
+  // Fixed at spawn, so the running process has to go. It is asked to exit
+  // rather than killed, so the conversation is on disk and the next message
+  // resumes it: flipping this costs you nothing but the wait.
   closeConsoleChat(session.id);
   db.updateConsoleSession(session.id, req.me.id, { root_enabled: enabled ? 1 : 0 });
   db.logLogin(
@@ -1748,8 +1758,9 @@ app.post("/console/:id/archive", requireAuth, requirePerm("console.use"), requir
   const session = loadConsoleSession(req, res);
   if (!session) return;
   const archived = !session.archived;
-  // Archiving closes the process. Keeping one alive for a chat that has been
-  // put away would be paying for a conversation nobody is having.
+  // Archiving closes the process; unarchiving and speaking resumes it. Keeping
+  // one alive for a chat that has been put away is paying for a conversation
+  // nobody is having.
   if (archived) closeConsoleChat(session.id);
   db.updateConsoleSession(session.id, req.me.id, { archived: archived ? 1 : 0 });
   res.redirect(archived ? "/console" : "/console/" + session.id);
@@ -1763,17 +1774,61 @@ app.post("/console/:id/delete", requireAuth, requirePerm("console.use"), require
   res.redirect("/console");
 });
 
-/** End a chat's process, whether it is mid-turn or merely idle. */
-function closeConsoleChat(sessionId) {
+/**
+ * End a chat's process, letting it write its transcript on the way out.
+ *
+ * Closing stdin rather than killing matters: a session that exits cleanly
+ * leaves its conversation on disk, and the next process resumes it. That is the
+ * whole reason changing a setting no longer costs you the chat. A kill is kept
+ * as a fallback for a process that will not go.
+ *
+ * Returns a promise that settles when the process is gone, so a respawn can
+ * wait for the transcript to be flushed rather than racing it.
+ */
+function closeConsoleChat(sessionId, { hard = false } = {}) {
   const entry = consoleTurns.get(sessionId);
-  if (!entry) return;
+  if (!entry) return Promise.resolve();
+
   clearTimeout(entry.idle);
-  try {
-    entry.child.kill("SIGTERM");
-  } catch (_) {
-    /* already gone */
-  }
   consoleTurns.delete(sessionId);
+
+  if (consoleClosing.has(sessionId)) return consoleClosing.get(sessionId);
+
+  const closing = new Promise((resolve) => {
+    let settled = false;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve();
+    };
+    entry.child.once("close", done);
+
+    try {
+      if (hard) entry.child.kill("SIGTERM");
+      else entry.child.stdin.end();
+    } catch (_) {
+      return done();
+    }
+
+    // A turn in flight keeps running until it finishes, so this is generous.
+    // If it is still there afterwards it is stuck, and a stuck process holding
+    // a chat open helps nobody.
+    const timer = setTimeout(() => {
+      try {
+        entry.child.kill("SIGKILL");
+      } catch (_) {
+        /* already gone */
+      }
+      done();
+    }, hard ? 4000 : 20000);
+    timer.unref();
+  }).then(() => {
+    consoleClosing.delete(sessionId);
+  });
+
+  consoleClosing.set(sessionId, closing);
+  return closing;
 }
 
 /**
@@ -1902,10 +1957,11 @@ app.post("/console/:id/permission", requireAuth, requirePerm("console.use"), req
 app.post("/console/:id/stop", requireAuth, requirePerm("console.use"), requireCsrf, (req, res) => {
   const session = loadConsoleSession(req, res);
   if (!session) return;
-  // Stopping a turn ends the conversation with it. Interrupting Claude
-  // mid-tool-call and then continuing would leave it holding a half-finished
-  // action it believes succeeded, which is worse than starting again.
-  closeConsoleChat(session.id);
+  // Stops the turn, not the conversation: the process is asked to finish and
+  // write its transcript, and the next message resumes from there. What it was
+  // part way through doing may or may not have completed, so the reply says so
+  // rather than pretending the interruption was clean.
+  closeConsoleChat(session.id, { hard: true });
   res.json({ stopped: true });
 });
 
@@ -1949,6 +2005,10 @@ app.post("/console/:id/send", requireAuth, requirePerm("console.use"), requireCs
   // `claude -p` writes no transcript to disk, so a fresh process per message
   // would start every turn from nothing however the session was named.
   if (!entry) {
+    // A process that was closing must be allowed to finish writing before the
+    // replacement tries to resume what it wrote.
+    if (consoleClosing.has(session.id)) await consoleClosing.get(session.id);
+
     const child = priv.consoleOpen({
       model: session.model,
       effort: session.effort,
@@ -1956,6 +2016,10 @@ app.post("/console/:id/send", requireAuth, requirePerm("console.use"), requireCs
       cwd: session.cwd,
       permission_mode: session.permission_mode || "auto",
       root_enabled: session.root_enabled !== 0,
+      // Pick the conversation back up where it was left. Settings fixed at
+      // spawn -- the model, the root switch -- can then be changed by restarting
+      // the process without the chat losing what it knows.
+      resume: session.started && UUID_RE.test(session.uuid) ? session.uuid : "",
     });
     entry = {
       child,

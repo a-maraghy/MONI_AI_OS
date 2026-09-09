@@ -2440,13 +2440,14 @@ def cmd_console_open(args):
     The first line of stdin configures the session; everything after it is a
     user message in the CLI's streaming-input format, and everything the CLI
     emits goes straight to stdout. The process stays up between turns, which is
-    what makes the conversation a conversation.
+    what makes the conversation a conversation and skips a cold start on every
+    message.
 
-    It works this way because `claude -p` does not persist a transcript
-    anywhere: --resume with the id it reports finds nothing afterwards, so a
-    second turn always began again from nothing. Holding the process open keeps
-    the context where the CLI actually keeps it, and has the side benefit of
-    skipping a cold start on every message.
+    A session that is allowed to exit -- stdin closed, rather than killed --
+    writes its transcript to disk, and `resume` picks that conversation back up.
+    That is what lets a setting fixed at spawn, like the root switch, be changed
+    without the chat forgetting everything: the process restarts, the
+    conversation does not.
     """
     first = sys.stdin.readline()
     if not first:
@@ -2503,6 +2504,12 @@ def cmd_console_open(args):
         "--permission-mode", CONSOLE_PERMISSION_MODES[permission_mode],
         "--append-system-prompt", CONSOLE_PROMPT[prompt_key],
     ]
+
+    resume = str(payload.get("resume") or "").strip()
+    if resume:
+        if not UUID_RE.match(resume):
+            fail("malformed session id")
+        argv += ["--resume", resume]
 
     # Root off is enforced by the kernel, not by asking nicely. no_new_privs
     # makes every setuid binary -- sudo included -- unable to gain privilege for
