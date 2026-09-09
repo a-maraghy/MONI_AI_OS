@@ -134,8 +134,11 @@ function addColumn(table, column, definition) {
 
 addColumn("console_sessions", "permission_mode", "TEXT NOT NULL DEFAULT 'auto'");
 addColumn("console_sessions", "archived", "INTEGER NOT NULL DEFAULT 0");
-// Existing chats keep whatever they had; new ones start without root, which is
-// why the column default is 0 while the migration below leaves old rows alone.
+// New chats start without root. The value is written explicitly by
+// createConsoleSession rather than left to this default, because a database
+// that already had the column keeps whatever default it was created with --
+// and on an install that predates this change, that default is 1. Anything
+// inserting a console session must therefore say what it means.
 addColumn("console_sessions", "root_enabled", "INTEGER NOT NULL DEFAULT 0");
 
 /* --------------------------------------------------------------- roles --- */
