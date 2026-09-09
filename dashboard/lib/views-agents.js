@@ -286,7 +286,7 @@ exports.create = ({ csrf, user, form = {}, errors = [], probe }) => {
           <input name="name" value="${v("name")}" placeholder="e.g. Odoo Dev" maxlength="64" required autofocus></label>
         <label>Short name <span class="hint">lowercase; names the folder and the systemd unit, and cannot be changed later</span>
           <input name="slug" value="${v("slug")}" placeholder="odoo-dev"
-                 pattern="[a-z][a-z0-9-]{1,30}" maxlength="31" required></label>
+                 pattern="[a-z][a-z0-9\\-]{1,30}" maxlength="31" required></label>
         <label>Role <span class="hint">written into CLAUDE.md and loaded on every request — this is the field that decides whether the agent is useful</span>
           <textarea name="role" rows="7" placeholder="You maintain the Odoo 17 instance at /opt/projects/odoo. You handle module changes, migrations and deployment. You may edit code and run tests unattended. Ask before restarting the service during working hours.">${v("role")}</textarea></label>`,
         { icon: "agents" }

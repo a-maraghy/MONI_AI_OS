@@ -817,3 +817,39 @@ var MD = (function () {
   setInterval(poll, 2500);
   tick();
 })();
+
+/* ------------------------------------------------- channel type switching --
+ *
+ * The channel form carries both a Telegram card and a WhatsApp one and hides
+ * the irrelevant half with CSS. Hidden is not the same as absent: the fields
+ * are still submitted and still validated, so a Telegram user ID typed before
+ * switching to WhatsApp blocked the form with "an invalid form control is not
+ * focusable" -- a complaint about something the reader could no longer see.
+ *
+ * Disabling them takes them out of both. Progressive enhancement: with no
+ * script the form still works, it is merely fussier than it needs to be.
+ */
+(function () {
+  var radios = document.querySelectorAll('input[name="type"]');
+  if (!radios.length) return;
+
+  function sync() {
+    var chosen = document.querySelector('input[name="type"]:checked');
+    var type = chosen ? chosen.value : "telegram";
+    [
+      [".only-telegram", type !== "telegram"],
+      [".only-whatsapp", type !== "whatsapp"],
+    ].forEach(function (pair) {
+      var card = document.querySelector(pair[0]);
+      if (!card) return;
+      Array.prototype.forEach.call(card.querySelectorAll("input, select, textarea"), function (f) {
+        f.disabled = pair[1];
+      });
+    });
+  }
+
+  Array.prototype.forEach.call(radios, function (r) {
+    r.addEventListener("change", sync);
+  });
+  sync();
+})();

@@ -271,7 +271,7 @@ exports.create = ({ csrf, user, agents, form = {}, errors = [], botInfo = null, 
           <input name="name" value="${v("name")}" placeholder="e.g. Support line" maxlength="64" required autofocus></label>
         <label>Short name <span class="hint">lowercase; cannot be changed later</span>
           <input name="slug" value="${v("slug")}" placeholder="support-line"
-                 pattern="[a-z][a-z0-9-]{1,30}" maxlength="31" required></label>
+                 pattern="[a-z][a-z0-9\\-]{1,30}" maxlength="31" required></label>
         <label>Connect to agent
           <select name="agent">
             <option value="">— not connected yet —</option>

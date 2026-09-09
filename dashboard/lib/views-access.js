@@ -107,7 +107,7 @@ exports.userNew = ({ csrf, user, roles, form = {}, errors = [] }) =>
         <div class="grid cols-2">
           <label>Username <span class="hint">what they type to sign in</span>
             <input name="username" value="${esc(form.username || "")}" required
-              pattern="[a-zA-Z0-9._-]{3,32}" autocomplete="off"></label>
+              pattern="[a-zA-Z0-9._\\-]{3,32}" autocomplete="off"></label>
           <label>Display name <span class="hint">optional</span>
             <input name="display_name" value="${esc(form.display_name || "")}"></label>
         </div>
@@ -430,7 +430,11 @@ exports.roleEdit = ({ csrf, user, role, agents, channels, isNew, readOnly, error
             isNew ? "lowercase, used internally" : "cannot be changed"
           }</span>
             <input name="name" value="${esc(role.name || "")}"${
-              isNew ? " required pattern=\"[a-z0-9_-]{2,32}\"" : " disabled"
+              // The hyphen is escaped because browsers compile `pattern` with
+              // the `v` flag, where a trailing `-` in a character class is a
+              // syntax error rather than a literal. An uncompilable pattern is
+              // silently ignored, so the field would have accepted anything.
+              isNew ? " required pattern=\"[a-z0-9_\\-]{2,32}\"" : " disabled"
             }></label>
           <label>Label <span class="hint">what people see</span>
             <input name="label" value="${esc(role.label || "")}" required${
