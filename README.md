@@ -2,25 +2,30 @@
 
 Control panel for a fleet of Claude agents on a single VPS.
 
-Each **agent** is one Telegram bot wired to one Claude Code session with its own
-memory. You create it from a web panel, it comes up as a systemd unit, and it
-starts with an Obsidian vault and a local vector index over that vault. Nothing
-is shared between agents — separate bot, separate workspace, separate memory,
-separate process.
+Two things, kept separate. An **agent** is a Claude session with its own
+workspace and its own memory — an Obsidian vault plus a local vector index over
+it. A **channel** is how people reach that agent: a Telegram bot, or a linked
+WhatsApp number. You create both from a web panel and each comes up as a systemd
+unit. Nothing is shared between agents.
+
+Keeping them apart means you can swap the bot an agent answers on, or move it
+from Telegram to WhatsApp, without rebuilding the agent or losing a word of its
+memory.
 
 **Live at** https://vmi3567127.contaboserver.net:8443/
 
 ```
-You on Telegram
+You, on Telegram or WhatsApp
       │
       ▼
-  Telegram Bot API          outbound polling — no inbound port, no webhook
+  channel                   credential + allow-list; connects outbound only
       │
       ▼
   moni-agent@<name>         systemd unit, runs as the moniagent account
+  or moni-whatsapp@<chan>
       │
       ├─ Claude Agent SDK ──▶ claude CLI ──▶ Anthropic
-      ├─ workspace/           the only directory it may read or write
+      ├─ vault/               the only directory it may read or write
       └─ memory MCP server ─▶ vault (Markdown) + vectors (local embeddings)
 ```
 
@@ -33,7 +38,8 @@ You on Telegram
 | `dashboard/` | The web panel: Node, server-rendered, no client framework |
 | `dashboard/deploy/` | Privileged helper, systemd units, nginx, fail2ban, sudoers |
 | `memory/` | `moni-memory` — vector + keyword memory over an Obsidian vault, exposed to Claude over MCP |
-| `deploy/` | Bootstrap and deployment scripts, the vault template |
+| `whatsapp/` | The WhatsApp bridge — Baileys + Claude Agent SDK, one process per channel |
+| `deploy/` | Bootstrap, deployment and migration scripts, the vault template |
 | `docs/` | Setup, Telegram, memory internals, operations |
 | `ops/` | Local helper scripts (RDP launcher) |
 
@@ -74,11 +80,17 @@ Deploy the panel, then create your first agent in it:
 sudo bash /opt/moni-ai-os/deploy/deploy-dashboard.sh
 ```
 
-Optionally put Obsidian on the desktop so you can read and edit agent memory by
-hand:
+Optional extras:
 
 ```bash
+# Obsidian on the desktop, to read and edit agent memory by hand
 sudo bash /opt/moni-ai-os/deploy/install-obsidian.sh
+
+# whisper.cpp, for local voice-note transcription
+sudo bash /opt/moni-ai-os/deploy/install-whisper.sh
+
+# WhatsApp channels (unofficial library — see the caveat in whatsapp/README.md)
+sudo bash /opt/moni-ai-os/deploy/install-whatsapp.sh
 ```
 
 Full walkthrough — including creating the Telegram bot — is on the panel's own
@@ -184,6 +196,12 @@ to `/opt/moni-agents/archived/<slug>-<timestamp>`.
 - **`trust proxy` is `loopback` only.** Widening it lets a remote client spoof
   `X-Forwarded-For` and defeat the fail2ban jail.
 - Port 80 is reserved for ACME renewal only.
+- **`moni-agent@` is the Telegram runtime.** A WhatsApp-only agent is served by
+  `moni-whatsapp@<channel>` instead; starting both would crash-loop on a bot
+  token that does not exist.
+- **Add-ons are configuration, not plugins.** The catalogue in
+  `dashboard/lib/catalog.js` must only reference settings the runtime actually
+  reads — `deploy/resync-addons.js` re-derives every environment from it.
 
 ---
 

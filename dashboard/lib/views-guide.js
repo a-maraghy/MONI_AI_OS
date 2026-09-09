@@ -22,7 +22,8 @@ exports.guide = ({ csrf, user, publicHost, publicPort, sshHost }) => {
       <a href="#talk">4 · Talk to it</a>
       <a href="#addons">Add-ons</a>
       <a href="#topics">Groups &amp; topics</a>
-      <a href="#channels">Channels</a>
+      <a href="#whatsapp">WhatsApp</a>
+      <a href="#channels">Telegram broadcast</a>
       <a href="#memory">Memory</a>
       <a href="#obsidian">Obsidian</a>
       <a href="#trouble">Troubleshooting</a>
@@ -31,31 +32,36 @@ exports.guide = ({ csrf, user, publicHost, publicPort, sshHost }) => {
 
     <div class="card" id="how">
       <h2>How it works</h2>
-      <p>An <strong>agent</strong> is one Telegram bot wired to one Claude Code session
-        with its own memory. Nothing is shared between agents — separate bot, separate
-        workspace, separate memory, separate process.</p>
-      <pre class="diagram">You on Telegram
+      <p>Two things, kept separate. An <strong>agent</strong> is a Claude session with its
+        own workspace and its own memory. A <strong>channel</strong> is how people reach
+        it — a Telegram bot, or a linked WhatsApp number. Nothing is shared between
+        agents.</p>
+      <pre class="diagram">You, on Telegram or WhatsApp
       │
       ▼
-  Telegram Bot API          (outbound polling — no inbound port, no webhook)
+  channel                   the credential and the allow-list live here
       │
       ▼
   moni-agent@&lt;name&gt;         systemd unit, runs as the moniagent account
+  or moni-whatsapp@&lt;chan&gt;
       │
       ├─ Claude Agent SDK ──▶ claude CLI ──▶ Anthropic
       │
-      ├─ workspace/         the only directory it may read or write
+      ├─ vault/             the only directory it may read or write
       │
       └─ memory MCP server ─▶ vault (Markdown) + vectors (local embeddings)</pre>
-      <p class="muted">Three things follow from this shape, and they are the ones worth
+      <p class="muted">Four things follow from this shape, and they are the ones worth
         remembering:</p>
       <ul>
-        <li><strong>No inbound port.</strong> The agent polls Telegram outbound, so the
+        <li><strong>No inbound port.</strong> Both transports connect outbound, so the
           firewall stays shut. Nothing about an agent is reachable from the internet.</li>
         <li><strong>Only files survive.</strong> A chat session ends on timeout or
           <code>/new</code>. Whatever the agent did not write to its vault is gone.</li>
-        <li><strong>One bot per agent.</strong> Telegram allows exactly one poller per
-          token; pointing two agents at one bot makes both drop messages at random.</li>
+        <li><strong>One channel per agent.</strong> Telegram allows exactly one poller per
+          token; two agents sharing a channel would make both drop messages at random, so
+          the panel refuses it.</li>
+        <li><strong>The channel is not the agent.</strong> Swap the bot, or move it to
+          WhatsApp, and the agent keeps every word of its memory.</li>
       </ul>
     </div>
 
@@ -211,8 +217,35 @@ exports.guide = ({ csrf, user, publicHost, publicPort, sshHost }) => {
         to take effect.</div>
     </div>
 
+    <div class="card" id="whatsapp">
+      <h2>WhatsApp</h2>
+      <p>A WhatsApp channel links a real number the way WhatsApp Web does: you scan a QR
+        code from your phone, and the server holds the linked-device session. The agent
+        behind it is the same agent — same workspace, same memory, same voice and file
+        handling — reached over a different transport.</p>
+      <ol class="steps">
+        <li>Install the bridge once:
+          <code>sudo bash /opt/moni-ai-os/deploy/install-whatsapp.sh</code></li>
+        <li><a href="/channels/new">Channels → Add channel</a>, pick WhatsApp, name it, and
+          connect it to an agent.</li>
+        <li>Add the numbers allowed to talk to it, in international format.</li>
+        <li>Press <strong>Start linking</strong>, then on your phone:
+          <strong>WhatsApp → Settings → Linked devices → Link a device</strong> and scan
+          the code. It expires after about a minute; reload for a fresh one.</li>
+      </ol>
+      <div class="alert warn">WhatsApp has no official API for this. The bridge uses an
+        unofficial library, which is against WhatsApp's terms of service, and the number
+        <strong>can be banned without warning</strong>. Use a number you can afford to
+        lose, not your main business line.</div>
+      <p class="muted small">A WhatsApp channel with no agent connected does not run at
+        all — collecting messages with nothing to answer them is worse than being visibly
+        off. Group chats are ignored by design.</p>
+    </div>
+
     <div class="card" id="channels">
-      <h2>Channels</h2>
+      <h2>Telegram broadcast channels</h2>
+      <p class="muted">Not to be confused with a MONI <em>channel</em>, which is any way of
+        reaching an agent. This is Telegram's own broadcast feature.</p>
       <p>Telegram channels are broadcast, not conversation, and that difference matters
         here:</p>
       <ul>
