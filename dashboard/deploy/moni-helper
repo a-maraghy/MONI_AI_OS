@@ -85,7 +85,10 @@ UNSTOPPABLE_UNITS = ("ssh", "nginx", "ufw", "moni-dashboard")
 CHANNEL_TYPES = ("telegram", "whatsapp")
 
 SLUG_RE = re.compile(r"^[a-z][a-z0-9-]{1,30}$")
-NAME_RE = re.compile(r"^[\w .,'()&/-]{1,64}$", re.UNICODE)
+# Display names are shown, never interpolated into a shell or a path, so the set
+# is generous. It still excludes the characters that would end up in generated
+# files: quotes, angle brackets, newlines, backslashes.
+NAME_RE = re.compile(r"^[\w .,'()&/@:+#!?-]{1,64}$", re.UNICODE)
 BOT_TOKEN_RE = re.compile(r"^\d{6,12}:[A-Za-z0-9_-]{30,60}$")
 BOT_USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{4,32}$")
 USER_IDS_RE = re.compile(r"^\d{4,15}(,\d{4,15})*$")
@@ -1498,6 +1501,17 @@ def check_unit(unit):
 def service_state(unit):
     active = run(["systemctl", "is-active", unit]).stdout.strip() or "unknown"
     enabled = run(["systemctl", "is-enabled", unit]).stdout.strip() or "unknown"
+
+    # Socket-activated units look alarming otherwise: on Ubuntu 24.04 ssh.service
+    # is 'disabled' while ssh.socket is enabled, and SSH comes back on boot
+    # perfectly well. Reporting the raw service state would have an operator
+    # "fixing" a service that was never broken.
+    via_socket = False
+    if enabled in ("disabled", "static", "unknown"):
+        socket_unit = unit.split(".")[0] + ".socket"
+        if run(["systemctl", "is-enabled", socket_unit]).stdout.strip() == "enabled":
+            enabled = "enabled"
+            via_socket = True
     since = run(
         ["systemctl", "show", unit, "-p", "ActiveEnterTimestamp", "--value"]
     ).stdout.strip()
@@ -1512,6 +1526,7 @@ def service_state(unit):
         "unit": unit,
         "active": active,
         "enabled": enabled,
+        "socket_activated": via_socket,
         "since": since,
         "memory": mem_bytes,
         "stoppable": unit not in UNSTOPPABLE_UNITS,

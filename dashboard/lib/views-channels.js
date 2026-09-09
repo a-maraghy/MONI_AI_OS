@@ -206,7 +206,7 @@ exports.create = ({ csrf, user, agents, form = {}, errors = [], botInfo = null }
           <input name="topics_chat_id" value="${v("topics_chat_id")}" placeholder="-1001234567890" pattern="-?[0-9]*"></label>
         <p class="muted small">Don't know your user ID? Message <code>@userinfobot</code>.
           Full walkthrough in the <a href="/guide#bot">Guide</a>.</p>`,
-        { icon: "telegram" }
+        { icon: "telegram" , className: "only-telegram" }
       )}
 
       ${card(
@@ -217,7 +217,7 @@ exports.create = ({ csrf, user, agents, form = {}, errors = [], botInfo = null }
           with your phone, using an unofficial library. It works, but it is against
           WhatsApp's terms of service and the number can be banned without warning. Use a
           number you can afford to lose, not your main business line.</div></div>`,
-        { icon: "whatsapp" }
+        { icon: "whatsapp" , className: "only-whatsapp" }
       )}
 
       ${card(

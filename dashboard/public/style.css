@@ -380,3 +380,22 @@ ol.steps li { margin: 7px 0; }
   .top-tab span { display: none; }
   .brand-text { display: none; }
 }
+
+/* Channel type: show only the fields that belong to the selected transport.
+   Pure CSS via :has() rather than a script, because the CSP forbids inline
+   handlers and this is not worth an external file. Browsers without :has()
+   simply see both sections, which is the old behaviour and still correct. */
+form:has(input[name="type"][value="telegram"]:checked) .only-whatsapp { display: none; }
+form:has(input[name="type"][value="whatsapp"]:checked) .only-telegram { display: none; }
+
+/* Keep the type cards in step with the radio inside them. */
+label.addon:has(input[type="radio"]:checked),
+label.addon:has(input[type="checkbox"]:checked) {
+  border-color: var(--brand);
+  background: var(--brand-tint);
+}
+label.addon:has(input[type="radio"]:checked) .addon-ico,
+label.addon:has(input[type="checkbox"]:checked) .addon-ico {
+  background: var(--brand);
+  color: #fff;
+}

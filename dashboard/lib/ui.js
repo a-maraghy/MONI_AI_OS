@@ -108,14 +108,15 @@ function dashboardFor(active) {
   return null;
 }
 
-function renderSidebar(active, dash) {
-  return SIDEBAR.map((group) => {
-    // Show items for the current dashboard plus the dashboard-agnostic ones.
-    const items = group.items.filter((i) => !i.dash || !dash || i.dash === dash);
-    if (!items.length) return "";
-    return `<div class="side-group">
+function renderSidebar(active) {
+  // Everything is always listed. Filtering the sidebar by the selected
+  // dashboard was tidier but meant that reaching Channels from the OS view took
+  // two clicks and a context switch, which is a bad trade for tidiness in a
+  // panel this small.
+  return SIDEBAR.map(
+    (group) => `<div class="side-group">
       <div class="side-label">${esc(group.group)}</div>
-      ${items
+      ${group.items
         .map(
           (i) =>
             `<a href="${i.href}" class="side-item${active === i.key ? " on" : ""}">
@@ -123,8 +124,8 @@ function renderSidebar(active, dash) {
              </a>`
         )
         .join("")}
-    </div>`;
-  }).join("");
+    </div>`
+  ).join("");
 }
 
 /**
@@ -172,7 +173,7 @@ function shell(title, body, opts = {}) {
     </header>
 
     <div class="layout">
-      <aside class="sidebar">${renderSidebar(opts.active, dash)}</aside>
+      <aside class="sidebar">${renderSidebar(opts.active)}</aside>
       <main class="content${opts.wide ? " wide" : ""}">
         ${
           title

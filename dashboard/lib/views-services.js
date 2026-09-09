@@ -56,7 +56,11 @@ exports.system = ({ csrf, user, services, flash, err }) =>
                 ${meta.detail ? `<div class="muted small">${esc(meta.detail)}</div>` : ""}
               </td>
               <td>${statusPill(s.active)}</td>
-              <td class="small">${esc(s.enabled)}</td>
+              <td class="small">${esc(s.enabled)}${
+                s.socket_activated
+                  ? `<div class="muted small">via socket</div>`
+                  : ""
+              }</td>
               <td class="mono small">${s.memory != null ? bytes(s.memory) : "—"}</td>
               <td class="mono small">${esc((s.since || "").slice(0, 19) || "—")}</td>
               <td class="right">

@@ -120,7 +120,10 @@ exports.dashboard = ({ csrf, user, agents, channels, probe, flash, err }) => {
                     a.channel
                       ? `<a href="/channels/${esc(a.channel.slug)}">${esc(a.channel.name)}</a>
                          ${
-                           a.channel.telegram_bot_username
+                           // Only when it adds something: a channel named after
+                           // its bot would otherwise print the handle twice.
+                           a.channel.telegram_bot_username &&
+                           a.channel.name !== "@" + a.channel.telegram_bot_username
                              ? `<div class="muted small mono">@${esc(a.channel.telegram_bot_username)}</div>`
                              : ""
                          }`
@@ -132,10 +135,7 @@ exports.dashboard = ({ csrf, user, agents, channels, probe, flash, err }) => {
                 </tr>`
                 )
                 .join("")}</tbody></table>`,
-            {
-              icon: "agents",
-              actions: `<a class="btn primary small" href="/agents/new">${icon("plus")} New agent</a>`,
-            }
+            { icon: "agents" }
           )
         : card(
             "",
