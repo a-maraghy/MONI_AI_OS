@@ -29,6 +29,14 @@ That cap is the whole reason the vector index exists. `MEMORY.md` has a budget,
 so it holds the current state and an index — the map. The notes it points at hold
 the territory, and those are retrieved on demand.
 
+`CLAUDE.md` and `MEMORY.md` are therefore **not indexed**. They are already in
+front of the agent when it searches, so retrieving them again spends result slots
+on text it is currently reading — and `MEMORY.md` is the worst offender, because
+its one-line pointers are short and topical enough to outrank the notes they
+point at. This is not a micro-optimisation: before it was fixed, a search for
+"how do we put code live" returned the index line about the release procedure
+instead of the release procedure.
+
 ## Retrieval
 
 `moni_memory` indexes the vault into a per-agent SQLite database:

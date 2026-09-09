@@ -31,6 +31,13 @@ MIN_CHUNK_CHARS = 20
 SKIP_DIRS = {".obsidian", ".git", ".trash", "node_modules", "__pycache__", ".venv"}
 INDEX_MARKER = "## Memory index"
 
+# The runtime injects these two into the system prompt on every single request,
+# so they are already in front of the agent when it searches. Indexing them
+# means a search spends result slots re-surfacing context the agent is currently
+# reading -- and MEMORY.md is the worst offender, because its one-line pointers
+# are short, topical, and outrank the notes they point at.
+ALWAYS_IN_PROMPT = {"CLAUDE.md", "MEMORY.md"}
+
 
 def slugify(title: str) -> str:
     text = unicodedata.normalize("NFKD", title).encode("ascii", "ignore").decode()
@@ -52,6 +59,8 @@ class Vault:
         for path in sorted(self.root.rglob("*.md")):
             rel_parts = path.relative_to(self.root).parts
             if any(part in SKIP_DIRS or part.startswith(".") for part in rel_parts[:-1]):
+                continue
+            if len(rel_parts) == 1 and rel_parts[0] in ALWAYS_IN_PROMPT:
                 continue
             if path.is_file():
                 yield path

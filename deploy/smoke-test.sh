@@ -72,7 +72,7 @@ RUN() {
     "$PY" -m moni_memory.cli "$@"
 }
 
-say "Indexing a three-file vault"
+say "Indexing the vault (MEMORY.md is prompt-injected, so it is not indexed)"
 OUT=$(RUN index) || fail "index crashed: $OUT"
 echo "$OUT" | "$PY" -c '
 import json,sys
@@ -80,7 +80,7 @@ d=json.load(sys.stdin)
 assert d["ok"], d
 data=d["data"]
 assert data["chunks"] > 0, "no chunks were produced"
-assert data["files"] == 3, "expected 3 files, got %s" % data["files"]
+assert data["files"] == 2, "expected 2 indexed files (MEMORY.md is prompt-injected, not indexed), got %s" % data["files"]
 print("  indexed %d files into %d chunks with %s" % (data["files"], data["chunks"], data["model"]))
 ' || fail "index result was wrong"
 pass "indexing"
@@ -120,8 +120,8 @@ echo "$OUT" | "$PY" -c '
 import json,sys
 d=json.load(sys.stdin)["data"]
 assert d["indexed"] == 0, "re-indexed %d unchanged files" % d["indexed"]
-assert d["skipped"] == 3, "skipped %d, expected 3" % d["skipped"]
-print("  skipped all 3 unchanged files")
+assert d["skipped"] == 2, "skipped %d, expected 2" % d["skipped"]
+print("  skipped all 2 unchanged files")
 ' || fail "incremental indexing re-embedded unchanged files"
 pass "incremental indexing"
 
