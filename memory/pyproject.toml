@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "moni-memory"
+version = "0.1.0"
+description = "Local vector + keyword memory over an Obsidian vault, exposed to Claude over MCP"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "MONI" }]
+dependencies = [
+    "sqlite-vec>=0.1.6",
+    "fastembed>=0.4.2",
+    "mcp>=1.2.0",
+]
+
+[project.scripts]
+moni-memory = "moni_memory.cli:main"
+moni-memory-mcp = "moni_memory.mcp_server:main"
+
+[tool.setuptools]
+packages = ["moni_memory"]

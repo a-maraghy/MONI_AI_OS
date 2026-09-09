@@ -1,0 +1,44 @@
+[Unit]
+Description=MONI VPS admin dashboard
+Documentation=file:/home/ubuntu/workspace/SETUP.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=moniadmin
+Group=moniadmin
+WorkingDirectory=/opt/moni-dashboard
+ExecStart=/usr/bin/node /opt/moni-dashboard/server.js
+Restart=on-failure
+RestartSec=3
+
+Environment=NODE_ENV=production
+Environment=MONI_BIND=127.0.0.1
+Environment=MONI_PORT=3000
+Environment=MONI_DATA_DIR=/var/lib/moni-dashboard
+Environment=MONI_LOG_DIR=/var/log/moni-dashboard
+Environment=MONI_PUBLIC_HOST=vmi3567127.contaboserver.net
+Environment=MONI_PUBLIC_PORT=8443
+
+# --- sandboxing -------------------------------------------------------------
+# NOTE: NoNewPrivileges MUST stay false. The dashboard escalates through
+# `sudo moni-helper` for the few operations that need root; setting
+# NoNewPrivileges=yes would silently break every privileged action.
+NoNewPrivileges=false
+
+PrivateTmp=yes
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=no
+LockPersonality=yes
+
+ReadWritePaths=/var/lib/moni-dashboard /var/log/moni-dashboard
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=moni-dashboard
+
+[Install]
+WantedBy=multi-user.target

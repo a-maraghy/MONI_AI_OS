@@ -1,0 +1,1051 @@
+#!/usr/bin/env python3
+"""
+Privileged helper for the MONI admin dashboard.
+
+The dashboard runs as the unprivileged user `moniadmin` and may invoke ONLY this
+script via a single-command sudoers rule. Every privileged action the dashboard
+can perform must be an explicit subcommand here.
+
+Design rules:
+  - No shell is ever invoked (subprocess without shell=True, fixed argv).
+  - Every argument is validated against a strict whitelist before use.
+  - Target accounts are restricted to a fixed set.
+  - SSH key material is parsed and re-serialised, never echoed through a shell.
+  - Secrets (bot tokens) arrive on stdin, never in argv, because argv is world
+    readable in /proc for the lifetime of the call.
+  - Agent files are written as root but owned by the agent service account, and
+    anything that executes agent-owned code drops to that account first.
+"""
+
+import base64
+import hashlib
+import json
+import os
+import pwd
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from datetime import datetime, timezone
+
+ALLOWED_USERS = ("root", "ubuntu")
+ALLOWED_KEY_TYPES = ("ssh-ed25519", "ssh-rsa", "ecdsa-sha2-nistp256",
+                     "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521")
+COMMENT_RE = re.compile(r"^[A-Za-z0-9 _.@:+-]{1,64}$")
+B64_RE = re.compile(r"^[A-Za-z0-9+/]+={0,3}$")
+FP_RE = re.compile(r"^SHA256:[A-Za-z0-9+/]{40,50}$")
+AUDIT_LOG = "/var/log/moni-dashboard/audit.log"
+
+# --- agent runtime layout ---------------------------------------------------
+AGENTS_ROOT = "/opt/moni-agents"
+AGENTS_DIR = os.path.join(AGENTS_ROOT, "agents")
+RUNTIME_DIR = os.path.join(AGENTS_ROOT, "runtime")
+SHARED_DIR = os.path.join(AGENTS_ROOT, "shared")
+ARCHIVE_DIR = os.path.join(AGENTS_ROOT, "archived")
+TEMPLATE_DIR = os.path.join(AGENTS_ROOT, "vault-template")
+AGENT_USER = "moniagent"
+UNIT_PREFIX = "moni-agent@"
+
+SLUG_RE = re.compile(r"^[a-z][a-z0-9-]{1,30}$")
+NAME_RE = re.compile(r"^[\w .,'()&/-]{1,64}$", re.UNICODE)
+BOT_TOKEN_RE = re.compile(r"^\d{6,12}:[A-Za-z0-9_-]{30,60}$")
+BOT_USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{4,32}$")
+USER_IDS_RE = re.compile(r"^\d{4,15}(,\d{4,15})*$")
+MODEL_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{2,60}$")
+CHAT_ID_RE = re.compile(r"^-?\d{4,20}$")
+ABS_PATH_RE = re.compile(r"^/[A-Za-z0-9._/-]{1,200}$")
+VAULT_REL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/ -]{0,180}\.(md|json|txt)$")
+
+# A project directory can only be attached from one of these roots. Without this
+# an operator could point an agent at /etc and hand the model the host.
+PROJECT_ROOTS = ("/opt/projects", "/srv", "/opt/moni-agents/workspaces")
+
+MAX_FILE_BYTES = 512 * 1024
+MAX_STDIN_BYTES = 1024 * 1024
+
+ACTIONS = ("start", "stop", "restart", "enable", "disable")
+
+
+def fail(msg, code=2):
+    print(json.dumps({"ok": False, "error": msg}))
+    sys.exit(code)
+
+
+def ok(data):
+    print(json.dumps({"ok": True, "data": data}))
+    sys.exit(0)
+
+
+def now_iso():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def audit(action, detail):
+    try:
+        os.makedirs(os.path.dirname(AUDIT_LOG), exist_ok=True)
+        with open(AUDIT_LOG, "a") as fh:
+            fh.write(json.dumps({
+                "ts": now_iso(),
+                "action": action,
+                "detail": detail,
+                "invoked_by": os.environ.get("SUDO_USER", "?"),
+            }) + "\n")
+    except Exception:
+        pass  # auditing must never mask the operation's own error reporting
+
+
+def read_stdin_json():
+    raw = sys.stdin.buffer.read(MAX_STDIN_BYTES + 1)
+    if len(raw) > MAX_STDIN_BYTES:
+        fail("stdin payload too large")
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except Exception:
+        fail("stdin is not valid JSON")
+    if not isinstance(payload, dict):
+        fail("stdin must be a JSON object")
+    return payload
+
+
+def read_stdin_text():
+    raw = sys.stdin.buffer.read(MAX_STDIN_BYTES + 1)
+    if len(raw) > MAX_STDIN_BYTES:
+        fail("stdin payload too large")
+    return raw.decode("utf-8", errors="replace")
+
+
+def run(argv, **kwargs):
+    return subprocess.run(argv, capture_output=True, text=True, timeout=kwargs.pop("timeout", 15), **kwargs)
+
+
+# ============================================================== SSH keys =====
+
+
+def authorized_keys_path(user):
+    home = pwd.getpwnam(user).pw_dir
+    return os.path.join(home, ".ssh", "authorized_keys")
+
+
+def check_user(user):
+    if user not in ALLOWED_USERS:
+        fail("target user not permitted: " + repr(user))
+    return user
+
+
+def fingerprint(keytype, keydata):
+    """SHA256 fingerprint, same format as ssh-keygen -l."""
+    raw = base64.b64decode(keydata)
+    digest = hashlib.sha256(raw).digest()
+    return "SHA256:" + base64.b64encode(digest).decode().rstrip("=")
+
+
+def parse_key_line(line):
+    parts = line.strip().split(None, 2)
+    if len(parts) < 2:
+        return None
+    keytype, keydata = parts[0], parts[1]
+    comment = parts[2] if len(parts) > 2 else ""
+    if keytype not in ALLOWED_KEY_TYPES:
+        return None
+    if not B64_RE.match(keydata):
+        return None
+    try:
+        fp = fingerprint(keytype, keydata)
+    except Exception:
+        return None
+    return {"type": keytype, "data": keydata, "comment": comment, "fingerprint": fp}
+
+
+def read_keys(user):
+    path = authorized_keys_path(user)
+    if not os.path.exists(path):
+        return []
+    out = []
+    with open(path) as fh:
+        for line in fh:
+            if not line.strip() or line.strip().startswith("#"):
+                continue
+            parsed = parse_key_line(line)
+            if parsed:
+                out.append(parsed)
+    return out
+
+
+def write_keys(user, keys):
+    """Atomic replace, preserving ownership and 0600 mode."""
+    path = authorized_keys_path(user)
+    pw = pwd.getpwnam(user)
+    ssh_dir = os.path.dirname(path)
+    os.makedirs(ssh_dir, exist_ok=True)
+    os.chown(ssh_dir, pw.pw_uid, pw.pw_gid)
+    os.chmod(ssh_dir, 0o700)
+    fd, tmp = tempfile.mkstemp(dir=ssh_dir)
+    try:
+        with os.fdopen(fd, "w") as fh:
+            for k in keys:
+                line = k["type"] + " " + k["data"] + " " + k["comment"]
+                fh.write(line.rstrip() + "\n")
+        os.chown(tmp, pw.pw_uid, pw.pw_gid)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, path)
+    except Exception:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+
+
+def cmd_list_keys(args):
+    if not args:
+        fail("usage: list-keys <user>")
+    ok(read_keys(check_user(args[0])))
+
+
+def cmd_list_all_keys(args):
+    ok({u: read_keys(u) for u in ALLOWED_USERS})
+
+
+def cmd_add_key(args):
+    if len(args) < 3:
+        fail("usage: add-key <user> <keytype> <keydata> [comment]")
+    user = check_user(args[0])
+    keytype, keydata = args[1], args[2]
+    comment = args[3] if len(args) > 3 else "added-via-dashboard"
+    if keytype not in ALLOWED_KEY_TYPES:
+        fail("key type not permitted: " + repr(keytype))
+    if not B64_RE.match(keydata) or not (32 <= len(keydata) <= 1024):
+        fail("malformed key data")
+    if not COMMENT_RE.match(comment):
+        fail("comment contains disallowed characters")
+    try:
+        fp = fingerprint(keytype, keydata)
+    except Exception:
+        fail("key data is not valid base64")
+    keys = read_keys(user)
+    if any(k["fingerprint"] == fp for k in keys):
+        fail("this key is already authorised for that account")
+    keys.append({"type": keytype, "data": keydata, "comment": comment, "fingerprint": fp})
+    write_keys(user, keys)
+    audit("add-key", {"user": user, "fingerprint": fp, "comment": comment})
+    ok({"fingerprint": fp, "user": user})
+
+
+def cmd_remove_key(args):
+    if len(args) < 2:
+        fail("usage: remove-key <user> <fingerprint>")
+    user = check_user(args[0])
+    fp = args[1]
+    if not FP_RE.match(fp):
+        fail("malformed fingerprint")
+    keys = read_keys(user)
+    remaining = [k for k in keys if k["fingerprint"] != fp]
+    if len(remaining) == len(keys):
+        fail("no such key on that account")
+    if not remaining:
+        fail("refusing to remove the last key for " + user +
+             " - that would lock you out of this account")
+    write_keys(user, remaining)
+    audit("remove-key", {"user": user, "fingerprint": fp})
+    ok({"removed": fp, "user": user, "remaining": len(remaining)})
+
+
+# ================================================================ status =====
+
+
+def jail_stats(name):
+    r = run(["fail2ban-client", "status", name])
+    if r.returncode != 0:
+        return None
+    banned = re.search(r"Currently banned:\s+(\d+)", r.stdout)
+    failed = re.search(r"Total failed:\s+(\d+)", r.stdout)
+    total_banned = re.search(r"Total banned:\s+(\d+)", r.stdout)
+    return {
+        "banned": int(banned.group(1)) if banned else 0,
+        "total_failed": int(failed.group(1)) if failed else 0,
+        "total_banned": int(total_banned.group(1)) if total_banned else 0,
+    }
+
+
+def cmd_status(args):
+    services = {}
+    for svc in ("ssh", "ufw", "fail2ban", "xrdp", "xrdp-sesman", "moni-dashboard"):
+        services[svc] = run(["systemctl", "is-active", svc]).stdout.strip() or "unknown"
+    jails = {}
+    for jail in ("sshd", "moni-dashboard"):
+        stats = jail_stats(jail)
+        if stats:
+            jails[jail] = stats
+    agents = {"total": 0, "running": 0}
+    if os.path.isdir(AGENTS_DIR):
+        for slug in sorted(os.listdir(AGENTS_DIR)):
+            if not SLUG_RE.match(slug):
+                continue
+            agents["total"] += 1
+            if unit_state(slug)["active"] == "active":
+                agents["running"] += 1
+    return ok({"services": services, "jails": jails, "agents": agents})
+
+
+def cmd_audit_tail(args):
+    n = 100
+    if args:
+        try:
+            n = max(1, min(1000, int(args[0])))
+        except ValueError:
+            fail("bad count")
+    if not os.path.exists(AUDIT_LOG):
+        ok([])
+    with open(AUDIT_LOG) as fh:
+        lines = fh.readlines()[-n:]
+    out = []
+    for ln in lines:
+        try:
+            out.append(json.loads(ln))
+        except Exception:
+            continue
+    ok(list(reversed(out)))
+
+
+# ================================================================ agents =====
+
+
+def agent_dir(slug):
+    return os.path.join(AGENTS_DIR, slug)
+
+
+def check_slug(slug):
+    if not isinstance(slug, str) or not SLUG_RE.match(slug):
+        fail("invalid agent name: must be lowercase letters, digits and hyphens")
+    return slug
+
+
+def existing_agent(slug):
+    check_slug(slug)
+    path = agent_dir(slug)
+    if not os.path.isdir(path):
+        fail("no such agent: " + slug)
+    return path
+
+
+def agent_ids():
+    try:
+        pw = pwd.getpwnam(AGENT_USER)
+    except KeyError:
+        fail("service account " + AGENT_USER + " does not exist; run the bootstrap first")
+    return pw.pw_uid, pw.pw_gid
+
+
+def chown_tree(path, uid, gid, dir_mode=0o770, file_mode=0o660):
+    """Give the agent account ownership, and its group write access.
+
+    Group-writable is deliberate: a human in the moniagent group edits these
+    vaults in Obsidian over RDP, and a memory the operator cannot correct is a
+    memory that stays wrong. agent.env is tightened back to 0600 afterwards, so
+    the bot token is not part of this.
+    """
+    os.chown(path, uid, gid)
+    os.chmod(path, dir_mode)
+    for root, dirs, files in os.walk(path):
+        for d in dirs:
+            p = os.path.join(root, d)
+            os.chown(p, uid, gid)
+            os.chmod(p, dir_mode)
+        for f in files:
+            p = os.path.join(root, f)
+            os.chown(p, uid, gid)
+            os.chmod(p, file_mode)
+
+
+def unit_name(slug):
+    return UNIT_PREFIX + slug + ".service"
+
+
+def unit_state(slug):
+    active = run(["systemctl", "is-active", unit_name(slug)]).stdout.strip() or "unknown"
+    enabled = run(["systemctl", "is-enabled", unit_name(slug)]).stdout.strip() or "unknown"
+    since = ""
+    r = run(["systemctl", "show", unit_name(slug), "-p", "ActiveEnterTimestamp", "--value"])
+    if r.returncode == 0:
+        since = r.stdout.strip()
+    return {"active": active, "enabled": enabled, "since": since}
+
+
+def read_agent_json(slug):
+    path = os.path.join(agent_dir(slug), "agent.json")
+    try:
+        with open(path) as fh:
+            return json.load(fh)
+    except Exception:
+        return {"slug": slug, "name": slug, "broken": True}
+
+
+def write_agent_json(slug, meta, uid, gid):
+    path = os.path.join(agent_dir(slug), "agent.json")
+    tmp = path + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(meta, fh, indent=2, sort_keys=True)
+        fh.write("\n")
+    os.chown(tmp, uid, gid)
+    os.chmod(tmp, 0o640)
+    os.replace(tmp, path)
+
+
+def memory_counts(slug):
+    """Read index size straight from SQLite.
+
+    Deliberately not via the moni-memory CLI: this runs on every dashboard page
+    load, and spawning a Python interpreter per agent to count two rows is waste.
+    """
+    db = os.path.join(agent_dir(slug), "vectors", "memory.db")
+    if not os.path.exists(db):
+        return {"files": 0, "chunks": 0, "bytes": 0, "indexed": False}
+    try:
+        import sqlite3
+
+        conn = sqlite3.connect("file:" + db + "?mode=ro", uri=True, timeout=2)
+        try:
+            files = conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
+            chunks = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+            last = conn.execute("SELECT MAX(indexed_at) FROM files").fetchone()[0]
+        finally:
+            conn.close()
+        return {
+            "files": files,
+            "chunks": chunks,
+            "bytes": os.path.getsize(db),
+            "last_indexed": last,
+            "indexed": True,
+        }
+    except Exception:
+        return {"files": 0, "chunks": 0, "bytes": 0, "indexed": False}
+
+
+def vault_counts(slug):
+    vault = os.path.join(agent_dir(slug), "vault")
+    notes = 0
+    if os.path.isdir(vault):
+        for root, dirs, files in os.walk(vault):
+            dirs[:] = [d for d in dirs if not d.startswith(".")]
+            notes += sum(1 for f in files if f.endswith(".md"))
+    return notes
+
+
+def has_token(slug):
+    path = os.path.join(agent_dir(slug), "agent.env")
+    try:
+        with open(path) as fh:
+            for line in fh:
+                if line.startswith("TELEGRAM_BOT_TOKEN="):
+                    return bool(line.split("=", 1)[1].strip())
+    except Exception:
+        return False
+    return False
+
+
+def agent_summary(slug):
+    meta = read_agent_json(slug)
+    meta["state"] = unit_state(slug)
+    meta["memory"] = memory_counts(slug)
+    meta["notes"] = vault_counts(slug)
+    meta["token_set"] = has_token(slug)
+    meta["dir"] = agent_dir(slug)
+    return meta
+
+
+def cmd_agent_list(args):
+    if not os.path.isdir(AGENTS_DIR):
+        ok([])
+    out = []
+    for slug in sorted(os.listdir(AGENTS_DIR)):
+        if not SLUG_RE.match(slug):
+            continue
+        if not os.path.isdir(agent_dir(slug)):
+            continue
+        out.append(agent_summary(slug))
+    ok(out)
+
+
+def cmd_agent_get(args):
+    if not args:
+        fail("usage: agent-get <slug>")
+    existing_agent(args[0])
+    ok(agent_summary(args[0]))
+
+
+def validate_config(cfg, creating):
+    """Validate the dashboard-supplied agent configuration.
+
+    The dashboard validates too, but it is a web app: this is the layer that has
+    to hold if the web app is wrong.
+    """
+    out = {}
+
+    slug = cfg.get("slug", "")
+    check_slug(slug)
+    out["slug"] = slug
+
+    name = str(cfg.get("name") or slug).strip()
+    if not NAME_RE.match(name):
+        fail("display name contains disallowed characters")
+    out["name"] = name
+
+    role = str(cfg.get("role") or "").strip()
+    if len(role) > 4000:
+        fail("role description is too long (max 4000 characters)")
+    out["role"] = role
+
+    username = str(cfg.get("telegram_bot_username") or "").lstrip("@").strip()
+    if username and not BOT_USERNAME_RE.match(username):
+        fail("bot username must be 4-32 characters of letters, digits or underscore")
+    out["telegram_bot_username"] = username
+
+    allowed = str(cfg.get("allowed_users") or "").replace(" ", "")
+    if allowed and not USER_IDS_RE.match(allowed):
+        fail("allowed users must be comma-separated numeric Telegram IDs")
+    out["allowed_users"] = allowed
+
+    model = str(cfg.get("model") or "claude-opus-5").strip()
+    if not MODEL_RE.match(model):
+        fail("invalid model id")
+    out["model"] = model
+
+    try:
+        verbose = int(cfg.get("verbose_level", 1))
+    except (TypeError, ValueError):
+        fail("verbose level must be a number")
+    if verbose not in (0, 1, 2):
+        fail("verbose level must be 0, 1 or 2")
+    out["verbose_level"] = verbose
+
+    try:
+        max_turns = int(cfg.get("max_turns", 100))
+    except (TypeError, ValueError):
+        fail("max turns must be a number")
+    if not 1 <= max_turns <= 500:
+        fail("max turns must be between 1 and 500")
+    out["max_turns"] = max_turns
+
+    try:
+        timeout = int(cfg.get("timeout_seconds", 1800))
+    except (TypeError, ValueError):
+        fail("timeout must be a number")
+    if not 60 <= timeout <= 7200:
+        fail("timeout must be between 60 and 7200 seconds")
+    out["timeout_seconds"] = timeout
+
+    project = str(cfg.get("project_dir") or "").strip()
+    if project:
+        if not ABS_PATH_RE.match(project) or ".." in project:
+            fail("project directory must be a plain absolute path")
+        real = os.path.realpath(project)
+        if not any(real == root or real.startswith(root + "/") for root in PROJECT_ROOTS):
+            fail("project directory must live under one of: " + ", ".join(PROJECT_ROOTS))
+        if not os.path.isdir(real):
+            fail("project directory does not exist: " + real)
+        project = real
+    out["project_dir"] = project
+
+    threads = bool(cfg.get("enable_project_threads"))
+    chat_id = str(cfg.get("project_threads_chat_id") or "").strip()
+    if chat_id and not CHAT_ID_RE.match(chat_id):
+        fail("Telegram chat id must be numeric (groups start with -100)")
+    if threads and not chat_id:
+        fail("group topic mode needs the group chat id")
+    out["enable_project_threads"] = threads
+    out["project_threads_chat_id"] = chat_id
+
+    token = cfg.get("telegram_bot_token") or ""
+    if token and not BOT_TOKEN_RE.match(token):
+        fail("that does not look like a Telegram bot token")
+    if creating and not token:
+        fail("a Telegram bot token is required to create an agent")
+    out["_token"] = token
+
+    return out
+
+
+def render_env(cfg):
+    """Build the agent's systemd EnvironmentFile.
+
+    Every value here has already been through validate_config, so none of them
+    can contain a newline or a quote that would break the format.
+    """
+    d = agent_dir(cfg["slug"])
+    vault = os.path.join(d, "vault")
+    lines = [
+        "# Generated by the MONI dashboard. Edit through the panel, not by hand.",
+        "# Regenerated on every configuration change.",
+        "TELEGRAM_BOT_TOKEN=" + cfg["_token"],
+        "TELEGRAM_BOT_USERNAME=" + cfg["telegram_bot_username"],
+        "APPROVED_DIRECTORY=" + vault,
+        "ALLOWED_USERS=" + cfg["allowed_users"],
+        "ENABLE_TOKEN_AUTH=false",
+        "DATABASE_URL=sqlite:///" + os.path.join(d, "data", "bot.db"),
+        "CLAUDE_MODEL=" + cfg["model"],
+        "CLAUDE_MAX_TURNS=" + str(cfg["max_turns"]),
+        "CLAUDE_TIMEOUT_SECONDS=" + str(cfg["timeout_seconds"]),
+        "VERBOSE_LEVEL=" + str(cfg["verbose_level"]),
+        "USE_SDK=true",
+        "AGENTIC_MODE=true",
+        "ENABLE_PERSISTENT_MEMORY=true",
+        "MEMORY_SCAFFOLD_ON_START=true",
+        "CONTEXT_FILE_MAX_CHARS=24000",
+        "ENABLE_MCP=true",
+        "MCP_CONFIG_PATH=" + os.path.join(d, "mcp.json"),
+        "ENABLE_GIT_INTEGRATION=true",
+        "DISABLE_SECURITY_PATTERNS=true",
+        "DISABLE_TOOL_VALIDATION=false",
+        "SESSION_TIMEOUT_HOURS=720",
+        "MAX_SESSIONS_PER_USER=10",
+        "RATE_LIMIT_REQUESTS=30",
+        "RATE_LIMIT_WINDOW=60",
+        "RATE_LIMIT_BURST=60",
+        "ENVIRONMENT=production",
+        "DEVELOPMENT_MODE=false",
+        "MONI_AGENT_SLUG=" + cfg["slug"],
+        "MONI_VAULT=" + vault,
+        "MONI_VECTOR_DB=" + os.path.join(d, "vectors", "memory.db"),
+    ]
+    if cfg["enable_project_threads"]:
+        lines += [
+            "ENABLE_PROJECT_THREADS=true",
+            "PROJECT_THREADS_MODE=group",
+            "PROJECT_THREADS_CHAT_ID=" + cfg["project_threads_chat_id"],
+        ]
+    return "\n".join(lines) + "\n"
+
+
+def render_mcp(cfg):
+    d = agent_dir(cfg["slug"])
+    return json.dumps(
+        {
+            "mcpServers": {
+                "memory": {
+                    "command": os.path.join(RUNTIME_DIR, "venv", "bin", "python"),
+                    "args": ["-m", "moni_memory.mcp_server"],
+                    "env": {
+                        "MONI_VAULT": os.path.join(d, "vault"),
+                        "MONI_VECTOR_DB": os.path.join(d, "vectors", "memory.db"),
+                        "MONI_MODEL_CACHE": os.path.join(SHARED_DIR, "models"),
+                    },
+                }
+            }
+        },
+        indent=2,
+    ) + "\n"
+
+
+def scaffold_vault(cfg, uid, gid):
+    d = agent_dir(cfg["slug"])
+    vault = os.path.join(d, "vault")
+    if not os.path.isdir(TEMPLATE_DIR):
+        fail("vault template missing at " + TEMPLATE_DIR + "; run the bootstrap first")
+    if not os.path.exists(vault):
+        shutil.copytree(TEMPLATE_DIR, vault)
+
+    substitutions = {
+        "{{AGENT_NAME}}": cfg["name"],
+        "{{AGENT_SLUG}}": cfg["slug"],
+        "{{AGENT_ROLE}}": cfg["role"] or "General-purpose assistant. No specific role set yet.",
+        "{{WORKSPACE}}": vault,
+        "{{CREATED}}": now_iso()[:10],
+    }
+    for filename in ("CLAUDE.md", "MEMORY.md"):
+        path = os.path.join(vault, filename)
+        if not os.path.exists(path):
+            continue
+        text = open(path, encoding="utf-8").read()
+        for needle, value in substitutions.items():
+            text = text.replace(needle, value)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+
+    if cfg["project_dir"]:
+        link = os.path.join(vault, "project")
+        if os.path.islink(link):
+            os.unlink(link)
+        if not os.path.exists(link):
+            os.symlink(cfg["project_dir"], link)
+
+
+def write_agent_files(cfg, uid, gid):
+    d = agent_dir(cfg["slug"])
+    for sub in ("", "data", "logs", "vectors"):
+        os.makedirs(os.path.join(d, sub), exist_ok=True)
+
+    scaffold_vault(cfg, uid, gid)
+
+    env_path = os.path.join(d, "agent.env")
+    fd, tmp = tempfile.mkstemp(dir=d)
+    with os.fdopen(fd, "w") as fh:
+        fh.write(render_env(cfg))
+    os.chown(tmp, uid, gid)
+    os.chmod(tmp, 0o600)  # holds the bot token
+    os.replace(tmp, env_path)
+
+    mcp_path = os.path.join(d, "mcp.json")
+    with open(mcp_path, "w") as fh:
+        fh.write(render_mcp(cfg))
+    os.chown(mcp_path, uid, gid)
+    os.chmod(mcp_path, 0o640)
+
+
+def drop_in_path(slug):
+    return "/etc/systemd/system/" + unit_name(slug) + ".d"
+
+
+def write_drop_in(cfg):
+    """Per-agent systemd overrides.
+
+    The unit is sandboxed with ProtectSystem=strict, so an attached project
+    directory has to be granted explicitly or the agent gets a read-only
+    filesystem and confusing permission errors.
+    """
+    path = drop_in_path(cfg["slug"])
+    if not cfg["project_dir"]:
+        if os.path.isdir(path):
+            shutil.rmtree(path, ignore_errors=True)
+        return
+    os.makedirs(path, exist_ok=True)
+    with open(os.path.join(path, "project.conf"), "w") as fh:
+        fh.write("[Service]\nReadWritePaths=" + cfg["project_dir"] + "\n")
+    os.chmod(os.path.join(path, "project.conf"), 0o644)
+
+
+def public_meta(cfg):
+    meta = {k: v for k, v in cfg.items() if not k.startswith("_")}
+    meta["updated_at"] = now_iso()
+    return meta
+
+
+def cmd_agent_create(args):
+    payload = read_stdin_json()
+    cfg = validate_config(payload, creating=True)
+    slug = cfg["slug"]
+    if os.path.exists(agent_dir(slug)):
+        fail("an agent called " + slug + " already exists")
+    if not os.path.isdir(RUNTIME_DIR):
+        fail("agent runtime is not installed at " + RUNTIME_DIR + "; run the bootstrap first")
+
+    uid, gid = agent_ids()
+    os.makedirs(AGENTS_DIR, exist_ok=True)
+    try:
+        write_agent_files(cfg, uid, gid)
+        meta = public_meta(cfg)
+        meta["created_at"] = now_iso()
+        write_agent_json(slug, meta, uid, gid)
+        chown_tree(agent_dir(slug), uid, gid)
+        os.chmod(os.path.join(agent_dir(slug), "agent.env"), 0o600)
+        write_drop_in(cfg)
+    except Exception as exc:
+        # A half-created agent is worse than none: it shows up in the list and
+        # fails mysteriously. Roll the directory back.
+        shutil.rmtree(agent_dir(slug), ignore_errors=True)
+        fail("could not create agent: " + type(exc).__name__ + ": " + str(exc))
+
+    run(["systemctl", "daemon-reload"])
+    r = run(["systemctl", "enable", "--now", unit_name(slug)], timeout=30)
+    started = r.returncode == 0
+    audit("agent-create", {"slug": slug, "name": cfg["name"], "started": started})
+    ok({
+        "slug": slug,
+        "started": started,
+        "message": r.stderr.strip() if not started else "",
+        "state": unit_state(slug),
+    })
+
+
+def cmd_agent_update(args):
+    payload = read_stdin_json()
+    slug = check_slug(payload.get("slug", ""))
+    existing_agent(slug)
+    current = read_agent_json(slug)
+
+    # An update with no token keeps the stored one; the dashboard never reads it
+    # back, so it cannot resubmit what it does not have.
+    merged = dict(current)
+    merged.update({k: v for k, v in payload.items() if v is not None})
+    cfg = validate_config(merged, creating=False)
+    if not cfg["_token"]:
+        cfg["_token"] = read_stored_token(slug)
+        if not cfg["_token"]:
+            fail("this agent has no bot token stored; supply one")
+
+    uid, gid = agent_ids()
+    write_agent_files(cfg, uid, gid)
+    meta = public_meta(cfg)
+    meta["created_at"] = current.get("created_at", now_iso())
+    write_agent_json(slug, meta, uid, gid)
+    chown_tree(agent_dir(slug), uid, gid)
+    os.chmod(os.path.join(agent_dir(slug), "agent.env"), 0o600)
+    write_drop_in(cfg)
+
+    run(["systemctl", "daemon-reload"])
+    restarted = False
+    if unit_state(slug)["active"] == "active":
+        restarted = run(["systemctl", "restart", unit_name(slug)], timeout=30).returncode == 0
+    audit("agent-update", {"slug": slug, "restarted": restarted,
+                           "token_changed": bool(payload.get("telegram_bot_token"))})
+    ok({"slug": slug, "restarted": restarted, "state": unit_state(slug)})
+
+
+def read_stored_token(slug):
+    path = os.path.join(agent_dir(slug), "agent.env")
+    try:
+        with open(path) as fh:
+            for line in fh:
+                if line.startswith("TELEGRAM_BOT_TOKEN="):
+                    return line.split("=", 1)[1].strip()
+    except Exception:
+        return ""
+    return ""
+
+
+def cmd_agent_action(args):
+    if len(args) < 2:
+        fail("usage: agent-action <slug> <" + "|".join(ACTIONS) + ">")
+    slug = check_slug(args[0])
+    existing_agent(slug)
+    action = args[1]
+    if action not in ACTIONS:
+        fail("action not permitted: " + repr(action))
+    r = run(["systemctl", action, unit_name(slug)], timeout=45)
+    audit("agent-" + action, {"slug": slug, "rc": r.returncode})
+    if r.returncode != 0:
+        fail((r.stderr.strip() or "systemctl " + action + " failed")[:400])
+    ok({"slug": slug, "action": action, "state": unit_state(slug)})
+
+
+def cmd_agent_logs(args):
+    if not args:
+        fail("usage: agent-logs <slug> [lines]")
+    slug = check_slug(args[0])
+    existing_agent(slug)
+    n = 200
+    if len(args) > 1:
+        try:
+            n = max(10, min(2000, int(args[1])))
+        except ValueError:
+            fail("bad line count")
+    r = run(["journalctl", "-u", unit_name(slug), "-n", str(n),
+             "--no-pager", "--output", "short-iso"], timeout=30)
+    ok({"slug": slug, "lines": r.stdout.splitlines()[-n:]})
+
+
+def cmd_agent_delete(args):
+    if not args:
+        fail("usage: agent-delete <slug>")
+    slug = check_slug(args[0])
+    path = existing_agent(slug)
+    run(["systemctl", "disable", "--now", unit_name(slug)], timeout=45)
+    shutil.rmtree(drop_in_path(slug), ignore_errors=True)
+    run(["systemctl", "daemon-reload"])
+
+    # Archive rather than delete. An agent's vault is months of accumulated
+    # memory and there is no undo for rm -rf.
+    os.makedirs(ARCHIVE_DIR, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    target = os.path.join(ARCHIVE_DIR, slug + "-" + stamp)
+    shutil.move(path, target)
+    os.chmod(target, 0o700)
+    audit("agent-delete", {"slug": slug, "archived_to": target})
+    ok({"slug": slug, "archived_to": target})
+
+
+# ------------------------------------------------------------ vault files ---
+
+
+def check_vault_path(slug, relpath):
+    if not isinstance(relpath, str) or not VAULT_REL_RE.match(relpath):
+        fail("only .md, .json or .txt files inside the vault can be accessed")
+    if ".." in relpath.split("/"):
+        fail("path traversal rejected")
+    vault = os.path.realpath(os.path.join(agent_dir(slug), "vault"))
+    target = os.path.realpath(os.path.join(vault, relpath))
+    if target != vault and not target.startswith(vault + "/"):
+        fail("path escapes the vault")
+    return target
+
+
+def cmd_agent_read_file(args):
+    if len(args) < 2:
+        fail("usage: agent-read-file <slug> <relpath>")
+    slug = check_slug(args[0])
+    existing_agent(slug)
+    target = check_vault_path(slug, args[1])
+    if not os.path.isfile(target):
+        fail("no such file: " + args[1])
+    if os.path.getsize(target) > MAX_FILE_BYTES:
+        fail("file is too large to edit here")
+    with open(target, encoding="utf-8", errors="replace") as fh:
+        ok({"path": args[1], "content": fh.read()})
+
+
+def cmd_agent_write_file(args):
+    if len(args) < 2:
+        fail("usage: agent-write-file <slug> <relpath>  (content on stdin)")
+    slug = check_slug(args[0])
+    existing_agent(slug)
+    target = check_vault_path(slug, args[1])
+    content = read_stdin_text()
+    if len(content.encode("utf-8")) > MAX_FILE_BYTES:
+        fail("content is too large")
+    uid, gid = agent_ids()
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(target))
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(content)
+    os.chown(tmp, uid, gid)
+    os.chmod(tmp, 0o640)
+    os.replace(tmp, target)
+    audit("agent-write-file", {"slug": slug, "path": args[1], "bytes": len(content)})
+    ok({"path": args[1], "bytes": len(content)})
+
+
+def cmd_agent_vault_list(args):
+    if not args:
+        fail("usage: agent-vault-list <slug> [subdir]")
+    slug = check_slug(args[0])
+    existing_agent(slug)
+    vault = os.path.realpath(os.path.join(agent_dir(slug), "vault"))
+    sub = args[1] if len(args) > 1 else ""
+    if sub and (".." in sub or sub.startswith("/") or not re.match(r"^[A-Za-z0-9._/-]{1,120}$", sub)):
+        fail("bad subdirectory")
+    root = os.path.realpath(os.path.join(vault, sub))
+    if root != vault and not root.startswith(vault + "/"):
+        fail("path escapes the vault")
+    if not os.path.isdir(root):
+        ok([])
+    out = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+        for name in sorted(filenames):
+            if not name.endswith(".md"):
+                continue
+            full = os.path.join(dirpath, name)
+            st = os.stat(full)
+            out.append({
+                "path": os.path.relpath(full, vault).replace(os.sep, "/"),
+                "bytes": st.st_size,
+                "modified": datetime.fromtimestamp(st.st_mtime, timezone.utc).isoformat(timespec="seconds"),
+            })
+    out.sort(key=lambda x: x["modified"], reverse=True)
+    ok(out[:500])
+
+
+# --------------------------------------------------------------- memory -----
+
+
+def memory_cli(slug, argv, timeout=300):
+    """Run the memory CLI as the agent account, never as root.
+
+    The index writes into the agent's own directory; doing that as root would
+    silently leave root-owned files the agent then cannot update.
+    """
+    d = agent_dir(slug)
+    python = os.path.join(RUNTIME_DIR, "venv", "bin", "python")
+    if not os.path.exists(python):
+        fail("agent runtime venv is missing; run the bootstrap first")
+    env = {
+        "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "HOME": os.path.join(SHARED_DIR, "home"),
+        "MONI_VAULT": os.path.join(d, "vault"),
+        "MONI_VECTOR_DB": os.path.join(d, "vectors", "memory.db"),
+        "MONI_MODEL_CACHE": os.path.join(SHARED_DIR, "models"),
+        "LANG": "C.UTF-8",
+    }
+    return subprocess.run(
+        ["runuser", "-u", AGENT_USER, "--", python, "-m", "moni_memory.cli"] + argv,
+        capture_output=True, text=True, timeout=timeout, env=env,
+    )
+
+
+def parse_cli_json(result):
+    for line in reversed(result.stdout.strip().splitlines()):
+        try:
+            return json.loads(line)
+        except Exception:
+            continue
+    return None
+
+
+def cmd_agent_memory_index(args):
+    if not args:
+        fail("usage: agent-memory-index <slug> [--force]")
+    slug = check_slug(args[0])
+    existing_agent(slug)
+    argv = ["index"]
+    if len(args) > 1 and args[1] == "--force":
+        argv.append("--force")
+    r = memory_cli(slug, argv)
+    parsed = parse_cli_json(r)
+    if parsed is None:
+        fail((r.stderr.strip() or "indexing failed with no output")[:500])
+    if not parsed.get("ok"):
+        fail(str(parsed.get("error"))[:500])
+    audit("agent-memory-index", {"slug": slug, "result": parsed.get("data", {}).get("indexed")})
+    ok(parsed["data"])
+
+
+def cmd_agent_memory_search(args):
+    if not args:
+        fail("usage: agent-memory-search <slug>  (query on stdin)")
+    slug = check_slug(args[0])
+    existing_agent(slug)
+    query = read_stdin_text().strip()
+    if not query:
+        fail("empty query")
+    if len(query) > 500:
+        fail("query too long")
+    r = memory_cli(slug, ["search", "--limit", "10", query], timeout=120)
+    parsed = parse_cli_json(r)
+    if parsed is None:
+        fail((r.stderr.strip() or "search failed with no output")[:500])
+    if not parsed.get("ok"):
+        fail(str(parsed.get("error"))[:500])
+    ok(parsed["data"])
+
+
+def cmd_agent_memory_stats(args):
+    if not args:
+        fail("usage: agent-memory-stats <slug>")
+    slug = check_slug(args[0])
+    existing_agent(slug)
+    ok(memory_counts(slug))
+
+
+COMMANDS = {
+    "list-keys": cmd_list_keys,
+    "list-all-keys": cmd_list_all_keys,
+    "add-key": cmd_add_key,
+    "remove-key": cmd_remove_key,
+    "status": cmd_status,
+    "audit-tail": cmd_audit_tail,
+    "agent-list": cmd_agent_list,
+    "agent-get": cmd_agent_get,
+    "agent-create": cmd_agent_create,
+    "agent-update": cmd_agent_update,
+    "agent-action": cmd_agent_action,
+    "agent-logs": cmd_agent_logs,
+    "agent-delete": cmd_agent_delete,
+    "agent-read-file": cmd_agent_read_file,
+    "agent-write-file": cmd_agent_write_file,
+    "agent-vault-list": cmd_agent_vault_list,
+    "agent-memory-index": cmd_agent_memory_index,
+    "agent-memory-search": cmd_agent_memory_search,
+    "agent-memory-stats": cmd_agent_memory_stats,
+}
+
+if __name__ == "__main__":
+    if os.geteuid() != 0:
+        fail("must run as root (via sudo)")
+    if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
+        fail("unknown subcommand; allowed: " + ", ".join(sorted(COMMANDS)))
+    try:
+        COMMANDS[sys.argv[1]](sys.argv[2:])
+    except SystemExit:
+        raise
+    except subprocess.TimeoutExpired:
+        fail("the operation timed out")
+    except Exception as exc:
+        fail(type(exc).__name__ + ": " + str(exc))

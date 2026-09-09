@@ -1,0 +1,61 @@
+# /etc/systemd/system/moni-agent@.service
+#
+# One instance per agent: `systemctl start moni-agent@sales-bot`.
+# Everything instance-specific lives in /opt/moni-agents/agents/%i, written by
+# the dashboard through moni-helper. Never edit an instance by hand -- the next
+# configuration change from the panel regenerates it.
+
+[Unit]
+Description=MONI agent %i (Telegram bridge to Claude Code)
+Documentation=https://github.com/mo-zaghloul96/MONI_AI_OS
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=moniagent
+Group=moniagent
+WorkingDirectory=/opt/moni-agents/agents/%i
+
+Environment=HOME=/opt/moni-agents/shared/home
+Environment=PATH=/opt/moni-agents/runtime/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=MONI_MODEL_CACHE=/opt/moni-agents/shared/models
+Environment=PYTHONUNBUFFERED=1
+
+# Claude authentication, shared by every agent (0640 root:moniagent).
+# Leading '-' so an agent still starts to report a clear error if it is missing.
+EnvironmentFile=-/opt/moni-agents/shared/claude-auth.env
+EnvironmentFile=/opt/moni-agents/agents/%i/agent.env
+
+ExecStart=/opt/moni-agents/runtime/venv/bin/claude-telegram-bot
+
+Restart=always
+RestartSec=10
+MemoryMax=8G
+TasksMax=512
+
+# This process runs commands a language model chose. Give it as little of the
+# host as it can still do its job with. An attached project directory is added
+# back by a per-agent drop-in, not by widening these.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/moni-agents/agents/%i /opt/moni-agents/shared
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+LockPersonality=true
+RemoveIPC=true
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=moni-agent-%i
+
+[Install]
+WantedBy=multi-user.target

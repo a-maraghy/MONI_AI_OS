@@ -1,0 +1,5 @@
+# The dashboard runs as `moniadmin` and may run exactly one command as root:
+# the helper script, which validates every argument itself.
+# Deliberately NOT a wildcard path and NOT a shell.
+moniadmin ALL=(root) NOPASSWD: /usr/local/sbin/moni-helper
+Defaults:moniadmin !requiretty
