@@ -29,6 +29,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import uuid
 from datetime import datetime, timezone
 
 ALLOWED_USERS = ("root", "ubuntu")
@@ -2321,6 +2322,22 @@ UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
 CONSOLE_PATH_RE = re.compile(r"^/[A-Za-z0-9._/-]{0,200}$")
 
 
+def ensure_console_state():
+    """The console's state root: traversable, not listable.
+
+    0711 rather than 0700. The console account has to walk through this
+    directory to reach its own config and attachments, and root-only 0700 meant
+    it could not -- the files underneath were correctly owned and simply
+    unreachable. Everything below carries its own 0700, so opening the door
+    without opening the cupboards is the right trade.
+    """
+    os.makedirs(CONSOLE_STATE, mode=0o711, exist_ok=True)
+    try:
+        os.chmod(CONSOLE_STATE, 0o711)
+    except OSError:
+        pass
+
+
 def console_config_dir(access):
     """Where Claude Code keeps this console's own settings and session history.
 
@@ -2337,6 +2354,8 @@ def console_config_dir(access):
         pw = pwd.getpwnam(profile["user"])
     except KeyError:
         return path
+
+    ensure_console_state()
 
     for directory in (profile["home"], path):
         os.makedirs(directory, mode=0o700, exist_ok=True)
@@ -2572,6 +2591,7 @@ def cmd_console_upload(args):
     except KeyError:
         fail("console account does not exist; run the deploy script")
 
+    ensure_console_state()
     directory = os.path.join(CONSOLE_UPLOADS, chat)
     os.makedirs(directory, mode=0o700, exist_ok=True)
     os.chown(directory, pw.pw_uid, pw.pw_gid)

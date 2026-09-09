@@ -56,7 +56,10 @@ usermod --shell /bin/bash moniconsole
 # groups grant it directly, so ordinary log reading does not need sudo and does
 # not fill the sudo log with noise that hides the escalations worth seeing.
 usermod -aG adm,systemd-journal moniconsole
-install -d -m 0700 -o root -g root /var/lib/moni-console
+# 0711: the console account must walk through this to reach its own config and
+# attachments. Everything below it keeps 0700, so this opens the door without
+# opening the cupboards.
+install -d -m 0711 -o root -g root /var/lib/moni-console
 install -d -m 0700 -o moniconsole -g moniconsole /var/lib/moni-console/home
 # Created here so the operator drop-in can name it as a ReadWritePath; systemd
 # skips a missing path silently, and a silently skipped audit log is worse than
