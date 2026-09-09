@@ -348,7 +348,10 @@ exports.console = ({
                           </button>
                         </form>`
                       : `<details class="menu root-toggle">
-                          <summary class="toggle" aria-pressed="false"
+                          <!-- No aria-pressed: a summary is a disclosure, not a
+                               toggle button, and it already announces expanded
+                               state on its own. -->
+                          <summary class="toggle"
                                    title="Root is off. Switching it on needs a code from your authenticator.">
                             <span class="toggle-track"><span class="toggle-knob"></span></span>
                             <span class="toggle-label">root</span>
