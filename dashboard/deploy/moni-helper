@@ -20,6 +20,7 @@ Design rules:
 import base64
 import grp
 import hashlib
+import ipaddress
 import json
 import os
 import pwd
@@ -1866,6 +1867,327 @@ def cmd_service_logs(args):
     ok({"unit": unit, "lines": r.stdout.splitlines()[-n:]})
 
 
+# =============================================================== firewall ====
+#
+# Two systems produce one answer here. ufw holds the standing rules; fail2ban
+# watches the logs and inserts its own bans through ufw's own command, so a ban
+# placed by a jail and a ban placed by hand land in the same table and can only
+# be told apart by the comment each leaves behind. Everything below reads both
+# and reports them as one list, because "who is blocked right now" is one
+# question and answering it from two places is how an address stays blocked
+# after somebody believes they have released it.
+
+UFW = "/usr/sbin/ufw"
+F2B = "/usr/bin/fail2ban-client"
+
+# What each system stamps on the rules it owns. fail2ban's wording comes from
+# its ufw action; ours is chosen to be obvious in `ufw status` to somebody who
+# has never seen this panel.
+MANUAL_TAG = "MONI panel"
+F2B_TAG = "by Fail2Ban"
+
+BLOCKING = ("DENY", "REJECT")
+
+# A ban typed into a form outlives the session that typed it, so how much one
+# may cover is capped. /24 is 256 addresses: wide enough to shut out a noisy
+# subnet, narrow enough that a slipped keystroke cannot black-hole a continent.
+MIN_PREFIX = {4: 24, 6: 64}
+
+# `[ 1] Anywhere      DENY IN     198.51.100.7    # MONI panel: probing /admin`
+# Columns are separated by runs of spaces, and the comment is optional.
+UFW_RULE_RE = re.compile(
+    r"^\[\s*(?P<num>\d+)\]\s+(?P<to>.+?)\s\s+"
+    r"(?P<action>(?:ALLOW|DENY|REJECT|LIMIT)(?:\s+(?:IN|OUT|FWD))?)\s\s+"
+    r"(?P<frm>.+?)\s*(?:#\s*(?P<comment>.*?))?\s*$"
+)
+
+# `187.18.8.5   2026-09-09 23:06:53 + 7200 = 2026-09-10 01:06:53`
+F2B_BAN_RE = re.compile(
+    r"^(?P<ip>\S+)\s+(?P<since>[\d-]{10} [\d:]{8})\s*\+\s*(?P<secs>-?\d+)"
+    r"\s*=\s*(?P<until>[\d-]{10} [\d:]{8})"
+)
+
+
+def ufw_rules():
+    r = run([UFW, "status", "numbered"], timeout=20)
+    if r.returncode != 0:
+        fail((r.stderr.strip() or "ufw status failed")[:300])
+    rules = []
+    for line in r.stdout.splitlines():
+        m = UFW_RULE_RE.match(line.rstrip())
+        if not m:
+            continue
+        rules.append({
+            "num": int(m.group("num")),
+            "to": m.group("to").strip(),
+            "action": " ".join(m.group("action").split()),
+            "from": m.group("frm").strip(),
+            "comment": (m.group("comment") or "").strip(),
+        })
+    return rules
+
+
+def ufw_state():
+    r = run([UFW, "status", "verbose"], timeout=20)
+    state = {"active": False, "logging": "unknown", "default": "unknown"}
+    for line in r.stdout.splitlines():
+        if line.startswith("Status:"):
+            state["active"] = line.split(":", 1)[1].strip() == "active"
+        elif line.startswith("Logging:"):
+            state["logging"] = line.split(":", 1)[1].strip()
+        elif line.startswith("Default:"):
+            state["default"] = line.split(":", 1)[1].strip()
+    return state
+
+
+def rule_target(rule):
+    """The single address a blocking rule applies to, or None."""
+    parts = rule["from"].split()
+    if not parts:
+        return None
+    try:
+        return ipaddress.ip_network(parts[0], strict=False)
+    except ValueError:
+        return None
+
+
+def blocking_rules_for(target):
+    return [
+        r for r in ufw_rules()
+        if r["action"].split()[0] in BLOCKING and rule_target(r) == target
+    ]
+
+
+def f2b(*args, **kwargs):
+    return run([F2B] + list(args), timeout=kwargs.pop("timeout", 15))
+
+
+def jail_names():
+    r = f2b("status")
+    if r.returncode != 0:
+        return []
+    for line in r.stdout.splitlines():
+        if "Jail list:" in line:
+            return [n.strip() for n in line.split(":", 1)[1].split(",") if n.strip()]
+    return []
+
+
+def jail_setting(jail, key):
+    r = f2b("get", jail, key)
+    try:
+        return int(r.stdout.strip())
+    except (ValueError, TypeError):
+        return None
+
+
+def jail_bans(jail):
+    r = f2b("get", jail, "banip", "--with-time")
+    bans = []
+    for line in r.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        m = F2B_BAN_RE.match(line)
+        if m:
+            bans.append({
+                "ip": m.group("ip"),
+                "since": m.group("since"),
+                "until": m.group("until"),
+                # -1 is fail2ban's "until somebody says otherwise".
+                "seconds": int(m.group("secs")),
+            })
+        else:
+            # A permanent ban, or a format this version words differently. The
+            # address is still the first token and is the part that matters.
+            bans.append({"ip": line.split()[0], "since": None, "until": None,
+                         "seconds": None})
+    return bans
+
+
+def jail_total(jail):
+    r = f2b("status", jail)
+    for line in r.stdout.splitlines():
+        if "Total banned:" in line:
+            try:
+                return int(line.split(":")[-1].strip())
+            except ValueError:
+                return None
+    return None
+
+
+def host_addresses():
+    """Every address this machine answers on, so none of them can be banned."""
+    r = run(["ip", "-json", "addr"], timeout=10)
+    out = []
+    try:
+        for iface in json.loads(r.stdout or "[]"):
+            for info in iface.get("addr_info") or []:
+                try:
+                    out.append(ipaddress.ip_address(info.get("local") or ""))
+                except ValueError:
+                    pass
+    except Exception:
+        pass
+    return out
+
+
+def check_ban_target(value, requester):
+    """Validate a ban target, refusing the ones that would do harm."""
+    text = str(value or "").strip()
+    if not text or len(text) > 49:
+        fail("enter an IP address or a CIDR block")
+    try:
+        net = ipaddress.ip_network(text, strict=False)
+    except ValueError:
+        fail("not an IP address or CIDR block: " + repr(text[:40]))
+
+    if (net.is_loopback or net.is_link_local or net.is_multicast
+            or net.is_unspecified or net.is_reserved):
+        fail("that is not a public address, so blocking it would achieve nothing")
+    if net.is_private:
+        fail("that is a private range. Nobody on the internet reaches this machine "
+             "from it, and blocking it can cut the host off from its own network.")
+
+    limit = MIN_PREFIX[net.version]
+    if net.prefixlen < limit:
+        fail("that block is wider than /%d. Ban the address itself, or its /%d."
+             % (limit, limit))
+
+    # The two easy ways to lock yourself out are to block the address you are
+    # sitting at and to block one of the machine's own. Neither is recoverable
+    # from this panel afterwards -- it would be behind the rule it just wrote.
+    here = str(requester or "").strip()
+    if here:
+        try:
+            if ipaddress.ip_address(here) in net:
+                fail("you are connected from " + here + ", which that rule covers. "
+                     "Blocking it would lock you out of this panel.")
+        except ValueError:
+            pass
+    for addr in host_addresses():
+        if addr in net:
+            fail("that covers " + str(addr) + ", an address of this machine.")
+    return net
+
+
+def ban_target_text(net):
+    return str(net) if net.num_addresses > 1 else str(net.network_address)
+
+
+def cmd_firewall_status(args):
+    rules = ufw_rules()
+
+    manual = []
+    for rule in rules:
+        if rule["action"].split()[0] not in BLOCKING:
+            continue
+        # fail2ban's rules are reported under the jail that owns them, with the
+        # expiry the jail knows about. Listing them here as well would show the
+        # same address twice with an Unban button that only half works.
+        if F2B_TAG in rule["comment"]:
+            continue
+        net = rule_target(rule)
+        if net is None:
+            continue
+        note = rule["comment"]
+        panel = note.startswith(MANUAL_TAG)
+        if panel:
+            note = note[len(MANUAL_TAG):].lstrip(": ").strip()
+        manual.append({
+            "ip": ban_target_text(net),
+            "num": rule["num"],
+            "action": rule["action"],
+            "note": note,
+            "panel": panel,
+        })
+
+    jails = []
+    for name in jail_names():
+        jails.append({
+            "name": name,
+            "bans": jail_bans(name),
+            "total": jail_total(name),
+            "maxretry": jail_setting(name, "maxretry"),
+            "findtime": jail_setting(name, "findtime"),
+            "bantime": jail_setting(name, "bantime"),
+        })
+
+    ok({
+        "ufw": ufw_state(),
+        "fail2ban": bool(jails),
+        # fail2ban stamps its bans in the host's local time with no offset on
+        # them, so the page has to be told which clock it is reading.
+        "tz": datetime.now().astimezone().tzname() or "server time",
+        "jails": jails,
+        "manual": manual,
+        "allowed": [r for r in rules if r["action"].split()[0] in ("ALLOW", "LIMIT")],
+    })
+
+
+def cmd_firewall_ban(args):
+    payload = read_stdin_json()
+    net = check_ban_target(payload.get("ip"), payload.get("requester"))
+    note = str(payload.get("note") or "").strip()
+    if note and not COMMENT_RE.match(note):
+        fail("the note may only use letters, numbers, spaces and . _ @ : + -")
+    target = ban_target_text(net)
+
+    rules = ufw_rules()
+    if any(r["action"].split()[0] in BLOCKING and rule_target(r) == net for r in rules):
+        fail(target + " is already blocked.")
+
+    comment = MANUAL_TAG + (": " + note if note else "")
+    # Position 1: the allow rules for SSH and this panel sit below, and a deny
+    # placed after them would never be reached. An empty table has no position 1.
+    argv = [UFW]
+    if rules:
+        argv += ["insert", "1"]
+    argv += ["deny", "from", target, "comment", comment]
+
+    r = run(argv, timeout=30)
+    if r.returncode != 0:
+        fail((r.stderr.strip() or r.stdout.strip() or "ufw refused the rule")[:300])
+    audit("firewall-ban", {"target": target, "note": note})
+    ok({"ip": target, "note": note})
+
+
+def cmd_firewall_unban(args):
+    payload = read_stdin_json()
+    text = str(payload.get("ip") or "").strip()
+    try:
+        net = ipaddress.ip_network(text, strict=False)
+    except ValueError:
+        fail("not an IP address or CIDR block")
+    target = ban_target_text(net)
+
+    cleared = []
+    # fail2ban is asked first and asked properly: `unban` drops its ufw rule and
+    # clears the strike record together. Deleting the rule by hand would leave
+    # the jail believing the address is still banned, and it would never be
+    # re-banned on the next attempt because it never left.
+    r = f2b("unban", target, timeout=30)
+    if r.returncode == 0 and (r.stdout.strip() or "0") not in ("0", ""):
+        cleared.append("fail2ban")
+
+    # Re-listed every pass because deleting by number renumbers what is left.
+    removed = 0
+    while removed < 16:
+        hits = blocking_rules_for(net)
+        if not hits:
+            break
+        d = run([UFW, "--force", "delete", str(hits[0]["num"])], timeout=30)
+        if d.returncode != 0:
+            fail((d.stderr.strip() or "ufw refused to delete the rule")[:300])
+        removed += 1
+    if removed:
+        cleared.append("%d firewall rule%s" % (removed, "" if removed == 1 else "s"))
+
+    if not cleared:
+        fail(target + " is not blocked.")
+    audit("firewall-unban", {"target": target, "cleared": cleared})
+    ok({"ip": target, "cleared": cleared})
+
+
 # ============================================================ credentials ====
 
 
@@ -2656,6 +2978,9 @@ COMMANDS = {
     "service-list": cmd_service_list,
     "service-action": cmd_service_action,
     "service-logs": cmd_service_logs,
+    "firewall-status": cmd_firewall_status,
+    "firewall-ban": cmd_firewall_ban,
+    "firewall-unban": cmd_firewall_unban,
     "credential-list": cmd_credential_list,
     "credential-get": cmd_credential_get,
     "credential-set": cmd_credential_set,

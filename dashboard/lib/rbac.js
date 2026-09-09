@@ -65,6 +65,8 @@ const PERMISSION_GROUPS = [
       { key: "services.view", label: "View system services" },
       { key: "services.logs", label: "Read service logs" },
       { key: "services.control", label: "Start / stop / restart services", hint: "Core units stay protected regardless." },
+      { key: "firewall.view", label: "View the firewall", hint: "Blocked addresses, jail policy, open ports." },
+      { key: "firewall.manage", label: "Block and unblock addresses", hint: "Reaches who can open a connection to this machine." },
       { key: "audit.view", label: "View the audit log" },
     ],
   },
@@ -136,6 +138,8 @@ const IMPLIES = {
   "services.control": ["services.view", "os.view"],
   "services.logs": ["services.view", "os.view"],
   "services.view": ["os.view"],
+  "firewall.view": ["os.view"],
+  "firewall.manage": ["firewall.view", "os.view"],
   "credentials.edit": ["credentials.view"],
   "keys.manage": ["keys.view"],
   "devices.manage": ["devices.view"],
@@ -195,6 +199,10 @@ const SYSTEM_ROLES = [
       "addons.manage",
       "os.view",
       "services.view",
+      // Seeing who is currently blocked is part of knowing why a bot stopped
+      // answering. Changing it is not: that reaches the host, which this role
+      // deliberately does not.
+      "firewall.view",
     ]),
     agent_scope: "*",
     channel_scope: "*",

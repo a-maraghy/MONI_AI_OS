@@ -193,6 +193,23 @@ module.exports = {
       redactDeep
     ),
 
+  /* ------------------------------------------------------------ firewall -- */
+  firewallStatus: () => callHelper("firewall-status", [], { timeout: 30000 }),
+
+  // The requester's own address travels with the request so the helper can
+  // refuse to block the person typing. It is a check the browser cannot do:
+  // the page does not know which address it reached the server from.
+  firewallBan: ({ ip, note, requester }) =>
+    callHelper("firewall-ban", [], {
+      stdin: JSON.stringify({ ip, note, requester }),
+      timeout: 40000,
+    }),
+  firewallUnban: (ip) =>
+    callHelper("firewall-unban", [], {
+      stdin: JSON.stringify({ ip }),
+      timeout: 40000,
+    }),
+
   /* --------------------------------------------------------- credentials -- */
   credentialList: () => callHelper("credential-list"),
   credentialGet: (name) => callHelper("credential-get", [name]),

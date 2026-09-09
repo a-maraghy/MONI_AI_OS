@@ -27,6 +27,7 @@ const views = require("./lib/views");
 const agentViews = require("./lib/views-agents");
 const channelViews = require("./lib/views-channels");
 const serviceViews = require("./lib/views-services");
+const firewallViews = require("./lib/views-firewall");
 const credentialViews = require("./lib/views-credentials");
 const addonViews = require("./lib/views-addons");
 const guideViews = require("./lib/views-guide");
@@ -1505,6 +1506,56 @@ app.get("/services/logs", requireAuth, requirePerm("services.logs"), async (req,
       err,
     })
   );
+});
+
+/* ---------------------------------------------------------------- firewall - */
+
+app.get("/firewall", requireAuth, requirePerm("firewall.view"), async (req, res) => {
+  try {
+    const status = await priv.firewallStatus();
+    res.send(
+      firewallViews.index({
+        csrf: res.locals.csrf,
+        user: ctx(req),
+        status,
+        myIp: req.ip,
+        canManage: req.perm.can("firewall.manage"),
+        flash: req.query.msg || null,
+        err: req.query.err || null,
+      })
+    );
+  } catch (e) {
+    res.status(500).send(views.error("Could not read the firewall", e.message));
+  }
+});
+
+app.post("/firewall/ban", requireAuth, requirePerm("firewall.manage"), requireCsrf, async (req, res) => {
+  const ip = field(req.body, "ip");
+  const note = field(req.body, "note");
+  try {
+    // The helper decides whether this address may be blocked, and req.ip is the
+    // half of that decision only the server knows. `trust proxy` is loopback, so
+    // this is the real client address and not nginx.
+    const done = await priv.firewallBan({ ip, note, requester: req.ip });
+    db.logLogin(req.ip, req.me.username, "firewall", "blocked " + done.ip);
+    res.redirect("/firewall?msg=" + encodeURIComponent(done.ip + " is blocked."));
+  } catch (e) {
+    res.redirect("/firewall?err=" + encodeURIComponent(e.message));
+  }
+});
+
+app.post("/firewall/unban", requireAuth, requirePerm("firewall.manage"), requireCsrf, async (req, res) => {
+  const ip = field(req.body, "ip");
+  try {
+    const done = await priv.firewallUnban(ip);
+    db.logLogin(req.ip, req.me.username, "firewall", "unblocked " + done.ip);
+    res.redirect(
+      "/firewall?msg=" +
+        encodeURIComponent(done.ip + " unblocked (" + done.cleared.join(", ") + ").")
+    );
+  } catch (e) {
+    res.redirect("/firewall?err=" + encodeURIComponent(e.message));
+  }
 });
 
 app.get("/services/agents", requireAuth, requirePerm("agents.view"), async (req, res) => {
