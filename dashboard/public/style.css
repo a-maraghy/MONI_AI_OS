@@ -61,7 +61,13 @@
 
 * { box-sizing: border-box; }
 
-html, body { height: 100%; }
+/* min-height, not height. A sticky element is held inside its containing block,
+   and the top bar's is <body>. With a fixed 100% the body box was exactly one
+   viewport tall however long the page was, so on any page taller than about two
+   viewports the bar unstuck at that boundary and scrolled away with the rest.
+   min-height keeps the full-height behaviour the console layout wants while
+   letting the box grow with the document. */
+html, body { min-height: 100%; }
 
 body {
   margin: 0;
