@@ -1342,8 +1342,11 @@ app.post("/channels/:slug", requireAuth, requirePerm("channels.edit"), requireCh
     name: field(req.body, "name"),
     type: channel.type,
     agent: field(req.body, "agent"),
-    allowed_users: field(req.body, "allowed_users").replace(/\s/g, ""),
-    allowed_numbers: field(req.body, "allowed_numbers").replace(/\s/g, ""),
+    // Membership is deliberately absent. It is edited by the /members routes,
+    // and the helper preserves any key the payload omits -- whereas an empty
+    // string overrides the stored list. This form no longer carries those
+    // fields, so posting them would have emptied the allow-list, silently,
+    // every time somebody renamed a channel or changed an add-on.
     topics_enabled: !!req.body.topics_enabled,
     topics_chat_id: field(req.body, "topics_chat_id"),
     addons,
@@ -1606,9 +1609,12 @@ async function saveMembers(channel, members) {
     addons: channel.addons || [],
     addon_env: channel.addon_env || {},
     telegram_bot_username: channel.telegram_bot_username || "",
-    allowed_users: channel.type === "telegram" ? members.join(",") : "",
-    allowed_numbers: channel.type === "telegram" ? "" : members.join(","),
   };
+  // Only the key this channel type actually uses. Sending the other one as an
+  // empty string would clear a list that is not being edited -- which matters
+  // if a channel is ever converted between types.
+  update[channel.type === "telegram" ? "allowed_users" : "allowed_numbers"] =
+    members.join(",");
   await priv.channelUpdate(update);
 }
 

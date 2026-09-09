@@ -343,6 +343,15 @@ exports.detail = ({ csrf, user, agent, notes = [], flash, err }) => {
            token and a missing Claude credential are the two usual causes.</div></div>`
         : ""
     }
+    ${
+      agent.server_operator
+        ? `<div class="alert warn">${icon("shield")}<div>This agent holds the
+           <strong>server operator</strong> role: it can ask to run commands as root on this
+           machine. It cannot run one — each request is shown to the channel's administrator
+           with the exact command, and runs only after they approve it with the passphrase.
+           <a href="/operator">Manage the role</a>.</div></div>`
+        : ""
+    }
 
     <div class="grid">
       ${card(
@@ -693,6 +702,25 @@ exports.settings = ({ csrf, user, agent, probe, flash, err }) =>
         <button class="btn primary" type="submit">${icon("save")} Save settings</button>`
       )}
     </form>
+
+    ${card(
+      "Server operator role",
+      agent.server_operator
+        ? `<p>This agent <strong>holds</strong> the role. It can propose commands that run as
+            root; each one needs the channel administrator's approval and passphrase in chat.</p>
+           <div class="btn-row"><a class="btn" href="/operator">${icon(
+             "shield"
+           )} Manage the role</a></div>`
+        : `<p class="muted">This agent does not hold the server operator role, so it cannot
+            reach anything outside its own workspace and project directory.</p>
+           <p class="muted small">The role is granted on its own page rather than here — only
+            one agent on the machine may hold it, so it is a decision about the host, not a
+            setting on an agent.</p>
+           <div class="btn-row"><a class="btn" href="/operator">${icon(
+             "shield"
+           )} Server operator</a></div>`,
+      { icon: "lock" }
+    )}
 
     ${card(
       "Delete this agent",
