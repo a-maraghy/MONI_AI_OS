@@ -38,9 +38,6 @@ done
 say "Installing the privileged helper and unit files"
 install -m 0755 "$SRC/deploy/moni-helper" /usr/local/sbin/moni-helper
 python3 -m py_compile /usr/local/sbin/moni-helper
-install -m 0755 "$SRC/deploy/moni-root" /usr/local/sbin/moni-root
-python3 -m py_compile /usr/local/sbin/moni-root
-install -d -m 0700 -o root -g root /var/lib/moni-root
 
 # The account the panel's console runs as. Separate from moniagent so the two
 # entitlements can never be confused for one another: this one holds full sudo,
@@ -61,11 +58,6 @@ usermod -aG adm,systemd-journal moniconsole
 # opening the cupboards.
 install -d -m 0711 -o root -g root /var/lib/moni-console
 install -d -m 0700 -o moniconsole -g moniconsole /var/lib/moni-console/home
-# Created here so the operator drop-in can name it as a ReadWritePath; systemd
-# skips a missing path silently, and a silently skipped audit log is worse than
-# a noisy one.
-touch /var/log/moni-root.log
-chmod 0600 /var/log/moni-root.log
 install -m 0644 "$SRC/deploy/moni-agent@.service" /etc/systemd/system/moni-agent@.service
 # The dashboard's own unit was installed by hand once and then never again, so
 # edits to it in the repo silently did nothing. Installing it here makes the

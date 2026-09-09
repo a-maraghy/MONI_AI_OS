@@ -239,15 +239,6 @@ module.exports = {
       timeout: 300000,
     }),
 
-  /* ----------------------------------------------------- server operator -- */
-  operatorGet: () => callHelper("operator-get", [], { timeout: 30000 }),
-  // A username, not a secret: the authenticator secret it points at is read by
-  // moni-root from the panel's own database and never travels through here.
-  rootSetApprover: (username) => callHelper("root-set-approver", [username]),
-  rootClearApprover: () => callHelper("root-clear-approver"),
-  rootAudit: (lines = 100) =>
-    callHelper("root-audit", ["--lines", String(lines)], { timeout: 20000 }),
-
   /* -------------------------------------------------------------- probes -- */
   systemProbe: () => callHelper("system-probe", [], { timeout: 30000 }),
 

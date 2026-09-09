@@ -37,16 +37,13 @@ LockPersonality=yes
 ReadWritePaths=/var/lib/moni-dashboard /var/log/moni-dashboard
 
 # ProtectSystem=full makes /etc read-only, and sudo's child inherits this
-# unit's mount namespace -- so without these, moni-helper cannot write the
-# per-agent systemd drop-ins or the broker's state even though it runs as root.
+# unit's mount namespace -- so without this, moni-helper cannot write the
+# per-agent systemd drop-ins even though it runs as root.
 #
-# These grant the namespace, not the service account. /etc/systemd/system is
-# 0755 root:root and /var/lib/moni-root is 0700 root:root, so moniadmin still
-# cannot write a unit file or read a ticket; only moni-helper and moni-root,
-# which are root, can.
+# This grants the namespace, not the service account: /etc/systemd/system is
+# 0755 root:root, so moniadmin still cannot write a unit file. Only moni-helper,
+# which is root, can.
 ReadWritePaths=/etc/systemd/system
-ReadWritePaths=/var/lib/moni-root
-ReadWritePaths=-/var/log/moni-root.log
 
 StandardOutput=journal
 StandardError=journal

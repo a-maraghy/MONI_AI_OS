@@ -31,7 +31,6 @@ const credentialViews = require("./lib/views-credentials");
 const addonViews = require("./lib/views-addons");
 const guideViews = require("./lib/views-guide");
 const accessViews = require("./lib/views-access");
-const operatorViews = require("./lib/views-operator");
 const consoleViews = require("./lib/views-console");
 const rbac = require("./lib/rbac");
 const totp = require("./lib/totp");
@@ -1296,14 +1295,6 @@ app.get("/channels/:slug", requireAuth, requirePerm("channels.view"), requireCha
       /* the bridge may not be installed; the view handles that */
     }
   }
-  // Needed so the members card can say that promoting somebody here grants
-  // them approval over root actions.
-  let operator = null;
-  try {
-    operator = await priv.operatorGet();
-  } catch (_) {
-    /* the page is still useful without it */
-  }
   res.send(
     channelViews.detail({
       csrf: res.locals.csrf,
@@ -1311,7 +1302,6 @@ app.get("/channels/:slug", requireAuth, requirePerm("channels.view"), requireCha
       channel,
       agents,
       wa,
-      operator,
       flash: req.query.msg || null,
       err: req.query.err || null,
     })
@@ -2331,8 +2321,6 @@ app.post("/console/:id/send", requireAuth, requirePerm("console.use"), requireCs
   });
 });
 
-/* ------------------------------------------------------- server operator --- */
-
 /** Read the current allow-list of a channel as an ordered array. */
 function memberList(channel) {
   const raw = channel.type === "telegram" ? channel.allowed_users : channel.allowed_numbers;
@@ -2373,116 +2361,6 @@ async function saveMembers(channel, members) {
 
 const TELEGRAM_ID_RE = /^\d{4,15}$/;
 const PHONE_RE = /^\+?\d{6,20}$/;
-
-app.get("/operator", requireAuth, requirePerm("operator.view"), async (req, res) => {
-  const data = await gather({
-    operator: () => priv.operatorGet(),
-    agents: () => priv.agentList(),
-    audit: () => priv.rootAudit(150),
-  });
-  res.send(
-    operatorViews.index({
-      csrf: res.locals.csrf,
-      user: ctx(req, "os"),
-      operator: data.operator || null,
-      agents: scopeAgents(req, data.agents),
-      // Only accounts that could actually produce a code are offered. Binding
-      // approvals to an account that cannot is a failure you would discover at
-      // the worst possible moment.
-      eligible: req.perm.can("operator.approver")
-        ? db.listUsers().filter((u) => !u.disabled && u.totp_confirmed)
-        : [],
-      audit: (data.audit && data.audit.entries) || [],
-      flash: req.query.msg || null,
-      err: req.query.err || data.errors.operator || null,
-    })
-  );
-});
-
-app.post("/operator/assign", requireAuth, requirePerm("operator.assign"), requireCsrf, async (req, res) => {
-  const slug = field(req.body, "agent");
-  const back = (q) => res.redirect("/operator?" + q);
-
-  try {
-    const current = await priv.operatorGet();
-
-    // Clearing first, always. Moving the role in one step would briefly leave
-    // two agents holding it if the second write failed, and "which agent can
-    // reach root" must never have two answers.
-    if (current.agent && current.agent !== slug) {
-      await priv.agentUpdate({ slug: current.agent, server_operator: false });
-    }
-
-    if (!slug) {
-      db.logLogin(req.ip, req.me.username, "admin", "removed the server operator role");
-      return back("msg=" + encodeURIComponent("Server operator role removed."));
-    }
-
-    if (!SLUG_RE.test(slug) || !req.perm.seesAgent(slug))
-      return back("err=" + encodeURIComponent("Unknown agent."));
-
-    const agent = await priv.agentGet(slug);
-    if (!agent.channel)
-      return back(
-        "err=" +
-          encodeURIComponent(
-            "That agent has no channel, so nobody could approve anything it proposes."
-          )
-      );
-
-    await priv.agentUpdate({ slug, server_operator: true });
-    db.logLogin(req.ip, req.me.username, "admin", "granted the server operator role to " + slug);
-    back("msg=" + encodeURIComponent(agent.name + " now holds the server operator role."));
-  } catch (e) {
-    back("err=" + encodeURIComponent(e.message));
-  }
-});
-
-app.post("/operator/approver", requireAuth, requirePerm("operator.approver"), requireCsrf, async (req, res) => {
-  const username = field(req.body, "username");
-  const back = (q) => res.redirect("/operator?" + q);
-
-  // Checked here so the page can explain itself, and again inside moni-root,
-  // which is the layer that has to hold if this one is wrong.
-  const target = db.getUserByName(username);
-  if (!target || target.disabled || !target.totp_confirmed)
-    return back(
-      "err=" +
-        encodeURIComponent(
-          "That account cannot approve: it must be enabled and have finished authenticator enrolment."
-        )
-    );
-
-  try {
-    await priv.rootSetApprover(username);
-    db.logLogin(
-      req.ip,
-      req.me.username,
-      "admin",
-      "root approvals now use " + username + "'s authenticator"
-    );
-    back(
-      "msg=" +
-        encodeURIComponent(
-          "Root actions are now approved with " +
-            username +
-            "'s authenticator. Waiting proposals were cancelled."
-        )
-    );
-  } catch (e) {
-    back("err=" + encodeURIComponent(e.message));
-  }
-});
-
-app.post("/operator/approver/clear", requireAuth, requirePerm("operator.approver"), requireCsrf, async (req, res) => {
-  try {
-    await priv.rootClearApprover();
-    db.logLogin(req.ip, req.me.username, "admin", "removed the root approver");
-    res.redirect("/operator?msg=" + encodeURIComponent("Approver removed. Root actions are disabled."));
-  } catch (e) {
-    res.redirect("/operator?err=" + encodeURIComponent(e.message));
-  }
-});
 
 /* ------------------------------------------------------- channel members --- */
 

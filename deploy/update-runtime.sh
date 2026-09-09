@@ -47,7 +47,13 @@ say "Checking it imports"
 (cd /tmp && "$RUNTIME/venv/bin/python" -c "import src.main")
 
 say "Restarting agents"
-mapfile -t units < <(systemctl list-units --plain --no-legend 'moni-agent@*' | awk '{print $1}')
+# Only the ones that were running. list-units also reports units that are
+# loaded but deliberately stopped -- a WhatsApp agent has no Telegram token, so
+# its moni-agent@ unit is disabled on purpose, and restarting it every deploy
+# started something that could only fail and then left it in a failed state.
+mapfile -t units < <(
+  systemctl list-units --plain --no-legend --state=active 'moni-agent@*' | awk '{print $1}'
+)
 if [[ ${#units[@]} -eq 0 ]]; then
   echo "  none running"
 else

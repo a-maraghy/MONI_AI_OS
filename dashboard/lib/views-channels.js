@@ -15,14 +15,12 @@ const { renderAddons } = require("./views-addons");
 /**
  * The people allowed to talk to this channel, in order.
  *
- * Order is not cosmetic: the first entry is the administrator. On an ordinary
- * channel that only decides who the runtime treats as the default user; on the
- * channel bound to the server-operator agent it decides who can approve a
- * command that runs as root. Which is why promoting somebody is a deliberate
- * button on a row rather than a matter of retyping a comma-separated list in
- * the right order and hoping.
+ * Order is not cosmetic: the first entry is the administrator, and that is who
+ * the runtime treats as the default user. Which is why promoting somebody is a
+ * deliberate button on a row rather than a matter of retyping a comma-separated
+ * list in the right order and hoping.
  */
-function renderMembers({ csrf, channel, editable, operator }) {
+function renderMembers({ csrf, channel, editable }) {
   const c = channel;
   const isTelegram = c.type === "telegram";
   const raw = isTelegram ? c.allowed_users : c.allowed_numbers;
@@ -50,9 +48,7 @@ function renderMembers({ csrf, channel, editable, operator }) {
                 isAdmin
                   ? ""
                   : `<form method="post" action="/channels/${esc(c.slug)}/members/promote" class="inline"
-                       data-confirm="Make ${esc(id)} the administrator of this channel?${
-                         operator ? " They will be able to approve commands that run as root." : ""
-                       }">
+                       data-confirm="Make ${esc(id)} the administrator of this channel?">
                       <input type="hidden" name="_csrf" value="${esc(csrf)}">
                       <input type="hidden" name="id" value="${esc(id)}">
                       <button class="btn small" type="submit">${icon(
@@ -91,13 +87,7 @@ function renderMembers({ csrf, channel, editable, operator }) {
           <button class="btn primary" type="submit">${icon("plus")} Add</button>
         </form>
         <p class="muted small mt-8">The first entry is the administrator. Everyone else can
-          use the agent normally.${
-            operator
-              ? ` Because this channel is bound to the server-operator agent, only the
-                 administrator can approve root actions — everyone else's messages are treated
-                 as relayed text and copied to the administrator.`
-              : ""
-          }</p>`
+          use the agent normally.</p>`
       : ""
   }`;
 }
@@ -475,13 +465,10 @@ function whatsappCard(csrf, c, wa) {
   );
 }
 
-exports.detail = ({ csrf, user, channel, agents, wa, operator, flash, err }) => {
+exports.detail = ({ csrf, user, channel, agents, wa, flash, err }) => {
   const c = channel;
   const free = agents.filter((a) => !a.channel || a.channel.slug === c.slug);
   const isTelegram = c.type === "telegram";
-  // True when this channel feeds the agent holding the server-operator role,
-  // which raises the stakes of everything on the members card.
-  const isOperatorChannel = !!(operator && operator.channel === c.slug);
 
   return shell(
     c.name || c.slug,
@@ -498,14 +485,6 @@ exports.detail = ({ csrf, user, channel, agents, wa, operator, flash, err }) => 
            agent, so messages sent to it go nowhere.</div></div>`
         : ""
     }
-    ${
-      isOperatorChannel
-        ? `<div class="alert warn">${icon("shield")}<div>This channel feeds the
-           <a href="/operator">server operator</a> agent. Its administrator — the first entry
-           in the members list — is the only person who can approve a command that runs as
-           root on this machine.</div></div>`
-        : ""
-    }
 
     ${card(
       "Who can use this channel",
@@ -513,7 +492,6 @@ exports.detail = ({ csrf, user, channel, agents, wa, operator, flash, err }) => 
         csrf,
         channel: c,
         editable: can(user, "channels.edit", c.slug),
-        operator: isOperatorChannel,
       }),
       { icon: "users" }
     )}

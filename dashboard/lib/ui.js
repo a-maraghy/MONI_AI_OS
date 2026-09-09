@@ -139,9 +139,6 @@ const NAV = [
           {
             label: "Security",
             items: [
-              // Lives on the OS side, not with the agents: what it governs is
-              // root on this host, and the agent is only the thing asking.
-              { key: "operator", href: "/operator", label: "Server operator", icon: "lock", perm: "operator.view" },
               { key: "credentials", href: "/credentials", label: "Credentials", icon: "credentials", perm: "credentials.view" },
               { key: "keys", href: "/keys", label: "SSH keys", icon: "keys", perm: "keys.view" },
               { key: "devices", href: "/devices", label: "Devices", icon: "devices", perm: "devices.view" },
