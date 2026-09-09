@@ -8,9 +8,99 @@
  * agent or losing its memory.
  */
 
-const { esc, shell, card, flashes, empty, icon, agentPill, stamp } = require("./ui");
+const { esc, shell, card, flashes, empty, icon, agentPill, stamp, can, steps } = require("./ui");
 const { byScope } = require("./catalog");
 const { renderAddons } = require("./views-addons");
+
+/**
+ * The people allowed to talk to this channel, in order.
+ *
+ * Order is not cosmetic: the first entry is the administrator. On an ordinary
+ * channel that only decides who the runtime treats as the default user; on the
+ * channel bound to the server-operator agent it decides who can approve a
+ * command that runs as root. Which is why promoting somebody is a deliberate
+ * button on a row rather than a matter of retyping a comma-separated list in
+ * the right order and hoping.
+ */
+function renderMembers({ csrf, channel, editable, operator }) {
+  const c = channel;
+  const isTelegram = c.type === "telegram";
+  const raw = isTelegram ? c.allowed_users : c.allowed_numbers;
+  const members = String(raw || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const label = isTelegram ? "Telegram user ID" : "phone number";
+
+  const rows = members
+    .map((id, i) => {
+      const isAdmin = i === 0;
+      return `<tr>
+        <td>
+          <code>${esc(id)}</code>
+          ${
+            isAdmin
+              ? `<span class="pill brand">administrator</span>`
+              : `<span class="muted small">member</span>`
+          }
+        </td>
+        <td class="right">${
+          editable
+            ? `${
+                isAdmin
+                  ? ""
+                  : `<form method="post" action="/channels/${esc(c.slug)}/members/promote" class="inline"
+                       data-confirm="Make ${esc(id)} the administrator of this channel?${
+                         operator ? " They will be able to approve commands that run as root." : ""
+                       }">
+                      <input type="hidden" name="_csrf" value="${esc(csrf)}">
+                      <input type="hidden" name="id" value="${esc(id)}">
+                      <button class="btn small" type="submit">${icon(
+                        "shield"
+                      )} Make administrator</button>
+                    </form>`
+              }
+              <form method="post" action="/channels/${esc(c.slug)}/members/remove" class="inline"
+                    data-confirm="Remove ${esc(id)} from this channel?${
+                      isAdmin && members.length > 1
+                        ? " The next entry becomes the administrator."
+                        : ""
+                    }">
+                <input type="hidden" name="_csrf" value="${esc(csrf)}">
+                <input type="hidden" name="id" value="${esc(id)}">
+                <button class="btn danger small" type="submit">${icon("trash")}</button>
+              </form>`
+            : ""
+        }</td>
+      </tr>`;
+    })
+    .join("");
+
+  return `${
+    members.length
+      ? `<table class="rows"><tbody>${rows}</tbody></table>`
+      : `<p class="muted">Nobody is allowed to use this channel yet, so it will ignore every
+          message it receives.</p>`
+  }
+  ${
+    editable
+      ? `<form method="post" action="/channels/${esc(c.slug)}/members/add" class="mt-12 row-form">
+          <input type="hidden" name="_csrf" value="${esc(csrf)}">
+          <input name="id" placeholder="${isTelegram ? "123456789" : "+201234567890"}"
+                 aria-label="New ${label}" required>
+          <button class="btn primary" type="submit">${icon("plus")} Add</button>
+        </form>
+        <p class="muted small mt-8">The first entry is the administrator. Everyone else can
+          use the agent normally.${
+            operator
+              ? ` Because this channel is bound to the server-operator agent, only the
+                 administrator can approve root actions — everyone else's messages are treated
+                 as relayed text and copied to the administrator.`
+              : ""
+          }</p>`
+      : ""
+  }`;
+}
 
 const TYPES = {
   telegram: { label: "Telegram", icon: "telegram" },
@@ -121,14 +211,22 @@ exports.list = ({ csrf, user, channels, agents, flash, err }) => {
 
 /* ------------------------------------------------------------------ new --- */
 
-exports.create = ({ csrf, user, agents, form = {}, errors = [], botInfo = null }) => {
+exports.create = ({ csrf, user, agents, form = {}, errors = [], botInfo = null, wizard = null }) => {
   const v = (k, d) => esc(form[k] != null && form[k] !== "" ? form[k] : d == null ? "" : d);
   const type = form.type === "whatsapp" ? "whatsapp" : "telegram";
   const free = agents.filter((a) => !a.channel || a.channel.slug === form.slug);
 
   return shell(
     "Add channel",
-    `${errors.length ? `<div class="alert bad">${icon("alert")}<div>${errors.map(esc).join("<br>")}</div></div>` : ""}
+    `${wizard ? steps(2, ["Create the agent", "Connect a channel"]) : ""}
+    ${errors.length ? `<div class="alert bad">${icon("alert")}<div>${errors.map(esc).join("<br>")}</div></div>` : ""}
+    ${
+      wizard
+        ? `<div class="alert good">${icon("check")}<div><strong>${esc(
+            wizard.name || wizard.slug
+          )}</strong> was created. Give it a way to hear you and it is ready to use.</div></div>`
+        : ""
+    }
     ${
       botInfo
         ? `<div class="alert good">${icon("check")}<div>Token verified — this is
@@ -138,6 +236,7 @@ exports.create = ({ csrf, user, agents, form = {}, errors = [], botInfo = null }
 
     <form method="post" action="/channels/new" autocomplete="off">
       <input type="hidden" name="_csrf" value="${esc(csrf)}">
+      ${wizard ? `<input type="hidden" name="wizard" value="1">` : ""}
 
       ${card(
         "Type",
@@ -230,16 +329,28 @@ exports.create = ({ csrf, user, agents, form = {}, errors = [], botInfo = null }
 
       ${card(
         "",
-        `<button class="btn primary" type="submit">${icon("plus")} Create channel</button>
-         <a class="btn" href="/channels">Cancel</a>`
+        `<button class="btn primary" type="submit">${icon("plus")} ${
+          wizard ? "Connect and finish" : "Create channel"
+        }</button>
+         <a class="btn" href="${
+           wizard ? "/agents/" + esc(wizard.slug) : "/channels"
+         }">${wizard ? "Skip for now" : "Cancel"}</a>
+         ${
+           wizard
+             ? `<p class="muted small mt-8">Skipping leaves the agent created but unreachable.
+                 You can connect a channel later from its page.</p>`
+             : ""
+         }`
       )}
     </form>`,
     {
       user,
       csrf,
       active: "channels",
-      heading: "Add a channel",
-      subtitle: "Give an agent a way to hear you.",
+      heading: wizard ? "Connect a channel" : "Add a channel",
+      subtitle: wizard
+        ? "Step 2 of 2 — how people reach " + esc(wizard.name || wizard.slug) + "."
+        : "Give an agent a way to hear you.",
     }
   );
 };
@@ -354,10 +465,13 @@ function whatsappCard(csrf, c, wa) {
   );
 }
 
-exports.detail = ({ csrf, user, channel, agents, wa, flash, err }) => {
+exports.detail = ({ csrf, user, channel, agents, wa, operator, flash, err }) => {
   const c = channel;
   const free = agents.filter((a) => !a.channel || a.channel.slug === c.slug);
   const isTelegram = c.type === "telegram";
+  // True when this channel feeds the agent holding the server-operator role,
+  // which raises the stakes of everything on the members card.
+  const isOperatorChannel = !!(operator && operator.channel === c.slug);
 
   return shell(
     c.name || c.slug,
@@ -374,6 +488,25 @@ exports.detail = ({ csrf, user, channel, agents, wa, flash, err }) => {
            agent, so messages sent to it go nowhere.</div></div>`
         : ""
     }
+    ${
+      isOperatorChannel
+        ? `<div class="alert warn">${icon("shield")}<div>This channel feeds the
+           <a href="/operator">server operator</a> agent. Its administrator — the first entry
+           in the members list — is the only person who can approve a command that runs as
+           root on this machine.</div></div>`
+        : ""
+    }
+
+    ${card(
+      "Who can use this channel",
+      renderMembers({
+        csrf,
+        channel: c,
+        editable: can(user, "channels.edit", c.slug),
+        operator: isOperatorChannel,
+      }),
+      { icon: "users" }
+    )}
 
     <div class="grid">
       ${card(
@@ -454,15 +587,11 @@ exports.detail = ({ csrf, user, channel, agents, wa, flash, err }) => {
                 <input name="token" type="password" placeholder="${
                   c.token_set ? "•••••••• stored" : "no token stored"
                 }"></label>
-               <label>Allowed Telegram user IDs
-                 <input name="allowed_users" value="${esc(c.allowed_users || "")}" pattern="[0-9, ]*"></label>
                <label class="check"><input type="checkbox" name="topics_enabled" value="1"
                  ${c.topics_enabled ? "checked" : ""}> Route conversations into group topics</label>
                <label>Group chat ID
                  <input name="topics_chat_id" value="${esc(c.topics_chat_id || "")}" pattern="-?[0-9]*"></label>`
-            : `<label>Allowed numbers
-                 <input name="allowed_numbers" value="${esc(c.allowed_numbers || "")}"
-                        placeholder="+201234567890"></label>`
+            : ``
         }`,
         { icon: "settings" }
       )}

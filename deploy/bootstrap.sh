@@ -156,9 +156,12 @@ systemctl daemon-reload
 
 # ---------------------------------------------------------------- helper ----
 
-say "Installing the privileged helper"
+say "Installing the privileged helpers"
 install -m 0755 "$REPO_DIR/dashboard/deploy/moni-helper" /usr/local/sbin/moni-helper
 python3 -m py_compile /usr/local/sbin/moni-helper
+install -m 0755 "$REPO_DIR/dashboard/deploy/moni-root" /usr/local/sbin/moni-root
+python3 -m py_compile /usr/local/sbin/moni-root
+install -d -m 0700 -o root -g root /var/lib/moni-root
 install -m 0440 "$REPO_DIR/dashboard/deploy/moni-sudoers" /etc/sudoers.d/moni-dashboard
 visudo -cf /etc/sudoers.d/moni-dashboard >/dev/null
 

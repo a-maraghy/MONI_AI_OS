@@ -3,3 +3,15 @@
 # Deliberately NOT a wildcard path and NOT a shell.
 moniadmin ALL=(root) NOPASSWD: /usr/local/sbin/moni-helper
 Defaults:moniadmin !requiretty
+
+# The agent account may run exactly one command as root: the approval broker.
+#
+# This is the entirety of the "server operator" role's privilege, and it is
+# deliberately not `ALL`. moni-root executes nothing on its own -- an agent can
+# only lodge a proposal, which runs only after the administrator's passphrase
+# is verified inside moni-root, as root, against a hash the agent account
+# cannot read. Granting anything else here would make that gate decorative,
+# since the process on the other side of it runs commands a language model
+# chose.
+moniagent ALL=(root) NOPASSWD: /usr/local/sbin/moni-root
+Defaults:moniagent !requiretty

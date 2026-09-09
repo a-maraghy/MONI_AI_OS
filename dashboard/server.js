@@ -31,6 +31,7 @@ const credentialViews = require("./lib/views-credentials");
 const addonViews = require("./lib/views-addons");
 const guideViews = require("./lib/views-guide");
 const accessViews = require("./lib/views-access");
+const operatorViews = require("./lib/views-operator");
 const rbac = require("./lib/rbac");
 
 const PORT = Number(process.env.MONI_PORT || 3000);
@@ -818,10 +819,11 @@ app.post("/agents/new", requireAuth, requirePerm("agents.create"), requireCsrf, 
       addon_env: catalog.envFor(addons, "agent", req.body),
     });
     priv.agentMemoryIndex(form.slug).catch(() => {});
+    // Step two of the wizard. Anyone who genuinely wanted only an agent can
+    // skip from there, but the default path leads to a working agent rather
+    // than a created one, and those are not the same thing.
     res.redirect(
-      agentRedirect(form.slug, "", {
-        msg: "Agent created. Connect a channel so it can be reached.",
-      })
+      "/channels/new?wizard=1&agent=" + encodeURIComponent(form.slug)
     );
   } catch (e) {
     return res.status(400).send(
@@ -1090,10 +1092,24 @@ app.get("/channels", requireAuth, requirePerm("channels.view"), async (req, res)
   );
 });
 
+/**
+ * Resolve the agent a wizard step is continuing from.
+ *
+ * Returns null unless `?wizard=1` names an agent that exists and is in scope,
+ * so a forged link cannot make the page claim an agent was just created.
+ */
+async function wizardAgent(req, agents) {
+  if (!req.query.wizard) return null;
+  const slug = String(req.query.agent || "");
+  if (!SLUG_RE.test(slug) || !req.perm.seesAgent(slug)) return null;
+  const match = (agents || []).find((a) => a.slug === slug);
+  return match ? { slug: match.slug, name: match.name } : null;
+}
+
 app.get("/channels/new", requireAuth, requirePerm("channels.create"), async (req, res) => {
   let agents = [];
   try {
-    agents = await priv.agentList();
+    agents = scopeAgents(req, await priv.agentList());
   } catch (_) {
     /* rendering the form with no agents is still useful */
   }
@@ -1102,6 +1118,7 @@ app.get("/channels/new", requireAuth, requirePerm("channels.create"), async (req
       csrf: res.locals.csrf,
       user: ctx(req),
       agents,
+      wizard: await wizardAgent(req, agents),
       form: { agent: req.query.agent || "" },
     })
   );
@@ -1135,7 +1152,7 @@ app.post("/channels/new", requireAuth, requirePerm("channels.create"), requireCs
   const rerender = async (extra = [], botInfo = null) => {
     let agents = [];
     try {
-      agents = await priv.agentList();
+      agents = scopeAgents(req, await priv.agentList());
     } catch (_) {
       /* ignore */
     }
@@ -1144,6 +1161,7 @@ app.post("/channels/new", requireAuth, requirePerm("channels.create"), requireCs
         csrf: res.locals.csrf,
         user: ctx(req),
         agents,
+        wizard: await wizardAgent({ query: { wizard: req.body.wizard, agent: form.agent }, perm: req.perm }, agents),
         form,
         errors: errors.concat(extra),
         botInfo,
@@ -1195,6 +1213,19 @@ app.post("/channels/new", requireAuth, requirePerm("channels.create"), requireCs
       addons,
       addon_env: catalog.envFor(addons, "channel", req.body),
     });
+    // Finishing the wizard lands on the agent, not the channel: the thing you
+    // set out to build was an agent that works, and its page is where you
+    // check that it does.
+    if (req.body.wizard && form.agent) {
+      return res.redirect(
+        agentRedirect(form.agent, "", {
+          msg:
+            "Agent and channel are ready." +
+            (bot ? " Say hello to @" + bot.username + " on Telegram." : ""),
+        })
+      );
+    }
+
     const msg = form.agent
       ? "Channel created and connected." +
         (bot ? " Say hello to @" + bot.username + " on Telegram." : "")
@@ -1224,6 +1255,14 @@ app.get("/channels/:slug", requireAuth, requirePerm("channels.view"), requireCha
       /* the bridge may not be installed; the view handles that */
     }
   }
+  // Needed so the members card can say that promoting somebody here grants
+  // them approval over root actions.
+  let operator = null;
+  try {
+    operator = await priv.operatorGet();
+  } catch (_) {
+    /* the page is still useful without it */
+  }
   res.send(
     channelViews.detail({
       csrf: res.locals.csrf,
@@ -1231,6 +1270,7 @@ app.get("/channels/:slug", requireAuth, requirePerm("channels.view"), requireCha
       channel,
       agents,
       wa,
+      operator,
       flash: req.query.msg || null,
       err: req.query.err || null,
     })
@@ -1533,6 +1573,216 @@ app.get("/addons", requireAuth, requirePerm("addons.view"), async (req, res) => 
       channels: (data.channels || []).map((c) => ({ ...c, name: c.name || c.slug })),
     })
   );
+});
+
+/* ------------------------------------------------------- server operator --- */
+
+/** Read the current allow-list of a channel as an ordered array. */
+function memberList(channel) {
+  const raw = channel.type === "telegram" ? channel.allowed_users : channel.allowed_numbers;
+  return String(raw || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Rewrite a channel's allow-list.
+ *
+ * Sent through channelUpdate rather than a dedicated helper command so the
+ * ordinary path runs: the list is revalidated, the agent's environment is
+ * regenerated, and the unit is restarted. A membership change that did not
+ * restart the agent would leave the old list in the running process, which is
+ * exactly the class of bug that made the credential editor confusing.
+ */
+async function saveMembers(channel, members) {
+  const update = {
+    slug: channel.slug,
+    name: channel.name,
+    type: channel.type,
+    agent: channel.agent || "",
+    topics_enabled: !!channel.topics_enabled,
+    topics_chat_id: channel.topics_chat_id || "",
+    addons: channel.addons || [],
+    addon_env: channel.addon_env || {},
+    telegram_bot_username: channel.telegram_bot_username || "",
+    allowed_users: channel.type === "telegram" ? members.join(",") : "",
+    allowed_numbers: channel.type === "telegram" ? "" : members.join(","),
+  };
+  await priv.channelUpdate(update);
+}
+
+const TELEGRAM_ID_RE = /^\d{4,15}$/;
+const PHONE_RE = /^\+?\d{6,20}$/;
+
+app.get("/operator", requireAuth, requirePerm("operator.view"), async (req, res) => {
+  const data = await gather({
+    operator: () => priv.operatorGet(),
+    agents: () => priv.agentList(),
+    audit: () => priv.rootAudit(150),
+  });
+  res.send(
+    operatorViews.index({
+      csrf: res.locals.csrf,
+      user: ctx(req, "os"),
+      operator: data.operator || null,
+      agents: scopeAgents(req, data.agents),
+      audit: (data.audit && data.audit.entries) || [],
+      flash: req.query.msg || null,
+      err: req.query.err || data.errors.operator || null,
+    })
+  );
+});
+
+app.post("/operator/assign", requireAuth, requirePerm("operator.assign"), requireCsrf, async (req, res) => {
+  const slug = field(req.body, "agent");
+  const back = (q) => res.redirect("/operator?" + q);
+
+  try {
+    const current = await priv.operatorGet();
+
+    // Clearing first, always. Moving the role in one step would briefly leave
+    // two agents holding it if the second write failed, and "which agent can
+    // reach root" must never have two answers.
+    if (current.agent && current.agent !== slug) {
+      await priv.agentUpdate({ slug: current.agent, server_operator: false });
+    }
+
+    if (!slug) {
+      db.logLogin(req.ip, req.me.username, "admin", "removed the server operator role");
+      return back("msg=" + encodeURIComponent("Server operator role removed."));
+    }
+
+    if (!SLUG_RE.test(slug) || !req.perm.seesAgent(slug))
+      return back("err=" + encodeURIComponent("Unknown agent."));
+
+    const agent = await priv.agentGet(slug);
+    if (!agent.channel)
+      return back(
+        "err=" +
+          encodeURIComponent(
+            "That agent has no channel, so nobody could approve anything it proposes."
+          )
+      );
+
+    await priv.agentUpdate({ slug, server_operator: true });
+    db.logLogin(req.ip, req.me.username, "admin", "granted the server operator role to " + slug);
+    back("msg=" + encodeURIComponent(agent.name + " now holds the server operator role."));
+  } catch (e) {
+    back("err=" + encodeURIComponent(e.message));
+  }
+});
+
+app.post("/operator/passphrase", requireAuth, requirePerm("operator.passphrase"), requireCsrf, async (req, res) => {
+  const passphrase = String(req.body.passphrase || "");
+  const back = (q) => res.redirect("/operator?" + q);
+
+  if (passphrase.length < 10)
+    return back("err=" + encodeURIComponent("The passphrase must be at least 10 characters."));
+  if (passphrase !== String(req.body.passphrase2 || ""))
+    return back("err=" + encodeURIComponent("The two passphrases do not match."));
+
+  try {
+    await priv.rootSetPassphrase(passphrase);
+    // Recorded, never the value. This log is readable by anyone with audit
+    // access, who is not necessarily anyone with root.
+    db.logLogin(req.ip, req.me.username, "admin", "set the root approval passphrase");
+    back("msg=" + encodeURIComponent("Passphrase saved. Any waiting proposals were cancelled."));
+  } catch (e) {
+    back("err=" + encodeURIComponent(e.message));
+  }
+});
+
+app.post("/operator/passphrase/clear", requireAuth, requirePerm("operator.passphrase"), requireCsrf, async (req, res) => {
+  try {
+    await priv.rootClearPassphrase();
+    db.logLogin(req.ip, req.me.username, "admin", "cleared the root approval passphrase");
+    res.redirect("/operator?msg=" + encodeURIComponent("Passphrase cleared. Root actions are disabled."));
+  } catch (e) {
+    res.redirect("/operator?err=" + encodeURIComponent(e.message));
+  }
+});
+
+/* ------------------------------------------------------- channel members --- */
+
+app.post("/channels/:slug/members/add", requireAuth, requirePerm("channels.edit"), requireChannelScope, requireCsrf, async (req, res) => {
+  const channel = await loadChannel(req, res);
+  if (!channel) return;
+  const id = field(req.body, "id").replace(/\s/g, "");
+  const back = (q) => res.redirect("/channels/" + channel.slug + "?" + q);
+
+  const pattern = channel.type === "telegram" ? TELEGRAM_ID_RE : PHONE_RE;
+  if (!pattern.test(id))
+    return back(
+      "err=" +
+        encodeURIComponent(
+          channel.type === "telegram"
+            ? "A Telegram user ID is 4-15 digits. Message @userinfobot to find yours."
+            : "Use a phone number in E.164 form, like +201234567890."
+        )
+    );
+
+  const members = memberList(channel);
+  if (members.includes(id)) return back("err=" + encodeURIComponent("Already on the list."));
+
+  members.push(id);
+  try {
+    await saveMembers(channel, members);
+    back(
+      "msg=" +
+        encodeURIComponent(
+          members.length === 1
+            ? id + " added, and is the administrator of this channel."
+            : id + " added."
+        )
+    );
+  } catch (e) {
+    back("err=" + encodeURIComponent(e.message));
+  }
+});
+
+app.post("/channels/:slug/members/promote", requireAuth, requirePerm("channels.edit"), requireChannelScope, requireCsrf, async (req, res) => {
+  const channel = await loadChannel(req, res);
+  if (!channel) return;
+  const id = field(req.body, "id").replace(/\s/g, "");
+  const back = (q) => res.redirect("/channels/" + channel.slug + "?" + q);
+
+  const members = memberList(channel);
+  if (!members.includes(id)) return back("err=" + encodeURIComponent("Not on the list."));
+
+  // Promotion is a reorder, not an extra flag: the administrator is defined as
+  // position zero, so there is only ever one and it cannot drift out of sync
+  // with the list it is meant to describe.
+  const reordered = [id, ...members.filter((m) => m !== id)];
+  try {
+    await saveMembers(channel, reordered);
+    db.logLogin(req.ip, req.me.username, "admin", "made " + id + " administrator of " + channel.slug);
+    back("msg=" + encodeURIComponent(id + " is now the administrator of this channel."));
+  } catch (e) {
+    back("err=" + encodeURIComponent(e.message));
+  }
+});
+
+app.post("/channels/:slug/members/remove", requireAuth, requirePerm("channels.edit"), requireChannelScope, requireCsrf, async (req, res) => {
+  const channel = await loadChannel(req, res);
+  if (!channel) return;
+  const id = field(req.body, "id").replace(/\s/g, "");
+  const back = (q) => res.redirect("/channels/" + channel.slug + "?" + q);
+
+  const members = memberList(channel).filter((m) => m !== id);
+  try {
+    await saveMembers(channel, members);
+    back(
+      "msg=" +
+        encodeURIComponent(
+          members.length
+            ? id + " removed. " + members[0] + " is the administrator."
+            : id + " removed. Nobody can use this channel now."
+        )
+    );
+  } catch (e) {
+    back("err=" + encodeURIComponent(e.message));
+  }
 });
 
 /* ---------------------------------------------------------------- users --- */

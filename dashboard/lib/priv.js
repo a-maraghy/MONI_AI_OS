@@ -200,6 +200,16 @@ module.exports = {
     callHelper("credential-set", [name, key], { stdin: value }),
   credentialClear: (name, key) => callHelper("credential-clear", [name, key]),
 
+  /* ----------------------------------------------------- server operator -- */
+  operatorGet: () => callHelper("operator-get", [], { timeout: 30000 }),
+  // The passphrase goes over stdin, like every other secret here, so it never
+  // appears in a process listing.
+  rootSetPassphrase: (passphrase) =>
+    callHelper("root-set-passphrase", [], { stdin: passphrase }),
+  rootClearPassphrase: () => callHelper("root-clear-passphrase"),
+  rootAudit: (lines = 100) =>
+    callHelper("root-audit", ["--lines", String(lines)], { timeout: 20000 }),
+
   /* -------------------------------------------------------------- probes -- */
   systemProbe: () => callHelper("system-probe", [], { timeout: 30000 }),
 

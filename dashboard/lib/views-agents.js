@@ -13,6 +13,8 @@ const {
   icon,
   stamp,
   ago,
+  can,
+  steps,
 } = require("./ui");
 const { byScope } = require("./catalog");
 const { renderAddons } = require("./views-addons");
@@ -248,10 +250,11 @@ exports.create = ({ csrf, user, form = {}, errors = [], probe }) => {
 
   return shell(
     "New agent",
-    `${errors.length ? `<div class="alert bad">${icon("alert")}<div>${errors.map(esc).join("<br>")}</div></div>` : ""}
-    <div class="alert info">${icon("info")}<div>An agent has no way to be reached until you
-      connect a channel to it. Create the agent first, then add a channel — or pick one
-      below if you have a spare.</div></div>
+    `${steps(1, ["Create the agent", "Connect a channel"])}
+    ${errors.length ? `<div class="alert bad">${icon("alert")}<div>${errors.map(esc).join("<br>")}</div></div>` : ""}
+    <div class="alert info">${icon("info")}<div>An agent is the mind: a workspace, a memory
+      vault and a role. It has no way to be reached until a channel is connected, which is
+      the next step — you will be taken straight there.</div></div>
 
     <form method="post" action="/agents/new" autocomplete="off">
       <input type="hidden" name="_csrf" value="${esc(csrf)}">
@@ -299,8 +302,8 @@ exports.create = ({ csrf, user, form = {}, errors = [], probe }) => {
       ${card(
         "",
         `<p class="muted small">On save the vault is scaffolded and the vector index is
-          built. Takes a few seconds.</p>
-        <button class="btn primary" type="submit">${icon("plus")} Create agent</button>
+          built. Takes a few seconds. You then go straight to connecting a channel.</p>
+        <button class="btn primary" type="submit">${icon("plus")} Create agent and continue</button>
         <a class="btn" href="/agents">Cancel</a>`
       )}
     </form>`,
@@ -309,7 +312,7 @@ exports.create = ({ csrf, user, form = {}, errors = [], probe }) => {
       csrf,
       active: "agents",
       heading: "Create an agent",
-      subtitle: "The mind. The channel it answers on comes next.",
+      subtitle: "Step 1 of 2 — the mind. The channel it answers on comes next.",
     }
   );
 };

@@ -93,6 +93,7 @@ SLUG_RE = re.compile(r"^[a-z][a-z0-9-]{1,30}$")
 NAME_RE = re.compile(r"^[\w .,'()&/@:+#!?-]{1,64}$", re.UNICODE)
 BOT_TOKEN_RE = re.compile(r"^\d{6,12}:[A-Za-z0-9_-]{30,60}$")
 BOT_USERNAME_RE = re.compile(r"^[A-Za-z0-9_]{4,32}$")
+USER_ID_RE = re.compile(r"^\d{4,15}$")
 USER_IDS_RE = re.compile(r"^\d{4,15}(,\d{4,15})*$")
 MODEL_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{2,60}$")
 CHAT_ID_RE = re.compile(r"^-?\d{4,20}$")
@@ -611,6 +612,23 @@ def validate_config(cfg, creating):
     # does not trust that map -- it revalidates every key and value, because
     # these end up in a systemd EnvironmentFile read by a process that runs
     # model-authored commands.
+    # The server-operator role. At most one agent may hold it, so that "which
+    # agent can touch the host" has exactly one answer and it is visible on one
+    # page. The role itself does not grant root -- it grants the ability to
+    # *propose* root actions through moni-root, which still need the
+    # administrator's passphrase in chat before anything runs.
+    operator = bool(cfg.get("server_operator"))
+    if operator:
+        for other in agent_ids():
+            if other == slug:
+                continue
+            if read_agent_json(other).get("server_operator"):
+                fail(
+                    "agent " + other + " already holds the server operator role; "
+                    "remove it there first"
+                )
+    out["server_operator"] = operator
+
     out["addons"] = validate_addon_ids(cfg.get("addons"))
     out["addon_env"] = validate_env_map(cfg.get("addon_env"))
 
@@ -667,6 +685,12 @@ PROTECTED_ENV_KEYS = {
     "TELEGRAM_BOT_USERNAME",
     "APPROVED_DIRECTORY",
     "ALLOWED_USERS",
+    # An add-on that could set these could hand itself the operator role, or
+    # name itself as the administrator principal.
+    "MONI_SERVER_OPERATOR",
+    "MONI_ADMIN_PRINCIPAL",
+    "MONI_OPERATOR_ROOT",
+    "MONI_UNPRIVILEGED_ROOT",
     "DATABASE_URL",
     "MCP_CONFIG_PATH",
     "MONI_VAULT",
@@ -733,6 +757,23 @@ def render_env(cfg, channel=None):
         }
     )
 
+    # --- server operator ----------------------------------------------------
+    #
+    # Elevation is decided per message by the runtime, from the verified sender
+    # id, and never by the model. Two facts are handed over here and nowhere
+    # else: whether this agent holds the role at all, and which single principal
+    # may exercise it. Everyone else on the allow-list is an ordinary member
+    # whose messages are treated as relayed, untrusted text.
+    if cfg.get("server_operator") and channel:
+        env["MONI_SERVER_OPERATOR"] = "true"
+        env["MONI_ADMIN_PRINCIPAL"] = principal_admin(channel)
+        env["MONI_OPERATOR_ROOT"] = "/"
+        # The privileged session works from the host root; the unprivileged one
+        # stays in the vault. The runtime picks between them per message.
+        env["MONI_UNPRIVILEGED_ROOT"] = vault
+    else:
+        env["MONI_SERVER_OPERATOR"] = "false"
+
     if channel and channel.get("type") == "telegram":
         env["TELEGRAM_BOT_TOKEN"] = channel.get("_token", "")
         env["TELEGRAM_BOT_USERNAME"] = channel.get("telegram_bot_username", "")
@@ -755,22 +796,30 @@ def render_env(cfg, channel=None):
 
 def render_mcp(cfg):
     d = agent_dir(cfg["slug"])
-    return json.dumps(
-        {
-            "mcpServers": {
-                "memory": {
-                    "command": os.path.join(RUNTIME_DIR, "venv", "bin", "python"),
-                    "args": ["-m", "moni_memory.mcp_server"],
-                    "env": {
-                        "MONI_VAULT": os.path.join(d, "vault"),
-                        "MONI_VECTOR_DB": os.path.join(d, "vectors", "memory.db"),
-                        "MONI_MODEL_CACHE": os.path.join(SHARED_DIR, "models"),
-                    },
-                }
-            }
-        },
-        indent=2,
-    ) + "\n"
+    servers = {
+        "memory": {
+            "command": os.path.join(RUNTIME_DIR, "venv", "bin", "python"),
+            "args": ["-m", "moni_memory.mcp_server"],
+            "env": {
+                "MONI_VAULT": os.path.join(d, "vault"),
+                "MONI_VECTOR_DB": os.path.join(d, "vectors", "memory.db"),
+                "MONI_MODEL_CACHE": os.path.join(SHARED_DIR, "models"),
+            },
+        }
+    }
+
+    # The root-proposal tool is mounted only for the agent holding the operator
+    # role. Everywhere else it is absent rather than present-and-refusing:
+    # there is then nothing for a model to keep trying, and no tool description
+    # hinting that such a capability exists on this host at all.
+    if cfg.get("server_operator"):
+        servers["moni_root"] = {
+            "command": os.path.join(RUNTIME_DIR, "venv", "bin", "python"),
+            "args": ["-m", "src.mcp.root_server"],
+            "env": {"PYTHONPATH": RUNTIME_DIR},
+        }
+
+    return json.dumps({"mcpServers": servers}, indent=2) + "\n"
 
 
 def scaffold_vault(cfg, uid, gid):
@@ -832,22 +881,60 @@ def drop_in_path(slug):
     return "/etc/systemd/system/" + unit_name(slug) + ".d"
 
 
+OPERATOR_DROP_IN = """\
+# Written by the MONI dashboard for the agent holding the server-operator role.
+#
+# NoNewPrivileges has to come off for sudo to work at all. That is the whole of
+# what this file relaxes, and it is why the only sudoers entitlement the agent
+# account has is /usr/local/sbin/moni-root -- a broker that executes nothing
+# without the administrator's passphrase, typed into the chat at the time.
+#
+# ProtectSystem stays strict on purpose. The agent reads the host freely and
+# writes where it has rights; anything beyond that is a proposal, not an
+# action. In particular the runtime's own source stays read-only, so the agent
+# cannot edit the code that enforces any of this.
+[Service]
+NoNewPrivileges=false
+ProtectHome=read-only
+ReadWritePaths=-/opt/projects
+ReadWritePaths=-/srv
+ReadWritePaths=-/var/tmp
+"""
+
+
 def write_drop_in(cfg):
     """Per-agent systemd overrides.
 
     The unit is sandboxed with ProtectSystem=strict, so an attached project
     directory has to be granted explicitly or the agent gets a read-only
-    filesystem and confusing permission errors.
+    filesystem and confusing permission errors. The server-operator role needs
+    a second override; see OPERATOR_DROP_IN for why it is only one line of
+    relaxation.
     """
     path = drop_in_path(cfg["slug"])
-    if not cfg["project_dir"]:
+    project_conf = os.path.join(path, "project.conf")
+    operator_conf = os.path.join(path, "operator.conf")
+
+    if not cfg["project_dir"] and not cfg.get("server_operator"):
         if os.path.isdir(path):
             shutil.rmtree(path, ignore_errors=True)
         return
+
     os.makedirs(path, exist_ok=True)
-    with open(os.path.join(path, "project.conf"), "w") as fh:
-        fh.write("[Service]\nReadWritePaths=" + cfg["project_dir"] + "\n")
-    os.chmod(os.path.join(path, "project.conf"), 0o644)
+
+    if cfg["project_dir"]:
+        with open(project_conf, "w") as fh:
+            fh.write("[Service]\nReadWritePaths=" + cfg["project_dir"] + "\n")
+        os.chmod(project_conf, 0o644)
+    elif os.path.exists(project_conf):
+        os.unlink(project_conf)
+
+    if cfg.get("server_operator"):
+        with open(operator_conf, "w") as fh:
+            fh.write(OPERATOR_DROP_IN)
+        os.chmod(operator_conf, 0o644)
+    elif os.path.exists(operator_conf):
+        os.unlink(operator_conf)
 
 
 DESKTOP_USER = "ubuntu"
@@ -1305,6 +1392,52 @@ def channel_summary(slug):
     return meta
 
 
+MAX_PRINCIPALS = 25
+
+
+def normalise_principals(raw, pattern, what):
+    """Clean an ordered allow-list, preserving order and dropping duplicates.
+
+    Order carries meaning: the first entry is the administrator. Duplicates are
+    removed keeping the earliest position, so promoting someone already on the
+    list is just a matter of moving them to the front rather than remembering to
+    delete the old entry -- and forgetting to would otherwise leave two
+    candidates for "who is the administrator".
+    """
+    if raw is None:
+        items = []
+    elif isinstance(raw, (list, tuple)):
+        items = [str(x) for x in raw]
+    else:
+        items = str(raw).replace("\n", ",").split(",")
+
+    seen = set()
+    out = []
+    for item in items:
+        item = item.strip().replace(" ", "")
+        if not item:
+            continue
+        if not pattern.match(item):
+            fail("not a valid " + what + ": " + repr(item[:40]))
+        if item in seen:
+            continue
+        seen.add(item)
+        out.append(item)
+    if len(out) > MAX_PRINCIPALS:
+        fail("at most " + str(MAX_PRINCIPALS) + " entries are allowed")
+    return out
+
+
+def principal_admin(channel):
+    """The one principal permitted to exercise the server-operator role."""
+    if channel.get("type") == "telegram":
+        raw = channel.get("allowed_users", "")
+    else:
+        raw = channel.get("allowed_numbers", "")
+    parts = [p for p in str(raw).split(",") if p]
+    return parts[0] if parts else ""
+
+
 def validate_channel(cfg, creating):
     out = {}
     slug = cfg.get("slug", "")
@@ -1345,10 +1478,12 @@ def validate_channel(cfg, creating):
             fail("bot username must be 4-32 characters of letters, digits or underscore")
         out["telegram_bot_username"] = username
 
-        allowed = str(cfg.get("allowed_users") or "").replace(" ", "")
-        if allowed and not USER_IDS_RE.match(allowed):
-            fail("allowed users must be comma-separated numeric Telegram IDs")
-        out["allowed_users"] = allowed
+        # An ordered list, not a set. Position zero is the administrator: the
+        # one principal that may exercise the server-operator role, and the one
+        # the runtime treats as the source of instructions rather than of
+        # relayed text. Reordering the list is how the administrator changes.
+        allowed = normalise_principals(cfg.get("allowed_users"), USER_ID_RE, "Telegram user ID")
+        out["allowed_users"] = ",".join(allowed)
 
         topics = bool(cfg.get("topics_enabled"))
         chat_id = str(cfg.get("topics_chat_id") or "").strip()
@@ -1366,10 +1501,8 @@ def validate_channel(cfg, creating):
             fail("a Telegram bot token is required to create a Telegram channel")
         out["_token"] = token
     else:
-        numbers = str(cfg.get("allowed_numbers") or "").replace(" ", "")
-        if numbers and not PHONES_RE.match(numbers):
-            fail("allowed numbers must be comma-separated phone numbers in E.164 form")
-        out["allowed_numbers"] = numbers
+        numbers = normalise_principals(cfg.get("allowed_numbers"), PHONE_RE, "phone number in E.164 form")
+        out["allowed_numbers"] = ",".join(numbers)
         out["_token"] = ""
 
     return out
@@ -2055,6 +2188,96 @@ def cmd_system_probe(args):
     )
 
 
+# ------------------------------------------------------- server operator ---
+
+
+def cmd_operator_get(args):
+    """Which agent holds the role, and whether root actions are usable at all.
+
+    The passphrase state comes from moni-root rather than being duplicated
+    here: one program owns that secret, and it is not this one.
+    """
+    holder = None
+    for slug in agent_ids():
+        if read_agent_json(slug).get("server_operator"):
+            holder = slug
+            break
+
+    channel = channel_bound_to(holder) if holder else None
+    root_state = {"configured": False, "pending": 0, "locked_for": 0}
+    try:
+        result = run(["/usr/local/sbin/moni-root", "status"], timeout=15)
+        parsed = json.loads(result.stdout or "{}")
+        if parsed.get("ok"):
+            root_state = {
+                "configured": bool(parsed.get("configured")),
+                "pending": parsed.get("pending", 0),
+                "locked_for": parsed.get("locked_for", 0),
+            }
+    except Exception:
+        # moni-root not installed yet, or unreadable. Reporting "not configured"
+        # is the safe answer: it is what the runtime will conclude too.
+        pass
+
+    ok(
+        {
+            "agent": holder,
+            "agent_name": read_agent_json(holder).get("name", holder) if holder else None,
+            "channel": channel.get("slug") if channel else None,
+            "channel_type": channel.get("type") if channel else None,
+            "administrator": principal_admin(channel) if channel else "",
+            "members": [
+                p
+                for p in str(
+                    (channel or {}).get("allowed_users")
+                    or (channel or {}).get("allowed_numbers")
+                    or ""
+                ).split(",")
+                if p
+            ][1:],
+            "root": root_state,
+        }
+    )
+
+
+def cmd_root_set_passphrase(args):
+    """Set the approval passphrase. Reaches moni-root on stdin, never in argv."""
+    passphrase = read_stdin_text()
+    result = run(
+        ["/usr/local/sbin/moni-root", "set-passphrase"],
+        input=passphrase,
+        timeout=30,
+    )
+    parsed = json.loads(result.stdout or "{}")
+    if not parsed.get("ok"):
+        fail(parsed.get("error", "could not set the passphrase"))
+    audit("root-passphrase-set", "approval passphrase changed")
+    ok({"configured": True})
+
+
+def cmd_root_clear_passphrase(args):
+    result = run(["/usr/local/sbin/moni-root", "clear-passphrase"], timeout=30)
+    parsed = json.loads(result.stdout or "{}")
+    if not parsed.get("ok"):
+        fail(parsed.get("error", "could not clear the passphrase"))
+    audit("root-passphrase-cleared", "root actions disabled")
+    ok({"configured": False})
+
+
+def cmd_root_audit(args):
+    """Every root proposal, approval and refusal, newest last."""
+    lines = "100"
+    for i, token in enumerate(args):
+        if token == "--lines" and i + 1 < len(args):
+            lines = args[i + 1]
+    try:
+        result = run(["/usr/local/sbin/moni-root", "audit", "--lines", str(int(lines))], timeout=15)
+        parsed = json.loads(result.stdout or "{}")
+        ok({"entries": parsed.get("entries", [])})
+    except Exception:
+        ok({"entries": []})
+
+
 COMMANDS = {
     "list-keys": cmd_list_keys,
     "list-all-keys": cmd_list_all_keys,
@@ -2092,6 +2315,10 @@ COMMANDS = {
     "credential-set": cmd_credential_set,
     "credential-clear": cmd_credential_clear,
     "system-probe": cmd_system_probe,
+    "operator-get": cmd_operator_get,
+    "root-set-passphrase": cmd_root_set_passphrase,
+    "root-clear-passphrase": cmd_root_clear_passphrase,
+    "root-audit": cmd_root_audit,
 }
 
 if __name__ == "__main__":

@@ -81,6 +81,20 @@ const PERMISSION_GROUPS = [
     ],
   },
   {
+    key: "operator",
+    label: "Server operator",
+    blurb: "The agent allowed to propose commands that run as root on this host.",
+    perms: [
+      { key: "operator.view", label: "View the operator role", hint: "Which agent holds it, and the root action log." },
+      { key: "operator.assign", label: "Assign and remove the role", hint: "Decides which agent can propose root actions at all." },
+      {
+        key: "operator.passphrase",
+        label: "Set the approval passphrase",
+        hint: "This is the secret that turns a proposal into a root command. Grant it to nobody you would not give root.",
+      },
+    ],
+  },
+  {
     key: "access",
     label: "User management",
     perms: [
@@ -124,6 +138,9 @@ const IMPLIES = {
   "devices.manage": ["devices.view"],
   "users.manage": ["users.view", "roles.view"],
   "roles.manage": ["roles.view"],
+  "operator.view": ["agents.view"],
+  "operator.assign": ["operator.view", "agents.view"],
+  "operator.passphrase": ["operator.view"],
 };
 
 /** Expand a permission list to include everything it implies. */
@@ -177,6 +194,10 @@ const SYSTEM_ROLES = [
       "addons.manage",
       "os.view",
       "services.view",
+      // An operator can see who holds the role and what has been run as root,
+      // but cannot grant the role or hold the passphrase. Those are the two
+      // powers that amount to root on the host, and they stay with an admin.
+      "operator.view",
     ]),
     agent_scope: "*",
     channel_scope: "*",

@@ -97,6 +97,9 @@ const NAV = [
           {
             label: "Security",
             items: [
+              // Lives on the OS side, not with the agents: what it governs is
+              // root on this host, and the agent is only the thing asking.
+              { key: "operator", href: "/operator", label: "Server operator", icon: "lock", perm: "operator.view" },
               { key: "credentials", href: "/credentials", label: "Credentials", icon: "credentials", perm: "credentials.view" },
               { key: "keys", href: "/keys", label: "SSH keys", icon: "keys", perm: "keys.view" },
               { key: "devices", href: "/devices", label: "Devices", icon: "devices", perm: "devices.view" },
@@ -335,6 +338,30 @@ function can(user, perm, scopeSlug) {
     : p.canAgent(perm, scopeSlug);
 }
 
+/**
+ * Step indicator for the two-part agent creation flow.
+ *
+ * The two steps are the two existing forms, not a new combined one. Creating an
+ * agent and connecting a channel are separately useful -- you add a second
+ * channel to an existing agent, or rebuild a channel without touching the
+ * agent's memory -- so the wizard chains the real pages rather than replacing
+ * them with a bespoke path that would then have to be maintained twice.
+ */
+function steps(current, items) {
+  return `<ol class="wizard">
+    ${items
+      .map((label, i) => {
+        const n = i + 1;
+        const state = n < current ? "done" : n === current ? "on" : "";
+        return `<li class="wizard-step ${state}">
+          <span class="wizard-num">${n < current ? icon("check", 14) : n}</span>
+          <span>${esc(label)}</span>
+        </li>`;
+      })
+      .join("")}
+  </ol>`;
+}
+
 function statusPill(state) {
   const good = state === "active";
   return `<span class="pill ${good ? "ok" : "bad"}">${esc(state)}</span>`;
@@ -414,6 +441,7 @@ module.exports = {
   empty,
   icon,
   can,
+  steps,
   NAV,
   DASHBOARDS,
 };
