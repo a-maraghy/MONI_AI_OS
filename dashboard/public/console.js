@@ -681,6 +681,46 @@ var MD = (function () {
   input.focus();
 })();
 
+/* A details-based menu closes on its own summary but not on anything else, so
+   these two habits -- click away, press Escape -- are added back. Without them
+   the menu still works; it just outstays its welcome. */
+(function () {
+  document.addEventListener("click", function (ev) {
+    Array.prototype.forEach.call(document.querySelectorAll("details.menu[open]"), function (menu) {
+      if (!menu.contains(ev.target)) menu.open = false;
+    });
+  });
+
+  document.addEventListener("keydown", function (ev) {
+    if (ev.key !== "Escape") return;
+    Array.prototype.forEach.call(document.querySelectorAll("details.menu[open]"), function (menu) {
+      menu.open = false;
+      var summary = menu.querySelector("summary");
+      if (summary) summary.focus();
+    });
+  });
+})();
+
+/* Filter the chat list by name. Hides rows rather than rebuilding the list, so
+   the current chat keeps its place and nothing reflows beyond the sidebar. */
+(function () {
+  var filter = document.getElementById("chat-filter");
+  if (!filter) return;
+
+  filter.addEventListener("input", function () {
+    var needle = filter.value.trim().toLowerCase();
+    Array.prototype.forEach.call(document.querySelectorAll(".chat-item"), function (item) {
+      var hay = item.getAttribute("data-search") || "";
+      item.hidden = needle !== "" && hay.indexOf(needle) === -1;
+    });
+
+    // Searching should look everywhere, including the drawer things were put
+    // away in.
+    var archive = document.querySelector(".chat-archive");
+    if (archive && needle) archive.open = true;
+  });
+})();
+
 /* Selects that apply on change, so the chat header needs no Apply button. */
 (function () {
   Array.prototype.forEach.call(

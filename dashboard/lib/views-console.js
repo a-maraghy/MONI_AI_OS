@@ -54,10 +54,48 @@ const MODES = [
 const modelLabel = (id) => (MODELS.find((m) => m[0] === id) || [id, id])[1];
 
 function sessionRow(s, activeId) {
-  return `<a class="chat-item${s.id === activeId ? " on" : ""}" href="/console/${s.id}">
+  return `<a class="chat-item${s.id === activeId ? " on" : ""}" href="/console/${s.id}"
+    data-search="${esc((s.title || "New chat").toLowerCase())}">
     <span class="chat-title">${esc(s.title || "New chat")}</span>
-    <span class="chat-meta">${esc(modelLabel(s.model))} · ${esc(ago(s.updated_at))}</span>
+    <span class="chat-meta">${esc(ago(s.updated_at))}${
+      s.message_count ? ` · ${s.message_count} message${s.message_count === 1 ? "" : "s"}` : ""
+    }</span>
   </a>`;
+}
+
+/**
+ * The per-chat menu.
+ *
+ * A details/summary rather than a scripted popover: it opens, closes and takes
+ * focus correctly with no JavaScript at all, which matters on a page whose CSP
+ * forbids inline handlers. The only script involved closes it when you click
+ * elsewhere, and its absence would be an annoyance rather than a broken menu.
+ */
+function chatMenu(csrf, s) {
+  return `<details class="menu">
+    <summary aria-label="Chat options" title="Chat options">${icon("dots", 16)}</summary>
+    <div class="menu-pop">
+      <form method="post" action="/console/${s.id}/rename" class="menu-rename">
+        <input type="hidden" name="_csrf" value="${esc(csrf)}">
+        <label>Rename
+          <input name="title" value="${esc(s.title || "")}" maxlength="80"
+                 placeholder="New chat" autocomplete="off"></label>
+        <button class="btn primary small" type="submit">Save</button>
+      </form>
+      <div class="menu-sep"></div>
+      <form method="post" action="/console/${s.id}/archive">
+        <input type="hidden" name="_csrf" value="${esc(csrf)}">
+        <button class="menu-item" type="submit">${icon("archive", 15)} ${
+          s.archived ? "Unarchive" : "Archive"
+        }</button>
+      </form>
+      <form method="post" action="/console/${s.id}/delete"
+            data-confirm="Delete this chat? The transcript goes with it.">
+        <input type="hidden" name="_csrf" value="${esc(csrf)}">
+        <button class="menu-item danger" type="submit">${icon("trash", 15)} Delete</button>
+      </form>
+    </div>
+  </details>`;
 }
 
 /**
@@ -106,24 +144,49 @@ function renderMessage(m) {
   </div>`;
 }
 
-exports.console = ({ csrf, user, sessions, session, messages, dirs, flash, err }) => {
+exports.console = ({ csrf, user, sessions, archived = [], session, messages, dirs, flash, err }) => {
   const active = session || null;
 
   return shell(
     active ? active.title || "MONI Bot" : "MONI Bot",
     `<div class="chat-layout">
       <aside class="chat-list">
-        <form method="post" action="/console/new">
+        <form method="post" action="/console/new" class="chat-new">
           <input type="hidden" name="_csrf" value="${esc(csrf)}">
-          <button class="btn primary w-full" type="submit">${icon("plus")} New chat</button>
+          <button class="btn primary w-full" type="submit">${icon("plus", 15)} New chat</button>
         </form>
-        <div class="chat-items">
+
+        ${
+          sessions.length + archived.length > 6
+            ? `<div class="chat-filter">
+                ${icon("search", 14)}
+                <input id="chat-filter" type="search" placeholder="Find a chat"
+                       aria-label="Filter chats" autocomplete="off">
+              </div>`
+            : ""
+        }
+
+        <nav class="chat-items" id="chat-items">
           ${
             sessions.length
               ? sessions.map((s) => sessionRow(s, active && active.id)).join("")
-              : `<p class="muted small pad-8">No chats yet.</p>`
+              : `<p class="muted small chat-none">No chats yet. Start one above.</p>`
           }
-        </div>
+        </nav>
+
+        ${
+          archived.length
+            ? `<details class="chat-archive"${
+                active && active.archived ? " open" : ""
+              }>
+                <summary>${icon("archive", 13)} Archived
+                  <span class="count">${archived.length}</span></summary>
+                <nav class="chat-items">
+                  ${archived.map((s) => sessionRow(s, active && active.id)).join("")}
+                </nav>
+              </details>`
+            : ""
+        }
       </aside>
 
       <section class="chat-main">
@@ -137,11 +200,12 @@ exports.console = ({ csrf, user, sessions, session, messages, dirs, flash, err }
             : `
           <div class="chat-topline">
             <span class="chat-name">${esc(active.title || "New chat")}</span>
-            <form method="post" action="/console/${active.id}/delete" class="inline"
-                  data-confirm="Delete this chat?">
-              <input type="hidden" name="_csrf" value="${esc(csrf)}">
-              <button class="btn danger small" type="submit">${icon("trash")}</button>
-            </form>
+            ${
+              active.archived
+                ? `<span class="pill neutral">archived</span>`
+                : ""
+            }
+            ${chatMenu(csrf, active)}
           </div>
 
           ${

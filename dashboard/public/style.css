@@ -527,28 +527,115 @@ label.addon:has(input[type="checkbox"]:checked) .addon-ico {
 .chat-layout { display: flex; height: 100%; min-height: 0; }
 
 .chat-list {
-  flex: none; width: 250px;
-  display: flex; flex-direction: column; gap: 10px;
-  padding: 14px 12px;
+  flex: none; width: 258px;
+  display: flex; flex-direction: column; gap: 12px;
+  padding: 14px 10px;
   border-right: 1px solid var(--line);
-  background: var(--surface);
+  background: var(--surface-2);
   overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--line-strong) transparent;
 }
-.chat-items { display: flex; flex-direction: column; gap: 3px; }
+.chat-new { margin: 0; }
+
+.chat-filter {
+  display: flex; align-items: center; gap: 7px;
+  padding: 0 10px; border-radius: 8px;
+  border: 1px solid var(--line); background: var(--surface);
+  color: var(--muted);
+  transition: border-color var(--fast) var(--ease), box-shadow var(--fast) var(--ease);
+}
+.chat-filter:focus-within { border-color: var(--brand); box-shadow: 0 0 0 3px var(--brand-tint); }
+.chat-filter input {
+  margin: 0; border: 0; background: none; box-shadow: none;
+  padding: 7px 0; font-size: 13px; width: 100%;
+}
+.chat-filter input:focus { outline: none; box-shadow: none; }
+
+.chat-items { display: flex; flex-direction: column; gap: 2px; }
+.chat-none { padding: 10px; margin: 0; }
+
 .chat-item {
-  display: flex; flex-direction: column; gap: 2px;
-  padding: 8px 10px; border-radius: var(--radius);
+  display: flex; flex-direction: column; gap: 1px;
+  padding: 8px 11px; border-radius: 8px;
   color: var(--body);
+  position: relative;
+  transition: background var(--fast) var(--ease);
 }
-.chat-item { transition: background var(--fast) var(--ease); }
 .chat-item:hover { background: var(--brand-tint); text-decoration: none; }
-.chat-item.on { background: var(--brand-tint); box-shadow: inset 2px 0 0 var(--brand); }
+.chat-item.on { background: var(--brand-tint); }
+/* A bar rather than a border, so the row does not shift by a pixel when it
+   becomes the current one. */
+.chat-item.on::before {
+  content: ""; position: absolute; left: 3px; top: 8px; bottom: 8px;
+  width: 3px; border-radius: 999px; background: var(--brand);
+}
 .chat-title {
   font-size: 13px; font-weight: 600; color: var(--ink);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+.chat-item.on .chat-title { color: var(--brand-deep); }
 .chat-meta { font-size: 11px; color: var(--muted); }
-.pad-8 { padding: 8px; }
+
+/* Archived chats live behind a disclosure with their count on it, because the
+   count is the only reason anybody opens it. */
+.chat-archive { margin-top: 2px; border-top: 1px solid var(--line); padding-top: 10px; }
+.chat-archive > summary {
+  display: flex; align-items: center; gap: 7px;
+  padding: 5px 11px; border-radius: 8px;
+  font-size: 11px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase;
+  color: var(--muted); cursor: pointer; list-style: none;
+}
+.chat-archive > summary::-webkit-details-marker { display: none; }
+.chat-archive > summary:hover { background: var(--brand-tint); color: var(--brand-deep); }
+.chat-archive > summary .count {
+  margin-left: auto; font-size: 11px; letter-spacing: 0;
+  background: var(--line); color: var(--body);
+  padding: 0 6px; border-radius: 999px; font-weight: 600;
+}
+.chat-archive > nav { margin-top: 4px; }
+.chat-archive .chat-title { font-weight: 500; color: var(--body); }
+
+/* ------------------------------------------------------------------ menu -- */
+
+.menu { position: relative; flex: none; }
+.menu > summary {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; border-radius: 8px;
+  color: var(--muted); cursor: pointer; list-style: none;
+  transition: background var(--fast) var(--ease), color var(--fast) var(--ease);
+}
+.menu > summary::-webkit-details-marker { display: none; }
+.menu > summary:hover,
+.menu[open] > summary { background: var(--brand-tint); color: var(--ink); }
+.menu-pop {
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 40;
+  min-width: 232px; padding: 8px;
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: 10px; box-shadow: var(--shadow-md);
+  animation: pop 120ms var(--ease) both;
+}
+@keyframes pop {
+  from { opacity: 0; transform: translateY(-4px) scale(.985); }
+  to   { opacity: 1; transform: none; }
+}
+.menu-pop form { margin: 0; }
+.menu-rename { display: flex; flex-direction: column; gap: 7px; padding: 2px 2px 8px; }
+.menu-rename label { margin: 0; font-size: 11px; font-weight: 700; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.05em; }
+.menu-rename input { margin-top: 4px; font-size: 13px; padding: 6px 9px; }
+.menu-sep { height: 1px; background: var(--line); margin: 2px 0 6px; }
+.menu-item {
+  display: flex; align-items: center; gap: 9px; width: 100%;
+  padding: 7px 9px; border: 0; border-radius: 7px;
+  background: none; color: var(--body);
+  font: inherit; font-size: 13px; font-weight: 500;
+  cursor: pointer; text-align: left;
+  transition: background var(--fast) var(--ease), color var(--fast) var(--ease);
+}
+.menu-item:hover { background: var(--brand-tint); color: var(--ink); }
+.menu-item.danger { color: var(--bad); }
+.menu-item.danger:hover { background: #fdecea; }
 
 .chat-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .chat-empty { margin: auto; max-width: 460px; padding: 24px; }

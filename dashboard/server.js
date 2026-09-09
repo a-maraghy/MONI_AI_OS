@@ -1616,6 +1616,20 @@ async function consoleDirs() {
   }
 }
 
+/**
+ * The two lists the sidebar draws.
+ *
+ * Archived chats are fetched even when the section is closed, because the
+ * count on its label is the reason anyone opens it, and a count that needs a
+ * second request is a count that arrives late.
+ */
+function consoleLists(req) {
+  return {
+    sessions: db.listConsoleSessions(req.me.id),
+    archived: db.listConsoleSessions(req.me.id, { archived: true }),
+  };
+}
+
 function loadConsoleSession(req, res) {
   const session = db.getConsoleSession(Number(req.params.id), req.me.id);
   if (!session) {
@@ -1626,12 +1640,11 @@ function loadConsoleSession(req, res) {
 }
 
 app.get("/console", requireAuth, requirePerm("console.use"), async (req, res) => {
-  const sessions = db.listConsoleSessions(req.me.id);
   res.send(
     consoleViews.console({
       csrf: res.locals.csrf,
       user: ctx(req, "console"),
-      sessions,
+      ...consoleLists(req),
       session: null,
       messages: [],
       dirs: await consoleDirs(),
@@ -1661,7 +1674,7 @@ app.get("/console/:id", requireAuth, requirePerm("console.use"), async (req, res
     consoleViews.console({
       csrf: res.locals.csrf,
       user: ctx(req, "console"),
-      sessions: db.listConsoleSessions(req.me.id),
+      ...consoleLists(req),
       session,
       messages: db.listConsoleMessages(session.id),
       dirs: await consoleDirs(),
@@ -1696,6 +1709,27 @@ app.post("/console/:id/settings", requireAuth, requirePerm("console.use"), requi
   // was showing when the chat began.
   closeConsoleChat(session.id);
   res.redirect("/console/" + session.id);
+});
+
+app.post("/console/:id/rename", requireAuth, requirePerm("console.use"), requireCsrf, (req, res) => {
+  const session = loadConsoleSession(req, res);
+  if (!session) return;
+  const title = field(req.body, "title").replace(/\s+/g, " ").slice(0, 80);
+  // An empty name is a request to go back to being unnamed, not an error: the
+  // next message will name the chat again from what it says.
+  db.updateConsoleSession(session.id, req.me.id, { title: title || "New chat" });
+  res.redirect("/console/" + session.id);
+});
+
+app.post("/console/:id/archive", requireAuth, requirePerm("console.use"), requireCsrf, (req, res) => {
+  const session = loadConsoleSession(req, res);
+  if (!session) return;
+  const archived = !session.archived;
+  // Archiving closes the process. Keeping one alive for a chat that has been
+  // put away would be paying for a conversation nobody is having.
+  if (archived) closeConsoleChat(session.id);
+  db.updateConsoleSession(session.id, req.me.id, { archived: archived ? 1 : 0 });
+  res.redirect(archived ? "/console" : "/console/" + session.id);
 });
 
 app.post("/console/:id/delete", requireAuth, requirePerm("console.use"), requireCsrf, (req, res) => {

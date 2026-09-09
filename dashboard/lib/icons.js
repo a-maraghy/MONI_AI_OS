@@ -80,6 +80,9 @@ const PATHS = {
   network:
     '<circle cx="12" cy="4.5" r="2"/><circle cx="4.5" cy="19" r="2"/><circle cx="19.5" cy="19" r="2"/><path d="M12 6.5v4M12 10.5 5.6 17.3M12 10.5l6.4 6.8"/>',
   activity: '<path d="M2.5 12h4l2.5-7 5 14 2.5-7h5"/>',
+  dots: '<circle cx="12" cy="5" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="12" cy="19" r="1.5"/>',
+  archive:
+    '<rect x="3" y="4" width="18" height="4.5" rx="1.5"/><path d="M4.8 8.5v9.7A1.8 1.8 0 0 0 6.6 20h10.8a1.8 1.8 0 0 0 1.8-1.8V8.5"/><path d="M10 12h4"/>',
   power: '<path d="M12 3v9"/><path d="M6.6 6.6a8 8 0 1 0 10.8 0"/>',
 };
 

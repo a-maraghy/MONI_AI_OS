@@ -133,6 +133,7 @@ function addColumn(table, column, definition) {
 }
 
 addColumn("console_sessions", "permission_mode", "TEXT NOT NULL DEFAULT 'auto'");
+addColumn("console_sessions", "archived", "INTEGER NOT NULL DEFAULT 0");
 
 /* --------------------------------------------------------------- roles --- */
 
@@ -346,14 +347,27 @@ module.exports = {
 
   /* --- console ---------------------------------------------------------- */
 
-  listConsoleSessions: (userId) =>
+  /**
+   * A user's chats, newest first.
+   *
+   * Archived ones are a separate call rather than a flag on the rows: the
+   * sidebar shows them in their own place, and asking for "the chats" should
+   * not hand back a pile the caller has to sort out.
+   */
+  listConsoleSessions: (userId, { archived = false, limit = 200 } = {}) =>
     db
       .prepare(
         `SELECT s.*, (SELECT COUNT(*) FROM console_messages m WHERE m.session_id = s.id) AS message_count
-           FROM console_sessions s WHERE s.user_id = ?
-          ORDER BY s.updated_at DESC LIMIT 100`
+           FROM console_sessions s
+          WHERE s.user_id = ? AND s.archived = ?
+          ORDER BY s.updated_at DESC LIMIT ?`
       )
-      .all(userId),
+      .all(userId, archived ? 1 : 0, limit),
+
+  countArchivedConsoleSessions: (userId) =>
+    db
+      .prepare("SELECT COUNT(*) AS n FROM console_sessions WHERE user_id = ? AND archived = 1")
+      .get(userId).n,
 
   /** Scoped by user: one administrator's chats are not another's to read. */
   getConsoleSession: (id, userId) =>
@@ -372,7 +386,16 @@ module.exports = {
       .run(uuid, userId, model, effort, access, cwd, nowIso(), nowIso()),
 
   updateConsoleSession: (id, userId, fields) => {
-    const allowed = ["title", "model", "effort", "access", "cwd", "started", "permission_mode"];
+    const allowed = [
+      "title",
+      "model",
+      "effort",
+      "access",
+      "cwd",
+      "started",
+      "permission_mode",
+      "archived",
+    ];
     const keys = Object.keys(fields).filter((k) => allowed.includes(k));
     if (!keys.length) return;
     const sets = keys.map((k) => `${k} = @${k}`).join(", ");
