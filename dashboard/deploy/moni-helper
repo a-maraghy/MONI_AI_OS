@@ -712,6 +712,61 @@ def write_drop_in(cfg):
     os.chmod(os.path.join(path, "project.conf"), 0o644)
 
 
+DESKTOP_USER = "ubuntu"
+
+
+def _obsidian_vaults(slug, remove=False):
+    """Add or remove a vault in the desktop user's Obsidian vault switcher.
+
+    Best effort by design: Obsidian may not be installed, and a failure here is
+    a menu entry, not a broken agent. The id is derived from the path so
+    re-registering the same vault never duplicates it.
+    """
+    try:
+        pw = pwd.getpwnam(DESKTOP_USER)
+    except KeyError:
+        return False
+    conf_dir = os.path.join(pw.pw_dir, ".config", "obsidian")
+    conf_path = os.path.join(conf_dir, "obsidian.json")
+    vault = os.path.join(agent_dir(slug), "vault")
+    vid = hashlib.sha1(vault.encode()).hexdigest()[:16]
+    try:
+        os.makedirs(conf_dir, exist_ok=True)
+        try:
+            with open(conf_path) as fh:
+                conf = json.load(fh)
+        except Exception:
+            conf = {}
+        vaults = conf.setdefault("vaults", {})
+        if remove:
+            if vid not in vaults:
+                return False
+            del vaults[vid]
+        else:
+            entry = vaults.get(vid, {})
+            entry.update(
+                {"path": vault, "ts": int(datetime.now(timezone.utc).timestamp() * 1000)}
+            )
+            vaults[vid] = entry
+        tmp = conf_path + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump(conf, fh, indent=2)
+        os.replace(tmp, conf_path)
+        for path in (conf_dir, conf_path):
+            os.chown(path, pw.pw_uid, pw.pw_gid)
+        return True
+    except Exception:
+        return False
+
+
+def register_obsidian_vault(slug):
+    return _obsidian_vaults(slug, remove=False)
+
+
+def unregister_obsidian_vault(slug):
+    return _obsidian_vaults(slug, remove=True)
+
+
 def public_meta(cfg):
     meta = {k: v for k, v in cfg.items() if not k.startswith("_")}
     meta["updated_at"] = now_iso()
@@ -747,10 +802,12 @@ def cmd_agent_create(args):
     run(["systemctl", "reset-failed", unit_name(slug)])  # clear any stale state
     r = run(["systemctl", "enable", "--now", unit_name(slug)], timeout=30)
     started = r.returncode == 0
+    registered = register_obsidian_vault(slug)
     audit("agent-create", {"slug": slug, "name": cfg["name"], "started": started})
     ok({
         "slug": slug,
         "started": started,
+        "obsidian_registered": registered,
         "message": r.stderr.strip() if not started else "",
         "state": unit_state(slug),
     })
@@ -852,6 +909,9 @@ def cmd_agent_delete(args):
     target = os.path.join(ARCHIVE_DIR, slug + "-" + stamp)
     shutil.move(path, target)
     os.chmod(target, 0o700)
+    # The vault is no longer at that path, so leaving it in Obsidian's switcher
+    # just means a dead entry the operator has to clear by hand.
+    unregister_obsidian_vault(slug)
     audit("agent-delete", {"slug": slug, "archived_to": target})
     ok({"slug": slug, "archived_to": target})
 

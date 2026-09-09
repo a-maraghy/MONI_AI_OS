@@ -31,10 +31,18 @@ if [[ $REFRESH_ONLY -eq 0 ]]; then
   if command -v obsidian >/dev/null; then
     say "Obsidian is already installed ($(obsidian --version 2>/dev/null || echo 'version unknown'))"
   else
-    say "Finding the latest Obsidian release"
-    URL=$(curl -fsSL https://api.github.com/repos/obsidianmd/obsidian-releases/releases/latest \
-      | grep -o 'https://[^"]*amd64\.deb' | head -1)
-    [[ -n "$URL" ]] || { echo "could not find a .deb asset" >&2; exit 1; }
+    say "Finding the latest Obsidian desktop release"
+    # Not the GitHub "latest release" endpoint: Obsidian publishes mobile and
+    # desktop builds to the same repo, and "latest" is regularly an Android APK
+    # with no .deb attached at all. desktop-releases.json is the authoritative
+    # desktop version.
+    VERSION=$(curl -fsSL \
+      https://raw.githubusercontent.com/obsidianmd/obsidian-releases/master/desktop-releases.json \
+      | grep -o '"latestVersion"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 \
+      | grep -o '[0-9][0-9.]*')
+    [[ -n "$VERSION" ]] || { echo "could not read the latest desktop version" >&2; exit 1; }
+    URL="https://github.com/obsidianmd/obsidian-releases/releases/download/v${VERSION}/obsidian_${VERSION}_amd64.deb"
+    say "Latest desktop release is $VERSION"
 
     say "Downloading $(basename "$URL")"
     TMP=$(mktemp -d)
