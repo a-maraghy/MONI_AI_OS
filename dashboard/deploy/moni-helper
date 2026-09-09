@@ -1852,8 +1852,37 @@ def cmd_credential_set(args):
     if key in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY") and not OAUTH_TOKEN_RE.match(value):
         fail("that does not look like an Anthropic credential (expected sk-ant-…)")
     _write_credential(spec, {key: value}, drop=[k for k in spec["keys"] if k != key])
-    audit("credential-set", {"name": args[0], "key": key})
-    ok({"name": args[0], "key": key, "configured": True})
+    # systemd reads an EnvironmentFile once, at unit start. Writing the file
+    # while agents are running therefore changes nothing for them -- they keep
+    # the environment they booted with, the panel reports the credential as
+    # configured, and the agent answers "not authenticated" with no visible
+    # reason why. Restarting is not a nicety here; without it the write is a
+    # no-op for every process that needs it.
+    restarted = restart_all_agents()
+    audit("credential-set", {"name": args[0], "key": key, "restarted": restarted})
+    ok({"name": args[0], "key": key, "configured": True, "restarted": restarted})
+
+
+def restart_all_agents():
+    """Restart every running agent and WhatsApp bridge. Returns what it touched."""
+    touched = []
+    if os.path.isdir(AGENTS_DIR):
+        for slug in sorted(os.listdir(AGENTS_DIR)):
+            if not SLUG_RE.match(slug) or not os.path.isdir(agent_dir(slug)):
+                continue
+            if unit_state(slug)["active"] in ("active", "activating", "failed"):
+                run(["systemctl", "reset-failed", unit_name(slug)])
+                if run(["systemctl", "restart", unit_name(slug)], timeout=45).returncode == 0:
+                    touched.append(slug)
+    for meta in all_channels():
+        if meta.get("type") != "whatsapp":
+            continue
+        unit = wa_unit(meta["slug"])
+        if unit_state_for(unit)["active"] in ("active", "activating", "failed"):
+            run(["systemctl", "reset-failed", unit])
+            if run(["systemctl", "restart", unit], timeout=45).returncode == 0:
+                touched.append(meta["slug"] + " (whatsapp)")
+    return touched
 
 
 def cmd_credential_clear(args):
@@ -1864,8 +1893,9 @@ def cmd_credential_clear(args):
     if key not in spec["keys"]:
         fail("key not permitted in " + args[0] + ": " + repr(key))
     _write_credential(spec, {}, drop=[key])
-    audit("credential-clear", {"name": args[0], "key": key})
-    ok({"name": args[0], "key": key, "configured": False})
+    restarted = restart_all_agents()
+    audit("credential-clear", {"name": args[0], "key": key, "restarted": restarted})
+    ok({"name": args[0], "key": key, "configured": False, "restarted": restarted})
 
 
 def _write_credential(spec, updates, drop=()):
@@ -1966,6 +1996,32 @@ def cmd_system_probe(args):
     if r.returncode == 0:
         runtime_rev = r.stdout.strip()
 
+    # An agent that started before the credential was last written is still
+    # running with the old environment, because systemd reads EnvironmentFile
+    # only at unit start. Without this the panel would report the credential as
+    # configured while the agent that needs it has never seen it.
+    stale = []
+    if os.path.isfile(CLAUDE_AUTH) and os.path.isdir(AGENTS_DIR):
+        written = os.path.getmtime(CLAUDE_AUTH)
+        for slug in sorted(os.listdir(AGENTS_DIR)):
+            if not SLUG_RE.match(slug) or not os.path.isdir(agent_dir(slug)):
+                continue
+            if unit_state(slug)["active"] != "active":
+                continue
+            wall = run(
+                ["systemctl", "show", unit_name(slug),
+                 "-p", "ActiveEnterTimestamp", "--value"]
+            ).stdout.strip()
+            if not wall:
+                continue
+            try:
+                # `date -d` handles systemd's locale-ish timestamp format for us.
+                epoch = run(["date", "-d", wall, "+%s"]).stdout.strip()
+                if epoch and float(epoch) < written:
+                    stale.append(slug)
+            except Exception:
+                continue
+
     ok(
         {
             "files": {
@@ -1985,6 +2041,7 @@ def cmd_system_probe(args):
                 "git": have_binary("git"),
             },
             "claude_credential": claude_configured,
+            "credential_stale_agents": stale,
             "runtime_revision": runtime_rev,
             "counts": {
                 "agents": len(

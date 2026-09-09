@@ -22,6 +22,17 @@ exports.index = ({ csrf, user, credentials, probe, flash, err }) =>
            <em>authentication</em> when this is the cause.</div></div>`
         : ""
     }
+    ${
+      probe && (probe.credential_stale_agents || []).length
+        ? `<div class="alert warn">${icon("alert")}<div>
+           ${probe.credential_stale_agents.map(esc).join(", ")} started before the
+           credential was last changed, so
+           ${probe.credential_stale_agents.length === 1 ? "it is" : "they are"} still
+           using the old one. Saving a credential here restarts agents automatically;
+           this one predates that. Restart from
+           <a href="/services/agents">Agent services</a>.</div></div>`
+        : ""
+    }
 
     ${credentials
       .map((c) =>

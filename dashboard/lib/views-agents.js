@@ -78,6 +78,19 @@ exports.dashboard = ({ csrf, user, agents, channels, probe, flash, err }) => {
         : ""
     }
     ${
+      // systemd reads an EnvironmentFile only at unit start, so an agent that
+      // was already running when the credential changed still holds the old
+      // one. It looks configured everywhere and fails at the only moment that
+      // matters, so it is called out rather than left to be discovered.
+      probe && (probe.credential_stale_agents || []).length
+        ? `<div class="alert warn">${icon("alert")}<div>The Claude credential changed after
+           ${probe.credential_stale_agents.map(esc).join(", ")} started, so
+           ${probe.credential_stale_agents.length === 1 ? "it is" : "they are"} still
+           running with the old one and cannot authenticate. Restart from
+           <a href="/services/agents">Agent services</a>.</div></div>`
+        : ""
+    }
+    ${
       failed.length
         ? `<div class="alert bad">${icon("alert")}<div>${failed.length} agent${
             failed.length === 1 ? " is" : "s are"
