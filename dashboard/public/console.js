@@ -10,6 +10,173 @@
  *
  * Loaded on every page and returns immediately when there is no chat on screen.
  */
+/* ------------------------------------------------------------- markdown ---
+ *
+ * A deliberately small renderer for the subset an answer actually uses:
+ * fenced and inline code, headings, lists, quotes, rules, bold, italic and
+ * links. Anything else stays as written.
+ *
+ * It escapes first and formats second, always. Every branch below operates on
+ * text that is already HTML-safe, so a reply containing markup renders as the
+ * characters that were typed rather than as elements -- which matters more here
+ * than in most places, because a great deal of what this thing reports is the
+ * contents of files it just read.
+ */
+var MD = (function () {
+  /* Spans of code are lifted out before emphasis is applied and put back after,
+     so a `*` inside code is never read as markup. The marker has to be a
+     sequence the surrounding prose cannot contain, which rules out anything
+     printable -- " 0 " occurs in ordinary text all the time. Built with
+     fromCharCode rather than typed, so no control character ends up sitting in
+     this file where an editor might quietly eat it. */
+  var MARK = String.fromCharCode(0);
+  var MARK_RE = new RegExp(MARK + "(\\d+)" + MARK, "g");
+
+  function esc(s) {
+    return String(s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
+  function inline(text) {
+    var out = esc(text);
+    // Code first: what is inside a span of code must not then be read as
+    // emphasis. The placeholder keeps it out of the way of everything after.
+    var codes = [];
+    out = out.replace(/`([^`\n]+)`/g, function (_, code) {
+      codes.push(code);
+      return MARK + (codes.length - 1) + MARK;
+    });
+
+    out = out
+      .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/(^|[\s(])\*([^*\n]+)\*/g, "$1<em>$2</em>")
+      .replace(/(^|[\s(])_([^_\n]+)_/g, "$1<em>$2</em>");
+
+    // Only http(s), and rel-hardened: an answer can contain a link somebody
+    // else wrote, and target=_blank without noopener hands them the tab.
+    out = out.replace(/\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g, function (_, label, href) {
+      return '<a href="' + href + '" target="_blank" rel="noopener noreferrer">' + label + "</a>";
+    });
+
+    return out.replace(MARK_RE, function (_, i) {
+      return "<code>" + codes[i] + "</code>";
+    });
+  }
+
+  return function render(src) {
+    var lines = String(src == null ? "" : src).split("\n");
+    var html = "";
+    var list = null;      // "ul" | "ol" | null
+    var para = [];
+    var fence = null;     // language of an open code fence, or null
+    var code = [];
+
+    function flushPara() {
+      if (para.length) {
+        html += "<p>" + inline(para.join("\n")).replace(/\n/g, "<br>") + "</p>";
+        para = [];
+      }
+    }
+    function closeList() {
+      if (list) {
+        html += "</" + list + ">";
+        list = null;
+      }
+    }
+
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i];
+
+      var fenceMark = line.match(/^\s*```(.*)$/);
+      if (fenceMark) {
+        if (fence === null) {
+          flushPara();
+          closeList();
+          fence = fenceMark[1] || "";
+          code = [];
+        } else {
+          html += "<pre><code>" + esc(code.join("\n")) + "</code></pre>";
+          fence = null;
+        }
+        continue;
+      }
+      if (fence !== null) {
+        code.push(line);
+        continue;
+      }
+
+      if (!line.trim()) {
+        flushPara();
+        closeList();
+        continue;
+      }
+
+      var heading = line.match(/^(#{1,4})\s+(.*)$/);
+      if (heading) {
+        flushPara();
+        closeList();
+        var level = Math.min(heading[1].length + 1, 4);
+        html += "<h" + level + ">" + inline(heading[2]) + "</h" + level + ">";
+        continue;
+      }
+
+      if (/^\s*([-*_])\s*\1\s*\1[\s-*_]*$/.test(line)) {
+        flushPara();
+        closeList();
+        html += "<hr>";
+        continue;
+      }
+
+      var quote = line.match(/^\s*>\s?(.*)$/);
+      if (quote) {
+        flushPara();
+        closeList();
+        html += "<blockquote>" + inline(quote[1]) + "</blockquote>";
+        continue;
+      }
+
+      var bullet = line.match(/^\s*[-*+]\s+(.*)$/);
+      var numbered = line.match(/^\s*\d+[.)]\s+(.*)$/);
+      if (bullet || numbered) {
+        flushPara();
+        var want = bullet ? "ul" : "ol";
+        if (list !== want) {
+          closeList();
+          html += "<" + want + ">";
+          list = want;
+        }
+        html += "<li>" + inline((bullet || numbered)[1]) + "</li>";
+        continue;
+      }
+
+      closeList();
+      para.push(line);
+    }
+
+    // An unterminated fence still shows what was inside it: a turn that is
+    // still streaming is mid-code-block far more often than it is broken.
+    if (fence !== null && code.length) {
+      html += "<pre><code>" + esc(code.join("\n")) + "</code></pre>";
+    }
+    flushPara();
+    closeList();
+    return html;
+  };
+})();
+
+/* Stored messages arrive as plain text and are rendered here, so there is one
+   markdown implementation rather than one per side. */
+(function () {
+  var pending = document.querySelectorAll(".bubble[data-md]");
+  Array.prototype.forEach.call(pending, function (el) {
+    el.innerHTML = MD(el.textContent);
+    el.removeAttribute("data-md");
+  });
+})();
+
 (function () {
   var compose = document.getElementById("chat-compose");
   if (!compose) return;
@@ -90,6 +257,28 @@
     }
   }
 
+  /* One frame, one paint. Text is written plain while it streams -- rendering
+     markdown on every frame would re-parse the whole answer sixty times a
+     second -- and the formatted version replaces it once the turn is done. */
+  function schedule(ctx) {
+    if (ctx.frame) return;
+    ctx.frame = requestAnimationFrame(function () {
+      ctx.frame = 0;
+      if (ctx.bubble) ctx.bubble.textContent = ctx.text;
+      toBottom();
+    });
+  }
+
+  function finalise(ctx) {
+    if (ctx.frame) {
+      cancelAnimationFrame(ctx.frame);
+      ctx.frame = 0;
+    }
+    if (!ctx.bubble) return;
+    ctx.bubble.className = "bubble";
+    if (ctx.text) ctx.bubble.innerHTML = MD(ctx.text);
+  }
+
   function setRunning(state) {
     running = state;
     sendBtn.disabled = state;
@@ -102,9 +291,17 @@
     if (ev.type === "stream_event" && ev.event) {
       var d = ev.event.delta;
       if (ev.event.type === "content_block_delta" && d && d.type === "text_delta" && d.text) {
-        if (!ctx.bubble) ctx.bubble = addMessage("assistant", "");
-        ctx.bubble.textContent += d.text;
-        toBottom();
+        if (!ctx.bubble) {
+          ctx.bubble = addMessage("assistant", "");
+          ctx.bubble.className = "bubble streaming";
+          ctx.text = "";
+        }
+        // Deltas arrive faster than the screen refreshes. Appending on each one
+        // means a layout and a paint per token; buffering and flushing on the
+        // next frame means one of each per frame, which is all the eye can use
+        // and a great deal less work on a long answer.
+        ctx.text += d.text;
+        schedule(ctx);
       }
       if (
         ev.event.type === "content_block_start" &&
@@ -123,17 +320,25 @@
           addTool(ctx, block.name, summarise(block.input));
           // A tool call closes the current prose block, so the next text opens
           // a new bubble beneath it and the order on screen matches reality.
+          finalise(ctx);
           ctx.bubble = null;
+          ctx.text = "";
         } else if (block.type === "text" && block.text && !ctx.bubble) {
           // Only when the partial deltas did not already render it.
-          ctx.bubble = addMessage("assistant", block.text);
+          ctx.bubble = addMessage("assistant", "");
+          ctx.text = block.text;
+          ctx.bubble.textContent = block.text;
         }
       });
       return;
     }
 
     if (ev.type === "result") {
-      if (!ctx.bubble && ev.result) ctx.bubble = addMessage("assistant", ev.result);
+      if (!ctx.bubble && ev.result) {
+        ctx.bubble = addMessage("assistant", "");
+        ctx.text = ev.result;
+      }
+      finalise(ctx);
       var bits = [];
       if (ev.duration_ms) bits.push(Math.round(ev.duration_ms / 100) / 10 + "s");
       if (ev.total_cost_usd) bits.push("$" + Number(ev.total_cost_usd).toFixed(4));
@@ -240,7 +445,7 @@
     setRunning(true);
     status.textContent = "working…";
 
-    var ctx = { bubble: null, activity: null };
+    var ctx = { bubble: null, activity: null, text: "", frame: 0 };
 
     post("/console/" + sessionId + "/send", { prompt: body })
       .then(function (res) {

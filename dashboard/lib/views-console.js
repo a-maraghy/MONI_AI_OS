@@ -93,7 +93,7 @@ function renderMessage(m) {
     meta = null;
   }
   return `<div class="msg assistant">
-    <div class="bubble">${esc(m.content)}</div>
+    <div class="bubble" data-md>${esc(m.content)}</div>
     ${
       meta && (meta.duration_ms || meta.cost_usd)
         ? `<div class="msg-meta">${
