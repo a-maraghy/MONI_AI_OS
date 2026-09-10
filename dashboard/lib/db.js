@@ -16,9 +16,23 @@ const rbac = require("./rbac");
 const DATA_DIR = process.env.MONI_DATA_DIR || "/var/lib/moni-dashboard";
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
-const db = new Database(path.join(DATA_DIR, "moni.db"));
+const DB_PATH = path.join(DATA_DIR, "moni.db");
+const db = new Database(DB_PATH);
 db.pragma("journal_mode = WAL");
 db.pragma("foreign_keys = ON");
+
+// This file holds every password hash and every TOTP secret on the panel, and
+// it was created world-readable. The directory is 0750, so this is the second
+// lock rather than the first, but a database of credentials has no business
+// being readable by any account that happens to be on the machine. WAL means
+// two sidecars carry the same rows until a checkpoint, so they get it too.
+for (const suffix of ["", "-wal", "-shm"]) {
+  try {
+    fs.chmodSync(DB_PATH + suffix, 0o600);
+  } catch (_) {
+    /* not every sidecar exists at every moment; the next start catches it */
+  }
+}
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS admin (
