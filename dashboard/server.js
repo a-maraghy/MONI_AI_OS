@@ -2896,6 +2896,30 @@ app.post("/account/password", requireAuth, requireCsrf, async (req, res) => {
   res.redirect("/account?msg=" + encodeURIComponent("Password changed."));
 });
 
+/**
+ * Confirm the authenticator you have just scanned, without signing out.
+ *
+ * A reset leaves the account "enrolment pending" until a code arrives, and the
+ * only thing that used to deliver one was a fresh sign-in. Somebody who resets
+ * their own factor, scans the new code and stays in an existing session is then
+ * looking at a page that says they are not enrolled while their phone is
+ * producing perfectly good codes. This closes that: one code, from the app they
+ * just set up, and the account is confirmed.
+ */
+app.post("/account/authenticator/verify", requireAuth, requireCsrf, (req, res) => {
+  if (req.me.totp_confirmed) return res.redirect("/account");
+  if (!totp.verifyAndConsume(req.me, req.body.code)) {
+    logAuthFailure(req.ip, "bad code confirming enrolment");
+    return res.redirect(
+      "/account?err=" +
+        encodeURIComponent("That code was not accepted. Check the phone's clock and try the next one.")
+    );
+  }
+  db.confirmUserTotp(req.me.id);
+  db.logLogin(req.ip, req.me.username, "account", "confirmed authenticator enrolment");
+  res.redirect("/account?msg=" + encodeURIComponent("Authenticator confirmed."));
+});
+
 /* --- moving your own authenticator to another app ----------------------- */
 
 /**

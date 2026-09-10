@@ -242,7 +242,10 @@ exports.userDetail = ({ csrf, user, target, roles, isSelf, lastAdmin, flash, err
         <tr><td>Two-factor</td><td>${
           target.totp_confirmed
             ? `<span class="pill ok">enrolled</span>`
-            : `<span class="pill warn">not yet enrolled</span>`
+            : `<span class="pill warn">enrolment pending</span>
+               <div class="muted small">A secret exists and the QR can be scanned; this
+                 turns to enrolled the first time a code from it is accepted —
+                 ${isSelf ? "confirm one on your account page, or just sign in again" : "which happens at their next sign-in"}.</div>`
         }</td></tr>
         <tr><td>Created</td><td class="mono small">${esc(stamp(target.created_at))}${
           target.created_by ? ` by ${esc(target.created_by)}` : ""
@@ -612,11 +615,26 @@ exports.account = ({ csrf, user, me, flash, err }) =>
 
     ${card(
       "Authenticator",
-      `<p class="muted">Your codes come from an authenticator app on your phone —
-        Microsoft Authenticator, or any other. They gate sign-in, and they are also
-        what unlocks root in a console chat, so moving them is worth doing carefully.</p>
-      <p class="muted small">Moving does not take effect until a code from the new app
-        is accepted, so if something goes wrong halfway your current app keeps working.</p>
+      `${
+        me.totp_confirmed
+          ? `<p class="muted">Your codes come from an authenticator app on your phone —
+             Microsoft Authenticator, or any other. They gate sign-in, and they are also
+             what unlocks root in a console chat, so moving them is worth doing carefully.</p>
+           <p class="muted small">Moving does not take effect until a code from the new app
+             is accepted, so if something goes wrong halfway your current app keeps working.</p>`
+          : `<div class="alert warn">${icon("alert")}<div>This account is
+             <strong>enrolment pending</strong>: the panel has not yet seen a code from your
+             authenticator. That is what a reset leaves behind — scanning the QR sets up the
+             phone, but nothing tells this side it worked until a code arrives. Enter one
+             below and it is settled without signing out.</div></div>
+           <form method="post" action="/account/authenticator/verify" autocomplete="off">
+             <input type="hidden" name="_csrf" value="${esc(csrf)}">
+             <label>Code from your authenticator
+               <input name="code" inputmode="numeric" pattern="[0-9 ]*" placeholder="000000"
+                 required autocomplete="one-time-code"></label>
+             <button class="btn primary" type="submit">${icon("check")} Confirm enrolment</button>
+           </form>`
+      }
       <div class="btn-row">
         <a class="btn" href="/account/authenticator">${icon("reindex")} Move to another app or phone</a>
       </div>`,
