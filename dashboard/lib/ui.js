@@ -140,6 +140,7 @@ const NAV = [
             label: "Security",
             items: [
               { key: "firewall", href: "/firewall", label: "Firewall", icon: "ban", perm: "firewall.view" },
+              { key: "sso", href: "/sso", label: "Microsoft sign-in", icon: "lock", perm: "sso.view" },
               { key: "credentials", href: "/credentials", label: "Credentials", icon: "credentials", perm: "credentials.view" },
               { key: "keys", href: "/keys", label: "SSH keys", icon: "keys", perm: "keys.view" },
               { key: "devices", href: "/devices", label: "Devices", icon: "devices", perm: "devices.view" },

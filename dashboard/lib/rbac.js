@@ -80,6 +80,12 @@ const PERMISSION_GROUPS = [
       { key: "keys.manage", label: "Add and remove SSH keys", hint: "This is shell access to the host." },
       { key: "devices.view", label: "View paired devices" },
       { key: "devices.manage", label: "Pair and unpair devices" },
+      { key: "sso.view", label: "View Microsoft sign-in settings", hint: "Never shows the client secret." },
+      {
+        key: "sso.manage",
+        label: "Configure Microsoft sign-in",
+        hint: "Decides which Entra tenant may issue sign-ins to this panel.",
+      },
     ],
   },
   {
@@ -143,6 +149,7 @@ const IMPLIES = {
   "credentials.edit": ["credentials.view"],
   "keys.manage": ["keys.view"],
   "devices.manage": ["devices.view"],
+  "sso.manage": ["sso.view"],
   "users.manage": ["users.view", "roles.view"],
   "roles.manage": ["roles.view"],
   "console.full": ["console.use"],

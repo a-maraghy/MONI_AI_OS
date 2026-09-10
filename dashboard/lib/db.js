@@ -16,9 +16,22 @@ const rbac = require("./rbac");
 const DATA_DIR = process.env.MONI_DATA_DIR || "/var/lib/moni-dashboard";
 fs.mkdirSync(DATA_DIR, { recursive: true });
 
-const db = new Database(path.join(DATA_DIR, "moni.db"));
+const DB_PATH = path.join(DATA_DIR, "moni.db");
+const db = new Database(DB_PATH);
 db.pragma("journal_mode = WAL");
 db.pragma("foreign_keys = ON");
+
+// This file holds password hashes, TOTP secrets and the Microsoft client
+// secret. The directory is already 0750, so this is the second lock rather than
+// the first, but a database of credentials has no business being world-readable
+// on any account. WAL means two sidecars carry the same data until a checkpoint.
+for (const suffix of ["", "-wal", "-shm"]) {
+  try {
+    fs.chmodSync(DB_PATH + suffix, 0o600);
+  } catch (_) {
+    /* not every sidecar exists at every moment; the next start catches it */
+  }
+}
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS admin (
@@ -111,6 +124,15 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS console_messages_session
     ON console_messages(session_id, id);
+
+  -- Panel-wide configuration that is not a file and not a secret file: right
+  -- now the Microsoft sign-in settings. JSON values, so a setting can grow a
+  -- field without a migration.
+  CREATE TABLE IF NOT EXISTS settings (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
 
   CREATE TABLE IF NOT EXISTS login_log (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -246,6 +268,27 @@ module.exports = {
 
   getUserByName: (username) =>
     userRow(db.prepare(USER_SELECT + " WHERE u.username = ?").get(username)),
+
+  /* --- settings -------------------------------------------------------- */
+
+  getSetting: (key, fallback = null) => {
+    const row = db.prepare("SELECT value FROM settings WHERE key = ?").get(key);
+    if (!row) return fallback;
+    try {
+      return JSON.parse(row.value);
+    } catch (_) {
+      return fallback;
+    }
+  },
+
+  setSetting: (key, value) =>
+    db
+      .prepare(
+        `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value,
+                                        updated_at = excluded.updated_at`
+      )
+      .run(key, JSON.stringify(value), nowIso()),
 
   /** Case-insensitive: addresses are not case-sensitive in practice. */
   getUserByEmail: (email) =>

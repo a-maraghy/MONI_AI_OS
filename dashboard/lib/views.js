@@ -32,20 +32,31 @@ exports.error = (title, msg) =>
 
 /* ----------------------------------------------------------------- auth --- */
 
-exports.login = ({ csrf, error }) =>
+exports.login = ({ csrf, error, microsoft = false }) =>
   shell(
     "Sign in",
     `<div class="card">
       <h2 class="mb-14">Sign in to MONI AI OS</h2>
       ${error ? `<div class="alert bad">${icon("alert")}<div>${esc(error)}</div></div>` : ""}
+      ${
+        microsoft
+          ? `<a class="btn primary w-full" href="/auth/microsoft">${icon(
+              "shield"
+            )} Sign in with Microsoft</a>
+             <p class="muted small center mt-12">Approve the prompt in Microsoft Authenticator.</p>
+             <div class="or"><span>or use a code</span></div>`
+          : ""
+      }
       <form method="post" action="/login" autocomplete="off">
         <input type="hidden" name="_csrf" value="${esc(csrf)}">
-        <label>Username<input name="username" autocomplete="username" required autofocus></label>
+        <label>Username<input name="username" autocomplete="username" required${
+          microsoft ? "" : " autofocus"
+        }></label>
         <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
         <label>Authenticator code
           <input name="token" inputmode="numeric" pattern="[0-9 ]*" placeholder="000000"
                  autocomplete="one-time-code" required></label>
-        <button class="btn primary w-full" type="submit">Sign in</button>
+        <button class="btn${microsoft ? "" : " primary"} w-full" type="submit">Sign in</button>
       </form>
     </div>`
   );
