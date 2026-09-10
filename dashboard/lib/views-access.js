@@ -10,7 +10,7 @@
  * until it locks the last administrator out of their own machine.
  */
 
-const { esc, shell, card, flashes, icon, stamp, ago, empty } = require("./ui");
+const { esc, shell, card, flashes, icon, stamp, ago, empty, enrolSteps } = require("./ui");
 const rbac = require("./rbac");
 
 const roleBadge = (role) =>
@@ -27,10 +27,19 @@ function permCount(role) {
 
 /* ---------------------------------------------------------------- users --- */
 
-exports.users = ({ csrf, user, users, roles, flash, err }) =>
+exports.users = ({ csrf, user, users, roles, missingEmail = 0, flash, err }) =>
   shell(
     "Users",
     `${flashes({ msg: flash, err })}
+    ${
+      missingEmail
+        ? `<div class="alert warn">${icon("alert")}<div>${missingEmail} account${
+            missingEmail === 1 ? " has" : "s have"
+          } no work email yet. It is what the authenticator app shows beside the
+           code, so add it from ${missingEmail === 1 ? "that account" : "each account"} below.
+           Sign-in is unaffected either way.</div></div>`
+        : ""
+    }
 
     ${card(
       "People with access",
@@ -45,6 +54,11 @@ exports.users = ({ csrf, user, users, roles, flash, err }) =>
                   <td>
                     <div class="row-title">${esc(u.display_name || u.username)}</div>
                     <div class="muted small mono">${esc(u.username)}</div>
+                    <div class="muted small">${
+                      u.email
+                        ? esc(u.email)
+                        : `<span class="pill warn">no work email</span>`
+                    }</div>
                   </td>
                   <td>${roleBadge(u.role)}
                     <div class="muted small">${permCount(u.role)} permission${
@@ -111,6 +125,10 @@ exports.userNew = ({ csrf, user, roles, form = {}, errors = [] }) =>
           <label>Display name <span class="hint">optional</span>
             <input name="display_name" value="${esc(form.display_name || "")}"></label>
         </div>
+        <label>Microsoft work email
+          <span class="hint">Microsoft Authenticator shows this beside their code</span>
+          <input name="email" type="email" value="${esc(form.email || "")}" required
+            autocomplete="off" spellcheck="false" placeholder="name@company.com"></label>
         <label>Role
           <select name="role_id">
             ${roles
@@ -168,9 +186,9 @@ exports.userEnrol = ({ csrf, user, target, qr, secret, password }) =>
         </div>
         <div class="qr-wrap">
           <img class="qr" src="${esc(qr)}" alt="Authenticator enrolment QR code" width="200" height="200">
-          <p class="muted small">Scan in Google Authenticator, 1Password, or similar.</p>
         </div>
-      </div>`,
+      </div>
+      ${enrolSteps(target.email)}`,
       { icon: "lock" }
     )}
 
@@ -210,6 +228,11 @@ exports.userDetail = ({ csrf, user, target, roles, isSelf, lastAdmin, flash, err
       "Account",
       `<table class="kv">
         <tr><td>Username</td><td class="mono">${esc(target.username)}</td></tr>
+        <tr><td>Work email</td><td class="mono small">${
+          target.email
+            ? esc(target.email)
+            : `<span class="pill warn">not set</span>`
+        }</td></tr>
         <tr><td>Role</td><td>${roleBadge(target.role)}</td></tr>
         <tr><td>Status</td><td>${
           target.disabled
@@ -237,6 +260,14 @@ exports.userDetail = ({ csrf, user, target, roles, isSelf, lastAdmin, flash, err
         <input type="hidden" name="_csrf" value="${esc(csrf)}">
         <label>Display name
           <input name="display_name" value="${esc(target.display_name || "")}"></label>
+        <label>Microsoft work email
+          <span class="hint">what their authenticator shows beside the code${
+            target.totp_confirmed
+              ? " — changing it does not disturb an enrolled phone"
+              : ""
+          }</span>
+          <input name="email" type="email" value="${esc(target.email || "")}" required
+            autocomplete="off" spellcheck="false" placeholder="name@company.com"></label>
         <label>Role
           <select name="role_id"${lastAdmin ? " disabled" : ""}>
             ${roles
@@ -545,6 +576,9 @@ exports.account = ({ csrf, user, me, flash, err }) =>
       "Signed in as",
       `<table class="kv">
         <tr><td>Username</td><td class="mono">${esc(me.username)}</td></tr>
+        <tr><td>Work email</td><td class="mono small">${
+          me.email ? esc(me.email) : `<span class="pill warn">not set</span>`
+        }</td></tr>
         <tr><td>Role</td><td>${roleBadge(me.role)}</td></tr>
         <tr><td>Agent scope</td><td class="mono small">${esc(
           rbac.scopeLabel(rbac.parseScope(me.agent_scope))
@@ -577,6 +611,19 @@ exports.account = ({ csrf, user, me, flash, err }) =>
     )}
 
     ${card(
+      "Authenticator",
+      `<p class="muted">Your codes come from an authenticator app on your phone —
+        Microsoft Authenticator, or any other. They gate sign-in, and they are also
+        what unlocks root in a console chat, so moving them is worth doing carefully.</p>
+      <p class="muted small">Moving does not take effect until a code from the new app
+        is accepted, so if something goes wrong halfway your current app keeps working.</p>
+      <div class="btn-row">
+        <a class="btn" href="/account/authenticator">${icon("reindex")} Move to another app or phone</a>
+      </div>`,
+      { icon: "devices" }
+    )}
+
+    ${card(
       "What you can do",
       me.role && me.role.permissions.includes("*")
         ? `<p class="muted">Everything. You hold the administrator role.</p>`
@@ -594,6 +641,86 @@ exports.account = ({ csrf, user, me, flash, err }) =>
       active: null,
       heading: me.display_name || me.username,
       subtitle: "Your own credentials and what your role permits.",
+    }
+  );
+
+/* ------------------------------------------- moving your authenticator --- */
+
+/**
+ * Step one: prove it is you, with both factors.
+ *
+ * The password alone would let a session left open on an unlocked desk move the
+ * second factor to somebody else's phone, which is precisely what the second
+ * factor is for. So this asks for a current code as well.
+ */
+exports.reenrolStart = ({ csrf, user, me, err }) =>
+  shell(
+    "Move your authenticator",
+    `${flashes({ err })}
+    ${card(
+      "Confirm it is you",
+      `<p class="muted">This moves your codes to a different app or phone. Nothing changes
+        until the new app produces a code this panel accepts — your current one keeps
+        working until then.</p>
+      <form method="post" action="/account/authenticator" autocomplete="off">
+        <input type="hidden" name="_csrf" value="${esc(csrf)}">
+        <label>Your password
+          <input name="password" type="password" required autocomplete="current-password" autofocus></label>
+        <label>A code from the authenticator you have now
+          <span class="hint">proves the old device is still in your hands</span>
+          <input name="code" inputmode="numeric" pattern="[0-9 ]*" placeholder="000000"
+            required autocomplete="one-time-code"></label>
+        <button class="btn primary" type="submit">${icon("chevron")} Continue</button>
+      </form>`,
+      { icon: "lock" }
+    )}`,
+    {
+      user,
+      csrf,
+      active: null,
+      heading: "Move your authenticator",
+      subtitle: "For a new phone, or to switch to Microsoft Authenticator.",
+      actions: `<a class="btn" href="/account">${icon("chevron")} Your account</a>`,
+    }
+  );
+
+/** Step two: scan, then prove the new app works before anything is replaced. */
+exports.reenrolScan = ({ csrf, user, me, qr, secret, err }) =>
+  shell(
+    "Scan the new code",
+    `${flashes({ err })}
+    <div class="alert warn">${icon("alert")}<div>Your current authenticator is still the
+      live one. It is replaced the moment a code from the new app is accepted below, and
+      not before — so do not delete the old entry until this page says it is done.</div></div>
+
+    ${card(
+      "Add it to your authenticator",
+      `<div class="grid cols-2">
+        <div>
+          ${enrolSteps(me.email)}
+          <p class="muted small">Can't scan? Enter this secret by hand:</p>
+          <pre class="secret">${esc(secret)}</pre>
+        </div>
+        <div class="qr-wrap">
+          <img class="qr" src="${esc(qr)}" alt="Authenticator enrolment QR code" width="200" height="200">
+        </div>
+      </div>
+      <form method="post" action="/account/authenticator/confirm" autocomplete="off">
+        <input type="hidden" name="_csrf" value="${esc(csrf)}">
+        <label>Code from the new app
+          <input name="code" inputmode="numeric" pattern="[0-9 ]*" placeholder="000000"
+            required autofocus autocomplete="one-time-code"></label>
+        <button class="btn primary" type="submit">${icon("check")} Finish the move</button>
+      </form>`,
+      { icon: "devices" }
+    )}`,
+    {
+      user,
+      csrf,
+      active: null,
+      heading: "Scan the new code",
+      subtitle: "This page expires in 15 minutes. Leaving it changes nothing.",
+      actions: `<a class="btn" href="/account">${icon("chevron")} Cancel</a>`,
     }
   );
 

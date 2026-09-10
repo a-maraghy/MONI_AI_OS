@@ -16,6 +16,7 @@ const {
   flashes,
   empty,
   icon,
+  enrolSteps,
   can,
 } = require("./ui");
 
@@ -49,7 +50,7 @@ exports.login = ({ csrf, error }) =>
     </div>`
   );
 
-exports.setup = ({ csrf, token, errors = [] }) =>
+exports.setup = ({ csrf, token, form = {}, errors = [] }) =>
   shell(
     "First-run setup",
     `<div class="card">
@@ -59,7 +60,10 @@ exports.setup = ({ csrf, token, errors = [] }) =>
       <form method="post" action="/setup" autocomplete="off">
         <input type="hidden" name="_csrf" value="${esc(csrf)}">
         <input type="hidden" name="token" value="${esc(token)}">
-        <label>Username<input name="username" required autofocus></label>
+        <label>Username<input name="username" value="${esc(form.username || "")}" required autofocus></label>
+        <label>Microsoft work email
+          <span class="hint">what Microsoft Authenticator will show beside the code</span>
+          <input name="email" type="email" value="${esc(form.email || "")}" required></label>
         <label>Password <span class="hint">minimum 12 characters</span>
           <input name="password" type="password" required></label>
         <label>Repeat password<input name="password2" type="password" required></label>
@@ -68,12 +72,13 @@ exports.setup = ({ csrf, token, errors = [] }) =>
     </div>`
   );
 
-exports.totpEnroll = ({ csrf, qr, secret, error }) =>
+
+exports.totpEnroll = ({ csrf, qr, secret, account, error }) =>
   shell(
     "Set up two-factor",
     `<div class="card">
       <h2>Set up two-factor authentication</h2>
-      <p class="muted small">Scan with Google Authenticator, Authy, 1Password, or any TOTP app.</p>
+      ${enrolSteps(account)}
       ${error ? `<div class="alert bad">${icon("alert")}<div>${esc(error)}</div></div>` : ""}
       <p class="center"><img src="${esc(qr)}" alt="TOTP QR code" width="240" height="240"></p>
       <p class="muted small">Can't scan? Enter this secret manually:</p>

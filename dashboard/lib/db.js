@@ -46,6 +46,12 @@ db.exec(`
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     username       TEXT NOT NULL UNIQUE,
     display_name   TEXT NOT NULL DEFAULT '',
+    -- The person's Microsoft work address. It is what the authenticator app
+    -- shows next to the code, so a phone holding several work accounts can tell
+    -- which one this is. Not UNIQUE at the schema level: an empty string is the
+    -- migration state for accounts that predate the column, and several of
+    -- those may exist at once. Uniqueness of real addresses is enforced above.
+    email          TEXT NOT NULL DEFAULT '',
     password_hash  TEXT NOT NULL,
     totp_secret    TEXT NOT NULL,
     totp_confirmed INTEGER NOT NULL DEFAULT 0,
@@ -131,6 +137,12 @@ function addColumn(table, column, definition) {
     .get(table, column).n;
   if (!has) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
 }
+
+// Existing installs get the column empty. The panel then asks for an address
+// the next time each account is edited, and says on the users page how many are
+// still missing one -- rather than inventing a value or refusing sign-in to
+// people who were enrolled before the column existed.
+addColumn("users", "email", "TEXT NOT NULL DEFAULT ''");
 
 addColumn("console_sessions", "permission_mode", "TEXT NOT NULL DEFAULT 'auto'");
 addColumn("console_sessions", "archived", "INTEGER NOT NULL DEFAULT 0");
@@ -235,20 +247,43 @@ module.exports = {
   getUserByName: (username) =>
     userRow(db.prepare(USER_SELECT + " WHERE u.username = ?").get(username)),
 
-  createUser: ({ username, displayName, passwordHash, totpSecret, roleId, createdBy }) =>
+  /** Case-insensitive: addresses are not case-sensitive in practice. */
+  getUserByEmail: (email) =>
+    userRow(
+      db
+        .prepare(USER_SELECT + " WHERE u.email <> '' AND lower(u.email) = lower(?)")
+        .get(String(email || ""))
+    ),
+
+  /** Accounts that predate the email column, for the prompt on the users page. */
+  usersMissingEmail: () =>
+    db.prepare("SELECT COUNT(*) AS n FROM users WHERE email = ''").get().n,
+
+  createUser: ({ username, displayName, email, passwordHash, totpSecret, roleId, createdBy }) =>
     db
       .prepare(
         `INSERT INTO users
-           (username, display_name, password_hash, totp_secret, totp_confirmed,
+           (username, display_name, email, password_hash, totp_secret, totp_confirmed,
             role_id, disabled, created_at, created_by)
-         VALUES (?, ?, ?, ?, 0, ?, 0, ?, ?)`
+         VALUES (?, ?, ?, ?, ?, 0, ?, 0, ?, ?)`
       )
-      .run(username, displayName || username, passwordHash, totpSecret, roleId, nowIso(), createdBy || null),
+      .run(
+        username,
+        displayName || username,
+        email || "",
+        passwordHash,
+        totpSecret,
+        roleId,
+        nowIso(),
+        createdBy || null
+      ),
 
-  updateUser: (id, { displayName, roleId, disabled }) =>
+  updateUser: (id, { displayName, email, roleId, disabled }) =>
     db
-      .prepare("UPDATE users SET display_name = ?, role_id = ?, disabled = ? WHERE id = ?")
-      .run(displayName, roleId, disabled ? 1 : 0, id),
+      .prepare(
+        "UPDATE users SET display_name = ?, email = ?, role_id = ?, disabled = ? WHERE id = ?"
+      )
+      .run(displayName, email || "", roleId, disabled ? 1 : 0, id),
 
   setUserPassword: (id, passwordHash) =>
     db.prepare("UPDATE users SET password_hash = ? WHERE id = ?").run(passwordHash, id),

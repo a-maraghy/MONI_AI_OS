@@ -307,6 +307,25 @@ function setupTokenValid(supplied) {
 /** True until the very first account exists. */
 const noUsersYet = () => db.userCount() === 0;
 
+const TOTP_ISSUER = "MONI AI OS";
+
+/**
+ * The enrolment URI an authenticator app scans.
+ *
+ * Microsoft Authenticator lists an entry as "issuer — account name", and a
+ * phone holding several work accounts has nothing but that line to tell them
+ * apart. So the account name is the person's work address rather than the local
+ * username, which means nothing once it is off this machine. The secret and the
+ * algorithm are untouched: this is plain RFC 6238 either way, which is what
+ * Microsoft Authenticator stores under "Other account".
+ */
+function enrolUri(user, secret) {
+  return authenticator.keyuri(user.email || user.username, TOTP_ISSUER, secret);
+}
+
+const enrolQr = (user, secret) =>
+  QRCode.toDataURL(enrolUri(user, secret), { margin: 1, width: 240 });
+
 app.get("/setup", async (req, res) => {
   if (!noUsersYet()) return res.redirect("/login");
   if (!setupTokenValid(req.query.token))
@@ -319,16 +338,23 @@ app.post("/setup", requireCsrf, async (req, res) => {
   if (!setupTokenValid(req.body.token))
     return res.status(404).send(views.error("Not found", "No such page."));
   const { username, password, password2 } = req.body;
+  const email = field(req.body, "email");
   const errors = [];
   if (!username || !/^[a-zA-Z0-9_.-]{3,32}$/.test(username))
     errors.push("Username must be 3-32 characters (letters, digits, . _ -).");
+  if (!EMAIL_RE.test(email)) errors.push("Enter the Microsoft work email for this account.");
   if (!password || password.length < 12)
     errors.push("Password must be at least 12 characters.");
   if (password !== password2) errors.push("Passwords do not match.");
   if (errors.length)
-    return res
-      .status(400)
-      .send(views.setup({ csrf: res.locals.csrf, token: req.body.token, errors }));
+    return res.status(400).send(
+      views.setup({
+        csrf: res.locals.csrf,
+        token: req.body.token,
+        form: { username, email },
+        errors,
+      })
+    );
 
   const hash = await argon2.hash(password, { type: argon2.argon2id });
   const secret = authenticator.generateSecret();
@@ -336,15 +362,15 @@ app.post("/setup", requireCsrf, async (req, res) => {
   db.createUser({
     username,
     displayName: username,
+    email,
     passwordHash: hash,
     totpSecret: secret,
     roleId: role.id,
     createdBy: "setup",
   });
 
-  const otpauth = authenticator.keyuri(username, "MONI AI OS", secret);
-  const qr = await QRCode.toDataURL(otpauth, { margin: 1, width: 240 });
-  res.send(views.totpEnroll({ csrf: res.locals.csrf, qr, secret }));
+  const qr = await enrolQr({ username, email }, secret);
+  res.send(views.totpEnroll({ csrf: res.locals.csrf, qr, secret, account: email }));
 });
 
 app.post("/setup/confirm", requireCsrf, async (req, res) => {
@@ -355,13 +381,12 @@ app.post("/setup/confirm", requireCsrf, async (req, res) => {
   if (!first || db.userCount() !== 1 || first.totp_confirmed) return res.redirect("/login");
   const token = String(req.body.token || "").replace(/\s/g, "");
   if (!authenticator.check(token, first.totp_secret)) {
-    const otpauth = authenticator.keyuri(first.username, "MONI AI OS", first.totp_secret);
-    const qr = await QRCode.toDataURL(otpauth, { margin: 1, width: 240 });
     return res.status(400).send(
       views.totpEnroll({
         csrf: res.locals.csrf,
-        qr,
+        qr: await enrolQr(first, first.totp_secret),
         secret: first.totp_secret,
+        account: first.email || first.username,
         error: "That code was not accepted. Check your device clock and try the next code.",
       })
     );
@@ -2500,6 +2525,13 @@ app.post("/channels/:slug/members/remove", requireAuth, requirePerm("channels.ed
 const USERNAME_RE = /^[a-zA-Z0-9._-]{3,32}$/;
 const ROLE_NAME_RE = /^[a-z0-9_-]{2,32}$/;
 
+// Deliberately loose. Anything stricter starts rejecting real addresses, and
+// this field is a label on an authenticator entry and a way to reach the
+// person -- not a credential, so nothing is decided by its exact shape. The
+// domain is not pinned either: which domains count as "work" is an
+// organisation's decision, and hard-coding one here breaks the first contractor.
+const EMAIL_RE = /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/;
+
 /** Scope inputs arrive as a mode radio plus a checkbox list. */
 function readScope(body, name) {
   if (field(body, name + "_mode") !== "list") return "*";
@@ -2529,6 +2561,7 @@ app.get("/users", requireAuth, requirePerm("users.view"), (req, res) => {
       user: ctx(req, "os"),
       users: db.listUsers(),
       roles: db.listRoles(),
+      missingEmail: db.usersMissingEmail(),
       flash: req.query.msg || null,
       err: req.query.err || null,
     })
@@ -2548,6 +2581,7 @@ app.get("/users/new", requireAuth, requirePerm("users.manage"), (req, res) => {
 app.post("/users/new", requireAuth, requirePerm("users.manage"), requireCsrf, async (req, res) => {
   const username = field(req.body, "username");
   const displayName = field(req.body, "display_name");
+  const email = field(req.body, "email");
   const password = String(req.body.password || "");
   const roleId = Number(field(req.body, "role_id"));
 
@@ -2555,6 +2589,8 @@ app.post("/users/new", requireAuth, requirePerm("users.manage"), requireCsrf, as
   if (!USERNAME_RE.test(username))
     errors.push("Username must be 3-32 characters (letters, digits, . _ -).");
   if (db.getUserByName(username)) errors.push("That username is already taken.");
+  if (!EMAIL_RE.test(email)) errors.push("Enter their Microsoft work email.");
+  else if (db.getUserByEmail(email)) errors.push("Another account already uses that email.");
   if (password.length < 12) errors.push("Password must be at least 12 characters.");
   if (!db.getRole(roleId)) errors.push("Pick a role.");
   if (errors.length)
@@ -2563,7 +2599,7 @@ app.post("/users/new", requireAuth, requirePerm("users.manage"), requireCsrf, as
         csrf: res.locals.csrf,
         user: ctx(req, "os"),
         roles: db.listRoles(),
-        form: { username, display_name: displayName, role_id: roleId },
+        form: { username, display_name: displayName, email, role_id: roleId },
         errors,
       })
     );
@@ -2573,16 +2609,14 @@ app.post("/users/new", requireAuth, requirePerm("users.manage"), requireCsrf, as
   const info = db.createUser({
     username,
     displayName,
+    email,
     passwordHash: hash,
     totpSecret: secret,
     roleId,
     createdBy: req.me.username,
   });
   const target = db.getUser(info.lastInsertRowid);
-  const qr = await QRCode.toDataURL(authenticator.keyuri(username, "MONI AI OS", secret), {
-    margin: 1,
-    width: 240,
-  });
+  const qr = await enrolQr(target, secret);
   // Rendered directly rather than redirected to: the password and the secret
   // exist only in this response, and a redirect would have to carry them in a
   // URL, which is the one place they must never be.
@@ -2629,15 +2663,37 @@ app.post("/users/:id", requireAuth, requirePerm("users.manage"), requireCsrf, (r
 
   const roleId = c.lastAdmin ? c.target.role_id : Number(field(req.body, "role_id"));
   const disabled = !c.lastAdmin && !c.isSelf && field(req.body, "disabled") === "1";
+  const email = field(req.body, "email");
   if (!db.getRole(roleId))
     return res.redirect(back + "?err=" + encodeURIComponent("Unknown role."));
+  if (!EMAIL_RE.test(email))
+    return res.redirect(back + "?err=" + encodeURIComponent("Enter their Microsoft work email."));
+  const clash = db.getUserByEmail(email);
+  if (clash && clash.id !== c.target.id)
+    return res.redirect(
+      back + "?err=" + encodeURIComponent("Another account already uses that email.")
+    );
+
+  // Changing the address changes the label an already-enrolled phone shows, but
+  // not the secret -- so nothing re-enrols and nobody is locked out. The entry
+  // on their phone keeps the old label until they next enrol.
+  const relabelled = email.toLowerCase() !== String(c.target.email || "").toLowerCase();
 
   db.updateUser(c.target.id, {
     displayName: field(req.body, "display_name") || c.target.username,
+    email,
     roleId,
     disabled,
   });
-  res.redirect(back + "?msg=" + encodeURIComponent("Saved."));
+  res.redirect(
+    back +
+      "?msg=" +
+      encodeURIComponent(
+        relabelled && c.target.totp_confirmed
+          ? "Saved. Their authenticator keeps working — the new address only shows on a fresh enrolment."
+          : "Saved."
+      )
+  );
 });
 
 app.post("/users/:id/password", requireAuth, requirePerm("users.manage"), requireCsrf, async (req, res) => {
@@ -2658,10 +2714,7 @@ app.post("/users/:id/totp", requireAuth, requirePerm("users.manage"), requireCsr
   const secret = authenticator.generateSecret();
   db.setUserTotp(c.target.id, secret, false);
   db.logLogin(req.ip, req.me.username, "admin", "reset 2FA for " + c.target.username);
-  const qr = await QRCode.toDataURL(
-    authenticator.keyuri(c.target.username, "MONI AI OS", secret),
-    { margin: 1, width: 240 }
-  );
+  const qr = await enrolQr(c.target, secret);
   res.send(
     accessViews.userEnrol({
       csrf: res.locals.csrf,
@@ -2841,6 +2894,105 @@ app.post("/account/password", requireAuth, requireCsrf, async (req, res) => {
 
   db.setUserPassword(req.me.id, await argon2.hash(password, { type: argon2.argon2id }));
   res.redirect("/account?msg=" + encodeURIComponent("Password changed."));
+});
+
+/* --- moving your own authenticator to another app ----------------------- */
+
+/**
+ * How long a half-finished move stays open.
+ *
+ * Long enough to install an app and scan, short enough that a pending secret
+ * does not sit in the session store for the rest of the day.
+ */
+const REENROL_MS = 15 * 60 * 1000;
+
+/**
+ * Move your second factor to a different app or phone, with no gap in cover.
+ *
+ * The alternative is an administrator reset, which needs a second
+ * administrator on hand and leaves the account unable to sign in between the
+ * reset and the new enrolment. Here the new secret lives in the session until a
+ * code generated from it proves it actually arrived on the phone; only then
+ * does it replace the old one. Abandon this halfway and nothing has changed.
+ */
+app.get("/account/authenticator", requireAuth, (req, res) => {
+  res.send(
+    accessViews.reenrolStart({
+      csrf: res.locals.csrf,
+      user: ctx(req),
+      me: req.me,
+      err: req.query.err || null,
+    })
+  );
+});
+
+app.post("/account/authenticator", requireAuth, requireCsrf, async (req, res) => {
+  const fail = (m) => res.redirect("/account/authenticator?err=" + encodeURIComponent(m));
+
+  let ok = false;
+  try {
+    ok = await argon2.verify(req.me.password_hash, String(req.body.password || ""));
+  } catch (_) {
+    ok = false;
+  }
+  if (!ok) {
+    logAuthFailure(req.ip, "authenticator move with wrong password");
+    return fail("Password is not correct.");
+  }
+  // A current code as well as the password: without it, a session left open on
+  // an unlocked machine is enough to move the second factor to another phone,
+  // which is the one thing the second factor exists to prevent.
+  if (!totp.verifyAndConsume(req.me, req.body.code)) {
+    logAuthFailure(req.ip, "authenticator move with bad code");
+    return fail("That code was not accepted. Try the next one.");
+  }
+
+  const secret = authenticator.generateSecret();
+  req.session.pendingTotp = { secret, at: Date.now() };
+  res.send(
+    accessViews.reenrolScan({
+      csrf: res.locals.csrf,
+      user: ctx(req),
+      me: req.me,
+      qr: await enrolQr(req.me, secret),
+      secret,
+      err: null,
+    })
+  );
+});
+
+app.post("/account/authenticator/confirm", requireAuth, requireCsrf, async (req, res) => {
+  const pending = req.session.pendingTotp;
+  if (!pending || Date.now() - pending.at > REENROL_MS) {
+    delete req.session.pendingTotp;
+    return res.redirect(
+      "/account/authenticator?err=" + encodeURIComponent("That took too long. Start again.")
+    );
+  }
+
+  const code = String(req.body.code || "").replace(/\s/g, "");
+  // Checked against the pending secret, not the account's, so this cannot be
+  // satisfied by the app being replaced.
+  if (!authenticator.check(code, pending.secret)) {
+    return res.status(400).send(
+      accessViews.reenrolScan({
+        csrf: res.locals.csrf,
+        user: ctx(req),
+        me: req.me,
+        qr: await enrolQr(req.me, pending.secret),
+        secret: pending.secret,
+        err: "That code was not accepted. Check the phone's clock and try the next one.",
+      })
+    );
+  }
+
+  db.setUserTotp(req.me.id, pending.secret, true);
+  delete req.session.pendingTotp;
+  db.logLogin(req.ip, req.me.username, "account", "moved authenticator to a new app");
+  res.redirect(
+    "/account?msg=" +
+      encodeURIComponent("Authenticator moved. Codes from the old app no longer work.")
+  );
 });
 
 /* ---------------------------------------------------------------- guide --- */

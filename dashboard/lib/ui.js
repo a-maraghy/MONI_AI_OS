@@ -460,6 +460,30 @@ function flashes({ msg, err }) {
   return out;
 }
 
+/**
+ * How to enrol, worded for Microsoft Authenticator.
+ *
+ * The app files a panel like this one under "Other account", not under its
+ * "Work or school account" flow -- that one signs in to Entra and will not
+ * accept this QR code. Somebody who taps the wrong entry gets an error that
+ * explains nothing, so the path is spelled out rather than left to be found.
+ *
+ * Shared by first-run setup, admin enrolment and the move-app flow, because
+ * three copies of an instruction is three chances for one of them to go stale.
+ */
+function enrolSteps(account) {
+  return `<ol class="steps">
+    <li>Open <strong>Microsoft Authenticator</strong> on your phone.</li>
+    <li>Tap <strong>+</strong>, then <strong>Other account (Google, Facebook, etc.)</strong>
+      — not "Work or school account".</li>
+    <li>Scan the code${
+      account ? ` — it is saved as <span class="mono">${esc(account)}</span>` : ""
+    }.</li>
+  </ol>
+  <p class="muted small">Any other authenticator works the same way. This is standard
+    RFC 6238, so Authy, 1Password and Google Authenticator all read the same code.</p>`;
+}
+
 function empty(iconName, title, body) {
   return `<div class="empty">
     <span class="empty-ico">${icon(iconName, 28)}</span>
@@ -483,6 +507,7 @@ module.exports = {
   card,
   flashes,
   empty,
+  enrolSteps,
   icon,
   can,
   steps,
