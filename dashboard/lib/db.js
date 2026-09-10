@@ -46,8 +46,8 @@ db.exec(`
     id             INTEGER PRIMARY KEY AUTOINCREMENT,
     username       TEXT NOT NULL UNIQUE,
     display_name   TEXT NOT NULL DEFAULT '',
-    -- The person's Microsoft work address. It is what the authenticator app
-    -- shows next to the code, so a phone holding several work accounts can tell
+    -- The person's email address. It is what the authenticator app shows next
+    -- to the code, so a phone holding entries for several systems can tell
     -- which one this is. Not UNIQUE at the schema level: an empty string is the
     -- migration state for accounts that predate the column, and several of
     -- those may exist at once. Uniqueness of real addresses is enforced above.

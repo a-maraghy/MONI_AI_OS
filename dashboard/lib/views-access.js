@@ -35,7 +35,7 @@ exports.users = ({ csrf, user, users, roles, missingEmail = 0, flash, err }) =>
       missingEmail
         ? `<div class="alert warn">${icon("alert")}<div>${missingEmail} account${
             missingEmail === 1 ? " has" : "s have"
-          } no work email yet. It is what the authenticator app shows beside the
+          } no email address yet. It is what the authenticator app shows beside the
            code, so add it from ${missingEmail === 1 ? "that account" : "each account"} below.
            Sign-in is unaffected either way.</div></div>`
         : ""
@@ -57,7 +57,7 @@ exports.users = ({ csrf, user, users, roles, missingEmail = 0, flash, err }) =>
                     <div class="muted small">${
                       u.email
                         ? esc(u.email)
-                        : `<span class="pill warn">no work email</span>`
+                        : `<span class="pill warn">no email</span>`
                     }</div>
                   </td>
                   <td>${roleBadge(u.role)}
@@ -125,8 +125,8 @@ exports.userNew = ({ csrf, user, roles, form = {}, errors = [] }) =>
           <label>Display name <span class="hint">optional</span>
             <input name="display_name" value="${esc(form.display_name || "")}"></label>
         </div>
-        <label>Microsoft work email
-          <span class="hint">Microsoft Authenticator shows this beside their code</span>
+        <label>Email
+          <span class="hint">what their authenticator app shows beside the code</span>
           <input name="email" type="email" value="${esc(form.email || "")}" required
             autocomplete="off" spellcheck="false" placeholder="name@company.com"></label>
         <label>Role
@@ -228,7 +228,7 @@ exports.userDetail = ({ csrf, user, target, roles, isSelf, lastAdmin, flash, err
       "Account",
       `<table class="kv">
         <tr><td>Username</td><td class="mono">${esc(target.username)}</td></tr>
-        <tr><td>Work email</td><td class="mono small">${
+        <tr><td>Email</td><td class="mono small">${
           target.email
             ? esc(target.email)
             : `<span class="pill warn">not set</span>`
@@ -260,8 +260,8 @@ exports.userDetail = ({ csrf, user, target, roles, isSelf, lastAdmin, flash, err
         <input type="hidden" name="_csrf" value="${esc(csrf)}">
         <label>Display name
           <input name="display_name" value="${esc(target.display_name || "")}"></label>
-        <label>Microsoft work email
-          <span class="hint">what their authenticator shows beside the code${
+        <label>Email
+          <span class="hint">what their authenticator app shows beside the code${
             target.totp_confirmed
               ? " — changing it does not disturb an enrolled phone"
               : ""
@@ -576,7 +576,7 @@ exports.account = ({ csrf, user, me, flash, err }) =>
       "Signed in as",
       `<table class="kv">
         <tr><td>Username</td><td class="mono">${esc(me.username)}</td></tr>
-        <tr><td>Work email</td><td class="mono small">${
+        <tr><td>Email</td><td class="mono small">${
           me.email ? esc(me.email) : `<span class="pill warn">not set</span>`
         }</td></tr>
         <tr><td>Role</td><td>${roleBadge(me.role)}</td></tr>

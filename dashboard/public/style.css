@@ -377,7 +377,13 @@ form.inline { display: inline; margin: 0; }
 label { display: block; margin: 0 0 14px; font-size: 13px; font-weight: 600; color: var(--ink); }
 label .hint { display: block; font-weight: 400; color: var(--muted); font-size: 12.5px; margin-top: 2px; }
 
-input[type=text], input[type=password], input[type=number], input:not([type]),
+/* Written as an exclusion, not a list of accepted types. The list version
+   silently dropped input[type=email] the day one was added -- it rendered at
+   the browser's default width beside every other field -- and would do the
+   same for the next type someone reaches for. Only the controls that must keep
+   their native shape are named here. */
+input:not([type=checkbox], [type=radio], [type=file], [type=submit], [type=button],
+          [type=reset], [type=image], [type=range], [type=color], [type=hidden]),
 select, textarea {
   width: 100%; margin-top: 6px; padding: 9px 11px;
   background: var(--surface); color: var(--ink);

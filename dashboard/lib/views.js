@@ -61,8 +61,8 @@ exports.setup = ({ csrf, token, form = {}, errors = [] }) =>
         <input type="hidden" name="_csrf" value="${esc(csrf)}">
         <input type="hidden" name="token" value="${esc(token)}">
         <label>Username<input name="username" value="${esc(form.username || "")}" required autofocus></label>
-        <label>Microsoft work email
-          <span class="hint">what Microsoft Authenticator will show beside the code</span>
+        <label>Email
+          <span class="hint">what your authenticator app shows beside the code</span>
           <input name="email" type="email" value="${esc(form.email || "")}" required></label>
         <label>Password <span class="hint">minimum 12 characters</span>
           <input name="password" type="password" required></label>

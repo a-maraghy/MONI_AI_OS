@@ -313,8 +313,8 @@ const TOTP_ISSUER = "MONI AI OS";
  * The enrolment URI an authenticator app scans.
  *
  * Microsoft Authenticator lists an entry as "issuer — account name", and a
- * phone holding several work accounts has nothing but that line to tell them
- * apart. So the account name is the person's work address rather than the local
+ * phone holding entries for several systems has nothing but that line to tell
+ * them apart. So the account name is the person's email rather than the local
  * username, which means nothing once it is off this machine. The secret and the
  * algorithm are untouched: this is plain RFC 6238 either way, which is what
  * Microsoft Authenticator stores under "Other account".
@@ -342,7 +342,7 @@ app.post("/setup", requireCsrf, async (req, res) => {
   const errors = [];
   if (!username || !/^[a-zA-Z0-9_.-]{3,32}$/.test(username))
     errors.push("Username must be 3-32 characters (letters, digits, . _ -).");
-  if (!EMAIL_RE.test(email)) errors.push("Enter the Microsoft work email for this account.");
+  if (!EMAIL_RE.test(email)) errors.push("Enter an email address for this account.");
   if (!password || password.length < 12)
     errors.push("Password must be at least 12 characters.");
   if (password !== password2) errors.push("Passwords do not match.");
@@ -2527,9 +2527,9 @@ const ROLE_NAME_RE = /^[a-z0-9_-]{2,32}$/;
 
 // Deliberately loose. Anything stricter starts rejecting real addresses, and
 // this field is a label on an authenticator entry and a way to reach the
-// person -- not a credential, so nothing is decided by its exact shape. The
-// domain is not pinned either: which domains count as "work" is an
-// organisation's decision, and hard-coding one here breaks the first contractor.
+// person -- not a credential, so nothing is decided by its exact shape. No
+// domain is pinned: any address will do, and deciding which ones count is a
+// policy that belongs to whoever runs the panel rather than to this line.
 const EMAIL_RE = /^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$/;
 
 /** Scope inputs arrive as a mode radio plus a checkbox list. */
@@ -2589,7 +2589,7 @@ app.post("/users/new", requireAuth, requirePerm("users.manage"), requireCsrf, as
   if (!USERNAME_RE.test(username))
     errors.push("Username must be 3-32 characters (letters, digits, . _ -).");
   if (db.getUserByName(username)) errors.push("That username is already taken.");
-  if (!EMAIL_RE.test(email)) errors.push("Enter their Microsoft work email.");
+  if (!EMAIL_RE.test(email)) errors.push("Enter their email address.");
   else if (db.getUserByEmail(email)) errors.push("Another account already uses that email.");
   if (password.length < 12) errors.push("Password must be at least 12 characters.");
   if (!db.getRole(roleId)) errors.push("Pick a role.");
@@ -2667,7 +2667,7 @@ app.post("/users/:id", requireAuth, requirePerm("users.manage"), requireCsrf, (r
   if (!db.getRole(roleId))
     return res.redirect(back + "?err=" + encodeURIComponent("Unknown role."));
   if (!EMAIL_RE.test(email))
-    return res.redirect(back + "?err=" + encodeURIComponent("Enter their Microsoft work email."));
+    return res.redirect(back + "?err=" + encodeURIComponent("Enter their email address."));
   const clash = db.getUserByEmail(email);
   if (clash && clash.id !== c.target.id)
     return res.redirect(
