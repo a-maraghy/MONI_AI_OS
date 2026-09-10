@@ -1166,13 +1166,3 @@ fieldset.scope legend { font-size: 12px; font-weight: 700; color: var(--ink); pa
 .fill[data-w="95"] { width: 95%; }  .fill[data-w="96"] { width: 96%; }
 .fill[data-w="97"] { width: 97%; }  .fill[data-w="98"] { width: 98%; }
 .fill[data-w="99"] { width: 99%; }  .fill[data-w="100"] { width: 100%; }
-
-/* A labelled rule between two ways of doing the same thing — the Microsoft
-   button and the code form on the sign-in page. */
-.or {
-  display: flex; align-items: center; gap: 12px;
-  margin: 18px 0 16px; color: var(--muted); font-size: 12.5px;
-}
-.or::before, .or::after {
-  content: ""; flex: 1; height: 1px; background: var(--line);
-}

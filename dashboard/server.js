@@ -28,7 +28,6 @@ const agentViews = require("./lib/views-agents");
 const channelViews = require("./lib/views-channels");
 const serviceViews = require("./lib/views-services");
 const firewallViews = require("./lib/views-firewall");
-const ssoViews = require("./lib/views-sso");
 const credentialViews = require("./lib/views-credentials");
 const addonViews = require("./lib/views-addons");
 const guideViews = require("./lib/views-guide");
@@ -36,7 +35,6 @@ const accessViews = require("./lib/views-access");
 const consoleViews = require("./lib/views-console");
 const rbac = require("./lib/rbac");
 const totp = require("./lib/totp");
-const entra = require("./lib/entra");
 
 const PORT = Number(process.env.MONI_PORT || 3000);
 const BIND = process.env.MONI_BIND || "127.0.0.1";
@@ -405,7 +403,6 @@ app.get("/login", (req, res) => {
   res.send(
     views.login({
       csrf: res.locals.csrf,
-      microsoft: entra.active(),
       error: req.query.revoked ? "Your access has been changed. Sign in again." : null,
     })
   );
@@ -421,13 +418,7 @@ app.post("/login", loginLimiter, requireCsrf, async (req, res) => {
     logAuthFailure(ip, reason);
     return res
       .status(401)
-      .send(
-        views.login({
-          csrf: res.locals.csrf,
-          microsoft: entra.active(),
-          error: "Invalid credentials.",
-        })
-      );
+      .send(views.login({ csrf: res.locals.csrf, error: "Invalid credentials." }));
   };
 
   if (!username || !password || !token) return reject("missing field");
@@ -461,21 +452,9 @@ app.post("/login", loginLimiter, requireCsrf, async (req, res) => {
   // First successful sign-in also completes enrolment: producing a valid code
   // is the proof that the authenticator was set up correctly.
   if (!account.totp_confirmed) db.confirmUserTotp(account.id);
-
-  establishSession(req, res, account, null);
-});
-
-/* ------------------------------------------------ sign in with Microsoft -- */
-
-/**
- * Complete a sign-in for an account that Microsoft has already vouched for.
- *
- * Shared with the password path in everything that matters -- session
- * regeneration, the login log, where you land -- so the two routes cannot drift
- * into granting subtly different sessions.
- */
-function establishSession(req, res, account, how) {
   db.touchUserLogin(account.id);
+
+  // Regenerate the session on privilege change to prevent fixation.
   const csrf = req.session.csrf;
   req.session.regenerate((err) => {
     if (err) return res.status(500).send(views.error("Session error", String(err)));
@@ -483,82 +462,10 @@ function establishSession(req, res, account, how) {
     req.session.userId = account.id;
     req.session.username = account.username;
     req.session.csrf = csrf;
-    db.logLogin(req.ip, account.username, "success", how);
+    db.logLogin(ip, account.username, "success", null);
     const actor = rbac.actor(account.role);
     res.redirect(actor.can("os.view") ? "/" : "/agents/dashboard");
   });
-}
-
-app.get("/auth/microsoft", loginLimiter, (req, res) => {
-  const cfg = entra.config();
-  if (!entra.active(cfg)) return res.redirect("/login");
-
-  const { url, state, nonce, verifier } = entra.begin(cfg);
-  // Session-bound, single-use. The callback checks all three and clears them,
-  // so a captured redirect cannot be replayed and a response meant for another
-  // browser cannot be finished in this one.
-  req.session.oidc = { state, nonce, verifier, at: Date.now() };
-  res.redirect(url);
-});
-
-app.get("/auth/microsoft/callback", loginLimiter, async (req, res) => {
-  const pending = req.session.oidc || null;
-  delete req.session.oidc;
-
-  const cfg = entra.config();
-  const refuse = (reason, shown) => {
-    db.logLogin(req.ip, "", "fail", "microsoft: " + reason);
-    logAuthFailure(req.ip, "microsoft sign-in: " + reason);
-    return res.status(401).send(
-      views.login({
-        csrf: res.locals.csrf,
-        microsoft: entra.active(cfg),
-        error: shown || "That Microsoft sign-in could not be completed.",
-      })
-    );
-  };
-
-  if (!entra.active(cfg)) return res.redirect("/login");
-  // Microsoft reports a refusal by redirecting here with an error, which is a
-  // normal outcome -- somebody cancelled, or a policy said no.
-  if (req.query.error)
-    return refuse(
-      String(req.query.error).slice(0, 60),
-      String(req.query.error_description || "Microsoft did not complete the sign-in.").slice(0, 300)
-    );
-  if (!pending || Date.now() - pending.at > 10 * 60 * 1000)
-    return refuse("no sign-in in progress", "That sign-in took too long. Start again.");
-  if (!req.query.state || req.query.state !== pending.state)
-    return refuse("state mismatch");
-  if (!req.query.code) return refuse("no code");
-
-  let claims;
-  try {
-    const tokens = await entra.exchange(cfg, String(req.query.code), pending.verifier);
-    claims = await entra.verifyIdToken(cfg, tokens.id_token, pending.nonce);
-  } catch (e) {
-    return refuse(String(e.message).slice(0, 120), e.message);
-  }
-
-  if (cfg.require_mfa && !entra.usedMfa(claims)) {
-    return refuse(
-      "no mfa in amr",
-      "Microsoft signed you in without a second factor, so this panel did not accept it. " +
-        "Require multi-factor authentication for this app in Entra, or sign in with a code below."
-    );
-  }
-
-  const email = entra.emailOf(claims);
-  if (!email) return refuse("no address in token");
-
-  // No auto-provisioning: a valid token proves who somebody is at Microsoft,
-  // not that they may administer this machine.
-  const account = db.getUserByEmail(email);
-  if (!account) return refuse("no panel account for " + email,
-    "There is no account on this panel with the address " + email + ".");
-  if (account.disabled) return refuse("account disabled: " + email, "That account is disabled.");
-
-  establishSession(req, res, account, "microsoft");
 });
 
 app.post("/logout", requireCsrf, (req, res) => {
@@ -1626,67 +1533,6 @@ app.get("/services/logs", requireAuth, requirePerm("services.logs"), async (req,
   );
 });
 
-/* --------------------------------------------------------------------- sso - */
-
-app.get("/sso", requireAuth, requirePerm("sso.view"), (req, res) => {
-  res.send(
-    ssoViews.index({
-      csrf: res.locals.csrf,
-      user: ctx(req, "os"),
-      cfg: entra.redacted(),
-      canManage: req.perm.can("sso.manage"),
-      users: db.listUsers(),
-      flash: req.query.msg || null,
-      err: req.query.err || null,
-    })
-  );
-});
-
-app.post("/sso", requireAuth, requirePerm("sso.manage"), requireCsrf, (req, res) => {
-  const back = (q) => res.redirect("/sso?" + q);
-  const tenantId = field(req.body, "tenant_id");
-  const clientId = field(req.body, "client_id");
-  const secret = String(req.body.client_secret || "").trim();
-  const redirect = field(req.body, "redirect_uri");
-  const enabled = field(req.body, "enabled") === "1";
-
-  if (tenantId && !GUID_RE.test(tenantId))
-    return back("err=" + encodeURIComponent("The directory (tenant) ID should be a GUID."));
-  if (clientId && !GUID_RE.test(clientId))
-    return back("err=" + encodeURIComponent("The application (client) ID should be a GUID."));
-  if (redirect && !/^https:\/\/[^\s]+$/.test(redirect))
-    return back("err=" + encodeURIComponent("The redirect URI must be an https address."));
-
-  const current = entra.config();
-  const patch = {
-    tenant_id: tenantId,
-    client_id: clientId,
-    redirect_uri: redirect,
-    require_mfa: field(req.body, "require_mfa") === "1",
-    force_prompt: field(req.body, "force_prompt") === "1",
-    enabled,
-  };
-  // Blank means "leave it alone", so that saving a checkbox does not silently
-  // clear a secret the form was never going to show back.
-  if (secret) patch.client_secret = secret;
-
-  const next = { ...current, ...patch };
-  if (enabled && !(next.tenant_id && next.client_id && next.client_secret))
-    return back(
-      "err=" +
-        encodeURIComponent("All three of tenant, client and secret are needed before this can be switched on.")
-    );
-
-  entra.save(patch);
-  db.logLogin(
-    req.ip,
-    req.me.username,
-    "admin",
-    "microsoft sign-in " + (enabled ? "enabled" : "disabled") + (secret ? ", secret replaced" : "")
-  );
-  back("msg=" + encodeURIComponent("Saved."));
-});
-
 /* ---------------------------------------------------------------- firewall - */
 
 app.get("/firewall", requireAuth, requirePerm("firewall.view"), async (req, res) => {
@@ -2678,7 +2524,6 @@ app.post("/channels/:slug/members/remove", requireAuth, requirePerm("channels.ed
 
 const USERNAME_RE = /^[a-zA-Z0-9._-]{3,32}$/;
 const ROLE_NAME_RE = /^[a-z0-9_-]{2,32}$/;
-const GUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 
 // Deliberately loose. Anything stricter starts rejecting real addresses, and
 // this field is a label on an authenticator entry and a way to reach the
