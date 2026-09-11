@@ -54,6 +54,30 @@ const ok = (name, cond, extra) => {
   ok("five concurrent requests all return audio",
      many.every(b => Buffer.isBuffer(b) && b.length > 44));
 
+
+  /* ---- the warm pool ----
+     The point of holding piper open is latency, so that is what is asserted.
+     A cold first call pays startup; every call after it must not. */
+  const t1 = Date.now();
+  await speech.speak("Warm up.");
+  const first = Date.now() - t1;
+
+  const times = [];
+  for (const line of ["One.", "Two.", "Three.", "Four."]) {
+    const t = Date.now();
+    await speech.speak(line);
+    times.push(Date.now() - t);
+  }
+  const median = times.sort((a, b) => a - b)[Math.floor(times.length / 2)];
+  ok("a warm sentence is quick", median < 400,
+     "first " + first + "ms, then " + times.join("/") + "ms (median " + median + ")");
+
+  // A pool that cannot recover from a dead process is worse than no pool.
+  speech.shutdownAll();
+  const after = await speech.speak("Back again.");
+  ok("it respawns after the process is killed", Buffer.isBuffer(after) && after.length > 44);
+
+  speech.shutdownAll();
   console.log(fails ? "\nFAILURES: " + fails : "\nALL SPEECH TESTS PASSED");
   process.exit(fails ? 1 : 0);
 })();

@@ -762,7 +762,7 @@ var MD = (function () {
     var calibrating = 0;
 
     var SAMPLE_MS = 50;
-    var END_MS = 700;       // silence that ends an utterance
+    var END_MS = 450;       // silence that ends an utterance
     var RESET_MS = 6000;    // silence with no speech at all: drop what we have
     var MIN_MS = 300;       // shorter than this is a cough, not a sentence
 

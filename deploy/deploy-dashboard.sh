@@ -39,6 +39,20 @@ say "Installing the privileged helper and unit files"
 install -m 0755 "$SRC/deploy/moni-helper" /usr/local/sbin/moni-helper
 python3 -m py_compile /usr/local/sbin/moni-helper
 
+# Speech to text, with the model resident. Loading a 142MB model per recording
+# cost 2.26s where this costs 0.12s, which is the difference between talking to
+# the panel and waiting for it. Its own account, no shell and no sudo: parsing a
+# stranger's audio is not work for a privileged process.
+if [[ -x /opt/moni-agents/shared/whisper.cpp/build/bin/whisper-server ]]; then
+  id -u monispeech >/dev/null 2>&1 || \
+    useradd --system --no-create-home --shell /usr/sbin/nologin monispeech
+  install -m 0644 "$SRC/deploy/moni-whisper.service" /etc/systemd/system/moni-whisper.service
+  systemctl daemon-reload
+  systemctl enable --now moni-whisper >/dev/null 2>&1 || true
+else
+  say "  (whisper-server not built; transcription stays on the slow path)"
+fi
+
 # The account the panel's console runs as. Separate from moniagent so the two
 # entitlements can never be confused for one another: this one holds full sudo,
 # and an agent must never inherit it.

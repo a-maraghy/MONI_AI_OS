@@ -36,6 +36,7 @@ const consoleViews = require("./lib/views-console");
 const rbac = require("./lib/rbac");
 const totp = require("./lib/totp");
 const speech = require("./lib/speech");
+const listen = require("./lib/listen");
 
 const PORT = Number(process.env.MONI_PORT || 3000);
 const BIND = process.env.MONI_BIND || "127.0.0.1";
@@ -2118,15 +2119,26 @@ app.post("/console/:id/upload", requireAuth, requirePerm("console.use"), console
 app.post("/console/:id/transcribe", requireAuth, requirePerm("console.use"), consoleUploadBody, requireCsrf, async (req, res) => {
   const session = loadConsoleSession(req, res);
   if (!session) return;
+  const data = String(req.body.data || "");
   try {
-    // Saved first, then transcribed: whisper reads a file, and keeping the
-    // recording means a transcription that comes out wrong can be checked
-    // against what was actually said.
+    // Straight to the resident transcriber, which holds the model in memory:
+    // 0.12s against the 2.26s it took to load a 142MB model per recording. In
+    // live mode that time is silence with somebody waiting in it.
+    const text = await listen.transcribe(Buffer.from(data, "base64"));
+    return res.json({ text });
+  } catch (_) {
+    /* fall through to the slow path rather than losing what was said */
+  }
+
+  try {
+    // The old route, for when the resident server is stopped or absent. Saves
+    // the recording first, which also means a transcription that comes out
+    // wrong can be checked against what was actually said.
     const saved = await priv.consoleUpload({
       chat: String(session.id),
       access: session.access,
       name: "voice-note.webm",
-      data: String(req.body.data || ""),
+      data,
     });
     const out = await priv.consoleTranscribe(saved.path);
     res.json({ text: out.text, path: saved.path });

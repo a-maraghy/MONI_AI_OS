@@ -1,0 +1,26 @@
+[Unit]
+Description=MONI speech-to-text (whisper.cpp, model resident)
+After=network.target
+
+[Service]
+Type=simple
+User=monispeech
+Group=monispeech
+ExecStart=/opt/moni-agents/shared/whisper.cpp/build/bin/whisper-server   --model /opt/moni-agents/shared/whisper.cpp/models/ggml-base.en.bin   --host 127.0.0.1 --port 8081 --threads 4 --convert
+Restart=on-failure
+RestartSec=3
+Environment=LD_LIBRARY_PATH=/opt/moni-agents/shared/whisper.cpp/build/src:/opt/moni-agents/shared/whisper.cpp/build/ggml/src
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_UNIX
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryMax=2G
+
+[Install]
+WantedBy=multi-user.target

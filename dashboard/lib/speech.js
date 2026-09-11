@@ -16,16 +16,22 @@
  * so the dashboard's own unprivileged account runs it directly -- no helper, no
  * sudo, and nothing here that could be talked into touching anything else.
  *
- * The process is started per request rather than held open. Startup plus model
- * load is most of the 0.8 seconds a sentence takes, and a resident daemon would
- * trade that for a process to supervise, restart and keep out of the way of the
- * agents. At under a second a sentence, ahead of the speaking it feeds, the
- * trade is not worth making.
+ * The process is held open between sentences, and that was a correction rather
+ * than a plan. Starting one per request cost 0.8 seconds a sentence, of which
+ * measurement said roughly 0.1 was synthesis and the rest was startup and
+ * reading a 61MB model off disk -- once per sentence, for a model that never
+ * changes. Piper reads lines from stdin for as long as you leave it open and
+ * writes one file per line, so a warm process answers in about 0.1 seconds.
+ *
+ * A warm process is a thing that can die, so it is treated as one: the pool
+ * respawns on demand, a crash rejects only the sentences in flight, and an idle
+ * voice is closed rather than held forever.
  */
 
 const { spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
+const os = require("os");
 
 const PIPER = process.env.MONI_PIPER_BIN || "/opt/moni-tts/piper/piper";
 const VOICE_DIR = process.env.MONI_PIPER_VOICES || "/opt/moni-tts/voices";
@@ -149,6 +155,107 @@ function release() {
   running = Math.max(0, running - 1);
 }
 
+/* ------------------------------------------------------------ warm pool -- */
+
+// Under PrivateTmp this is the unit's own /tmp, invisible to the rest of the
+// box. Clips live in it for the few milliseconds between being written and
+// being read back.
+const OUT_DIR = path.join(os.tmpdir(), "moni-tts");
+try {
+  fs.mkdirSync(OUT_DIR, { recursive: true, mode: 0o700 });
+} catch (_) {
+  /* reported properly by the first synthesis that needs it */
+}
+
+// Long enough that a conversation never pays startup twice, short enough that
+// a panel left open overnight is not holding a model in memory for nobody.
+const IDLE_MS = 10 * 60 * 1000;
+
+const pool = new Map(); // voice name -> warm process
+
+function shutdown(entry, why) {
+  if (!entry) return;
+  clearTimeout(entry.idle);
+  pool.delete(entry.voice.name);
+  for (const job of entry.queue.splice(0)) job.reject(new Error(why));
+  try {
+    entry.child.kill("SIGTERM");
+  } catch (_) {
+    /* already gone */
+  }
+}
+
+function warm(voice) {
+  const live = pool.get(voice.name);
+  if (live && live.child.exitCode === null && !live.child.killed) return live;
+
+  const child = spawn(
+    PIPER,
+    ["--model", path.join(VOICE_DIR, voice.name + ".onnx"), "--output_dir", OUT_DIR],
+    { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, OMP_NUM_THREADS: THREADS } }
+  );
+
+  const entry = { voice, child, queue: [], buf: "", idle: null };
+  pool.set(voice.name, entry);
+
+  // One path per line, in the order the lines went in -- piper is strictly
+  // sequential, which is what lets a queue this simple stay correct.
+  child.stdout.on("data", (d) => {
+    entry.buf += d;
+    let nl;
+    while ((nl = entry.buf.indexOf("\n")) >= 0) {
+      const line = entry.buf.slice(0, nl).trim();
+      entry.buf = entry.buf.slice(nl + 1);
+      const job = entry.queue.shift();
+      if (job) job.resolve(line);
+    }
+  });
+  child.stderr.on("data", (d) => {
+    if (entry.err === undefined) entry.err = "";
+    if (entry.err.length < 2048) entry.err += d;
+  });
+  child.on("error", () => shutdown(entry, "the speech synthesiser could not be started"));
+  child.on("close", () => shutdown(entry, "the speech synthesiser stopped"));
+  child.stdin.on("error", () => {
+    /* the close handler reports it */
+  });
+
+  return entry;
+}
+
+function touch(entry) {
+  clearTimeout(entry.idle);
+  entry.idle = setTimeout(() => shutdown(entry, "idle"), IDLE_MS);
+  if (entry.idle.unref) entry.idle.unref();
+}
+
+/** Hand one line to a warm piper and wait for the file it writes. */
+function synthesise(voice, line) {
+  const entry = warm(voice);
+  touch(entry);
+  return new Promise((resolve, reject) => {
+    const job = { resolve, reject };
+    job.timer = setTimeout(() => {
+      const at = entry.queue.indexOf(job);
+      if (at >= 0) entry.queue.splice(at, 1);
+      // A piper that has stopped answering is not one to keep handing work to.
+      shutdown(entry, "the speech synthesiser timed out");
+      reject(new Error("the speech synthesiser timed out"));
+    }, TIMEOUT_MS);
+    if (job.timer.unref) job.timer.unref();
+
+    const done = (fn) => (value) => {
+      clearTimeout(job.timer);
+      fn(value);
+    };
+    job.resolve = done(resolve);
+    job.reject = done(reject);
+
+    entry.queue.push(job);
+    entry.child.stdin.write(line + "\n");
+  });
+}
+
 /**
  * Speak one piece of text. Resolves with a complete WAV.
  *
@@ -168,70 +275,24 @@ async function speak(text, voiceName) {
   if (!voice) throw new Error("unknown voice");
 
   await slot();
+  let file = null;
   try {
-    return await new Promise((resolve, reject) => {
-      const child = spawn(
-        PIPER,
-        [
-          "--model", path.join(VOICE_DIR, voice.name + ".onnx"),
-          "--output_raw",
-        ],
-        {
-          stdio: ["pipe", "pipe", "pipe"],
-          env: { ...process.env, OMP_NUM_THREADS: THREADS },
-        }
-      );
-
-      const chunks = [];
-      let size = 0;
-      let settled = false;
-      // Piper logs its timings to stderr at info level; it is only interesting
-      // when something failed, so it is kept and reported only then.
-      let err = "";
-
-      const timer = setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        child.kill("SIGKILL");
-        reject(new Error("the speech synthesiser timed out"));
-      }, TIMEOUT_MS);
-
-      const finish = (e, value) => {
-        if (settled) return;
-        settled = true;
-        clearTimeout(timer);
-        e ? reject(e) : resolve(value);
-      };
-
-      child.stdout.on("data", (d) => {
-        chunks.push(d);
-        size += d.length;
-      });
-      child.stderr.on("data", (d) => {
-        if (err.length < 4096) err += d;
-      });
-      child.on("error", (e) => finish(e));
-      child.on("close", (code) => {
-        if (!size) {
-          return finish(
-            new Error(
-              code === 0
-                ? "the synthesiser produced no audio"
-                : (err.trim().split("\n").pop() || "the synthesiser failed").slice(0, 200)
-            )
-          );
-        }
-        finish(null, Buffer.concat([wavHeader(size, voice.rate), ...chunks], 44 + size));
-      });
-
-      child.stdin.on("error", () => {
-        /* a piper that died early closes this; the close handler reports it */
-      });
-      child.stdin.end(say + "\n");
-    });
+    // A newline would be read as the end of this sentence and the start of
+    // another, which would put the queue one reply out of step for good.
+    file = await synthesise(voice, say.replace(/[\r\n]+/g, " "));
+    if (!file || !file.startsWith(OUT_DIR)) throw new Error("the synthesiser wrote nowhere");
+    const wav = await fs.promises.readFile(file);
+    if (wav.length <= 44) throw new Error("the synthesiser produced no audio");
+    return wav;
   } finally {
+    if (file) fs.promises.unlink(file).catch(() => {});
     release();
   }
 }
 
-module.exports = { speak, voices, defaultVoice, available, MAX_CHARS };
+/** Stop every warm process. Used by the tests; the pool otherwise self-manages. */
+function shutdownAll() {
+  for (const entry of [...pool.values()]) shutdown(entry, "shutting down");
+}
+
+module.exports = { speak, voices, defaultVoice, available, shutdownAll, MAX_CHARS };
