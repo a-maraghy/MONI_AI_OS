@@ -765,11 +765,14 @@ var MD = (function () {
     var END_MS = 450;       // silence that ends an utterance
     var RESET_MS = 6000;    // silence with no speech at all: drop what we have
     var MIN_MS = 300;       // shorter than this is a cough, not a sentence
+    var BARGE_MS = 330;     // sustained speech over the answer before it yields
 
     var spoken = 0;         // how much of the current reply has been queued
     var queue = [];         // sentences waiting to be synthesised
     var audio = null;
     var busy = false;       // a clip is playing or being fetched
+    var speaking = false;   // audio is on the speaker right now
+    var loudFor = 0;        // consecutive loud samples while it is speaking
 
     /* ---- what is worth saying aloud ----
        A reply is written to be read: it has code blocks, tables, backticks and
@@ -817,7 +820,17 @@ var MD = (function () {
     function pump() {
       if (busy || !queue.length || !on) return;
       busy = true;
-      listen(false);
+      // The microphone stays open while it talks. That is what lets you cut in,
+      // and cutting in is most of the difference between a conversation and a
+      // pair of walkie-talkies. The threshold goes up rather than the mic going
+      // off, so the answer bleeding back through the speaker is not mistaken
+      // for you -- echo cancellation reduces that, it does not remove it.
+      speaking = true;
+      loudFor = 0;
+      // Stop capturing, keep measuring: the meter is what notices you cutting
+      // in, the recorder is what would otherwise capture the answer itself.
+      recording(false);
+      if (!poll) poll = setInterval(tick, SAMPLE_MS);
       var say = queue.shift();
       post("/console/" + sessionId + "/speak", {
         text: say,
@@ -844,10 +857,36 @@ var MD = (function () {
           busy = false;
           audio = null;
           if (queue.length) return pump();
+          speaking = false;
+          loudFor = 0;
           // Nothing left to say: the floor is yours again, but only once the
           // turn itself has finished.
           if (!running) listen(true);
         });
+    }
+
+    /**
+     * You started talking over it, so it stops.
+     *
+     * Everything queued goes too, not just the clip playing -- the sentences
+     * behind it were an answer to what you have evidently stopped waiting for,
+     * and hearing them arrive after you interrupted is worse than silence. The
+     * turn is stopped as well where one is running: it would otherwise go on
+     * writing, and on paying for, a reply nobody is listening to.
+     */
+    function bargeIn() {
+      if (!speaking) return;
+      queue = [];
+      if (audio) {
+        try { audio.pause(); } catch (e) { /* already ended */ }
+      }
+      speaking = false;
+      loudFor = 0;
+      // Capture from this instant, so the interruption is recorded and the
+      // half sentence it landed on top of is not.
+      recording(true);
+      status.textContent = "listening…";
+      if (running && stopBtn && !stopBtn.hidden) stopBtn.click();
     }
 
     /* ---- hearing ---- */
@@ -872,6 +911,15 @@ var MD = (function () {
       if (calibrating > 0) {
         calibrating--;
         floor = Math.max(floor * 0.8 + rms * 0.2, 0.004);
+        return;
+      }
+
+      // While it is talking, only a clearly louder and sustained voice counts.
+      // A single loud frame is a door or a keystroke; a third of a second of
+      // one is a person deciding they have heard enough.
+      if (speaking) {
+        loudFor = rms > floor * 6 + 0.01 ? loudFor + SAMPLE_MS : 0;
+        if (loudFor >= BARGE_MS) bargeIn();
         return;
       }
 
@@ -941,22 +989,41 @@ var MD = (function () {
       reader.readAsDataURL(blob);
     }
 
+    /**
+     * Capture on or off, independently of whether we are measuring the room.
+     *
+     * These are two different things and conflating them is how a speech
+     * assistant ends up talking to itself: the level meter has to keep running
+     * while the answer plays, so that cutting in can be noticed, but the
+     * recorder must not -- or the next utterance would arrive with the machine's
+     * own sentence at the front of it, be transcribed, and be sent back as
+     * something you said.
+     */
+    function recording(want) {
+      if (want) {
+        if (rec && rec.state === "recording") return;
+        newRecorder(true);
+      } else {
+        if (rec && rec.state !== "inactive") {
+          rec.onstop = null;    // a deliberate close sends nothing
+          rec.stop();
+        }
+        rec = null;
+      }
+    }
+
     /** Open or close the microphone without leaving the mode. */
     function listen(want) {
       if (!on) want = false;
       if (want) {
         if (rec && rec.state === "recording") return;
         calibrating = 10;
-        newRecorder(true);
+        recording(true);
         if (!poll) poll = setInterval(tick, SAMPLE_MS);
         status.textContent = "listening…";
       } else {
         if (poll) { clearInterval(poll); poll = 0; }
-        if (rec && rec.state !== "inactive") {
-          rec.onstop = null;    // a deliberate close sends nothing
-          rec.stop();
-        }
-        rec = null;
+        recording(false);
       }
     }
 
