@@ -88,7 +88,30 @@ app.use(
 );
 
 app.use(express.urlencoded({ extended: false, limit: "64kb" }));
-app.use(express.json({ limit: "64kb" }));
+
+/**
+ * 64KB is the right ceiling for a form, and the wrong one for the two routes
+ * that carry a file.
+ *
+ * Those mount their own parser allowing 44MB -- but a parser mounted here runs
+ * first, so it is this limit a large upload meets, and it answers by throwing
+ * rather than by refusing politely. Skipping them here is what lets their own
+ * parser be the one that decides. Everything else keeps the small ceiling,
+ * which is the point of having one.
+ */
+const PAYLOAD_ROUTES = /^\/console\/\d+\/(upload|transcribe)$/;
+const smallJson = express.json({ limit: "64kb" });
+app.use((req, res, next) =>
+  PAYLOAD_ROUTES.test(req.path) ? next() : smallJson(req, res, next)
+);
+
+/** A body over the limit is a 413 with a reason, not a stack trace. */
+app.use((err, req, res, next) => {
+  if (err && (err.type === "entity.too.large" || err.status === 413)) {
+    return res.status(413).json({ error: "That is too large to send in one request." });
+  }
+  return next(err);
+});
 // Long-lived, because every reference carries a stamp that changes when the
 // file does (see asset() in lib/ui.js). The previous hour-long cache with plain
 // URLs meant a deployed stylesheet reached a browser that already had the old
