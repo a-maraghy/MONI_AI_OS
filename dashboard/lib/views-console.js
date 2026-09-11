@@ -353,6 +353,12 @@ exports.console = ({
               <input type="file" id="chat-file" multiple hidden>
 
               <div class="composer-bar">
+                <!-- Two rows, always the same two. What the chat *is* on top --
+                     model, effort, reach, directory -- and what you *do* with it
+                     underneath. Left to one wrapping row these nine controls
+                     found seven different heights and pushed Send onto a line of
+                     its own, which is a strange place for the main button. -->
+                <div class="composer-settings">
                 <form method="post" action="/console/${active.id}/settings" class="chat-controls">
                   <input type="hidden" name="_csrf" value="${esc(csrf)}">
                   <span class="pick" title="Model">
@@ -442,6 +448,9 @@ exports.console = ({
                   </span>
                 </form>
 
+                </div>
+
+                <div class="composer-actions">
                 ${
                   voices.length
                     ? `<span class="chat-controls live-controls">
@@ -477,6 +486,7 @@ exports.console = ({
                   "play",
                   14
                 )} Send</button>
+                </div>
               </div>
             </div>
             <p class="composer-hint muted small">Enter to send · Shift+Enter for a new line</p>

@@ -976,11 +976,38 @@ label.addon:has(input[type="checkbox"]:checked) .addon-ico {
 }
 .composer textarea:focus { outline: none; box-shadow: none; }
 
+/* Two rows, fixed. The bar used to be one wrapping row of nine controls, which
+   at 1024px found seven different vertical positions and pushed Send onto a
+   line by itself -- 118px of ragged furniture above the thing you came to read.
+   Splitting it by what the controls *are* gives a shape that does not change
+   with the window: what the chat is on top, what you do with it underneath. */
 .composer-bar {
-  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
-  padding: 6px 8px 8px 10px;
+  display: flex; flex-direction: column; align-items: stretch; gap: 5px;
+  padding: 6px 8px 7px 10px;
 }
-.chat-controls { display: flex; align-items: center; gap: 4px; margin: 0; min-width: 0; flex: 0 1 auto; flex-wrap: wrap; }
+
+/* Settings scroll sideways rather than wrapping. A second row of settings
+   would push the transcript up every time the window narrowed, and these are
+   things you set once and then stop looking at. */
+.composer-settings {
+  display: flex; align-items: center; gap: 5px;
+  flex-wrap: nowrap; overflow-x: auto; overscroll-behavior-x: contain;
+  scrollbar-width: none; padding-bottom: 1px;
+}
+.composer-settings::-webkit-scrollbar { display: none; }
+
+.composer-actions { display: flex; align-items: center; gap: 6px; }
+
+/* One height for everything in the bar, so the row reads as a row. They were
+   26, 29, 30 and 32 before, which is what made it look assembled rather than
+   designed. */
+.composer-settings .pick,
+.composer-settings .root-toggle,
+.composer-settings .toggle { height: 28px; }
+.composer-actions .icon-btn { width: 30px; height: 30px; }
+.composer-actions .btn.small { height: 30px; padding: 0 12px; }
+
+.chat-controls { display: flex; align-items: center; gap: 4px; margin: 0; min-width: 0; flex: 0 0 auto; flex-wrap: nowrap; }
 /* Nothing in the strip stretches. The gap between the settings and the buttons
    is made by the status text's auto margin, so each control stays the width of
    what it says. */
@@ -1182,16 +1209,10 @@ a.toggle:hover { text-decoration: none; border-color: var(--line-strong); }
   .chat-notice { margin: 8px 12px 0; }
   .chat-compose { padding: 8px 12px calc(10px + env(safe-area-inset-bottom)); }
 
-  /* The composer's settings are five controls wide on a desktop. Left to wrap
-     they became a three-row block 156px tall -- a fifth of the screen spent on
-     things you set once. They scroll sideways in a single row instead, which
-     costs a swipe and gives the transcript the space back. */
-  .composer-bar { flex-wrap: nowrap; gap: 5px; padding: 6px 6px 7px 8px; }
-  .chat-controls {
-    flex-wrap: nowrap; overflow-x: auto; overscroll-behavior-x: contain;
-    scrollbar-width: none; padding-bottom: 1px;
-  }
-  .chat-controls::-webkit-scrollbar { display: none; }
+  /* The two rows hold on a phone; they just get tighter. The settings row was
+     already built to scroll rather than wrap, which is what keeps this from
+     becoming the three-row, 156px block it used to be. */
+  .composer-bar { gap: 4px; padding: 6px 6px 7px 8px; }
   .composer-status { display: none; }
   .composer-hint { display: none; }
 }

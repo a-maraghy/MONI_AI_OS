@@ -744,6 +744,11 @@ var MD = (function () {
     var idle = { on: false, feed: function () {}, flush: function () {}, done: function () {} };
     if (!btn || !window.AudioContext || !navigator.mediaDevices) return idle;
 
+    // The voice only matters once something is going to speak, so it stays out
+    // of the bar until live mode is on rather than sitting there asking to be
+    // set for a chat that is never going to say anything.
+    if (voiceSel) voiceSel.hidden = true;
+
     var on = false;
     var stream = null;
     var ac = null;
@@ -969,6 +974,7 @@ var MD = (function () {
           on = true;
           btn.classList.add("on");
           btn.setAttribute("aria-pressed", "true");
+          if (voiceSel) voiceSel.hidden = false;
           listen(true);
         })
         .catch(function () {
@@ -988,6 +994,7 @@ var MD = (function () {
       analyser = null;
       btn.classList.remove("on");
       btn.setAttribute("aria-pressed", "false");
+      if (voiceSel) voiceSel.hidden = true;
       status.textContent = "";
     }
 
