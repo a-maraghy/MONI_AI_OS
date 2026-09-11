@@ -1337,3 +1337,16 @@ fieldset.scope legend { font-size: 12px; font-weight: 700; color: var(--ink); pa
 .fill[data-w="95"] { width: 95%; }  .fill[data-w="96"] { width: 96%; }
 .fill[data-w="97"] { width: 97%; }  .fill[data-w="98"] { width: 98%; }
 .fill[data-w="99"] { width: 99%; }  .fill[data-w="100"] { width: 100%; }
+
+/* Live mode: talk to it, hear the answer. Wider than the other icon buttons
+   because it is a mode rather than an action -- you need to see at a glance
+   whether the microphone is open, and a 30px glyph does not say that. */
+.live-controls { gap: 5px; }
+.live-btn { width: auto; padding: 0 10px; gap: 6px; }
+.live-btn span { font-size: 12px; font-weight: 600; }
+.live-btn.on {
+  background: var(--brand); border-color: var(--brand); color: #fff;
+  animation: pulse 2s ease-in-out infinite;
+}
+.live-btn.on:hover { background: var(--brand-deep); border-color: var(--brand-deep); color: #fff; }
+@media (prefers-reduced-motion: reduce) { .live-btn.on { animation: none; } }

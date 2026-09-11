@@ -35,6 +35,7 @@ const accessViews = require("./lib/views-access");
 const consoleViews = require("./lib/views-console");
 const rbac = require("./lib/rbac");
 const totp = require("./lib/totp");
+const speech = require("./lib/speech");
 
 const PORT = Number(process.env.MONI_PORT || 3000);
 const BIND = process.env.MONI_BIND || "127.0.0.1";
@@ -1811,6 +1812,7 @@ app.get("/console", requireAuth, requirePerm("console.use"), async (req, res) =>
       session: null,
       messages: [],
       dirs: await consoleDirs(),
+      voices: speech.voices(),
     })
   );
 });
@@ -1846,6 +1848,7 @@ app.get("/console/:id", requireAuth, requirePerm("console.use"), async (req, res
       locked,
       messages: locked ? [] : db.listConsoleMessages(session.id),
       dirs: await consoleDirs(),
+      voices: speech.voices(),
       err: req.query.err || null,
     })
   );
@@ -2151,6 +2154,39 @@ function handlePermissionRequest(session, entry, event, write) {
     })
   );
 }
+
+/**
+ * Speak one sentence of a reply.
+ *
+ * Called once per sentence rather than once per turn: the browser plays each
+ * clip while asking for the next, so the first words arrive about a second
+ * after the reply starts instead of after the whole thing is written.
+ *
+ * The text comes from the client, which sounds worse than it is -- it is the
+ * client's own transcript being read back to the person who is already looking
+ * at it. Nothing here reads the session, and a chat still locked behind a code
+ * is refused anyway, so this cannot be used to listen to one.
+ */
+app.post("/console/:id/speak", requireAuth, requirePerm("console.use"), requireCsrf, async (req, res) => {
+  const session = loadConsoleSession(req, res);
+  if (!session) return;
+  if (rootLocked(req, session))
+    return res.status(401).json({ error: "This chat needs an authenticator code again." });
+  if (!speech.available())
+    return res.status(503).json({ error: "No speech synthesiser is installed on this machine." });
+
+  try {
+    const wav = await speech.speak(req.body.text, field(req.body, "voice"));
+    res.set({
+      "Content-Type": "audio/wav",
+      "Content-Length": String(wav.length),
+      "Cache-Control": "no-store",
+    });
+    res.send(wav);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
+  }
+});
 
 app.post("/console/:id/permission", requireAuth, requirePerm("console.use"), requireCsrf, (req, res) => {
   const session = loadConsoleSession(req, res);

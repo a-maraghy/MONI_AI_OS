@@ -274,6 +274,7 @@ var MD = (function () {
       cancelAnimationFrame(ctx.frame);
       ctx.frame = 0;
     }
+    if (ctx.text) live.flush(ctx.text);
     if (!ctx.bubble) return;
     ctx.bubble.className = "bubble";
     if (ctx.text) ctx.bubble.innerHTML = MD(ctx.text);
@@ -302,6 +303,9 @@ var MD = (function () {
         // and a great deal less work on a long answer.
         ctx.text += d.text;
         schedule(ctx);
+        // Sentence by sentence as it arrives, so the first words are spoken
+        // while the rest is still being written.
+        live.feed(ctx.text);
       }
       if (
         ev.event.type === "content_block_start" &&
@@ -497,6 +501,9 @@ var MD = (function () {
       .then(function () {
         setRunning(false);
         toBottom(true);
+        // The turn is over. If nothing is still being spoken, the microphone
+        // opens again here; if something is, it opens when the queue drains.
+        live.done();
       });
   }
 
@@ -676,6 +683,304 @@ var MD = (function () {
       input.focus();
     });
   });
+
+  /* --------------------------------------------------------- live mode -- *
+   *
+   * Talk to it, hear the answer, keep talking. Three pieces that already
+   * existed separately -- the microphone, whisper, and the streaming reply --
+   * joined by two that did not: knowing when you have stopped speaking, and
+   * speaking back.
+   *
+   * Half duplex, deliberately. The microphone is closed while the answer is
+   * playing, because a laptop speaker three inches from a laptop microphone
+   * means the machine hears itself, transcribes itself, and answers itself.
+   * Echo cancellation makes that less likely, not impossible, and the failure
+   * is a loop that costs real money.
+   *
+   * The reply is spoken sentence by sentence as it streams, not at the end:
+   * synthesis runs at three to nine times realtime on this box, so the next
+   * sentence is ready well before the current one finishes and the first words
+   * arrive about a second after the reply starts.
+   */
+  var live = (function () {
+    var btn = document.getElementById("chat-live");
+    var voiceSel = document.getElementById("chat-voice");
+    var idle = { on: false, feed: function () {}, flush: function () {}, done: function () {} };
+    if (!btn || !window.AudioContext || !navigator.mediaDevices) return idle;
+
+    var on = false;
+    var stream = null;
+    var ac = null;
+    var analyser = null;
+    var rec = null;
+    var chunks = [];
+    var poll = 0;
+    var heard = false;      // speech has been detected since the recorder started
+    var quietFor = 0;       // consecutive quiet samples
+    var floor = 0.006;      // noise floor, learned on the way in
+    var calibrating = 0;
+
+    var SAMPLE_MS = 50;
+    var END_MS = 700;       // silence that ends an utterance
+    var RESET_MS = 6000;    // silence with no speech at all: drop what we have
+    var MIN_MS = 300;       // shorter than this is a cough, not a sentence
+
+    var spoken = 0;         // how much of the current reply has been queued
+    var queue = [];         // sentences waiting to be synthesised
+    var audio = null;
+    var busy = false;       // a clip is playing or being fetched
+
+    /* ---- what is worth saying aloud ----
+       A reply is written to be read: it has code blocks, tables, backticks and
+       URLs in it. Read out, those are noise -- "backtick sudo systemctl
+       backtick" helps nobody -- so they are replaced by something a listener
+       can actually use, and the screen keeps the real thing. */
+    function speakable(text) {
+      return String(text)
+        .replace(/```[\s\S]*?```/g, " (code) ")
+        .replace(/`[^`\n]+`/g, function (m) { return m.replace(/`/g, ""); })
+        .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")
+        .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+        .replace(/https?:\/\/\S+/g, " a link ")
+        .replace(/^\s*[#>]+\s*/gm, "")
+        .replace(/^\s*[-*+]\s+/gm, "")
+        .replace(/[*_~|]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+    }
+
+    /** Complete sentences in `text` after `from`, and where they end. */
+    function sentences(text, from) {
+      var rest = text.slice(from);
+      var out = [];
+      var at = 0;
+      var re = /[^.!?\n]*[.!?\n]+/g;
+      var m;
+      while ((m = re.exec(rest))) {
+        var piece = m[0].trim();
+        at = re.lastIndex;
+        if (piece) out.push(piece);
+      }
+      return { list: out, consumed: from + at };
+    }
+
+    function enqueue(piece) {
+      var say = speakable(piece);
+      // A line that was nothing but a code fence or a rule has nothing in it to
+      // say; queueing it would spend a second of silence on punctuation.
+      if (say.length < 2 || !/[a-z0-9]/i.test(say)) return;
+      queue.push(say.slice(0, 780));
+      pump();
+    }
+
+    function pump() {
+      if (busy || !queue.length || !on) return;
+      busy = true;
+      listen(false);
+      var say = queue.shift();
+      post("/console/" + sessionId + "/speak", {
+        text: say,
+        voice: voiceSel ? voiceSel.value : "",
+      })
+        .then(function (res) {
+          if (!res.ok) throw new Error("speak failed");
+          return res.blob();
+        })
+        .then(function (blob) {
+          return new Promise(function (resolve) {
+            audio = new Audio(URL.createObjectURL(blob));
+            audio.onended = audio.onerror = function () {
+              URL.revokeObjectURL(audio.src);
+              resolve();
+            };
+            audio.play().catch(resolve);
+          });
+        })
+        .catch(function () {
+          /* One sentence failing to speak is not worth ending the mode over. */
+        })
+        .then(function () {
+          busy = false;
+          audio = null;
+          if (queue.length) return pump();
+          // Nothing left to say: the floor is yours again, but only once the
+          // turn itself has finished.
+          if (!running) listen(true);
+        });
+    }
+
+    /* ---- hearing ---- */
+
+    function level() {
+      var buf = new Uint8Array(analyser.fftSize);
+      analyser.getByteTimeDomainData(buf);
+      var sum = 0;
+      for (var i = 0; i < buf.length; i++) {
+        var v = (buf[i] - 128) / 128;
+        sum += v * v;
+      }
+      return Math.sqrt(sum / buf.length);
+    }
+
+    function tick() {
+      if (!on || !analyser) return;
+      var rms = level();
+
+      // The first half second sets the noise floor, so a noisy room does not
+      // read as somebody talking and a silent one does not need a loud voice.
+      if (calibrating > 0) {
+        calibrating--;
+        floor = Math.max(floor * 0.8 + rms * 0.2, 0.004);
+        return;
+      }
+
+      if (rms > floor * 3 + 0.004) {
+        heard = true;
+        quietFor = 0;
+        status.textContent = "listening…";
+      } else {
+        quietFor += SAMPLE_MS;
+        if (heard && quietFor >= END_MS) return finishUtterance();
+        if (!heard && quietFor >= RESET_MS) return restartRecorder();
+      }
+    }
+
+    function restartRecorder() {
+      if (!rec) return;
+      quietFor = 0;
+      heard = false;
+      if (rec.state !== "inactive") rec.stop();     // onstop starts a fresh one
+    }
+
+    function finishUtterance() {
+      if (!rec || rec.state === "inactive") return;
+      rec.stop();
+    }
+
+    function newRecorder(send_it) {
+      chunks = [];
+      heard = false;
+      quietFor = 0;
+      var started = Date.now();
+      rec = new MediaRecorder(stream);
+      rec.ondataavailable = function (e) {
+        if (e.data && e.data.size) chunks.push(e.data);
+      };
+      rec.onstop = function () {
+        var enough = Date.now() - started > MIN_MS && chunks.length;
+        var blob = enough ? new Blob(chunks, { type: "audio/webm" }) : null;
+        if (on && send_it && blob && heard) transcribeAndSend(blob);
+        else if (on) newRecorder(true);
+      };
+      rec.start();
+    }
+
+    function transcribeAndSend(blob) {
+      listen(false);
+      status.textContent = "transcribing…";
+      var reader = new FileReader();
+      reader.onload = function () {
+        post("/console/" + sessionId + "/transcribe", {
+          data: String(reader.result).split(",")[1] || "",
+        })
+          .then(function (r) { return r.json(); })
+          .then(function (d) {
+            if (d.error) throw new Error(d.error);
+            var said = String(d.text || "").trim();
+            // Whisper writes bracketed labels for noises it heard but could not
+            // read as words. Sending those would answer a cough.
+            if (!said || /^[\[(]/.test(said)) throw new Error("nothing said");
+            spoken = 0;
+            send(said);
+          })
+          .catch(function () {
+            if (on) listen(true);
+          });
+      };
+      reader.readAsDataURL(blob);
+    }
+
+    /** Open or close the microphone without leaving the mode. */
+    function listen(want) {
+      if (!on) want = false;
+      if (want) {
+        if (rec && rec.state === "recording") return;
+        calibrating = 10;
+        newRecorder(true);
+        if (!poll) poll = setInterval(tick, SAMPLE_MS);
+        status.textContent = "listening…";
+      } else {
+        if (poll) { clearInterval(poll); poll = 0; }
+        if (rec && rec.state !== "inactive") {
+          rec.onstop = null;    // a deliberate close sends nothing
+          rec.stop();
+        }
+        rec = null;
+      }
+    }
+
+    function start() {
+      navigator.mediaDevices
+        .getUserMedia({
+          audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        })
+        .then(function (s) {
+          stream = s;
+          ac = new AudioContext();
+          analyser = ac.createAnalyser();
+          analyser.fftSize = 1024;
+          ac.createMediaStreamSource(stream).connect(analyser);
+          on = true;
+          btn.classList.add("on");
+          btn.setAttribute("aria-pressed", "true");
+          listen(true);
+        })
+        .catch(function () {
+          addMessage("system", "Live mode needs the microphone, and it was refused.");
+        });
+    }
+
+    function stop() {
+      on = false;
+      listen(false);
+      queue = [];
+      if (audio) { audio.pause(); audio = null; }
+      busy = false;
+      if (stream) stream.getTracks().forEach(function (t) { t.stop(); });
+      stream = null;
+      if (ac) { ac.close(); ac = null; }
+      analyser = null;
+      btn.classList.remove("on");
+      btn.setAttribute("aria-pressed", "false");
+      status.textContent = "";
+    }
+
+    btn.addEventListener("click", function () {
+      on ? stop() : start();
+    });
+
+    return {
+      get on() { return on; },
+      /** Called as the reply grows: queue whole sentences, keep the remainder. */
+      feed: function (text) {
+        if (!on) return;
+        var found = sentences(text, spoken);
+        spoken = found.consumed;
+        found.list.forEach(enqueue);
+      },
+      /** The turn is over: say whatever was left without its full stop. */
+      flush: function (text) {
+        if (!on) return;
+        var rest = text.slice(spoken).trim();
+        spoken = text.length;
+        if (rest) enqueue(rest);
+      },
+      /** Nothing more is coming; listen again once the queue has drained. */
+      done: function () {
+        if (on && !busy && !queue.length) listen(true);
+      },
+    };
+  })();
 
   toBottom(true);
   input.focus();

@@ -210,6 +210,7 @@ exports.console = ({
   session,
   messages,
   dirs,
+  voices = [],
   locked = false,
   flash,
   err,
@@ -440,6 +441,28 @@ exports.console = ({
                     </select>
                   </span>
                 </form>
+
+                ${
+                  voices.length
+                    ? `<span class="chat-controls live-controls">
+                         <button class="icon-btn live-btn" type="button" id="chat-live"
+                                 aria-pressed="false"
+                                 title="Live mode — talk to it and hear the answer">${icon(
+                                   "voice",
+                                   15
+                                 )}<span>Live</span></button>
+                         <select class="pick" id="chat-voice" aria-label="Voice"
+                                 title="Which voice answers">
+                           ${voices
+                             .map(
+                               (v) =>
+                                 `<option value="${esc(v.name)}">${esc(v.label)}</option>`
+                             )
+                             .join("")}
+                         </select>
+                       </span>`
+                    : ""
+                }
 
                 <span class="muted small composer-status" id="chat-status"></span>
                 <button class="icon-btn" type="button" id="chat-attach"
