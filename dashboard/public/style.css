@@ -61,6 +61,12 @@
 
 * { box-sizing: border-box; }
 
+/* The `hidden` attribute has to actually hide things. It is only `display: none`
+   in the browser's own stylesheet, which any class rule here outranks -- so the
+   voice picker, being a .pick and therefore inline-flex, sat in the bar all the
+   way through being marked hidden. Anything given the attribute means it. */
+[hidden] { display: none !important; }
+
 /* min-height, not height. A sticky element is held inside its containing block,
    and the top bar's is <body>. With a fixed 100% the body box was exactly one
    viewport tall however long the page was, so on any page taller than about two
@@ -976,36 +982,65 @@ label.addon:has(input[type="checkbox"]:checked) .addon-ico {
 }
 .composer textarea:focus { outline: none; box-shadow: none; }
 
-/* Two rows, fixed. The bar used to be one wrapping row of nine controls, which
-   at 1024px found seven different vertical positions and pushed Send onto a
-   line by itself -- 118px of ragged furniture above the thing you came to read.
-   Splitting it by what the controls *are* gives a shape that does not change
-   with the window: what the chat is on top, what you do with it underneath. */
+/* One row: what the chat is, on the left; what you do with it, on the right.
+ *
+ * It was nine controls in a single wrapping row, which at 1024px found seven
+ * vertical positions and put Send on a line of its own. Splitting it into two
+ * rows fixed the raggedness and introduced a different problem -- two long
+ * stretches of nothing, one at the end of each row, with the eye having to
+ * cross them. One row with the two groups pushed apart has no voids in it,
+ * and it gives the transcript back the second row as well.
+ *
+ * Below 700px there is not room for both groups side by side, and there it
+ * does become two rows -- but by then it is a phone and a stacked bar is what
+ * you want anyway.
+ */
 .composer-bar {
-  display: flex; flex-direction: column; align-items: stretch; gap: 5px;
-  padding: 6px 8px 7px 10px;
+  display: flex; align-items: center; gap: 10px;
+  padding: 5px 8px 7px 8px;
 }
 
-/* Settings scroll sideways rather than wrapping. A second row of settings
-   would push the transcript up every time the window narrowed, and these are
-   things you set once and then stop looking at. */
+/* The settings shrink and scroll; the actions never move. A narrow window
+   should cost you a swipe to reach the model picker, not the Send button. */
 .composer-settings {
-  display: flex; align-items: center; gap: 5px;
+  display: flex; align-items: center; gap: 3px;
+  flex: 0 1 auto; min-width: 0;
   flex-wrap: nowrap; overflow-x: auto; overscroll-behavior-x: contain;
   scrollbar-width: none; padding-bottom: 1px;
 }
 .composer-settings::-webkit-scrollbar { display: none; }
 
-.composer-actions { display: flex; align-items: center; gap: 6px; }
+.composer-actions { display: flex; align-items: center; gap: 6px; flex: none; margin-left: auto; }
+/* The status text used to hold the two groups apart with an auto margin. The
+   groups do that themselves now, and leaving it would open a second void
+   inside the actions. */
+.composer-actions .composer-status { margin-left: 0; }
+
+/* Live is a mode; the rest are things you do once. The rule says so without
+   spending a word on it. */
+.composer-actions .live-controls {
+  padding-right: 8px; margin-right: 2px;
+  border-right: 1px solid var(--line);
+}
 
 /* One height for everything in the bar, so the row reads as a row. They were
-   26, 29, 30 and 32 before, which is what made it look assembled rather than
-   designed. */
+   26, 29, 30 and 32 before, which is most of why it looked assembled rather
+   than designed. */
 .composer-settings .pick,
 .composer-settings .root-toggle,
 .composer-settings .toggle { height: 28px; }
 .composer-actions .icon-btn { width: 30px; height: 30px; }
+/* Except this one, which carries a word. The square rule above is more
+   specific than .live-btn's own `width: auto`, so it won -- and the button
+   rendered as a 30px box with "Live" clipped inside it. */
+.composer-actions .live-btn { width: auto; }
 .composer-actions .btn.small { height: 30px; padding: 0 12px; }
+
+@media (max-width: 700px) {
+  .composer-bar { flex-direction: column; align-items: stretch; gap: 5px; }
+  .composer-actions { margin-left: 0; }
+  .composer-actions .composer-status { margin-left: auto; }
+}
 
 .chat-controls { display: flex; align-items: center; gap: 4px; margin: 0; min-width: 0; flex: 0 0 auto; flex-wrap: nowrap; }
 /* Nothing in the strip stretches. The gap between the settings and the buttons
@@ -1098,13 +1133,16 @@ a.toggle:hover { text-decoration: none; border-color: var(--line-strong); }
 }
 .pick select:focus { outline: none; box-shadow: none; }
 .pick select:disabled { cursor: default; opacity: .8; }
-/* The directory picker gets room for a path and no more. Letting it take the
-   whole remaining row stretched the select across the bar and left its chevron
-   stranded against the buttons, reading as a stray control rather than as part
-   of the field. */
+/* The directory picker gets a fixed width, and the reason is a quirk worth
+   naming: `width: auto` on a <select> sizes it to its *longest option*, not to
+   the one that is selected. The list holds paths like
+   /opt/moni-agents/agents/admin/workspace, so the control sat at its 210px
+   ceiling permanently -- showing "/" against a chevron stranded 200px away,
+   which read as two separate broken controls. A fixed width is honest: it is
+   the same size whatever is in it, and the browser truncates the long ones. */
 .pick.wide { flex: 0 1 auto; min-width: 0; }
 .pick.wide select {
-  width: auto; max-width: 210px;
+  width: 148px; max-width: 148px;
   font-family: var(--mono); font-weight: 500;
   text-overflow: ellipsis;
 }
@@ -1362,8 +1400,14 @@ fieldset.scope legend { font-size: 12px; font-weight: 700; color: var(--ink); pa
 /* Live mode: talk to it, hear the answer. Wider than the other icon buttons
    because it is a mode rather than an action -- you need to see at a glance
    whether the microphone is open, and a 30px glyph does not say that. */
-.live-controls { gap: 5px; }
-.live-btn { width: auto; padding: 0 10px; gap: 6px; }
+.live-controls { gap: 5px; flex: none; }
+/* min-width, not just padding. This is a flex item in a row that is allowed to
+   shrink, and without a floor the label was the first thing to give -- the
+   button rendered as "Liv" with the microphone half outside it. */
+.live-btn {
+  width: auto; min-width: 0; flex: none;
+  padding: 0 11px; gap: 6px; white-space: nowrap;
+}
 .live-btn span { font-size: 12px; font-weight: 600; }
 .live-btn.on {
   background: var(--brand); border-color: var(--brand); color: #fff;
