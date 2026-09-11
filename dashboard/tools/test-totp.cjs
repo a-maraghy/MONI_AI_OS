@@ -59,5 +59,60 @@ check(
 );
 check("and the same code is then refused", totp.verifyAndConsume(spaced, spacedCode), false);
 
-console.log(failures ? "\nFAILURES: " + failures : "\nALL TOTP TESTS PASSED");
-process.exit(failures ? 1 : 0);
+
+/* --------------------------------------------------- the clock keeps moving --
+ *
+ * The regression these exist for: recovering which step a code belonged to used
+ * to assign `epoch` on the shared otplib instance and then try to put the old
+ * options back. It could not -- the setter merges, and the getter's snapshot
+ * has no key to clear with -- so the clock stayed pinned to the moment of the
+ * last accepted code for the life of the process. The first code after a
+ * restart worked and every later one was refused, which from the outside looked
+ * exactly like "signing in works, unlocking root a minute later does not".
+ *
+ * Every test above passes with that bug present, because none of them lets any
+ * time pass. These two do: one checks the invariant directly, and one waits for
+ * a real thirty-second boundary and offers the code a phone would be showing.
+ */
+check(
+  "verifying leaves the shared authenticator's clock alone",
+  authenticator.options.epoch === undefined,
+  true
+);
+
+const clockUser = { id: 5, totp_secret: authenticator.generateSecret() };
+const stepNow = () => Math.floor(Date.now() / 1000 / totp.STEP_SECONDS);
+
+check(
+  "a code is accepted in the current step",
+  totp.verifyAndConsume(clockUser, authenticator.generate(clockUser.totp_secret)),
+  true
+);
+
+/** Wait for the clock to roll into the next step, then check a fresh code. */
+function acrossBoundary(remaining, done) {
+  if (!remaining) return done();
+  const startedIn = stepNow();
+  const poll = () => {
+    if (stepNow() === startedIn) return setTimeout(poll, 1000);
+    check(
+      "a code from the next step is accepted too (" + remaining + " to go)",
+      totp.verifyAndConsume(clockUser, authenticator.generate(clockUser.totp_secret)),
+      true
+    );
+    acrossBoundary(remaining - 1, done);
+  };
+  setTimeout(poll, 1000);
+}
+
+// Two boundaries: one proves the clock is not pinned, the second proves the
+// first success did not pin it either.
+acrossBoundary(2, () => {
+  check(
+    "and the clock is still not pinned at the end",
+    authenticator.options.epoch === undefined,
+    true
+  );
+  console.log(failures ? "\nFAILURES: " + failures : "\nALL TOTP TESTS PASSED");
+  process.exit(failures ? 1 : 0);
+});
