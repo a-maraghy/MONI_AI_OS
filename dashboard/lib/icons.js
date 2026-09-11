@@ -84,6 +84,10 @@ const PATHS = {
   archive:
     '<rect x="3" y="4" width="18" height="4.5" rx="1.5"/><path d="M4.8 8.5v9.7A1.8 1.8 0 0 0 6.6 20h10.8a1.8 1.8 0 0 0 1.8-1.8V8.5"/><path d="M10 12h4"/>',
   power: '<path d="M12 3v9"/><path d="M6.6 6.6a8 8 0 1 0 10.8 0"/>',
+  menu: '<path d="M4 7h16"/><path d="M4 12h16"/><path d="M4 17h16"/>',
+  close: '<path d="M6 6l12 12"/><path d="M18 6L6 18"/>',
+  sidebar:
+    '<rect x="3" y="4.5" width="18" height="15" rx="2"/><path d="M9.5 4.5v15"/>',
 };
 
 /**

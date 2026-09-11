@@ -67,3 +67,74 @@ document.addEventListener("submit", function (ev) {
 
   setInterval(refresh, 15000);
 })();
+
+/*
+ * The two drawers.
+ *
+ * Below 900px the sidebar and the console's chat list stop being columns and
+ * become panels that slide in over the page. Both are the same mechanism: a
+ * class on <html>, a button that toggles it, and a scrim that closes it. The
+ * markup is identical at every width -- only the stylesheet decides whether a
+ * drawer is a drawer -- so nothing here has to know the viewport, and a desktop
+ * that happens to run this code toggles a class no rule reads.
+ *
+ * Delegated from the document because the console replaces its own topline as
+ * chats come and go, and a listener bound to a button would go with it.
+ */
+(function () {
+  var root = document.documentElement;
+
+  var DRAWERS = [
+    { open: "nav-open", toggle: "data-nav-toggle", close: "data-nav-close", scrim: ".nav-scrim" },
+    { open: "chats-open", toggle: "data-chats-toggle", close: "data-chats-close", scrim: ".chat-scrim" },
+  ];
+
+  function setOpen(d, on) {
+    root.classList.toggle(d.open, on);
+    var buttons = document.querySelectorAll("[" + d.toggle + "]");
+    for (var i = 0; i < buttons.length; i++) {
+      buttons[i].setAttribute("aria-expanded", on ? "true" : "false");
+    }
+    // hidden rather than opacity alone: a scrim left in the layer soaks up taps
+    // meant for the page behind it, which reads as the whole app going dead.
+    var scrim = document.querySelector(d.scrim);
+    if (scrim) scrim.hidden = !on;
+  }
+
+  function closeAll() {
+    for (var i = 0; i < DRAWERS.length; i++) setOpen(DRAWERS[i], false);
+  }
+
+  document.addEventListener("click", function (ev) {
+    for (var i = 0; i < DRAWERS.length; i++) {
+      var d = DRAWERS[i];
+      if (ev.target.closest("[" + d.toggle + "]")) {
+        ev.preventDefault();
+        var on = !root.classList.contains(d.open);
+        closeAll();
+        setOpen(d, on);
+        return;
+      }
+      if (ev.target.closest("[" + d.close + "]")) {
+        setOpen(d, false);
+        return;
+      }
+    }
+    // Following a link inside a drawer navigates; leaving it open would mean
+    // the new page arrives with a panel over it.
+    if (ev.target.closest(".sidebar a, .chat-list a")) closeAll();
+  });
+
+  document.addEventListener("keydown", function (ev) {
+    if (ev.key === "Escape") closeAll();
+  });
+
+  // A drawer is a small-screen state. Coming back to a wide window with one
+  // still "open" would leave the class on and, with it, a scrim nobody can see.
+  var wide = window.matchMedia("(min-width: 901px)");
+  (wide.addEventListener ? wide.addEventListener.bind(wide, "change") : wide.addListener.bind(wide))(
+    function (e) {
+      if (e.matches) closeAll();
+    }
+  );
+})();

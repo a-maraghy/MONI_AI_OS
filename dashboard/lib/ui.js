@@ -307,6 +307,13 @@ function shell(title, body, opts = {}) {
   return page(
     title,
     `<header class="topbar">
+      ${
+        bare
+          ? ""
+          : `<button class="nav-toggle" type="button" aria-label="Menu"
+                     aria-expanded="false" aria-controls="sidebar"
+                     data-nav-toggle>${icon("menu", 20)}</button>`
+      }
       <a class="brand" href="/">
         <span class="brand-mark">${icon("overview", 20)}</span>
         <span class="brand-text">MONI<em>AI OS</em></span>
@@ -325,8 +332,21 @@ function shell(title, body, opts = {}) {
       </div>
     </header>
 
+    ${
+      bare
+        ? ""
+        : // Dismisses the drawer by tap, and dims what is behind it. Inert and
+          // invisible until the drawer opens, and absent entirely on a desktop
+          // width where the sidebar is always there to be clicked.
+          `<div class="nav-scrim" data-nav-close hidden></div>`
+    }
+
     <div class="layout${bare ? " bare" : ""}">
-      ${bare ? "" : `<aside class="sidebar">${renderSidebar(opts.active, dash, perm)}</aside>`}
+      ${
+        bare
+          ? ""
+          : `<aside class="sidebar" id="sidebar">${renderSidebar(opts.active, dash, perm)}</aside>`
+      }
       <main class="content${opts.wide ? " wide" : ""}${bare ? " flush" : ""}">
         ${
           !bare && opts.heading !== null

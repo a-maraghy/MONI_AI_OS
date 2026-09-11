@@ -222,7 +222,8 @@ exports.console = ({
   return shell(
     active ? active.title || "MONI Bot" : "MONI Bot",
     `<div class="chat-layout">
-      <aside class="chat-list">
+      <div class="chat-scrim" data-chats-close hidden></div>
+      <aside class="chat-list" id="chat-list">
         <form method="post" action="/console/new" class="chat-new">
           <input type="hidden" name="_csrf" value="${esc(csrf)}">
           <button class="btn primary w-full" type="submit">${icon("plus", 15)} New chat</button>
@@ -264,15 +265,33 @@ exports.console = ({
       <section class="chat-main">
         ${
           !active
-            ? `<div class="chat-empty">${empty(
-                "agents",
-                "MONI Bot",
-                "Your direct line to this machine. Start a chat to run anything Claude Code can run, here rather than over SSH."
-              )}</div>`
+            ? // The topline carries the only way to reach the chat list once it
+              // becomes a drawer, so it is rendered even with nothing open --
+              // otherwise a phone with no chat selected has no way to pick one.
+              `<div class="chat-topline">
+                 <button class="chats-toggle" type="button" aria-label="Chats"
+                         aria-expanded="false" aria-controls="chat-list"
+                         data-chats-toggle>${icon("sidebar", 18)}</button>
+                 <span class="chat-name">MONI Bot</span>
+               </div>
+               <div class="chat-empty">${empty(
+                 "agents",
+                 "MONI Bot",
+                 "Your direct line to this machine. Start a chat to run anything Claude Code can run, here rather than over SSH."
+               )}</div>`
             : locked
-              ? lockScreen(csrf, active, err)
+              ? `<div class="chat-topline">
+                   <button class="chats-toggle" type="button" aria-label="Chats"
+                           aria-expanded="false" aria-controls="chat-list"
+                           data-chats-toggle>${icon("sidebar", 18)}</button>
+                   <span class="chat-name">${esc(active.title || "New chat")}</span>
+                 </div>
+                 ${lockScreen(csrf, active, err)}`
               : `
           <div class="chat-topline">
+            <button class="chats-toggle" type="button" aria-label="Chats"
+                    aria-expanded="false" aria-controls="chat-list"
+                    data-chats-toggle>${icon("sidebar", 18)}</button>
             <span class="chat-name">${esc(active.title || "New chat")}</span>
             ${
               active.archived

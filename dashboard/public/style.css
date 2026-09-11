@@ -284,11 +284,11 @@ h3 { font-size: 14px; margin: 22px 0 8px; line-height: 1.35; }
 .card-head h2 { display: flex; align-items: center; gap: 8px; }
 .card-head h2 .ico { color: var(--brand); }
 
-.grid { display: grid; gap: var(--gap); grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+.grid { display: grid; gap: var(--gap); grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); }
 /* Explicitly two, not auto-fit: now that the content column is full width,
    auto-fit would spread a deliberate 2x2 layout into five columns. */
 .grid.cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-@media (max-width: 900px) { .grid.cols-2 { grid-template-columns: 1fr; } }
+/* Narrow-screen grid collapsing lives in the small-screen section below. */
 .grid .card { margin-bottom: 0; }
 
 /* --------------------------------------------------------------- stats --- */
@@ -458,7 +458,7 @@ ol.steps li { margin: 7px 0; }
 
 /* --------------------------------------------------- add-on catalogue ---- */
 
-.addon-grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+.addon-grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); }
 .addon {
   border: 1px solid var(--line); border-radius: var(--radius);
   padding: 14px 16px; background: var(--surface); display: flex; flex-direction: column; gap: 8px;
@@ -476,18 +476,142 @@ ol.steps li { margin: 7px 0; }
 
 /* -------------------------------------------------------------- mobile --- */
 
+/* =========================================================== small screens ==
+ *
+ * One breakpoint, at 900px. Below it the two columns stop being columns: the
+ * sidebar becomes a drawer over the page, and the content column takes the
+ * whole width. Everything here is additive -- no rule above this line is
+ * written for a phone, so the desktop layout is exactly what it always was.
+ *
+ * The drawer is not a nicety. The previous version turned the sidebar into a
+ * horizontal strip of icons with the category labels hidden, which fitted but
+ * meant a rail of unlabelled glyphs was the only way to navigate. A panel that
+ * slides in keeps the real thing -- labels, groups, the lot.
+ */
+
+.nav-toggle, .chats-toggle {
+  display: none;                     /* a drawer control, and there is no drawer here */
+  align-items: center; justify-content: center;
+  flex: none; width: 38px; height: 38px;
+  padding: 0; margin: 0;
+  background: none; border: 1px solid transparent; border-radius: var(--radius);
+  color: var(--body); cursor: pointer;
+}
+.nav-toggle:hover, .chats-toggle:hover { background: var(--brand-tint); color: var(--ink); }
+
+/* Covers the page while a drawer is open. Kept out of the layer entirely when
+   closed -- `hidden` is set from app.js -- so it can never swallow a tap. */
+.nav-scrim, .chat-scrim {
+  position: fixed; inset: 0; z-index: 39;
+  background: rgba(31, 42, 36, .38);
+  opacity: 0; pointer-events: none;
+  transition: opacity var(--fast) var(--ease);
+}
+
 @media (max-width: 900px) {
-  .layout { flex-direction: column; }
-  .sidebar {
-    position: static; width: 100%; height: auto;
-    display: flex; gap: 6px; overflow-x: auto; padding: 10px 12px;
-  }
-  .side-group { display: flex; gap: 6px; align-items: center; }
-  .side-group + .side-group { margin-top: 0; }
-  .side-label { display: none; }
-  .content { padding: 18px 16px 40px; }
-  .top-tab span { display: none; }
+  /* ---- the fix that makes everything else possible ----------------------
+     .layout is align-items: flex-start, which on a row is right and in a
+     column means "size children to their content". So one wide table made the
+     content column wider than the phone, and every heading and card stretched
+     with it. Every page overflowed; the table was only ever the excuse. */
+  .layout { flex-direction: column; align-items: stretch; }
+  .content { width: 100%; min-width: 0; max-width: 100%; padding: 16px 14px 40px; }
+
+  /* ---- top bar ---- */
+  .topbar { gap: 8px; padding: 0 10px; }
+  .nav-toggle { display: flex; }
   .brand-text { display: none; }
+  .top-tab { padding: 0 11px; }
+  .top-tab span { display: none; }
+  .top-right { gap: 6px; }
+  /* The status chip ("3 running", "up 4d") is a glance-value on a wide screen
+     and the thing that overflows the bar on a narrow one. Every page that shows
+     it also states the same number in its own first card. */
+  .top-right .chip { display: none; }
+  .whoami { padding: 4px 6px; }
+  .whoami-role { display: none; }
+  .whoami-name { max-width: 74px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .logout button { padding: 7px 9px; }
+  .logout button span { display: none; }
+
+  /* ---- the sidebar, as a drawer ---- */
+  .sidebar {
+    position: fixed; z-index: 40;
+    top: var(--topbar-h); left: 0; bottom: 0;
+    width: min(282px, 84vw); height: auto;
+    padding: 14px 12px calc(18px + env(safe-area-inset-bottom));
+    transform: translateX(-100%);
+    transition: transform var(--fast) var(--ease);
+    box-shadow: var(--shadow-md);
+    overscroll-behavior: contain;
+  }
+  :root.nav-open .sidebar { transform: none; }
+  :root.nav-open .nav-scrim { opacity: 1; pointer-events: auto; }
+  /* The page must not scroll under an open drawer; the drawer scrolls instead. */
+  :root.nav-open, :root.chats-open,
+  :root.nav-open body, :root.chats-open body { overflow: hidden; }
+
+  /* ---- content density ---- */
+  .page-head { gap: 10px; }
+  h1 { font-size: 19px; }
+  .card { padding: 14px; }
+  .statrow { grid-template-columns: repeat(auto-fit, minmax(136px, 1fr)); gap: 10px; }
+  /* min() in the base track keeps auto-fit grids from forcing a 300px column
+     onto a 274px screen; this collapses the fixed two-column ones as well. */
+  .grid.cols-2 { grid-template-columns: 1fr; }
+
+  /* ---- anything wider than a phone scrolls inside its own box ----
+     A table of six columns cannot become narrow and must not be truncated:
+     both would cost information. So it keeps its shape and scrolls sideways
+     within the card, which leaves the page itself scrolling only one way. */
+  .table-scroll, .card > table, .card > form > table {
+    display: block; width: 100%; overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-x: contain;
+  }
+  /* Key/value tables are two columns and genuinely do narrow, so they stack
+     instead -- a label above its value reads better than either half clipped. */
+  table.kv, table.kv tbody, table.kv tr, table.kv td { display: block; width: auto; min-width: 0; }
+  table.kv tr { padding: 9px 0; border-bottom: 1px solid var(--line); }
+  table.kv tr:last-child { border-bottom: 0; }
+  table.kv td:first-child { color: var(--muted); font-size: 12.5px; padding: 0 0 2px; }
+  table.kv td { padding: 0; border: 0; }
+
+  pre, .secret, .logs, .diagram { max-width: 100%; overflow-x: auto; }
+  /* Long unbroken strings -- a token preview, a path, an address -- would
+     otherwise set a minimum width for the whole column. */
+  .mono, code, .chip, .pill { overflow-wrap: anywhere; }
+
+  /* ---- touch targets ----
+     40px is the smallest thing a thumb hits reliably; several of these were
+     28-32 because a mouse does not need more. */
+  .btn { padding: 9px 14px; }
+  .btn.small { padding: 8px 12px; font-size: 12.5px; }
+  .side-item { padding: 10px 12px; }
+  .menu-item { padding: 11px 14px; }
+  .row-end, .stack-actions { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+  .btn-row .btn { flex: 1 1 auto; justify-content: center; }
+}
+
+/* The narrowest phones still in use, around 320px. The top bar is the only
+   thing that does not fit by then -- five fixed-width controls and no text to
+   wrap -- so it gives up spacing and most of the username rather than dropping
+   a control somebody would then have no way to reach. */
+@media (max-width: 380px) {
+  .topbar { gap: 5px; padding: 0 8px; }
+  .top-tab { padding: 0 8px; }
+  .whoami { padding: 4px 4px; }
+  .whoami-name { max-width: 48px; }
+  .content { padding: 14px 11px 36px; }
+  .card { padding: 12px; }
+  .statrow { grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); }
+}
+
+/* A phone in landscape, or a small tablet: the drawer still applies, but the
+   content column can breathe and two-column grids are worth keeping. */
+@media (min-width: 601px) and (max-width: 900px) {
+  .content { padding: 20px 20px 44px; }
+  .grid.cols-2 { grid-template-columns: 1fr 1fr; }
 }
 
 /* Channel type: show only the fields that belong to the selected transport.
@@ -1021,8 +1145,55 @@ a.toggle:hover { text-decoration: none; border-color: var(--line-strong); }
 .composer-bar .btn { flex: none; }
 .composer-hint { margin: 6px 0 0; padding-left: 4px; font-size: 11px; }
 
+/* The console on a phone.
+ *
+ * The chat list used to be `display: none` here, which fitted the screen by
+ * removing the only way to start a chat, switch chats, or reach the archive --
+ * the transcript was all that was left. It is a drawer now, on the same
+ * mechanism as the sidebar, opened from a button in the chat's own top line.
+ */
 @media (max-width: 900px) {
-  .chat-list { display: none; }
+  .chats-toggle { display: flex; margin-left: -6px; }
+
+  .chat-list {
+    position: fixed; z-index: 40;
+    top: var(--topbar-h); left: 0; bottom: 0;
+    width: min(290px, 86vw);
+    border-right: 1px solid var(--line);
+    padding-bottom: calc(14px + env(safe-area-inset-bottom));
+    transform: translateX(-100%);
+    transition: transform var(--fast) var(--ease);
+    box-shadow: var(--shadow-md);
+  }
+  :root.chats-open .chat-list { transform: none; }
+  :root.chats-open .chat-scrim { opacity: 1; pointer-events: auto; }
+
+  /* 100dvh, not 100vh: on a phone 100vh is the viewport with the browser's
+     address bar *hidden*, so a composer pinned to the bottom of it spends the
+     first scroll underneath that bar. dvh follows the bar as it moves. */
+  .layout.bare { height: calc(100vh - var(--topbar-h)); }
+  @supports (height: 100dvh) {
+    .layout.bare { height: calc(100dvh - var(--topbar-h)); }
+  }
+
+  .chat-topline { padding: 7px 12px; gap: 8px; }
+  .chat-scroll { padding: 16px 12px 8px; gap: 12px; }
+  .msg .bubble { max-width: 92%; }
+  .chat-notice { margin: 8px 12px 0; }
+  .chat-compose { padding: 8px 12px calc(10px + env(safe-area-inset-bottom)); }
+
+  /* The composer's settings are five controls wide on a desktop. Left to wrap
+     they became a three-row block 156px tall -- a fifth of the screen spent on
+     things you set once. They scroll sideways in a single row instead, which
+     costs a swipe and gives the transcript the space back. */
+  .composer-bar { flex-wrap: nowrap; gap: 5px; padding: 6px 6px 7px 8px; }
+  .chat-controls {
+    flex-wrap: nowrap; overflow-x: auto; overscroll-behavior-x: contain;
+    scrollbar-width: none; padding-bottom: 1px;
+  }
+  .chat-controls::-webkit-scrollbar { display: none; }
+  .composer-status { display: none; }
+  .composer-hint { display: none; }
 }
 
 /* ---------------------------------------------------------------- wizard --- */
