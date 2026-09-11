@@ -190,6 +190,19 @@ var MD = (function () {
   var csrf = compose.getAttribute("data-csrf");
   var running = false;
 
+  /* Speech, not music. The browser's default is around 128kbps, which is four
+     times what whisper can use and turns a half-minute of talking into a body
+     big enough to be worth arguing about. 24kbps opus transcribes identically
+     and keeps a long utterance well inside every limit between here and the
+     model. */
+  function recorderFor(stream) {
+    try {
+      return new MediaRecorder(stream, { audioBitsPerSecond: 24000 });
+    } catch (e) {
+      return new MediaRecorder(stream);   // a browser that dislikes the option
+    }
+  }
+
   function atBottom() {
     return scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 80;
   }
@@ -423,6 +436,29 @@ var MD = (function () {
     });
   }
 
+  /**
+   * The same thing, as JSON, for the two routes that carry a payload.
+   *
+   * An attachment or a recording is base64 in the body, and the form parser
+   * this app mounts globally caps a form at 64KB -- so those routes were
+   * answering 413 to anything bigger, even though each of them mounts a JSON
+   * parser that allows 44MB. That parser was never reached: it ignores a body
+   * sent as a form, which is what every call here was sending. Which is to say
+   * an attachment over about 48KB has never worked.
+   */
+  function postJson(path, extra) {
+    var payload = { _csrf: csrf };
+    Object.keys(extra || {}).forEach(function (k) {
+      payload[k] = extra[k];
+    });
+    return fetch(path, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  }
+
   function send(text) {
     var ready = attached.filter(function (a) { return !a.pending && a.path; });
     if (running || (!text.trim() && !ready.length)) return;
@@ -546,7 +582,7 @@ var MD = (function () {
     var reader = new FileReader();
     reader.onload = function () {
       var b64 = String(reader.result).split(",")[1] || "";
-      post("/console/" + sessionId + "/upload", { name: item.name, data: b64 })
+      postJson("/console/" + sessionId + "/upload", { name: item.name, data: b64 })
         .then(function (r) { return r.json(); })
         .then(function (d) {
           if (d.error) throw new Error(d.error);
@@ -608,7 +644,7 @@ var MD = (function () {
       .getUserMedia({ audio: true })
       .then(function (stream) {
         chunks = [];
-        recorder = new MediaRecorder(stream);
+        recorder = recorderFor(stream);
         recorder.ondataavailable = function (e) {
           if (e.data.size) chunks.push(e.data);
         };
@@ -620,7 +656,7 @@ var MD = (function () {
           var blob = new Blob(chunks, { type: "audio/webm" });
           var reader = new FileReader();
           reader.onload = function () {
-            post("/console/" + sessionId + "/transcribe", {
+            postJson("/console/" + sessionId + "/transcribe", {
               data: String(reader.result).split(",")[1] || "",
             })
               .then(function (r) { return r.json(); })
@@ -862,7 +898,7 @@ var MD = (function () {
       heard = false;
       quietFor = 0;
       var started = Date.now();
-      rec = new MediaRecorder(stream);
+      rec = recorderFor(stream);
       rec.ondataavailable = function (e) {
         if (e.data && e.data.size) chunks.push(e.data);
       };
@@ -880,7 +916,7 @@ var MD = (function () {
       status.textContent = "transcribing…";
       var reader = new FileReader();
       reader.onload = function () {
-        post("/console/" + sessionId + "/transcribe", {
+        postJson("/console/" + sessionId + "/transcribe", {
           data: String(reader.result).split(",")[1] || "",
         })
           .then(function (r) { return r.json(); })

@@ -71,6 +71,11 @@ app.use(
         scriptSrc: ["'self'"],
         styleSrc: ["'self'"],
         imgSrc: ["'self'", "data:"], // data: is needed for the TOTP QR code
+        // Spoken replies arrive as a WAV body and are played from a blob URL,
+        // which is same-origin but is not 'self' as far as CSP is concerned.
+        // Without this the audio is fetched, decoded, and then silently refused
+        // at the moment it would play.
+        mediaSrc: ["'self'", "blob:"],
         connectSrc: ["'self'"],
         objectSrc: ["'none'"],
         frameAncestors: ["'none'"],
