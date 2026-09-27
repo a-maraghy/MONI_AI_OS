@@ -18,6 +18,7 @@ const {
 } = require("./ui");
 const { byScope } = require("./catalog");
 const { renderAddons } = require("./views-addons");
+const { graphPanel, viewSwitch } = require("./views-memgraph");
 
 const MODELS = [
   ["claude-opus-5", "Opus 5 — most capable"],
@@ -612,20 +613,43 @@ exports.instructions = ({ csrf, user, agent, content, flash, err }) =>
 
 /* --------------------------------------------------------------- memory --- */
 
-exports.memory = ({ csrf, user, agent, notes, query, hits, flash, err }) => {
+exports.memory = ({ csrf, user, agent, agents, notes, query, hits, view, flash, err }) => {
   const mem = agent.memory || {};
+  const v = ["graph", "list"].includes(view) ? view : query ? "list" : "graph";
+  const peers = (agents && agents.length ? agents : [agent]).filter((a) => can(user, "agents.memory.read", a.slug));
+  const base = "/agents/" + agent.slug + "/memory";
   return shell(
     "Memory — " + (agent.name || agent.slug),
     `${tabs(agent.slug, "memory")}
     ${flashes({ msg: flash, err })}
-
+    <div class="mg-page">
+    ${graphPanel({
+      kind: "agents",
+      src: "/api/agents/memory/graph?agent=all",
+      search: "/api/agents/memory/search",
+      incremental: false,
+      poll: 20000,
+      groups: [{ key: "", label: "All agents" }].concat(
+        peers.map((a) => ({
+          key: a.slug,
+          label: a.name || a.slug,
+          dot: a.state && a.state.active === "active" ? "ok" : a.state && a.state.active === "failed" ? "bad" : "off",
+        }))
+      ),
+      group: agent.slug,
+      listHref: base,
+      placeholder: "Search… (Enter = by meaning)",
+      hidden: v !== "graph",
+    })}
+    <div data-view-panel="list"${v === "list" ? "" : " hidden"}>
     ${card(
       "Search the vault",
       `<p class="muted small">The same index the agent queries. Vector similarity finds
         paraphrase, keyword matching finds exact tokens, and the two rankings are merged.
         Everything is embedded locally — no text leaves this machine.</p>
       <form method="get" action="/agents/${esc(agent.slug)}/memory" class="searchbar">
-        <input name="q" value="${esc(query || "")}" placeholder="what did we decide about deployments?" autofocus>
+        <input type="hidden" name="view" value="list">
+        <input name="q" value="${esc(query || "")}" placeholder="what did we decide about deployments?">
         <button class="btn primary" type="submit">${icon("search")} Search</button>
       </form>
       ${
@@ -671,13 +695,15 @@ exports.memory = ({ csrf, user, agent, notes, query, hits, flash, err }) => {
         : `<p class="muted">The vault is empty.</p>`,
       {
         icon: "memory",
-        actions: `<span class="muted small">${notes.length} files · ${
-          mem.chunks || 0
-        } indexed chunks</span>
-        <form method="post" action="/agents/${esc(agent.slug)}/memory/reindex" class="inline">
-          <input type="hidden" name="_csrf" value="${esc(csrf)}">
-          <button class="btn small" type="submit">${icon("reindex")} Reindex</button>
-        </form>`,
+        actions: `<span class="muted small">${notes.length} files · ${mem.chunks || 0} indexed chunks</span>
+        ${
+          can(user, "agents.memory.write", agent.slug)
+            ? `<form method="post" action="/agents/${esc(agent.slug)}/memory/reindex" class="inline">
+                <input type="hidden" name="_csrf" value="${esc(csrf)}">
+                <button class="btn small" type="submit">${icon("reindex")} Reindex</button>
+              </form>`
+            : ""
+        }`,
       }
     )}
 
@@ -688,13 +714,24 @@ exports.memory = ({ csrf, user, agent, notes, query, hits, flash, err }) => {
         <a href="/guide#obsidian">Guide</a>.</p>
       <pre>${esc((agent.dir || "") + "/vault")}</pre>`,
       { icon: "guide" }
-    )}`,
+    )}
+    </div>
+    </div>`,
     {
       user,
       csrf,
       active: "agents",
+      pattern: "a",
+      assets: ["memgraph.css", "memgraph.js"],
+      crumbs: agentCrumbs(agent, "Memory"),
       heading: agent.name || agent.slug,
-      subtitle: "What this agent remembers.",
+      headingHtml: agentHead(agent),
+      headArt: seedling(agent),
+      subtitle: "What this agent remembers — and how it connects.",
+      actions: viewSwitch(v, [
+        ["graph", "Graph", "network", base + "?view=graph"],
+        ["list", "Notes", "logs", base + "?view=list"],
+      ]),
     }
   );
 };

@@ -10,6 +10,7 @@
 
 const { esc, bytes, duration, ago, stamp, shell, stat, card, flashes, empty, icon, can } =
   require("./ui");
+const { graphPanel, viewSwitch } = require("./views-memgraph");
 
 const KINDS = ["decision", "figure", "trap", "preference", "open_issue", "fact"];
 
@@ -365,8 +366,16 @@ function servicesCard(csrf, user, svc, err) {
   );
 }
 
+/**
+ * Claude Code > Memory: the long-term memory as a graph (the default), the
+ * facts as a list, and the machinery (stats, auto-memory files, hook activity,
+ * services) as an overview -- three views of one page, switched in place and
+ * remembered in the URL (?view=). A search or a filter from the list lands on
+ * the list, so every link and form the page had still goes where it went.
+ */
 exports.memory = (d) => {
   const { csrf, user, query, searchProject, filters, stats, facts, files, hooks, services, search, errors } = d;
+  const view = ["graph", "list", "overview"].includes(d.view) ? d.view : "graph";
   const f = facts || { rows: [], total: 0, page: 1, per_page: 25 };
   const pages = Math.max(1, Math.ceil((f.total || 0) / (f.per_page || 25)));
   const filterParams = {
@@ -375,33 +384,64 @@ exports.memory = (d) => {
     fq: filters.q,
     sup: filters.superseded,
   };
+  const db = (stats && stats.db) || null;
+  const projects = (db && db.projects) || [];
+  const hide = (v) => (v === view ? "" : " hidden");
   return page(
     "Claude Code memory",
     `${tabs("memory", user)}
     ${flashes({ msg: d.flash, err: d.err })}
-    ${memoryStats(stats, errors.stats)}
-    ${searchCard(query, searchProject, search, stats && stats.db && stats.db.projects, errors.search)}
-    ${card(
-      "Facts",
-      `${factFilters(filters, stats)}
-      ${errors.facts ? `<div class="alert bad">${icon("alert")}<div>${esc(errors.facts)}</div></div>` : ""}
-      <p class="muted small">${esc(f.total)} fact${f.total === 1 ? "" : "s"}, newest first. Editing a fact
-        stores a new one that supersedes it, so the history is kept.</p>
-      ${factsTable(f.rows)}
-      ${pager("/claude/memory", filterParams, f.page, pages)}
-      ${can(user, "claude.memory.write") ? addFactForm(csrf, stats) : ""}`,
-      { icon: "memory" }
-    )}
-    <div class="grid cols-2">
-      ${memfilesCard(files, errors.files)}
-      ${hooksCard(hooks, errors.hooks)}
-    </div>
-    ${servicesCard(csrf, user, services, errors.services)}`,
+    <div class="mg-page">
+      ${graphPanel({
+        kind: "claude",
+        src: "/api/claude/memory/graph",
+        search: "/api/claude/memory/search",
+        incremental: true,
+        poll: 15000,
+        groups: [{ key: "", label: "All projects" }].concat(projects.map((p) => ({ key: p, label: p, dot: "ok" }))),
+        group: "",
+        csrf,
+        writable: can(user, "claude.memory.write"),
+        factUrl: "/api/claude/memory/fact/",
+        listHref: "/claude/memory",
+        placeholder: "Search… (Enter = by meaning)",
+        hidden: view !== "graph",
+      })}
+      <div data-view-panel="list"${hide("list")}>
+        ${searchCard(query, searchProject, search, projects, errors.search)}
+        ${card(
+          "Facts",
+          `${factFilters(filters, stats)}
+          ${errors.facts ? `<div class="alert bad">${icon("alert")}<div>${esc(errors.facts)}</div></div>` : ""}
+          <p class="muted small">${esc(f.total)} fact${f.total === 1 ? "" : "s"}, newest first. Editing a fact
+            stores a new one that supersedes it, so the history is kept.</p>
+          ${factsTable(f.rows)}
+          ${pager("/claude/memory", Object.assign({ view: "list" }, filterParams), f.page, pages)}
+          ${can(user, "claude.memory.write") ? addFactForm(csrf, stats) : ""}`,
+          { icon: "memory" }
+        )}
+      </div>
+      <div data-view-panel="overview"${hide("overview")}>
+        ${memoryStats(stats, errors.stats)}
+        <div class="grid cols-2">
+          ${memfilesCard(files, errors.files)}
+          ${hooksCard(hooks, errors.hooks)}
+        </div>
+        ${servicesCard(csrf, user, services, errors.services)}
+      </div>
+    </div>`,
     {
       user,
       csrf,
       active: "memory",
-      subtitle: "What Claude Code remembers across sessions on this machine.",
+      pattern: "a",
+      assets: ["memgraph.css", "memgraph.js"],
+      subtitle: "What Claude Code remembers across sessions on this machine — and how it connects.",
+      actions: viewSwitch(view, [
+        ["graph", "Graph", "network", "/claude/memory?view=graph"],
+        ["list", "List", "logs", "/claude/memory?view=list"],
+        ["overview", "Overview", "activity", "/claude/memory?view=overview"],
+      ]),
     }
   );
 };

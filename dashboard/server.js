@@ -40,6 +40,7 @@ const rbac = require("./lib/rbac");
 const totp = require("./lib/totp");
 const voice = require("./lib/voice");
 const chrome = require("./lib/chrome");
+const memgraph = require("./lib/memgraph");
 
 const PORT = Number(process.env.MONI_PORT || 3000);
 const BIND = process.env.MONI_BIND || "127.0.0.1";
@@ -1048,11 +1049,19 @@ app.get("/agents/:slug/memory", requireAuth, requirePerm("agents.memory.read"), 
       hits = [];
     }
   }
+  let peers = [];
+  try {
+    peers = scopeAgents(req, await priv.agentList());
+  } catch (_) {
+    /* the chips then offer this agent alone */
+  }
   res.send(
     agentViews.memory({
       csrf: res.locals.csrf,
       user: ctx(req),
       agent,
+      agents: peers,
+      view: String(req.query.view || ""),
       notes,
       query,
       hits,
@@ -3657,6 +3666,120 @@ function ccSessionParams(req, res, next) {
   return res.status(404).send(views.error("Not found", "No such session."));
 }
 
+/* ------------------------------------------------------ memory graphs --- */
+
+/**
+ * The memory graphs' data, as JSON for the page's canvas (public/memgraph.js).
+ *
+ * Read-only: every one of these reads through the privileged helper, which
+ * redacts, and is redacted again here. The permissions are the ones the pages
+ * already use -- claude.memory.read for Claude Code's memory, and for an
+ * agent's vault agents.memory.read plus the agent inside the actor's scope, so
+ * an agent's memory is visible to exactly those who could open its Memory tab.
+ * JSON refusals, not pages: a poll that loses its session should see a status
+ * code rather than a sign-in form.
+ */
+function apiPerm(perm) {
+  return (req, res, next) => {
+    if (!req.me) return res.status(401).json({ error: "Sign in first." });
+    if (!req.perm.can(perm)) return res.status(403).json({ error: "Your role does not include this." });
+    next();
+  };
+}
+const CURSOR_RE = /^\d{1,15}$/;
+
+app.get("/api/claude/memory/graph", apiPerm("claude.memory.read"), async (req, res) => {
+  const params = {};
+  for (const [q, key] of [["after_f", "after_f"], ["after_c", "after_c"]]) {
+    const v = String(req.query[q] || "");
+    if (v && !CURSOR_RE.test(v)) return res.status(400).json({ error: "bad cursor" });
+    if (v) params[key] = Number(v);
+  }
+  try {
+    const raw = await priv.ccMemoryGraph(params);
+    res.json(priv.redactDeep(memgraph.buildClaude(raw)));
+  } catch (e) {
+    res.status(502).json({ error: e.message });
+  }
+});
+
+app.get("/api/claude/memory/search", apiPerm("claude.memory.read"), async (req, res) => {
+  const q = String(req.query.q || "").slice(0, 500).trim();
+  if (!q) return res.status(400).json({ error: "Type something to search for." });
+  const project = String(req.query.project || "").slice(0, 61).trim();
+  try {
+    const out = await priv.ccMemorySearch(q, 30, project && CC_SLUG.test(project) ? project : null);
+    res.json({ hits: memgraph.claudeHits(out.results), timing_ms: out.timing_ms || null });
+  } catch (e) {
+    res.status(502).json({ error: e.message });
+  }
+});
+
+app.get("/api/claude/memory/fact/:id(\\d+)", apiPerm("claude.memory.read"), async (req, res) => {
+  try {
+    res.json(priv.redactDeep(await priv.ccFactGet(req.params.id)));
+  } catch (e) {
+    res.status(404).json({ error: e.message });
+  }
+});
+
+/** The agents whose memory this actor may read: all in scope, or one. */
+async function memoryAgents(req, which) {
+  const all = scopeAgents(req, await priv.agentList());
+  if (!which || which === "all") return all.slice(0, 24);
+  if (!SLUG_RE.test(which)) return [];
+  return all.filter((a) => a.slug === which);
+}
+
+app.get("/api/agents/memory/graph", apiPerm("agents.memory.read"), async (req, res) => {
+  try {
+    const agents = await memoryAgents(req, String(req.query.agent || "all"));
+    const vaults = await Promise.all(
+      agents.map((a) =>
+        priv
+          .agentMemoryGraph(a.slug)
+          .then((graph) => ({ slug: a.slug, name: a.name || a.slug, graph }))
+          .catch((e) => ({ slug: a.slug, name: a.name || a.slug, error: e.message }))
+      )
+    );
+    res.json(priv.redactDeep(memgraph.buildAgents(vaults)));
+  } catch (e) {
+    res.status(502).json({ error: e.message });
+  }
+});
+
+app.get("/api/agents/memory/search", apiPerm("agents.memory.read"), async (req, res) => {
+  const q = String(req.query.q || "").slice(0, 500).trim();
+  if (!q) return res.status(400).json({ error: "Type something to search for." });
+  try {
+    const agents = await memoryAgents(req, String(req.query.agent || "all"));
+    const per = await Promise.all(
+      agents.map((a) =>
+        priv
+          .agentMemorySearch(a.slug, q)
+          .then((hits) => memgraph.agentHits(a.slug, hits))
+          .catch(() => [])
+      )
+    );
+    const hits = [].concat(...per).sort((x, y) => (y.score || 0) - (x.score || 0));
+    res.json({ hits: priv.redactDeep(hits) });
+  } catch (e) {
+    res.status(502).json({ error: e.message });
+  }
+});
+
+app.get("/api/agents/:slug/memory/note", apiPerm("agents.memory.read"), async (req, res) => {
+  const slug = String(req.params.slug || "");
+  if (!SLUG_RE.test(slug) || !req.perm.seesAgent(slug)) return res.status(404).json({ error: "No such agent." });
+  try {
+    const file = await priv.agentReadFile(slug, String(req.query.path || ""));
+    const content = String(file.content || "");
+    res.json(priv.redactDeep({ path: file.path, content: content.slice(0, 6000), truncated: content.length > 6000 }));
+  } catch (e) {
+    res.status(404).json({ error: e.message });
+  }
+});
+
 app.get("/claude", requireAuth, (req, res) => res.redirect("/claude/memory"));
 
 app.get("/claude/memory", requireAuth, requirePerm("claude.memory.read"), async (req, res) => {
@@ -3678,10 +3801,13 @@ app.get("/claude/memory", requireAuth, requirePerm("claude.memory.read"), async 
     services: () => priv.ccMemoryServices(),
     search: () => (query ? priv.ccMemorySearch(query, 12, searchProject || null) : Promise.resolve(null)),
   });
+  const asked = String(req.query.view || "");
+  const filtered = query || filters.topic || filters.project || filters.q || filters.superseded || filters.page > 1;
   res.send(
     claudeViews.memory({
       csrf: res.locals.csrf,
       user: ctx(req),
+      view: ["graph", "list", "overview"].includes(asked) ? asked : filtered ? "list" : "graph",
       query,
       searchProject,
       filters,
