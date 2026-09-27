@@ -284,7 +284,7 @@ function actor(role) {
     /** True if the actor can reach anything at all on that dashboard. */
     canDash: (key) =>
       key === "console"
-        ? can("console.use")
+        ? can("console.use") || can("moniai.use")
         : key === "agents"
         ? can("agents.view") || can("channels.view") || can("addons.view")
         : can("os.view") ||

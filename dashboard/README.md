@@ -18,9 +18,13 @@ and [docs/agents.md](../docs/agents.md).
     lib/views-guide.js     the operator's manual, served from the panel
     lib/views-claude.js    Claude Code: memory, sessions, running processes
     lib/moniai.js          client for the MONI AI supervisor's unix socket
+    lib/views-moniai.js    the MONI AI Command Center's frame
     lib/telegram.js        Bot API client, used only to validate configuration
-    public/style.css       styles
-    public/app.js          confirmations + live stat refresh + Running refresh
+    public/style.css       styles, and the light and dark palettes
+    public/app.js          confirmations + live stat refresh + Running refresh + theme switch
+    public/theme-init.js   applies the saved theme before first paint
+    public/moni-ai.css     the Command Center's styles and HUD palette
+    public/moni-ai.js      the Command Center: API, event stream, seed core, voice
     tools/test-*.cjs       standalone tests (node tools/test-claude.cjs)
 
     deploy/moni-helper             privileged helper -> /usr/local/sbin/
@@ -68,9 +72,8 @@ MONI AI (the renamed MONI Bot) is one root Claude Code session that delegates
 commands to every other session on the machine. It is run by its own
 supervisor, `moni-ai.service`; the design, the approval gate and the traps are
 in [`moni-ai/README.md`](../moni-ai/README.md). The panel's part is a JSON and
-SSE API for the Command Center page, which is built separately. The old
-console (`/console`) keeps working until that page ships; only its label
-changed.
+SSE API, and the Command Center page that consumes it (below). The old console
+(`/console`) keeps working; only its label changed.
 
 Permission `moniai.use`, in no stock role: it reaches a root session that can
 message every session on the box. API routes answer in JSON, refusals too
@@ -108,4 +111,55 @@ sends, approvals and restarts in its own login log.
 `deploy-dashboard.sh` now tars the tree it replaces to
 `/root/backups/moni-dashboard_<timestamp>.tgz` before syncing.
 
+    POST /moni-ai/api/transcribe           {data: base64 webm} -> {text}   (resident whisper)
+    POST /moni-ai/api/speak                {text, voice?} -> audio/wav     (Piper)
+
 Tests: `node dashboard/tools/test-moniai.cjs` (client and permission).
+
+### The Command Center (`/moni-ai`)
+
+The top bar's MONI AI tab opens it. Someone with `console.use` but not
+`moniai.use` is sent on to `/console`. One screen, no page scroll at
+1920×1080, 1600×900 and 1440×900 -- only its panels scroll:
+
+- **Left rail** -- MONI AI Core (process, sessions, agents, memory, voice,
+  guardrails), Talk to MONI, vitals rings (the supervisor's own vitals, which
+  arrive on the stream every 5 s) and memory counts.
+- **Centre** -- the seed core: one canvas, `requestAnimationFrame`, DPR-aware,
+  paused while the tab is hidden, a still frame under reduced motion. Its
+  satellites are the live sessions from `/sessions`, in their real state
+  colours. States come from real events: *thinking* while a turn runs,
+  *delegating* when a `delegation` event with status `sent` arrives (a bead of
+  light runs down the root to that session), *listening* while the microphone
+  records, *speaking* while a reply is read aloud. Below it the sessions strip
+  (Delegate… prefills the composer for that session; Open says where it runs,
+  and for MONI AI itself opens the Remote Control link) and the composer
+  (target chip, `@` to pick, interrupt while a turn runs).
+- **Drawer** -- Conversation (the turns ledger, then live: streamed text,
+  delegation cards, approval cards), Timeline (delegations and approvals),
+  Live feed (replies, idle notices, service and session events), and Current
+  AI Activity from the turn's `steps`.
+- **Approval cards** come from `approval` events: command, target, effect,
+  reason, a countdown to the automatic deny, and Approve & run / Deny. While
+  any is pending the status chip and the core's pill say *Awaiting approval*.
+- **Voice** is the console's pipeline behind this page's permission: tap to
+  talk (end of utterance from the level, barge-in over a reply), or hold
+  Space. A spoken turn gets a spoken "On it." and its reply read aloud; the
+  *replies aloud* chip reads every reply.
+
+Everything is built in `public/moni-ai.js` from the API; the frame is
+`lib/views-moniai.js`, the styles `public/moni-ai.css`. No inline script or
+style (the CSP forbids both) and no external requests.
+
+### Themes
+
+System (the default), Dark and Light, from a switch in the top bar of every
+page. `public/theme-init.js` applies the saved choice (localStorage
+`moni-theme`, guarded) before first paint; `app.js` wires the switch; System
+follows `prefers-color-scheme` live. The whole panel's palette is custom
+properties in `style.css` -- the rules use tokens only (QR codes excepted,
+which must stay white). The Command Center has its own HUD palette in
+`moni-ai.css`, dark and light, which wins over the site's on this page.
+
+Tests: `node dashboard/tools/test-moniai-page.cjs` (the page's frame, CSP
+safety, escaping, the tab, the palette, the client's pure helpers).

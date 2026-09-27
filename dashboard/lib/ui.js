@@ -108,13 +108,14 @@ function stamp(iso) {
  */
 const NAV = [
   {
-    // The main point of contact, so it sits first in the bar. It carries its
-    // own conversation list inside the page, which is why it asks for no
-    // sidebar -- two lists side by side would be one too many.
+    // The main point of contact, so it sits first in the bar. It opens the
+    // MONI AI Command Center; the older console chat stays at /console. Both
+    // carry their own navigation inside the page, which is why this asks for
+    // no sidebar -- two lists side by side would be one too many.
     key: "console",
-    href: "/console",
+    href: "/moni-ai",
     label: "MONI AI",
-    icon: "agents",
+    icon: "core",
     noSidebar: true,
     home: { key: "console", href: "/console", label: "Chat", icon: "agents" },
     categories: [],

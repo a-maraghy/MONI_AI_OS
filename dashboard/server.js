@@ -33,6 +33,7 @@ const addonViews = require("./lib/views-addons");
 const guideViews = require("./lib/views-guide");
 const accessViews = require("./lib/views-access");
 const consoleViews = require("./lib/views-console");
+const moniAiViews = require("./lib/views-moniai");
 const claudeViews = require("./lib/views-claude");
 const moniai = require("./lib/moniai");
 const rbac = require("./lib/rbac");
@@ -102,7 +103,7 @@ app.use(express.urlencoded({ extended: false, limit: "64kb" }));
  * parser be the one that decides. Everything else keeps the small ceiling,
  * which is the point of having one.
  */
-const PAYLOAD_ROUTES = /^\/console\/\d+\/(upload|transcribe)$/;
+const PAYLOAD_ROUTES = /^(\/console\/\d+\/(upload|transcribe)|\/moni-ai\/api\/transcribe)$/;
 const smallJson = express.json({ limit: "64kb" });
 app.use((req, res, next) =>
   PAYLOAD_ROUTES.test(req.path) ? next() : smallJson(req, res, next)
@@ -2575,6 +2576,7 @@ async function moniAiMemoryCounts() {
         sessions: db.sessions_indexed == null ? null : db.sessions_indexed,
         last_ingest: db.last_ingest || null,
         last_facts: db.last_facts || null,
+        topics: Array.isArray(db.topics) ? db.topics.slice(0, 6).map((t) => String(t).slice(0, 40)) : [],
         healthy: !!(s && s.health && s.health.ok),
       };
       moniAiMemory = { at: Date.now(), data, pending: null };
@@ -2587,6 +2589,60 @@ async function moniAiMemoryCounts() {
   return moniAiMemory.pending;
 }
 
+/**
+ * Agent counts for the rail: how many, how many running, and on which kinds of
+ * channel. Only counts and channel types leave here -- an agent's role text,
+ * allowed users and addon settings are the agents pages' business. Cached for
+ * a minute like the memory counts, because it is a helper call.
+ */
+let moniAiAgents = { at: 0, data: null, pending: null };
+async function moniAiAgentCounts(req) {
+  if (!req.perm.can("agents.view")) return null;
+  if (!(moniAiAgents.data && Date.now() - moniAiAgents.at < 60000)) {
+    if (!moniAiAgents.pending) {
+      moniAiAgents.pending = priv
+        .agentList()
+        .then((list) => {
+          moniAiAgents = { at: Date.now(), data: Array.isArray(list) ? list : [], pending: null };
+          return moniAiAgents.data;
+        })
+        .catch((e) => {
+          moniAiAgents.pending = null;
+          throw e;
+        });
+    }
+    await moniAiAgents.pending;
+  }
+  const mine = scopeAgents(req, moniAiAgents.data);
+  const types = [...new Set(mine.map((a) => a.channel && a.channel.type).filter(Boolean))];
+  return {
+    total: mine.length,
+    active: mine.filter((a) => a.state && a.state.active === "active").length,
+    channels: types.map((t) => String(t).slice(0, 20)),
+  };
+}
+
+/** What the page's voice controls can rely on. */
+function moniAiVoice() {
+  return { tts: speech.available(), voice: speech.defaultVoice(), stt: true };
+}
+
+app.get("/moni-ai", requireAuth, (req, res) => {
+  // The tab is shared with the older console: someone who may use that but not
+  // MONI AI lands where they are allowed to be rather than on a refusal.
+  if (!req.perm.can("moniai.use")) {
+    if (req.perm.can("console.use")) return res.redirect("/console");
+    return requirePerm("moniai.use")(req, res, () => {});
+  }
+  res.send(
+    moniAiViews.page({
+      csrf: res.locals.csrf,
+      user: ctx(req, "console"),
+      voice: moniAiVoice(),
+    })
+  );
+});
+
 app.get("/moni-ai/api/status", ...moniAiGuard, async (req, res) => {
   try {
     res.json(await moniai.call("status", {}, req.me.username));
@@ -2598,11 +2654,12 @@ app.get("/moni-ai/api/status", ...moniAiGuard, async (req, res) => {
 /** Everything the page needs on load, in one round trip. */
 app.get("/moni-ai/api/overview", ...moniAiGuard, async (req, res) => {
   const who = req.me.username;
-  const [status, sessions, delegations, memory] = await Promise.allSettled([
+  const [status, sessions, delegations, memory, agents] = await Promise.allSettled([
     moniai.call("status", {}, who),
     moniai.call("sessions", {}, who),
     moniai.call("ledger", { table: "delegations", limit: 30 }, who),
     moniAiMemoryCounts(),
+    moniAiAgentCounts(req),
   ]);
   if (status.status === "rejected") return moniAiFail(res, status.reason);
   res.json({
@@ -2610,6 +2667,8 @@ app.get("/moni-ai/api/overview", ...moniAiGuard, async (req, res) => {
     sessions: sessions.status === "fulfilled" ? sessions.value : { error: sessions.reason.message },
     timeline: delegations.status === "fulfilled" ? delegations.value.rows : [],
     memory: memory.status === "fulfilled" ? memory.value : { error: memory.reason.message },
+    agents: agents.status === "fulfilled" ? agents.value : { error: agents.reason.message },
+    voice: moniAiVoice(),
     viewer: { name: req.me.display_name || req.me.username, csrf: res.locals.csrf },
   });
 });
@@ -2722,6 +2781,38 @@ app.post("/moni-ai/api/rc", ...moniAiWrite, async (req, res) => {
     res.json(await moniai.call("rc", { enabled }, req.me.username, { timeout: 60000 }));
   } catch (e) {
     moniAiFail(res, e);
+  }
+});
+
+/**
+ * Voice for the Command Center: the console's own pipeline -- the resident
+ * whisper server for speech to text, Piper for text to speech -- behind this
+ * page's permission instead of a console chat's. Nothing is saved: the audio
+ * goes to the transcriber and the text comes back to the page, which sends it
+ * like anything typed.
+ */
+const moniAiAudioBody = express.json({ limit: "44mb" });
+
+app.post("/moni-ai/api/transcribe", requireApiPerm("moniai.use"), moniAiAudioBody, requireApiCsrf, async (req, res) => {
+  const data = typeof (req.body && req.body.data) === "string" ? req.body.data : "";
+  if (!data || !/^[A-Za-z0-9+/=]+$/.test(data)) return res.status(400).json({ error: "No audio arrived." });
+  try {
+    res.json({ text: await listen.transcribe(Buffer.from(data, "base64")) });
+  } catch (e) {
+    res.status(503).json({ error: "The transcriber is not answering: " + e.message });
+  }
+});
+
+app.post("/moni-ai/api/speak", ...moniAiWrite, async (req, res) => {
+  if (!speech.available()) return res.status(503).json({ error: "No speech synthesiser is installed on this machine." });
+  const text = typeof (req.body && req.body.text) === "string" ? req.body.text : "";
+  if (!text.trim()) return res.status(400).json({ error: "Nothing to say." });
+  try {
+    const wav = await speech.speak(text, field(req.body, "voice"));
+    res.set({ "Content-Type": "audio/wav", "Content-Length": String(wav.length), "Cache-Control": "no-store" });
+    res.send(wav);
+  } catch (e) {
+    res.status(400).json({ error: e.message });
   }
 });
 
