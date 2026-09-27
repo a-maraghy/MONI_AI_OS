@@ -412,7 +412,8 @@ h3 { font-size: 14px; margin: 18px 0 8px; line-height: 1.35; }
 :root[data-side="collapsed"] .side-item .badge.bad { background: var(--bad); }
 :root[data-side="collapsed"] .side-item .badge.plain { display: none; }
 :root[data-side="collapsed"] .side-id { grid-template-columns: 34px; justify-content: center; padding: 8px 0 12px; }
-:root[data-side="collapsed"] .side-label { display: block; height: 1px; padding: 0; margin: 8px 6px; background: var(--line); opacity: 1; }
+:root[data-side="collapsed"] .side-label { display: block; height: 1px; padding: 0; margin: 8px 6px; background: var(--line); opacity: 1; font-size: 0; overflow: hidden; }
+:root[data-side="collapsed"] .side-label::after { display: none; }
 :root[data-side="collapsed"] .side-collapse { justify-content: center; }
 :root[data-side="collapsed"] .side-collapse .ico { transform: scaleX(-1); }
 

@@ -52,31 +52,29 @@
   })();
 
   /* ----------------------------------------------------------------- clock */
+  // The administrator's zone (data-tz), the same the Command Center keeps.
   (function () {
     var el = document.querySelector("[data-clock]");
     if (!el) return;
     var b = el.querySelector("b");
     var s = el.querySelector("span");
-    var zone = "";
+    var zone = el.getAttribute("data-tz") || undefined;
+    var city = (zone || "").split("/").pop().replace(/_/g, " ");
+    var fHMS, fDate;
     try {
-      zone = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+      fHMS = new Intl.DateTimeFormat("en-GB", { timeZone: zone, hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false });
+      fDate = new Intl.DateTimeFormat("en-GB", { timeZone: zone, weekday: "short", day: "numeric", month: "short" });
     } catch (e) {
-      zone = "";
+      fHMS = null;
     }
-    var city = zone.split("/").pop().replace(/_/g, " ");
     function tick() {
       var d = new Date();
-      var hms = [d.getHours(), d.getMinutes(), d.getSeconds()]
-        .map(function (n) { return (n < 10 ? "0" : "") + n; })
-        .join(":");
-      b.textContent = hms;
-      var day = "";
-      try {
-        day = d.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" });
-      } catch (e) {
-        day = d.toDateString().slice(0, 10);
+      if (fHMS) {
+        b.textContent = fHMS.format(d);
+        s.textContent = fDate.format(d) + (city ? " · " + city : "");
+      } else {
+        b.textContent = d.toTimeString().slice(0, 8);
       }
-      s.textContent = day + (city ? " · " + city : "");
     }
     tick();
     setInterval(tick, 1000);

@@ -27,6 +27,8 @@ function controls(csrf, action, target, state) {
   }
   if (running && state.stoppable !== false) {
     parts.push(button("stop", "Stop", "danger", "Stop " + target + "?"));
+  } else if (running) {
+    parts.push(`<span class="lockt" title="Stopping it would cut off access">${icon("lock", 12)}restart only</span>`);
   }
   return `<div class="row-end">${parts.join("")}</div>`;
 }
@@ -42,44 +44,48 @@ exports.system = ({ csrf, user, services, flash, err }) =>
       access to the machine or to this page, and getting back in would need the Contabo
       console.</div></div>
 
-    ${card(
-      "System services",
-      `<table class="rows">
-        <thead><tr><th>Service</th><th>State</th><th>At boot</th><th>Memory</th><th>Since</th><th></th></tr></thead>
+    <section class="card table-card fill-card hud">
+      <div class="tbl"><table class="rows">
+        <thead><tr><th scope="col">Service</th><th scope="col">State</th><th scope="col">At boot</th><th scope="col">Memory</th><th scope="col">Since</th><th scope="col" class="right">Actions</th></tr></thead>
         <tbody>${services
           .map((s) => {
             const meta = DETAIL.get(s.unit) || {};
+            const mb = s.memory != null ? s.memory / 1024 / 1024 : null;
             return `<tr>
-              <td>
-                <span class="strong">${esc(meta.name || s.unit)}</span>
-                <div class="muted small mono">${esc(s.unit)}</div>
-                ${meta.detail ? `<div class="muted small">${esc(meta.detail)}</div>` : ""}
-              </td>
+              <td><div class="svc-name"><span class="svc-ic">${icon(meta.icon || "services", 16)}</span><div>
+                <span class="strong">${esc(meta.name || s.unit)}</span> <span class="mono small muted">${esc(s.unit)}</span>
+                ${meta.detail ? `<div class="muted">${esc(meta.detail)}</div>` : ""}
+              </div></div></td>
               <td>${statusPill(s.active)}</td>
-              <td class="small">${esc(s.enabled)}${
-                s.socket_activated
-                  ? `<div class="muted small">via socket</div>`
-                  : ""
+              <td class="small">${esc(s.enabled)}${s.socket_activated ? `<div class="muted small">via socket</div>` : ""}</td>
+              <td>${
+                mb != null
+                  ? `<div class="memline"><span class="mono small">${bytes(s.memory)}</span><div class="bar"><div class="fill" data-w="${Math.min(
+                      100,
+                      Math.round(mb / 2)
+                    )}"></div></div></div>`
+                  : `<span class="muted">—</span>`
               }</td>
-              <td class="mono small">${s.memory != null ? bytes(s.memory) : "—"}</td>
-              <td class="mono small">${esc((s.since || "").slice(0, 19) || "—")}</td>
-              <td class="right">
+              <td class="mono small nowrap">${esc(String(s.since || "").replace(/^[A-Z][a-z]{2} /, "").slice(0, 19) || "—")}</td>
+              <td class="right"><div class="row-end">
                 ${controls(csrf, "/services/action", s.unit, s)}
-                <div class="stack-actions"><a class="btn small" href="/services/logs?unit=${encodeURIComponent(
-                  s.unit
-                )}">Logs</a></div>
-              </td>
+                <a class="btn small" href="/services/logs?unit=${encodeURIComponent(s.unit)}">${icon("logs", 14)}Logs</a>
+              </div></td>
             </tr>`;
           })
-          .join("")}</tbody></table>`,
-      { icon: "services" }
-    )}`,
+          .join("")}</tbody></table></div>
+    </section>`,
     {
       user,
       csrf,
       active: "services",
+      pattern: "b",
+      fill: true,
       heading: "System services",
       subtitle: "The units that keep the machine and this panel running.",
+      actions: `<span class="pill ${services.every((s) => s.active === "active") ? "ok" : "warn"}">${
+        services.filter((s) => s.active === "active").length
+      } of ${services.length} active</span>`,
     }
   );
 
@@ -134,6 +140,7 @@ exports.agents = ({ csrf, user, agents, flash, err }) =>
       user,
       csrf,
       active: "agent-services",
+      pattern: "b",
       heading: "Agent services",
       subtitle:
         "One systemd unit per agent. Restarting an agent does not lose its memory or its conversation — both are on disk.",
@@ -146,24 +153,24 @@ exports.logs = ({ csrf, user, unit, lines, err }) =>
   shell(
     "Logs — " + unit,
     `${flashes({ err })}
-    ${card(
-      "Last " + lines.length + " lines · " + unit,
-      lines.length
-        ? `<pre class="logs">${esc(lines.join("\n"))}</pre>`
-        : `<p class="muted">Nothing logged.</p>`,
-      {
-        icon: "logs",
-        actions: `<a class="btn small" href="/services/logs?unit=${encodeURIComponent(
-          unit
-        )}">${icon("restart")} Refresh</a>`,
+    <section class="card fill-card grow">
+      <div class="card-head"><h2>${icon("logs")}Last ${esc(lines.length)} lines · ${esc(unit)}</h2>
+        <a class="btn small" href="/services/logs?unit=${encodeURIComponent(unit)}">${icon("restart")} Refresh</a></div>
+      ${
+        lines.length
+          ? `<div class="panel-body logbox" data-scroll-end><pre class="logs">${esc(lines.join("\n"))}</pre></div>`
+          : `<p class="muted">Nothing logged.</p>`
       }
-    )}
+    </section>
     <p class="muted small">Secrets are stripped from this view before it reaches the
       browser. Live tail from a shell: <code>journalctl -u ${esc(unit)} -f</code></p>`,
     {
       user,
       csrf,
       active: "services",
+      pattern: "b",
+      fill: true,
+      crumbs: [["OS Dashboard", "/"], ["Platform", null], ["Services", "/services"], [unit, null]],
       heading: unit,
       subtitle: "Journal output for this unit.",
       actions: `<a class="btn" href="/services">${icon("chevron")} All services</a>`,

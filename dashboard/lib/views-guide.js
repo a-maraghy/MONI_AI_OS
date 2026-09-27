@@ -6,7 +6,24 @@
  * moment you are looking at the panel wondering why the bot is silent.
  */
 
-const { esc, shell, icon } = require("./ui");
+const { esc, shell, icon, docLayout } = require("./ui");
+
+/** The sticky contents beside the guide. Labels are trusted markup (entities). */
+const GUIDE_TOC = [
+  ["how", "How it works"],
+  ["bot", "1 · Create a Telegram bot"],
+  ["userid", "2 · Find your user ID"],
+  ["create", "3 · Create the agent and its channel"],
+  ["talk", "4 · Talk to it"],
+  ["addons", "Add-ons"],
+  ["topics", "Groups &amp; topics"],
+  ["whatsapp", "WhatsApp"],
+  ["channels", "Telegram broadcast"],
+  ["memory", "Memory"],
+  ["obsidian", "Obsidian"],
+  ["trouble", "Troubleshooting"],
+  ["layout", "Where things live"],
+];
 
 exports.guide = ({ csrf, user, publicHost, publicPort, sshHost }) => {
   const host = esc(publicHost);
@@ -14,22 +31,7 @@ exports.guide = ({ csrf, user, publicHost, publicPort, sshHost }) => {
 
   return shell(
     "Guide",
-    `<nav class="toc card">
-      <a href="#how">How it works</a>
-      <a href="#bot">1 · Create a Telegram bot</a>
-      <a href="#userid">2 · Find your user ID</a>
-      <a href="#create">3 · Create the agent and its channel</a>
-      <a href="#talk">4 · Talk to it</a>
-      <a href="#addons">Add-ons</a>
-      <a href="#topics">Groups &amp; topics</a>
-      <a href="#whatsapp">WhatsApp</a>
-      <a href="#channels">Telegram broadcast</a>
-      <a href="#memory">Memory</a>
-      <a href="#obsidian">Obsidian</a>
-      <a href="#trouble">Troubleshooting</a>
-      <a href="#layout">Where things live</a>
-    </nav>
-
+    `${docLayout(`
     <div class="card" id="how">
       <h2>How it works</h2>
       <p>Two things, kept separate. An <strong>agent</strong> is a Claude session with its
@@ -360,11 +362,15 @@ exports.guide = ({ csrf, user, publicHost, publicPort, sshHost }) => {
         directory. Bot tokens go to the helper over stdin, never on a command line where
         another local user could read them from <code>/proc</code>.</p>
       <p class="muted small">Full architecture and threat model: the repository README.</p>
-    </div>`,
+    </div>`, `<section class="card hud"><div class="card-head"><h2>${icon("guide")}Contents</h2></div>
+      <nav class="toc" aria-label="Guide contents"><ul class="toc-list" data-toc>
+      ${GUIDE_TOC.map(([id, label], i) => `<li><a href="#${id}"${i === 0 ? ' class="on"' : ""}>${label}</a></li>`).join("")}
+      </ul></nav></section>`)}`,
     {
       user,
       csrf,
       active: "guide",
+      pattern: "c",
       heading: "Guide",
       subtitle:
         "How this system is put together, and how to get an agent talking to you.",

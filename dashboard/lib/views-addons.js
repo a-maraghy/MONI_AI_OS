@@ -148,6 +148,7 @@ exports.catalogue = ({ csrf, user, query, scope, results, probe, agents, channel
       user,
       csrf,
       active: "addons",
+      pattern: "c",
       heading: "Add-ons",
       subtitle: "Capabilities you can give an agent or a channel.",
     }

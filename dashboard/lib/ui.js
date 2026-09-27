@@ -348,11 +348,20 @@ function healthChip(chrome) {
     <span class="dot${h.cls === "ok" ? "" : " " + esc(h.cls)}"></span><span class="long">${esc(h.text)}</span><span class="short">${esc(h.short)}</span></a>`;
 }
 
-/** Wall clock, in the browser's own time zone once os.js has run. */
+/**
+ * Wall clock in the administrator's zone -- the same one the Command Center
+ * keeps (Africa/Cairo), so the two never disagree about the time. os.js ticks
+ * it; the server's own time stands in until then.
+ */
+const CLOCK_TZ = "Africa/Cairo";
 function clock() {
-  const now = new Date();
-  const hms = [now.getHours(), now.getMinutes(), now.getSeconds()].map((n) => String(n).padStart(2, "0")).join(":");
-  return `<div class="clock" data-clock aria-hidden="true"><b>${hms}</b><span>&nbsp;</span></div>`;
+  let hms = "";
+  try {
+    hms = new Intl.DateTimeFormat("en-GB", { timeZone: CLOCK_TZ, hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(new Date());
+  } catch (_) {
+    hms = new Date().toTimeString().slice(0, 8);
+  }
+  return `<div class="clock" data-clock data-tz="${CLOCK_TZ}" aria-hidden="true"><b>${hms}</b><span>${esc(CLOCK_TZ.split("/").pop())}</span></div>`;
 }
 
 /**
@@ -436,11 +445,9 @@ function shell(title, body, opts = {}) {
       </a>
       <nav class="top-tabs" aria-label="Dashboards">${tabs}</nav>
       <div class="top-right">
-        ${healthChip(chrome)}
-        ${opts.topExtra || ""}
+        ${opts.topExtra ? opts.topExtra : healthChip(chrome)}
         ${themeSwitch()}
-        ${opts.topEnd || ""}
-        ${clock()}
+        ${opts.topEnd ? opts.topEnd : clock()}
         <a class="whoami" href="/account" title="Your account">
           <span class="whoami-name">${esc(who.name)}</span>
           ${who.roleLabel ? `<span class="whoami-role">${esc(who.roleLabel)}</span>` : ""}

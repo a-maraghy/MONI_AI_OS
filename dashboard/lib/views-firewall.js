@@ -81,13 +81,41 @@ exports.index = ({ csrf, user, status, myIp, canManage, flash, err }) => {
     `${flashes({ msg: flash, err })}
     ${warnings}
 
-    <div class="statrow">
+    <div class="stats4">
       ${stat(blocked.length, "blocked now", "ban")}
       ${stat(auto, "by a jail", "shield")}
       ${stat(blocked.length - auto, "by hand", "lock")}
       ${stat(jails.length, jails.length === 1 ? "jail watching" : "jails watching", "eye")}
     </div>
 
+    ${
+      canManage
+        ? card(
+            "Block an address",
+            `<form method="post" action="/firewall/ban" class="fw-block"
+                  data-confirm="Add this block? The address will lose SSH and this panel at once.">
+              <input type="hidden" name="_csrf" value="${esc(csrf)}">
+              <label>Address or range
+                <span class="hint">one IP, or a CIDR block no wider than /24</span>
+                <input name="ip" required autocomplete="off" spellcheck="false"
+                  placeholder="203.0.113.45"
+                  pattern="[0-9A-Fa-f.:]{2,45}(/[0-9]{1,3})?"></label>
+              <label>Reason <span class="hint">optional, kept on the rule</span>
+                <input name="note" autocomplete="off" maxlength="60"
+                  placeholder="probing /wp-login"></label>
+              <button class="btn danger" type="submit">${icon("ban")} Block</button>
+            </form>
+            <p class="muted small">A block added here has no expiry — it stands until
+              somebody removes it. You are connected from
+              <span class="mono">${esc(myIp || "an unknown address")}</span>; a rule
+              covering it is refused, as is one covering this machine's own
+              addresses, because neither could be undone from this page.</p>`,
+            { icon: "ban", className: "fw-form" }
+          )
+        : ""
+    }
+
+    <div class="split three">
     ${card(
       "Blocked addresses",
       blocked.length
@@ -122,39 +150,8 @@ exports.index = ({ csrf, user, status, myIp, canManage, flash, err }) => {
             "Nothing is blocked",
             "No address is currently shut out, by a jail or by hand."
           ),
-      { icon: "ban" }
+      { icon: "ban", className: "hud", bodyClass: "tbl pad" }
     )}
-
-    ${
-      canManage
-        ? card(
-            "Block an address",
-            `<form method="post" action="/firewall/ban"
-                  data-confirm="Add this block? The address will lose SSH and this panel at once.">
-              <input type="hidden" name="_csrf" value="${esc(csrf)}">
-              <div class="grid cols-2">
-                <label>Address or range
-                  <span class="hint">one IP, or a CIDR block no wider than /24</span>
-                  <input name="ip" required autocomplete="off" spellcheck="false"
-                    placeholder="203.0.113.45"
-                    pattern="[0-9A-Fa-f.:]{2,45}(/[0-9]{1,3})?"></label>
-                <label>Reason <span class="hint">optional, kept on the rule</span>
-                  <input name="note" autocomplete="off" maxlength="60"
-                    placeholder="probing /wp-login"></label>
-              </div>
-              <div class="btn-row">
-                <button class="btn danger" type="submit">${icon("ban")} Block</button>
-              </div>
-            </form>
-            <p class="muted small">A block added here has no expiry — it stands until
-              somebody removes it. You are connected from
-              <span class="mono">${esc(myIp || "an unknown address")}</span>; a rule
-              covering it is refused, as is one covering this machine's own
-              addresses, because neither could be undone from this page.</p>`,
-            { icon: "ban" }
-          )
-        : ""
-    }
 
     ${card(
       "What is watching",
@@ -191,7 +188,7 @@ exports.index = ({ csrf, user, status, myIp, canManage, flash, err }) => {
             <span class="mono">recidive</span> jail watches the other jails: an address
             that keeps coming back after its ban expires gets a much longer one.</p>`
         : `<p class="muted">No jails are configured.</p>`,
-      { icon: "shield" }
+      { icon: "shield", bodyClass: "tbl pad" }
     )}
 
     ${card(
@@ -215,12 +212,15 @@ exports.index = ({ csrf, user, status, myIp, canManage, flash, err }) => {
             from here — closing one of them from a web page is how a panel locks
             itself out.</p>`
         : `<p class="muted">No ports are open.</p>`,
-      { icon: "network" }
-    )}`,
+      { icon: "network", bodyClass: "tbl pad" }
+    )}
+    </div>`,
     {
       user,
       csrf,
       active: "firewall",
+      pattern: "b",
+      fill: true,
       heading: "Firewall",
       subtitle:
         "Who can reach this machine. Blocks placed by the jails and blocks placed by hand, in one list.",

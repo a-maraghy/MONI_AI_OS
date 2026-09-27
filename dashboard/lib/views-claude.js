@@ -82,16 +82,23 @@ function tabs(active, user) {
     .join("")}</nav>`;
 }
 
-const page = (title, body, { user, csrf, active, subtitle, actions }) =>
+const page = (title, body, { user, csrf, active, subtitle, actions, pattern, fill, crumbs, assets, headingHtml }) =>
   shell(title, body, {
     user,
     csrf,
     active: "claude-" + active,
     heading: title,
+    headingHtml,
     subtitle,
     actions,
     wide: true,
+    pattern: pattern || "c",
+    fill,
+    crumbs,
+    assets,
   });
+
+const memCrumbs = (here) => [["OS Dashboard", "/"], ["Claude Code", null], ["Memory", "/claude/memory"], [here, null]];
 
 function factStatus(f) {
   if (f.superseded_by == null) return pill("ok", "current");
@@ -485,7 +492,7 @@ exports.fact = ({ csrf, user, data, flash, err }) => {
         </div>`
         : ""
     }`,
-    { user, csrf, active: "memory", subtitle: `<span class="mono">${esc(f.topic || "")}</span>` }
+    { user, csrf, active: "memory", pattern: "c", crumbs: memCrumbs("Fact #" + f.id), subtitle: `<span class="mono">${esc(f.topic || "")}</span>` }
   );
 };
 
@@ -518,7 +525,7 @@ exports.memfile = ({ csrf, user, file, flash, err }) => {
         actions: `<a class="btn small" href="/claude/memory">${icon("chevron")} Back to memory</a>`,
       }
     )}`,
-    { user, csrf, active: "memory", subtitle: `<span class="mono">${esc(file.project)}</span>` }
+    { user, csrf, active: "memory", pattern: "c", crumbs: memCrumbs(file.name), subtitle: `<span class="mono">${esc(file.project)}</span>` }
   );
 };
 
@@ -555,7 +562,7 @@ exports.sessionMemory = ({ csrf, user, data, uuid, err }) => {
         : `<p class="muted">Nothing from this session is in the index.</p>`,
       { icon: "logs" }
     )}`,
-    { user, csrf, active: "memory", subtitle: `<span class="mono">${esc(uuid)}</span>` }
+    { user, csrf, active: "memory", pattern: "b", crumbs: memCrumbs("Session " + String(uuid).slice(0, 8)), subtitle: `<span class="mono">${esc(uuid)}</span>` }
   );
 };
 
@@ -644,7 +651,7 @@ exports.sessions = ({ csrf, user, data, filters, flash, err }) => {
       }`,
       { icon: "logs" }
     )}`,
-    { user, csrf, active: "sessions", subtitle: "Every Claude Code transcript on this machine, across its three homes." }
+    { user, csrf, active: "sessions", pattern: "b", subtitle: "Every Claude Code transcript on this machine, across its three homes." }
   );
 };
 
@@ -813,6 +820,7 @@ exports.session = ({ csrf, user, s, flash, err }) => {
       user,
       csrf,
       active: "sessions",
+      pattern: "b",
       subtitle: `${esc(s.home_label)} · <span class="mono">${esc(s.uuid)}</span>`,
     }
   );
@@ -970,43 +978,47 @@ exports.running = ({ csrf, user, r, flash, err }) => {
     `<div class="cc-scroll"><table class="rows"><thead><tr>${head
       .map((h) => `<th${h.startsWith(">") ? ' class="right"' : ""}>${esc(h.replace(/^>/, ""))}</th>`)
       .join("")}</tr></thead><tbody data-cc-section="${key}">${sec[key]}</tbody></table></div>`;
+  const panel = (title, iconName, inner, cls) =>
+    `<section class="card${cls ? " " + cls : ""}"><div class="card-head"><h2>${icon(iconName)}${esc(title)}</h2></div>
+      <div class="panel-body">${inner}</div></section>`;
   return page(
     "Running now",
     `${tabs("running", user)}
     ${flashes({ msg: flash, err })}
-    <div data-cc-running>
-      <div class="statrow" data-cc-section="stats">${sec.stats}</div>
+    <div data-cc-running class="cc-live">
+      <div class="stats4" data-cc-section="stats">${sec.stats}</div>
       <p class="muted small cc-line">Updated <span data-cc-updated>${esc(stamp(data.ts))}</span> · refreshes every
         10 seconds while this tab is visible. <a href="/claude/running">Refresh now</a></p>
-      ${card(
-        "Claude Code sessions",
-        `${table("sessions", ["Session", "Entrypoint", "Status", "Model", "cwd", "pid", "Uptime", ">CPU", "Updated", ""])}
-        <p class="muted small">Stop sends an interrupt (SIGINT), the same as Ctrl-C, and only to a pid that
-          is both registered in a Claude home's <span class="mono">sessions/</span> folder and running the
-          claude binary. If it is still alive ten seconds later, Force stop (SIGTERM) appears.</p>`,
-        { icon: "activity" }
-      )}
-      <div class="grid cols-2">
-        ${card("Subagents working", table("subagents", ["Type", "Description", "Session", ">Size", "Last write"]), {
-          icon: "agents",
-        })}
-        ${card("Recent subagent hooks", table("hooks", ["When", "Event", "Type"]), { icon: "clock" })}
+      <div class="cc-board three">
+        ${panel(
+          "Claude Code sessions",
+          "activity",
+          `${table("sessions", ["Session", "Entrypoint", "Status", "Model", "cwd", "pid", "Uptime", ">CPU", "Updated", ""])}
+          <p class="muted small">Stop sends an interrupt (SIGINT), the same as Ctrl-C, and only to a pid that
+            is both registered in a Claude home's <span class="mono">sessions/</span> folder and running the
+            claude binary. If it is still alive ten seconds later, Force stop (SIGTERM) appears.</p>`,
+          "hud span2"
+        )}
+        ${panel("Subagents working", "agents", table("subagents", ["Type", "Description", "Session", ">Size", "Last write"]))}
+        ${panel(
+          "Other claude processes",
+          "cpu",
+          `${table("others", ["Binary", "pid", "User", "cwd", "Uptime", ">CPU"])}
+          <p class="muted small">Headless runs — fact extraction, agents answering a message — that have no
+            sessions entry and so cannot be stopped from here.</p>
+          <h3 class="sub-h">Supporting processes</h3>
+          ${table("services", ["Process", "pid", "User", "", "Uptime", ">CPU"])}`
+        )}
+        ${panel("Recent subagent hooks", "clock", table("hooks", ["When", "Event", "Type"]))}
+        ${panel(
+          "Memory jobs",
+          "memory",
+          `${table("jobs", ["Job", "pid", "User", "Parent", "Uptime", ">CPU"])}
+          <h3 class="sub-h">Agent and memory units</h3>
+          ${table("units", ["Unit", "State", "Memory", "Since"])}`
+        )}
       </div>
-      ${card(
-        "Other claude processes",
-        `${table("others", ["Binary", "pid", "User", "cwd", "Uptime", ">CPU"])}
-        <p class="muted small">Headless runs — fact extraction, agents answering a message — that have no
-          sessions entry and so cannot be stopped from here.</p>`,
-        { icon: "cpu" }
-      )}
-      <div class="grid cols-2">
-        ${card("Memory jobs", table("jobs", ["Job", "pid", "User", "Parent", "Uptime", ">CPU"]), { icon: "memory" })}
-        ${card("Agent and memory units", table("units", ["Unit", "State", "Memory", "Since"]), { icon: "services" })}
-      </div>
-      ${card("Supporting processes", table("services", ["Process", "pid", "User", "", "Uptime", ">CPU"]), {
-        icon: "services",
-      })}
     </div>`,
-    { user, csrf, active: "running", subtitle: "Claude Code processes, subagents and memory jobs on this machine." }
+    { user, csrf, active: "running", pattern: "a", subtitle: "Claude Code processes, subagents and memory jobs on this machine." }
   );
 };

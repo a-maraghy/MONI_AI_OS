@@ -371,3 +371,8 @@ pre.logs .t { color: var(--muted); }
 .cc-board.three > .span2 { grid-row: span 2; }
 .cc-board .panel-body .rows th { background: var(--panel-2); }
 .cc-board h3.sub-h { margin: 12px 0 4px; font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; }
+
+/* Signed-out cards (sign in, pairing, first-run setup): new tokens, more air. */
+.auth-wrap .card { padding: 22px 24px 20px; }
+.auth-wrap .card > h2 { font-size: 17px; margin-bottom: 14px; }
+.btn.w-full { justify-content: center; padding-top: 9px; padding-bottom: 9px; font-size: 13.5px; }

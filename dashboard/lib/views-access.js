@@ -104,6 +104,7 @@ exports.users = ({ csrf, user, users, roles, missingEmail = 0, flash, err }) =>
       user,
       csrf,
       active: "users",
+      pattern: "b",
       heading: "Users",
       subtitle: "Who can sign in to MONI AI OS, and what they are allowed to do once they are in.",
     }
@@ -392,6 +393,7 @@ exports.roles = ({ csrf, user, roles, flash, err }) =>
       user,
       csrf,
       active: "roles",
+      pattern: "b",
       heading: "Roles",
       subtitle: "Permission sets you assign to users. Change a role and everyone holding it changes with it.",
     }

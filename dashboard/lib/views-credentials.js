@@ -9,7 +9,31 @@
  * length and the first and last few characters.
  */
 
-const { esc, shell, card, flashes, icon, stamp } = require("./ui");
+const { esc, shell, card, flashes, icon, stamp, can, docLayout, tocCard } = require("./ui");
+
+/**
+ * The master list beside every credential page: each credential this panel
+ * manages, with a dot for whether it is set. The voice key is listed only for
+ * those who may manage it.
+ */
+function credNav(user, credentials, active, voiceConfigured) {
+  const items = (credentials || []).map(
+    (c) => `<a href="/credentials/${esc(c.name)}"${active === c.name ? ' class="on" aria-current="page"' : ""}>
+      <span class="cred-ic">${icon("credentials", 16)}</span><span><b>${esc(c.label || c.name)}</b><small>${esc(
+        String(c.path || c.name).split("/").pop()
+      )}</small></span><span class="dot${c.configured ? "" : " off"}"></span></a>`
+  );
+  if (can(user, "voice.manage")) {
+    items.push(`<a href="/credentials/openai-voice"${active === "openai-voice" ? ' class="on" aria-current="page"' : ""}>
+      <span class="cred-ic">${icon("voice", 16)}</span><span><b>OpenAI voice</b><small>voice only</small></span>${
+        voiceConfigured == null ? "<span></span>" : `<span class="dot${voiceConfigured ? "" : " off"}"></span>`
+      }</a>`);
+  }
+  return `<section class="card hud cred-list" aria-label="Credentials">
+    <div class="card-head"><h2>${icon("credentials")}Credentials</h2>${
+      active ? `<a class="small" href="/credentials">All</a>` : ""
+    }</div>${items.join("")}</section>`;
+}
 
 /**
  * The OpenAI voice key, as a card on the index. Only the last four characters
@@ -68,7 +92,7 @@ exports.index = ({ csrf, user, credentials, probe, flash, err, voice }) =>
         : ""
     }
 
-    ${voiceSummary(voice)}
+    ${docLayout(`${voiceSummary(voice)}
 
     ${credentials
       .map((c) =>
@@ -87,27 +111,31 @@ exports.index = ({ csrf, user, credentials, probe, flash, err, voice }) =>
             <a class="btn primary small" href="/credentials/${esc(c.name)}">
               ${icon("edit")} ${c.configured ? "Replace" : "Set"}</a>
           </div>`,
-          { icon: "credentials" }
+          { icon: "credentials", className: "hud" }
         )
       )
-      .join("")}`,
+      .join("")}`, credNav(user, credentials, null, voice && !voice.error ? !!voice.configured : null))}`,
     {
       user,
       csrf,
       active: "credentials",
+      pattern: "c",
       heading: "Credentials",
       subtitle:
         "Secrets the agents need. Stored on disk readable only by the agent account, never displayed back.",
     }
   );
 
-exports.detail = ({ csrf, user, credential, flash, err }) => {
+exports.detail = ({ csrf, user, credential, credentials, flash, err }) => {
   const c = credential;
   const present = c.present || {};
+  const toc = [["c-state", "Current state"], ["c-file", "File contents"], ["c-set", "Set a value"]];
+  if (c.name === "claude") toc.push(["c-where", "Where to get this"]);
+  if (Object.keys(present).length) toc.push(["c-remove", "Remove"]);
 
   return shell(
     c.label,
-    `${flashes({ msg: flash, err })}
+    `${docLayout(`${flashes({ msg: flash, err })}
 
     ${card(
       "Current state",
@@ -130,14 +158,14 @@ exports.detail = ({ csrf, user, credential, flash, err }) => {
           )
           .join("")}
       </table>`,
-      { icon: "info" }
+      { icon: "info", id: "c-state", className: "hud" }
     )}
 
     ${card(
       "File contents",
       `<p class="muted small">Secret values are masked. Comments and other lines are shown as they are.</p>
        <pre>${esc(c.masked || "(file does not exist yet)")}</pre>`,
-      { icon: "file" }
+      { icon: "file", id: "c-file" }
     )}
 
     ${card(
@@ -157,7 +185,7 @@ exports.detail = ({ csrf, user, credential, flash, err }) => {
       <p class="muted small mt-12">Setting one key clears the other —
         the runtime uses whichever it finds, and having both set makes it ambiguous which
         one is actually in use.</p>`,
-      { icon: "credentials" }
+      { icon: "credentials", id: "c-set", className: "hud" }
     )}
 
     ${
@@ -177,7 +205,7 @@ exports.detail = ({ csrf, user, credential, flash, err }) => {
             <div class="alert info">${icon("info")}<div>Changing this affects every agent —
               they all authenticate with the same credential. Running agents pick it up on
               their next restart.</div></div>`,
-            { icon: "guide" }
+            { icon: "guide", id: "c-where" }
           )
         : ""
     }
@@ -199,14 +227,16 @@ exports.detail = ({ csrf, user, credential, flash, err }) => {
                 </form>`
               )
               .join(" ")}`,
-            { icon: "trash", className: "danger-zone" }
+            { icon: "trash", className: "danger-zone", id: "c-remove" }
           )
         : ""
-    }`,
+    }`, credNav(user, credentials || [c], c.name, null) + tocCard(toc))}`,
     {
       user,
       csrf,
       active: "credentials",
+      pattern: "c",
+      crumbs: [["OS Dashboard", "/"], ["Security", null], ["Credentials", "/credentials"], [c.label, null]],
       heading: c.label,
       subtitle: "Shared by every agent on this machine.",
       actions: `<a class="btn" href="/credentials">${icon("chevron")} All credentials</a>`,
@@ -220,7 +250,7 @@ function option(value, label, current) {
   return `<option value="${esc(value)}"${value === current ? " selected" : ""}>${esc(label)}</option>`;
 }
 
-exports.voice = ({ csrf, user, voice: v, models, voices, transcribeModels, test, flash, err }) => {
+exports.voice = ({ csrf, user, credentials, voice: v, models, voices, transcribeModels, test, flash, err }) => {
   const known = (list, id) => list.some((m) => (m.id || m) === id);
   const modelList = known(models, v.model) ? models : [{ id: v.model, label: v.model }, ...models];
   const tModels = known(transcribeModels, v.transcribe_model)
@@ -228,9 +258,11 @@ exports.voice = ({ csrf, user, voice: v, models, voices, transcribeModels, test,
     : [{ id: v.transcribe_model, label: v.transcribe_model }, ...transcribeModels];
   const voiceList = voices.includes(v.voice) ? voices : [v.voice, ...voices];
 
+  const toc = [["v-state", "Current state"], ["v-key", v.configured ? "Replace the key" : "Add the key"], ["v-voice", "Voice"]];
+  if (v.configured) toc.push(["v-remove", "Remove"]);
   return shell(
     "OpenAI voice",
-    `${flashes({ msg: flash, err })}
+    `${docLayout(`${flashes({ msg: flash, err })}
     ${
       test
         ? `<div class="alert ${test.ok ? "good" : "bad"}" id="voice-test-result">${icon(test.ok ? "check" : "alert")}<div>
@@ -258,7 +290,7 @@ exports.voice = ({ csrf, user, voice: v, models, voices, transcribeModels, test,
             </form>`
           : ""
       }`,
-      { icon: "info" }
+      { icon: "info", id: "v-state", className: "hud" }
     )}
 
     ${card(
@@ -272,7 +304,7 @@ exports.voice = ({ csrf, user, voice: v, models, voices, transcribeModels, test,
       <p class="muted small mt-12">Create one at platform.openai.com under API keys. A project key
         restricted to the Realtime and Audio endpoints is enough. This is the panel's own key —
         separate from anything the Odoo walkthrough uses.</p>`,
-      { icon: "credentials" }
+      { icon: "credentials", id: "v-key" }
     )}
 
     ${card(
@@ -287,7 +319,7 @@ exports.voice = ({ csrf, user, voice: v, models, voices, transcribeModels, test,
           <select name="transcribe_model">${tModels.map((m) => option(m.id, m.label + " (" + m.id + ")", v.transcribe_model)).join("")}</select></label>
         <button class="btn primary" type="submit">${icon("save")} Save voice settings</button>
       </form>`,
-      { icon: "voice" }
+      { icon: "voice", id: "v-voice" }
     )}
 
     ${
@@ -301,14 +333,16 @@ exports.voice = ({ csrf, user, voice: v, models, voices, transcribeModels, test,
               <input type="hidden" name="_csrf" value="${esc(csrf)}">
               <button class="btn danger small" type="submit" id="voice-remove">${icon("trash")} Remove key</button>
             </form>`,
-            { icon: "trash", className: "danger-zone" }
+            { icon: "trash", className: "danger-zone", id: "v-remove" }
           )
         : ""
-    }`,
+    }`, credNav(user, credentials, "openai-voice", !!v.configured) + tocCard(toc))}`,
     {
       user,
       csrf,
       active: "credentials",
+      pattern: "c",
+      crumbs: [["OS Dashboard", "/"], ["Security", null], ["Credentials", "/credentials"], ["OpenAI voice", null]],
       heading: "OpenAI voice",
       subtitle: "Voice only: OpenAI hears and speaks, Claude thinks. Administrators only.",
       actions: `<a class="btn" href="/credentials">${icon("chevron")} All credentials</a>`,

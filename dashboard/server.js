@@ -575,6 +575,7 @@ app.get("/", requireAuth, requirePerm("os.view"), async (req, res) => {
     agents: () => priv.agentList(),
     channels: () => priv.channelList(),
     probe: () => priv.systemProbe(),
+    audit: () => (req.perm.can("audit.view") ? priv.auditTail(14) : Promise.resolve(null)),
   });
   res.send(
     views.osDashboard({
@@ -587,7 +588,8 @@ app.get("/", requireAuth, requirePerm("os.view"), async (req, res) => {
       agents: data.agents || [],
       channels: data.channels || [],
       probe: data.probe || null,
-      logins: db.recentLogins(8),
+      logins: db.recentLogins(20),
+      audit: data.audit || null,
       users: req.perm.can("users.view") ? db.listUsers() : null,
       roles: req.perm.can("roles.view") ? db.listRoles() : null,
       devices: req.perm.can("devices.view") ? db.listDevices() : null,
@@ -956,12 +958,25 @@ app.get("/agents/:slug", requireAuth, requirePerm("agents.view"), requireAgentSc
   } catch (_) {
     /* a vault with no memory/ folder yet is normal, not an error */
   }
+  // The journal tail on the overview is the Logs tab's own read -- same
+  // helper call, same permission, same redaction -- just fewer lines.
+  let journal = null;
+  let journalErr = null;
+  if (req.perm.canAgent("agents.logs", agent.slug)) {
+    try {
+      journal = (await priv.agentLogs(agent.slug, 80)).lines;
+    } catch (e) {
+      journalErr = e.message;
+    }
+  }
   res.send(
     agentViews.detail({
       csrf: res.locals.csrf,
       user: ctx(req),
       agent,
       notes,
+      journal,
+      journalErr,
       flash: req.query.msg || null,
       err: req.query.err || null,
     })
@@ -1100,6 +1115,24 @@ app.post("/agents/:slug/memory/note", requireAuth, requirePerm("agents.memory.wr
     );
   } catch (e) {
     res.redirect(agentRedirect(agent.slug, "/memory", { err: e.message }));
+  }
+});
+
+/**
+ * The overview's journal tail, refreshed in place. The same permission and the
+ * same redacting helper call as the Logs page; JSON so a lapsed session gets a
+ * status code rather than a sign-in form in the middle of the panel.
+ */
+app.get("/api/agents/:slug/logs", async (req, res) => {
+  if (!req.me) return res.status(401).json({ error: "Sign in first." });
+  if (!req.perm.can("agents.logs")) return res.status(403).json({ error: "Your role does not include agent logs." });
+  const slug = String(req.params.slug || "");
+  if (!SLUG_RE.test(slug) || !req.perm.seesAgent(slug)) return res.status(404).json({ error: "No such agent." });
+  try {
+    const lines = (await priv.agentLogs(slug, 80)).lines;
+    res.json({ html: agentViews.journalHtml(lines), count: lines.length });
+  } catch (e) {
+    res.status(502).json({ error: e.message });
   }
 });
 
@@ -1805,10 +1838,12 @@ app.get("/credentials/openai-voice", requireAuth, requirePerm("voice.manage"), a
   const v = await voiceSettings();
   if (v.error) return res.status(500).send(views.error("Voice settings unavailable", v.error));
   const test = req.query.test ? { ok: req.query.test === "ok", text: String(req.query.t || "").slice(0, 600) } : null;
+  const list = req.perm.can("credentials.view") ? await priv.credentialList().catch(() => []) : [];
   res.send(
     credentialViews.voice({
       csrf: res.locals.csrf,
       user: ctx(req),
+      credentials: list,
       voice: v,
       models: voice.MODELS,
       voices: voice.VOICES,
@@ -1903,11 +1938,13 @@ app.get("/credentials/:name", requireAuth, requirePerm("credentials.view"), asyn
   const name = String(req.params.name || "");
   try {
     const credential = await priv.credentialGet(name);
+    const list = await priv.credentialList().catch(() => [credential]);
     res.send(
       credentialViews.detail({
         csrf: res.locals.csrf,
         user: ctx(req),
         credential,
+        credentials: list,
         flash: req.query.msg || null,
         err: req.query.err || null,
       })

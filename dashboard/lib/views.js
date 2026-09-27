@@ -106,13 +106,36 @@ exports.setupDone = () =>
 
 /* -------------------------------------------------------- OS dashboard --- */
 
+/** A vitals ring: a HUD dial with ticks, filled to `pct`. */
+function ring(key, label, pct, sub) {
+  const c = 2 * Math.PI * 24;
+  const p = Math.max(0, Math.min(100, Math.round(pct || 0)));
+  let ticks = "";
+  for (let k = 0; k < 24; k++) {
+    const a = (k / 24) * Math.PI * 2;
+    ticks += `<line class="tick" x1="${(30 + 29 * Math.cos(a)).toFixed(1)}" y1="${(30 + 29 * Math.sin(a)).toFixed(1)}" x2="${(30 + 27 * Math.cos(a)).toFixed(1)}" y2="${(30 + 27 * Math.sin(a)).toFixed(1)}"/>`;
+  }
+  return `<div class="ring-cell" data-ring="${esc(key)}">
+    <div class="ring"><svg viewBox="0 0 60 60" aria-hidden="true">${ticks}
+      <circle class="trk" cx="30" cy="30" r="24" fill="none" stroke-width="4.5"/>
+      <circle class="val${p > 90 ? " bad" : p > 75 ? " hot" : ""}" cx="30" cy="30" r="24" fill="none" stroke-width="4.5" stroke-linecap="round" stroke-dasharray="${((c * p) / 100).toFixed(1)} ${c.toFixed(1)}"/>
+    </svg><b>${p}%</b></div>
+    <span class="ring-l">${esc(label)}</span><small>${esc(sub)}</small>
+  </div>`;
+}
+
+const gib = (n) => (n == null ? "—" : (n / 1024 ** 3).toFixed(n >= 10 * 1024 ** 3 ? 0 : 1));
+
 /**
- * The OS dashboard: the machine, not the fleet.
+ * The OS dashboard: the machine, not the fleet -- "Machine core".
  *
- * Since the sidebar split, this page is the whole of the OS story -- so it
- * carries the detail that used to be a click away. It still opens with what is
- * wrong rather than what is fine, because a green wall of statistics is the
- * least useful thing an operations page can show you.
+ * One screen (pattern A). The centre is the host drawn as a tree in cross
+ * section: a growth ring per day of uptime, capped at 60, and a root out to
+ * every system service, with sap running along the healthy ones. Around it,
+ * the machine's vitals, what it is capable of, who can reach it, and what
+ * happened lately. It still opens with what is wrong rather than what is fine:
+ * a green wall of statistics is the least useful thing an operations page can
+ * show you.
  */
 exports.osDashboard = ({
   csrf,
@@ -128,16 +151,18 @@ exports.osDashboard = ({
   users,
   roles,
   devices,
+  audit,
 }) => {
   const svcDown = services.filter((s) => s.active !== "active");
   const running = agents.filter((a) => a.state && a.state.active === "active").length;
+  const failedAgents = agents.filter((a) => a.state && a.state.active === "failed").length;
   const jails = (status && status.jails) || {};
   const sshd = jails.sshd || { banned: 0, total_failed: 0 };
   const panelJail = jails["moni-dashboard"] || { banned: 0, total_failed: 0 };
   const files = (probe && probe.files) || {};
   const binaries = (probe && probe.binaries) || {};
 
-  const failedLogins = logins.filter((l) => l.outcome === "fail").length;
+  const failedLogins = logins.filter((l) => l.outcome === "fail" || l.outcome === "failed").length;
   const pendingEnrol = users ? users.filter((u) => !u.totp_confirmed && !u.disabled).length : 0;
   const disabledUsers = users ? users.filter((u) => u.disabled).length : 0;
 
@@ -186,180 +211,209 @@ exports.osDashboard = ({
   ];
   const missing = capabilities.filter(([, ok]) => !ok).length;
 
+  const DETAIL = new Map(require("./catalog").OS_SERVICES.map((s) => [s.unit, s]));
+  const nodes = services.map((s) => ({
+    name: (DETAIL.get(s.unit) || {}).name || s.unit,
+    unit: s.unit,
+    state: s.active === "active" ? "ok" : s.active === "failed" ? "bad" : "warn",
+  }));
+  if (agents.length || can(user, "agents.view")) {
+    nodes.push({
+      name: "Agent fleet",
+      unit: running + " of " + agents.length + " running",
+      state: failedAgents ? "bad" : running || !agents.length ? "ok" : "warn",
+      fleet: true,
+    });
+  }
+  const cpuPct = Math.min(100, (stats.loadavg[0] / Math.max(1, stats.cpus)) * 100);
+  const ramPct = stats.memTotal ? (stats.memUsed / stats.memTotal) * 100 : 0;
+  const diskPct = stats.diskTotal ? (stats.diskUsed / stats.diskTotal) * 100 : 0;
+  const days = Math.max(1, Math.min(60, Math.floor(stats.uptimeSec / 86400) || 1));
+  const coreData = {
+    days,
+    vitals: [cpuPct / 100, ramPct / 100, diskPct / 100],
+    nodes: nodes.map((n) => ({ state: n.state, fleet: !!n.fleet })),
+  };
+  const nodeHref = (n) =>
+    n.fleet ? "/agents/dashboard" : can(user, "services.logs") ? "/services/logs?unit=" + encodeURIComponent(n.unit) : "/services";
+  const upCount = services.length - svcDown.length;
+
+  const loginRows = logins.slice(0, 20).map(
+    (l) => `<tr>
+      <td class="mono nowrap">${esc(stamp(l.ts).slice(5, 16))}</td>
+      <td>${esc(l.username || "—")} <span class="mono small muted">${esc(l.ip || "")}</span></td>
+      <td><span class="pill ${l.outcome === "success" ? "ok" : l.outcome === "admin" ? "neutral" : "bad"}">${esc(l.outcome)}</span>${
+        l.detail ? ` <span class="muted small">${esc(l.detail)}</span>` : ""
+      }</td>
+    </tr>`
+  );
+
   return shell(
     "OS Dashboard",
-    `${warnings
-      .map((w) => `<div class="alert warn">${icon("alert")}<div>${w}</div></div>`)
-      .join("")}
+    `${
+      warnings.length
+        ? `<div class="alert warn">${icon("alert")}<div>${warnings.join(" &nbsp;·&nbsp; ")}</div></div>`
+        : ""
+    }
     ${statusError ? `<div class="alert bad">${icon("alert")}<div>Could not query privileged status: ${esc(statusError)}</div></div>` : ""}
 
-    <div class="statrow">
-      ${stat(services.length - svcDown.length + " / " + services.length, "services healthy", "services")}
-      ${stat(capabilities.length - missing + " / " + capabilities.length, "capabilities installed", "check")}
-      ${stat(users ? users.length : "—", "user accounts", "users")}
-      ${stat(sshd.banned + panelJail.banned, "IPs banned right now", "shield")}
-    </div>
-
-    <div class="grid cols-2">
-      ${card(
-        "Machine",
-        `<table class="kv">
-          <tr><td>Host</td><td class="mono">${esc(stats.hostname)}</td></tr>
-          <tr><td>OS</td><td class="small">${esc(stats.platform)} · ${esc(stats.arch)}</td></tr>
-          <tr><td>Uptime</td><td>${esc(duration(stats.uptimeSec))}</td></tr>
-          <tr><td>CPU</td><td>${stats.cpus} vCPU${
-            stats.cpuModel ? ` <span class="muted small">${esc(stats.cpuModel)}</span>` : ""
-          }</td></tr>
-          <tr><td>Load</td><td class="mono small">${stats.loadavg
+    <div class="ov-grid">
+      <div class="col">
+        <section class="card hud" data-vitals>
+          <div class="card-head"><h2>${icon("cpu")}Machine</h2><span class="card-aside mono">${esc(stats.cpus)} vCPU</span></div>
+          <div class="rings">
+            ${ring("cpu", "CPU", cpuPct, stats.cpus + " vCPU")}
+            ${ring("ram", "RAM", ramPct, gib(stats.memUsed) + " / " + gib(stats.memTotal) + " GB")}
+            ${stats.diskTotal != null ? ring("disk", "Disk", diskPct, gib(stats.diskUsed) + " / " + gib(stats.diskTotal) + " GB") : ""}
+          </div>
+          <div class="vit-foot"><span>Load <span class="mono" data-load>${stats.loadavg
             .map((n) => n.toFixed(2))
-            .join("  ")} <span class="muted">(1m 5m 15m)</span></td></tr>
-        </table>
-        <div class="mt-16">
-          ${meter("memory", "Memory", stats.memUsed, stats.memTotal)}
-          ${stats.diskTotal != null ? meter("disk", "Disk /", stats.diskUsed, stats.diskTotal) : ""}
-        </div>`,
-        { icon: "cpu" }
-      )}
-
-      ${card(
-        "System services",
-        services.length
-          ? `<table class="kv">
-              ${services
-                .map(
-                  (s) => `<tr><td>${esc(s.unit)}</td><td>${statusPill(s.active)}</td></tr>`
-                )
-                .join("")}
-            </table>`
-          : `<p class="muted">No services reported.</p>`,
-        { icon: "services", actions: `<a class="btn small" href="/services">Manage</a>` }
-      )}
-    </div>
-
-    <div class="grid cols-2">
-      ${card(
-        "Capabilities",
-        `<table class="kv">
-          ${capabilities.map(([label, ok, note]) => capRow(label, ok, note)).join("")}
-        </table>
-        ${
-          missing
-            ? `<p class="muted small mt-12">Missing pieces are installed by the deploy scripts in
-               <code>deploy/</code>; the guide says which script covers which.</p>`
-            : ""
-        }`,
-        { icon: "check", actions: `<a class="btn small" href="/guide">Guide</a>` }
-      )}
-
-      ${card(
-        "Platform",
-        `<table class="kv">
-          <tr><td>Runtime revision</td><td class="mono small">${esc(
-            (probe && probe.runtime_revision) || "—"
-          )}</td></tr>
-          <tr><td>Node</td><td class="mono small">${esc(stats.node)}</td></tr>
-          <tr><td>Panel uptime</td><td>${esc(duration(stats.panelUptimeSec))}
-            <span class="muted small">${esc(bytes(stats.panelRssBytes))} resident</span></td></tr>
-          <tr><td>Agents</td><td>${running} running of ${agents.length}
-            ${
-              agents.length
-                ? `<a class="muted small" href="/agents/dashboard">agents dashboard</a>`
-                : ""
+            .join(" · ")}</span></span><span>live</span></div>
+          <table class="kv">
+            <tr><td>Host</td><td class="mono">${esc(stats.hostname)}</td></tr>
+            <tr><td>OS</td><td class="small">${esc(stats.platform)} · ${esc(stats.arch)}</td></tr>
+            <tr><td>Uptime</td><td>${esc(duration(stats.uptimeSec))}</td></tr>
+            <tr><td>CPU</td><td>${stats.cpus} vCPU${
+              stats.cpuModel ? ` <span class="muted small">${esc(stats.cpuModel)}</span>` : ""
             }</td></tr>
-          <tr><td>Channels</td><td>${channels.length} configured</td></tr>
-        </table>`,
-        { icon: "activity" }
-      )}
-    </div>
+          </table>
+          <div class="sr">${meter("memory", "Memory", stats.memUsed, stats.memTotal)}${
+            stats.diskTotal != null ? meter("disk", "Disk /", stats.diskUsed, stats.diskTotal) : ""
+          }</div>
+        </section>
+        <section class="card grow scroll-y">
+          <div class="card-head"><h2>${icon("activity")}Platform</h2></div>
+          <table class="kv">
+            <tr><td>Runtime revision</td><td class="mono small">${esc((probe && probe.runtime_revision) || "—")}</td></tr>
+            <tr><td>Node</td><td class="mono small">${esc(stats.node)}</td></tr>
+            <tr><td>Panel uptime</td><td>${esc(duration(stats.panelUptimeSec))}
+              <span class="muted small">${esc(bytes(stats.panelRssBytes))} resident</span></td></tr>
+            <tr><td>Agents</td><td>${running} running of ${agents.length}
+              ${agents.length ? `<a class="small" href="/agents/dashboard">agents dashboard</a>` : ""}</td></tr>
+            <tr><td>Channels</td><td>${channels.length} configured</td></tr>
+          </table>
+        </section>
+      </div>
 
-    <div class="grid cols-2">
-      ${card(
-        "Access",
-        users
-          ? `<table class="kv">
-              <tr><td>Users</td><td>${users.length}
-                ${disabledUsers ? `<span class="muted small">${disabledUsers} disabled</span>` : ""}</td></tr>
-              <tr><td>Awaiting enrolment</td><td>${
-                pendingEnrol
-                  ? `<span class="pill warn">${pendingEnrol}</span>`
-                  : `<span class="pill ok">none</span>`
-              }</td></tr>
-              <tr><td>Roles</td><td>${roles ? roles.length : "—"}</td></tr>
-              <tr><td>Paired devices</td><td>${devices ? devices.length : "—"}</td></tr>
-            </table>
-            ${
-              roles
-                ? `<div class="chips mt-12">${roles
-                    .map(
-                      (r) =>
-                        `<a class="chip-link" href="/roles/${r.id}">${esc(r.label)}
-                           <span class="muted">${r.user_count}</span></a>`
-                    )
-                    .join("")}</div>`
-                : ""
-            }`
-          : `<p class="muted">Your role does not include viewing users.</p>`,
-        {
-          icon: "users",
-          actions: users ? `<a class="btn small" href="/users">Manage</a>` : "",
-        }
-      )}
+      <section class="core-hero" aria-label="Machine core: services grown from the host" data-machine-core="${esc(JSON.stringify(coreData))}">
+        <canvas aria-hidden="true"></canvas>
+        <div class="hero-title"><h2>Growth rings</h2><p>Each ring a day of uptime${
+          days >= 60 ? " (the last 60)" : ""
+        } · each root a service</p></div>
+        <span class="pill ${svcDown.length ? "warn" : "ok"} hero-pill">${upCount} of ${services.length} services up</span>
+        <div class="node-labels">${nodes
+          .map(
+            (n) => `<a class="node-lbl ${n.state === "ok" ? "" : esc(n.state)}" href="${esc(nodeHref(n))}">
+              <span class="dot${n.state === "ok" ? "" : " " + esc(n.state)}"></span>${esc(n.name)} <small>${esc(n.unit)}</small></a>`
+          )
+          .join("")}</div>
+        <div class="hero-legend"><span><i class="dot"></i>active</span><span><i class="dot warn"></i>inactive</span><span><i class="dot bad"></i>failed</span></div>
+        <div class="hero-stats">
+          <a href="/services"><b>${upCount} / ${services.length}</b><span>services</span></a>
+          <a href="/guide"><b>${capabilities.length - missing} / ${capabilities.length}</b><span>capabilities</span></a>
+          ${users ? `<a href="/users"><b>${users.length}</b><span>users</span></a>` : ""}
+          <div><b>${sshd.banned + panelJail.banned}</b><span>IPs banned</span></div>
+        </div>
+      </section>
 
-      ${card(
-        "Security",
-        `<table class="kv">
-          <tr><td>IPs banned (SSH)</td><td>${sshd.banned}</td></tr>
-          <tr><td>Failed SSH auths</td><td>${sshd.total_failed}</td></tr>
-          <tr><td>Panel bans</td><td>${panelJail.banned}</td></tr>
-          <tr><td>Failed panel sign-ins</td><td>${
-            failedLogins
-              ? `<span class="pill warn">${failedLogins} of the last ${logins.length}</span>`
-              : `<span class="pill ok">none recently</span>`
-          }</td></tr>
-        </table>`,
-        {
-          icon: "shield",
-          // These counts are the firewall's, so the page that can act on them is
-          // one click away rather than something to go looking for.
-          // Wrapped: the head is a space-between flex, so two loose buttons
-          // would be pushed to opposite ends of it.
-          actions: `<div class="btn-row">${
-            can(user, "firewall.view")
-              ? `<a class="btn small" href="/firewall">${icon("ban")} Firewall</a>`
-              : ""
-          }<a class="btn small" href="/audit">Audit log</a></div>`,
-        }
-      )}
-    </div>
+      <div class="col">
+        <section class="card hud">
+          <div class="card-head"><h2>${icon("shield")}Security</h2>
+            <div class="btn-row">${
+              can(user, "firewall.view") ? `<a class="btn small" href="/firewall">${icon("ban")} Firewall</a>` : ""
+            }<a class="btn small" href="/audit">Audit</a></div></div>
+          <div class="sec-grid">
+            <div class="sec-cell"><b data-stat="banned">${sshd.banned}</b><span>IPs banned (SSH)</span></div>
+            <div class="sec-cell"><b>${panelJail.banned}</b><span>panel bans</span></div>
+            <div class="sec-cell"><b data-stat="failed">${sshd.total_failed}</b><span>failed SSH auths</span></div>
+            <div class="sec-cell${failedLogins ? " warn" : ""}"><b>${failedLogins} / ${logins.length}</b><span>failed panel sign-ins</span></div>
+          </div>
+          <div class="muted small">fail2ban jails <span class="mono">sshd</span>, <span class="mono">moni-dashboard</span></div>
+        </section>
+        <section class="card grow scroll-y">
+          <div class="card-head"><h2>${icon("users")}Access</h2>${users ? `<a class="btn small" href="/users">Manage</a>` : ""}</div>
+          ${
+            users
+              ? `<table class="kv">
+                  <tr><td>Users</td><td>${users.length}
+                    ${disabledUsers ? `<span class="muted small">${disabledUsers} disabled</span>` : ""}</td></tr>
+                  <tr><td>Awaiting enrolment</td><td>${
+                    pendingEnrol ? `<span class="pill warn">${pendingEnrol}</span>` : `<span class="pill ok">none</span>`
+                  }</td></tr>
+                  <tr><td>Roles</td><td>${roles ? roles.length : "—"}</td></tr>
+                  <tr><td>Paired devices</td><td>${devices ? devices.length : "—"}</td></tr>
+                </table>
+                ${
+                  roles
+                    ? `<div class="chips mt-8">${roles
+                        .map(
+                          (r) =>
+                            `<a class="chip-link" href="/roles/${r.id}">${esc(r.label)}
+                               <span class="muted">${r.user_count}</span></a>`
+                        )
+                        .join("")}</div>`
+                    : ""
+                }`
+              : `<p class="muted small">Your role does not include viewing users.</p>`
+          }
+        </section>
+      </div>
 
-    ${card(
-      "Recent sign-ins",
-      logins.length
-        ? `<table class="rows">
-            <thead><tr><th>When</th><th>IP</th><th>User</th><th>Result</th></tr></thead>
-            <tbody>${logins
+      <div class="ov-bottom">
+        <section class="card">
+          <div class="card-head"><h2>${icon("check")}Capabilities</h2><a class="btn small" href="/guide">Guide</a></div>
+          <div class="panel-body">
+            <ul class="cap-list">${capabilities
               .map(
-                (l) => `<tr>
-                  <td class="mono small">${esc(stamp(l.ts))}</td>
-                  <td class="mono small">${esc(l.ip || "—")}</td>
-                  <td>${esc(l.username || "—")}</td>
-                  <td><span class="pill ${
-                    l.outcome === "success" ? "ok" : l.outcome === "admin" ? "neutral" : "bad"
-                  }">${esc(l.outcome)}</span>
-                    ${l.detail ? `<span class="muted small"> ${esc(l.detail)}</span>` : ""}</td>
-                </tr>`
+                ([label, ok, note]) =>
+                  `<li title="${esc(note)}"><span class="${ok ? "cap-ok" : "cap-miss"}">${icon(ok ? "check" : "close", 16)}</span>
+                   <span>${esc(label)} <span class="sr">${ok ? "installed" : "missing"}</span><small>${esc(note)}</small></span></li>`
               )
-              .join("")}</tbody></table>`
-        : `<p class="muted">No sign-ins recorded yet.</p>`,
-      { icon: "audit" }
-    )}`,
+              .join("")}</ul>
+            ${
+              missing
+                ? `<p class="muted small mt-8">Missing pieces are installed by the deploy scripts in
+                   <code>deploy/</code>; the guide says which script covers which.</p>`
+                : ""
+            }
+          </div>
+        </section>
+        <section class="card">
+          <div class="card-head"><h2>${icon("keys")}Recent sign-ins</h2><span class="card-aside">last ${logins.length}</span></div>
+          <div class="panel-body">${
+            loginRows.length
+              ? `<table class="rows tight"><thead><tr><th>When</th><th>User · IP</th><th>Result</th></tr></thead><tbody>${loginRows.join("")}</tbody></table>`
+              : `<p class="muted">No sign-ins recorded yet.</p>`
+          }</div>
+        </section>
+        <section class="card">
+          <div class="card-head"><h2>${icon("audit")}Recent audit</h2>${
+            can(user, "audit.view") ? `<a class="btn small" href="/audit">Audit log</a>` : ""
+          }</div>
+          <div class="panel-body">${
+            audit && audit.length
+              ? `<ul class="feed">${audit
+                  .map(
+                    (e) => `<li><time>${esc(stamp(e.ts).slice(11, 16))}</time><span><span class="act">${esc(e.action)}</span>
+                      <span class="det" title="${esc(JSON.stringify(e.detail))}">${esc(JSON.stringify(e.detail))}</span></span></li>`
+                  )
+                  .join("")}</ul>`
+              : `<p class="muted small">${can(user, "audit.view") ? "Nothing recorded yet." : "Your role does not include the audit log."}</p>`
+          }</div>
+        </section>
+      </div>
+    </div>`,
     {
       user,
       csrf,
       active: "os",
-      heading: "OS Dashboard",
+      pattern: "a",
+      heading: "Machine core",
       subtitle: "The machine everything runs on — host health, capabilities, and who can reach it.",
       statusChip: esc(stats.hostname) + " · up " + esc(duration(stats.uptimeSec)),
+      actions: `${can(user, "services.view") ? `<a class="btn" href="/services">${icon("services")} Services</a>` : ""}${
+        can(user, "firewall.view") ? `<a class="btn" href="/firewall">${icon("ban")} Firewall</a>` : ""
+      }`,
     }
   );
 };
@@ -435,6 +489,7 @@ exports.keys = ({ csrf, user, keys, devices, flash, flashError }) => {
       user,
       csrf,
       active: "keys",
+      pattern: "b",
       heading: "SSH keys",
       subtitle: "Keys authorised to log in. Revoking one takes effect immediately.",
     }
@@ -518,6 +573,7 @@ exports.devices = ({ csrf, user, codes, devices, publicHost, publicPort, flash }
       user,
       csrf,
       active: "devices",
+      pattern: "b",
       heading: "Devices",
       subtitle:
         "Pair a new machine without copying private keys around. Generate a code here, then enter it on the new device with its own public key.",
@@ -571,55 +627,63 @@ exports.paired = ({ label, targetUser, fingerprint, publicHost }) =>
 
 /* ---------------------------------------------------------------- audit --- */
 
-exports.audit = ({ csrf, user, entries, err, logins }) =>
-  shell(
+exports.audit = ({ csrf, user, entries, err, logins }) => {
+  const actPill = (a) =>
+    /remove|delete|ban$|forget|clear|revoke/.test(a) ? "bad" : /set|update|settings|edit|write/.test(a) ? "warn" : "ok";
+  return shell(
     "Audit log",
     `${err ? `<div class="alert bad">${icon("alert")}<div>${esc(err)}</div></div>` : ""}
-    ${card(
-      "Privileged actions",
-      entries.length
-        ? `<table class="rows">
-            <thead><tr><th>When</th><th>Action</th><th>Detail</th></tr></thead>
-            <tbody>${entries
-              .map(
-                (e) => `<tr>
-                  <td class="mono small">${esc(stamp(e.ts))}</td>
-                  <td><span class="pill ${
-                    String(e.action).includes("remove") || String(e.action).includes("delete")
-                      ? "bad"
-                      : "ok"
-                  }">${esc(e.action)}</span></td>
-                  <td class="mono small">${esc(JSON.stringify(e.detail))}</td>
-                </tr>`
-              )
-              .join("")}</tbody></table>`
-        : `<p class="muted">Nothing recorded yet.</p>`,
-      { icon: "audit" }
-    )}
-    ${card(
-      "Sign-in history",
-      logins.length
-        ? `<table class="rows">
-            <thead><tr><th>When</th><th>IP</th><th>User</th><th>Result</th></tr></thead>
-            <tbody>${logins
-              .map(
-                (l) => `<tr>
-                  <td class="mono small">${esc(stamp(l.ts))}</td>
-                  <td class="mono small">${esc(l.ip || "—")}</td>
-                  <td>${esc(l.username || "—")}</td>
-                  <td><span class="pill ${l.outcome === "success" ? "ok" : "bad"}">${esc(l.outcome)}</span>
-                    ${l.detail ? `<span class="muted small"> ${esc(l.detail)}</span>` : ""}</td>
-                </tr>`
-              )
-              .join("")}</tbody></table>`
-        : `<p class="muted">No sign-ins recorded.</p>`,
-      { icon: "keys" }
-    )}`,
+    <div class="split">
+      <section class="card hud">
+        <div class="card-head"><h2>${icon("audit")}Privileged actions</h2><span class="card-aside">newest first</span></div>
+        <div class="tbl">${
+          entries.length
+            ? `<table class="rows">
+                <thead><tr><th scope="col">When</th><th scope="col">Action</th><th scope="col">Detail</th></tr></thead>
+                <tbody>${entries
+                  .map(
+                    (e) => `<tr>
+                      <td class="mono nowrap">${esc(stamp(e.ts))}</td>
+                      <td><span class="pill act ${actPill(String(e.action))}">${esc(e.action)}</span></td>
+                      <td><span class="det" title="${esc(JSON.stringify(e.detail))}">${esc(JSON.stringify(e.detail))}</span></td>
+                    </tr>`
+                  )
+                  .join("")}</tbody></table>`
+            : `<p class="muted card-body-pad">Nothing recorded yet.</p>`
+        }</div>
+        <div class="card-foot"><span>Header stays put; only this list scrolls.</span><span class="mono">latest ${entries.length}</span></div>
+      </section>
+      <section class="card">
+        <div class="card-head"><h2>${icon("keys")}Sign-in history</h2><span class="card-aside">newest first</span></div>
+        <div class="tbl">${
+          logins.length
+            ? `<table class="rows">
+                <thead><tr><th scope="col">When</th><th scope="col">IP</th><th scope="col">User</th><th scope="col">Result</th></tr></thead>
+                <tbody>${logins
+                  .map(
+                    (l) => `<tr>
+                      <td class="mono nowrap">${esc(stamp(l.ts).slice(5))}</td>
+                      <td class="mono">${esc(l.ip || "—")}</td>
+                      <td>${esc(l.username || "—")}</td>
+                      <td><span class="pill ${l.outcome === "success" ? "ok" : l.outcome === "admin" ? "neutral" : "bad"}">${esc(l.outcome)}</span>
+                        ${l.detail ? `<span class="muted small"> ${esc(l.detail)}</span>` : ""}</td>
+                    </tr>`
+                  )
+                  .join("")}</tbody></table>`
+            : `<p class="muted card-body-pad">No sign-ins recorded.</p>`
+        }</div>
+        <div class="card-foot"><span>Failed sign-ins feed the fail2ban jail.</span><span class="mono">latest ${logins.length}</span></div>
+      </section>
+    </div>`,
     {
       user,
       csrf,
       active: "audit",
+      pattern: "b",
+      fill: true,
       heading: "Audit log",
       subtitle: "Every privileged action taken through this panel.",
+      actions: `<span class="pill nodot mono">${entries.length} actions · ${logins.length} sign-ins</span>`,
     }
   );
+};
