@@ -33,6 +33,7 @@ const addonViews = require("./lib/views-addons");
 const guideViews = require("./lib/views-guide");
 const accessViews = require("./lib/views-access");
 const consoleViews = require("./lib/views-console");
+const claudeViews = require("./lib/views-claude");
 const rbac = require("./lib/rbac");
 const totp = require("./lib/totp");
 const speech = require("./lib/speech");
@@ -3093,6 +3094,336 @@ app.post("/account/authenticator/confirm", requireAuth, requireCsrf, async (req,
     "/account?msg=" +
       encodeURIComponent("Authenticator moved. Codes from the old app no longer work.")
   );
+});
+
+/* ---------------------------------------------------------- claude code --- */
+
+/*
+ * Claude Code's memory, sessions and live processes. Administrator-only by
+ * default (the claude.* permissions are in no stock role): transcripts carry
+ * client data and this panel faces the internet.
+ *
+ * Every privileged step is a cc-* helper subcommand. The helper validates its
+ * arguments again and writes the audit line; the checks here exist so an
+ * obviously malformed request never reaches sudo at all.
+ */
+
+const CC_HOMES = new Set(["root", "console", "agents", "winarchive"]);
+const CC_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const CC_SLUG = /^[A-Za-z0-9_.-]{1,255}$/;
+const CC_MEMFILE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,120}\.md$/;
+const CC_AGENT = /^[A-Za-z0-9_-]{1,64}$/;
+
+const ccActor = (req) => req.me.username;
+const qint = (value, fallback) => {
+  const n = parseInt(value, 10);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+};
+const withMsg = (path, key, text) =>
+  path + (path.includes("?") ? "&" : "?") + key + "=" + encodeURIComponent(text);
+
+/** 404 for a session address that could not possibly be valid. */
+function ccSessionParams(req, res, next) {
+  if (CC_HOMES.has(req.params.home) && CC_UUID.test(req.params.uuid)) return next();
+  return res.status(404).send(views.error("Not found", "No such session."));
+}
+
+app.get("/claude", requireAuth, (req, res) => res.redirect("/claude/memory"));
+
+app.get("/claude/memory", requireAuth, requirePerm("claude.memory.read"), async (req, res) => {
+  const query = String(req.query.q || "").slice(0, 500).trim();
+  const searchProject = String(req.query.sproject || "").slice(0, 61).trim();
+  const filters = {
+    topic: String(req.query.topic || "").slice(0, 121).trim(),
+    project: String(req.query.project || "").slice(0, 61).trim(),
+    superseded: req.query.sup === "1",
+    q: String(req.query.fq || "").slice(0, 200).trim(),
+    page: qint(req.query.page, 1),
+    per_page: 25,
+  };
+  const data = await gather({
+    stats: () => priv.ccMemoryStats(),
+    facts: () => priv.ccFactsList(filters),
+    files: () => priv.ccMemfilesList(),
+    hooks: () => priv.ccHooksTail(50),
+    services: () => priv.ccMemoryServices(),
+    search: () => (query ? priv.ccMemorySearch(query, 12, searchProject || null) : Promise.resolve(null)),
+  });
+  res.send(
+    claudeViews.memory({
+      csrf: res.locals.csrf,
+      user: ctx(req),
+      query,
+      searchProject,
+      filters,
+      ...data,
+      flash: req.query.msg || null,
+      err: req.query.err || null,
+    })
+  );
+});
+
+app.get("/claude/memory/facts/:id(\\d+)", requireAuth, requirePerm("claude.memory.read"), async (req, res) => {
+  try {
+    const data = await priv.ccFactGet(req.params.id);
+    res.send(
+      claudeViews.fact({
+        csrf: res.locals.csrf,
+        user: ctx(req),
+        data,
+        flash: req.query.msg || null,
+        err: req.query.err || null,
+      })
+    );
+  } catch (e) {
+    res.redirect(withMsg("/claude/memory", "err", e.message));
+  }
+});
+
+app.post("/claude/memory/facts", requireAuth, requirePerm("claude.memory.write"), requireCsrf, async (req, res) => {
+  try {
+    const out = await priv.ccFactAdd({
+      content: String(req.body.content || ""),
+      topic: field(req.body, "topic"),
+      kind: field(req.body, "kind"),
+      project: field(req.body, "project"),
+      actor: ccActor(req),
+    });
+    const similar = (out.similar || []).map((s) => "#" + s.id).join(", ");
+    res.redirect(
+      withMsg(
+        "/claude/memory/facts/" + out.id,
+        "msg",
+        "Stored as fact #" + out.id + "." + (similar ? " Similar existing facts: " + similar + "." : "")
+      )
+    );
+  } catch (e) {
+    res.redirect(withMsg("/claude/memory", "err", e.message));
+  }
+});
+
+app.post("/claude/memory/facts/:id(\\d+)/edit", requireAuth, requirePerm("claude.memory.write"), requireCsrf, async (req, res) => {
+  try {
+    const out = await priv.ccFactEdit({
+      id: Number(req.params.id),
+      content: String(req.body.content || ""),
+      topic: field(req.body, "topic"),
+      kind: field(req.body, "kind"),
+      actor: ccActor(req),
+    });
+    res.redirect(
+      withMsg("/claude/memory/facts/" + out.id, "msg", "Saved as fact #" + out.id + "; #" + req.params.id + " is now superseded.")
+    );
+  } catch (e) {
+    res.redirect(withMsg("/claude/memory/facts/" + req.params.id, "err", e.message));
+  }
+});
+
+app.post("/claude/memory/facts/:id(\\d+)/forget", requireAuth, requirePerm("claude.memory.write"), requireCsrf, async (req, res) => {
+  try {
+    await priv.ccFactForget({ id: Number(req.params.id), reason: field(req.body, "reason"), actor: ccActor(req) });
+    res.redirect(withMsg("/claude/memory/facts/" + req.params.id, "msg", "Forgotten. It will no longer be recalled."));
+  } catch (e) {
+    res.redirect(withMsg("/claude/memory/facts/" + req.params.id, "err", e.message));
+  }
+});
+
+app.get("/claude/memory/files/:project/:name", requireAuth, requirePerm("claude.memory.read"), async (req, res) => {
+  const { project, name } = req.params;
+  if (!CC_SLUG.test(project) || !CC_MEMFILE.test(name)) {
+    return res.status(404).send(views.error("Not found", "No such memory file."));
+  }
+  try {
+    const file = await priv.ccMemfileRead(project, name);
+    res.send(
+      claudeViews.memfile({
+        csrf: res.locals.csrf,
+        user: ctx(req),
+        file,
+        flash: req.query.msg || null,
+        err: req.query.err || null,
+      })
+    );
+  } catch (e) {
+    res.redirect(withMsg("/claude/memory", "err", e.message));
+  }
+});
+
+app.post("/claude/memory/files/:project/:name", requireAuth, requirePerm("claude.memory.write"), requireCsrf, async (req, res) => {
+  const { project, name } = req.params;
+  if (!CC_SLUG.test(project) || !CC_MEMFILE.test(name)) {
+    return res.status(404).send(views.error("Not found", "No such memory file."));
+  }
+  const back = "/claude/memory/files/" + encodeURIComponent(project) + "/" + encodeURIComponent(name);
+  try {
+    const out = await priv.ccMemfileWrite(project, name, String(req.body.content || ""), ccActor(req));
+    const ingest = out.ingest || {};
+    res.redirect(
+      withMsg(
+        back,
+        "msg",
+        "Saved. " + (ingest.started ? "Re-indexing in the background." : "Re-index not started: " + (ingest.reason || "unknown") + ".")
+      )
+    );
+  } catch (e) {
+    res.redirect(withMsg(back, "err", e.message));
+  }
+});
+
+app.post("/claude/memory/restart", requireAuth, requirePerm("claude.memory.write"), requireCsrf, async (req, res) => {
+  try {
+    await priv.ccMemoryRestart(ccActor(req));
+    res.redirect(withMsg("/claude/memory", "msg", "claude-memory restarted."));
+  } catch (e) {
+    res.redirect(withMsg("/claude/memory", "err", e.message));
+  }
+});
+
+app.post("/claude/memory/ingest", requireAuth, requirePerm("claude.memory.write"), requireCsrf, async (req, res) => {
+  try {
+    const out = await priv.ccIngestAll(ccActor(req));
+    res.redirect(
+      withMsg(
+        "/claude/memory",
+        out.started ? "msg" : "err",
+        out.started ? "ingest.py --all started as cm-ingest (nice 10)." : "Not started: " + (out.reason || "unknown") + "."
+      )
+    );
+  } catch (e) {
+    res.redirect(withMsg("/claude/memory", "err", e.message));
+  }
+});
+
+app.get("/claude/memory/session/:uuid", requireAuth, requirePerm("claude.memory.read"), async (req, res) => {
+  const uuid = req.params.uuid;
+  if (!CC_UUID.test(uuid)) return res.status(404).send(views.error("Not found", "No such session."));
+  let data = null;
+  let err = null;
+  try {
+    data = await priv.ccSessionMemory(uuid, qint(req.query.page, 1));
+  } catch (e) {
+    err = e.message;
+  }
+  res.send(claudeViews.sessionMemory({ csrf: res.locals.csrf, user: ctx(req), data, uuid, err }));
+});
+
+app.get("/claude/sessions", requireAuth, requirePerm("claude.sessions.view"), async (req, res) => {
+  const filters = {
+    home: CC_HOMES.has(String(req.query.home || "")) ? String(req.query.home) : "",
+    project: CC_SLUG.test(String(req.query.project || "")) ? String(req.query.project) : "",
+    q: String(req.query.q || "").slice(0, 200).trim(),
+    archived: req.query.archived === "1",
+    page: qint(req.query.page, 1),
+    per_page: 25,
+  };
+  let data = null;
+  let err = req.query.err || null;
+  try {
+    data = await priv.ccSessionsList(filters);
+  } catch (e) {
+    err = e.message;
+  }
+  res.send(
+    claudeViews.sessions({ csrf: res.locals.csrf, user: ctx(req), data, filters, flash: req.query.msg || null, err })
+  );
+});
+
+app.get("/claude/sessions/:home/:uuid", requireAuth, requirePerm("claude.sessions.view"), ccSessionParams, async (req, res) => {
+  const agent = String(req.query.agent || "");
+  if (agent && !CC_AGENT.test(agent)) return res.status(404).send(views.error("Not found", "No such subagent."));
+  try {
+    const s = await priv.ccSessionGet(req.params.home, req.params.uuid, {
+      page: req.query.page ? qint(req.query.page, 1) : null,
+      agent: agent || null,
+      archived: req.query.archived === "1",
+    });
+    res.send(
+      claudeViews.session({
+        csrf: res.locals.csrf,
+        user: ctx(req),
+        s,
+        flash: req.query.msg || null,
+        err: req.query.err || null,
+      })
+    );
+  } catch (e) {
+    res.redirect(withMsg("/claude/sessions", "err", e.message));
+  }
+});
+
+const ccSessionPath = (req, archived) =>
+  "/claude/sessions/" + req.params.home + "/" + req.params.uuid + (archived ? "?archived=1" : "");
+
+app.post("/claude/sessions/:home/:uuid/rename", requireAuth, requirePerm("claude.sessions.manage"), ccSessionParams, requireCsrf, async (req, res) => {
+  try {
+    await priv.ccSessionRename(req.params.home, req.params.uuid, field(req.body, "title"), ccActor(req));
+    res.redirect(withMsg(ccSessionPath(req), "msg", "Renamed."));
+  } catch (e) {
+    res.redirect(withMsg(ccSessionPath(req), "err", e.message));
+  }
+});
+
+app.post("/claude/sessions/:home/:uuid/archive", requireAuth, requirePerm("claude.sessions.manage"), ccSessionParams, requireCsrf, async (req, res) => {
+  try {
+    await priv.ccSessionArchive(req.params.home, req.params.uuid, ccActor(req));
+    res.redirect(withMsg(ccSessionPath(req, true), "msg", "Archived. Nothing was deleted; Restore moves it back."));
+  } catch (e) {
+    res.redirect(withMsg(ccSessionPath(req), "err", e.message));
+  }
+});
+
+app.post("/claude/sessions/:home/:uuid/restore", requireAuth, requirePerm("claude.sessions.manage"), ccSessionParams, requireCsrf, async (req, res) => {
+  try {
+    await priv.ccSessionRestore(req.params.home, req.params.uuid, ccActor(req));
+    res.redirect(withMsg(ccSessionPath(req), "msg", "Restored to its project folder."));
+  } catch (e) {
+    res.redirect(withMsg(ccSessionPath(req, true), "err", e.message));
+  }
+});
+
+app.get("/claude/running", requireAuth, requirePerm("claude.running.view"), async (req, res) => {
+  let r = null;
+  let err = req.query.err || null;
+  try {
+    r = await priv.ccRunning();
+  } catch (e) {
+    err = e.message;
+  }
+  res.send(claudeViews.running({ csrf: res.locals.csrf, user: ctx(req), r, flash: req.query.msg || null, err }));
+});
+
+// Polled by public/app.js every 10 s. The fragments are rendered here, by the
+// same functions as the page, so there is one template and the browser only
+// swaps markup that was already escaped.
+app.get("/api/claude/running", requireAuth, requirePerm("claude.running.view"), async (req, res) => {
+  try {
+    const r = await priv.ccRunning();
+    res.json({
+      ts: r.ts,
+      updated: String(r.ts || "").replace("T", " ").slice(0, 19),
+      html: claudeViews.runningSections(res.locals.csrf, ctx(req), r),
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post("/claude/running/stop", requireAuth, requirePerm("claude.running.stop"), requireCsrf, async (req, res) => {
+  const pid = Number(field(req.body, "pid"));
+  if (!Number.isInteger(pid) || pid <= 1) return res.redirect(withMsg("/claude/running", "err", "Bad pid."));
+  const force = field(req.body, "force") === "1";
+  try {
+    const out = await priv.ccStop(pid, force, ccActor(req));
+    res.redirect(
+      withMsg(
+        "/claude/running",
+        "msg",
+        out.signal + " sent to pid " + pid + "." + (force ? "" : " If it is still running in 10 seconds, Force stop appears.")
+      )
+    );
+  } catch (e) {
+    res.redirect(withMsg("/claude/running", "err", e.message));
+  }
 });
 
 /* ---------------------------------------------------------------- guide --- */

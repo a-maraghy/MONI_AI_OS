@@ -69,6 +69,50 @@ document.addEventListener("submit", function (ev) {
 })();
 
 /*
+ * Claude Code > Running: swap the live tables in place every ten seconds.
+ *
+ * The server renders the fragments with the same view code as the page, so
+ * nothing is templated here and every value arrives already escaped. Skipped
+ * while the tab is hidden, and while a confirm dialog or a focused control is
+ * in play, so a table never changes under a click. Without JavaScript the page
+ * is complete as served and a reload is the refresh.
+ */
+(function () {
+  var root = document.querySelector("[data-cc-running]");
+  if (!root) return;
+  var busy = false;
+
+  function refresh() {
+    if (busy || document.hidden) return;
+    var focused = document.activeElement;
+    if (focused && focused !== document.body && root.contains(focused)) return;
+    busy = true;
+    fetch("/api/claude/running", { credentials: "same-origin", headers: { Accept: "application/json" } })
+      .then(function (r) {
+        if (!r.ok) throw new Error("running view unavailable");
+        return r.json();
+      })
+      .then(function (d) {
+        var html = d.html || {};
+        Object.keys(html).forEach(function (key) {
+          var el = root.querySelector('[data-cc-section="' + key + '"]');
+          if (el) el.innerHTML = html[key];
+        });
+        var stamp = root.querySelector("[data-cc-updated]");
+        if (stamp && d.updated) stamp.textContent = d.updated;
+      })
+      .catch(function () {
+        /* signed out or a transient failure: keep what is on screen */
+      })
+      .then(function () {
+        busy = false;
+      });
+  }
+
+  setInterval(refresh, 10000);
+})();
+
+/*
  * The two drawers.
  *
  * Below 900px the sidebar and the console's chat list stop being columns and

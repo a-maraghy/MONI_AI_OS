@@ -1415,3 +1415,28 @@ fieldset.scope legend { font-size: 12px; font-weight: 700; color: var(--ink); pa
 }
 .live-btn.on:hover { background: var(--brand-deep); border-color: var(--brand-deep); color: #fff; }
 @media (prefers-reduced-motion: reduce) { .live-btn.on { animation: none; } }
+
+/* ------------------------------------------------------------ Claude Code - */
+.cc-filters { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: flex-end; margin-bottom: 14px; }
+.cc-filters label { margin: 0; flex: 1 1 160px; max-width: 280px; }
+.cc-filters label.check { flex: 0 0 auto; padding-bottom: 8px; }
+.cc-filters input, .cc-filters select { margin-top: 4px; }
+.cc-narrow { flex: 0 0 180px; margin: 0; }
+.cc-line { margin: -6px 0 var(--gap); }
+.cc-pager { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin: 12px 0; }
+.cc-pager span.btn { opacity: .45; cursor: default; }
+.cc-scroll { overflow-x: auto; }
+.cc-tall { max-height: 420px; overflow-y: auto; }
+.cc-title-cell { min-width: 240px; max-width: 420px; }
+.nowrap { white-space: nowrap; }
+.cc-cmd, .cc-log { white-space: pre-wrap; word-break: break-all; font-size: 12px; }
+.cc-fact { font-size: 14px; }
+.cc-ex { display: flex; flex-direction: column; gap: 8px; padding: 14px 0; border-top: 1px solid var(--line); }
+.cc-ex-meta { opacity: 1; animation: none; }
+.cc-ex .msg { animation: none; }
+.cc-text { white-space: pre-wrap; }
+.cc-summary .bubble { background: var(--surface-2); color: var(--body); border: 1px dashed var(--line-strong); }
+.cc-tools { margin-left: 0; }
+.cc-tools .tool-arg { flex: 1; min-width: 0; }
+.cc-size { flex: none; font-variant-numeric: tabular-nums; }
+tr.cc-on td { background: var(--brand-tint); }
