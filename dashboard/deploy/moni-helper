@@ -1254,6 +1254,200 @@ def cmd_agent_memory_stats(args):
     ok(memory_counts(slug))
 
 
+# ----------------------------------------------------------- memory graph --
+#
+# An agent's vault as a graph: one node per note, typed by its folder (or its
+# frontmatter `type:`), [[wikilinks]] and #tags as links, and "related by
+# meaning" links from the agent's own vector index. Read-only throughout: the
+# vault is walked as root, and the index is opened read-only as the agent
+# account inside the agent runtime (which is where sqlite-vec lives).
+
+AGENT_GRAPH_MAX_NOTES = 1500
+AGENT_GRAPH_K = 3
+AGENT_GRAPH_MIN_SIM = 0.6
+AGENT_GRAPH_SKIP = {".obsidian", ".git", ".trash", ".claude", "node_modules"}
+AGENT_NOTE_TYPES = {
+    "people": "people", "person": "people", "contacts": "people",
+    "decisions": "decision", "decision": "decision",
+    "figures": "figure", "figure": "figure", "numbers": "figure",
+    "traps": "trap", "trap": "trap", "gotchas": "trap",
+    "runs": "run", "run": "run",
+    "conversations": "conversation", "conversation": "conversation", "chats": "conversation", "calls": "call",
+    "research": "research", "reports": "report", "report": "report", "outputs": "output", "output": "output",
+    "preferences": "preference", "preference": "preference", "goals": "goal", "goal": "goal",
+    "patterns": "pattern", "work-patterns": "pattern", "topics": "topic", "topic": "topic",
+    "attachments": "file", "files": "file", "uploads": "file", "documents": "document", "docs": "document",
+    "glossary": "document", "projects": "project",
+}
+WIKILINK_RE = re.compile(r"\[\[([^\]\|#\n]{1,160})(?:#[^\]\|\n]*)?(?:\|[^\]\n]*)?\]\]")
+TAG_RE = re.compile(r"(?:^|\s)#([A-Za-z؀-ۿ][\w؀-ۿ/\-]{1,40})")
+FRONT_RE = re.compile(r"\A---\s*\n(.*?)\n---\s*\n", re.S)
+
+
+def note_frontmatter(text):
+    m = FRONT_RE.match(text)
+    if not m:
+        return {}, text
+    meta = {}
+    for line in m.group(1).splitlines():
+        if ":" in line and not line.startswith((" ", "\t", "-")):
+            k, v = line.split(":", 1)
+            meta[k.strip().lower()] = v.strip().strip("'\"")
+        elif line.strip().startswith("- ") and meta.get("_last") == "tags":
+            meta.setdefault("tags_list", []).append(line.strip()[2:].strip())
+        if ":" in line and not line.startswith((" ", "\t", "-")):
+            meta["_last"] = line.split(":", 1)[0].strip().lower()
+    return meta, text[m.end():]
+
+
+def note_type(rel, meta):
+    t = str(meta.get("type") or "").lower().strip()
+    if t in AGENT_NOTE_TYPES:
+        return AGENT_NOTE_TYPES[t]
+    parts = rel.split("/")
+    for seg in reversed(parts[:-1]):
+        if seg.lower() in AGENT_NOTE_TYPES:
+            return AGENT_NOTE_TYPES[seg.lower()]
+    base = parts[-1].lower()
+    if base in ("claude.md", "memory.md", "readme.md"):
+        return "document"
+    if base == "worklog.md":
+        return "pattern"
+    return "note"
+
+
+def note_tags(meta, body):
+    tags = set()
+    raw = meta.get("tags") or ""
+    for t in re.split(r"[,\[\]\s]+", raw):
+        t = t.strip().lstrip("#")
+        if t:
+            tags.add(t[:40])
+    for t in meta.get("tags_list") or []:
+        tags.add(t.lstrip("#")[:40])
+    in_code = False
+    for line in body.splitlines():
+        if line.strip().startswith("```"):
+            in_code = not in_code
+            continue
+        if not in_code:
+            for m in TAG_RE.finditer(line):
+                tags.add(m.group(1)[:40])
+    return sorted(tags)[:20]
+
+
+AGENT_SEM_SNIPPET = r"""
+import json, sqlite3, sys
+import numpy as np
+db, k, floor = sys.argv[1], int(sys.argv[2]), float(sys.argv[3])
+conn = sqlite3.connect("file:" + db + "?mode=ro", uri=True)
+conn.enable_load_extension(True)
+import sqlite_vec
+sqlite_vec.load(conn)
+conn.enable_load_extension(False)
+by_path = {}
+for path, blob in conn.execute(
+        "SELECT c.path, vec_to_json(v.embedding) FROM chunks c JOIN chunks_vec v ON v.chunk_id = c.id"):
+    by_path.setdefault(path, []).append(json.loads(blob))
+paths = sorted(by_path)
+if len(paths) < 2:
+    print(json.dumps({"edges": [], "files": len(paths)}))
+    sys.exit(0)
+m = np.array([np.mean(np.array(by_path[p], dtype=np.float32), axis=0) for p in paths])
+m = m / np.maximum(np.linalg.norm(m, axis=1, keepdims=True), 1e-9)
+sim = m @ m.T
+np.fill_diagonal(sim, -1.0)
+edges, seen = [], set()
+for i, p in enumerate(paths):
+    for j in np.argsort(-sim[i])[:k]:
+        s = float(sim[i, j])
+        if s < floor:
+            break
+        key = (min(i, j), max(i, j))
+        if key in seen:
+            continue
+        seen.add(key)
+        edges.append([p, paths[j], round(s, 3)])
+print(json.dumps({"edges": edges, "files": len(paths)}))
+"""
+
+
+def agent_semantic_links(slug):
+    """Note-to-note similarity from the agent's own index: mean chunk vectors."""
+    d = agent_dir(slug)
+    db = os.path.join(d, "vectors", "memory.db")
+    python = os.path.join(RUNTIME_DIR, "venv", "bin", "python")
+    if not os.path.exists(db):
+        return [], "no vector index yet"
+    if not os.path.exists(python):
+        return [], "agent runtime venv is missing"
+    try:
+        r = subprocess.run(
+            ["runuser", "-u", AGENT_USER, "--", python, "-I", "-c", AGENT_SEM_SNIPPET, db,
+             str(AGENT_GRAPH_K), str(AGENT_GRAPH_MIN_SIM)],
+            capture_output=True, text=True, timeout=60,
+            env={"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                 "HOME": os.path.join(SHARED_DIR, "home"), "LANG": "C.UTF-8"})
+    except subprocess.TimeoutExpired:
+        return [], "the vector index did not answer in time"
+    except OSError as exc:
+        return [], "could not open the vector index: " + type(exc).__name__
+    try:
+        out = json.loads(r.stdout.strip().splitlines()[-1])
+        return out.get("edges") or [], None
+    except Exception:
+        return [], (r.stderr.strip().splitlines() or ["could not read the vector index"])[-1][:200]
+
+
+def agent_memory_graph(slug):
+    vault = os.path.realpath(os.path.join(agent_dir(slug), "vault"))
+    notes, truncated = [], False
+    if os.path.isdir(vault):
+        for dirpath, dirnames, filenames in os.walk(vault):
+            dirnames[:] = sorted(d for d in dirnames if not d.startswith(".") and d not in AGENT_GRAPH_SKIP)
+            for name in sorted(filenames):
+                if not name.endswith(".md"):
+                    continue
+                if len(notes) >= AGENT_GRAPH_MAX_NOTES:
+                    truncated = True
+                    break
+                full = os.path.join(dirpath, name)
+                if os.path.islink(full):
+                    continue
+                rel = os.path.relpath(full, vault).replace(os.sep, "/")
+                st = os.stat(full)
+                with open(full, encoding="utf-8", errors="replace") as fh:
+                    text = fh.read(64 * 1024)
+                meta, body = note_frontmatter(text)
+                title = meta.get("title") or ""
+                if not title:
+                    for line in body.splitlines():
+                        if line.startswith("# "):
+                            title = line[2:].strip()
+                            break
+                title = title or name[:-3]
+                links = sorted({m.group(1).strip() for m in WIKILINK_RE.finditer(body)})[:60]
+                snippet = " ".join(body.replace("#", " ").split())[:320]
+                notes.append({
+                    "path": rel, "title": title[:120], "type": note_type(rel, meta), "links": links,
+                    "tags": note_tags(meta, body), "snippet": snippet, "bytes": st.st_size,
+                    "modified": datetime.fromtimestamp(st.st_mtime, timezone.utc).isoformat(timespec="seconds"),
+                })
+    sem, sem_error = agent_semantic_links(slug)
+    known = {n["path"] for n in notes}
+    sem = [e for e in sem if e[0] in known and e[1] in known]
+    return {"slug": slug, "notes": notes, "sem": sem, "sem_error": sem_error, "truncated": truncated,
+            "limits": {"notes": AGENT_GRAPH_MAX_NOTES, "k": AGENT_GRAPH_K, "min_sim": AGENT_GRAPH_MIN_SIM}}
+
+
+def cmd_agent_memory_graph(args):
+    if len(args) != 1:
+        fail("usage: agent-memory-graph <slug>")
+    slug = check_slug(args[0])
+    existing_agent(slug)
+    ok(cc_redact_deep(agent_memory_graph(slug)))
+
+
 # ============================================================== channels =====
 #
 # A channel is a way for messages to reach an agent: a Telegram bot, or a linked
@@ -3467,9 +3661,105 @@ def index_info(c, req):
     return {"paths": paths, "docs": docs, "sessions": sessions}
 
 
+def _short(text, n):
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= n else text[:n - 1] + "…"
+
+
+def _chunk_label(src, content, meta):
+    if src == "doc":
+        head = (meta or {}).get("heading") or (meta or {}).get("rel") or ""
+        return _short(head.split(" > ")[-1] if head else content, 70)
+    if src == "memory_file":
+        return _short((meta or {}).get("file") or content, 70)
+    text = str(content or "")
+    for prefix in ("[cont.] ", "User: "):
+        if text.startswith(prefix):
+            text = text[len(prefix):]
+    return _short(text.split("\n", 1)[0], 70)
+
+
+def _sem_edges(c, ids, k, min_sim):
+    """Nearest current facts by embedding, k per fact, above min_sim.
+
+    One LATERAL query over the HNSW index; ef_search raised so the filter on
+    superseded_by does not starve the candidate list.
+    """
+    if not ids:
+        return []
+    c.execute("SET LOCAL hnsw.ef_search = 100")
+    got = c.execute(
+        "SELECT a.id, n.id, n.sim FROM facts a CROSS JOIN LATERAL ("
+        " SELECT b.id, 1 - (a.embedding <=> b.embedding) AS sim FROM facts b"
+        " WHERE b.superseded_by IS NULL AND b.embedding IS NOT NULL AND b.id <> a.id"
+        " ORDER BY a.embedding <=> b.embedding LIMIT %s) n"
+        " WHERE a.id = ANY(%s) AND a.superseded_by IS NULL AND a.embedding IS NOT NULL",
+        (k, list(ids))).fetchall()
+    out = []
+    for a, b, sim in got:
+        if sim is not None and sim >= min_sim:
+            out.append([int(a), int(b), round(float(sim), 3)])
+    return out
+
+
+def graph(c, req):
+    """Nodes and links for the memory graph.
+
+    Full when after_f/after_c are absent; otherwise only facts and chunks newer
+    than those ids, with whatever hubs they hang from and their links. Always
+    returns the ids of the facts still remembered, so a page can let a
+    forgotten one go. Semantic links are cached by the helper keyed on the
+    facts table's signature (see cc_memory_graph).
+    """
+    lim_f, lim_c = int(req.get("limit_f", 1500)), int(req.get("limit_c", 1000))
+    after_f, after_c = req.get("after_f"), req.get("after_c")
+    k, min_sim = int(req.get("k", 3)), float(req.get("min_sim", 0.75))
+    inc = after_f is not None or after_c is not None
+    fwhere = "(superseded_by IS NULL OR superseded_by <> id)"
+    fargs = []
+    if inc:
+        fwhere += " AND id > %s"
+        fargs.append(int(after_f or 0))
+    facts = rows(c, "SELECT id, topic, ts, source_session, superseded_by, meta->>'kind' AS kind, "
+                    "meta->>'project' AS project, left(content, 360) AS content FROM facts WHERE " + fwhere +
+                    " ORDER BY id DESC LIMIT %s", fargs + [lim_f])
+    cwhere, cargs = "TRUE", []
+    if inc:
+        cwhere = "id > %s"
+        cargs.append(int(after_c or 0))
+    chunks = rows(c, "SELECT id, source, session_id, project, ts, role, left(content, 240) AS content, "
+                     "meta->>'title' AS title, meta->>'heading' AS heading, meta->>'rel' AS rel, "
+                     "meta->>'file' AS file FROM chunks WHERE " + cwhere + " ORDER BY id DESC LIMIT %s",
+                cargs + [lim_c])
+    sessions = {}
+    sids = {f["source_session"] for f in facts if f["source_session"]} | {ch["session_id"] for ch in chunks if ch["session_id"]}
+    if sids:
+        for r in rows(c, "SELECT session_id, min(ts) AS first, max(ts) AS last, count(*) AS n, "
+                         "max(project) AS project, max(meta->>'title') AS title FROM chunks "
+                         "WHERE session_id = ANY(%s) GROUP BY session_id", (list(sids),)):
+            sessions[r["session_id"]] = r
+    sig = c.execute("SELECT count(*), coalesce(max(id), 0), coalesce(sum(superseded_by), 0) FROM facts").fetchone()
+    alive = [r[0] for r in c.execute("SELECT id FROM facts WHERE superseded_by IS NULL OR superseded_by <> id "
+                                     "ORDER BY id DESC LIMIT %s", (lim_f,)).fetchall()]
+    supers = [[r[0], r[1]] for r in c.execute(
+        "SELECT id, superseded_by FROM facts WHERE superseded_by IS NOT NULL AND superseded_by <> id "
+        "AND (id = ANY(%s) OR superseded_by = ANY(%s))",
+        ([f["id"] for f in facts], [f["id"] for f in facts])).fetchall()]
+    cur_ids = [f["id"] for f in facts if f["superseded_by"] is None]
+    sem = None
+    if req.get("want_sem"):
+        sem = _sem_edges(c, cur_ids, k, min_sim)
+    maxes = c.execute("SELECT (SELECT coalesce(max(id), 0) FROM facts), (SELECT coalesce(max(id), 0) FROM chunks)").fetchone()
+    for ch in chunks:
+        ch["label"] = _chunk_label(ch["source"], ch["content"], {"heading": ch.get("heading"), "rel": ch.get("rel"), "file": ch.get("file")})
+    return {"facts": facts, "chunks": chunks, "sessions": list(sessions.values()), "supers": supers,
+            "sem": sem, "alive": alive, "signature": list(sig), "cursor": {"f": maxes[0], "c": maxes[1]},
+            "cur_ids": cur_ids, "incremental": inc}
+
+
 OPS = {"stats": stats, "facts_list": facts_list, "fact_get": fact_get, "fact_add": fact_add,
        "fact_edit": fact_edit, "fact_forget": fact_forget, "session_memory": session_memory,
-       "index_info": index_info}
+       "index_info": index_info, "graph": graph}
 
 try:
     req = json.loads(sys.stdin.read() or "{}")
@@ -3663,6 +3953,88 @@ def cmd_cc_session_memory(args):
 
 
 # ---- auto-memory files: /root/.claude/projects/<slug>/memory/*.md
+
+# ------------------------------------------------------- memory: the graph
+
+CC_GRAPH_SEM = os.path.join(CC_CACHE, "graph-sem.json")
+CC_GRAPH_K = 3              # semantic neighbours per fact
+CC_GRAPH_MIN_SIM = 0.75     # cosine similarity floor for a "related by meaning" link
+CC_GRAPH_MAX_FACTS = 1500
+CC_GRAPH_MAX_CHUNKS = 1000
+
+
+def cc_graph_params(payload):
+    """Validate a graph request: two optional cursors and two optional caps."""
+    out = {}
+    for key in ("after_f", "after_c"):
+        v = payload.get(key)
+        if v is None or v == "":
+            continue
+        if isinstance(v, bool) or not re.match(r"^\d{1,15}$", str(v)):
+            raise CCError("bad cursor")
+        out[key] = int(v)
+    out["limit_f"] = cc_int(payload.get("limit_f"), 1, CC_GRAPH_MAX_FACTS, CC_GRAPH_MAX_FACTS)
+    out["limit_c"] = cc_int(payload.get("limit_c"), 0, CC_GRAPH_MAX_CHUNKS, CC_GRAPH_MAX_CHUNKS)
+    return out
+
+
+def cc_graph_sem_cache(signature):
+    try:
+        with open(CC_GRAPH_SEM) as fh:
+            got = json.load(fh)
+        if got.get("signature") == signature and got.get("k") == CC_GRAPH_K and got.get("min_sim") == CC_GRAPH_MIN_SIM:
+            return got.get("edges")
+    except Exception:
+        pass
+    return None
+
+
+def cc_graph_sem_store(signature, edges):
+    try:
+        os.makedirs(CC_CACHE, mode=0o700, exist_ok=True)
+        tmp = CC_GRAPH_SEM + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump({"signature": signature, "k": CC_GRAPH_K, "min_sim": CC_GRAPH_MIN_SIM, "edges": edges}, fh)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, CC_GRAPH_SEM)
+    except Exception:
+        pass
+
+
+def cc_memory_graph(payload):
+    """The memory as a graph: facts, chunks, sessions, and how they link.
+
+    Read-only. A full request's semantic links come from the cache when the
+    facts table has not changed since they were computed (count, highest id
+    and the sum of supersessions together catch an add, an edit and a
+    forget); otherwise they are recomputed with pgvector and cached. An
+    incremental request (after_f / after_c) computes them for the new facts
+    only, which is a handful of index lookups.
+    """
+    params = cc_graph_params(payload)
+    inc = "after_f" in params or "after_c" in params
+    data = cc_bridge("graph", want_sem=inc, k=CC_GRAPH_K, min_sim=CC_GRAPH_MIN_SIM, **params)
+    if not inc:
+        sig = data.get("signature")
+        sem = cc_graph_sem_cache(sig)
+        data["sem_cached"] = sem is not None
+        if sem is None:
+            t0 = time.time()
+            sem = cc_bridge("graph", want_sem=True, k=CC_GRAPH_K, min_sim=CC_GRAPH_MIN_SIM,
+                            limit_f=params["limit_f"], limit_c=0).get("sem") or []
+            data["sem_ms"] = int((time.time() - t0) * 1000)
+            cc_graph_sem_store(sig, sem)
+        keep = set(data.get("cur_ids") or [])
+        data["sem"] = [e for e in sem if e[0] in keep and e[1] in keep]
+    data.pop("cur_ids", None)
+    data["limits"] = {"facts": params["limit_f"], "chunks": params["limit_c"],
+                      "k": CC_GRAPH_K, "min_sim": CC_GRAPH_MIN_SIM}
+    return data
+
+
+def cmd_cc_memory_graph(args):
+    cc_ok(cc_run(lambda: cc_memory_graph(cc_read_payload())))
+
 
 def cc_memfile_path(slug, name):
     slug = cc_slug(slug)
@@ -4906,6 +5278,7 @@ COMMANDS = {
     "agent-memory-index": cmd_agent_memory_index,
     "agent-memory-search": cmd_agent_memory_search,
     "agent-memory-stats": cmd_agent_memory_stats,
+    "agent-memory-graph": cmd_agent_memory_graph,
     "channel-list": cmd_channel_list,
     "channel-get": cmd_channel_get,
     "channel-create": cmd_channel_create,
@@ -4937,6 +5310,7 @@ COMMANDS = {
     # Claude Code: memory
     "cc-memory-stats": cmd_cc_memory_stats,
     "cc-memory-search": cmd_cc_memory_search,
+    "cc-memory-graph": cmd_cc_memory_graph,
     "cc-memory-services": cmd_cc_memory_services,
     "cc-memory-restart": cmd_cc_memory_restart,
     "cc-ingest-all": cmd_cc_ingest_all,

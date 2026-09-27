@@ -165,6 +165,10 @@ module.exports = {
   agentMemorySearch: (slug, query) =>
     callHelper("agent-memory-search", [slug], { stdin: query, timeout: 120000 }),
   agentMemoryStats: (slug) => callHelper("agent-memory-stats", [slug]),
+  // The vault as a graph: notes, wikilinks, tags, and similarity from the
+  // agent's own index. Redacted by the helper and again here.
+  agentMemoryGraph: (slug) =>
+    callHelper("agent-memory-graph", [slug], { timeout: 90000 }).then(redactDeep),
 
   /* ------------------------------------------------------------ channels -- */
   channelList: () => callHelper("channel-list", [], { timeout: 30000 }),
@@ -275,6 +279,8 @@ module.exports = {
   ccMemorySearch: (query, k, project) =>
     cc("cc-memory-search", [], { stdin: JSON.stringify({ query, k, project }), timeout: 45000 }),
   ccMemoryServices: () => cc("cc-memory-services", [], { timeout: 30000 }),
+  ccMemoryGraph: (params) =>
+    cc("cc-memory-graph", [], { stdin: JSON.stringify(params || {}), timeout: 90000 }),
   ccMemoryRestart: (actor) =>
     cc("cc-memory-restart", [], { stdin: JSON.stringify({ actor }), timeout: 70000 }),
   ccIngestAll: (actor) => cc("cc-ingest-all", [], { stdin: JSON.stringify({ actor }), timeout: 30000 }),
