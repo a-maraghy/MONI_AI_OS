@@ -75,7 +75,7 @@ const TOP_CHIP = `<span class="cc-sys-chip" id="cc-sys" role="status"><span clas
 const TOP_CLOCK = `<div class="cc-clock" aria-hidden="true"><b id="cc-clock">--:--:--</b><span id="cc-clock-date">Cairo</span></div>`;
 
 /**
- * @param o  { csrf, user, voice: {tts, voice, stt} }
+ * @param o  { csrf, user, voice: {configured, model, voice, manage} }
  */
 function page(o) {
   const voice = o.voice || {};
@@ -83,8 +83,10 @@ function page(o) {
 <div class="cc-shell" id="cc"
      data-csrf="${esc(o.csrf)}"
      data-viewer="${esc(o.user && o.user.name)}"
-     data-tts="${voice.tts ? "1" : ""}"
-     data-voice="${esc(voice.voice || "")}">
+     data-voice-ready="${voice.configured ? "1" : ""}"
+     data-voice-manage="${voice.manage ? "1" : ""}"
+     data-voice="${esc(voice.voice || "")}"
+     data-voice-model="${esc(voice.model || "")}">
 
   <aside class="cc-rail" aria-label="MONI AI status">
     <section class="cc-card cc-hud">
@@ -100,14 +102,25 @@ function page(o) {
     </section>
 
     <section class="cc-card cc-voice-card">
-      <button type="button" class="cc-mic-big" id="cc-mic-big" aria-pressed="false" aria-label="Talk to MONI">${ic("voice")}</button>
+      <button type="button" class="cc-mic-big" id="cc-mic-big" aria-pressed="false" aria-label="Talk to MONI"${voice.configured ? "" : ' disabled title="Add an OpenAI key in Settings to use voice"'}>${ic("voice")}</button>
       <div class="cc-min0">
         <h2>Talk to MONI</h2>
-        <b id="cc-mic-label">Tap to talk</b>
-        <div class="cc-sub" id="cc-mic-sub">or hold <kbd>Space</kbd> to talk</div>
-        <div class="cc-chips"><span class="cc-tag">Whisper</span><span class="cc-tag" id="cc-voice-tag">${esc(
-          voice.tts ? String(voice.voice || "Piper").replace(/^en_US-/, "").replace(/-(medium|high|low)$/, "") : "text only"
-        )}</span><button type="button" class="cc-tag cc-tag-btn" id="cc-speak-toggle" aria-pressed="false" title="Read MONI AI's replies aloud">${ic("mute")}<span>replies silent</span></button></div>
+        ${
+          voice.configured
+            ? `<b id="cc-mic-label">Tap to talk</b>
+        <div class="cc-sub" id="cc-mic-sub">or hold <kbd>Space</kbd> to talk</div>`
+            : `<b id="cc-mic-label">Voice is off</b>
+        <div class="cc-sub" id="cc-mic-sub">${
+          voice.manage
+            ? `<a href="/credentials/openai-voice">Add an OpenAI key in Settings</a>`
+            : "Add an OpenAI key in Settings — ask an administrator"
+        }</div>`
+        }
+        <div class="cc-chips"><span class="cc-tag">OpenAI</span><span class="cc-tag" id="cc-voice-tag">${esc(
+          voice.configured ? String(voice.voice || "voice") : "no key"
+        )}</span><button type="button" class="cc-tag cc-tag-btn" id="cc-speak-toggle" aria-pressed="false" title="Read MONI AI's replies aloud"${
+          voice.configured ? "" : " hidden"
+        }>${ic("mute")}<span>replies silent</span></button></div>
       </div>
     </section>
 
@@ -155,7 +168,7 @@ function page(o) {
 
     <div class="cc-dock" id="cc-dock">
       <form class="cc-composer" id="cc-compose" autocomplete="off">
-        <button type="button" class="cc-c-mic" id="cc-c-mic" title="Talk to MONI (voice mode)" aria-label="Talk to MONI">${ic("voice")}</button>
+        <button type="button" class="cc-c-mic" id="cc-c-mic" title="${voice.configured ? "Talk to MONI (voice mode)" : "Add an OpenAI key in Settings to use voice"}" aria-label="Talk to MONI"${voice.configured ? "" : " disabled"}>${ic("voice")}</button>
         <input id="cc-input" name="text" placeholder="Tell MONI AI what to do…" aria-label="Message MONI AI" maxlength="20000" autocomplete="off">
         <button type="button" class="cc-target" id="cc-target" aria-haspopup="menu" aria-expanded="false">${ic("route")}<span id="cc-target-label">Auto-route</span>${ic("chev")}</button>
         <button type="button" class="cc-c-stop" id="cc-stop" title="Interrupt the current turn" aria-label="Interrupt" hidden>${ic("stop")}</button>

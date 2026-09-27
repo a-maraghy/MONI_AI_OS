@@ -44,7 +44,7 @@ const admin = rbac.actor({ permissions: ["*"] });
 const html = views.page({
   csrf: `tok"en<`,
   user: { name: EVIL, roleLabel: "Administrator", perm: admin, dash: "console" },
-  voice: { tts: true, voice: `en_US-${EVIL}-medium`, stt: true },
+  voice: { configured: true, voice: `v-${EVIL}`, model: "gpt-realtime-mini", manage: true },
 });
 
 check("renders a whole page", html.startsWith("<!doctype html>") && html.includes("</html>"));
@@ -58,7 +58,7 @@ check("no <style> blocks", !/<style[\s>]/i.test(html));
 check("no external URLs in src or href", !/(src|href)="(https?:)?\/\//i.test(html));
 check("viewer name is escaped", !html.includes(EVIL) && html.includes("&lt;img src=x onerror=alert(1)&gt;"));
 check("csrf token is escaped in the data attribute", html.includes('data-csrf="tok&quot;en&lt;"'));
-check("voice name is escaped", !html.includes(`en_US-${EVIL}`));
+check("voice name is escaped", !html.includes(`v-${EVIL}`) && html.includes("v-&lt;img"));
 check("loads the theme script before the stylesheet", html.indexOf("theme-init.js") > -1 && html.indexOf("theme-init.js") < html.indexOf("style.css"));
 check("theme script is blocking (not deferred)", /<script src="\/static\/theme-init\.js\?v=[^"]+"><\/script>/.test(html));
 check("loads its own stylesheet and deferred script", /moni-ai\.css\?v=/.test(html) && /<script src="\/static\/moni-ai\.js\?v=[^"]+" defer>/.test(html));
@@ -77,7 +77,10 @@ check("every id is unique", (() => {
   const ids = [...html.matchAll(/\sid="([^"]+)"/g)].map((m) => m[1]);
   return ids.length === new Set(ids).size;
 })());
-check("a page without TTS says text only", views.page({ csrf: "t", user: { name: "a", perm: admin }, voice: { tts: false } }).includes(">text only<"));
+check("a page without an OpenAI key says so and points to Settings", (() => {
+  const p = views.page({ csrf: "t", user: { name: "a", perm: admin }, voice: { configured: false, manage: true } });
+  return p.includes(">no key<") && p.includes("Add an OpenAI key in Settings") && /id="cc-mic-big"[^>]*disabled/.test(p);
+})());
 
 /* ----------------------------------------------------------- the shell --- */
 

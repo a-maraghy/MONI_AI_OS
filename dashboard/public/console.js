@@ -191,10 +191,10 @@ var MD = (function () {
   var running = false;
 
   /* Speech, not music. The browser's default is around 128kbps, which is four
-     times what whisper can use and turns a half-minute of talking into a body
-     big enough to be worth arguing about. 24kbps opus transcribes identically
-     and keeps a long utterance well inside every limit between here and the
-     model. */
+     times what a transcription model can use and turns a half-minute of
+     talking into a body big enough to be worth arguing about. 24kbps opus
+     transcribes identically and keeps a long utterance well inside every limit
+     between here and the model. */
   function recorderFor(stream) {
     try {
       return new MediaRecorder(stream, { audioBitsPerSecond: 24000 });
@@ -635,6 +635,7 @@ var MD = (function () {
   }
 
   micBtn.addEventListener("click", function () {
+    if (micBtn.disabled) return;
     if (recorder && recorder.state === "recording") return stopRecording();
     if (!navigator.mediaDevices || !window.MediaRecorder) {
       return addMessage("system", "This browser cannot record audio.");
@@ -653,11 +654,12 @@ var MD = (function () {
           micBtn.classList.remove("recording");
           status.textContent = "transcribing…";
 
-          var blob = new Blob(chunks, { type: "audio/webm" });
+          var blob = new Blob(chunks, { type: String(recorder.mimeType || "audio/webm").split(";")[0] });
           var reader = new FileReader();
           reader.onload = function () {
             postJson("/console/" + sessionId + "/transcribe", {
               data: String(reader.result).split(",")[1] || "",
+              mime: blob.type,
             })
               .then(function (r) { return r.json(); })
               .then(function (d) {
@@ -722,10 +724,11 @@ var MD = (function () {
 
   /* --------------------------------------------------------- live mode -- *
    *
-   * Talk to it, hear the answer, keep talking. Three pieces that already
-   * existed separately -- the microphone, whisper, and the streaming reply --
-   * joined by two that did not: knowing when you have stopped speaking, and
-   * speaking back.
+   * Talk to it, hear the answer, keep talking. The microphone, the streaming
+   * reply, knowing when you have stopped speaking, and speaking back. Hearing
+   * and speaking are OpenAI's (transcription, and the realtime voice reading
+   * each sentence word for word), always through this panel's server -- the
+   * browser never talks to OpenAI. Without a key the Live button stays off.
    *
    * Half duplex, deliberately. The microphone is closed while the answer is
    * playing, because a laptop speaker three inches from a laptop microphone
@@ -733,21 +736,15 @@ var MD = (function () {
    * Echo cancellation makes that less likely, not impossible, and the failure
    * is a loop that costs real money.
    *
-   * The reply is spoken sentence by sentence as it streams, not at the end:
-   * synthesis runs at three to nine times realtime on this box, so the next
-   * sentence is ready well before the current one finishes and the first words
-   * arrive about a second after the reply starts.
+   * The reply is spoken sentence by sentence as it streams, not at the end,
+   * and the next sentences are fetched while this one plays, so there is no
+   * round trip between them.
    */
   var live = (function () {
     var btn = document.getElementById("chat-live");
-    var voiceSel = document.getElementById("chat-voice");
     var idle = { on: false, feed: function () {}, flush: function () {}, done: function () {} };
-    if (!btn || !window.AudioContext || !navigator.mediaDevices) return idle;
-
-    // The voice only matters once something is going to speak, so it stays out
-    // of the bar until live mode is on rather than sitting there asking to be
-    // set for a chat that is never going to say anything.
-    if (voiceSel) voiceSel.hidden = true;
+    // A disabled button is the no-key state: the page already says where to add one.
+    if (!btn || btn.disabled || !window.AudioContext || !navigator.mediaDevices) return idle;
 
     var on = false;
     var stream = null;
@@ -768,7 +765,9 @@ var MD = (function () {
     var BARGE_MS = 330;     // sustained speech over the answer before it yields
 
     var spoken = 0;         // how much of the current reply has been queued
-    var queue = [];         // sentences waiting to be synthesised
+    var queue = [];         // sentences waiting to be spoken, fetched a few ahead
+    var gen = 0;            // bumped on barge-in/stop: anything older is dropped
+    var AHEAD = 3;
     var audio = null;
     var busy = false;       // a clip is playing or being fetched
     var speaking = false;   // audio is on the speaker right now
@@ -813,8 +812,46 @@ var MD = (function () {
       // A line that was nothing but a code fence or a rule has nothing in it to
       // say; queueing it would spend a second of silence on punctuation.
       if (say.length < 2 || !/[a-z0-9]/i.test(say)) return;
-      queue.push(say.slice(0, 780));
+      queue.push({ text: say.slice(0, 780) });
+      prefetch();
       pump();
+    }
+
+    /* Ask for the next few sentences now, so each is ready when its turn
+       comes. 204 means the voice would not read it word for word: skipped. */
+    function fetchClip(text) {
+      var ctrl = window.AbortController ? new AbortController() : null;
+      var clip = fetch("/console/" + sessionId + "/speak", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },
+        body: JSON.stringify({ _csrf: csrf, text: text }),
+        signal: ctrl ? ctrl.signal : undefined,
+      })
+        .then(function (res) {
+          if (res.status === 204 || !res.ok) return null;
+          return res.blob();
+        })
+        .catch(function () { return null; });
+      return { clip: clip, ctrl: ctrl };
+    }
+
+    function prefetch() {
+      for (var i = 0; i < queue.length && i < AHEAD; i++) {
+        if (!queue[i].clip) {
+          var f = fetchClip(queue[i].text);
+          queue[i].clip = f.clip;
+          queue[i].ctrl = f.ctrl;
+        }
+      }
+    }
+
+    function dropQueue() {
+      gen++;
+      queue.forEach(function (q) {
+        if (q.ctrl) { try { q.ctrl.abort(); } catch (e) { /* done */ } }
+      });
+      queue = [];
     }
 
     function pump() {
@@ -831,16 +868,12 @@ var MD = (function () {
       // in, the recorder is what would otherwise capture the answer itself.
       recording(false);
       if (!poll) poll = setInterval(tick, SAMPLE_MS);
-      var say = queue.shift();
-      post("/console/" + sessionId + "/speak", {
-        text: say,
-        voice: voiceSel ? voiceSel.value : "",
-      })
-        .then(function (res) {
-          if (!res.ok) throw new Error("speak failed");
-          return res.blob();
-        })
+      var item = queue.shift();
+      var my = gen;
+      prefetch();
+      item.clip
         .then(function (blob) {
+          if (!blob || my !== gen) return;
           return new Promise(function (resolve) {
             audio = new Audio(URL.createObjectURL(blob));
             audio.onended = audio.onerror = function () {
@@ -854,6 +887,7 @@ var MD = (function () {
           /* One sentence failing to speak is not worth ending the mode over. */
         })
         .then(function () {
+          if (my !== gen) return;
           busy = false;
           audio = null;
           if (queue.length) return pump();
@@ -876,10 +910,12 @@ var MD = (function () {
      */
     function bargeIn() {
       if (!speaking) return;
-      queue = [];
+      dropQueue();
       if (audio) {
         try { audio.pause(); } catch (e) { /* already ended */ }
+        audio = null;
       }
+      busy = false;
       speaking = false;
       loudFor = 0;
       // Capture from this instant, so the interruption is recorded and the
@@ -955,9 +991,11 @@ var MD = (function () {
       rec.ondataavailable = function (e) {
         if (e.data && e.data.size) chunks.push(e.data);
       };
+      var r = rec;
       rec.onstop = function () {
         var enough = Date.now() - started > MIN_MS && chunks.length;
-        var blob = enough ? new Blob(chunks, { type: "audio/webm" }) : null;
+        var type = String(r.mimeType || "audio/webm").split(";")[0];
+        var blob = enough ? new Blob(chunks, { type: type }) : null;
         if (on && send_it && blob && heard) transcribeAndSend(blob);
         else if (on) newRecorder(true);
       };
@@ -971,13 +1009,14 @@ var MD = (function () {
       reader.onload = function () {
         postJson("/console/" + sessionId + "/transcribe", {
           data: String(reader.result).split(",")[1] || "",
+          mime: blob.type,
         })
           .then(function (r) { return r.json(); })
           .then(function (d) {
             if (d.error) throw new Error(d.error);
             var said = String(d.text || "").trim();
-            // Whisper writes bracketed labels for noises it heard but could not
-            // read as words. Sending those would answer a cough.
+            // A bracketed label ("[music]") is a noise, not something said.
+            // Sending those would answer a cough.
             if (!said || /^[\[(]/.test(said)) throw new Error("nothing said");
             spoken = 0;
             send(said);
@@ -1041,7 +1080,6 @@ var MD = (function () {
           on = true;
           btn.classList.add("on");
           btn.setAttribute("aria-pressed", "true");
-          if (voiceSel) voiceSel.hidden = false;
           listen(true);
         })
         .catch(function () {
@@ -1052,7 +1090,7 @@ var MD = (function () {
     function stop() {
       on = false;
       listen(false);
-      queue = [];
+      dropQueue();
       if (audio) { audio.pause(); audio = null; }
       busy = false;
       if (stream) stream.getTracks().forEach(function (t) { t.stop(); });
@@ -1061,7 +1099,6 @@ var MD = (function () {
       analyser = null;
       btn.classList.remove("on");
       btn.setAttribute("aria-pressed", "false");
-      if (voiceSel) voiceSel.hidden = true;
       status.textContent = "";
     }
 

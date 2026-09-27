@@ -11,7 +11,41 @@
 
 const { esc, shell, card, flashes, icon, stamp } = require("./ui");
 
-exports.index = ({ csrf, user, credentials, probe, flash, err }) =>
+/**
+ * The OpenAI voice key, as a card on the index. Only the last four characters
+ * are ever shown -- enough to tell which key it is, not enough to use it.
+ */
+function voiceSummary(v) {
+  if (!v) return "";
+  if (v.error) {
+    return card(
+      "OpenAI voice",
+      `<div class="alert warn">${icon("alert")}<div>Could not read the voice settings: ${esc(v.error)}</div></div>`,
+      { icon: "voice" }
+    );
+  }
+  return card(
+    "OpenAI voice",
+    `<table class="kv" id="openai-voice">
+      <tr><td>Status</td><td>${
+        v.configured
+          ? `<span class="pill ok">configured</span> <span class="mono small muted">key ending ${esc(v.last4 || "····")}</span>`
+          : `<span class="pill bad">not set</span>`
+      }</td></tr>
+      <tr><td>Speaks with</td><td class="mono small">${esc(v.model)} · ${esc(v.voice)}</td></tr>
+      <tr><td>Hears with</td><td class="mono small">${esc(v.transcribe_model)}</td></tr>
+    </table>
+    <p class="muted small mt-12">Voice only: OpenAI hears you and reads MONI AI's replies aloud.
+      Claude does all the thinking. The key stays on the server.</p>
+    <div class="btn-row">
+      <a class="btn primary small" href="/credentials/openai-voice">
+        ${icon(v.configured ? "edit" : "plus")} ${v.configured ? "Manage" : "Add an OpenAI key"}</a>
+    </div>`,
+    { icon: "voice" }
+  );
+}
+
+exports.index = ({ csrf, user, credentials, probe, flash, err, voice }) =>
   shell(
     "Credentials",
     `${flashes({ msg: flash, err })}
@@ -33,6 +67,8 @@ exports.index = ({ csrf, user, credentials, probe, flash, err }) =>
            <a href="/services/agents">Agent services</a>.</div></div>`
         : ""
     }
+
+    ${voiceSummary(voice)}
 
     ${credentials
       .map((c) =>
@@ -173,6 +209,108 @@ exports.detail = ({ csrf, user, credential, flash, err }) => {
       active: "credentials",
       heading: c.label,
       subtitle: "Shared by every agent on this machine.",
+      actions: `<a class="btn" href="/credentials">${icon("chevron")} All credentials</a>`,
+    }
+  );
+};
+
+/* --------------------------------------------------------- openai voice -- */
+
+function option(value, label, current) {
+  return `<option value="${esc(value)}"${value === current ? " selected" : ""}>${esc(label)}</option>`;
+}
+
+exports.voice = ({ csrf, user, voice: v, models, voices, transcribeModels, test, flash, err }) => {
+  const known = (list, id) => list.some((m) => (m.id || m) === id);
+  const modelList = known(models, v.model) ? models : [{ id: v.model, label: v.model }, ...models];
+  const tModels = known(transcribeModels, v.transcribe_model)
+    ? transcribeModels
+    : [{ id: v.transcribe_model, label: v.transcribe_model }, ...transcribeModels];
+  const voiceList = voices.includes(v.voice) ? voices : [v.voice, ...voices];
+
+  return shell(
+    "OpenAI voice",
+    `${flashes({ msg: flash, err })}
+    ${
+      test
+        ? `<div class="alert ${test.ok ? "good" : "bad"}" id="voice-test-result">${icon(test.ok ? "check" : "alert")}<div>
+            ${test.ok ? "<strong>Test passed.</strong> " : "<strong>Test failed.</strong> "}${esc(test.text)}</div></div>`
+        : ""
+    }
+
+    ${card(
+      "Current state",
+      `<table class="kv">
+        <tr><td>Key</td><td>${
+          v.configured
+            ? `<span class="pill ok">set</span> <span class="mono small muted">••••${esc(v.last4 || "")} · ${esc(v.length)} chars</span>`
+            : `<span class="pill bad">not set</span> <span class="muted small">voice controls stay off until one is added</span>`
+        }</td></tr>
+        <tr><td>Stored in</td><td class="mono small">${esc(v.path || "")} ${v.mode ? "(" + esc(v.mode) + ", root only)" : ""}</td></tr>
+        <tr><td>Last changed</td><td class="mono small">${esc(stamp(v.modified))}</td></tr>
+      </table>
+      ${
+        v.configured
+          ? `<form method="post" action="/credentials/openai-voice/test" class="btn-row">
+              <input type="hidden" name="_csrf" value="${esc(csrf)}">
+              <button class="btn small" type="submit" id="voice-test">${icon("play")} Test</button>
+              <span class="muted small">Speaks one short line and transcribes it back — a real call, a fraction of a cent.</span>
+            </form>`
+          : ""
+      }`,
+      { icon: "info" }
+    )}
+
+    ${card(
+      v.configured ? "Replace the key" : "Add the key",
+      `<form method="post" action="/credentials/openai-voice/key" autocomplete="off">
+        <input type="hidden" name="_csrf" value="${esc(csrf)}">
+        <label>OpenAI API key <span class="hint">written straight to a root-only file and never shown again</span>
+          <input name="value" type="password" placeholder="sk-proj-…" required autocomplete="new-password" spellcheck="false"></label>
+        <button class="btn primary" type="submit">${icon("save")} ${v.configured ? "Replace key" : "Save key"}</button>
+      </form>
+      <p class="muted small mt-12">Create one at platform.openai.com under API keys. A project key
+        restricted to the Realtime and Audio endpoints is enough. This is the panel's own key —
+        separate from anything the Odoo walkthrough uses.</p>`,
+      { icon: "credentials" }
+    )}
+
+    ${card(
+      "Voice",
+      `<form method="post" action="/credentials/openai-voice/options">
+        <input type="hidden" name="_csrf" value="${esc(csrf)}">
+        <label>Speaking model <span class="hint">reads Claude's replies aloud, word for word</span>
+          <select name="model">${modelList.map((m) => option(m.id, m.label + " (" + m.id + ")", v.model)).join("")}</select></label>
+        <label>Voice
+          <select name="voice">${voiceList.map((x) => option(x, x.charAt(0).toUpperCase() + x.slice(1), v.voice)).join("")}</select></label>
+        <label>Listening model <span class="hint">turns what you say into text</span>
+          <select name="transcribe_model">${tModels.map((m) => option(m.id, m.label + " (" + m.id + ")", v.transcribe_model)).join("")}</select></label>
+        <button class="btn primary" type="submit">${icon("save")} Save voice settings</button>
+      </form>`,
+      { icon: "voice" }
+    )}
+
+    ${
+      v.configured
+        ? card(
+            "Remove",
+            `<p class="muted small">Voice stops at once: the microphone and read-aloud controls show
+              “Add an OpenAI key in Settings” until a key is added again. Typing keeps working.</p>
+            <form method="post" action="/credentials/openai-voice/clear" class="inline"
+                  data-confirm="Remove the OpenAI key? Voice stops working until a key is added again.">
+              <input type="hidden" name="_csrf" value="${esc(csrf)}">
+              <button class="btn danger small" type="submit" id="voice-remove">${icon("trash")} Remove key</button>
+            </form>`,
+            { icon: "trash", className: "danger-zone" }
+          )
+        : ""
+    }`,
+    {
+      user,
+      csrf,
+      active: "credentials",
+      heading: "OpenAI voice",
+      subtitle: "Voice only: OpenAI hears and speaks, Claude thinks. Administrators only.",
       actions: `<a class="btn" href="/credentials">${icon("chevron")} All credentials</a>`,
     }
   );

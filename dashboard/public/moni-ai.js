@@ -15,9 +15,10 @@
  * root to that session), listening while the microphone records, speaking
  * while a reply is read aloud.
  *
- * Voice reuses the console's pipeline: the resident whisper server for speech
- * to text and Piper for text to speech, reached through this page's own
- * routes, with the same end-of-utterance detection and barge-in.
+ * Voice goes through OpenAI, on the server only: the page posts its recording
+ * to /moni-ai/api/transcribe and each sentence of a reply to /moni-ai/api/speak
+ * (a WAV comes back), with the same end-of-utterance detection and barge-in.
+ * No key set, no voice: the controls say where to add one.
  *
  * Loaded only on the Command Center (html.cc-page); returns at once elsewhere.
  */
@@ -27,7 +28,7 @@
 
   var CSRF = root.getAttribute("data-csrf") || "";
   var VIEWER = root.getAttribute("data-viewer") || "you";
-  var TTS = root.getAttribute("data-tts") === "1";
+  var READY = root.getAttribute("data-voice-ready") === "1";   // an OpenAI key is set
   var VOICE = root.getAttribute("data-voice") || "";
   var reduced = !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
 
@@ -217,7 +218,7 @@
     var PAL = {}, SPR_GLOW = null, SPR_SAP = null;
     var PK_N = 4, PK_K = new Int8Array(PK_N).fill(-1), PK_T0 = new Float64Array(PK_N), PK_DUR = 1300;
     var BP = { x: 0, y: 0 };
-    var mic = 0, amp = 0, rot = 0, targetK = 0, micLevel = null;
+    var mic = 0, amp = 0, rot = 0, targetK = 0, micLevel = null, outLevel = null;
     var t0 = performance.now(), last = t0, running = false;
     var STATS = { frames: 0, total: 0 };
     window.__orbStats = STATS;
@@ -476,11 +477,13 @@
       var tStart = performance.now();
       var time = (now - t0) / 1000, dt = Math.min(0.05, Math.max(0, (now - last) / 1000)); last = now;
       for (var s = 0; s < 5; s++) { var tg = s === SI ? 1 : 0; WGT[s] += (tg - WGT[s]) * (reduced ? 1 : Math.min(1, dt * 4)); }
-      // The microphone's real level while listening; a voice-like envelope while
-      // speaking (the reply's own loudness is not worth a second audio graph).
+      // The microphone's real level while listening, and the reply's real level
+      // while it is read aloud (from an analyser on the speaker). A voice-like
+      // envelope stands in only when no level is on offer.
       var lvl = micLevel ? micLevel() : 0;
       mic += ((0.12 + Math.min(1, lvl * 9)) - mic) * Math.min(1, dt * 12);
-      var sy = Math.abs(Math.sin(time * 9.5)) * (0.55 + 0.45 * Math.sin(time * 1.7)) * (Math.sin(time * 0.8) > -0.55 ? 1 : 0.1);
+      var out = outLevel ? outLevel() : -1;
+      var sy = out >= 0 ? Math.min(1, out * 5) : Math.abs(Math.sin(time * 9.5)) * (0.55 + 0.45 * Math.sin(time * 1.7)) * (Math.sin(time * 0.8) > -0.55 ? 1 : 0.1);
       amp += (sy - amp) * Math.min(1, dt * 14);
       if (reduced) { mic = 0.5; amp = 0.6; }
       rot += dt * (0.05 + WGT[2] * 0.55 + WGT[3] * 0.1 + WGT[1] * 0.05);
@@ -520,6 +523,7 @@
         return true;
       },
       micSource: function (fn) { micLevel = fn; },
+      outSource: function (fn) { outLevel = fn; },
     };
   })();
 
@@ -611,8 +615,7 @@
       setCore("memory", num(mem.facts) + " facts", mem.healthy ? "Synced" : "Degraded", mem.healthy ? "" : "warn");
     } else setCore("memory", "unavailable", "—", "off");
 
-    var vname = VOICE ? VOICE.replace(/^en_US-/, "").replace(/-(medium|high|low)$/, "") : "";
-    setCore("voice", "Whisper" + (TTS ? " · " + vname : " · replies as text"), Voice.listening ? "Live" : TTS ? "Ready" : "Text only", Voice.listening ? "warn" : "");
+    setCore("voice", READY ? "OpenAI · " + (VOICE || "voice") : "OpenAI · no key", Voice.listening ? "Live" : READY ? "Ready" : "Off", Voice.listening ? "warn" : READY ? "" : "off");
 
     var pend = pendingApprovals().length;
     var mins = Math.round((st.approval_timeout_s || 300) / 60);
@@ -892,6 +895,7 @@
       setTarget("auto");
     }
     sending = true;
+    if (opts.voice || Voice.speakAll) Voice.unlock();
     $("cc-send").disabled = true;
     var body = { text: text };
     if (S.target !== "auto") body.target = S.target;
@@ -1621,20 +1625,27 @@
   setInterval(function () { if (!document.hidden) renderSessions(true); }, 30000);
 
   /* ================================================================ voice
-     The console's live mode, carried over: record, notice the end of an
-     utterance from the level, transcribe with the resident whisper server,
-     send; read the reply back sentence by sentence as it streams; and stop
-     talking the moment you talk over it. */
+     Record, notice the end of an utterance from the level, have the server
+     transcribe it with OpenAI, send; read the reply back sentence by sentence
+     as it streams (each sentence spoken by OpenAI's realtime voice on the
+     server and returned as a WAV, the next one fetched while this one plays);
+     and stop talking the moment you talk over it. The browser only ever talks
+     to this panel. Without a key the controls stay off and say so. */
 
   var Voice = (function () {
     var bigBtn = $("cc-mic-big"), cMic = $("cc-c-mic"), dock = $("cc-dock"), vbText = $("cc-vb-text"), wave = $("cc-vb-wave");
     var speakBtn = $("cc-speak-toggle");
     var api_ = {
       on: false, listening: false, speaking: false, speakAll: false,
-      say: function () {}, feed: function () {}, flush: function () {},
+      say: function () {}, feed: function () {}, flush: function () {}, unlock: function () {},
     };
-    var supported = !!(navigator.mediaDevices && window.MediaRecorder && (window.AudioContext || window.webkitAudioContext));
-    if (!supported) {
+    var AC = window.AudioContext || window.webkitAudioContext;
+    var canRecord = !!(navigator.mediaDevices && window.MediaRecorder && AC);
+    var supported = canRecord && READY;
+    if (!READY) {
+      // The server rendered the "Add an OpenAI key in Settings" state; keep it.
+      bigBtn.disabled = true; cMic.disabled = true;
+    } else if (!canRecord) {
       bigBtn.disabled = true; cMic.disabled = true;
       $("cc-mic-label").textContent = "Voice unavailable";
       $("cc-mic-sub").textContent = "This browser cannot record audio here.";
@@ -1643,8 +1654,8 @@
     var stream = null, ac = null, analyser = null, rec = null, chunks = [], poll = 0;
     var heard = false, quietFor = 0, floor = 0.006, calibrating = 0, lastRms = 0;
     var ptt = false;
-    var SAMPLE_MS = 50, END_MS = 700, RESET_MS = 8000, MIN_MS = 300, BARGE_MS = 330;
-    var spoken = 0, queue = [], audio = null, busy = false, loudFor = 0;
+    var SAMPLE_MS = 50, END_MS = 700, RESET_MS = 8000, MIN_MS = 300, BARGE_MS = 330, AHEAD = 3;
+    var spoken = 0, queue = [], busy = false, loudFor = 0, gen = 0;
 
     // Wave bars for the voice bar, driven by the real level.
     var BARS = 44;
@@ -1672,12 +1683,6 @@
       while ((m = re.exec(rest))) { var piece = m[0].trim(); at = re.lastIndex; if (piece) out.push(piece); }
       return { list: out, consumed: from + at };
     }
-    function enqueue(piece) {
-      var say = speakable(piece);
-      if (say.length < 2 || !/[a-z0-9]/i.test(say)) return;
-      queue.push(say.slice(0, 780));
-      pump();
-    }
     function level() {
       if (!analyser) return 0;
       var buf = new Uint8Array(analyser.fftSize);
@@ -1688,54 +1693,129 @@
     }
     Orb.micSource(function () { return api_.listening && !api_.speaking ? lastRms : 0; });
 
+    /* ---- the speaker: one AudioContext, an analyser in front of it, so the
+       seed core pulses with the reply's real loudness ---- */
+    var outCtx = null, outAn = null, outBuf = null, source = null;
+    function outContext() {
+      if (!AC) return null;
+      if (!outCtx) {
+        outCtx = new AC();
+        outAn = outCtx.createAnalyser();
+        outAn.fftSize = 512;
+        outAn.connect(outCtx.destination);
+        outBuf = new Uint8Array(outAn.fftSize);
+      }
+      if (outCtx.state === "suspended" && outCtx.resume) outCtx.resume().catch(function () { /* needs a gesture */ });
+      return outCtx;
+    }
+    function outLevel() {
+      if (!api_.speaking) return -1;
+      if (!source || !outAn) return 0;
+      outAn.getByteTimeDomainData(outBuf);
+      var sum = 0;
+      for (var i = 0; i < outBuf.length; i++) { var v = (outBuf[i] - 128) / 128; sum += v * v; }
+      return Math.sqrt(sum / outBuf.length);
+    }
+    Orb.outSource(outLevel);
+
     function setUi() {
+      if (!READY) return;
       var live = api_.on || ptt;
       dock.classList.toggle("voice-on", live);
       bigBtn.classList.toggle("live", live);
       bigBtn.setAttribute("aria-pressed", live ? "true" : "false");
-      $("cc-mic-label").textContent = api_.speaking ? "Speaking…" : ptt ? "Listening — release to send" : api_.on ? (api_.listening ? "Listening…" : "Working…") : "Tap to talk";
-      $("cc-mic-sub").innerHTML = api_.on ? "tap again to stop · talk over a reply to cut in" : "or hold <kbd>Space</kbd> to talk";
+      if (canRecord) {
+        $("cc-mic-label").textContent = api_.speaking ? "Speaking…" : ptt ? "Listening — release to send" : api_.on ? (api_.listening ? "Listening…" : "Working…") : "Tap to talk";
+        $("cc-mic-sub").innerHTML = api_.on ? "tap again to stop · talk over a reply to cut in" : "or hold <kbd>Space</kbd> to talk";
+      }
       paintState();
       renderRail();
     }
 
+    /* ---- speaking: fetch ahead, play in order, drop everything on barge-in ---- */
+    function fetchClip(text) {
+      var ctrl = window.AbortController ? new AbortController() : null;
+      var clip = fetch("/moni-ai/api/speak", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": CSRF, Accept: "audio/wav, application/json" },
+        body: JSON.stringify({ text: text }),
+        signal: ctrl ? ctrl.signal : undefined,
+      }).then(function (r) {
+        // 204: the voice would not read this sentence as written, so it is
+        // skipped -- the words are on the screen, and invented speech is worse.
+        if (r.status === 204) return null;
+        if (r.ok) return r.arrayBuffer();
+        return r.json().catch(function () { return {}; }).then(function (j) {
+          if (j.code === "no-key") toast("Voice needs an OpenAI key. Add one in Settings.", true);
+          return null;
+        });
+      }).catch(function () { return null; });
+      return { clip: clip, ctrl: ctrl };
+    }
+    function prefetch() {
+      for (var i = 0; i < queue.length && i < AHEAD; i++) {
+        if (!queue[i].clip) { var f = fetchClip(queue[i].text); queue[i].clip = f.clip; queue[i].ctrl = f.ctrl; }
+      }
+    }
+    function enqueue(piece) {
+      if (!READY) return;
+      var say = speakable(piece);
+      if (say.length < 2 || !/[a-z0-9]/i.test(say)) return;
+      queue.push({ text: say.slice(0, 780) });
+      prefetch();
+      pump();
+    }
+    function play(ab, my) {
+      var c = outContext();
+      if (!c) return Promise.resolve();
+      return new Promise(function (resolve) {
+        c.decodeAudioData(ab, function (buf) {
+          if (my !== gen) return resolve();
+          source = c.createBufferSource();
+          source.buffer = buf;
+          source.connect(outAn);
+          source.onended = function () { source = null; resolve(); };
+          source.start();
+        }, function () { resolve(); });
+      });
+    }
     function pump() {
       if (busy || !queue.length) return;
-      if (!TTS) { queue = []; return; }
       busy = true;
       api_.speaking = true;
       loudFor = 0;
       if (api_.on) { recording(false); if (!poll) poll = setInterval(tick, SAMPLE_MS); }
       setUi();
-      var say = queue.shift();
-      api("speak", { body: { text: say, voice: VOICE }, raw: true })
-        .then(function (res) { return res.blob(); })
-        .then(function (blob) {
-          return new Promise(function (resolve) {
-            audio = new Audio(URL.createObjectURL(blob));
-            audio.onended = audio.onerror = function () { URL.revokeObjectURL(audio.src); resolve(); };
-            audio.play().catch(resolve);
-          });
-        })
-        .catch(function () { /* one sentence failing to speak is not worth ending over */ })
-        .then(function () {
-          busy = false;
-          audio = null;
-          if (queue.length) return pump();
-          api_.speaking = false;
-          loudFor = 0;
-          if (api_.on && !(S.status && S.status.busy)) listen(true);
-          setUi();
-        });
+      var item = queue.shift(), my = gen;
+      prefetch();
+      item.clip.then(function (ab) {
+        if (my !== gen || !ab) return;
+        return play(ab, my);
+      }).then(function () {
+        if (my !== gen) return;
+        busy = false;
+        if (queue.length) return pump();
+        api_.speaking = false;
+        loudFor = 0;
+        if (api_.on && !(S.status && S.status.busy)) listen(true);
+        setUi();
+      });
+    }
+    /** Stop speaking now: the clip playing, the ones fetched, the ones asked for. */
+    function silence() {
+      gen++;
+      queue.forEach(function (q) { if (q.ctrl) { try { q.ctrl.abort(); } catch (e) { /* done */ } } });
+      queue = [];
+      if (source) { try { source.onended = null; source.stop(); } catch (e) { /* ended */ } source = null; }
+      busy = false;
+      api_.speaking = false;
+      loudFor = 0;
     }
 
     function bargeIn() {
       if (!api_.speaking) return;
-      queue = [];
-      if (audio) { try { audio.pause(); } catch (e) { /* ended */ } }
-      api_.speaking = false;
-      busy = false;
-      loudFor = 0;
+      silence();
       recording(true);
       vbText.textContent = "Listening…";
       setUi();
@@ -1767,15 +1847,16 @@
     function newRecorder() {
       chunks = []; heard = false; quietFor = 0;
       var started = Date.now();
-      rec = recorderFor(stream);
-      rec.ondataavailable = function (e) { if (e.data && e.data.size) chunks.push(e.data); };
-      rec.onstop = function () {
+      var r = rec = recorderFor(stream);
+      r.ondataavailable = function (e) { if (e.data && e.data.size) chunks.push(e.data); };
+      r.onstop = function () {
         var enough = Date.now() - started > MIN_MS && chunks.length;
-        var blob = enough ? new Blob(chunks, { type: "audio/webm" }) : null;
+        var type = String(r.mimeType || "audio/webm").split(";")[0];
+        var blob = enough ? new Blob(chunks, { type: type }) : null;
         if (blob && (heard || ptt)) transcribeAndSend(blob);
         else if (api_.on) newRecorder();
       };
-      rec.start();
+      r.start();
       api_.listening = true;
       setUi();
     }
@@ -1809,7 +1890,7 @@
       setUi();
       var reader = new FileReader();
       reader.onload = function () {
-        api("transcribe", { body: { data: String(reader.result).split(",")[1] || "" } }).then(function (d) {
+        api("transcribe", { body: { data: String(reader.result).split(",")[1] || "", mime: blob.type } }).then(function (d) {
           var said = String(d.text || "").trim();
           if (!said || /^[\[(]/.test(said)) throw new Error("nothing said");
           vbText.textContent = "“" + clip(said, 80) + "”";
@@ -1829,7 +1910,6 @@
       if (stream) return Promise.resolve();
       return navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }).then(function (s) {
         stream = s;
-        var AC = window.AudioContext || window.webkitAudioContext;
         ac = new AC();
         analyser = ac.createAnalyser();
         analyser.fftSize = 1024;
@@ -1846,8 +1926,15 @@
       lastRms = 0;
     }
 
+    // "On it." should play the instant a spoken turn is sent; asking for it
+    // once here puts it in the server's cache before it is needed.
+    var warmed = false;
+    function warm() { if (!warmed && READY) { warmed = true; fetchClip("On it."); } }
+
     function start() {
       if (!supported) return;
+      outContext();
+      warm();
       openStream().then(function () {
         api_.on = true;
         listen(true);
@@ -1855,10 +1942,7 @@
     }
     function stop() {
       api_.on = false;
-      queue = [];
-      if (audio) { try { audio.pause(); } catch (e) { /* ended */ } audio = null; }
-      busy = false;
-      api_.speaking = false;
+      silence();
       closeStream();
       setUi();
     }
@@ -1878,6 +1962,8 @@
       if (e.code !== "Space" || e.repeat || !supported || api_.on || ptt || typing(document.activeElement)) return;
       e.preventDefault();
       ptt = true;
+      outContext();
+      warm();
       if (api_.speaking) bargeIn();
       openStream().then(function () {
         if (!ptt) return closeStream();
@@ -1895,15 +1981,17 @@
       else { ptt = false; closeStream(); setUi(); }
     });
 
-    speakBtn.hidden = !TTS;
+    speakBtn.hidden = !READY;
     speakBtn.addEventListener("click", function () {
       api_.speakAll = !api_.speakAll;
+      if (api_.speakAll) outContext();
       speakBtn.setAttribute("aria-pressed", api_.speakAll ? "true" : "false");
       speakBtn.innerHTML = ic(api_.speakAll ? "speaker" : "mute") + "<span>" + (api_.speakAll ? "replies aloud" : "replies silent") + "</span>";
-      if (!api_.speakAll && !api_.on) { queue = []; if (audio) { try { audio.pause(); } catch (e) { /* ended */ } } }
+      if (!api_.speakAll && !api_.on) { silence(); setUi(); }
     });
 
-    api_.say = function (text) { if (TTS) enqueue(text); };
+    api_.unlock = function () { if (READY) outContext(); };
+    api_.say = function (text) { if (READY) enqueue(text); };
     var spokenTurn = null;
     api_.feed = function (id, text) {
       if (id !== spokenTurn) { spokenTurn = id; spoken = 0; }

@@ -210,7 +210,7 @@ exports.console = ({
   session,
   messages,
   dirs,
-  voices = [],
+  voice = {},
   locked = false,
   flash,
   err,
@@ -452,32 +452,32 @@ exports.console = ({
 
                 <div class="composer-actions">
                 ${
-                  voices.length
+                  voice.configured
                     ? `<span class="chat-controls live-controls">
                          <button class="icon-btn live-btn" type="button" id="chat-live"
                                  aria-pressed="false"
-                                 title="Live mode — talk to it and hear the answer">${icon(
+                                 title="Live mode — talk to it and hear the answer (OpenAI ${esc(voice.voice || "")})">${icon(
                                    "voice",
                                    15
                                  )}<span>Live</span></button>
-                         <select class="pick" id="chat-voice" aria-label="Voice"
-                                 title="Which voice answers">
-                           ${voices
-                             .map(
-                               (v) =>
-                                 `<option value="${esc(v.name)}">${esc(v.label)}</option>`
-                             )
-                             .join("")}
-                         </select>
                        </span>`
-                    : ""
+                    : `<span class="chat-controls live-controls voice-off" id="chat-voice-off">
+                         <button class="icon-btn live-btn" type="button" id="chat-live" disabled
+                                 aria-disabled="true"
+                                 title="Add an OpenAI key in Settings to use voice">${icon("voice", 15)}<span>Live</span></button>
+                         ${
+                           voice.manage
+                             ? `<a class="small voice-setup" href="/credentials/openai-voice">Add an OpenAI key in Settings</a>`
+                             : `<span class="muted small voice-setup">Voice needs an OpenAI key — ask an administrator</span>`
+                         }
+                       </span>`
                 }
 
                 <span class="muted small composer-status" id="chat-status"></span>
                 <button class="icon-btn" type="button" id="chat-attach"
                         title="Attach files (or just paste them)">${icon("plus", 15)}</button>
                 <button class="icon-btn" type="button" id="chat-mic"
-                        title="Record a voice message">${icon("voice", 15)}</button>
+                        ${voice.configured ? `title="Dictate a message"` : `disabled title="Add an OpenAI key in Settings to use voice"`}>${icon("voice", 15)}</button>
                 <button class="btn small" type="button" id="chat-stop" hidden>${icon(
                   "stop",
                   14

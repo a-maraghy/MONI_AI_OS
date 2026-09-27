@@ -38,8 +38,7 @@ const claudeViews = require("./lib/views-claude");
 const moniai = require("./lib/moniai");
 const rbac = require("./lib/rbac");
 const totp = require("./lib/totp");
-const speech = require("./lib/speech");
-const listen = require("./lib/listen");
+const voice = require("./lib/voice");
 
 const PORT = Number(process.env.MONI_PORT || 3000);
 const BIND = process.env.MONI_BIND || "127.0.0.1";
@@ -1648,6 +1647,184 @@ app.post("/services/agent-action", requireAuth, requirePerm("agents.control"), r
   }
 });
 
+/* --------------------------------------------------------- openai voice --- */
+
+/**
+ * The voice's configuration, key included, held in this process's memory.
+ *
+ * It lives in a root-only file the helper owns; reading it costs a sudo call,
+ * so it is cached, and dropped the moment Settings changes it. The key never
+ * leaves this object: routes get voicePublic(), which has no key in it, and
+ * nothing here logs it.
+ */
+let voiceCache = { at: 0, cfg: null, pending: null };
+const VOICE_TTL_MS = 5 * 60 * 1000;
+
+function voiceForget() {
+  voiceCache = { at: 0, cfg: null, pending: null };
+  voice.clearCache();
+}
+
+async function voiceConfig() {
+  if (voiceCache.cfg && Date.now() - voiceCache.at < VOICE_TTL_MS) return voiceCache.cfg;
+  if (voiceCache.pending) return voiceCache.pending;
+  const pending = priv
+    .voiceKeyRead()
+    .then((d) => {
+      const cfg = {
+        key: d && d.key ? String(d.key) : null,
+        model: (d && d.model) || voice.DEFAULTS.model,
+        voice: (d && d.voice) || voice.DEFAULTS.voice,
+        transcribe_model: (d && d.transcribe_model) || voice.DEFAULTS.transcribe_model,
+      };
+      if (voiceCache.pending === pending) voiceCache = { at: Date.now(), cfg, pending: null };
+      return cfg;
+    })
+    .catch((e) => {
+      if (voiceCache.pending === pending) voiceCache.pending = null;
+      return { key: null, ...voice.DEFAULTS, error: e.message };
+    });
+  voiceCache.pending = pending;
+  return pending;
+}
+
+/** What a page may know: whether voice works, and with what. Never the key. */
+async function voicePublic(req) {
+  const cfg = await voiceConfig();
+  return {
+    configured: !!cfg.key,
+    model: cfg.model,
+    voice: cfg.voice,
+    provider: "OpenAI",
+    manage: !!(req && req.perm && req.perm.can("voice.manage")),
+  };
+}
+
+function voiceFail(res, e) {
+  const status =
+    e.code === "no-key" ? 503 : e.code === "invalid" ? 400 : e.code === "unfaithful" ? 422 : e.code === "timeout" ? 504 : 502;
+  res.status(status).json({ error: e.message, code: e.code || "error" });
+}
+
+const AUDIO_MIME_RE = /^audio\/[a-z0-9.+-]{1,30}$/;
+
+/** Shared by the console and the Command Center: base64 recording in, text out. */
+async function voiceTranscribeRoute(req, res) {
+  const data = typeof (req.body && req.body.data) === "string" ? req.body.data : "";
+  if (!data || !/^[A-Za-z0-9+/=]+$/.test(data)) return res.status(400).json({ error: "No audio arrived.", code: "invalid" });
+  const mime = String((req.body && req.body.mime) || "").split(";")[0].trim().toLowerCase();
+  try {
+    const cfg = await voiceConfig();
+    res.json({ text: await voice.transcribe(Buffer.from(data, "base64"), cfg, AUDIO_MIME_RE.test(mime) ? mime : "audio/webm") });
+  } catch (e) {
+    voiceFail(res, e);
+  }
+}
+
+/** One sentence in, a WAV out -- or 204 when the voice would not read it as written. */
+async function voiceSpeakRoute(req, res) {
+  const text = typeof (req.body && req.body.text) === "string" ? req.body.text : "";
+  if (!text.trim()) return res.status(400).json({ error: "Nothing to say.", code: "invalid" });
+  try {
+    const cfg = await voiceConfig();
+    const out = await voice.speak(text, cfg);
+    res.set({ "Content-Type": "audio/wav", "Content-Length": String(out.wav.length), "Cache-Control": "no-store" });
+    res.send(out.wav);
+  } catch (e) {
+    // Not an error to the page: the sentence is skipped, and it stays on screen.
+    if (e.code === "unfaithful") return res.status(204).set({ "X-Voice-Skipped": "unfaithful", "Cache-Control": "no-store" }).end();
+    voiceFail(res, e);
+  }
+}
+
+/* Settings: the key is write-only. It is posted once, handed to the helper on
+   stdin, and from then on the panel shows its last four characters. */
+
+async function voiceSettings() {
+  try {
+    return await priv.voiceStatus();
+  } catch (e) {
+    return { error: e.message, configured: false, ...voice.DEFAULTS };
+  }
+}
+
+app.get("/credentials/openai-voice", requireAuth, requirePerm("voice.manage"), async (req, res) => {
+  const v = await voiceSettings();
+  if (v.error) return res.status(500).send(views.error("Voice settings unavailable", v.error));
+  const test = req.query.test ? { ok: req.query.test === "ok", text: String(req.query.t || "").slice(0, 600) } : null;
+  res.send(
+    credentialViews.voice({
+      csrf: res.locals.csrf,
+      user: ctx(req),
+      voice: v,
+      models: voice.MODELS,
+      voices: voice.VOICES,
+      transcribeModels: voice.TRANSCRIBE_MODELS,
+      test,
+      flash: req.query.msg || null,
+      err: req.query.err || null,
+    })
+  );
+});
+
+app.post("/credentials/openai-voice/key", requireAuth, requirePerm("voice.manage"), requireCsrf, async (req, res) => {
+  const value = String((req.body && req.body.value) || "").trim();
+  try {
+    const out = await priv.voiceKeySet(value);
+    voiceForget();
+    db.logLogin(req.ip, req.me.username, "voice", "set the OpenAI voice key (…" + out.last4 + ")");
+    res.redirect("/credentials/openai-voice?msg=" + encodeURIComponent("Key saved. Press Test to check it."));
+  } catch (e) {
+    res.redirect("/credentials/openai-voice?err=" + encodeURIComponent(priv.redact(e.message)));
+  }
+});
+
+app.post("/credentials/openai-voice/clear", requireAuth, requirePerm("voice.manage"), requireCsrf, async (req, res) => {
+  try {
+    await priv.voiceKeyClear();
+    voiceForget();
+    db.logLogin(req.ip, req.me.username, "voice", "removed the OpenAI voice key");
+    res.redirect("/credentials/openai-voice?msg=" + encodeURIComponent("Key removed. Voice is off until a key is added."));
+  } catch (e) {
+    res.redirect("/credentials/openai-voice?err=" + encodeURIComponent(e.message));
+  }
+});
+
+app.post("/credentials/openai-voice/options", requireAuth, requirePerm("voice.manage"), requireCsrf, async (req, res) => {
+  const model = field(req.body, "model");
+  const name = field(req.body, "voice");
+  const tmodel = field(req.body, "transcribe_model");
+  if (!voice.MODELS.some((m) => m.id === model) || !voice.VOICES.includes(name) || !voice.TRANSCRIBE_MODELS.some((m) => m.id === tmodel)) {
+    return res.redirect("/credentials/openai-voice?err=" + encodeURIComponent("Pick a model, voice and listening model from the lists."));
+  }
+  try {
+    await priv.voiceOptionsSet(model, name, tmodel);
+    voiceForget();
+    db.logLogin(req.ip, req.me.username, "voice", `voice settings ${model} / ${name} / ${tmodel}`);
+    res.redirect("/credentials/openai-voice?msg=" + encodeURIComponent("Voice settings saved."));
+  } catch (e) {
+    res.redirect("/credentials/openai-voice?err=" + encodeURIComponent(e.message));
+  }
+});
+
+app.post("/credentials/openai-voice/test", requireAuth, requirePerm("voice.manage"), requireCsrf, async (req, res) => {
+  voiceForget(); // test what is on disk now, not a cached copy
+  let ok = false;
+  let text;
+  try {
+    const out = await voice.check(await voiceConfig());
+    ok = out.faithful && !!out.heard;
+    text =
+      `${out.model} (${out.voice}) spoke ${out.seconds != null ? out.seconds + " s of audio " : ""}in ${out.speak_ms} ms` +
+      (out.faithful ? ", word for word" : `, but not as written — it said “${out.speak_transcript}”`) +
+      (out.heard != null ? `; listening heard “${out.heard}” in ${out.transcribe_ms} ms.` : ".");
+  } catch (e) {
+    text = e.message;
+  }
+  db.logLogin(req.ip, req.me.username, "voice", "tested the OpenAI voice key: " + (ok ? "ok" : "failed"));
+  res.redirect("/credentials/openai-voice?test=" + (ok ? "ok" : "fail") + "&t=" + encodeURIComponent(priv.redact(voice.scrub(text))));
+});
+
 /* ---------------------------------------------------------- credentials --- */
 
 app.get("/credentials", requireAuth, requirePerm("credentials.view"), async (req, res) => {
@@ -1655,12 +1832,14 @@ app.get("/credentials", requireAuth, requirePerm("credentials.view"), async (req
     credentials: () => priv.credentialList(),
     probe: () => priv.systemProbe(),
   });
+  const voiceState = req.perm.can("voice.manage") ? await voiceSettings() : null;
   res.send(
     credentialViews.index({
       csrf: res.locals.csrf,
       user: ctx(req),
       credentials: data.credentials || [],
       probe: data.probe || null,
+      voice: voiceState,
       flash: req.query.msg || null,
       err: req.query.err || data.errors.credentials || null,
     })
@@ -1844,7 +2023,7 @@ app.get("/console", requireAuth, requirePerm("console.use"), async (req, res) =>
       session: null,
       messages: [],
       dirs: await consoleDirs(),
-      voices: speech.voices(),
+      voice: await voicePublic(req),
     })
   );
 });
@@ -1880,7 +2059,7 @@ app.get("/console/:id", requireAuth, requirePerm("console.use"), async (req, res
       locked,
       messages: locked ? [] : db.listConsoleMessages(session.id),
       dirs: await consoleDirs(),
-      voices: speech.voices(),
+      voice: await voicePublic(req),
       err: req.query.err || null,
     })
   );
@@ -2119,35 +2298,17 @@ app.post("/console/:id/upload", requireAuth, requirePerm("console.use"), console
   }
 });
 
+/**
+ * Dictation and live mode: the recording goes to OpenAI's transcription model
+ * from here, never from the browser. Nothing is saved -- the audio is posted,
+ * the text comes back, and the recording is gone.
+ */
 app.post("/console/:id/transcribe", requireAuth, requirePerm("console.use"), consoleUploadBody, requireCsrf, async (req, res) => {
   const session = loadConsoleSession(req, res);
   if (!session) return;
-  const data = String(req.body.data || "");
-  try {
-    // Straight to the resident transcriber, which holds the model in memory:
-    // 0.12s against the 2.26s it took to load a 142MB model per recording. In
-    // live mode that time is silence with somebody waiting in it.
-    const text = await listen.transcribe(Buffer.from(data, "base64"));
-    return res.json({ text });
-  } catch (_) {
-    /* fall through to the slow path rather than losing what was said */
-  }
-
-  try {
-    // The old route, for when the resident server is stopped or absent. Saves
-    // the recording first, which also means a transcription that comes out
-    // wrong can be checked against what was actually said.
-    const saved = await priv.consoleUpload({
-      chat: String(session.id),
-      access: session.access,
-      name: "voice-note.webm",
-      data,
-    });
-    const out = await priv.consoleTranscribe(saved.path);
-    res.json({ text: out.text, path: saved.path });
-  } catch (e) {
-    res.status(400).json({ error: e.message });
-  }
+  if (rootLocked(req, session))
+    return res.status(401).json({ error: "This chat needs an authenticator code again." });
+  return voiceTranscribeRoute(req, res);
 });
 
 /** Answer the CLI's permission question. */
@@ -2199,11 +2360,11 @@ function handlePermissionRequest(session, entry, event, write) {
 }
 
 /**
- * Speak one sentence of a reply.
+ * Speak one sentence of a reply, through OpenAI's realtime voice.
  *
  * Called once per sentence rather than once per turn: the browser plays each
- * clip while asking for the next, so the first words arrive about a second
- * after the reply starts instead of after the whole thing is written.
+ * clip while fetching the next, so the first words arrive shortly after the
+ * reply starts instead of after the whole thing is written.
  *
  * The text comes from the client, which sounds worse than it is -- it is the
  * client's own transcript being read back to the person who is already looking
@@ -2215,20 +2376,7 @@ app.post("/console/:id/speak", requireAuth, requirePerm("console.use"), requireC
   if (!session) return;
   if (rootLocked(req, session))
     return res.status(401).json({ error: "This chat needs an authenticator code again." });
-  if (!speech.available())
-    return res.status(503).json({ error: "No speech synthesiser is installed on this machine." });
-
-  try {
-    const wav = await speech.speak(req.body.text, field(req.body, "voice"));
-    res.set({
-      "Content-Type": "audio/wav",
-      "Content-Length": String(wav.length),
-      "Cache-Control": "no-store",
-    });
-    res.send(wav);
-  } catch (e) {
-    res.status(400).json({ error: e.message });
-  }
+  return voiceSpeakRoute(req, res);
 });
 
 app.post("/console/:id/permission", requireAuth, requirePerm("console.use"), requireCsrf, (req, res) => {
@@ -2622,12 +2770,12 @@ async function moniAiAgentCounts(req) {
   };
 }
 
-/** What the page's voice controls can rely on. */
-function moniAiVoice() {
-  return { tts: speech.available(), voice: speech.defaultVoice(), stt: true };
+/** What the page's voice controls can rely on: whether a key is set, and which voice. */
+function moniAiVoice(req) {
+  return voicePublic(req);
 }
 
-app.get("/moni-ai", requireAuth, (req, res) => {
+app.get("/moni-ai", requireAuth, async (req, res) => {
   // The tab is shared with the older console: someone who may use that but not
   // MONI AI lands where they are allowed to be rather than on a refusal.
   if (!req.perm.can("moniai.use")) {
@@ -2638,7 +2786,7 @@ app.get("/moni-ai", requireAuth, (req, res) => {
     moniAiViews.page({
       csrf: res.locals.csrf,
       user: ctx(req, "console"),
-      voice: moniAiVoice(),
+      voice: await moniAiVoice(req),
     })
   );
 });
@@ -2654,12 +2802,13 @@ app.get("/moni-ai/api/status", ...moniAiGuard, async (req, res) => {
 /** Everything the page needs on load, in one round trip. */
 app.get("/moni-ai/api/overview", ...moniAiGuard, async (req, res) => {
   const who = req.me.username;
-  const [status, sessions, delegations, memory, agents] = await Promise.allSettled([
+  const [status, sessions, delegations, memory, agents, voiceInfo] = await Promise.allSettled([
     moniai.call("status", {}, who),
     moniai.call("sessions", {}, who),
     moniai.call("ledger", { table: "delegations", limit: 30 }, who),
     moniAiMemoryCounts(),
     moniAiAgentCounts(req),
+    moniAiVoice(req),
   ]);
   if (status.status === "rejected") return moniAiFail(res, status.reason);
   res.json({
@@ -2668,7 +2817,7 @@ app.get("/moni-ai/api/overview", ...moniAiGuard, async (req, res) => {
     timeline: delegations.status === "fulfilled" ? delegations.value.rows : [],
     memory: memory.status === "fulfilled" ? memory.value : { error: memory.reason.message },
     agents: agents.status === "fulfilled" ? agents.value : { error: agents.reason.message },
-    voice: moniAiVoice(),
+    voice: voiceInfo.status === "fulfilled" ? voiceInfo.value : { configured: false },
     viewer: { name: req.me.display_name || req.me.username, csrf: res.locals.csrf },
   });
 });
@@ -2785,36 +2934,16 @@ app.post("/moni-ai/api/rc", ...moniAiWrite, async (req, res) => {
 });
 
 /**
- * Voice for the Command Center: the console's own pipeline -- the resident
- * whisper server for speech to text, Piper for text to speech -- behind this
- * page's permission instead of a console chat's. Nothing is saved: the audio
- * goes to the transcriber and the text comes back to the page, which sends it
- * like anything typed.
+ * Voice for the Command Center, through OpenAI and only through this server:
+ * the recording is posted here and transcribed with the key held here; a reply
+ * is read aloud a sentence at a time and comes back as a WAV. The browser
+ * never talks to OpenAI. Nothing is saved.
  */
 const moniAiAudioBody = express.json({ limit: "44mb" });
 
-app.post("/moni-ai/api/transcribe", requireApiPerm("moniai.use"), moniAiAudioBody, requireApiCsrf, async (req, res) => {
-  const data = typeof (req.body && req.body.data) === "string" ? req.body.data : "";
-  if (!data || !/^[A-Za-z0-9+/=]+$/.test(data)) return res.status(400).json({ error: "No audio arrived." });
-  try {
-    res.json({ text: await listen.transcribe(Buffer.from(data, "base64")) });
-  } catch (e) {
-    res.status(503).json({ error: "The transcriber is not answering: " + e.message });
-  }
-});
+app.post("/moni-ai/api/transcribe", requireApiPerm("moniai.use"), moniAiAudioBody, requireApiCsrf, voiceTranscribeRoute);
 
-app.post("/moni-ai/api/speak", ...moniAiWrite, async (req, res) => {
-  if (!speech.available()) return res.status(503).json({ error: "No speech synthesiser is installed on this machine." });
-  const text = typeof (req.body && req.body.text) === "string" ? req.body.text : "";
-  if (!text.trim()) return res.status(400).json({ error: "Nothing to say." });
-  try {
-    const wav = await speech.speak(text, field(req.body, "voice"));
-    res.set({ "Content-Type": "audio/wav", "Content-Length": String(wav.length), "Cache-Control": "no-store" });
-    res.send(wav);
-  } catch (e) {
-    res.status(400).json({ error: e.message });
-  }
-});
+app.post("/moni-ai/api/speak", ...moniAiWrite, voiceSpeakRoute);
 
 app.post("/moni-ai/api/restart", ...moniAiWrite, async (req, res) => {
   try {

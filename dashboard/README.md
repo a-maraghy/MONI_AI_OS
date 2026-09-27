@@ -111,8 +111,8 @@ sends, approvals and restarts in its own login log.
 `deploy-dashboard.sh` now tars the tree it replaces to
 `/root/backups/moni-dashboard_<timestamp>.tgz` before syncing.
 
-    POST /moni-ai/api/transcribe           {data: base64 webm} -> {text}   (resident whisper)
-    POST /moni-ai/api/speak                {text, voice?} -> audio/wav     (Piper)
+    POST /moni-ai/api/transcribe           {data: base64, mime?} -> {text}  (OpenAI transcription)
+    POST /moni-ai/api/speak                {text} -> audio/wav, or 204      (OpenAI realtime voice)
 
 Tests: `node dashboard/tools/test-moniai.cjs` (client and permission).
 
@@ -142,14 +142,56 @@ The top bar's MONI AI tab opens it. Someone with `console.use` but not
 - **Approval cards** come from `approval` events: command, target, effect,
   reason, a countdown to the automatic deny, and Approve & run / Deny. While
   any is pending the status chip and the core's pill say *Awaiting approval*.
-- **Voice** is the console's pipeline behind this page's permission: tap to
-  talk (end of utterance from the level, barge-in over a reply), or hold
+- **Voice** is OpenAI, used as a voice only (see *OpenAI voice* below): tap
+  to talk (end of utterance from the level, barge-in over a reply), or hold
   Space. A spoken turn gets a spoken "On it." and its reply read aloud; the
-  *replies aloud* chip reads every reply.
+  *replies aloud* chip reads every reply. The core pulses with the reply's
+  real output level. Without a key the controls are off and say
+  "Add an OpenAI key in Settings".
 
 Everything is built in `public/moni-ai.js` from the API; the frame is
 `lib/views-moniai.js`, the styles `public/moni-ai.css`. No inline script or
 style (the CSP forbids both) and no external requests.
+
+### OpenAI voice
+
+Voice only: OpenAI hears the person and reads the replies aloud; Claude does
+all the thinking. Everything goes through this server -- the browser never
+talks to OpenAI and never sees the key (the CSP still forbids it to).
+
+- **Hearing**: the recording (webm/opus) is posted to `/moni-ai/api/transcribe`
+  or `/console/:id/transcribe`, and sent on to `POST /v1/audio/transcriptions`
+  (`gpt-4o-mini-transcribe` by default).
+- **Speaking**: each sentence of a reply is posted to `/moni-ai/api/speak` or
+  `/console/:id/speak`; `lib/voice.js` opens one WebSocket per sentence to
+  `wss://api.openai.com/v1/realtime?model=gpt-realtime-mini` (default;
+  `gpt-realtime` and `gpt-live-1` on `/v1/live/sessions` are selectable) and
+  returns a 24 kHz WAV. The page fetches the next sentences while one plays.
+  Short lines ("On it.") are cached in memory per model and voice.
+- **Verbatim guard**: the model's own transcript of what it said is compared
+  with the text word by word; a reading that adds, answers or drops words is
+  cut as soon as it wanders, retried once, and otherwise not spoken (the route
+  answers 204 and the page skips the sentence -- it is on screen anyway).
+- **The key**: Settings > Credentials > OpenAI voice (`/credentials/openai-voice`,
+  permission `voice.manage`, in no stock role -- administrators only). Write-only
+  field, shown as its last four characters, Replace, Remove and a Test button
+  that speaks one line and transcribes it back. Model, voice and listening model
+  selectors. Stored by the helper in `/var/lib/moni-voice/openai-voice.env`
+  (root:root 0600, directory 0700) -- not the repo, not the database, not argv;
+  set/clear/options are audited with the last four characters only. The panel
+  reads it through `moni-helper voice-key-read` and keeps it in memory.
+  This is a separate credential from the Odoo walkthrough's
+  `/etc/odoo/openai_key`.
+
+Piper (`/opt/moni-tts`) is gone. whisper.cpp stays: the Telegram agents'
+voice-notes add-on runs its `whisper-cli` with `ggml-base.bin`
+(`VOICE_PROVIDER=local`). `moni-whisper.service` (the resident server on
+127.0.0.1:8081) stays installed too, though since this change nothing calls
+it -- the panel was its only client.
+
+Tests: `node dashboard/tools/test-voice.cjs` (mock OpenAI for both protocols
+and transcription, the verbatim guard, the helper's key storage, the no-key
+views). Needs `ws` on `NODE_PATH`.
 
 ### Themes
 

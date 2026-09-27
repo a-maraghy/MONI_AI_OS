@@ -1479,6 +1479,12 @@ fieldset.scope legend { font-size: 12px; font-weight: 700; color: var(--ink); pa
 }
 .live-btn.on:hover { background: var(--brand-hover); border-color: var(--brand-hover); color: var(--on-brand); }
 @media (prefers-reduced-motion: reduce) { .live-btn.on { animation: none; } }
+/* No OpenAI key: the button stays in its place, dimmed, with where to fix it
+   beside it rather than a control that fails when pressed. */
+.live-controls.voice-off { display: inline-flex; align-items: center; }
+.icon-btn:disabled, .live-btn:disabled { opacity: .45; cursor: not-allowed; }
+.voice-setup { font-size: 12px; white-space: nowrap; }
+@media (max-width: 720px) { .voice-setup { display: none; } }
 
 /* ------------------------------------------------------------ Claude Code - */
 .cc-filters { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: flex-end; margin-bottom: 14px; }

@@ -260,6 +260,7 @@ html.cc-page .theme-seg button[aria-checked="true"] { background: var(--panel); 
 .cc-voice-card h2 { margin-bottom: 1px; }
 .cc-voice-card b { display: block; color: var(--ink); font-size: 13px; }
 .cc-sub { font-size: 11.5px; color: var(--muted); }
+.cc-sub a { color: var(--accent, currentColor); font-weight: 600; text-decoration: underline; text-underline-offset: 2px; }
 .cc-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
 .cc-tag { font-size: 10.5px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line); color: var(--body); background: var(--accent-soft); white-space: nowrap; line-height: 1.5; }
 .cc-shell .cc-tag-btn { display: inline-flex; align-items: center; gap: 4px; font: 10.5px/1.5 var(--ui); }
