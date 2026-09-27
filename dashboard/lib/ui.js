@@ -287,7 +287,12 @@ function renderSidebar(active, dashKey, perm) {
 /**
  * @param title   browser title
  * @param body    page markup
- * @param opts    { user, csrf, active, subtitle, actions, wide, perm, dash }
+ * @param opts    { user, csrf, active, subtitle, actions, wide, perm, dash,
+ *                  pageClass, topExtra, topEnd, assets }
+ *
+ * `topExtra` and `topEnd` are markup the caller has already escaped, placed
+ * before and after the theme switch. `assets` are extra files from public/ --
+ * .css as stylesheets, .js as deferred scripts.
  */
 function shell(title, body, opts = {}) {
   // `user` is the viewer context: routes pass the object built by ctx(), but a
@@ -298,7 +303,7 @@ function shell(title, body, opts = {}) {
   if (!who || !who.name) {
     // Signed out: no chrome at all, just the card. Showing navigation you
     // cannot use is noise on the one screen that has to be unambiguous.
-    return page(title, `<main class="auth-wrap">${body}</main>`);
+    return page(title, `<main class="auth-wrap">${body}</main>`, opts);
   }
 
   const perm = who.perm || opts.perm || null;
@@ -335,6 +340,9 @@ function shell(title, body, opts = {}) {
       <nav class="top-tabs">${tabs}</nav>
       <div class="top-right">
         ${opts.statusChip ? `<span class="chip">${opts.statusChip}</span>` : ""}
+        ${opts.topExtra || ""}
+        ${themeSwitch()}
+        ${opts.topEnd || ""}
         <a class="whoami" href="/account" title="Your account">
           <span class="whoami-name">${esc(who.name)}</span>
           ${who.roleLabel ? `<span class="whoami-role">${esc(who.roleLabel)}</span>` : ""}
@@ -375,22 +383,45 @@ function shell(title, body, opts = {}) {
         }
         ${body}
       </main>
-    </div>`
+    </div>`,
+    opts
   );
 }
 
-function page(title, inner) {
+/**
+ * System / Dark / Light. Rendered with System ticked; theme-init.js has already
+ * applied the saved choice before paint, and app.js ticks the right button and
+ * wires the clicks. Without JavaScript the page simply follows the system.
+ */
+function themeSwitch() {
+  const opt = (value, iconName, label, title) =>
+    `<button type="button" role="radio" data-theme-opt="${value}" aria-checked="${value === "system"}" title="${title}">${icon(iconName, 14)}<span>${label}</span></button>`;
+  return `<div class="theme-seg" role="radiogroup" aria-label="Theme" data-theme-switch>
+      ${opt("system", "monitor", "System", "Match the system setting")}${opt("dark", "moon", "Dark", "Dark")}${opt("light", "sun", "Light", "Light")}
+    </div>`;
+}
+
+function page(title, inner, opts = {}) {
+  const assets = (opts.assets || []).filter((f) => /^[a-z0-9-]+\.(css|js)$/.test(f));
+  const css = assets.filter((f) => f.endsWith(".css")).map((f) => `<link rel="stylesheet" href="${asset(f)}">`).join("\n");
+  const js = assets.filter((f) => f.endsWith(".js")).map((f) => `<script src="${asset(f)}" defer></script>`).join("\n");
+  // The theme is applied before first paint, so a dark page never flashes
+  // light. A blocking external script because the CSP forbids inline ones.
+  const theme = `<script src="${asset("theme-init.js")}"></script>\n`;
+  const cls = opts.pageClass && /^[a-z0-9 -]+$/.test(opts.pageClass) ? ` class="${opts.pageClass}"` : "";
   return `<!doctype html>
-<html lang="en"><head>
+<html lang="en"${cls}><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)} — MONI AI OS</title>
 <link rel="icon" href="${asset("favicon.svg")}" type="image/svg+xml">
 <link rel="alternate icon" href="/favicon.ico" sizes="48x48 32x32 16x16">
 <link rel="apple-touch-icon" href="${asset("favicon.svg")}">
-<link rel="stylesheet" href="${asset("style.css")}">
+${theme}<link rel="stylesheet" href="${asset("style.css")}">
+${css}
 <script src="${asset("app.js")}" defer></script>
 <script src="${asset("console.js")}" defer></script>
+${js}
 </head><body>
 ${inner}
 </body></html>`;

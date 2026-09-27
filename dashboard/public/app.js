@@ -182,3 +182,71 @@ document.addEventListener("submit", function (ev) {
     }
   );
 })();
+
+/*
+ * The theme switch: System / Dark / Light, in the top bar of every page.
+ *
+ * theme-init.js has already applied the saved choice before the first paint;
+ * this ticks the matching button and handles changes. "System" removes the
+ * attribute so the stylesheet's prefers-color-scheme rules decide, live, as
+ * the operating system changes. Storage can be blocked (a private window,
+ * cleared site data), so every access is guarded and the page still works --
+ * it just forgets the choice.
+ *
+ * A change is announced as a "moni-theme" event on the document, which the
+ * Command Center uses to repaint its canvas in the new palette.
+ */
+(function () {
+  var group = document.querySelector("[data-theme-switch]");
+  if (!group) return;
+  var root = document.documentElement;
+  var ORDER = ["system", "dark", "light"];
+
+  function current() {
+    var t = root.getAttribute("data-theme");
+    return t === "dark" || t === "light" ? t : "system";
+  }
+  function tick(pref) {
+    var bs = group.querySelectorAll("button[data-theme-opt]");
+    for (var i = 0; i < bs.length; i++) {
+      var on = bs[i].getAttribute("data-theme-opt") === pref;
+      bs[i].setAttribute("aria-checked", on ? "true" : "false");
+      bs[i].tabIndex = on ? 0 : -1;
+    }
+  }
+  function apply(pref) {
+    if (ORDER.indexOf(pref) < 0) pref = "system";
+    if (pref === "system") root.removeAttribute("data-theme");
+    else root.setAttribute("data-theme", pref);
+    try {
+      window.localStorage.setItem("moni-theme", pref);
+    } catch (e) {
+      /* storage blocked: the choice lasts until the page is left */
+    }
+    tick(pref);
+    document.dispatchEvent(new CustomEvent("moni-theme", { detail: { theme: pref } }));
+  }
+
+  tick(current());
+  group.addEventListener("click", function (ev) {
+    var b = ev.target.closest("button[data-theme-opt]");
+    if (b) apply(b.getAttribute("data-theme-opt"));
+  });
+  group.addEventListener("keydown", function (ev) {
+    if (ev.key !== "ArrowRight" && ev.key !== "ArrowLeft") return;
+    ev.preventDefault();
+    var i = (ORDER.indexOf(current()) + (ev.key === "ArrowRight" ? 1 : 2)) % 3;
+    apply(ORDER[i]);
+    var b = group.querySelector('button[data-theme-opt="' + ORDER[i] + '"]');
+    if (b) b.focus();
+  });
+  // Following the system, a change there is a change here.
+  var mq = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
+  if (mq) {
+    var onChange = function () {
+      if (current() === "system") document.dispatchEvent(new CustomEvent("moni-theme", { detail: { theme: "system" } }));
+    };
+    if (mq.addEventListener) mq.addEventListener("change", onChange);
+    else if (mq.addListener) mq.addListener(onChange);
+  }
+})();
