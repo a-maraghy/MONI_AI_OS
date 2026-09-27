@@ -376,3 +376,7 @@ pre.logs .t { color: var(--muted); }
 .auth-wrap .card { padding: 22px 24px 20px; }
 .auth-wrap .card > h2 { font-size: 17px; margin-bottom: 14px; }
 .btn.w-full { justify-content: center; padding-top: 9px; padding-bottom: 9px; font-size: 13.5px; }
+
+/* Firewall: the blocked list carries six columns, so it takes a little more
+   of the width than the other two panels. */
+.split.three.fw-split { grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr) minmax(0, 1fr); }

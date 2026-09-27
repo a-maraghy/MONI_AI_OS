@@ -115,7 +115,7 @@ exports.index = ({ csrf, user, status, myIp, canManage, flash, err }) => {
         : ""
     }
 
-    <div class="split three">
+    <div class="split three fw-split">
     ${card(
       "Blocked addresses",
       blocked.length
