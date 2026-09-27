@@ -18,6 +18,15 @@ say() { printf '\n\033[1;36m==>\033[0m %s\n' "$*"; }
 [[ $EUID -eq 0 ]] || { echo "run this with sudo" >&2; exit 1; }
 [[ -d "$SRC" ]] || { echo "no dashboard/ in $REPO_DIR" >&2; exit 1; }
 
+# The tree being replaced, kept so a bad deploy is one tar command from undone.
+if [[ -d "$TARGET" ]]; then
+  BACKUP_DIR=/root/backups
+  install -d -m 0700 "$BACKUP_DIR"
+  BACKUP="$BACKUP_DIR/moni-dashboard_$(date +%Y%m%d_%H%M%S).tgz"
+  say "Backing up the current tree to $BACKUP"
+  tar -czf "$BACKUP" -C "$(dirname "$TARGET")" --exclude "$(basename "$TARGET")/node_modules" "$(basename "$TARGET")"
+fi
+
 say "Syncing application code"
 mkdir -p "$TARGET"
 rsync -a --delete \
@@ -78,6 +87,11 @@ install -m 0644 "$SRC/deploy/moni-agent@.service" /etc/systemd/system/moni-agent
 # repo the source of truth for it, like every other unit.
 install -m 0644 "$SRC/deploy/moni-dashboard.service" /etc/systemd/system/moni-dashboard.service
 install -m 0644 "$SRC/deploy/moni-whatsapp@.service" /etc/systemd/system/moni-whatsapp@.service
+# MONI AI's supervisor listens on a socket only root and the moniai group can
+# open; the panel reaches it by being in that group. Takes effect at the
+# restart below.
+getent group moniai >/dev/null || groupadd --system moniai
+usermod -aG moniai moniadmin
 install -m 0440 "$SRC/deploy/moni-sudoers" /etc/sudoers.d/moni-dashboard
 visudo -cf /etc/sudoers.d/moni-dashboard >/dev/null
 systemctl daemon-reload

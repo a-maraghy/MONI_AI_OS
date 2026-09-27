@@ -84,7 +84,7 @@ const PERMISSION_GROUPS = [
   },
   {
     key: "console",
-    label: "MONI Bot console",
+    label: "MONI AI console",
     blurb: "Chatting with Claude Code from inside the panel.",
     perms: [
       {
@@ -96,6 +96,20 @@ const PERMISSION_GROUPS = [
         key: "console.full",
         label: "Run it against the whole server",
         hint: "Root, anywhere, tool permissions bypassed. This is shell access to the host.",
+      },
+    ],
+  },
+  {
+    key: "moniai",
+    label: "MONI AI",
+    blurb:
+      "The CEO session: one root Claude Code session that delegates commands to every other " +
+      "session on this machine. Destructive steps still wait for an approval.",
+    perms: [
+      {
+        key: "moniai.use",
+        label: "Command MONI AI",
+        hint: "Talk to it, see every session, approve or deny its destructive steps. Root reach over all sessions.",
       },
     ],
   },

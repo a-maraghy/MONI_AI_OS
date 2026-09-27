@@ -34,6 +34,7 @@ const guideViews = require("./lib/views-guide");
 const accessViews = require("./lib/views-access");
 const consoleViews = require("./lib/views-console");
 const claudeViews = require("./lib/views-claude");
+const moniai = require("./lib/moniai");
 const rbac = require("./lib/rbac");
 const totp = require("./lib/totp");
 const speech = require("./lib/speech");
@@ -2514,6 +2515,224 @@ async function saveMembers(channel, members) {
 
 const TELEGRAM_ID_RE = /^\d{4,15}$/;
 const PHONE_RE = /^\+?\d{6,20}$/;
+
+/* --------------------------------------------------------------- moni ai --- */
+
+/**
+ * MONI AI: the JSON / SSE API the Command Center page consumes.
+ *
+ * Everything proxies to the MONI AI supervisor's unix socket (lib/moniai.js),
+ * which owns the one long-lived root Claude Code session that delegates to the
+ * others. One permission, moniai.use, in no stock role: it reaches a root
+ * session that can message every other session on the machine, so it is the
+ * administrator's until a role is deliberately given it.
+ *
+ * API routes answer in JSON, including their refusals -- a page polling for
+ * status should get {"error": ...} and a status code, not a login form.
+ * Writes take the CSRF token in the JSON body (_csrf) or an X-CSRF-Token
+ * header. Every write reaches the supervisor with the panel user as actor, and
+ * the supervisor audits it; the panel's own audit gets a line as well.
+ */
+
+function requireApiPerm(perm) {
+  return (req, res, next) => {
+    if (!req.me) return res.status(401).json({ error: "Sign in first." });
+    if (!req.perm.can(perm)) return res.status(403).json({ error: "Your role does not include MONI AI." });
+    next();
+  };
+}
+
+function requireApiCsrf(req, res, next) {
+  const supplied = (req.body && req.body._csrf) || req.get("x-csrf-token");
+  if (!supplied || supplied !== req.session.csrf) {
+    return res.status(403).json({ error: "Invalid CSRF token. Reload the page and try again." });
+  }
+  next();
+}
+
+const moniAiGuard = [requireApiPerm("moniai.use")];
+const moniAiWrite = [requireApiPerm("moniai.use"), requireApiCsrf];
+
+function moniAiFail(res, e) {
+  const status =
+    e.code === "invalid" ? 400 : e.code === "refused" ? 409 : e.code === "offline" ? 503 : e.code === "timeout" ? 504 : 500;
+  res.status(status).json({ error: e.message, code: e.code || "error" });
+}
+
+/** Memory counts for the rail. The helper call is slow, so it is cached. */
+let moniAiMemory = { at: 0, data: null, pending: null };
+async function moniAiMemoryCounts() {
+  if (moniAiMemory.data && Date.now() - moniAiMemory.at < 60000) return moniAiMemory.data;
+  if (moniAiMemory.pending) return moniAiMemory.pending;
+  moniAiMemory.pending = priv
+    .ccMemoryStats()
+    .then((s) => {
+      const db = (s && s.db) || {};
+      const chunks = db.chunks || {};
+      const data = {
+        facts: db.facts ? db.facts.current : null,
+        chunks: Object.values(chunks).reduce((a, b) => a + (Number(b) || 0), 0) || null,
+        sessions: db.sessions_indexed == null ? null : db.sessions_indexed,
+        last_ingest: db.last_ingest || null,
+        last_facts: db.last_facts || null,
+        healthy: !!(s && s.health && s.health.ok),
+      };
+      moniAiMemory = { at: Date.now(), data, pending: null };
+      return data;
+    })
+    .catch((e) => {
+      moniAiMemory.pending = null;
+      return { error: e.message };
+    });
+  return moniAiMemory.pending;
+}
+
+app.get("/moni-ai/api/status", ...moniAiGuard, async (req, res) => {
+  try {
+    res.json(await moniai.call("status", {}, req.me.username));
+  } catch (e) {
+    moniAiFail(res, e);
+  }
+});
+
+/** Everything the page needs on load, in one round trip. */
+app.get("/moni-ai/api/overview", ...moniAiGuard, async (req, res) => {
+  const who = req.me.username;
+  const [status, sessions, delegations, memory] = await Promise.allSettled([
+    moniai.call("status", {}, who),
+    moniai.call("sessions", {}, who),
+    moniai.call("ledger", { table: "delegations", limit: 30 }, who),
+    moniAiMemoryCounts(),
+  ]);
+  if (status.status === "rejected") return moniAiFail(res, status.reason);
+  res.json({
+    status: status.value,
+    sessions: sessions.status === "fulfilled" ? sessions.value : { error: sessions.reason.message },
+    timeline: delegations.status === "fulfilled" ? delegations.value.rows : [],
+    memory: memory.status === "fulfilled" ? memory.value : { error: memory.reason.message },
+    viewer: { name: req.me.display_name || req.me.username, csrf: res.locals.csrf },
+  });
+});
+
+app.get("/moni-ai/api/sessions", ...moniAiGuard, async (req, res) => {
+  try {
+    res.json(await moniai.call("sessions", {}, req.me.username));
+  } catch (e) {
+    moniAiFail(res, e);
+  }
+});
+
+app.get("/moni-ai/api/memory", ...moniAiGuard, async (req, res) => {
+  res.json(await moniAiMemoryCounts());
+});
+
+app.get("/moni-ai/api/rc", ...moniAiGuard, async (req, res) => {
+  try {
+    res.json(await moniai.call("rc-url", {}, req.me.username));
+  } catch (e) {
+    moniAiFail(res, e);
+  }
+});
+
+app.get("/moni-ai/api/ledger/:table", ...moniAiGuard, async (req, res) => {
+  try {
+    const params = moniai.cleanLedger(req.params.table, req.query || {});
+    res.json(await moniai.call("ledger", params, req.me.username));
+  } catch (e) {
+    moniAiFail(res, e);
+  }
+});
+
+/**
+ * Live events as Server-Sent Events.
+ *
+ * A GET, so it carries no CSRF token, which is fine: it changes nothing, and
+ * the session cookie is SameSite=strict. `Last-Event-ID` (or ?since=) resumes
+ * from the supervisor's ring buffer after a reconnect. X-Accel-Buffering stops
+ * nginx holding events back until a buffer fills.
+ */
+app.get("/moni-ai/api/events", ...moniAiGuard, (req, res) => {
+  const since = moniai.cleanSince(req.get("last-event-id") || (req.query && req.query.since));
+  res.status(200).set({
+    "Content-Type": "text/event-stream; charset=utf-8",
+    "Cache-Control": "no-store",
+    "X-Accel-Buffering": "no",
+    Connection: "keep-alive",
+  });
+  res.flushHeaders();
+  res.write("retry: 3000\n\n");
+  const beat = setInterval(() => res.write(": keep-alive\n\n"), 20000);
+  const close = moniai.subscribe(
+    since,
+    req.me.username,
+    (ev) => {
+      const data = JSON.stringify(ev);
+      res.write((ev.seq ? `id: ${ev.seq}\n` : "") + `event: ${ev.type}\ndata: ${data}\n\n`);
+    },
+    (err) => {
+      clearInterval(beat);
+      if (err) res.write(`event: offline\ndata: ${JSON.stringify({ error: err.message })}\n\n`);
+      res.end();
+    }
+  );
+  req.on("close", () => {
+    clearInterval(beat);
+    close();
+  });
+});
+
+app.post("/moni-ai/api/send", ...moniAiWrite, async (req, res) => {
+  try {
+    const params = moniai.cleanSend(req.body || {});
+    db.logLogin(req.ip, req.me.username, "moni-ai", `turn${params.target ? " for " + params.target : ""}`);
+    res.json(await moniai.call("send", params, req.me.username));
+  } catch (e) {
+    moniAiFail(res, e);
+  }
+});
+
+app.post("/moni-ai/api/interrupt", ...moniAiWrite, async (req, res) => {
+  try {
+    res.json(await moniai.call("interrupt", {}, req.me.username));
+  } catch (e) {
+    moniAiFail(res, e);
+  }
+});
+
+app.post("/moni-ai/api/approvals/:id/:decision", ...moniAiWrite, async (req, res) => {
+  const decision = req.params.decision;
+  if (decision !== "approve" && decision !== "deny") return res.status(404).json({ error: "No such action." });
+  try {
+    const params = { approval_id: moniai.cleanApprovalId(req.params.id) };
+    const note = moniai.cleanNote(req.body && req.body.note);
+    if (note) params.note = note;
+    const out = await moniai.call(decision, params, req.me.username);
+    db.logLogin(req.ip, req.me.username, "moni-ai", `${decision === "approve" ? "approved" : "denied"} request ${params.approval_id}`);
+    res.json(out);
+  } catch (e) {
+    moniAiFail(res, e);
+  }
+});
+
+app.post("/moni-ai/api/rc", ...moniAiWrite, async (req, res) => {
+  const enabled = req.body && req.body.enabled;
+  if (typeof enabled !== "boolean") return res.status(400).json({ error: "enabled must be true or false." });
+  try {
+    db.logLogin(req.ip, req.me.username, "moni-ai", `remote control ${enabled ? "on" : "off"}`);
+    res.json(await moniai.call("rc", { enabled }, req.me.username, { timeout: 60000 }));
+  } catch (e) {
+    moniAiFail(res, e);
+  }
+});
+
+app.post("/moni-ai/api/restart", ...moniAiWrite, async (req, res) => {
+  try {
+    db.logLogin(req.ip, req.me.username, "moni-ai", "restarted MONI AI");
+    res.json(await moniai.call("restart", {}, req.me.username, { timeout: 90000 }));
+  } catch (e) {
+    moniAiFail(res, e);
+  }
+});
 
 /* ------------------------------------------------------- channel members --- */
 
