@@ -155,6 +155,20 @@ const NAV = [
         ],
       },
       {
+        // Claude Code's own state on this machine: what it remembers, what it
+        // said, and what is running now. Administrator-only by default.
+        label: "Claude Code",
+        sections: [
+          {
+            items: [
+              { key: "claude-memory", href: "/claude/memory", label: "Memory", icon: "memory", perm: "claude.memory.read" },
+              { key: "claude-sessions", href: "/claude/sessions", label: "Sessions", icon: "logs", perm: "claude.sessions.view" },
+              { key: "claude-running", href: "/claude/running", label: "Running", icon: "activity", perm: "claude.running.view" },
+            ],
+          },
+        ],
+      },
+      {
         label: "Help",
         sections: [
           { items: [{ key: "guide", href: "/guide", label: "Guide", icon: "guide" }] },

@@ -31,6 +31,9 @@ const SECRET_PATTERNS = [
   [/\bsk-ant-[A-Za-z0-9_-]{20,}/g, "«anthropic-key»"],
   [/\bsk-[A-Za-z0-9]{32,}/g, "«api-key»"],
   [/\bgh[pousr]_[A-Za-z0-9]{20,}/g, "«github-token»"],
+  [/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|$)/g, "«private-key»"],
+  [/\b(Bearer\s+)[A-Za-z0-9\-._~+/]{20,}=*/gi, "$1«token»"],
+  [/\b(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY)(\s*[=:]\s*["']?)[^\s"',;]+/g, "$1$2«token»"],
 ];
 
 function redact(text) {
@@ -113,6 +116,8 @@ function callHelper(subcommand, args = [], opts = {}) {
     else child.stdin.end();
   });
 }
+
+const cc = (sub, args = [], opts = {}) => callHelper(sub, args, opts).then(redactDeep);
 
 module.exports = {
   callHelper,
@@ -256,8 +261,53 @@ module.exports = {
       timeout: 300000,
     }),
 
+  /* ---------------------------------------------------------- claude code -- */
+
+  // Everything from the cc-* commands is redacted twice: once by the helper
+  // (its own rules plus memlib's) and again here, because raw transcripts on
+  // disk are not redacted and a browser is the last place a token should land.
+  // Writes carry the signed-in username so the audit log says who, not just
+  // "moniadmin".
+  ccMemoryStats: () => cc("cc-memory-stats", [], { timeout: 30000 }),
+  ccMemorySearch: (query, k, project) =>
+    cc("cc-memory-search", [], { stdin: JSON.stringify({ query, k, project }), timeout: 45000 }),
+  ccMemoryServices: () => cc("cc-memory-services", [], { timeout: 30000 }),
+  ccMemoryRestart: (actor) =>
+    cc("cc-memory-restart", [], { stdin: JSON.stringify({ actor }), timeout: 70000 }),
+  ccIngestAll: (actor) => cc("cc-ingest-all", [], { stdin: JSON.stringify({ actor }), timeout: 30000 }),
+  ccFactsList: (filters) =>
+    cc("cc-facts-list", [], { stdin: JSON.stringify(filters || {}), timeout: 30000 }),
+  ccFactGet: (id) => cc("cc-fact-get", [String(id)], { timeout: 30000 }),
+  ccFactAdd: (fact) => cc("cc-fact-add", [], { stdin: JSON.stringify(fact), timeout: 60000 }),
+  ccFactEdit: (fact) => cc("cc-fact-edit", [], { stdin: JSON.stringify(fact), timeout: 60000 }),
+  ccFactForget: (request) => cc("cc-fact-forget", [], { stdin: JSON.stringify(request), timeout: 30000 }),
+  ccSessionMemory: (uuid, page) =>
+    cc("cc-session-memory", [uuid, String(page || 1)], { timeout: 30000 }),
+  ccMemfilesList: () => cc("cc-memfiles-list"),
+  ccMemfileRead: (project, name) => cc("cc-memfile-read", [project, name]),
+  ccMemfileWrite: (project, name, content, actor) =>
+    cc("cc-memfile-write", [project, name], {
+      stdin: JSON.stringify({ content, actor }),
+      timeout: 30000,
+    }),
+  ccHooksTail: (n = 50) => cc("cc-hooks-tail", [String(n)]),
+  ccSessionsList: (filters) =>
+    cc("cc-sessions-list", [], { stdin: JSON.stringify(filters || {}), timeout: 120000 }),
+  ccSessionGet: (home, uuid, opts) =>
+    cc("cc-session-get", [home, uuid], { stdin: JSON.stringify(opts || {}), timeout: 90000 }),
+  ccSessionRename: (home, uuid, title, actor) =>
+    cc("cc-session-rename", [home, uuid], { stdin: JSON.stringify({ title, actor }), timeout: 30000 }),
+  ccSessionArchive: (home, uuid, actor) =>
+    cc("cc-session-archive", [home, uuid], { stdin: JSON.stringify({ actor }), timeout: 30000 }),
+  ccSessionRestore: (home, uuid, actor) =>
+    cc("cc-session-restore", [home, uuid], { stdin: JSON.stringify({ actor }), timeout: 30000 }),
+  ccRunning: () => cc("cc-running", [], { timeout: 30000 }),
+  ccStop: (pid, force, actor) =>
+    cc("cc-stop", [], { stdin: JSON.stringify({ pid, force: !!force, actor }), timeout: 20000 }),
+
   /* -------------------------------------------------------------- probes -- */
   systemProbe: () => callHelper("system-probe", [], { timeout: 30000 }),
 
   redact,
+  redactDeep,
 };

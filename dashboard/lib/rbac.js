@@ -100,6 +100,25 @@ const PERMISSION_GROUPS = [
     ],
   },
   {
+    key: "claude",
+    label: "Claude Code",
+    blurb:
+      "Claude Code's own memory, transcripts and live sessions on this machine. " +
+      "Transcripts hold client data, so none of this is in the stock roles.",
+    perms: [
+      { key: "claude.memory.read", label: "Read Claude memory", hint: "Facts, search, memory files, hook activity." },
+      {
+        key: "claude.memory.write",
+        label: "Change Claude memory",
+        hint: "Add, edit and forget facts, edit memory files, restart and re-ingest. Never deletes.",
+      },
+      { key: "claude.sessions.view", label: "Read session transcripts", hint: "Whole conversations, redacted on the way out." },
+      { key: "claude.sessions.manage", label: "Rename and archive sessions", hint: "Refused while a session runs. Never deletes." },
+      { key: "claude.running.view", label: "See running sessions", hint: "Live CLI processes, subagents, memory jobs." },
+      { key: "claude.running.stop", label: "Stop running sessions", hint: "Interrupts a live Claude Code process." },
+    ],
+  },
+  {
     key: "access",
     label: "User management",
     perms: [
@@ -146,6 +165,9 @@ const IMPLIES = {
   "users.manage": ["users.view", "roles.view"],
   "roles.manage": ["roles.view"],
   "console.full": ["console.use"],
+  "claude.memory.write": ["claude.memory.read"],
+  "claude.sessions.manage": ["claude.sessions.view"],
+  "claude.running.stop": ["claude.running.view"],
 };
 
 /** Expand a permission list to include everything it implies. */
@@ -257,7 +279,10 @@ function actor(role) {
           can("devices.view") ||
           can("audit.view") ||
           can("users.view") ||
-          can("roles.view"),
+          can("roles.view") ||
+          can("claude.memory.read") ||
+          can("claude.sessions.view") ||
+          can("claude.running.view"),
   };
 }
 
