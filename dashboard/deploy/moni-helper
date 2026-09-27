@@ -2950,6 +2950,1851 @@ def cmd_console_dirs(args):
     ok([p for p in roots if os.path.isdir(p)])
 
 
+# ============================================================ Claude Code ====
+#
+# Three read-mostly views over Claude Code's own state on this machine:
+#
+#   memory    the claude_memory database (facts, transcript chunks), its search
+#             service on 127.0.0.1:8765, its hook log and its systemd units
+#   sessions  the .jsonl transcripts under three Claude homes, plus the old
+#             Windows sessions kept read-only in an archive
+#   running   the CLI processes alive right now, their subagents, and the
+#             background memory jobs
+#
+# Everything here is root-only data. The database credentials live in
+# /root/.claude-memory/db.env and are read by memlib inside a child process of
+# this helper, never by the dashboard. Raw transcripts are NOT redacted on disk
+# (the memory index is), so every string that leaves this section passes
+# through cc_redact() first -- and the dashboard's own redactDeep() after that.
+#
+# Nothing here deletes anything. Facts are superseded or soft-forgotten through
+# memlib; sessions are moved to an archive folder and can be moved back.
+
+import importlib.util
+import shlex
+import signal
+import time
+import urllib.request
+
+CC_MEM_ROOT = "/opt/claude-memory"
+CC_VENV_PY = CC_MEM_ROOT + "/venv/bin/python"
+CC_SERVICE_URL = "http://127.0.0.1:8765"
+CC_HOOK_LOG = "/var/log/claude-memory-hooks.log"
+CC_INGEST_LOG = "/var/log/claude-memory-ingest.log"
+CC_CACHE = "/root/.cache/moni-cc"
+CC_STOP_STATE = os.path.join(CC_CACHE, "stops.json")
+CC_MEMFILE_ROOT = "/root/.claude/projects"
+
+# The Claude homes the panel may read. A fixed table rather than a path
+# argument: which directories hold transcripts is a code-review decision.
+# `base` is the .claude directory (sessions/ and archive/ hang off it);
+# `projects` is where the <slug>/<uuid>.jsonl transcripts live.
+CC_HOMES = {
+    "root": {
+        "label": "Desktop / CLI (root)",
+        "base": "/root/.claude",
+        "projects": "/root/.claude/projects",
+        "writable": True,
+    },
+    "console": {
+        "label": "MONI Bot console",
+        "base": "/var/lib/moni-console/home/.claude",
+        "projects": "/var/lib/moni-console/home/.claude/projects",
+        "writable": True,
+    },
+    "agents": {
+        "label": "MONI agents",
+        "base": "/opt/moni-agents/shared/home/.claude",
+        "projects": "/opt/moni-agents/shared/home/.claude/projects",
+        "writable": True,
+    },
+    # Sessions carried over from the old Windows laptop. Kept for the record and
+    # for the memory index; nothing in the panel may change them.
+    "winarchive": {
+        "label": "Windows archive",
+        "base": None,
+        "projects": "/root/.claude/archive/windows-projects",
+        "writable": False,
+    },
+}
+CC_ARCHIVE_SUBDIR = os.path.join("archive", "dashboard-archived")
+
+CC_TOPIC_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-]{0,120}$")
+CC_PROJECT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-]{0,60}$")
+CC_SLUG_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,255}$")
+CC_AGENT_ID_RE = re.compile(r"^[A-Za-z0-9_\-]{1,64}$")
+CC_MEMFILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\-]{0,120}\.md$")
+CC_ACTOR_RE = re.compile(r"^[A-Za-z0-9._@\-]{1,64}$")
+CC_SESSION_FILE_RE = re.compile(r"^(\d{1,9})\.json$")
+CC_JSONL_RE = re.compile(r"^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$")
+CC_KINDS = ("decision", "figure", "trap", "preference", "open_issue", "fact")
+CC_CONTROL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+CC_RUNNING_WINDOW = 120       # a subagent file written this recently may still be working
+CC_BUSY_WINDOW = 30           # refuse to rewrite a transcript touched this recently
+CC_FORCE_AFTER = 10           # seconds between SIGINT and the offer of SIGTERM
+CC_USER_TEXT_CAP = 8000
+CC_ASSISTANT_TEXT_CAP = 16000
+
+
+class CCError(Exception):
+    """A refusal or failure to report to the panel as {ok: false}."""
+
+
+# ----------------------------------------------------------------- redaction
+
+# The helper's own pass. memlib's redactor runs after it when it can be loaded,
+# and the dashboard runs redactDeep() over the JSON after that, so a secret has
+# to slip past three different rule sets to reach a browser.
+CC_SECRET_PATTERNS = [
+    (re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|\Z)", re.S),
+     "[REDACTED:private_key]"),
+    (re.compile(r"sk-ant-[A-Za-z0-9_\-]{8,}"), "[REDACTED:anthropic_key]"),
+    (re.compile(r"(?<![A-Za-z0-9])sk-[A-Za-z0-9_\-]{20,}"), "[REDACTED:api_key]"),
+    (re.compile(r"(?<![A-Za-z0-9])(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})"),
+     "[REDACTED:github_token]"),
+    (re.compile(r"(?i)(\bBearer\s+)[A-Za-z0-9\-._~+/]{8,}=*"), r"\1[REDACTED:bearer]"),
+    (re.compile(r"(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY|OPENAI_API_KEY)([\"']?\s*[=:]\s*[\"']?)[^\s\"',;]+"),
+     r"\1\2[REDACTED:token]"),
+    (re.compile(r"(?i)\b(password|passwd)([\"']?\s*[=:]\s*[\"']?)(?!\d+\b)[^\s\"',;}]{1,200}"),
+     r"\1\2[REDACTED:password]"),
+    (re.compile(r"\b\d{6,12}:[A-Za-z0-9_\-]{30,60}\b"), "[REDACTED:bot_token]"),
+    (re.compile(r"(?<![A-Za-z0-9_\-])eyJ[A-Za-z0-9_\-]{10,}\.eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}"),
+     "[REDACTED:jwt]"),
+]
+
+_CC_MEMLIB_REDACT = []
+
+
+def _cc_memlib_redact():
+    """memlib.redact.redact, loaded by path (it is stdlib-only). None if absent."""
+    if not _CC_MEMLIB_REDACT:
+        fn = None
+        try:
+            spec = importlib.util.spec_from_file_location(
+                "cc_memlib_redact", os.path.join(CC_MEM_ROOT, "memlib", "redact.py"))
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            fn = mod.redact
+        except Exception:
+            fn = None
+        _CC_MEMLIB_REDACT.append(fn)
+    return _CC_MEMLIB_REDACT[0]
+
+
+def cc_redact(text):
+    if not isinstance(text, str) or not text:
+        return text
+    for pattern, repl in CC_SECRET_PATTERNS:
+        text = pattern.sub(repl, text)
+    fn = _cc_memlib_redact()
+    if fn is not None:
+        try:
+            out = fn(text)
+            text = out[0] if isinstance(out, tuple) else out
+        except Exception:
+            pass
+    return text
+
+
+def cc_redact_deep(value):
+    if isinstance(value, str):
+        return cc_redact(value)
+    if isinstance(value, list):
+        return [cc_redact_deep(v) for v in value]
+    if isinstance(value, dict):
+        return {k: cc_redact_deep(v) for k, v in value.items()}
+    return value
+
+
+def cc_ok(data):
+    ok(cc_redact_deep(data))
+
+
+def cc_run(fn, *a, **kw):
+    """Run a core function and translate its refusal into the helper's fail()."""
+    try:
+        return fn(*a, **kw)
+    except CCError as exc:
+        fail(cc_redact(str(exc)))
+
+
+# ---------------------------------------------------------------- validation
+
+def cc_home(key):
+    if key not in CC_HOMES:
+        raise CCError("unknown Claude home: " + repr(key))
+    return CC_HOMES[key]
+
+
+def cc_uuid(value):
+    value = str(value or "")
+    if not UUID_RE.match(value):
+        raise CCError("not a session id")
+    return value
+
+
+def cc_slug(value):
+    value = str(value or "")
+    if not CC_SLUG_RE.match(value) or value in (".", ".."):
+        raise CCError("not a project folder name")
+    return value
+
+
+def cc_actor(payload):
+    actor = str(payload.get("actor") or "")
+    if not CC_ACTOR_RE.match(actor):
+        raise CCError("missing or malformed actor")
+    return actor
+
+
+def cc_int(value, lo, hi, default):
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(lo, min(hi, n))
+
+
+def cc_text(value, what, limit, single_line=False):
+    text = str(value or "").replace("\r\n", "\n").strip()
+    if not text:
+        raise CCError(what + " is required")
+    if len(text) > limit:
+        raise CCError(what + " is too long (max %d characters)" % limit)
+    if "\x00" in text or (single_line and ("\n" in text or CC_CONTROL_RE.search(text))):
+        raise CCError(what + " contains characters that are not allowed")
+    return text
+
+
+def cc_under(path, root):
+    """Resolve `path` and insist it stays inside `root` -- symlinks included."""
+    real = os.path.realpath(path)
+    real_root = os.path.realpath(root)
+    if real != real_root and not real.startswith(real_root + os.sep):
+        raise CCError("path escapes its allowed root")
+    return real
+
+
+def cc_plain_file(path, root):
+    if os.path.islink(path):
+        raise CCError("refusing to follow a symlink")
+    real = cc_under(path, root)
+    if not os.path.isfile(real):
+        raise CCError("no such file")
+    return real
+
+
+def cc_read_payload():
+    raw = sys.stdin.buffer.read(MAX_STDIN_BYTES + 1)
+    if len(raw) > MAX_STDIN_BYTES:
+        raise CCError("stdin payload too large")
+    if not raw.strip():
+        return {}
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except Exception:
+        raise CCError("stdin is not valid JSON")
+    if not isinstance(payload, dict):
+        raise CCError("stdin must be a JSON object")
+    return payload
+
+
+# --------------------------------------------------------- memory: database
+
+# Runs inside the claude-memory venv (psycopg lives there, not in the system
+# Python this helper uses), as root, so memlib can read db.env itself. The
+# request arrives on stdin as JSON; one JSON line comes back.
+CC_BRIDGE = r'''
+import json, sys
+sys.path.insert(0, "/opt/claude-memory")
+from memlib import facts as F
+
+
+def iso(v):
+    return v.isoformat() if hasattr(v, "isoformat") else v
+
+
+def rows(c, sql, args=()):
+    cur = c.execute(sql, args)
+    cols = [d.name for d in cur.description]
+    return [{k: iso(v) for k, v in zip(cols, r)} for r in cur.fetchall()]
+
+
+def like_prefix(s):
+    return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+
+
+FACT_COLS = ("id, content, topic, ts, source_session, superseded_by, confidence, meta, "
+             "(embedding IS NOT NULL) AS embedded")
+
+
+def stats(c, req):
+    one = lambda sql: c.execute(sql).fetchone()
+    cur, sup, forgot = one(
+        "SELECT count(*) FILTER (WHERE superseded_by IS NULL), "
+        "count(*) FILTER (WHERE superseded_by IS NOT NULL AND superseded_by <> id), "
+        "count(*) FILTER (WHERE superseded_by = id) FROM facts")
+    return {
+        "facts": {"current": cur, "superseded": sup, "forgotten": forgot},
+        "chunks": {r[0]: r[1] for r in c.execute(
+            "SELECT source, count(*) FROM chunks GROUP BY 1 ORDER BY 1").fetchall()},
+        "sessions_indexed": one(
+            "SELECT count(DISTINCT session_id) FROM chunks WHERE source = 'transcript'")[0],
+        "db_bytes": one("SELECT pg_database_size(current_database())")[0],
+        "last_ingest": iso(one("SELECT max(updated_at) FROM ingest_state "
+                               "WHERE file_path NOT LIKE 'facts:%'")[0]),
+        "last_facts": iso(one("SELECT max(updated_at) FROM ingest_state "
+                              "WHERE file_path LIKE 'facts:%'")[0]),
+        "topics": [r[0] for r in c.execute(
+            "SELECT split_part(topic, '.', 1) AS t FROM facts WHERE superseded_by IS NULL "
+            "AND topic IS NOT NULL GROUP BY 1 ORDER BY count(*) DESC LIMIT 40").fetchall()],
+        "projects": sorted({r[0] for r in c.execute(
+            "SELECT DISTINCT meta->>'project' FROM facts WHERE meta ? 'project' "
+            "UNION SELECT DISTINCT project FROM chunks WHERE project IS NOT NULL").fetchall()
+            if r[0]}),
+    }
+
+
+def facts_list(c, req):
+    where, args = [], []
+    if not req.get("superseded"):
+        where.append("superseded_by IS NULL")
+    if req.get("topic"):
+        where.append("topic LIKE %s")
+        args.append(like_prefix(req["topic"]))
+    if req.get("project"):
+        where.append("meta->>'project' = %s")
+        args.append(req["project"])
+    if req.get("session"):
+        where.append("source_session = %s")
+        args.append(req["session"])
+    if req.get("q"):
+        where.append("content ILIKE %s")
+        args.append("%" + req["q"].replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%")
+    clause = (" WHERE " + " AND ".join(where)) if where else ""
+    total = c.execute("SELECT count(*) FROM facts" + clause, args).fetchone()[0]
+    out = rows(c, "SELECT " + FACT_COLS + " FROM facts" + clause +
+               " ORDER BY ts DESC, id DESC LIMIT %s OFFSET %s",
+               args + [int(req.get("limit", 50)), int(req.get("offset", 0))])
+    return {"total": total, "rows": out}
+
+
+def fact_get(c, req):
+    fid = int(req["id"])
+    got = rows(c, "SELECT " + FACT_COLS + " FROM facts WHERE id = %s", (fid,))
+    if not got:
+        raise LookupError("no such fact")
+    fact = got[0]
+    newer = None
+    if fact["superseded_by"] and fact["superseded_by"] != fid:
+        n = rows(c, "SELECT id, topic, ts, content, superseded_by FROM facts WHERE id = %s",
+                 (fact["superseded_by"],))
+        newer = n[0] if n else None
+    older = rows(c, "SELECT id, topic, ts, content FROM facts WHERE superseded_by = %s AND id <> %s "
+                    "ORDER BY ts DESC LIMIT 20", (fid, fid))
+    return {"fact": fact, "newer": newer, "older": older}
+
+
+def _insert(c, content, topic, session, confidence, meta):
+    content = F.redact(content)
+    vec = F._vec((F.embed([content]) or [None])[0])
+    similar = []
+    if vec is not None:
+        similar = [s for s in F._candidates(c, vec, topic) if s["sim"] >= F.SIM_CANDIDATE][:5]
+    new_id = c.execute(
+        "INSERT INTO facts (content, topic, source_session, confidence, embedding, meta) "
+        "VALUES (%s, %s, %s, %s, %s::vector, %s::jsonb) RETURNING id",
+        (content, topic, session, confidence, vec, json.dumps(meta))).fetchone()[0]
+    return new_id, vec is not None, similar
+
+
+def fact_add(c, req):
+    meta = {"source": "dashboard", "kind": req.get("kind") or "fact", "added_by": req["actor"]}
+    if req.get("project"):
+        meta["project"] = req["project"]
+    new_id, embedded, similar = _insert(c, req["content"], req["topic"], None, None, meta)
+    c.commit()
+    return {"id": new_id, "embedded": embedded,
+            "similar": [{"id": s["id"], "sim": round(s["sim"], 3), "content": s["content"][:200]}
+                        for s in similar]}
+
+
+def fact_edit(c, req):
+    fid = int(req["id"])
+    old = c.execute("SELECT content, topic, source_session, confidence, meta, superseded_by "
+                    "FROM facts WHERE id = %s FOR UPDATE", (fid,)).fetchone()
+    if not old:
+        raise LookupError("no such fact")
+    if old[5] is not None:
+        raise ValueError("fact %d is already superseded; edit its current version instead" % fid)
+    old_meta = old[4] or {}
+    meta = {"source": "dashboard", "kind": req.get("kind") or old_meta.get("kind") or "fact",
+            "edited_from": fid, "edited_by": req["actor"]}
+    if old_meta.get("project"):
+        meta["project"] = old_meta["project"]
+    new_id, embedded, _ = _insert(c, req["content"], req["topic"], old[2], old[3], meta)
+    c.execute("UPDATE facts SET superseded_by = %s WHERE id = %s AND superseded_by IS NULL",
+              (new_id, fid))
+    c.commit()
+    return {"id": new_id, "superseded": fid, "embedded": embedded}
+
+
+def fact_forget(c, req):
+    fid = int(req["id"])
+    if not F.forget(fid, req["reason"]):
+        raise ValueError("fact %d is not current (already superseded or forgotten)" % fid)
+    c.execute("UPDATE facts SET meta = meta || %s::jsonb WHERE id = %s",
+              (json.dumps({"forgotten_by": req["actor"], "forgotten_via": "dashboard"}), fid))
+    c.commit()
+    return {"id": fid, "forgotten": True}
+
+
+def session_memory(c, req):
+    sid = req["session"]
+    lim, off = int(req.get("limit", 40)), int(req.get("offset", 0))
+    total = c.execute("SELECT count(*) FROM chunks WHERE session_id = %s", (sid,)).fetchone()[0]
+    chunks = rows(c,
+        "SELECT id, source, ts, role, turn_index, project, left(content, 1500) AS content, "
+        "length(content) AS chars, meta->>'agent_type' AS agent_type, "
+        "meta->>'subagent_id' AS subagent_id FROM chunks WHERE session_id = %s "
+        "ORDER BY turn_index NULLS LAST, id LIMIT %s OFFSET %s", (sid, lim, off))
+    facts = rows(c, "SELECT " + FACT_COLS + " FROM facts WHERE source_session = %s "
+                    "ORDER BY ts DESC, id DESC LIMIT 200", (sid,))
+    return {"total_chunks": total, "chunks": chunks, "facts": facts}
+
+
+def index_info(c, req):
+    paths = [r[0] for r in c.execute(
+        "SELECT file_path FROM ingest_state WHERE file_path NOT LIKE 'doc:%' "
+        "AND file_path NOT LIKE 'facts:%'").fetchall()]
+    docs = [r[0][4:] for r in c.execute(
+        "SELECT file_path FROM ingest_state WHERE file_path LIKE 'doc:%'").fetchall()]
+    sessions = {r[0]: r[1] for r in c.execute(
+        "SELECT session_id, count(*) FROM chunks WHERE source = 'transcript' "
+        "AND session_id IS NOT NULL GROUP BY 1").fetchall()}
+    return {"paths": paths, "docs": docs, "sessions": sessions}
+
+
+OPS = {"stats": stats, "facts_list": facts_list, "fact_get": fact_get, "fact_add": fact_add,
+       "fact_edit": fact_edit, "fact_forget": fact_forget, "session_memory": session_memory,
+       "index_info": index_info}
+
+try:
+    req = json.loads(sys.stdin.read() or "{}")
+    with F.connect(5) as c:
+        data = OPS[req["op"]](c, req)
+    print(json.dumps({"ok": True, "data": data}, default=str))
+except (LookupError, ValueError) as exc:
+    print(json.dumps({"ok": False, "error": str(exc)}))
+except Exception as exc:
+    print(json.dumps({"ok": False, "error": type(exc).__name__ + ": " + str(exc)[:300]}))
+'''
+
+
+def cc_bridge(op, **params):
+    if not os.path.exists(CC_VENV_PY):
+        raise CCError("the claude-memory venv is not installed")
+    env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": "/root", "LANG": "C.UTF-8",
+           "CLAUDE_MEMORY_INTERNAL": "1"}
+    params["op"] = op
+    try:
+        r = subprocess.run([CC_VENV_PY, "-I", "-c", CC_BRIDGE], input=json.dumps(params),
+                           capture_output=True, text=True, timeout=60, cwd=CC_MEM_ROOT, env=env)
+    except subprocess.TimeoutExpired:
+        raise CCError("the memory database did not answer in time")
+    try:
+        out = json.loads(r.stdout.strip().splitlines()[-1])
+    except Exception:
+        raise CCError("memory bridge failed: " + (r.stderr.strip()[-300:] or "no output"))
+    if not out.get("ok"):
+        raise CCError(out.get("error") or "memory bridge failed")
+    return out["data"]
+
+
+def cc_http(path, payload=None, timeout=20):
+    data = None if payload is None else json.dumps(payload).encode()
+    req = urllib.request.Request(CC_SERVICE_URL + path, data=data,
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return json.loads(resp.read().decode("utf-8", "replace"))
+
+
+def cc_systemd(unit, props):
+    r = run(["systemctl", "show", unit, "-p", ",".join(props), "--no-pager"], timeout=10)
+    out = {}
+    for line in r.stdout.splitlines():
+        if "=" in line:
+            k, v = line.split("=", 1)
+            out[k] = v
+    return out
+
+
+# ------------------------------------------------------- memory: commands
+
+def cmd_cc_memory_stats(args):
+    out = {"db": None, "db_error": None, "health": None, "health_error": None}
+    try:
+        out["db"] = cc_bridge("stats")
+    except CCError as exc:
+        out["db_error"] = str(exc)
+    try:
+        out["health"] = cc_http("/health", timeout=3)
+    except Exception as exc:
+        out["health_error"] = type(exc).__name__ + ": " + str(exc)[:200]
+    cc_ok(out)
+
+
+def cc_search(payload):
+    query = cc_text(payload.get("query"), "Query", 500)
+    k = cc_int(payload.get("k"), 1, 50, 12)
+    project = str(payload.get("project") or "") or None
+    if project and not CC_PROJECT_RE.match(project):
+        raise CCError("bad project filter")
+    try:
+        res = cc_http("/search", {"query": query, "k": k, "project": project}, timeout=30)
+    except Exception as exc:
+        raise CCError("memory search is unavailable: " + type(exc).__name__)
+    hits = []
+    for h in res.get("results") or []:
+        content = str(h.get("content") or "")
+        hits.append({
+            "kind": h.get("kind"), "id": h.get("id"), "score": h.get("score"),
+            "topic": h.get("topic"), "session_id": h.get("session_id"), "ts": h.get("ts"),
+            "project": h.get("project"), "role": h.get("role"), "source": h.get("source"),
+            "content": content[:900], "truncated": len(content) > 900,
+        })
+    return {"results": hits, "timing_ms": res.get("timing_ms")}
+
+
+def cmd_cc_memory_search(args):
+    cc_ok(cc_run(lambda: cc_search(cc_read_payload())))
+
+
+def cc_facts_query(payload):
+    topic = str(payload.get("topic") or "")
+    if topic and not CC_TOPIC_RE.match(topic):
+        raise CCError("bad topic filter")
+    project = str(payload.get("project") or "")
+    if project and not CC_PROJECT_RE.match(project):
+        raise CCError("bad project filter")
+    session = str(payload.get("session") or "")
+    if session:
+        cc_uuid(session)
+    q = str(payload.get("q") or "")[:200]
+    per = cc_int(payload.get("per_page"), 5, 100, 50)
+    page = cc_int(payload.get("page"), 1, 100000, 1)
+    data = cc_bridge("facts_list", topic=topic, project=project, session=session, q=q,
+                     superseded=bool(payload.get("superseded")), limit=per,
+                     offset=(page - 1) * per)
+    data.update({"page": page, "per_page": per})
+    return data
+
+
+def cmd_cc_facts_list(args):
+    cc_ok(cc_run(lambda: cc_facts_query(cc_read_payload())))
+
+
+def cmd_cc_fact_get(args):
+    if len(args) != 1 or not args[0].isdigit():
+        fail("usage: cc-fact-get <id>")
+    cc_ok(cc_run(cc_bridge, "fact_get", id=int(args[0])))
+
+
+def cc_fact_fields(payload):
+    content = cc_text(payload.get("content"), "Content", 4000)
+    topic = cc_text(payload.get("topic"), "Topic", 121, single_line=True)
+    if not CC_TOPIC_RE.match(topic):
+        raise CCError("topic must be dotted words: letters, digits, _ . -")
+    kind = str(payload.get("kind") or "fact")
+    if kind not in CC_KINDS:
+        raise CCError("kind must be one of " + ", ".join(CC_KINDS))
+    return content, topic, kind
+
+
+def cc_fact_add(payload):
+    actor = cc_actor(payload)
+    content, topic, kind = cc_fact_fields(payload)
+    project = str(payload.get("project") or "")
+    if project and not CC_PROJECT_RE.match(project):
+        raise CCError("bad project name")
+    res = cc_bridge("fact_add", content=content, topic=topic, kind=kind, project=project,
+                    actor=actor)
+    audit("cc-fact-add", {"by": actor, "fact": res.get("id"), "topic": topic})
+    return res
+
+
+def cc_fact_edit(payload):
+    actor = cc_actor(payload)
+    fid = cc_int(payload.get("id"), 1, 2 ** 62, 0)
+    if not fid:
+        raise CCError("bad fact id")
+    content, topic, kind = cc_fact_fields(payload)
+    res = cc_bridge("fact_edit", id=fid, content=content, topic=topic, kind=kind, actor=actor)
+    audit("cc-fact-edit", {"by": actor, "fact": fid, "new": res.get("id"), "topic": topic})
+    return res
+
+
+def cc_fact_forget(payload):
+    actor = cc_actor(payload)
+    fid = cc_int(payload.get("id"), 1, 2 ** 62, 0)
+    if not fid:
+        raise CCError("bad fact id")
+    reason = cc_text(payload.get("reason"), "A reason", 500, single_line=True)
+    res = cc_bridge("fact_forget", id=fid, reason=reason, actor=actor)
+    audit("cc-fact-forget", {"by": actor, "fact": fid})
+    return res
+
+
+def cmd_cc_fact_add(args):
+    cc_ok(cc_run(lambda: cc_fact_add(cc_read_payload())))
+
+
+def cmd_cc_fact_edit(args):
+    cc_ok(cc_run(lambda: cc_fact_edit(cc_read_payload())))
+
+
+def cmd_cc_fact_forget(args):
+    cc_ok(cc_run(lambda: cc_fact_forget(cc_read_payload())))
+
+
+def cmd_cc_session_memory(args):
+    if not args:
+        fail("usage: cc-session-memory <uuid> [page]")
+
+    def go():
+        sid = cc_uuid(args[0])
+        page = cc_int(args[1] if len(args) > 1 else 1, 1, 100000, 1)
+        data = cc_bridge("session_memory", session=sid, limit=40, offset=(page - 1) * 40)
+        data.update({"session": sid, "page": page, "per_page": 40})
+        return data
+    cc_ok(cc_run(go))
+
+
+# ---- auto-memory files: /root/.claude/projects/<slug>/memory/*.md
+
+def cc_memfile_path(slug, name):
+    slug = cc_slug(slug)
+    if not CC_MEMFILE_RE.match(str(name or "")):
+        raise CCError("not a memory file name")
+    return os.path.join(CC_MEMFILE_ROOT, slug, "memory", name)
+
+
+def cmd_cc_memfiles_list(args):
+    out = []
+    root = CC_MEMFILE_ROOT
+    for slug in sorted(os.listdir(root)) if os.path.isdir(root) else []:
+        mdir = os.path.join(root, slug, "memory")
+        if not CC_SLUG_RE.match(slug) or os.path.islink(mdir) or not os.path.isdir(mdir):
+            continue
+        for name in sorted(os.listdir(mdir)):
+            p = os.path.join(mdir, name)
+            if not CC_MEMFILE_RE.match(name) or os.path.islink(p) or not os.path.isfile(p):
+                continue
+            st = os.stat(p)
+            out.append({"project": slug, "name": name, "bytes": st.st_size,
+                        "modified": datetime.fromtimestamp(st.st_mtime, timezone.utc).isoformat()})
+    cc_ok(out)
+
+
+def cc_memfile_read(slug, name):
+    path = cc_plain_file(cc_memfile_path(slug, name), CC_MEMFILE_ROOT)
+    if os.path.getsize(path) > MAX_FILE_BYTES:
+        raise CCError("file is too large to show here")
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        raw = fh.read()
+    shown = cc_redact(raw)
+    st = os.stat(path)
+    return {"project": slug, "name": name, "content": shown,
+            # An edit made to a redacted copy would write the placeholders back
+            # over the real text, so the panel refuses to save one.
+            "redacted": shown != raw, "bytes": st.st_size,
+            "modified": datetime.fromtimestamp(st.st_mtime, timezone.utc).isoformat()}
+
+
+def cmd_cc_memfile_read(args):
+    if len(args) != 2:
+        fail("usage: cc-memfile-read <project-slug> <name.md>")
+    cc_ok(cc_run(cc_memfile_read, args[0], args[1]))
+
+
+def cc_start_ingest(unit, argv, collect):
+    """Start an ingest run as its own transient unit, so it outlives this call
+    and is not killed with the dashboard's cgroup on a panel restart."""
+    state = cc_systemd(unit, ["ActiveState"]).get("ActiveState", "")
+    if state in ("active", "activating"):
+        return {"started": False, "unit": unit, "reason": "already running"}
+    run(["systemctl", "reset-failed", unit], timeout=10)
+    cmd = ["systemd-run", "--unit=" + unit, "--description=claude-memory " + " ".join(argv),
+           "--nice=10", "-p", "StandardOutput=append:" + CC_INGEST_LOG,
+           "-p", "StandardError=append:" + CC_INGEST_LOG, "--setenv=HOME=/root",
+           "--working-directory=" + CC_MEM_ROOT]
+    if collect:
+        cmd.append("--collect")
+    cmd += [CC_VENV_PY, os.path.join(CC_MEM_ROOT, "ingest.py")] + argv
+    r = run(cmd, timeout=20)
+    if r.returncode != 0:
+        raise CCError((r.stderr.strip() or "systemd-run failed")[:300])
+    return {"started": True, "unit": unit}
+
+
+def cc_memfile_write(slug, name, payload):
+    actor = cc_actor(payload)
+    content = payload.get("content")
+    if not isinstance(content, str):
+        raise CCError("content is required")
+    content = content.replace("\r\n", "\n")
+    if len(content.encode("utf-8")) > MAX_FILE_BYTES or "\x00" in content:
+        raise CCError("content is too large or contains NUL bytes")
+    path = cc_plain_file(cc_memfile_path(slug, name), CC_MEMFILE_ROOT)
+    st = os.stat(path)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".moni-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(content)
+        os.chmod(tmp, st.st_mode & 0o7777)
+        os.chown(tmp, st.st_uid, st.st_gid)
+        os.replace(tmp, path)
+    except Exception:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+    ingest = {"started": False}
+    try:
+        ingest = cc_start_ingest("cm-ingest-docs", ["--docs"], collect=True)
+    except CCError as exc:
+        ingest = {"started": False, "reason": str(exc)}
+    audit("cc-memfile-write", {"by": actor, "project": slug, "file": name,
+                               "bytes": len(content.encode("utf-8"))})
+    return {"saved": True, "ingest": ingest}
+
+
+def cmd_cc_memfile_write(args):
+    if len(args) != 2:
+        fail("usage: cc-memfile-write <project-slug> <name.md>  (JSON on stdin)")
+    cc_ok(cc_run(lambda: cc_memfile_write(args[0], args[1], cc_read_payload())))
+
+
+# ---- hook log, services, jobs
+
+CC_HOOK_LINE_RE = re.compile(r"^(\S+)\s+([A-Za-z]+)\s+(\{.*\})\s*$")
+
+
+def cc_hook_lines(n):
+    if not os.path.exists(CC_HOOK_LOG):
+        return []
+    with open(CC_HOOK_LOG, "rb") as fh:
+        fh.seek(0, os.SEEK_END)
+        size = fh.tell()
+        fh.seek(max(0, size - 256 * 1024))
+        lines = fh.read().decode("utf-8", "replace").splitlines()[-n:]
+    out = []
+    for ln in lines:
+        m = CC_HOOK_LINE_RE.match(ln)
+        if not m:
+            continue
+        try:
+            detail = json.loads(m.group(3))
+        except Exception:
+            detail = {}
+        if not isinstance(detail, dict):
+            detail = {}
+        # The log is content-free by design; keep it that way on the way out by
+        # passing on scalars only.
+        detail = {str(k)[:40]: v for k, v in detail.items()
+                  if isinstance(v, (int, float, bool)) or v is None
+                  or (isinstance(v, str) and len(v) <= 80)}
+        out.append({"ts": m.group(1), "event": m.group(2), "detail": detail})
+    return list(reversed(out))
+
+
+def cmd_cc_hooks_tail(args):
+    n = cc_int(args[0] if args else 50, 1, 500, 50)
+    cc_ok(cc_hook_lines(n))
+
+
+def cc_unit_brief(unit):
+    p = cc_systemd(unit, ["LoadState", "ActiveState", "SubState", "Result", "MainPID",
+                          "ExecMainStartTimestamp", "ExecMainExitTimestamp",
+                          "ActiveEnterTimestamp", "MemoryCurrent"])
+    mem = p.get("MemoryCurrent", "")
+    return {
+        "unit": unit, "load": p.get("LoadState"), "active": p.get("ActiveState"),
+        "sub": p.get("SubState"), "result": p.get("Result"),
+        "pid": int(p["MainPID"]) if p.get("MainPID", "0").isdigit() else 0,
+        "started": p.get("ExecMainStartTimestamp") or None,
+        "exited": p.get("ExecMainExitTimestamp") or None,
+        "since": p.get("ActiveEnterTimestamp") or None,
+        "memory": int(mem) if mem.isdigit() else None,
+    }
+
+
+def cmd_cc_memory_services(args):
+    timer = cc_systemd("cm-backup.timer", ["ActiveState", "LastTriggerUSec",
+                                           "NextElapseUSecRealtime"])
+    log_tail, log_mtime = [], None
+    if os.path.exists(CC_INGEST_LOG):
+        log_mtime = datetime.fromtimestamp(os.path.getmtime(CC_INGEST_LOG), timezone.utc).isoformat()
+        with open(CC_INGEST_LOG, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            fh.seek(max(0, fh.tell() - 8192))
+            log_tail = [ln[:300] for ln in fh.read().decode("utf-8", "replace").splitlines()[-4:]]
+    cc_ok({
+        "service": cc_unit_brief("claude-memory"),
+        "backup_timer": {"active": timer.get("ActiveState"),
+                         "last": timer.get("LastTriggerUSec") or None,
+                         "next": timer.get("NextElapseUSecRealtime") or None},
+        "backup": cc_unit_brief("cm-backup.service"),
+        "ingest": cc_unit_brief("cm-ingest"),
+        "ingest_docs": cc_unit_brief("cm-ingest-docs"),
+        "ingest_log": {"modified": log_mtime, "tail": log_tail},
+        "jobs": cc_memory_jobs(),
+    })
+
+
+def cc_memory_restart(payload):
+    actor = cc_actor(payload)
+    r = run(["systemctl", "restart", "claude-memory"], timeout=60)
+    audit("cc-memory-restart", {"by": actor, "rc": r.returncode})
+    if r.returncode != 0:
+        raise CCError((r.stderr.strip() or "restart failed")[:300])
+    return cc_unit_brief("claude-memory")
+
+
+def cmd_cc_memory_restart(args):
+    cc_ok(cc_run(lambda: cc_memory_restart(cc_read_payload())))
+
+
+def cc_ingest_all(payload):
+    actor = cc_actor(payload)
+    res = cc_start_ingest("cm-ingest", ["--all"], collect=False)
+    audit("cc-ingest-all", {"by": actor, "started": res.get("started")})
+    return res
+
+
+def cmd_cc_ingest_all(args):
+    cc_ok(cc_run(lambda: cc_ingest_all(cc_read_payload())))
+
+
+# ------------------------------------------------------------ /proc reading
+
+CC_CLK = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
+CC_CLAUDE_EXE_RES = [
+    re.compile(r"^/root/\.claude/remote/ccd-cli/[0-9][0-9A-Za-z.\-]*$"),
+    re.compile(r"^/usr(?:/local)?/lib/node_modules/@anthropic-ai/claude-code/(?:bin/claude(?:\.exe)?|cli\.js)$"),
+    re.compile(r"^/(?:root|home/[^/]+|var/lib/[^/]+(?:/home)?|opt/[^/]+(?:/[^/]+)*)/\.local/share/claude/versions/[0-9][0-9A-Za-z.\-]*$"),
+]
+CC_CLAUDE_SCRIPT_RE = re.compile(r"/@anthropic-ai/claude-code/(?:cli\.js|bin/claude(?:\.exe)?)$")
+CC_JOB_SCRIPTS = ("ingest.py", "extract_facts.py", "recall.py", "synthetic.py")
+CC_JOB_FLAGS = ("--all", "--docs", "--pending", "--session", "--verbose", "--force", "--dry-run")
+
+
+def cc_boot_time():
+    try:
+        with open("/proc/stat") as fh:
+            for line in fh:
+                if line.startswith("btime "):
+                    return int(line.split()[1])
+    except OSError:
+        pass
+    return int(time.time())
+
+
+def cc_proc(pid):
+    """What the panel may know about a process: never its environment, and
+    never its command line (both can hold tokens)."""
+    base = "/proc/%d" % pid
+    try:
+        with open(base + "/stat") as fh:
+            raw = fh.read()
+    except OSError:
+        return None
+    # comm may contain spaces and parentheses; the fields after it are fixed.
+    rparen = raw.rfind(")")
+    comm = raw[raw.find("(") + 1:rparen]
+    fields = raw[rparen + 2:].split()
+    try:
+        st = os.stat(base)
+        user = pwd.getpwuid(st.st_uid).pw_name
+    except (OSError, KeyError):
+        user = "?"
+    try:
+        exe = os.readlink(base + "/exe")
+    except OSError:
+        exe = ""
+    try:
+        cwd = os.readlink(base + "/cwd")
+    except OSError:
+        cwd = None
+    return {
+        "pid": pid, "comm": comm, "state": fields[0], "ppid": int(fields[1]),
+        "cpu_ticks": int(fields[11]) + int(fields[12]), "start_ticks": int(fields[19]),
+        "user": user, "exe": exe.replace(" (deleted)", ""), "cwd": cwd,
+    }
+
+
+def cc_argv(pid):
+    """argv for classification only -- callers must never return it."""
+    try:
+        with open("/proc/%d/cmdline" % pid, "rb") as fh:
+            return [a.decode("utf-8", "replace") for a in fh.read().split(b"\0") if a]
+    except OSError:
+        return []
+
+
+def cc_is_claude(proc):
+    if not proc:
+        return False
+    exe = proc["exe"]
+    if any(r.match(exe) for r in CC_CLAUDE_EXE_RES):
+        return True
+    if os.path.basename(exe) in ("node", "bun", "nodejs"):
+        argv = cc_argv(proc["pid"])
+        return len(argv) > 1 and bool(CC_CLAUDE_SCRIPT_RE.search(argv[1]))
+    return False
+
+
+def cc_all_pids():
+    return [int(n) for n in os.listdir("/proc") if n.isdigit()]
+
+
+def cc_cpu_sample(pids, interval=0.3):
+    """CPU percent per pid over a short window."""
+    first = {}
+    for pid in pids:
+        p = cc_proc(pid)
+        if p:
+            first[pid] = p["cpu_ticks"]
+    if not first:
+        return {}
+    time.sleep(interval)
+    out = {}
+    for pid, t0 in first.items():
+        p = cc_proc(pid)
+        if p:
+            out[pid] = round((p["cpu_ticks"] - t0) / CC_CLK / interval * 100, 1)
+    return out
+
+
+def cc_uptime(proc, boot):
+    return max(0, int(time.time() - (boot + proc["start_ticks"] / CC_CLK)))
+
+
+def cc_memory_jobs():
+    boot = cc_boot_time()
+    jobs = []
+    for pid in cc_all_pids():
+        p = cc_proc(pid)
+        if not p or not os.path.basename(p["exe"]).startswith("python"):
+            continue
+        argv = cc_argv(pid)
+        script = None
+        for a in argv[1:3]:
+            if os.path.basename(a) in CC_JOB_SCRIPTS:
+                script = os.path.basename(a)
+                break
+        if not script:
+            continue
+        jobs.append({"pid": pid, "script": script, "user": p["user"],
+                     "flags": [a for a in argv[2:] if a in CC_JOB_FLAGS],
+                     "uptime": cc_uptime(p, boot)})
+    units = [cc_unit_brief(u) for u in ("cm-ingest", "cm-ingest-docs", "cm-facts-backfill")]
+    return {"processes": jobs, "units": [u for u in units if u["load"] == "loaded"]}
+
+
+# --------------------------------------------------------- transcripts: files
+
+def cc_find_session(key, uuid, archived=False):
+    """(slug, path) of <uuid>.jsonl in a home, searching every project folder."""
+    home = cc_home(key)
+    root = cc_archive_root(key) if archived else home["projects"]
+    if not root or not os.path.isdir(root):
+        raise CCError("no such session")
+    found = []
+    for slug in os.listdir(root):
+        if not CC_SLUG_RE.match(slug):
+            continue
+        p = os.path.join(root, slug, uuid + ".jsonl")
+        if os.path.isfile(p) and not os.path.islink(p):
+            found.append((slug, cc_under(p, root)))
+    if not found:
+        raise CCError("no such session")
+    found.sort(key=lambda f: os.path.getmtime(f[1]), reverse=True)
+    return found[0]
+
+
+def cc_archive_root(key):
+    base = cc_home(key)["base"]
+    return os.path.join(base, CC_ARCHIVE_SUBDIR) if base else None
+
+
+def cc_iter_sessions(key, archived=False):
+    home = cc_home(key)
+    root = cc_archive_root(key) if archived else home["projects"]
+    if not root or not os.path.isdir(root):
+        return
+    for slug in sorted(os.listdir(root)):
+        pdir = os.path.join(root, slug)
+        if not CC_SLUG_RE.match(slug) or os.path.islink(pdir) or not os.path.isdir(pdir):
+            continue
+        for name in os.listdir(pdir):
+            m = CC_JSONL_RE.match(name)
+            p = os.path.join(pdir, name)
+            if m and os.path.isfile(p) and not os.path.islink(p):
+                yield slug, m.group(1), p
+
+
+def cc_parse_lines(blob, drop_first=False):
+    lines = blob.split(b"\n")
+    if drop_first:
+        lines = lines[1:]
+    out = []
+    for ln in lines:
+        if not ln.strip():
+            continue
+        try:
+            rec = json.loads(ln)
+        except Exception:
+            continue
+        if isinstance(rec, dict):
+            out.append(rec)
+    return out
+
+
+def cc_read_head(path, limit):
+    with open(path, "rb") as fh:
+        blob = fh.read(limit)
+    if len(blob) == limit and b"\n" in blob:
+        blob = blob[:blob.rfind(b"\n")]
+    return cc_parse_lines(blob)
+
+
+def cc_read_tail(path, limit):
+    with open(path, "rb") as fh:
+        fh.seek(0, os.SEEK_END)
+        size = fh.tell()
+        start = max(0, size - limit)
+        fh.seek(start)
+        blob = fh.read()
+    return cc_parse_lines(blob, drop_first=start > 0)
+
+
+def cc_strip_reminders(text):
+    return re.sub(r"<system-reminder>.*?</system-reminder>", "", text, flags=re.S).strip()
+
+
+def cc_user_text(rec):
+    """The human-visible text of a user record, or None if it is a tool result."""
+    msg = rec.get("message") or {}
+    content = msg.get("content")
+    if isinstance(content, str):
+        return cc_strip_reminders(content)
+    if not isinstance(content, list):
+        return None
+    parts, images = [], 0
+    for block in content:
+        if not isinstance(block, dict):
+            continue
+        t = block.get("type")
+        if t == "tool_result":
+            return None
+        if t == "text":
+            parts.append(str(block.get("text") or ""))
+        elif t in ("image", "document"):
+            images += 1
+    text = cc_strip_reminders("\n".join(parts))
+    if images:
+        text = (text + "\n" if text else "") + "[%d attachment%s]" % (images, "" if images == 1 else "s")
+    return text
+
+
+def cc_prompt_kind(rec):
+    """'prompt' | 'summary' | 'notification' if this record opens an exchange."""
+    if rec.get("type") != "user" or rec.get("isMeta"):
+        return None
+    if cc_user_text(rec) is None:
+        return None
+    if rec.get("isCompactSummary"):
+        return "summary"
+    origin = rec.get("origin") or {}
+    if isinstance(origin, dict) and origin.get("kind") not in (None, "human"):
+        return "notification"
+    return "prompt"
+
+
+def cc_one_line(text, n):
+    text = re.sub(r"\s+", " ", str(text or "")).strip()
+    return text if len(text) <= n else text[: n - 1] + "…"
+
+
+def cc_title_of(head, tail, sdir):
+    """Claude Code's own title order: the newest custom-title record, then the
+    custom-title.json sidecar, then the first thing the human typed."""
+    for rec in reversed(tail):
+        if rec.get("type") == "custom-title" and rec.get("customTitle"):
+            return str(rec["customTitle"]), "custom"
+    side = os.path.join(sdir, "custom-title.json")
+    if os.path.isfile(side) and not os.path.islink(side):
+        try:
+            with open(side) as fh:
+                t = (json.load(fh) or {}).get("customTitle")
+            if t:
+                return str(t), "custom"
+        except Exception:
+            pass
+    for rec in head:
+        if rec.get("type") == "custom-title" and rec.get("customTitle"):
+            return str(rec["customTitle"]), "custom"
+    first = cc_first_prompt(head)
+    if first:
+        return cc_one_line(first, 90), "first-message"
+    return None, None
+
+
+def cc_first_prompt(records):
+    for rec in records:
+        if cc_prompt_kind(rec) == "prompt":
+            text = cc_user_text(rec)
+            if text:
+                return text
+    return None
+
+
+# ---- the exchange index: byte offsets of every record that opens an exchange,
+# cached per file and extended incrementally as a live transcript grows, so a
+# 55 MB session is scanned once rather than on every page view.
+
+def cc_cache_path(path):
+    return os.path.join(CC_CACHE, "idx", hashlib.sha1(path.encode()).hexdigest() + ".json")
+
+
+def cc_index(path):
+    st = os.stat(path)
+    cpath = cc_cache_path(path)
+    entry = None
+    try:
+        with open(cpath) as fh:
+            entry = json.load(fh)
+    except Exception:
+        entry = None
+    if entry and entry.get("ino") == st.st_ino and entry.get("size") == st.st_size \
+            and entry.get("mtime") == st.st_mtime_ns:
+        return entry
+    if not entry or entry.get("ino") != st.st_ino or st.st_size < entry.get("scanned", 0):
+        entry = {"ino": st.st_ino, "scanned": 0, "starts": [], "turns": 0, "records": 0}
+    with open(path, "rb") as fh:
+        fh.seek(entry["scanned"])
+        pos = entry["scanned"]
+        for line in fh:
+            if not line.endswith(b"\n"):
+                break  # a record still being written; pick it up next time
+            here = pos
+            pos += len(line)
+            entry["records"] += 1
+            if b'"type":"user"' not in line or b'"type":"tool_result"' in line:
+                continue
+            try:
+                rec = json.loads(line)
+            except Exception:
+                continue
+            kind = cc_prompt_kind(rec) if isinstance(rec, dict) else None
+            if kind:
+                entry["starts"].append([here, kind[0]])
+                if kind == "prompt":
+                    entry["turns"] += 1
+        entry["scanned"] = pos
+    entry.update({"size": st.st_size, "mtime": st.st_mtime_ns})
+    try:
+        os.makedirs(os.path.dirname(cpath), mode=0o700, exist_ok=True)
+        tmp = cpath + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump(entry, fh)
+        os.replace(tmp, cpath)
+    except OSError:
+        pass
+    return entry
+
+
+def cc_subagent_status(path, mtime):
+    """done | running | stopped, from the last assistant record's stop reason."""
+    tail = cc_read_tail(path, 128 * 1024)
+    for rec in reversed(tail):
+        if rec.get("type") == "assistant":
+            stop = (rec.get("message") or {}).get("stop_reason")
+            if stop == "end_turn":
+                return "done"
+            break
+    return "running" if time.time() - mtime < CC_RUNNING_WINDOW else "stopped"
+
+
+def cc_subagents(sdir):
+    adir = os.path.join(sdir, "subagents")
+    if not os.path.isdir(adir) or os.path.islink(adir):
+        return []
+    out = []
+    for name in sorted(os.listdir(adir)):
+        m = re.match(r"^agent-([A-Za-z0-9_\-]{1,64})\.jsonl$", name)
+        p = os.path.join(adir, name)
+        if not m or os.path.islink(p) or not os.path.isfile(p):
+            continue
+        meta = {}
+        mp = os.path.join(adir, "agent-" + m.group(1) + ".meta.json")
+        if os.path.isfile(mp) and not os.path.islink(mp):
+            try:
+                with open(mp) as fh:
+                    meta = json.load(fh) or {}
+            except Exception:
+                meta = {}
+        st = os.stat(p)
+        out.append({
+            "id": m.group(1), "type": meta.get("agentType"), "description": meta.get("description"),
+            "depth": meta.get("spawnDepth"), "background": meta.get("requestShape") == "background",
+            "bytes": st.st_size, "modified": datetime.fromtimestamp(st.st_mtime, timezone.utc).isoformat(),
+            "status": cc_subagent_status(p, st.st_mtime),
+        })
+    out.sort(key=lambda a: a["modified"])
+    return out
+
+
+def cc_summary_cached(path, st):
+    """Title, cwd and timestamps, cached against size+mtime."""
+    cpath = cc_cache_path(path) + ".sum"
+    try:
+        with open(cpath) as fh:
+            s = json.load(fh)
+        if s.get("size") == st.st_size and s.get("mtime") == st.st_mtime_ns:
+            return s
+    except Exception:
+        pass
+    head = cc_read_head(path, 256 * 1024)
+    if not cc_first_prompt(head) and st.st_size > 256 * 1024:
+        head = cc_read_head(path, 2 * 1024 * 1024)
+    tail = cc_read_tail(path, 256 * 1024)
+    sdir = path[:-len(".jsonl")]
+    title, title_src = cc_title_of(head, tail, sdir)
+    first = cc_first_prompt(head)
+    cwd = next((r.get("cwd") for r in reversed(tail) if r.get("cwd")), None) \
+        or next((r.get("cwd") for r in head if r.get("cwd")), None)
+    started = next((r.get("timestamp") for r in head if r.get("timestamp")), None)
+    last = next((r.get("timestamp") for r in reversed(tail) if r.get("timestamp")), None)
+    model = next(((r.get("message") or {}).get("model") for r in reversed(tail)
+                  if r.get("type") == "assistant" and (r.get("message") or {}).get("model")), None)
+    entry = next((r.get("entrypoint") for r in reversed(tail) if r.get("entrypoint")), None)
+    s = {"size": st.st_size, "mtime": st.st_mtime_ns, "title": title, "title_src": title_src,
+         "first": cc_one_line(first, 200) if first else None, "cwd": cwd, "started": started,
+         "last": last, "model": model, "entrypoint": entry}
+    try:
+        os.makedirs(os.path.dirname(cpath), mode=0o700, exist_ok=True)
+        with open(cpath + ".tmp", "w") as fh:
+            json.dump(s, fh)
+        os.replace(cpath + ".tmp", cpath)
+    except OSError:
+        pass
+    return s
+
+
+def cc_live_sessions():
+    """{(home, sessionId): row} for every sessions/<pid>.json whose pid is alive."""
+    out = {}
+    for key, home in CC_HOMES.items():
+        for row in cc_session_files(key, home):
+            if row["alive"]:
+                out[(key, row["session_id"])] = row
+    return out
+
+
+def cc_session_files(key, home):
+    base = home["base"]
+    sdir = os.path.join(base, "sessions") if base else None
+    if not sdir or not os.path.isdir(sdir):
+        return []
+    rows = []
+    for name in sorted(os.listdir(sdir)):
+        m = CC_SESSION_FILE_RE.match(name)  # never the .key siblings
+        p = os.path.join(sdir, name)
+        if not m or os.path.islink(p) or not os.path.isfile(p) or os.path.getsize(p) > 65536:
+            continue
+        try:
+            with open(p) as fh:
+                d = json.load(fh)
+        except Exception:
+            continue
+        pid = int(m.group(1))
+        if not isinstance(d, dict) or str(d.get("pid")) != str(pid):
+            continue
+        proc = cc_proc(pid)
+        proc_start = d.get("procStart")
+        alive = bool(proc) and (proc_start is None or str(proc["start_ticks"]) == str(proc_start))
+        rows.append({
+            "home": key, "pid": pid, "alive": alive, "claude": alive and cc_is_claude(proc),
+            "session_id": d.get("sessionId") if UUID_RE.match(str(d.get("sessionId") or "")) else None,
+            "cwd": d.get("cwd"), "kind": d.get("kind"), "entrypoint": d.get("entrypoint"),
+            "name": d.get("name"), "status": d.get("status"), "version": d.get("version"),
+            "started_at": d.get("startedAt"), "updated_at": d.get("updatedAt"),
+            "status_updated_at": d.get("statusUpdatedAt"), "proc": proc if alive else None,
+            "proc_start": proc_start,
+        })
+    return rows
+
+
+def cc_sessions_list(payload):
+    want_home = str(payload.get("home") or "")
+    if want_home:
+        cc_home(want_home)
+    project = str(payload.get("project") or "")[:255]
+    q = str(payload.get("q") or "").strip().lower()[:200]
+    archived = bool(payload.get("archived"))
+    per = cc_int(payload.get("per_page"), 5, 200, 25)
+    page = cc_int(payload.get("page"), 1, 100000, 1)
+
+    live = cc_live_sessions()
+    try:
+        index = cc_bridge("index_info")
+        indexed_paths = set(index["paths"])
+        chunk_counts = index["sessions"]
+    except CCError:
+        indexed_paths, chunk_counts = None, {}
+
+    rows, facets = [], {}
+    for key, home in CC_HOMES.items():
+        if want_home and key != want_home:
+            continue
+        if archived and not home["base"]:
+            continue
+        for slug, uuid, path in cc_iter_sessions(key, archived):
+            facets[slug] = facets.get(slug, 0) + 1
+            if project and slug != project:
+                continue
+            st = os.stat(path)
+            s = cc_summary_cached(path, st)
+            if q and q not in " ".join(str(s.get(k) or "") for k in ("title", "first", "cwd")).lower() \
+                    and q not in uuid:
+                continue
+            sdir = path[:-len(".jsonl")]
+            adir = os.path.join(sdir, "subagents")
+            n_sub = len([n for n in os.listdir(adir) if n.endswith(".jsonl")]) \
+                if os.path.isdir(adir) and not os.path.islink(adir) else 0
+            rows.append({
+                "home": key, "home_label": home["label"], "project": slug, "uuid": uuid,
+                "title": s["title"], "title_src": s["title_src"], "first": s["first"],
+                "cwd": s["cwd"], "started": s["started"], "last": s["last"],
+                "modified": datetime.fromtimestamp(st.st_mtime, timezone.utc).isoformat(),
+                "mtime": st.st_mtime, "bytes": st.st_size, "subagents": n_sub,
+                "running": (key, uuid) in live,
+                "released": os.path.exists(sdir + ".desktop-released.json"),
+                "indexed": None if indexed_paths is None else path in indexed_paths,
+                "chunks": chunk_counts.get(uuid, 0),
+                "writable": home["writable"] and not archived, "archived": archived,
+            })
+    rows.sort(key=lambda r: r["mtime"], reverse=True)
+    total = len(rows)
+    page_rows = rows[(page - 1) * per: page * per]
+    # Turn counts need a scan of the whole file (cached), so only the rows on
+    # this page pay for it.
+    for r in page_rows:
+        try:
+            path = cc_find_session(r["home"], r["uuid"], archived)[1]
+            r["turns"] = cc_index(path)["turns"]
+        except (CCError, OSError):
+            r["turns"] = None
+    return {
+        "rows": page_rows, "total": total, "page": page, "per_page": per,
+        "homes": [{"key": k, "label": h["label"], "writable": h["writable"]}
+                  for k, h in CC_HOMES.items()],
+        "projects": sorted(facets.items()), "index_available": indexed_paths is not None,
+    }
+
+
+def cmd_cc_sessions_list(args):
+    cc_ok(cc_run(lambda: cc_sessions_list(cc_read_payload())))
+
+
+# ---- reading one transcript as exchanges
+
+def cc_tool_arg(name, inp):
+    if not isinstance(inp, dict):
+        return ""
+    name = str(name or "")
+    if name in ("Agent", "Task"):
+        return "%s: %s" % (inp.get("subagent_type") or "agent", inp.get("description") or "")
+    if name == "Grep":
+        return "%s in %s" % (inp.get("pattern") or "", inp.get("path") or inp.get("glob") or ".")
+    if name == "TodoWrite":
+        todos = inp.get("todos")
+        return "%d items" % len(todos) if isinstance(todos, list) else ""
+    for k in ("file_path", "notebook_path", "command", "pattern", "url", "query", "path",
+              "description", "skill", "prompt", "subject", "action"):
+        v = inp.get(k)
+        if isinstance(v, str) and v.strip():
+            return v
+    for v in inp.values():
+        if isinstance(v, str) and v.strip():
+            return v
+    return ""
+
+
+def cc_result_size(block):
+    content = block.get("content")
+    if isinstance(content, str):
+        return len(content.encode("utf-8", "replace"))
+    try:
+        return len(json.dumps(content))
+    except Exception:
+        return 0
+
+
+def cc_cap(text, cap):
+    if len(text) <= cap:
+        return text, False
+    return text[:cap], True
+
+
+def cc_build_exchanges(records):
+    """Group records into exchanges: a prompt, then what the assistant said and
+    did, with every tool call folded to one line and its output reduced to a
+    size. Nothing large is ever copied through."""
+    exchanges, cur, tools = [], None, {}
+
+    def new(kind, rec, text):
+        ex = {"kind": kind, "ts": rec.get("timestamp") if rec else None, "user": "",
+              "user_truncated": False, "items": [], "model": None, "thinking": 0}
+        if text is not None:
+            ex["user"], ex["user_truncated"] = cc_cap(text, CC_USER_TEXT_CAP)
+        exchanges.append(ex)
+        return ex
+
+    said = 0
+    for rec in records:
+        t = rec.get("type")
+        kind = cc_prompt_kind(rec)
+        if kind:
+            cur, tools, said = new(kind, rec, cc_user_text(rec)), {}, 0
+            continue
+        if t == "assistant":
+            if cur is None:
+                cur, tools, said = new("preamble", rec, None), {}, 0
+            msg = rec.get("message") or {}
+            cur["model"] = msg.get("model") or cur["model"]
+            for block in msg.get("content") or []:
+                if not isinstance(block, dict):
+                    continue
+                bt = block.get("type")
+                if bt == "text":
+                    text = str(block.get("text") or "")
+                    room = CC_ASSISTANT_TEXT_CAP - said
+                    if room <= 0:
+                        continue
+                    text, cut = cc_cap(text, room)
+                    said += len(text)
+                    if cur["items"] and cur["items"][-1]["t"] == "text":
+                        cur["items"][-1]["text"] += "\n\n" + text
+                        cur["items"][-1]["truncated"] = cut
+                    else:
+                        cur["items"].append({"t": "text", "text": text, "truncated": cut})
+                elif bt == "thinking":
+                    cur["thinking"] += 1
+                elif bt == "tool_use":
+                    item = {"t": "tool", "name": str(block.get("name") or "?"),
+                            "arg": cc_one_line(cc_tool_arg(block.get("name"), block.get("input")), 200),
+                            "size": None, "error": False}
+                    tools[block.get("id")] = item
+                    cur["items"].append(item)
+        elif t == "user" and cur is not None:
+            content = (rec.get("message") or {}).get("content")
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "tool_result":
+                        item = tools.get(block.get("tool_use_id"))
+                        if item is not None:
+                            item["size"] = cc_result_size(block)
+                            item["error"] = bool(block.get("is_error"))
+        elif t == "system" and cur is not None:
+            sub = rec.get("subtype")
+            if sub == "compact_boundary":
+                cur["items"].append({"t": "note", "text": "Conversation compacted"})
+            elif rec.get("level") == "error":
+                cur["items"].append({"t": "note", "text": cc_one_line(rec.get("content") or sub, 300)})
+    return exchanges
+
+
+def cc_read_range(path, start, end):
+    records = []
+    with open(path, "rb") as fh:
+        fh.seek(start)
+        pos = start
+        for line in fh:
+            if end is not None and pos >= end:
+                break
+            pos += len(line)
+            if not line.endswith(b"\n"):
+                break
+            try:
+                rec = json.loads(line)
+            except Exception:
+                continue
+            if isinstance(rec, dict):
+                records.append(rec)
+    return records
+
+
+def cc_session_get(key, uuid, payload):
+    home = cc_home(key)
+    uuid = cc_uuid(uuid)
+    archived = bool(payload.get("archived"))
+    slug, path = cc_find_session(key, uuid, archived)
+    root = cc_archive_root(key) if archived else home["projects"]
+    sdir = path[:-len(".jsonl")]
+    agent = str(payload.get("agent") or "")
+    target, agent_meta = path, None
+    subagents = cc_subagents(sdir)
+    if agent:
+        if not CC_AGENT_ID_RE.match(agent):
+            raise CCError("bad subagent id")
+        target = cc_plain_file(os.path.join(sdir, "subagents", "agent-" + agent + ".jsonl"), root)
+        agent_meta = next((a for a in subagents if a["id"] == agent), None)
+    st = os.stat(path)
+    summary = cc_summary_cached(path, st)
+    idx = cc_index(target)
+    starts = [s[0] for s in idx["starts"]] or [0]
+    per = cc_int(payload.get("per_page"), 5, 100, 40)
+    pages = max(1, -(-len(starts) // per))
+    page = cc_int(payload.get("page"), 1, pages, pages)
+    lo = 0 if page == 1 else starts[(page - 1) * per]
+    hi = starts[page * per] if page * per < len(starts) else None
+    exchanges = cc_build_exchanges(cc_read_range(target, lo, hi))
+    live = cc_live_sessions().get((key, uuid))
+    cwd = summary.get("cwd")
+    resume = None
+    if key == "root" and not archived and isinstance(cwd, str) and cwd.startswith("/"):
+        resume = "cd %s && claude --resume %s" % (shlex.quote(cwd), uuid)
+    return {
+        "home": key, "home_label": home["label"], "project": slug, "uuid": uuid,
+        "archived": archived, "writable": home["writable"] and not archived,
+        "title": summary["title"], "title_src": summary["title_src"], "first": summary["first"],
+        "cwd": cwd, "started": summary["started"], "last": summary["last"],
+        "model": summary["model"], "entrypoint": summary["entrypoint"],
+        "bytes": st.st_size, "modified": datetime.fromtimestamp(st.st_mtime, timezone.utc).isoformat(),
+        "turns": cc_index(path)["turns"], "records": idx["records"],
+        "released": os.path.exists(sdir + ".desktop-released.json"),
+        "running": bool(live), "live": cc_public_live(live) if live else None,
+        "resume": resume, "subagents": subagents, "agent": agent or None, "agent_meta": agent_meta,
+        "page": page, "pages": pages, "per_page": per, "exchanges_total": len(idx["starts"]),
+        "exchanges": exchanges,
+    }
+
+
+def cmd_cc_session_get(args):
+    if len(args) != 2:
+        fail("usage: cc-session-get <home> <uuid>  (JSON on stdin: page, agent, archived)")
+    cc_ok(cc_run(lambda: cc_session_get(args[0], args[1], cc_read_payload())))
+
+
+# ---- rename / archive / restore
+
+def cc_refuse_if_busy(key, uuid, path):
+    if (key, uuid) in cc_live_sessions():
+        raise CCError("this session is running -- stop it or wait for it to end first")
+    if time.time() - os.path.getmtime(path) < CC_BUSY_WINDOW:
+        raise CCError("this session was written to in the last %d seconds; try again shortly"
+                      % CC_BUSY_WINDOW)
+
+
+def cc_writable_home(key):
+    home = cc_home(key)
+    if not home["writable"] or not home["base"]:
+        raise CCError(home["label"] + " is read-only")
+    return home
+
+
+def cc_session_rename(key, uuid, payload):
+    cc_writable_home(key)
+    uuid = cc_uuid(uuid)
+    actor = cc_actor(payload)
+    title = cc_text(payload.get("title"), "Title", 120, single_line=True)
+    slug, path = cc_find_session(key, uuid)
+    cc_refuse_if_busy(key, uuid, path)
+    st = os.stat(path)
+    sdir = path[:-len(".jsonl")]
+    side = os.path.join(sdir, "custom-title.json")
+    if os.path.islink(sdir) or os.path.islink(side):
+        raise CCError("refusing to follow a symlink")
+    # How Claude Code itself renames: it appends a custom-title record (and an
+    # agent-name record alongside it) to the transcript, and mirrors the title
+    # into <uuid>/custom-title.json. The newest record wins when it reads back.
+    records = [{"type": "custom-title", "customTitle": title, "sessionId": uuid},
+               {"type": "agent-name", "agentName": title, "sessionId": uuid}]
+    with open(path, "rb+") as fh:
+        fh.seek(0, os.SEEK_END)
+        lead = b""
+        if fh.tell() > 0:
+            fh.seek(-1, os.SEEK_END)
+            if fh.read(1) != b"\n":
+                lead = b"\n"
+        fh.seek(0, os.SEEK_END)
+        fh.write(lead + b"".join(json.dumps(r, ensure_ascii=False, separators=(",", ":")).encode()
+                                 + b"\n" for r in records))
+    if not os.path.isdir(sdir):
+        os.mkdir(sdir, 0o700)
+        os.chown(sdir, st.st_uid, st.st_gid)
+    tmp = side + ".moni-tmp"
+    with open(tmp, "w") as fh:
+        json.dump({"customTitle": title}, fh)
+    os.chown(tmp, st.st_uid, st.st_gid)
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, side)
+    audit("cc-session-rename", {"by": actor, "home": key, "session": uuid, "project": slug})
+    return {"renamed": True, "title": title}
+
+
+def cc_session_move(key, uuid, payload, restore):
+    home = cc_writable_home(key)
+    uuid = cc_uuid(uuid)
+    actor = cc_actor(payload)
+    archive_root = cc_archive_root(key)
+    src_root, dst_root = (archive_root, home["projects"]) if restore else (home["projects"], archive_root)
+    slug, path = cc_find_session(key, uuid, archived=restore)
+    if not restore:
+        cc_refuse_if_busy(key, uuid, path)
+    owner = os.stat(home["base"])
+    dst_dir = os.path.join(dst_root, slug)
+    # The archive lives inside the same .claude directory, so a move is a
+    # rename on one filesystem: atomic, and nothing is ever copied or deleted.
+    needed = [dst_dir] if restore else [os.path.dirname(archive_root), archive_root, dst_dir]
+    for d in needed:
+        if os.path.islink(d):
+            raise CCError("refusing to follow a symlink")
+        if not os.path.isdir(d):
+            os.mkdir(d, 0o700)
+            os.chown(d, owner.st_uid, owner.st_gid)
+    cc_under(dst_dir, dst_root)
+    stem_src = os.path.join(src_root, slug, uuid)
+    stem_dst = os.path.join(dst_dir, uuid)
+    moves = [(stem_src + ".jsonl", stem_dst + ".jsonl")]
+    if os.path.isdir(stem_src) and not os.path.islink(stem_src):
+        moves.append((stem_src, stem_dst))
+    if os.path.isfile(stem_src + ".desktop-released.json"):
+        moves.append((stem_src + ".desktop-released.json", stem_dst + ".desktop-released.json"))
+    for _, dst in moves:
+        if os.path.lexists(dst):
+            raise CCError("something already exists at the destination; nothing was moved")
+    done = []
+    try:
+        for src, dst in moves:
+            cc_under(src, src_root)
+            os.rename(src, dst)
+            done.append((src, dst))
+    except OSError as exc:
+        for src, dst in reversed(done):
+            os.rename(dst, src)
+        raise CCError("move failed, nothing changed: " + str(exc))
+    audit("cc-session-restore" if restore else "cc-session-archive",
+          {"by": actor, "home": key, "session": uuid, "project": slug, "moved": len(done)})
+    return {"moved": len(done), "project": slug, "restored": restore}
+
+
+def cmd_cc_session_rename(args):
+    if len(args) != 2:
+        fail("usage: cc-session-rename <home> <uuid>  (JSON on stdin)")
+    cc_ok(cc_run(lambda: cc_session_rename(args[0], args[1], cc_read_payload())))
+
+
+def cmd_cc_session_archive(args):
+    if len(args) != 2:
+        fail("usage: cc-session-archive <home> <uuid>  (JSON on stdin)")
+    cc_ok(cc_run(lambda: cc_session_move(args[0], args[1], cc_read_payload(), restore=False)))
+
+
+def cmd_cc_session_restore(args):
+    if len(args) != 2:
+        fail("usage: cc-session-restore <home> <uuid>  (JSON on stdin)")
+    cc_ok(cc_run(lambda: cc_session_move(args[0], args[1], cc_read_payload(), restore=True)))
+
+
+# ------------------------------------------------------------------ running
+
+def cc_load_stops():
+    try:
+        with open(CC_STOP_STATE) as fh:
+            d = json.load(fh)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def cc_save_stops(d):
+    os.makedirs(CC_CACHE, mode=0o700, exist_ok=True)
+    cutoff = time.time() - 86400
+    d = {k: v for k, v in d.items() if isinstance(v, dict) and v.get("ts", 0) > cutoff}
+    with open(CC_STOP_STATE + ".tmp", "w") as fh:
+        json.dump(d, fh)
+    os.replace(CC_STOP_STATE + ".tmp", CC_STOP_STATE)
+
+
+def cc_public_live(row):
+    """A sessions/<pid>.json row with only the whitelisted fields."""
+    return {k: row.get(k) for k in ("home", "pid", "alive", "claude", "session_id", "cwd", "kind",
+                                    "entrypoint", "name", "status", "version", "started_at",
+                                    "updated_at", "status_updated_at")}
+
+
+def cc_transcript_hints(key, uuid):
+    """Model and permission mode from the tail of the live transcript."""
+    try:
+        _, path = cc_find_session(key, uuid)
+    except CCError:
+        return {}
+    tail = cc_read_tail(path, 128 * 1024)
+    model = mode = None
+    for rec in reversed(tail):
+        if not model and rec.get("type") == "assistant":
+            model = (rec.get("message") or {}).get("model")
+        if not mode:
+            if rec.get("type") == "permission-mode":
+                mode = rec.get("permissionMode")
+            elif rec.get("type") == "user" and rec.get("permissionMode"):
+                mode = rec.get("permissionMode")
+        if model and mode:
+            break
+    sdir = path[:-len(".jsonl")]
+    return {"model": model, "permission_mode": mode, "project": os.path.basename(os.path.dirname(path)),
+            "subagents": [a for a in cc_subagents(sdir) if a["status"] == "running"]}
+
+
+def cc_running():
+    boot = cc_boot_time()
+    stops = cc_load_stops()
+    sessions, session_pids = [], set()
+    for key, home in CC_HOMES.items():
+        for row in cc_session_files(key, home):
+            session_pids.add(row["pid"])
+            pub = cc_public_live(row)
+            pub["home_label"] = home["label"]
+            proc = row["proc"]
+            pub["uptime"] = cc_uptime(proc, boot) if proc else None
+            pub["hints"] = cc_transcript_hints(key, row["session_id"]) if row["session_id"] else {}
+            stop = stops.get(str(row["pid"]))
+            if stop and proc and str(stop.get("start")) == str(proc["start_ticks"]):
+                pub["stop_requested"] = stop.get("ts")
+                pub["stop_signal"] = stop.get("signal")
+                pub["force_available"] = time.time() - stop.get("ts", 0) >= CC_FORCE_AFTER
+            else:
+                pub["stop_requested"] = None
+                pub["force_available"] = False
+            sessions.append(pub)
+
+    others, services = [], []
+    for pid in cc_all_pids():
+        if pid in session_pids:
+            continue
+        p = cc_proc(pid)
+        if not p:
+            continue
+        if cc_is_claude(p):
+            parent = cc_proc(p["ppid"])
+            others.append({"pid": pid, "user": p["user"], "cwd": p["cwd"], "binary": "claude",
+                           "parent": parent["comm"] if parent else None,
+                           "uptime": cc_uptime(p, boot)})
+        elif p["comm"].startswith("claude") or (p["comm"] == "uvicorn" and p["user"] == "claude-mem") \
+                or (p["user"] in ("moniagent", "moniconsole") and p["ppid"] == 1):
+            services.append({"pid": pid, "user": p["user"], "binary": p["comm"],
+                             "uptime": cc_uptime(p, boot)})
+
+    cpu = cc_cpu_sample([s["pid"] for s in sessions if s["alive"]]
+                        + [o["pid"] for o in others] + [s["pid"] for s in services])
+    for group in (sessions, others, services):
+        for row in group:
+            row["cpu"] = cpu.get(row["pid"])
+
+    # Subagents run inside their parent CLI, so the only outside sign of one at
+    # work is its transcript growing without a final answer yet.
+    subagents, now = [], time.time()
+    for key, home in CC_HOMES.items():
+        if not home["base"] or not os.path.isdir(home["projects"]):
+            continue
+        for slug in os.listdir(home["projects"]):
+            pdir = os.path.join(home["projects"], slug)
+            if not CC_SLUG_RE.match(slug) or os.path.islink(pdir) or not os.path.isdir(pdir):
+                continue
+            for sess in os.listdir(pdir):
+                adir = os.path.join(pdir, sess, "subagents")
+                if not UUID_RE.match(sess) or not os.path.isdir(adir) or os.path.islink(adir):
+                    continue
+                recent = [n for n in os.listdir(adir) if n.endswith(".jsonl")
+                          and now - os.path.getmtime(os.path.join(adir, n)) < CC_RUNNING_WINDOW]
+                if not recent:
+                    continue
+                for a in cc_subagents(os.path.join(pdir, sess)):
+                    if a["status"] == "running":
+                        a.update({"home": key, "session": sess})
+                        subagents.append(a)
+
+    units = []
+    r = run(["systemctl", "list-units", "--all", "--plain", "--no-legend", "--no-pager",
+             "moni-agent@*", "moni-whatsapp@*", "claude-memory.service", "moni-whisper.service"],
+            timeout=10)
+    for line in r.stdout.splitlines():
+        parts = line.split(None, 4)
+        if len(parts) >= 4 and re.match(r"^[A-Za-z0-9@._\-]+$", parts[0]):
+            units.append(cc_unit_brief(parts[0]))
+
+    hooks = [h for h in cc_hook_lines(400) if h["event"] in ("SubagentStart", "SubagentStop")][:12]
+    return {"ts": now_iso(), "sessions": sessions, "others": others, "services": services,
+            "subagents": subagents, "jobs": cc_memory_jobs(), "units": units,
+            "subagent_hooks": hooks}
+
+
+def cmd_cc_running(args):
+    cc_ok(cc_run(cc_running))
+
+
+def cc_stop(payload):
+    actor = cc_actor(payload)
+    try:
+        pid = int(payload.get("pid"))
+    except (TypeError, ValueError):
+        raise CCError("pid must be an integer")
+    force = bool(payload.get("force"))
+
+    def refuse(reason):
+        audit("cc-stop-refused", {"by": actor, "pid": pid, "force": force, "reason": reason})
+        raise CCError(reason)
+
+    if pid <= 1:
+        refuse("refusing to signal that pid")
+    row = None
+    for key, home in CC_HOMES.items():
+        for r in cc_session_files(key, home):
+            if r["pid"] == pid:
+                row = r
+    if row is None:
+        refuse("pid %d is not a Claude Code session known to this machine" % pid)
+    if not row["alive"]:
+        refuse("that session is no longer running")
+    if not row["claude"]:
+        refuse("pid %d is not a Claude Code CLI process" % pid)
+    start = row["proc"]["start_ticks"]
+    stops = cc_load_stops()
+    if force:
+        prev = stops.get(str(pid))
+        if not prev or str(prev.get("start")) != str(start):
+            refuse("send an ordinary stop first; force is only offered if that does not work")
+        if time.time() - prev.get("ts", 0) < CC_FORCE_AFTER:
+            refuse("give the ordinary stop %d seconds to work before forcing" % CC_FORCE_AFTER)
+        sig, name = signal.SIGTERM, "SIGTERM"
+    else:
+        sig, name = signal.SIGINT, "SIGINT"
+    os.kill(pid, sig)
+    stops[str(pid)] = {"ts": time.time(), "start": start, "signal": name}
+    cc_save_stops(stops)
+    audit("cc-stop", {"by": actor, "pid": pid, "signal": name, "home": row["home"],
+                      "session": row["session_id"], "entrypoint": row["entrypoint"]})
+    return {"pid": pid, "signal": name}
+
+
+def cmd_cc_stop(args):
+    cc_ok(cc_run(lambda: cc_stop(cc_read_payload())))
+
+
 COMMANDS = {
     "list-keys": cmd_list_keys,
     "list-all-keys": cmd_list_all_keys,
@@ -2994,6 +4839,31 @@ COMMANDS = {
     "console-dirs": cmd_console_dirs,
     "console-upload": cmd_console_upload,
     "console-transcribe": cmd_console_transcribe,
+    # Claude Code: memory
+    "cc-memory-stats": cmd_cc_memory_stats,
+    "cc-memory-search": cmd_cc_memory_search,
+    "cc-memory-services": cmd_cc_memory_services,
+    "cc-memory-restart": cmd_cc_memory_restart,
+    "cc-ingest-all": cmd_cc_ingest_all,
+    "cc-facts-list": cmd_cc_facts_list,
+    "cc-fact-get": cmd_cc_fact_get,
+    "cc-fact-add": cmd_cc_fact_add,
+    "cc-fact-edit": cmd_cc_fact_edit,
+    "cc-fact-forget": cmd_cc_fact_forget,
+    "cc-session-memory": cmd_cc_session_memory,
+    "cc-memfiles-list": cmd_cc_memfiles_list,
+    "cc-memfile-read": cmd_cc_memfile_read,
+    "cc-memfile-write": cmd_cc_memfile_write,
+    "cc-hooks-tail": cmd_cc_hooks_tail,
+    # Claude Code: sessions
+    "cc-sessions-list": cmd_cc_sessions_list,
+    "cc-session-get": cmd_cc_session_get,
+    "cc-session-rename": cmd_cc_session_rename,
+    "cc-session-archive": cmd_cc_session_archive,
+    "cc-session-restore": cmd_cc_session_restore,
+    # Claude Code: running
+    "cc-running": cmd_cc_running,
+    "cc-stop": cmd_cc_stop,
 }
 
 if __name__ == "__main__":
