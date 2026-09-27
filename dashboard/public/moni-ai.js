@@ -905,7 +905,8 @@
       if (r && r.turn) {
         upsertTurn(r.turn);
         if (opts.voice || Voice.speakAll) voiceTurns.add(r.turn.id);
-        if (opts.voice) Voice.say(r.queued_behind ? "Got it. I'll pick that up as soon as I'm free." : "On it.");
+        if (opts.voice && r.queued_behind) Voice.say("Got it. I'll pick that up as soon as I'm free.");
+        else if (opts.voice && !opts.acked) Voice.say("On it.");
       }
       showPane("conv");
       return r;
@@ -1654,8 +1655,14 @@
     var stream = null, ac = null, analyser = null, rec = null, chunks = [], poll = 0;
     var heard = false, quietFor = 0, floor = 0.006, calibrating = 0, lastRms = 0;
     var ptt = false;
-    var SAMPLE_MS = 50, END_MS = 700, RESET_MS = 8000, MIN_MS = 300, BARGE_MS = 330, AHEAD = 3;
-    var spoken = 0, queue = [], busy = false, loudFor = 0, gen = 0;
+    // END_MS: how long a pause ends what you are saying. 700 ms cut the
+    // administrator off mid-thought ("...when I ask you to delegate," went as
+    // a whole turn); 1200 ms lets a sentence breathe.
+    var SAMPLE_MS = 50, END_MS = 1200, RESET_MS = 8000, MIN_MS = 300, BARGE_MS = 450, BARGE_GRACE_MS = 700, AHEAD = 3;
+    var PTT_TAIL_MS = 250, PTT_KEEP_MS = 60000, keepTimer = 0;
+    var spoken = 0, queue = [], busy = false, loudFor = 0, gen = 0, clipAt = 0, lastSkipToast = 0;
+    // What the voice did, for the console and for tests: window.__moniVoice.
+    var diag = window.__moniVoice = { fetched: 0, played: 0, playedSeconds: 0, skipped: 0, blocked: 0, bargeIns: 0, engines: [], said: [] };
 
     // Wave bars for the voice bar, driven by the real level.
     var BARS = 44;
@@ -1678,10 +1685,41 @@
         .replace(/\s+/g, " ")
         .trim();
     }
-    function sentences(text, from) {
-      var rest = text.slice(from), out = [], at = 0, re = /[^.!?\n]*[.!?\n]+/g, m;
-      while ((m = re.exec(rest))) { var piece = m[0].trim(); at = re.lastIndex; if (piece) out.push(piece); }
-      return { list: out, consumed: from + at };
+    /* Where the reader is in a reply is counted in non-space characters, not
+       string offsets: the reply changes shape as it streams (deltas first, then
+       the finished blocks joined by blank lines), and an offset into one shape
+       used on the other skipped or repeated words at every change. */
+    function nonSpace(t) { return t.replace(/\s+/g, "").length; }
+    function offsetAfter(text, n) {
+      var i = 0, seen = 0;
+      while (i < text.length && seen < n) { if (!/\s/.test(text.charAt(i))) seen++; i++; }
+      return i;
+    }
+    /* Whole pieces ready to be read from `rest`. A sentence ends at . ! or ?
+       followed by a space (so victim-ui.txt and 2.5 stay whole) or at a line
+       end; never inside an unclosed ``` fence. The first piece of a reply may
+       end at a clause (a comma, colon, semicolon or dash) so the voice starts
+       sooner. */
+    function pieces(rest, first) {
+      var out = [], at = 0, re = /[.!?]+["')\]]*(?=\s)|\n/g, m;
+      if (first) {
+        var b = re.exec(rest), bEnd = b ? b.index + b[0].length : Infinity;
+        var clause = /[,;:](?=\s)|\s[\u2013\u2014]\s/g, c;
+        clause.lastIndex = 25;
+        if ((c = clause.exec(rest)) && c.index + c[0].length < bEnd && !/```/.test(rest.slice(0, c.index))) {
+          at = c.index + c[0].length;
+          out.push(rest.slice(0, at).trim());
+        }
+      }
+      re.lastIndex = at;
+      while ((m = re.exec(rest))) {
+        var end = m.index + m[0].length;
+        if ((rest.slice(0, end).match(/```/g) || []).length % 2) continue;
+        var piece = rest.slice(at, end).trim();
+        at = end;
+        if (piece) out.push(piece);
+      }
+      return { list: out, consumed: at };
     }
     function level() {
       if (!analyser) return 0;
@@ -1744,8 +1782,14 @@
       }).then(function (r) {
         // 204: the voice would not read this sentence as written, so it is
         // skipped -- the words are on the screen, and invented speech is worse.
-        if (r.status === 204) return null;
-        if (r.ok) return r.arrayBuffer();
+        if (r.status === 204) {
+          diag.skipped++;
+          console.warn("[voice] not read aloud (the voice would not read it as written):", text);
+          var now = Date.now();
+          if (now - lastSkipToast > 10000) { lastSkipToast = now; toast("One sentence was not read aloud. It is on the screen."); }
+          return null;
+        }
+        if (r.ok) { diag.fetched++; diag.engines.push(r.headers.get("X-Voice-Engine") || ""); return r.arrayBuffer(); }
         return r.json().catch(function () { return {}; }).then(function (j) {
           if (j.code === "no-key") toast("Voice needs an OpenAI key. Add one in Settings.", true);
           return null;
@@ -1762,22 +1806,48 @@
       if (!READY) return;
       var say = speakable(piece);
       if (say.length < 2 || !/[a-z0-9]/i.test(say)) return;
+      diag.said.push(say.slice(0, 780));
       queue.push({ text: say.slice(0, 780) });
       prefetch();
       pump();
     }
+    /* A browser may hold an AudioContext suspended until the page is clicked
+       (autoplay rules). Then a clip "plays" into nothing: no error, no sound.
+       So: resume before every clip, and if it stays suspended, say so and
+       resume on the next click or key, when the waiting clip plays. */
+    var unblockArmed = false;
+    function blocked(c) {
+      diag.blocked++;
+      console.warn("[voice] the browser is holding sound back (AudioContext " + c.state + ")");
+      if (unblockArmed) return;
+      unblockArmed = true;
+      toast("Your browser is holding MONI's voice back. Click anywhere on the page to hear it.", true);
+      var go = function () {
+        unblockArmed = false;
+        document.removeEventListener("pointerdown", go, true);
+        document.removeEventListener("keydown", go, true);
+        if (outCtx && outCtx.resume) outCtx.resume().catch(function () { /* still refused */ });
+      };
+      document.addEventListener("pointerdown", go, true);
+      document.addEventListener("keydown", go, true);
+    }
     function play(ab, my) {
       var c = outContext();
       if (!c) return Promise.resolve();
-      return new Promise(function (resolve) {
-        c.decodeAudioData(ab, function (buf) {
-          if (my !== gen) return resolve();
-          source = c.createBufferSource();
-          source.buffer = buf;
-          source.connect(outAn);
-          source.onended = function () { source = null; resolve(); };
-          source.start();
-        }, function () { resolve(); });
+      var ready = c.state === "running" || !c.resume ? Promise.resolve() : c.resume().catch(function () { /* reported below */ });
+      return ready.then(function () {
+        if (c.state !== "running") blocked(c);
+        return new Promise(function (resolve) {
+          c.decodeAudioData(ab, function (buf) {
+            if (my !== gen) return resolve();
+            source = c.createBufferSource();
+            source.buffer = buf;
+            source.connect(outAn);
+            source.onended = function () { source = null; diag.played++; diag.playedSeconds += buf.duration; resolve(); };
+            clipAt = Date.now();
+            source.start();
+          }, function (e) { console.warn("[voice] could not decode a clip", e); resolve(); });
+        });
       });
     }
     function pump() {
@@ -1815,6 +1885,8 @@
 
     function bargeIn() {
       if (!api_.speaking) return;
+      diag.bargeIns++;
+      console.info("[voice] cut in: you spoke over the reply, so the rest of it is not read");
       silence();
       recording(true);
       vbText.textContent = "Listening…";
@@ -1832,6 +1904,10 @@
       if (calibrating > 0) { calibrating--; floor = Math.max(floor * 0.8 + rms * 0.2, 0.004); return; }
       if (ptt) return;
       if (api_.speaking) {
+        // The first moments of a clip are when echo cancelling has not caught
+        // up yet, and the speaker leaks into the microphone: do not count them,
+        // or MONI cuts itself off and the rest of the reply is dropped.
+        if (!source || Date.now() - clipAt < BARGE_GRACE_MS) { loudFor = 0; return; }
         loudFor = rms > floor * 6 + 0.01 ? loudFor + SAMPLE_MS : 0;
         if (loudFor >= BARGE_MS) bargeIn();
         return;
@@ -1853,7 +1929,7 @@
         var enough = Date.now() - started > MIN_MS && chunks.length;
         var type = String(r.mimeType || "audio/webm").split(";")[0];
         var blob = enough ? new Blob(chunks, { type: type }) : null;
-        if (blob && (heard || ptt)) transcribeAndSend(blob);
+        if (blob && (heard || ptt)) { ack(); transcribeAndSend(blob); }
         else if (api_.on) newRecorder();
       };
       r.start();
@@ -1894,12 +1970,13 @@
           var said = String(d.text || "").trim();
           if (!said || /^[\[(]/.test(said)) throw new Error("nothing said");
           vbText.textContent = "“" + clip(said, 80) + "”";
-          return send(said, { voice: true });
+          return send(said, { voice: true, acked: true });
         }).catch(function (e) {
           if (e.message !== "nothing said") toast("Could not transcribe that: " + e.message, true);
+          enqueue("Sorry, I didn't catch that.");
           if (api_.on) listen(true);
         }).then(function () {
-          if (!api_.on && wasPtt) closeStream();
+          if (!api_.on && wasPtt) keepStream();
           setUi();
         });
       };
@@ -1916,7 +1993,15 @@
         ac.createMediaStreamSource(stream).connect(analyser);
       });
     }
+    /* After a push-to-talk, the microphone stays open for a minute: opening it
+       takes a moment, and whatever is said in that moment was never recorded
+       (the first word went missing). The browser's mic indicator shows it. */
+    function keepStream() {
+      clearTimeout(keepTimer);
+      keepTimer = setTimeout(function () { if (!api_.on && !ptt) { closeStream(); setUi(); } }, PTT_KEEP_MS);
+    }
     function closeStream() {
+      clearTimeout(keepTimer);
       if (poll) { clearInterval(poll); poll = 0; }
       recording(false);
       if (stream) stream.getTracks().forEach(function (tr) { tr.stop(); });
@@ -1931,8 +2016,16 @@
     var warmed = false;
     function warm() { if (!warmed && READY) { warmed = true; fetchClip("On it."); } }
 
+    /* "On it." the moment the recording ends: it is cached on the server, so it
+       plays while the words are still being transcribed. */
+    function ack() {
+      outContext();
+      enqueue("On it.");
+    }
+
     function start() {
       if (!supported) return;
+      clearTimeout(keepTimer);
       outContext();
       warm();
       openStream().then(function () {
@@ -1965,8 +2058,9 @@
       outContext();
       warm();
       if (api_.speaking) bargeIn();
+      clearTimeout(keepTimer);
       openStream().then(function () {
-        if (!ptt) return closeStream();
+        if (!ptt) return keepStream();
         calibrating = 0;
         recording(true);
         if (!poll) poll = setInterval(tick, SAMPLE_MS);
@@ -1977,8 +2071,9 @@
     document.addEventListener("keyup", function (e) {
       if (e.code !== "Space" || !ptt) return;
       e.preventDefault();
-      if (rec && rec.state === "recording") rec.stop();
-      else { ptt = false; closeStream(); setUi(); }
+      // A short tail, so the last syllable is not cut off by a quick release.
+      if (rec && rec.state === "recording") { var r0 = rec; setTimeout(function () { if (r0.state === "recording") r0.stop(); }, PTT_TAIL_MS); }
+      else { ptt = false; keepStream(); setUi(); }
     });
 
     speakBtn.hidden = !READY;
@@ -1994,17 +2089,23 @@
     api_.say = function (text) { if (READY) enqueue(text); };
     var spokenTurn = null;
     api_.feed = function (id, text) {
+      text = String(text || "");
       if (id !== spokenTurn) { spokenTurn = id; spoken = 0; }
-      var found = sentences(text, spoken);
-      spoken = found.consumed;
+      var rest = text.slice(offsetAfter(text, spoken));
+      var found = pieces(rest, spoken === 0);
+      spoken += nonSpace(rest.slice(0, found.consumed));
       found.list.forEach(enqueue);
     };
     api_.flush = function (id, text) {
+      text = String(text || "");
       if (id !== spokenTurn) { spokenTurn = id; spoken = 0; }
-      var rest = String(text || "").slice(spoken).trim();
+      var rest = text.slice(offsetAfter(text, spoken));
+      var found = pieces(rest, spoken === 0);
+      found.list.forEach(enqueue);
+      var tail = rest.slice(found.consumed).trim();
       spoken = 0;
       spokenTurn = null;
-      if (rest) enqueue(rest);
+      if (tail) enqueue(tail);
       if (api_.on && !busy && !queue.length) listen(true);
     };
     return api_;

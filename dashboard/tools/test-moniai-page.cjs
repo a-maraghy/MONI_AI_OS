@@ -131,7 +131,7 @@ function cut(name) {
   throw new Error("unbalanced " + name);
 }
 const sandbox = {};
-vm.runInNewContext(["esc", "modelLabel", "dur", "clip", "firstLine", "speakable", "sentences"].map(cut).join("\n"), sandbox);
+vm.runInNewContext(["esc", "modelLabel", "dur", "clip", "firstLine", "speakable", "nonSpace", "offsetAfter", "pieces"].map(cut).join("\n"), sandbox);
 
 check("esc escapes the five", sandbox.esc(`<a href="x" onclick='y'>&</a>`) === "&lt;a href=&quot;x&quot; onclick=&#39;y&#39;&gt;&amp;&lt;/a&gt;");
 check("esc of null is empty", sandbox.esc(null) === "" && sandbox.esc(undefined) === "");
@@ -147,10 +147,53 @@ check("speech drops code blocks and links", (() => {
   return !s.includes("rm -rf") && s.includes("(code)") && s.includes("a link") && s.includes("the docs") && !s.includes("`");
 })());
 check("sentences come out whole and the rest waits", (() => {
-  const r = sandbox.sentences("One. Two! Three", 0);
+  const r = sandbox.pieces("One. Two! Three", false);
   return r.list.join("|") === "One.|Two!" && r.consumed === "One. Two!".length;
 })());
-check("sentences resume from where they stopped", sandbox.sentences("One. Two. Three.", 5).list.join("|") === "Two.|Three.");
+check("a full stop inside a file name, a service or a number does not end a sentence", (() => {
+  const r = sandbox.pieces("Open victim-ui.txt now. Version 2.5 of moni-ai.service is live. Next", false);
+  return r.list.join("|") === "Open victim-ui.txt now.|Version 2.5 of moni-ai.service is live.";
+})());
+check("a line end ends a piece (bullets), a fenced block is never cut", (() => {
+  const r = sandbox.pieces("- one\n- two\n```\nrm -rf /.\nls\n", false);
+  return r.list.join("|") === "- one|- two" && r.consumed === "- one\n- two\n".length;
+})());
+check("the first piece of a reply may end at a clause, so the voice starts sooner", (() => {
+  const r = sandbox.pieces("I looked at the dashboard logs for today, and nothing failed", true);
+  return r.list.join("|") === "I looked at the dashboard logs for today," && !sandbox.pieces("Yes, it is.", true).list.includes("Yes,");
+})());
+check("the reading position survives the reply changing shape (deltas, then blocks)", (() => {
+  const text = "One two.\n\nThree four. Five";
+  return sandbox.offsetAfter(text, sandbox.nonSpace("One two. Three")) === text.indexOf("Three") + 5;
+})());
+check("a streamed markdown reply is read word for word, whatever the chunk size", (() => {
+  const B1 = "Yes, I can hear you \u2014 loud and clear. I checked `moni-dashboard.service` and it is **running**.\n\n- The file `victim-ui.txt` is in /tmp/scratch.\n- Version 2.5 is live\n- No errors since 17:05";
+  const B2 = "Next, I will restart the **allocation engine**, then report back. Done?";
+  // Each piece is cleaned on its own, as the page does before asking for speech.
+  const norm = (t) => sandbox.speakable(t).toLowerCase().replace(/[^a-z0-9.:\/\s-]/g, " ").split(/\s+/).filter(Boolean).join(" ");
+  const want = norm(B1 + "\n\n" + B2);
+  return [1, 3, 7, 50, 1000].every((size) => {
+    const said = [];
+    let spoken = 0, blocks = [], partial = "";
+    const ai = () => blocks.join("\n\n") + (partial ? (blocks.length ? "\n\n" : "") + partial : "");
+    const feed = (text) => {
+      const rest = text.slice(sandbox.offsetAfter(text, spoken));
+      const f = sandbox.pieces(rest, spoken === 0);
+      spoken += sandbox.nonSpace(rest.slice(0, f.consumed));
+      said.push(...f.list);
+    };
+    // Block 1 streams with a leading newline its finished form lacks.
+    for (const [b, lead] of [[B1, "\n"], [B2, ""]]) {
+      const s = lead + b;
+      for (let i = 0; i < s.length; i += size) { partial += s.slice(i, i + size); feed(ai()); }
+      blocks.push(b); partial = ""; feed(ai());
+    }
+    const text = ai(), rest = text.slice(sandbox.offsetAfter(text, spoken)), f = sandbox.pieces(rest, spoken === 0);
+    said.push(...f.list);
+    if (rest.slice(f.consumed).trim()) said.push(rest.slice(f.consumed).trim());
+    return said.map(norm).join(" ") === want;
+  });
+})());
 
 /* The strings the client builds as markup must not carry inline style either:
    CSP refuses a style="" set through innerHTML just as it refuses one in the

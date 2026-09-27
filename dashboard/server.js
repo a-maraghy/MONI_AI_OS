@@ -1713,25 +1713,66 @@ async function voiceTranscribeRoute(req, res) {
   const data = typeof (req.body && req.body.data) === "string" ? req.body.data : "";
   if (!data || !/^[A-Za-z0-9+/=]+$/.test(data)) return res.status(400).json({ error: "No audio arrived.", code: "invalid" });
   const mime = String((req.body && req.body.mime) || "").split(";")[0].trim().toLowerCase();
+  const t0 = Date.now();
+  const audio = Buffer.from(data, "base64");
+  let cfg = null;
   try {
-    const cfg = await voiceConfig();
-    res.json({ text: await voice.transcribe(Buffer.from(data, "base64"), cfg, AUDIO_MIME_RE.test(mime) ? mime : "audio/webm") });
+    cfg = await voiceConfig();
+    // Speech is wanted next ("On it.", then the reply): open a socket now.
+    voice.warm(cfg);
+    const text = await voice.transcribe(audio, cfg, AUDIO_MIME_RE.test(mime) ? mime : "audio/webm");
+    voiceLog("transcribe", 200, { model: cfg.transcribe_model, ms: Date.now() - t0, bytes: audio.length, words: text.split(/\s+/).filter(Boolean).length });
+    res.json({ text });
   } catch (e) {
+    voiceLog("transcribe", e.code || "error", { model: cfg && cfg.transcribe_model, ms: Date.now() - t0, bytes: audio.length, why: e.message });
     voiceFail(res, e);
   }
+}
+
+/**
+ * One line per voice call in the journal: outcome, model, timings, sizes.
+ * Never the key, never what was said -- counts only.
+ */
+function voiceLog(kind, status, f) {
+  const parts = ["voice", kind, String(status)];
+  for (const [k, v] of Object.entries(f)) {
+    if (v === undefined || v === null || v === "") continue;
+    parts.push(k + "=" + (k === "why" ? JSON.stringify(voice.scrub(String(v)).slice(0, 120)) : v));
+  }
+  console.log(parts.join(" "));
 }
 
 /** One sentence in, a WAV out -- or 204 when the voice would not read it as written. */
 async function voiceSpeakRoute(req, res) {
   const text = typeof (req.body && req.body.text) === "string" ? req.body.text : "";
   if (!text.trim()) return res.status(400).json({ error: "Nothing to say.", code: "invalid" });
+  const t0 = Date.now();
+  const words = text.split(/\s+/).filter(Boolean).length;
+  let cfg = null;
   try {
-    const cfg = await voiceConfig();
+    cfg = await voiceConfig();
     const out = await voice.speak(text, cfg);
-    res.set({ "Content-Type": "audio/wav", "Content-Length": String(out.wav.length), "Cache-Control": "no-store" });
+    voiceLog("speak", 200, {
+      engine: out.engine || cfg.model,
+      ms: Date.now() - t0,
+      first_audio_ms: out.firstAudioMs,
+      warm: out.cached ? undefined : out.warm ? 1 : 0,
+      cached: out.cached ? 1 : undefined,
+      fallback: out.fallback ? out.why || "unfaithful" : undefined,
+      audio_s: Math.round(((out.wav.length - 44) / (voice.RATE * 2)) * 100) / 100,
+      words,
+    });
+    res.set({
+      "Content-Type": "audio/wav",
+      "Content-Length": String(out.wav.length),
+      "Cache-Control": "no-store",
+      "X-Voice-Engine": out.fallback ? "fallback" : out.cached ? "cache" : "realtime",
+    });
     res.send(out.wav);
   } catch (e) {
+    voiceLog("speak", e.code === "unfaithful" ? 204 : e.code || "error", { model: cfg && cfg.model, ms: Date.now() - t0, words, why: e.message });
     // Not an error to the page: the sentence is skipped, and it stays on screen.
+    // With the text-to-speech fallback this should now be rare; the page says so when it happens.
     if (e.code === "unfaithful") return res.status(204).set({ "X-Voice-Skipped": "unfaithful", "Cache-Control": "no-store" }).end();
     voiceFail(res, e);
   }

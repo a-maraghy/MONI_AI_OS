@@ -16,12 +16,15 @@
  *             model gpt-4o-mini-transcribe by default. The endpoint takes the
  *             recording as it is, so nothing has to decode audio here.
  *
- *   speaking  one WebSocket session per sentence:
- *             - gpt-realtime-mini / gpt-realtime on {ws}/realtime?model=...
- *               (session.update, conversation.item.create, response.create;
- *               audio arrives as response.output_audio.delta, and the model's
- *               own transcript of what it said as ..._transcript.delta), or
- *             - gpt-live-1 on {ws}/live/sessions, driven the way the Odoo
+ *   speaking  - gpt-realtime-mini / gpt-realtime on {ws}/realtime?model=...,
+ *               over warm sockets reused sentence after sentence: one
+ *               session.update per socket, then per sentence an out-of-band
+ *               response.create (conversation "none", the text quoted in its
+ *               instructions); audio arrives as response.output_audio.delta,
+ *               the model's own transcript as ..._transcript.delta. See the
+ *               note above RealtimeConn for why it must be out of band. Or
+ *             - gpt-live-1 on {ws}/live/sessions, one socket per sentence,
+ *               driven the way the Odoo
  *               walkthrough learned by testing: no Origin header,
  *               session.commentary.append with delegation_id: null, and a
  *               stream of silence frames, because it only talks while it hears.
@@ -31,9 +34,11 @@
  * eleven. So every reading is checked: the model's own transcript of what it
  * said is compared with the text it was given, word by word. A reading that
  * adds words, answers, or drops a real part of the sentence is thrown away and
- * tried once more; if that is unfaithful too, the sentence is not spoken at all
- * (it is on the screen anyway). A reading that has clearly wandered off is cut
- * the moment the transcript shows it, rather than paid for to the end.
+ * the sentence is read by gpt-4o-mini-tts instead -- a text-to-speech model,
+ * which has no conversation to join. Tested on the real API, realtime-mini read
+ * about 88% of sentences verbatim (out of band); a skipped sentence was a hole
+ * in the reply, so skipping is now the last resort. A reading that has clearly
+ * wandered off is cut the moment the transcript shows it.
  */
 
 const WebSocket = require("ws");
@@ -46,7 +51,14 @@ const MAX_CHARS = 800; // one sentence at a time is the design; this is the guar
 const SPEAK_TIMEOUT_MS = 30000;
 const TRANSCRIBE_TIMEOUT_MS = 45000;
 const MAX_CONCURRENT = 4; // the page fetches ahead by a sentence or two
-const ATTEMPTS = 2; // a second try, and then silence rather than invention
+// Realtime readings before falling back. Measured on the real API (2026-09-27):
+// gpt-realtime-mini reads about 88% of sentences verbatim even out of band; the
+// rest it answers ("Done." -> "Of course! Please go ahead..."). A second
+// realtime try is another ~0.7 s at the same odds, so the fallback is a real
+// text-to-speech model instead, which reads anything as written.
+const ATTEMPTS = 1;
+const FALLBACK_TTS_MODEL = "gpt-4o-mini-tts";
+const TTS_VOICES = ["alloy", "ash", "ballad", "coral", "echo", "fable", "onyx", "nova", "sage", "shimmer", "verse", "marin", "cedar"];
 const MAX_AUDIO_BYTES = 25 * 1024 * 1024; // the transcription endpoint's own cap
 
 const MODELS = [
@@ -59,6 +71,9 @@ const TRANSCRIBE_MODELS = [
   { id: "gpt-4o-mini-transcribe", label: "GPT-4o mini transcribe" },
   { id: "gpt-4o-transcribe", label: "GPT-4o transcribe" },
 ];
+const TRANSCRIBE_PROMPT =
+  "Someone talking to MONI AI, the assistant that runs their VPS: the MONI dashboard, Odoo, the allocation engine, " +
+  "agents, sessions, Claude, sub-agents, deploys, services and logs.";
 const DEFAULTS = { model: "gpt-realtime-mini", voice: "marin", transcribe_model: "gpt-4o-mini-transcribe" };
 
 const INSTRUCTIONS =
@@ -272,58 +287,269 @@ function session(url, cfg, text, drive, onEvent) {
   });
 }
 
-/** gpt-realtime(-mini): one response, audio only, then response.done. */
-function readRealtime(text, cfg) {
-  const url = (cfg.wsBase || WS_BASE) + "/realtime?model=" + encodeURIComponent(cfg.model);
-  return session(
-    url,
-    cfg,
-    text,
-    (send) => {
-      send({
-        type: "session.update",
-        session: {
-          type: "realtime",
-          instructions: INSTRUCTIONS,
+/* ------------------------------------------------- realtime, warm pool -- */
+
+/*
+ * gpt-realtime(-mini), as tested against the real API (2026-09-27).
+ *
+ * The first build put each sentence in as a user message and asked for a
+ * response. Against the real model that is a conversation turn: handed "Hello,
+ * can you hear me?" it said "Yes, I can hear you loud and clear. How can I
+ * assist you today?" -- 8 of 10 test sentences were answered, not read, the
+ * verbatim guard rightly threw them away, and the page got 204 after 204.
+ *
+ * What reads word for word (10 of 10 on the same sentences) is an out-of-band
+ * response: response.create with conversation "none", an empty input, and the
+ * text quoted inside that response's own instructions. There is no user turn
+ * to answer, and nothing accumulates in the session, so one socket can read
+ * sentence after sentence.
+ *
+ * So sockets are kept warm and reused: opening one and updating its session
+ * costs about 0.6 s, which used to be paid on every sentence. A socket reads one
+ * sentence at a time; up to POOL_IDLE_MAX sit idle for POOL_IDLE_MS after use,
+ * and none is reused once it is POOL_MAX_AGE_MS old (sessions are capped).
+ * Events seen, in order: session.created, session.updated, response.created,
+ * response.output_item.added, response.content_part.added,
+ * response.output_audio.delta (+ response.output_audio_transcript.delta) ...,
+ * response.output_audio.done, response.output_audio_transcript.done
+ * {transcript}, response.content_part.done, response.output_item.done,
+ * response.done {response.status}, rate_limits.updated.
+ */
+
+const POOL_IDLE_MAX = 3;
+const POOL_IDLE_MS = 3 * 60 * 1000;
+const POOL_MAX_AGE_MS = 20 * 60 * 1000;
+const WARM_COUNT = 2;
+const pool = new Map(); // identity -> [RealtimeConn]
+const warming = new Map(); // identity -> sockets still opening for warm()
+const everyConn = new Set();
+
+function identity(cfg) {
+  // The key is part of the identity so a changed key never reuses an old
+  // socket; only a short hash of it is held here.
+  const h = require("crypto").createHash("sha256").update(String(cfg.key)).digest("hex").slice(0, 12);
+  return [cfg.wsBase || WS_BASE, cfg.model, cfg.voice, h].join("|");
+}
+
+/** Quote the text so the model sees it as material, not as a message to it. */
+function readingInstructions(text) {
+  return INSTRUCTIONS + '\n\nThe text to read aloud, between the triple quotes:\n"""\n' + String(text).replace(/"""/g, '"') + '\n"""';
+}
+
+class RealtimeConn {
+  constructor(cfg) {
+    this.id = identity(cfg);
+    this.bornAt = Date.now();
+    this.dead = false;
+    this.job = null;
+    this.idleTimer = null;
+    everyConn.add(this);
+    this.ready = new Promise((resolve, reject) => {
+      const ws = (this.ws = openSocket((cfg.wsBase || WS_BASE) + "/realtime?model=" + encodeURIComponent(cfg.model), cfg.key));
+      const send = (o) => ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify(o));
+      this.send = send;
+      let opened = false;
+      const fail = (err) => {
+        this.kill();
+        if (!opened) reject(err);
+        else if (this.job) this.job.finish(err);
+      };
+      ws.on("unexpected-response", (req, res) => {
+        let body = "";
+        res.on("data", (d) => {
+          if (body.length < 4096) body += d;
+        });
+        res.on("end", () => {
+          let msg = body;
+          try {
+            msg = (JSON.parse(body).error || {}).message || body;
+          } catch (_) {
+            /* not JSON */
+          }
+          fail(classify(res.statusCode, msg));
+        });
+      });
+      ws.on("error", (e) => fail(new VoiceError("Could not reach OpenAI: " + scrub(e.message), "network")));
+      ws.on("close", () => fail(new VoiceError("OpenAI closed the connection before it finished", "upstream")));
+      ws.on("open", () =>
+        send({
+          type: "session.update",
+          session: {
+            type: "realtime",
+            instructions: INSTRUCTIONS,
+            output_modalities: ["audio"],
+            audio: { output: { format: { type: "audio/pcm", rate: RATE }, voice: cfg.voice } },
+          },
+        })
+      );
+      ws.on("message", (data) => {
+        let ev;
+        try {
+          ev = JSON.parse(String(data));
+        } catch (_) {
+          return;
+        }
+        if (ev.type === "error") {
+          const err = eventError(ev.error);
+          if (!opened) return fail(err);
+          if (this.job) return this.job.finish(err, true);
+          return;
+        }
+        if (ev.type === "session.updated" && !opened) {
+          opened = true;
+          return resolve(this);
+        }
+        if (this.job) this.job.onEvent(ev);
+      });
+    });
+    this.ready.catch(() => {}); // a warm-up nobody waited on must not crash the process
+  }
+
+  usable() {
+    return !this.dead && !this.job && Date.now() - this.bornAt < POOL_MAX_AGE_MS && this.ws.readyState === WebSocket.OPEN;
+  }
+
+  kill() {
+    if (this.dead) return;
+    this.dead = true;
+    clearTimeout(this.idleTimer);
+    everyConn.delete(this);
+    const list = pool.get(this.id);
+    if (list) pool.set(this.id, list.filter((c) => c !== this));
+    try {
+      this.ws.close();
+    } catch (_) {
+      /* already closed */
+    }
+  }
+
+  /** Read one sentence. Resolves {pcm, transcript}. */
+  read(text, timeoutMs) {
+    return new Promise((resolve, reject) => {
+      const st = { chunks: [], transcript: "", firstAudioAt: 0 };
+      let done = false;
+      const finish = (err, killSocket) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        this.job = null;
+        if (err) {
+          // A socket that failed, timed out or was cut mid-reading is not
+          // trusted with the next sentence.
+          if (killSocket !== false) this.kill();
+          reject(err);
+        } else resolve({ pcm: Buffer.concat(st.chunks), transcript: st.transcript.trim(), firstAudioAt: st.firstAudioAt });
+      };
+      const timer = setTimeout(() => finish(new VoiceError("OpenAI took too long to speak that", "timeout")), timeoutMs);
+      this.job = {
+        finish,
+        onEvent: (ev) => {
+          switch (ev.type) {
+            case "response.output_audio.delta":
+            case "response.audio.delta":
+              if (ev.delta) {
+                if (!st.firstAudioAt) st.firstAudioAt = Date.now();
+                st.chunks.push(Buffer.from(ev.delta, "base64"));
+              }
+              break;
+            case "response.output_audio_transcript.delta":
+            case "response.audio_transcript.delta":
+              st.transcript += ev.delta || "";
+              if (wandering(text, st.transcript)) {
+                return finish(new VoiceError("the voice started saying something else", "unfaithful", st.transcript));
+              }
+              break;
+            case "response.output_audio_transcript.done":
+            case "response.audio_transcript.done":
+              if (typeof ev.transcript === "string") st.transcript = ev.transcript;
+              break;
+            case "response.done": {
+              const r = ev.response || {};
+              if (r.status && r.status !== "completed") {
+                const d = r.status_details || {};
+                const why = (d.error && d.error.message) || d.reason || r.status;
+                return finish(new VoiceError("OpenAI did not finish speaking: " + scrub(why), "upstream"));
+              }
+              finish(null);
+              break;
+            }
+            default:
+              break;
+          }
+        },
+      };
+      this.send({
+        type: "response.create",
+        response: {
+          conversation: "none",
+          input: [],
           output_modalities: ["audio"],
-          audio: { output: { format: { type: "audio/pcm", rate: RATE }, voice: cfg.voice } },
+          instructions: readingInstructions(text),
         },
       });
-      send({
-        type: "conversation.item.create",
-        item: { type: "message", role: "user", content: [{ type: "input_text", text }] },
-      });
-      send({ type: "response.create", response: { output_modalities: ["audio"], instructions: INSTRUCTIONS } });
-    },
-    (ev, state, finish) => {
-      switch (ev.type) {
-        case "response.output_audio.delta":
-        case "response.audio.delta":
-          if (ev.delta) state.chunks.push(Buffer.from(ev.delta, "base64"));
-          break;
-        case "response.output_audio_transcript.delta":
-        case "response.audio_transcript.delta":
-          state.transcript += ev.delta || "";
-          break;
-        case "response.output_audio_transcript.done":
-        case "response.audio_transcript.done":
-          if (typeof ev.transcript === "string") state.transcript = ev.transcript;
-          break;
-        case "response.done": {
-          const r = ev.response || {};
-          if (r.status && r.status !== "completed") {
-            const d = r.status_details || {};
-            const why = (d.error && d.error.message) || d.reason || r.status;
-            return finish(new VoiceError("OpenAI did not finish speaking: " + scrub(why), "upstream"));
-          }
-          finish(null, { pcm: Buffer.concat(state.chunks), transcript: state.transcript.trim() });
-          break;
-        }
-        default:
-          break;
-      }
-    }
-  );
+    });
+  }
+}
+
+function takeConn(cfg) {
+  const list = (pool.get(identity(cfg)) || []).filter((c) => c.usable());
+  pool.set(identity(cfg), list);
+  const c = list.shift();
+  if (c) {
+    clearTimeout(c.idleTimer);
+    return { conn: c, warm: true };
+  }
+  return { conn: new RealtimeConn(cfg), warm: false };
+}
+
+function giveBack(conn) {
+  if (!conn.usable()) return conn.kill();
+  const list = pool.get(conn.id) || [];
+  if (list.length >= POOL_IDLE_MAX) return conn.kill();
+  list.push(conn);
+  pool.set(conn.id, list);
+  clearTimeout(conn.idleTimer);
+  conn.idleTimer = setTimeout(() => conn.kill(), POOL_IDLE_MS);
+  if (conn.idleTimer.unref) conn.idleTimer.unref();
+}
+
+/**
+ * Open a socket ahead of need (the page is about to want speech). Costs no
+ * tokens; it only saves the next sentence the connection set-up.
+ */
+function warm(cfg) {
+  if (!cfg || !cfg.key) return;
+  const model = cfg.model || DEFAULTS.model;
+  if (protocolFor(model) !== "realtime") return;
+  const opts = { ...cfg, model, voice: cfg.voice || DEFAULTS.voice };
+  // Two, because the page fetches the next sentence while one is being read.
+  const id = identity(opts);
+  const have = (pool.get(id) || []).filter((c) => c.usable()).length + (warming.get(id) || 0);
+  for (let i = have; i < WARM_COUNT; i++) {
+    warming.set(id, (warming.get(id) || 0) + 1);
+    const c = new RealtimeConn(opts);
+    const done = () => warming.set(id, Math.max(0, (warming.get(id) || 1) - 1));
+    c.ready.then(() => { done(); giveBack(c); }, done);
+  }
+}
+
+function closeAll() {
+  [...everyConn].forEach((c) => c.kill());
+  pool.clear();
+  warming.clear();
+}
+
+async function readRealtime(text, cfg) {
+  const t0 = Date.now();
+  const { conn, warm: wasWarm } = takeConn(cfg);
+  await conn.ready;
+  const tReady = Date.now();
+  const out = await conn.read(text, cfg.timeoutMs || SPEAK_TIMEOUT_MS);
+  giveBack(conn);
+  out.warm = wasWarm;
+  out.connectMs = tReady - t0;
+  out.firstAudioMs = out.firstAudioAt ? out.firstAudioAt - t0 : null;
+  return out;
 }
 
 /**
@@ -389,6 +615,46 @@ function readLive(text, cfg) {
   );
 }
 
+/* ---------------------------------------------------- tts (fallback) -- */
+
+/**
+ * gpt-4o-mini-tts on {http}/audio/speech, raw PCM back. A text-to-speech model
+ * has no conversation to join, so it cannot answer the text; it is the reading
+ * the realtime voice falls back to when it would not read a sentence as written.
+ */
+async function readTts(text, cfg) {
+  const voice = TTS_VOICES.includes(cfg.voice) ? cfg.voice : DEFAULTS.voice;
+  let res;
+  try {
+    res = await fetch((cfg.httpBase || HTTP_BASE) + "/audio/speech", {
+      method: "POST",
+      headers: { Authorization: "Bearer " + cfg.key, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: cfg.fallback_model || FALLBACK_TTS_MODEL,
+        voice,
+        input: text,
+        response_format: "pcm",
+        instructions: "Speak clear, natural English at a brisk conversational pace.",
+      }),
+      signal: AbortSignal.timeout(cfg.timeoutMs || SPEAK_TIMEOUT_MS),
+    });
+  } catch (e) {
+    if (e.name === "TimeoutError") throw new VoiceError("OpenAI took too long to speak that", "timeout");
+    throw new VoiceError("Could not reach OpenAI: " + scrub(e.message), "network");
+  }
+  const body = Buffer.from(await res.arrayBuffer());
+  if (!res.ok) {
+    let msg = body.toString("utf8");
+    try {
+      msg = (JSON.parse(msg).error || {}).message || msg;
+    } catch (_) {
+      /* not JSON */
+    }
+    throw classify(res.status, msg);
+  }
+  return { pcm: body, transcript: text };
+}
+
 /* ------------------------------------------------------------- speak -- */
 
 let running = 0;
@@ -414,6 +680,7 @@ const CACHE_CHARS = 80;
 const cache = new Map();
 function clearCache() {
   cache.clear();
+  closeAll(); // a changed key or voice must not speak through an old socket
 }
 
 function cleanText(text) {
@@ -441,15 +708,24 @@ async function speak(text, cfg) {
     const hit = cache.get(ck);
     cache.delete(ck);
     cache.set(ck, hit);
-    return { ...hit, cached: true };
+    warm({ ...cfg, model, voice }); // "On it." is played: the reply's sentences come next
+    return { ...hit, cached: true, attempts: 0, ms: 0 };
   }
 
   const read = protocolFor(model) === "live" ? readLive : readRealtime;
   const opts = { ...cfg, model, voice };
+  const t0 = Date.now();
+  const attempts = cfg.attempts || ATTEMPTS;
+  const cacheIt = (result) => {
+    if (say.length <= CACHE_CHARS) {
+      cache.set(ck, result);
+      if (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value);
+    }
+  };
   await slot();
   try {
     let last = null;
-    for (let attempt = 1; attempt <= (cfg.attempts || ATTEMPTS); attempt++) {
+    for (let attempt = 1; attempt <= attempts; attempt++) {
       let out;
       try {
         out = await read(say, opts);
@@ -466,16 +742,26 @@ async function speak(text, cfg) {
       }
       const check = faithful(say, out.transcript);
       if (check.ok) {
-        const result = { wav: wav(out.pcm, RATE), transcript: out.transcript, attempts: attempt };
-        if (say.length <= CACHE_CHARS) {
-          cache.set(ck, result);
-          if (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value);
-        }
-        return { ...result, cached: false };
+        const result = { wav: wav(out.pcm, RATE), transcript: out.transcript, attempts: attempt, engine: model };
+        cacheIt(result);
+        return { ...result, cached: false, ms: Date.now() - t0, warm: !!out.warm, firstAudioMs: out.firstAudioMs == null ? null : out.firstAudioMs };
       }
       last = new VoiceError("the voice did not read the text as written", "unfaithful", out.transcript);
     }
-    throw last || new VoiceError("the voice did not read the text as written", "unfaithful");
+    // The realtime voice would not read it as written. Rather than drop the
+    // sentence, read it with a text-to-speech model, which cannot answer it.
+    if (cfg.fallback !== false) {
+      const out = await readTts(say, opts);
+      if (out.pcm.length) {
+        const result = { wav: wav(out.pcm, RATE), transcript: say, attempts, engine: cfg.fallback_model || FALLBACK_TTS_MODEL, fallback: true };
+        cacheIt(result);
+        return { ...result, cached: false, ms: Date.now() - t0, warm: false, firstAudioMs: null, why: last && last.code };
+      }
+    }
+    const err = last || new VoiceError("the voice did not read the text as written", "unfaithful");
+    err.attempts = attempts;
+    err.ms = Date.now() - t0;
+    throw err;
   } finally {
     release();
   }
@@ -499,6 +785,10 @@ async function transcribe(audio, cfg, mime) {
   form.append("file", new Blob([buf], { type }), "speech." + ext);
   form.append("model", cfg.transcribe_model || DEFAULTS.transcribe_model);
   form.append("response_format", "json");
+  // A vocabulary hint: the words this panel hears that a general model would
+  // not guess ("MONI" came back as "money", "Odoo" as "OPC"). Supported by the
+  // gpt-4o transcribe models; it steers spelling, it does not add words.
+  form.append("prompt", cfg.transcribe_prompt || TRANSCRIBE_PROMPT);
 
   let res;
   try {
@@ -535,7 +825,7 @@ async function check(cfg) {
   const line = "Voice check: one, two, three.";
   const out = { model: cfg.model || DEFAULTS.model, voice: cfg.voice || DEFAULTS.voice };
   const t0 = Date.now();
-  const spoken = await speak(line, { ...cfg, attempts: 1, noCache: true }).catch((e) => {
+  const spoken = await speak(line, { ...cfg, attempts: 1, noCache: true, fallback: false }).catch((e) => {
     // Unfaithful still proves the key and model work; say so rather than fail.
     if (e.code === "unfaithful") return { unfaithful: true, transcript: e.detail || "" };
     throw e;
@@ -554,6 +844,9 @@ async function check(cfg) {
 
 module.exports = {
   speak,
+  warm,
+  closeAll,
+  readingInstructions,
   transcribe,
   check,
   faithful,
@@ -569,4 +862,5 @@ module.exports = {
   INSTRUCTIONS,
   MAX_CHARS,
   RATE,
+  FALLBACK_TTS_MODEL,
 };

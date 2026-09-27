@@ -6,12 +6,18 @@
  *
  *   node dashboard/tools/test-voice.cjs
  *
- * The mock speaks the two protocols lib/voice.js implements -- the Realtime API
- * (session.update / conversation.item.create / response.create, audio back as
- * response.output_audio.delta) and GPT-Live (session.start, commentary with
- * delegation_id: null, audio only while silence frames arrive) -- plus the
- * transcription endpoint. It can be told to read faithfully, to improvise, to
- * refuse the key, to not know the model, or to hang.
+ * The mock speaks the protocols lib/voice.js implements -- the Realtime API as
+ * captured from the real gpt-realtime-mini on 2026-09-27 (session.created,
+ * session.updated, then per response.create: response.created,
+ * output_item.added, content_part.added, output_audio(_transcript).delta ...,
+ * output_audio.done, output_audio_transcript.done, content_part.done,
+ * output_item.done, response.done, rate_limits.updated; several responses per
+ * socket), GPT-Live (session.start, commentary with delegation_id: null, audio
+ * only while silence frames arrive), /audio/speech (the text-to-speech
+ * fallback) and the transcription endpoint. Like the real model, it ANSWERS a
+ * sentence put in as a user message and reads only an out-of-band response
+ * whose instructions quote the text. It can be told to improvise, to refuse
+ * the key, to not know the model, or to hang.
  *
  * The helper part loads deploy/moni-helper as a Python module with its voice
  * file pointed into a temp directory, so nothing on the machine is touched.
@@ -60,6 +66,9 @@ const mock = {
   log: [], // per connection: { url, headers, events: [], closedEarly }
   heard: null, // the last text "spoken", returned by transcription of a RIFF upload
   transcriptions: [],
+  responses: 0, // response.create calls, across sockets
+  speech: [], // /audio/speech calls
+  speechMode: "ok", // ok | 401
 };
 
 function speechChunk(loud) {
@@ -76,7 +85,29 @@ function readingFor(text, conn) {
   return text;
 }
 
+/** What the real model does with a sentence handed over as a user message. */
+function answerTo() {
+  return "Yes, I can hear you loud and clear. How can I assist you today?";
+}
+
 const server = http.createServer((req, res) => {
+  if (req.method === "POST" && req.url === "/v1/audio/speech") {
+    const chunks = [];
+    req.on("data", (d) => chunks.push(d));
+    req.on("end", () => {
+      const body = JSON.parse(Buffer.concat(chunks).toString() || "{}");
+      mock.speech.push({ auth: req.headers.authorization, ...body });
+      if (req.headers.authorization !== "Bearer " + GOOD || mock.speechMode === "401") {
+        res.statusCode = 401;
+        res.setHeader("Content-Type", "application/json");
+        return res.end(JSON.stringify({ error: { message: "Incorrect API key provided: sk-proj-****nope." } }));
+      }
+      mock.heard = body.input;
+      res.setHeader("Content-Type", "application/octet-stream");
+      res.end(Buffer.from(speechChunk(true), "base64"));
+    });
+    return;
+  }
   if (req.method === "POST" && req.url === "/v1/audio/transcriptions") {
     const chunks = [];
     req.on("data", (d) => chunks.push(d));
@@ -86,7 +117,8 @@ const server = http.createServer((req, res) => {
       const txt = body.toString("latin1");
       const model = (txt.match(/name="model"\r\n\r\n([^\r]*)/) || [])[1];
       const ctype = (txt.match(/name="file"; filename="([^"]*)"\r\nContent-Type: ([^\r]*)/) || []).slice(1);
-      mock.transcriptions.push({ auth, model, filename: ctype[0], type: ctype[1], bytes: body.length });
+      const prompt = (txt.match(/name="prompt"\r\n\r\n([^\r]*)/) || [])[1];
+      mock.transcriptions.push({ auth, model, prompt, filename: ctype[0], type: ctype[1], bytes: body.length });
       res.setHeader("Content-Type", "application/json");
       if (auth !== "Bearer " + GOOD) {
         res.statusCode = 401;
@@ -130,17 +162,32 @@ wss.on("connection", (ws, req) => {
       send({ type: "error", error: { type: "invalid_request_error", code: null, message: "Missing bearer or basic authentication in header" } });
       return setTimeout(() => ws.close(), 20);
     }
-    send({ type: "session.created", session: {} });
-    let text = "";
+    send({ type: "session.created", event_id: "e0", session: {} });
+    let userText = null;
+    let n = 0;
     ws.on("message", (raw) => {
       const ev = JSON.parse(String(raw));
       entry.events.push(ev);
       if (ev.type === "session.update") send({ type: "session.updated", session: ev.session });
-      if (ev.type === "conversation.item.create") text = ev.item.content[0].text;
+      if (ev.type === "conversation.item.create") {
+        userText = ev.item.content[0].text;
+        send({ type: "conversation.item.added", item: ev.item });
+        send({ type: "conversation.item.done", item: ev.item });
+      }
       if (ev.type === "response.create") {
+        mock.responses++;
         if (mock.mode === "model-error") return send({ type: "error", error: { code: "model_not_found", message: "The model gpt-nope does not exist" } });
         if (mock.mode === "hang") return;
-        const reading = readingFor(text, conn);
+        const r = ev.response || {};
+        const quoted = /"""\n([\s\S]*)\n"""$/.exec(r.instructions || "");
+        const outOfBand = r.conversation === "none" && quoted;
+        // In band, the real model takes the text as something said to it.
+        const reading = outOfBand ? readingFor(quoted[1], conn) : answerTo(userText);
+        const rid = "resp_" + conn + "_" + ++n;
+        entry.finished = false;
+        send({ type: "response.created", response: { id: rid, status: "in_progress", output_modalities: ["audio"] } });
+        send({ type: "response.output_item.added", response_id: rid, item: { type: "message", role: "assistant" } });
+        send({ type: "response.content_part.added", response_id: rid, part: { type: "audio", transcript: "" } });
         const parts = reading.match(/\S+\s*/g) || [];
         let i = 0;
         const step = () => {
@@ -149,16 +196,19 @@ wss.on("connection", (ws, req) => {
             return;
           }
           if (i < parts.length) {
-            send({ type: "response.output_audio_transcript.delta", delta: parts[i] });
-            send({ type: "response.output_audio.delta", delta: speechChunk(true) });
+            send({ type: "response.output_audio_transcript.delta", response_id: rid, delta: parts[i] });
+            send({ type: "response.output_audio.delta", response_id: rid, delta: speechChunk(true) });
             i++;
             return setTimeout(step, 5);
           }
-          send({ type: "response.output_audio_transcript.done", transcript: reading });
-          send({ type: "response.output_audio.done" });
+          send({ type: "response.output_audio.done", response_id: rid });
+          send({ type: "response.output_audio_transcript.done", response_id: rid, transcript: reading });
+          send({ type: "response.content_part.done", response_id: rid, part: { type: "audio", transcript: reading } });
+          send({ type: "response.output_item.done", response_id: rid });
           entry.finished = true;
           mock.heard = reading;
-          send({ type: "response.done", response: { status: "completed" } });
+          send({ type: "response.done", response: { id: rid, status: "completed" } });
+          send({ type: "rate_limits.updated", rate_limits: [] });
         };
         step();
       }
@@ -241,12 +291,14 @@ async function main() {
     w.slice(0, 4).toString() === "RIFF" && w.slice(8, 12).toString() === "WAVE" &&
     w.readUInt16LE(22) === 1 && w.readUInt32LE(24) === 24000 && w.readUInt16LE(34) === 16 && w.readUInt32LE(40) === 4800);
 
-  section("realtime protocol (gpt-realtime-mini)");
+  section("realtime protocol (gpt-realtime-mini), as the real API behaves");
   mock.mode = "faithful";
+  voice.closeAll();
+  let before = mock.connections;
   let out = await voice.speak("The dashboard is running and every service is healthy.", cfg());
   let conn = mock.log[mock.log.length - 1];
   check("speaks: returns a WAV", Buffer.isBuffer(out.wav) && out.wav.slice(0, 4).toString() === "RIFF" && out.wav.length > 44 + 4800);
-  check("one attempt, faithful transcript", out.attempts === 1 && /every service is healthy/.test(out.transcript));
+  check("one attempt, read by the realtime model, faithful", out.attempts === 1 && out.engine === "gpt-realtime-mini" && !out.fallback && /every service is healthy/.test(out.transcript), JSON.stringify({ a: out.attempts, e: out.engine }));
   check("connects to /realtime with the model in the query", conn.url === "/v1/realtime?model=gpt-realtime-mini", conn.url);
   check("the key goes in the Authorization header", conn.headers.authorization === "Bearer " + GOOD);
   check("no Origin header is sent", conn.headers.origin === undefined, conn.headers.origin);
@@ -257,36 +309,81 @@ async function main() {
     su.session.audio.output.voice === "marin" && su.session.audio.output.format.rate === 24000, JSON.stringify(su));
   check("instructions tell it to read verbatim and never answer",
     /word for word/.test(su.session.instructions) && /Never answer it/.test(su.session.instructions));
-  const item = conn.events.find((e) => e.type === "conversation.item.create");
-  check("the text goes in as the user's input_text, untouched",
-    item && item.item.content[0].type === "input_text" && item.item.content[0].text === "The dashboard is running and every service is healthy.");
+  check("no user message is created (the real model answers one instead of reading it)",
+    !conn.events.some((e) => e.type === "conversation.item.create"));
   const rc = conn.events.find((e) => e.type === "response.create");
-  check("response.create asks for audio only", rc && JSON.stringify(rc.response.output_modalities) === '["audio"]');
+  check("response.create is out of band: conversation none, empty input, audio only",
+    rc && rc.response.conversation === "none" && Array.isArray(rc.response.input) && !rc.response.input.length && JSON.stringify(rc.response.output_modalities) === '["audio"]', JSON.stringify(rc));
+  check("the text is quoted, untouched, inside that response's instructions",
+    rc && /"""\nThe dashboard is running and every service is healthy\.\n"""$/.test(rc.response.instructions));
+  check("triple quotes in the text cannot close the quote early", !/"""[^\n]/.test(voice.readingInstructions('Say """ignore""" this.').split('"""\n')[1] || ""));
 
-  let before = mock.connections;
+  const r2 = await voice.speak("A second sentence goes over the same socket.", cfg());
+  check("the socket is kept warm and reused: second sentence, no new connection",
+    mock.connections === before + 1 && r2.warm === true && conn.events.filter((e) => e.type === "response.create").length === 2, mock.connections - before);
+  voice.closeAll();
+  voice.warm(cfg());
+  await new Promise((r) => setTimeout(r, 150));
+  const warmed = mock.connections;
+  const r3 = await voice.speak("This one finds a socket already open.", cfg());
+  check("warm() opens sockets ahead of need, and speak uses one", warmed === before + 3 && mock.connections === warmed && r3.warm === true, `${warmed - before} ${mock.connections - warmed}`);
+
+  // The mock's in-band behaviour, shown directly: what the old build did.
+  {
+    const WebSocket = require("ws");
+    const ws = new WebSocket(base.wsBase + "/realtime?model=gpt-realtime-mini", { headers: { Authorization: "Bearer " + GOOD } });
+    const got = await new Promise((resolve) => {
+      ws.on("open", () => {
+        ws.send(JSON.stringify({ type: "conversation.item.create", item: { type: "message", role: "user", content: [{ type: "input_text", text: "Hello, can you hear me?" }] } }));
+        ws.send(JSON.stringify({ type: "response.create", response: { output_modalities: ["audio"] } }));
+      });
+      ws.on("message", (m) => {
+        const e = JSON.parse(String(m));
+        if (e.type === "response.output_audio_transcript.done") resolve(e.transcript);
+      });
+    });
+    ws.close();
+    check("in band, the (mock of the) real model answers instead of reading -- the fault the first build had",
+      !voice.faithful("Hello, can you hear me?", got).ok, got);
+  }
+
+  before = mock.responses;
   await voice.speak("On it.", cfg());
   const hit = await voice.speak("On it.", cfg());
-  check("a short line is cached: the second 'On it.' makes no call", hit.cached === true && mock.connections === before + 1);
+  check("a short line is cached: the second 'On it.' makes no call", hit.cached === true && mock.responses === before + 1);
   await voice.speak("On it.", cfg({ voice: "cedar" }));
-  check("the cache is per voice", mock.connections === before + 2);
+  check("the cache is per voice", mock.responses === before + 2);
   voice.clearCache();
   await voice.speak("On it.", cfg());
-  check("clearCache (key or settings changed) forgets it", mock.connections === before + 3);
+  check("clearCache (key or settings changed) forgets it", mock.responses === before + 3);
 
-  section("verbatim guard, live");
+  section("verbatim guard, live, and the text-to-speech fallback");
   mock.mode = "improvise-once";
+  voice.closeAll();
   mock.connections = 0;
-  out = await voice.speak("I restarted the dashboard.", cfg());
-  check("an improvised first reading is thrown away and the second one used", out.attempts === 2 && out.transcript === "I restarted the dashboard.", out.attempts + " " + out.transcript);
-  check("the improvising reading was cut short, not paid for to the end", mock.log[mock.log.length - 2].closedEarly === true);
+  let sp = mock.speech.length;
+  out = await voice.speak("I restarted the dashboard.", cfg({ noCache: true }));
+  check("an improvised reading is thrown away and the sentence read by gpt-4o-mini-tts instead",
+    out.fallback === true && out.engine === "gpt-4o-mini-tts" && mock.speech.length === sp + 1 && out.wav.length > 44, JSON.stringify({ f: out.fallback, e: out.engine }));
+  const tts = mock.speech[mock.speech.length - 1];
+  check("  the fallback gets the text as input, the same voice, raw PCM, the key as bearer",
+    tts.input === "I restarted the dashboard." && tts.voice === "marin" && tts.response_format === "pcm" && tts.model === "gpt-4o-mini-tts" && tts.auth === "Bearer " + GOOD, JSON.stringify(tts));
+  check("the improvising reading was cut short, not paid for to the end", mock.log[mock.log.length - 1].closedEarly === true);
 
   mock.mode = "improvise";
-  let r = await expectCode(voice.speak("The backup finished.", cfg()), "unfaithful");
-  check("a voice that keeps improvising: rejected as unfaithful, nothing returned", r.ok, r.got);
+  out = await voice.speak("The backup finished.", cfg({ noCache: true }));
+  check("a voice that keeps improvising: the sentence is still spoken, by the fallback", out.fallback === true);
+  let r = await expectCode(voice.speak("The backup finished.", cfg({ noCache: true, fallback: false })), "unfaithful");
+  check("with the fallback off: rejected as unfaithful, nothing returned", r.ok, r.got);
   allMessages.push(r.e && r.e.message);
   mock.mode = "answer";
-  r = await expectCode(voice.speak("Do you want me to restart the dashboard?", cfg()), "unfaithful");
-  check("a voice that answers the question instead of reading it: rejected", r.ok, r.got);
+  out = await voice.speak("Do you want me to restart the dashboard?", cfg({ noCache: true }));
+  check("a voice that answers the question instead of reading it: fallback reads it", out.fallback === true && mock.heard === "Do you want me to restart the dashboard?");
+  mock.speechMode = "401";
+  r = await expectCode(voice.speak("Do you want me to restart it now?", cfg({ noCache: true })), "auth");
+  check("a fallback that fails reports its error", r.ok, r.got);
+  check("  and never carries a key", r.e && !/sk-proj-\*\*\*\*nope/.test(r.e.message) && !r.e.message.includes(GOOD), r.e && r.e.message);
+  mock.speechMode = "ok";
 
   section("realtime errors");
   mock.mode = "faithful";
@@ -294,6 +391,7 @@ async function main() {
   check("a wrong key (error event after upgrade): code auth", r.ok, r.got);
   allMessages.push(r.e && r.e.message);
   mock.mode = "handshake-401";
+  voice.closeAll(); // a warm socket would otherwise answer
   r = await expectCode(voice.speak("Hello.", cfg()), "auth");
   check("a 401 at the handshake: code auth", r.ok, r.got);
   check("the error message never carries a key", r.e && !/sk-proj-Z/.test(r.e.message), r.e && r.e.message);
@@ -302,8 +400,12 @@ async function main() {
   r = await expectCode(voice.speak("Hello.", cfg({ model: "gpt-realtime-nope" })), "model");
   check("an unknown model: code model", r.ok, r.got);
   mock.mode = "hang";
-  r = await expectCode(voice.speak("Hello.", cfg({ timeoutMs: 400 })), "timeout");
+  r = await expectCode(voice.speak("Hello there.", cfg({ timeoutMs: 400 })), "timeout");
   check("no answer: code timeout", r.ok, r.got);
+  mock.mode = "faithful";
+  before = mock.connections;
+  out = await voice.speak("After a timeout the socket is not reused.", cfg());
+  check("  the socket that timed out is dropped; the next sentence opens a fresh one", mock.connections === before + 1 && out.warm === false, mock.connections - before);
   r = await expectCode(voice.speak("Hello.", { ...base, wsBase: "ws://127.0.0.1:1/v1", key: GOOD, model: "gpt-realtime-mini" }), "network");
   check("unreachable: code network", r.ok, r.got);
 
@@ -324,8 +426,10 @@ async function main() {
   check("audio comes back trimmed to the speech, faithful",
     out.wav.length > 44 && out.wav.length < 44 + 4800 * 16 && /none need approval/.test(out.transcript), out.wav.length + " " + out.transcript);
   mock.mode = "improvise";
-  r = await expectCode(voice.speak("The backup finished.", cfg({ model: "gpt-live-1" })), "unfaithful");
+  r = await expectCode(voice.speak("The backup finished.", cfg({ model: "gpt-live-1", fallback: false })), "unfaithful");
   check("GPT-Live inventing a continuation is caught too", r.ok, r.got);
+  out = await voice.speak("The backup finished.", cfg({ model: "gpt-live-1" }));
+  check("  and falls back to text-to-speech like the realtime model", out.fallback === true);
 
   section("transcription");
   mock.mode = "faithful";
@@ -335,6 +439,7 @@ async function main() {
   check("posts the configured model and the recording with its type",
     t.model === "gpt-4o-mini-transcribe" && t.type === "audio/webm" && t.filename === "speech.webm", JSON.stringify(t));
   check("with the key as a bearer token", t.auth === "Bearer " + GOOD);
+  check("with a vocabulary prompt (MONI, Odoo)", /MONI/.test(t.prompt || "") && /Odoo/.test(t.prompt || ""), t.prompt);
   await voice.transcribe(Buffer.from("x"), cfg({ transcribe_model: "gpt-4o-transcribe" }), "audio/ogg;codecs=opus");
   const t2 = mock.transcriptions[mock.transcriptions.length - 1];
   check("the listening model is a setting; an odd mime falls back to webm", t2.model === "gpt-4o-transcribe" && t2.type === "audio/webm", JSON.stringify(t2));
@@ -358,11 +463,15 @@ async function main() {
 
   section("Settings > Test (a tiny live round trip)");
   mock.mode = "faithful";
-  before = mock.connections;
+  before = mock.responses;
   let c = await voice.check(cfg());
   check("speaks a line and transcribes that audio back", c.faithful === true && /Voice check/.test(c.heard) && c.seconds > 0, JSON.stringify(c));
   c = await voice.check(cfg());
-  check("never answered from the cache", mock.connections === before + 2);
+  check("never answered from the cache", mock.responses === before + 2);
+  mock.mode = "answer";
+  c = await voice.check(cfg());
+  check("Test reports an unfaithful realtime voice rather than hiding it behind the fallback", c.faithful === false, JSON.stringify(c));
+  mock.mode = "faithful";
   r = await expectCode(voice.check(cfg({ key: BAD })), "auth");
   check("a wrong key: the error comes back", r.ok, r.got);
 
@@ -376,6 +485,7 @@ async function main() {
   section("views: the no-key state");
   viewTests();
 
+  voice.closeAll();
   wss.close();
   server.close();
   console.log(`\n${passed} passed, ${failed} failed`);

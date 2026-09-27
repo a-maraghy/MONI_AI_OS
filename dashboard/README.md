@@ -161,17 +161,30 @@ talks to OpenAI and never sees the key (the CSP still forbids it to).
 
 - **Hearing**: the recording (webm/opus) is posted to `/moni-ai/api/transcribe`
   or `/console/:id/transcribe`, and sent on to `POST /v1/audio/transcriptions`
-  (`gpt-4o-mini-transcribe` by default).
+  (`gpt-4o-mini-transcribe` by default), with a vocabulary prompt (MONI, Odoo,
+  sessions, agents) so the panel's own words are spelled right.
 - **Speaking**: each sentence of a reply is posted to `/moni-ai/api/speak` or
-  `/console/:id/speak`; `lib/voice.js` opens one WebSocket per sentence to
-  `wss://api.openai.com/v1/realtime?model=gpt-realtime-mini` (default;
-  `gpt-realtime` and `gpt-live-1` on `/v1/live/sessions` are selectable) and
-  returns a 24 kHz WAV. The page fetches the next sentences while one plays.
-  Short lines ("On it.") are cached in memory per model and voice.
+  `/console/:id/speak` and comes back as a 24 kHz WAV. `lib/voice.js` keeps
+  WebSockets to `wss://api.openai.com/v1/realtime?model=gpt-realtime-mini`
+  (default; `gpt-realtime` and `gpt-live-1` on `/v1/live/sessions` are
+  selectable) warm and reuses them, opening two as soon as a recording is
+  transcribed. Each sentence is an **out-of-band** `response.create`
+  (`conversation: "none"`, empty input, the text quoted in that response's
+  instructions): put in as a user message, the real model *answers* it ("Hello,
+  can you hear me?" -> "Yes, I can hear you loud and clear. How can I assist
+  you today?"), which is why the first build spoke almost nothing. The page
+  fetches the next sentences while one plays. Short lines ("On it.") are cached
+  in memory per model and voice.
 - **Verbatim guard**: the model's own transcript of what it said is compared
   with the text word by word; a reading that adds, answers or drops words is
-  cut as soon as it wanders, retried once, and otherwise not spoken (the route
-  answers 204 and the page skips the sentence -- it is on screen anyway).
+  cut as soon as it wanders and the sentence is read by `gpt-4o-mini-tts`
+  (`/v1/audio/speech`) instead, which cannot answer it. Measured 2026-09-27:
+  realtime-mini read about 88% of sentences verbatim out of band (2 of 10 in
+  band). The route answers 204 only if the fallback fails too; the page then
+  says a sentence was not read aloud. Each call logs one key-free, text-free
+  line to the journal: `voice speak 200 engine=... ms=... first_audio_ms=...
+  warm=1 audio_s=... words=...` or `voice transcribe 200 model=... ms=...`.
+  The response header `X-Voice-Engine` says realtime / fallback / cache.
 - **The key**: Settings > Credentials > OpenAI voice (`/credentials/openai-voice`,
   permission `voice.manage`, in no stock role -- administrators only). Write-only
   field, shown as its last four characters, Replace, Remove and a Test button
