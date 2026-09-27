@@ -113,7 +113,7 @@ const NAV = [
     // sidebar -- two lists side by side would be one too many.
     key: "console",
     href: "/console",
-    label: "MONI Bot",
+    label: "MONI AI",
     icon: "agents",
     noSidebar: true,
     home: { key: "console", href: "/console", label: "Chat", icon: "agents" },

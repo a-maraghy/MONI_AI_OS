@@ -1,6 +1,6 @@
 "use strict";
 /**
- * The MONI Bot console -- Claude Code, in the panel.
+ * The MONI AI console -- Claude Code, in the panel.
  *
  * This is not a bot somebody messages. It is the administrator at a keyboard,
  * already past a password and a TOTP code, so it runs with the access they
@@ -221,7 +221,7 @@ exports.console = ({
   const rootOn = !!active && active.access === "full" && active.root_enabled !== 0;
 
   return shell(
-    active ? active.title || "MONI Bot" : "MONI Bot",
+    active ? active.title || "MONI AI" : "MONI AI",
     `<div class="chat-layout">
       <div class="chat-scrim" data-chats-close hidden></div>
       <aside class="chat-list" id="chat-list">
@@ -273,11 +273,11 @@ exports.console = ({
                  <button class="chats-toggle" type="button" aria-label="Chats"
                          aria-expanded="false" aria-controls="chat-list"
                          data-chats-toggle>${icon("sidebar", 18)}</button>
-                 <span class="chat-name">MONI Bot</span>
+                 <span class="chat-name">MONI AI</span>
                </div>
                <div class="chat-empty">${empty(
                  "agents",
-                 "MONI Bot",
+                 "MONI AI",
                  "Your direct line to this machine. Start a chat to run anything Claude Code can run, here rather than over SSH."
                )}</div>`
             : locked
@@ -348,7 +348,7 @@ exports.console = ({
               <div class="attachments" id="chat-attachments" hidden></div>
 
               <textarea id="chat-input" rows="2"
-                        placeholder="Message MONI Bot…  Paste or drop files, or hold the mic."></textarea>
+                        placeholder="Message MONI AI…  Paste or drop files, or hold the mic."></textarea>
 
               <input type="file" id="chat-file" multiple hidden>
 

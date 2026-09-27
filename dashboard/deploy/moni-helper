@@ -2997,7 +2997,7 @@ CC_HOMES = {
         "writable": True,
     },
     "console": {
-        "label": "MONI Bot console",
+        "label": "MONI AI console",
         "base": "/var/lib/moni-console/home/.claude",
         "projects": "/var/lib/moni-console/home/.claude/projects",
         "writable": True,
