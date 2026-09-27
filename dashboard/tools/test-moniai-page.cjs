@@ -85,7 +85,9 @@ check("a page without an OpenAI key says so and points to Settings", (() => {
 /* ----------------------------------------------------------- the shell --- */
 
 const plain = ui.shell("X", "<p>body</p>", { user: { name: "u", perm: admin }, csrf: "c" });
-check("other pages keep no page class", /<html lang="en">/.test(plain));
+// Framed pages carry only the frame marker (the fixed top bar and sidebar);
+// the Command Center's own palette class stays on the Command Center.
+check("other pages keep no page class but the frame's", /<html lang="en" class="framed">/.test(plain) && !plain.includes("cc-page"));
 check("every page loads the theme script before its stylesheet", plain.indexOf("theme-init.js") > -1 && plain.indexOf("theme-init.js") < plain.indexOf("style.css"));
 check("every signed-in page carries the theme switch", plain.includes("data-theme-switch") && ["system", "dark", "light"].every((t) => plain.includes(`data-theme-opt="${t}"`)));
 check("the signed-out page has no switch (no top bar at all)", !ui.shell("Sign in", "<form></form>", {}).includes("data-theme-switch"));

@@ -249,14 +249,57 @@ function dashboardFor(active, hint) {
   return hint || null;
 }
 
-function renderSidebar(active, dashKey, perm) {
+/** Where an item sits: [dashboard, category, section, item], for the crumbs. */
+function locate(active, dashKey) {
+  const dash = NAV.find((d) => d.key === dashKey);
+  if (!dash) return null;
+  if (dash.home && dash.home.key === active) return { dash, item: dash.home };
+  for (const cat of dash.categories) {
+    for (const sec of cat.sections) {
+      const item = sec.items.find((i) => i.key === active);
+      if (item) return { dash, cat, sec, item };
+    }
+  }
+  return { dash };
+}
+
+/**
+ * The trail above a page title: dashboard / section / page. Pages deeper than
+ * the navigation (an agent, a fact) pass their own trail as opts.crumbs, a list
+ * of [label, href] pairs; the last is where you are and is not a link.
+ */
+function renderCrumbs(active, dashKey, crumbs) {
+  let trail = crumbs;
+  if (!trail) {
+    const at = locate(active, dashKey);
+    if (!at) return "";
+    trail = [[at.dash.label, at.dash.href]];
+    if (at.sec && at.sec.label) trail.push([at.sec.label, null]);
+    else if (at.cat) trail.push([at.cat.label, null]);
+    if (at.item && at.item !== at.dash.home) trail.push([at.item.label, at.item.href]);
+    else if (at.item) trail.push(["Overview", null]);
+  }
+  return `<nav class="crumbs" aria-label="Breadcrumb">${trail
+    .map(([label, href], i) =>
+      (i ? `<span aria-hidden="true">/</span>` : "") +
+      (href && i < trail.length - 1 ? `<a href="${esc(href)}">${esc(label)}</a>` : `<span>${esc(label)}</span>`)
+    )
+    .join("")}</nav>`;
+}
+
+function renderSidebar(active, dashKey, perm, chrome) {
   const dash = NAV.find((d) => d.key === dashKey) || NAV[0];
   const allow = (item) => !item.perm || !perm || perm.can(item.perm);
+  const badges = (chrome && chrome.badges) || {};
 
-  const link = (i) =>
-    `<a href="${i.href}" class="side-item${active === i.key ? " on" : ""}">
-       ${icon(i.icon)}<span>${esc(i.label)}</span>
-     </a>`;
+  const link = (i) => {
+    const b = badges[i.key];
+    return `<a href="${i.href}" class="side-item${active === i.key ? " on" : ""}"${
+      active === i.key ? ' aria-current="page"' : ""
+    } title="${esc(i.label)}">${icon(i.icon)}<span>${esc(i.label)}</span>${
+      b ? `<span class="badge ${esc(b[1])}" data-badge="${esc(i.key)}">${esc(b[0])}</span>` : ""
+    }</a>`;
+  };
 
   const home = dash.home && allow(dash.home) ? `<div class="side-home">${link(dash.home)}</div>` : "";
 
@@ -282,15 +325,46 @@ function renderSidebar(active, dashKey, perm) {
     .filter(Boolean)
     .join("");
 
-  return home + categories;
+  const id = (chrome && chrome.ids && chrome.ids[dash.key]) || null;
+  const idBlock = id
+    ? `<div class="side-id"><span class="side-id-mark">${icon(dash.key === "agents" ? "agents" : "cpu", 18)}</span>
+        <div><b>${esc(id.name)}</b><small>${esc(id.sub)}</small></div></div>`
+    : "";
+
+  return `<div class="side-scroll">${idBlock}<nav aria-label="Section navigation">${home + categories}</nav></div>
+    <div class="side-foot">
+      <button class="side-collapse" type="button" data-side-collapse aria-expanded="true" title="Collapse the sidebar to icons">${icon(
+        "sidebar",
+        16
+      )}<span>Collapse to icons</span></button>
+    </div>`;
+}
+
+/** The health chip: one line saying whether anything needs you. */
+function healthChip(chrome) {
+  const h = chrome && chrome.health;
+  if (!h) return "";
+  return `<a class="sys-chip ${esc(h.cls)}" href="${esc(h.href)}" data-health title="${esc(h.text)}">
+    <span class="dot${h.cls === "ok" ? "" : " " + esc(h.cls)}"></span><span class="long">${esc(h.text)}</span><span class="short">${esc(h.short)}</span></a>`;
+}
+
+/** Wall clock, in the browser's own time zone once os.js has run. */
+function clock() {
+  const now = new Date();
+  const hms = [now.getHours(), now.getMinutes(), now.getSeconds()].map((n) => String(n).padStart(2, "0")).join(":");
+  return `<div class="clock" data-clock aria-hidden="true"><b>${hms}</b><span>&nbsp;</span></div>`;
 }
 
 /**
  * @param title   browser title
  * @param body    page markup
  * @param opts    { user, csrf, active, subtitle, actions, wide, perm, dash,
- *                  pageClass, topExtra, topEnd, assets }
+ *                  pageClass, topExtra, topEnd, assets, pattern, crumbs,
+ *                  heading, headClass }
  *
+ * `pattern` is how the page uses the screen: "a" one screen (nothing but
+ * inner panels scrolls), "b" a fixed frame whose body panel scrolls, "c" a
+ * document whose column scrolls under the frame (the default).
  * `topExtra` and `topEnd` are markup the caller has already escaped, placed
  * before and after the theme switch. `assets` are extra files from public/ --
  * .css as stylesheets, .js as deferred scripts.
@@ -308,10 +382,12 @@ function shell(title, body, opts = {}) {
   }
 
   const perm = who.perm || opts.perm || null;
+  const chrome = who.chrome || null;
   const dash = dashboardFor(opts.active, who.dash || opts.dash) || "os";
   // A dashboard that carries its own navigation inside the page gets the full
   // width instead of a sidebar it would only duplicate.
   const bare = !!(NAV.find((d) => d.key === dash) || {}).noSidebar;
+  const pattern = bare ? null : ["a", "b", "c"].includes(opts.pattern) ? opts.pattern : "c";
 
   // A dashboard the actor cannot reach at all is hidden rather than shown as a
   // link into a permission error.
@@ -324,6 +400,26 @@ function shell(title, body, opts = {}) {
     )
     .join("");
 
+  const actions = [
+    opts.statusChip ? `<span class="pill nodot mono">${opts.statusChip}</span>` : "",
+    opts.actions || "",
+  ].join("");
+
+  const head =
+    !bare && opts.heading !== null
+      ? `<div class="page-head${opts.headClass ? " " + esc(opts.headClass) : ""}${opts.headArt ? " with-art" : ""}">
+           ${opts.headArt ? `<div class="head-art">${opts.headArt}</div>` : ""}
+           <div class="head-text">
+             ${renderCrumbs(opts.active, dash, opts.crumbs)}
+             <h1>${opts.headingHtml || esc(opts.heading || title)}</h1>
+             ${opts.subtitle ? `<p class="sub">${opts.subtitle}</p>` : ""}
+           </div>
+           ${actions ? `<div class="page-actions">${actions}</div>` : ""}
+         </div>`
+      : "";
+
+  const pageClass = [bare ? "" : "framed", opts.pageClass || ""].filter(Boolean).join(" ");
+
   return page(
     title,
     `<header class="topbar">
@@ -334,23 +430,24 @@ function shell(title, body, opts = {}) {
                      aria-expanded="false" aria-controls="sidebar"
                      data-nav-toggle>${icon("menu", 20)}</button>`
       }
-      <a class="brand" href="/">
-        <span class="brand-mark">${icon("overview", 20)}</span>
+      <a class="brand" href="/" aria-label="MONI AI OS home">
+        <span class="brand-mark">${icon("overview", 18)}</span>
         <span class="brand-text">MONI<em>AI OS</em></span>
       </a>
-      <nav class="top-tabs">${tabs}</nav>
+      <nav class="top-tabs" aria-label="Dashboards">${tabs}</nav>
       <div class="top-right">
-        ${opts.statusChip ? `<span class="chip">${opts.statusChip}</span>` : ""}
+        ${healthChip(chrome)}
         ${opts.topExtra || ""}
         ${themeSwitch()}
         ${opts.topEnd || ""}
+        ${clock()}
         <a class="whoami" href="/account" title="Your account">
           <span class="whoami-name">${esc(who.name)}</span>
           ${who.roleLabel ? `<span class="whoami-role">${esc(who.roleLabel)}</span>` : ""}
         </a>
         <form method="post" action="/logout" class="logout">
           <input type="hidden" name="_csrf" value="${esc(opts.csrf)}">
-          <button type="submit" title="Sign out">${icon("power")}</button>
+          <button type="submit" title="Sign out" aria-label="Sign out">${icon("power")}</button>
         </form>
       </div>
     </header>
@@ -368,24 +465,14 @@ function shell(title, body, opts = {}) {
       ${
         bare
           ? ""
-          : `<aside class="sidebar" id="sidebar">${renderSidebar(opts.active, dash, perm)}</aside>`
+          : `<aside class="sidebar" id="sidebar" aria-label="Sidebar">${renderSidebar(opts.active, dash, perm, chrome)}</aside>`
       }
-      <main class="content${opts.wide ? " wide" : ""}${bare ? " flush" : ""}">
-        ${
-          !bare && opts.heading !== null
-            ? `<div class="page-head">
-                 <div>
-                   <h1>${esc(opts.heading || title)}</h1>
-                   ${opts.subtitle ? `<p class="sub">${opts.subtitle}</p>` : ""}
-                 </div>
-                 ${opts.actions ? `<div class="page-actions">${opts.actions}</div>` : ""}
-               </div>`
-            : ""
-        }
-        ${body}
+      <main class="content${opts.wide ? " wide" : ""}${bare ? " flush" : " pat-" + pattern}">
+        ${head}
+        ${bare ? body : `<div class="frame-body${opts.fill ? " stretch" : ""}">${body}</div>`}
       </main>
     </div>`,
-    opts
+    Object.assign({}, opts, { pageClass })
   );
 }
 
@@ -419,9 +506,11 @@ function page(title, inner, opts = {}) {
 <link rel="alternate icon" href="/favicon.ico" sizes="48x48 32x32 16x16">
 <link rel="apple-touch-icon" href="${asset("favicon.svg")}">
 ${theme}<link rel="stylesheet" href="${asset("style.css")}">
+<link rel="stylesheet" href="${asset("os.css")}">
 ${css}
 <script src="${asset("app.js")}" defer></script>
 <script src="${asset("console.js")}" defer></script>
+<script src="${asset("os.js")}" defer></script>
 ${js}
 </head><body>
 ${inner}
@@ -507,7 +596,7 @@ function stat(value, label, iconName) {
 }
 
 function card(title, body, opts = {}) {
-  return `<section class="card${opts.className ? " " + opts.className : ""}">
+  return `<section class="card${opts.className ? " " + opts.className : ""}"${opts.id ? ` id="${esc(opts.id)}"` : ""}>
     ${
       title
         ? `<div class="card-head"><h2>${
@@ -515,8 +604,25 @@ function card(title, body, opts = {}) {
           }${esc(title)}</h2>${opts.actions || ""}</div>`
         : ""
     }
-    ${body}
+    ${opts.bodyClass ? `<div class="${esc(opts.bodyClass)}">${body}</div>` : body}
   </section>`;
+}
+
+/**
+ * A document page with a sticky side column (pattern C): the main column
+ * scrolls with the page, the side stays in view.
+ */
+function docLayout(main, side) {
+  return `<div class="doc-grid"><div class="doc-main">${main}</div><aside class="doc-side">${side}</aside></div>`;
+}
+
+/** "On this page": links to the sections of a document, highlighted by os.js. */
+function tocCard(items, title) {
+  if (!items.length) return "";
+  return `<section class="card"><div class="card-head"><h2>${esc(title || "On this page")}</h2></div>
+    <ul class="toc-list" data-toc>${items
+      .map(([id, label], i) => `<li><a href="#${esc(id)}"${i === 0 ? ' class="on"' : ""}>${esc(label)}</a></li>`)
+      .join("")}</ul></section>`;
 }
 
 function flashes({ msg, err }) {
@@ -559,6 +665,8 @@ function empty(iconName, title, body) {
 }
 
 module.exports = {
+  docLayout,
+  tocCard,
   esc,
   bytes,
   duration,

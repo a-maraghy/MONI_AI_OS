@@ -39,6 +39,7 @@ const moniai = require("./lib/moniai");
 const rbac = require("./lib/rbac");
 const totp = require("./lib/totp");
 const voice = require("./lib/voice");
+const chrome = require("./lib/chrome");
 
 const PORT = Number(process.env.MONI_PORT || 3000);
 const BIND = process.env.MONI_BIND || "127.0.0.1";
@@ -230,6 +231,16 @@ function loadActor(req, res, next) {
 }
 app.use(loadActor);
 
+// The frame's badges and health chip, from a shared 30-second cache (see
+// lib/chrome.js). A change made through the panel forgets the cache, so the
+// page it redirects to counts what is true now rather than half a minute ago.
+chrome.configure({ priv, db, catalog });
+app.use((req, res, next) => {
+  if (req.method === "POST") chrome.invalidate();
+  next();
+});
+app.use(chrome.middleware());
+
 function requireAuth(req, res, next) {
   if (req.me) return next();
   return res.redirect("/login");
@@ -242,6 +253,7 @@ function ctx(req, dash) {
     roleLabel: req.me && req.me.role ? req.me.role.label : null,
     perm: req.perm,
     dash: dash || null,
+    chrome: req.chrome || null,
   };
 }
 

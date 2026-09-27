@@ -14,4 +14,14 @@
   } catch (e) {
     /* storage blocked: System it is */
   }
+  // The sidebar collapsed to icons is remembered the same way, and applied
+  // before paint for the same reason: a rail that visibly shrinks on every
+  // page load reads as the page jumping.
+  try {
+    if (window.localStorage.getItem("moni-side") === "collapsed") {
+      document.documentElement.setAttribute("data-side", "collapsed");
+    }
+  } catch (e) {
+    /* storage blocked: the sidebar stays open */
+  }
 })();
