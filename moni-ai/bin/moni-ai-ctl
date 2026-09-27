@@ -1,0 +1,60 @@
+#!/usr/bin/env node
+"use strict";
+/**
+ * moni-ai-ctl: talk to the MONI AI supervisor from a shell.
+ *
+ *   moni-ai-ctl status
+ *   moni-ai-ctl sessions
+ *   moni-ai-ctl send '{"text":"What is running right now?"}'
+ *   moni-ai-ctl approve '{"approval_id":3}'
+ *   moni-ai-ctl ledger '{"table":"delegations","limit":10}'
+ *   moni-ai-ctl events '{"since":0}'        (streams until Ctrl-C)
+ *
+ * Root or a member of the moniai group. The actor recorded in the audit log is
+ * $MONI_AI_ACTOR, else the invoking user ("cli:<user>").
+ */
+const net = require("net");
+const os = require("os");
+
+const SOCKET = process.env.MONI_AI_SOCKET || "/run/moni-ai/moni-ai.sock";
+const [op, json] = process.argv.slice(2);
+if (!op || op === "-h" || op === "--help") {
+  console.log("usage: moni-ai-ctl <op> [json-params]\nops: ping status sessions rc-url events ledger send interrupt approve deny rc restart");
+  process.exit(op ? 0 : 2);
+}
+let params = {};
+try {
+  params = json ? JSON.parse(json) : {};
+} catch (e) {
+  console.error("params must be JSON: " + e.message);
+  process.exit(2);
+}
+const who = (process.env.SUDO_USER || os.userInfo().username || "unknown").replace(/[^A-Za-z0-9._@-]/g, "");
+const actor = process.env.MONI_AI_ACTOR || "cli." + who;
+const sock = net.createConnection(SOCKET);
+sock.setEncoding("utf8");
+sock.on("error", (e) => {
+  console.error(`cannot reach ${SOCKET}: ${e.message}`);
+  process.exit(1);
+});
+sock.on("connect", () => sock.write(JSON.stringify({ id: "ctl", op, actor, ...params }) + "\n"));
+let buf = "";
+sock.on("data", (c) => {
+  buf += c;
+  let nl;
+  while ((nl = buf.indexOf("\n")) !== -1) {
+    const line = buf.slice(0, nl);
+    buf = buf.slice(nl + 1);
+    const msg = JSON.parse(line);
+    if (msg.event) {
+      console.log(JSON.stringify(msg.event));
+      continue;
+    }
+    if (!msg.ok) {
+      console.error("error: " + msg.error);
+      process.exit(1);
+    }
+    console.log(JSON.stringify(msg.data, null, 2));
+    if (op !== "events") process.exit(0);
+  }
+});
