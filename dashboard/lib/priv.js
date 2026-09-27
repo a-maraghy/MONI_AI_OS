@@ -29,6 +29,7 @@ const MAX_OUTPUT = 8 * 1024 * 1024;
 const SECRET_PATTERNS = [
   [/\b\d{6,12}:[A-Za-z0-9_-]{30,60}\b/g, "«bot-token»"],
   [/\bsk-ant-[A-Za-z0-9_-]{20,}/g, "«anthropic-key»"],
+  [/\bsk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{20,}/g, "«openai-key»"],
   [/\bsk-[A-Za-z0-9]{32,}/g, "«api-key»"],
   [/\bgh[pousr]_[A-Za-z0-9]{20,}/g, "«github-token»"],
   [/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z0-9 ]*PRIVATE KEY-----|$)/g, "«private-key»"],
@@ -253,13 +254,15 @@ module.exports = {
       timeout: 60000,
     }),
 
-  // Whisper on a long recording is not quick, and the alternative to waiting is
-  // an error the person cannot act on.
-  consoleTranscribe: (path) =>
-    callHelper("console-transcribe", [], {
-      stdin: JSON.stringify({ path }),
-      timeout: 300000,
-    }),
+  /* ------------------------------------------------------- openai voice -- */
+  // The key goes in over stdin, never argv. voiceKeyRead is the only call that
+  // returns it, and only the server's voice config cache uses it.
+  voiceStatus: () => callHelper("voice-status"),
+  voiceKeyRead: () => callHelper("voice-key-read"),
+  voiceKeySet: (value) => callHelper("voice-key-set", [], { stdin: value }),
+  voiceKeyClear: () => callHelper("voice-key-clear"),
+  voiceOptionsSet: (model, voice, transcribeModel) =>
+    callHelper("voice-options-set", [model, voice, transcribeModel]),
 
   /* ---------------------------------------------------------- claude code -- */
 

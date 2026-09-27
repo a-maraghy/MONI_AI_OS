@@ -76,6 +76,11 @@ const PERMISSION_GROUPS = [
     perms: [
       { key: "credentials.view", label: "View credential state", hint: "Never shows a secret value." },
       { key: "credentials.edit", label: "Set and clear credentials", hint: "Affects every agent at once." },
+      {
+        key: "voice.manage",
+        label: "Manage the OpenAI voice key",
+        hint: "Set, test and remove the key the panel's voice uses. Spends money on OpenAI; administrators only by default.",
+      },
       { key: "keys.view", label: "View SSH keys" },
       { key: "keys.manage", label: "Add and remove SSH keys", hint: "This is shell access to the host." },
       { key: "devices.view", label: "View paired devices" },
@@ -174,6 +179,7 @@ const IMPLIES = {
   "firewall.view": ["os.view"],
   "firewall.manage": ["firewall.view", "os.view"],
   "credentials.edit": ["credentials.view"],
+  "voice.manage": ["credentials.view"],
   "keys.manage": ["keys.view"],
   "devices.manage": ["devices.view"],
   "users.manage": ["users.view", "roles.view"],

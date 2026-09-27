@@ -2385,6 +2385,146 @@ def cmd_credential_list(args):
     ok(out)
 
 
+# ========================================================== OpenAI voice ====
+#
+# The key the panel's voice uses: OpenAI's realtime model speaks MONI AI's
+# replies and OpenAI's transcription model hears the person. Voice only --
+# Claude does the thinking, so this key never reaches an agent or a model.
+#
+# Its own file rather than a CREDENTIAL_FILES entry: those are shared with every
+# agent (group moniagent, restart-all on write), and this one is the panel's
+# alone. root:root 0600 in a root-only directory under /var/lib (ProtectSystem
+# makes /etc read-only to anything the panel's unit spawns). The value arrives
+# on stdin, is never echoed back except by voice-key-read, and is never audited.
+#
+# This is deliberately a different credential from /etc/odoo/openai_key, which
+# belongs to the Odoo walkthrough and is not read here.
+
+VOICE_DIR = "/var/lib/moni-voice"
+VOICE_FILE = os.path.join(VOICE_DIR, "openai-voice.env")
+OPENAI_KEY_RE = re.compile(r"^sk-[A-Za-z0-9_\-]{20,300}$")
+VOICE_MODEL_RE = re.compile(r"^gpt-(realtime|live)[a-z0-9.\-]{0,40}$")
+VOICE_NAME_RE = re.compile(r"^[a-z]{2,20}$")
+VOICE_TRANSCRIBE_RE = re.compile(r"^gpt-4o(-mini)?-transcribe[a-z0-9.\-]{0,30}$")
+VOICE_DEFAULTS = {
+    "OPENAI_VOICE_MODEL": "gpt-realtime-mini",
+    "OPENAI_VOICE_NAME": "marin",
+    "OPENAI_TRANSCRIBE_MODEL": "gpt-4o-mini-transcribe",
+}
+
+
+def _voice_read():
+    values = {}
+    if os.path.isfile(VOICE_FILE):
+        with open(VOICE_FILE, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                key, _, value = line.partition("=")
+                values[key.strip()] = value.strip()
+    return values
+
+
+def _voice_write(values):
+    os.makedirs(VOICE_DIR, mode=0o700, exist_ok=True)
+    os.chown(VOICE_DIR, 0, 0)
+    os.chmod(VOICE_DIR, 0o700)
+    lines = ["# MONI dashboard voice (OpenAI). Written by moni-helper; root only."]
+    for key in ("OPENAI_API_KEY", "OPENAI_VOICE_MODEL", "OPENAI_VOICE_NAME", "OPENAI_TRANSCRIBE_MODEL"):
+        if values.get(key):
+            lines.append(key + "=" + values[key])
+    fd, tmp = tempfile.mkstemp(dir=VOICE_DIR)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(lines) + "\n")
+        os.chown(tmp, 0, 0)
+        os.replace(tmp, VOICE_FILE)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+
+
+def _voice_options(values):
+    return {
+        "model": values.get("OPENAI_VOICE_MODEL") or VOICE_DEFAULTS["OPENAI_VOICE_MODEL"],
+        "voice": values.get("OPENAI_VOICE_NAME") or VOICE_DEFAULTS["OPENAI_VOICE_NAME"],
+        "transcribe_model": values.get("OPENAI_TRANSCRIBE_MODEL") or VOICE_DEFAULTS["OPENAI_TRANSCRIBE_MODEL"],
+    }
+
+
+def cmd_voice_status(args):
+    """Whether a key is set, and enough to recognise it: its last four characters."""
+    values = _voice_read()
+    key = values.get("OPENAI_API_KEY", "")
+    st = os.stat(VOICE_FILE) if os.path.isfile(VOICE_FILE) else None
+    out = {
+        "configured": bool(key),
+        "last4": key[-4:] if len(key) >= 12 else None,
+        "length": len(key) if key else 0,
+        "path": VOICE_FILE,
+        "mode": oct(st.st_mode & 0o777) if st else None,
+        "modified": datetime.fromtimestamp(st.st_mtime, timezone.utc).isoformat(timespec="seconds") if st else None,
+    }
+    out.update(_voice_options(values))
+    ok(out)
+
+
+def cmd_voice_key_read(args):
+    """The key itself, for the panel's own process, which makes the calls.
+
+    The one place the value leaves this file. The panel keeps it in memory and
+    never renders, logs or returns it; no route calls this on a browser's behalf.
+    """
+    values = _voice_read()
+    out = {"key": values.get("OPENAI_API_KEY") or None}
+    out.update(_voice_options(values))
+    ok(out)
+
+
+def cmd_voice_key_set(args):
+    """Store the OpenAI key. Value on stdin, never argv."""
+    value = read_stdin_text().strip()
+    if not value:
+        fail("empty value; use voice-key-clear to remove the key")
+    if value.startswith("sk-ant-"):
+        fail("that is an Anthropic key; the voice needs an OpenAI key (sk-…)")
+    if not OPENAI_KEY_RE.match(value):
+        fail("that does not look like an OpenAI API key (expected sk-…)")
+    values = _voice_read()
+    values["OPENAI_API_KEY"] = value
+    _voice_write(values)
+    audit("voice-key-set", {"last4": value[-4:], "length": len(value)})
+    ok({"configured": True, "last4": value[-4:]})
+
+
+def cmd_voice_key_clear(args):
+    values = _voice_read()
+    had = bool(values.pop("OPENAI_API_KEY", None))
+    _voice_write(values)
+    audit("voice-key-clear", {"had_key": had})
+    ok({"configured": False})
+
+
+def cmd_voice_options_set(args):
+    """voice-options-set <model> <voice> <transcribe-model>"""
+    if len(args) != 3:
+        fail("usage: voice-options-set <model> <voice> <transcribe-model>")
+    model, voice, transcribe = args
+    if not VOICE_MODEL_RE.match(model):
+        fail("not a realtime or live model id: " + repr(model[:60]))
+    if not VOICE_NAME_RE.match(voice):
+        fail("not a voice name: " + repr(voice[:30]))
+    if not VOICE_TRANSCRIBE_RE.match(transcribe):
+        fail("not a transcription model id: " + repr(transcribe[:60]))
+    values = _voice_read()
+    values.update({"OPENAI_VOICE_MODEL": model, "OPENAI_VOICE_NAME": voice, "OPENAI_TRANSCRIBE_MODEL": transcribe})
+    _voice_write(values)
+    audit("voice-options-set", {"model": model, "voice": voice, "transcribe_model": transcribe})
+    ok(_voice_options(values))
+
+
 # =============================================================== probing =====
 
 
@@ -2891,55 +3031,6 @@ def cmd_console_upload(args):
     os.chmod(path, 0o600)
 
     ok({"path": path, "name": name, "bytes": len(data)})
-
-
-def cmd_console_transcribe(args):
-    """Turn a recorded voice note into text with the local whisper build.
-
-    Local rather than an API: whisper.cpp is already on this machine for the
-    agents' voice notes, and a message dictated to your own server has no
-    business making a round trip to somebody else's.
-    """
-    payload = read_stdin_json()
-    path = str(payload.get("path") or "")
-    if not path.startswith(CONSOLE_UPLOADS + os.sep) or ".." in path:
-        fail("that file is not a console attachment")
-    if not os.path.isfile(path):
-        fail("no such attachment")
-
-    binary = os.path.join(SHARED_DIR, "whisper.cpp", "build", "bin", "whisper-cli")
-    model = os.path.join(SHARED_DIR, "whisper.cpp", "models", "ggml-base.bin")
-    if not os.path.isfile(binary) or not os.path.isfile(model):
-        fail("voice transcription is not installed on this host")
-
-    # whisper.cpp wants 16 kHz mono PCM; browsers record webm/opus.
-    wav = path + ".16k.wav"
-    convert = run(
-        ["ffmpeg", "-nostdin", "-y", "-i", path, "-ar", "16000", "-ac", "1", "-f", "wav", wav],
-        timeout=120,
-    )
-    if convert.returncode != 0 or not os.path.isfile(wav):
-        fail("could not decode that recording")
-
-    try:
-        result = run([binary, "-m", model, "-f", wav, "-nt", "-np", "-otxt", "-of", wav], timeout=300)
-        text = ""
-        transcript = wav + ".txt"
-        if os.path.isfile(transcript):
-            with open(transcript, encoding="utf-8", errors="replace") as fh:
-                text = fh.read().strip()
-        if not text:
-            text = (result.stdout or "").strip()
-    finally:
-        for tmp in (wav, wav + ".txt"):
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-
-    if not text:
-        fail("nothing was said, or it could not be made out")
-    ok({"text": text[:20000]})
 
 
 def cmd_console_dirs(args):
@@ -4834,11 +4925,15 @@ COMMANDS = {
     "credential-get": cmd_credential_get,
     "credential-set": cmd_credential_set,
     "credential-clear": cmd_credential_clear,
+    "voice-status": cmd_voice_status,
+    "voice-key-read": cmd_voice_key_read,
+    "voice-key-set": cmd_voice_key_set,
+    "voice-key-clear": cmd_voice_key_clear,
+    "voice-options-set": cmd_voice_options_set,
     "system-probe": cmd_system_probe,
     "console-open": cmd_console_open,
     "console-dirs": cmd_console_dirs,
     "console-upload": cmd_console_upload,
-    "console-transcribe": cmd_console_transcribe,
     # Claude Code: memory
     "cc-memory-stats": cmd_cc_memory_stats,
     "cc-memory-search": cmd_cc_memory_search,
