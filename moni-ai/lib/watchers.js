@@ -16,8 +16,10 @@
  * Flood control, so a flapping service cannot swamp MONI AI:
  *   - de-duplication: one open card per (watcher, subject); a repeat only bumps
  *     its count and last-seen time;
- *   - cooldown: after a card is closed (dismissed, done, failed) the same
- *     (watcher, subject) stays quiet for cooldown_s;
+ *   - cooldown: after a card is closed (done, failed) the same (watcher,
+ *     subject) stays quiet for cooldown_s; after a Dismiss, for
+ *     dismiss_quiet_s (a day), so a condition that persists does not return
+ *     every half hour;
  *   - rate limit: at most max_investigations_per_hour MONI AI turns; past that
  *     the card is still raised, marked rate-limited, with an Investigate button.
  *
@@ -77,6 +79,9 @@ class Watchers {
     this.onFire = onFire;
     this.onBump = onBump;
     this.cooldownMs = (cfg.watcher_cooldown_s || 1800) * 1000;
+    // Dismissed means "I know, leave it": a condition that persists (an Odoo
+    // cron failing every minute) must not come back every half hour.
+    this.dismissQuietMs = (cfg.watcher_dismiss_quiet_s || 86400) * 1000;
     this.maxPerHour = cfg.watcher_max_investigations_per_hour || 4;
     this.windows = { bans: [], starts: new Map(), odoo: [] };
     this.states = new Map(); // key -> state text for the page
@@ -148,7 +153,8 @@ class Watchers {
     const closed = db
       .prepare(`SELECT * FROM decisions WHERE watcher = ? AND subject = ? AND status NOT IN (${OPEN.map(() => "?").join(",")}) ORDER BY id DESC LIMIT 1`)
       .get(key, subject, ...OPEN);
-    if (closed && this.now() - Date.parse(closed.updated_at) < this.cooldownMs) {
+    const quiet = closed && closed.status === "dismissed" ? Math.max(this.dismissQuietMs, this.cooldownMs) : this.cooldownMs;
+    if (closed && this.now() - Date.parse(closed.updated_at) < quiet) {
       return { decision: closed, created: false, skipped: "cooldown" };
     }
     const hourAgo = new Date(this.now() - 3600000).toISOString();

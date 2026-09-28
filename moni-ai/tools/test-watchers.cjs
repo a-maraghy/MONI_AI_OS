@@ -68,8 +68,8 @@ const before = fired.length;
 r = w.observeServices([{ unit: "moni-agent@admin", active: "failed" }]);
 check("a still-failed unit does not raise a second card", !r[0].created && r[0].skipped === "duplicate" && fired.length === before);
 check("it bumps the open card's count", r[0].decision.count === 2 && bumped.length >= 1);
-// close the card, then it recurs
-ledger.update("decisions", r[0].decision.id, { status: "dismissed", updated_at: at(clock) });
+// close the card (fixed), then it recurs
+ledger.update("decisions", r[0].decision.id, { status: "done", updated_at: at(clock) });
 clock += 5 * 60000;
 r = w.observeServices([{ unit: "moni-agent@admin", active: "failed" }]);
 check("within the cooldown a closed subject stays quiet", !r[0].created && r[0].skipped === "cooldown");
@@ -88,6 +88,16 @@ clock += 3600000 + 1000;
 r = w.fire("service_failed", "ssh", { title: "ssh failed" });
 check("an hour later investigations resume", r.created && r.investigate === true);
 
+// a dismissed card keeps its subject quiet for a day, not the cooldown
+{
+  const x = w.fire("disk", "/data", { title: "t" });
+  ledger.update("decisions", x.decision.id, { status: "dismissed", updated_at: at(clock) });
+  clock += 20 * 60000;
+  check("after a Dismiss the cooldown alone does not bring it back", w.fire("disk", "/data", { title: "t" }).skipped === "cooldown");
+  clock += 24 * 3600000;
+  check("a day after a Dismiss it can fire again", w.fire("disk", "/data", { title: "t" }).created);
+}
+
 /* ------------------------------------------------------ switch + restart --- */
 w.set("odoo_errors", false, "amaraghy");
 w = mk(); // a new supervisor on the same ledger
@@ -95,7 +105,7 @@ check("the switch survives a restart", w.get("odoo_errors").enabled === false &&
 check("a switched-off watcher never fires", w.observeOdooLines(errs(9)).every((x) => x.skipped === "disabled"));
 r = w.observeServices([{ unit: "ssh", active: "failed" }]);
 check("an open card survives a restart: no second card", !r[0].created && r[0].skipped === "duplicate");
-check("fired_24h counts hits", w.get("service_failed").fired_24h >= 3);
+check("fired_24h counts recent hits", w.get("service_failed").fired_24h >= 2, String(w.get("service_failed").fired_24h));
 check("unknown watcher refused", (() => {
   try {
     w.set("nope", true, "x");
