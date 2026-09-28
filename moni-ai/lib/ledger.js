@@ -94,6 +94,164 @@ CREATE TABLE IF NOT EXISTS turns (
   error           TEXT
 );
 
+CREATE TABLE IF NOT EXISTS missions (
+  id              INTEGER PRIMARY KEY,
+  title           TEXT NOT NULL,
+  goal            TEXT,
+  status          TEXT NOT NULL,
+  created_by      TEXT,
+  turn_id         INTEGER,
+  created_at      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL,
+  done_at         TEXT
+);
+
+CREATE TABLE IF NOT EXISTS steps (
+  id              INTEGER PRIMARY KEY,
+  mission_id      INTEGER NOT NULL REFERENCES missions(id),
+  n               INTEGER NOT NULL,
+  title           TEXT NOT NULL,
+  detail          TEXT,
+  target          TEXT,
+  status          TEXT NOT NULL,
+  delegation_id   INTEGER,
+  approval_id     INTEGER,
+  result          TEXT,
+  note            TEXT,
+  created_at      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL,
+  started_at      TEXT,
+  done_at         TEXT,
+  UNIQUE (mission_id, n)
+);
+
+CREATE TABLE IF NOT EXISTS mission_turns (
+  mission_id      INTEGER NOT NULL,
+  turn_id         INTEGER NOT NULL,
+  PRIMARY KEY (mission_id, turn_id)
+);
+
+CREATE TABLE IF NOT EXISTS decisions (
+  id              INTEGER PRIMARY KEY,
+  kind            TEXT NOT NULL,
+  watcher         TEXT,
+  subject         TEXT,
+  title           TEXT NOT NULL,
+  detail          TEXT,
+  evidence        TEXT,
+  proposal        TEXT,
+  fix_command     TEXT,
+  status          TEXT NOT NULL,
+  count           INTEGER NOT NULL DEFAULT 1,
+  first_seen      TEXT NOT NULL,
+  last_seen       TEXT NOT NULL,
+  created_at      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL,
+  decided_by      TEXT,
+  decided_at      TEXT,
+  turn_id         INTEGER,
+  fix_turn_id     INTEGER,
+  result          TEXT,
+  rate_limited    INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS decisions_key ON decisions(watcher, subject, status);
+
+CREATE TABLE IF NOT EXISTS watchers (
+  key             TEXT PRIMARY KEY,
+  enabled         INTEGER NOT NULL,
+  updated_by      TEXT,
+  updated_at      TEXT NOT NULL,
+  last_fired_at   TEXT,
+  state_text      TEXT
+);
+
+CREATE TABLE IF NOT EXISTS orders (
+  id              INTEGER PRIMARY KEY,
+  name            TEXT NOT NULL,
+  kind            TEXT NOT NULL,
+  at              TEXT,
+  dow             INTEGER,
+  every_h         INTEGER,
+  cron            TEXT NOT NULL,
+  tz              TEXT NOT NULL,
+  target          TEXT NOT NULL,
+  prompt          TEXT NOT NULL,
+  delivery        TEXT NOT NULL,
+  paused          INTEGER NOT NULL DEFAULT 0,
+  seed_key        TEXT UNIQUE,
+  last_run_at     TEXT,
+  last_status     TEXT,
+  last_result     TEXT,
+  next_run_at     TEXT,
+  created_by      TEXT,
+  created_at      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS order_runs (
+  id              INTEGER PRIMARY KEY,
+  order_id        INTEGER NOT NULL,
+  scheduled_for   TEXT,
+  started_at      TEXT NOT NULL,
+  ended_at        TEXT,
+  turn_id         INTEGER,
+  status          TEXT NOT NULL,
+  result          TEXT,
+  manual          INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS rules (
+  id              INTEGER PRIMARY KEY,
+  effect          TEXT NOT NULL,
+  tool            TEXT NOT NULL,
+  pattern         TEXT NOT NULL,
+  note            TEXT,
+  builtin         INTEGER NOT NULL DEFAULT 0,
+  builtin_key     TEXT UNIQUE,
+  scope_session   TEXT,
+  scope_machine   TEXT,
+  created_by      TEXT,
+  created_at      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL,
+  uses            INTEGER NOT NULL DEFAULT 0,
+  last_used_at    TEXT,
+  source_approval_id INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS settings (
+  key             TEXT PRIMARY KEY,
+  value           TEXT,
+  updated_by      TEXT,
+  updated_at      TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS cost_daily (
+  session_id      TEXT NOT NULL,
+  day             TEXT NOT NULL,
+  model           TEXT NOT NULL,
+  input           INTEGER NOT NULL DEFAULT 0,
+  output          INTEGER NOT NULL DEFAULT 0,
+  cache_write     INTEGER NOT NULL DEFAULT 0,
+  cache_read      INTEGER NOT NULL DEFAULT 0,
+  usd             REAL NOT NULL DEFAULT 0,
+  PRIMARY KEY (session_id, day, model)
+);
+
+CREATE TABLE IF NOT EXISTS cost_files (
+  path            TEXT PRIMARY KEY,
+  ino             INTEGER,
+  off             INTEGER NOT NULL,
+  last_msg        TEXT,
+  updated_at      TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS cost_names (
+  session_id      TEXT PRIMARY KEY,
+  name            TEXT,
+  cwd             TEXT,
+  updated_at      TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS audit (
   id              INTEGER PRIMARY KEY,
   at              TEXT NOT NULL,
@@ -112,12 +270,26 @@ class Ledger {
     fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
     this.db = new DatabaseSync(file);
     this.db.exec(SCHEMA);
+    this.migrate();
     try {
       fs.chmodSync(file, 0o600);
     } catch (_) {
       /* not ours to fix if it fails */
     }
     this.q = {};
+  }
+
+  /** Columns added after the first release; ALTER is idempotent by probing. */
+  migrate() {
+    const add = {
+      turns: ["order_id INTEGER", "mission_id INTEGER", "decision_id INTEGER", "proc_start TEXT", "cost_delta_usd REAL"],
+      delegations: ["mission_id INTEGER", "step_id INTEGER"],
+      approvals: ["mission_id INTEGER", "step_id INTEGER", "decision_id INTEGER", "rule_id INTEGER"],
+    };
+    for (const [table, cols] of Object.entries(add)) {
+      const have = new Set(this.db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name));
+      for (const c of cols) if (!have.has(c.split(" ")[0])) this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${c}`);
+    }
   }
 
   prep(sql) {
@@ -131,10 +303,10 @@ class Ledger {
 
   /* ------------------------------------------------------------- turns --- */
 
-  addTurn({ uuid, source, actor, text, target, status }) {
+  addTurn({ uuid, source, actor, text, target, status, order_id, mission_id, decision_id }) {
     const r = this.prep(
-      "INSERT INTO turns (uuid, source, actor, text, target, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
-    ).run(uuid || null, source, actor || null, text, target || null, status || "queued", now());
+      "INSERT INTO turns (uuid, source, actor, text, target, status, created_at, order_id, mission_id, decision_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    ).run(uuid || null, source, actor || null, text, target || null, status || "queued", now(), order_id || null, mission_id || null, decision_id || null);
     return this.get("turns", Number(r.lastInsertRowid));
   }
   turnByUuid(uuid) {

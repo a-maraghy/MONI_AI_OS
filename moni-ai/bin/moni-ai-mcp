@@ -1,0 +1,242 @@
+#!/usr/bin/env node
+"use strict";
+/**
+ * moni-ai-mcp: MONI AI's own tools, as a stdio MCP server.
+ *
+ * The supervisor starts MONI AI with this server in --mcp-config. Each tool is
+ * one call to the supervisor's control socket as actor "moni-ai", so the
+ * supervisor validates it, records it in the ledger, audits it and pushes it
+ * to the Command Center. Nothing here touches the machine: missions and
+ * decisions are MONI AI's record of what it plans and proposes.
+ *
+ * Tools
+ *   mission_create        a multi-step goal with its steps
+ *   mission_step_add      another step
+ *   mission_step_update   a step's status / target / result
+ *   mission_update        close a mission (done, failed, cancelled) or retitle it
+ *   mission_list          open missions (or all)
+ *   mission_get           one mission with its steps
+ *   decision_propose      the finding and fix for a watcher's decision card
+ *   decision_update       the result of running an approved fix
+ *
+ * Plain JSON-RPC 2.0 over newline-delimited stdio (MCP's stdio transport).
+ */
+const net = require("net");
+const readline = require("readline");
+
+const SOCKET = process.env.MONI_AI_SOCKET || "/run/moni-ai/moni-ai.sock";
+const STEP_STATUSES = ["planned", "delegated", "working", "waiting_approval", "done", "failed", "skipped"];
+const missionId = { type: "string", description: 'The mission, e.g. "M-12".' };
+
+const TOOLS = [
+  {
+    name: "mission_create",
+    op: "mission-create",
+    description:
+      "Create a mission for a multi-step goal and record its steps. Use it whenever a goal needs more than one delegation or more than one session. " +
+      'Each step names who does it: a live session\'s name, or "moni-ai" for a step you do yourself. Returns the mission with its id (M-<n>). ' +
+      'Then delegate each step with "M-<n> step <k>" in the first line of the message, so the Command Center links the delegation to the step.',
+    inputSchema: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "Short title, under 80 characters." },
+        goal: { type: "string", description: "The goal in one or two sentences, as the administrator gave it." },
+        steps: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: { title: { type: "string" }, detail: { type: "string" }, target: { type: "string", description: 'Session name, or "moni-ai".' } },
+            required: ["title"],
+            additionalProperties: false,
+          },
+        },
+      },
+      required: ["title", "goal", "steps"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "mission_step_add",
+    op: "mission-step-add",
+    description: "Add a step to an open mission (numbered after the last one).",
+    inputSchema: {
+      type: "object",
+      properties: { mission_id: missionId, title: { type: "string" }, detail: { type: "string" }, target: { type: "string" } },
+      required: ["mission_id", "title"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "mission_step_update",
+    op: "mission-step-update",
+    description:
+      "Update one step: its status (" +
+      STEP_STATUSES.join(", ") +
+      "), target, result or note. Delegations tagged with the step move it automatically (sent -> delegated, working, done); " +
+      "set it yourself for steps you do, to record a result, or to mark a step done, failed or skipped.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        mission_id: missionId,
+        step: { type: "integer", minimum: 1 },
+        status: { type: "string", enum: STEP_STATUSES },
+        target: { type: "string" },
+        result: { type: "string", description: "One or two lines: what the step produced." },
+        note: { type: "string" },
+      },
+      required: ["mission_id", "step"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "mission_update",
+    op: "mission-update",
+    description: "Close a mission (done, failed, cancelled) or change its title. A mission is marked done by itself when every step is done or skipped.",
+    inputSchema: {
+      type: "object",
+      properties: { mission_id: missionId, status: { type: "string", enum: ["planned", "active", "done", "failed", "cancelled"] }, title: { type: "string" } },
+      required: ["mission_id"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "mission_list",
+    op: "missions",
+    description: "List missions with their steps: the open ones by default, or all.",
+    inputSchema: { type: "object", properties: { status: { type: "string", enum: ["active", "all"] } }, additionalProperties: false },
+    defaults: { status: "active" },
+  },
+  {
+    name: "mission_get",
+    op: "mission",
+    description: "One mission with its steps and metrics.",
+    inputSchema: { type: "object", properties: { mission_id: missionId }, required: ["mission_id"], additionalProperties: false },
+  },
+  {
+    name: "decision_propose",
+    op: "decision-propose",
+    description:
+      "After investigating a watcher alert (a turn that starts with [Watcher: … · decision #N]), record what you found and the fix you propose. " +
+      "It appears as a decision card with Approve / Dismiss / Ask more. Do not run the fix yourself: you will be asked to once it is approved. " +
+      "Leave fix_command out when nothing needs doing.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        decision_id: { type: "integer", minimum: 1 },
+        summary: { type: "string", description: "The cause and what the fix does, in two or three short sentences." },
+        evidence: { type: "string", description: "The log lines or output you relied on (a few lines)." },
+        fix_command: { type: "string", description: "The exact shell command(s) you would run." },
+      },
+      required: ["decision_id", "summary"],
+      additionalProperties: false,
+    },
+  },
+  {
+    name: "decision_update",
+    op: "decision-update",
+    description: "After running an approved fix, record whether it worked.",
+    inputSchema: {
+      type: "object",
+      properties: { decision_id: { type: "integer", minimum: 1 }, status: { type: "string", enum: ["done", "failed"] }, result: { type: "string" } },
+      required: ["decision_id", "status"],
+      additionalProperties: false,
+    },
+  },
+];
+
+let n = 0;
+function call(op, params) {
+  return new Promise((resolve, reject) => {
+    const s = net.createConnection(SOCKET);
+    let buf = "";
+    const timer = setTimeout(() => {
+      s.destroy();
+      reject(new Error("the MONI AI supervisor did not answer"));
+    }, 20000);
+    s.setEncoding("utf8");
+    s.on("error", (e) => {
+      clearTimeout(timer);
+      reject(new Error("cannot reach the MONI AI supervisor: " + e.message));
+    });
+    s.on("connect", () => s.write(JSON.stringify({ id: "mcp" + ++n, op, actor: "moni-ai", ...params }) + "\n"));
+    s.on("data", (c) => {
+      buf += c;
+      const nl = buf.indexOf("\n");
+      if (nl === -1) return;
+      clearTimeout(timer);
+      s.destroy();
+      let msg;
+      try {
+        msg = JSON.parse(buf.slice(0, nl));
+      } catch (_) {
+        return reject(new Error("unreadable reply"));
+      }
+      if (msg.ok) resolve(msg.data);
+      else reject(new Error(msg.error || "refused"));
+    });
+  });
+}
+
+/** Keep tool results short: the model needs ids and statuses, not everything. */
+function brief(data) {
+  const m = data && data.mission;
+  const one = (x) => ({
+    id: x.ref,
+    title: x.title,
+    status: x.status,
+    steps: (x.steps || []).map((s) => ({ step: s.n, title: s.title, target: s.target, status: s.status, result: s.result || undefined })),
+  });
+  if (m) return one(m);
+  if (data && Array.isArray(data.missions)) return data.missions.map(one);
+  if (data && data.decision) return { decision: data.decision.id, status: data.decision.status };
+  return data;
+}
+
+const out = (o) => process.stdout.write(JSON.stringify(o) + "\n");
+
+async function onMessage(msg) {
+  const { id, method, params } = msg;
+  if (method === "initialize") {
+    return out({
+      jsonrpc: "2.0",
+      id,
+      result: {
+        protocolVersion: (params && params.protocolVersion) || "2025-06-18",
+        capabilities: { tools: {} },
+        serverInfo: { name: "moni-ai", version: "1.0.0" },
+        instructions: "MONI AI's missions and decision proposals, recorded by the supervisor and shown in the Command Center.",
+      },
+    });
+  }
+  if (method === "notifications/initialized" || (method && method.startsWith("notifications/"))) return;
+  if (method === "ping") return out({ jsonrpc: "2.0", id, result: {} });
+  if (method === "tools/list") return out({ jsonrpc: "2.0", id, result: { tools: TOOLS.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })) } });
+  if (method === "tools/call") {
+    const tool = TOOLS.find((t) => t.name === (params && params.name));
+    if (!tool) return out({ jsonrpc: "2.0", id, error: { code: -32602, message: "unknown tool" } });
+    try {
+      const args = { ...(tool.defaults || {}), ...((params && params.arguments) || {}) };
+      const data = await call(tool.op, args);
+      return out({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(brief(data)) }] } });
+    } catch (e) {
+      return out({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: "Error: " + e.message }], isError: true } });
+    }
+  }
+  if (id !== undefined) out({ jsonrpc: "2.0", id, error: { code: -32601, message: "method not found" } });
+}
+
+if (require.main === module) {
+  const rl = readline.createInterface({ input: process.stdin });
+  rl.on("line", (line) => {
+    let msg;
+    try {
+      msg = JSON.parse(line);
+    } catch (_) {
+      return;
+    }
+    onMessage(msg).catch(() => {});
+  });
+  rl.on("close", () => process.exit(0));
+}
+
+module.exports = { TOOLS, brief };

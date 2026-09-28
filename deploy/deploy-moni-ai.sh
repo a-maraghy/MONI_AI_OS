@@ -25,7 +25,7 @@ say() { printf '\n\033[1;36m==>\033[0m %s\n' "$*"; }
 [[ -f "$SRC/supervisor.js" ]] || { echo "no moni-ai/ in $REPO_DIR" >&2; exit 1; }
 
 say "Checking syntax"
-for f in "$SRC"/supervisor.js "$SRC"/lib/*.js "$SRC"/hooks/*.js "$SRC"/bin/moni-ai-ctl; do
+for f in "$SRC"/supervisor.js "$SRC"/lib/*.js "$SRC"/hooks/*.js "$SRC"/bin/moni-ai-ctl "$SRC"/bin/moni-ai-mcp; do
   node --check "$f"
 done
 
@@ -38,7 +38,7 @@ id -u moniadmin >/dev/null 2>&1 && usermod -aG moniai moniadmin
 say "Installing the supervisor to $TARGET"
 install -d -m 0755 "$TARGET" "$TARGET/cli"
 rsync -a --delete --exclude cli --exclude home --exclude deploy "$SRC/" "$TARGET/"
-chmod 0755 "$TARGET/hooks/"*.js "$TARGET/bin/moni-ai-ctl"
+chmod 0755 "$TARGET/hooks/"*.js "$TARGET/bin/moni-ai-ctl" "$TARGET/bin/moni-ai-mcp"
 ln -sf "$TARGET/bin/moni-ai-ctl" /usr/local/bin/moni-ai-ctl
 
 say "Configuration"

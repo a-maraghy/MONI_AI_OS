@@ -35,8 +35,10 @@ const { spawn, execFile } = require("child_process");
 const { Ledger, now } = require("./lib/ledger");
 const protocol = require("./lib/protocol");
 const classifier = require("./lib/classifier");
+const rulesLib = require("./lib/rules");
 const peers = require("./lib/peers");
 const { redact, redactDeep, clip } = require("./lib/redact");
+const { createFeatures } = require("./lib/features");
 
 /* ----------------------------------------------------------------- config --- */
 
@@ -63,6 +65,18 @@ const DEFAULTS = {
   ring_size: 2000,
   backoff_min_s: 2,
   backoff_max_s: 120,
+  // Command Center v3, phase 1
+  tz: "Africa/Cairo",
+  helper: "/usr/local/sbin/moni-helper",
+  odoo_log: "/var/log/odoo/odoo.log",
+  watcher_poll_s: 30,
+  watcher_cooldown_s: 1800,
+  watcher_max_investigations_per_hour: 4,
+  watcher_inject: false,
+  orders_tick_s: 15,
+  cost_scan_s: 60,
+  mcp: true,
+  cli_extra_args: [], // tests only, e.g. ["--setting-sources", "project"]
 };
 
 function loadConfig() {
@@ -293,6 +307,7 @@ function childEnv() {
     MONI_AI_SUPERVISED: "1",
     MONI_AI_HOOK_SOCKET: HOOK_SOCKET,
     MONI_AI_CONFIG: CONFIG_FILE,
+    MONI_AI_SOCKET: CONTROL_SOCKET,
   };
   if (cfg.runtime_dir && fs.existsSync(cfg.runtime_dir)) env.XDG_RUNTIME_DIR = cfg.runtime_dir;
   // Deliberately built from nothing: an inherited CLAUDE_CODE_MESSAGING_SOCKET
@@ -312,6 +327,19 @@ function checkCli() {
       resolve({ ok: true, version: v });
     });
   });
+}
+
+/**
+ * MONI AI's own tools (missions, decisions) as a stdio MCP server, bin/moni-ai-mcp.
+ * It talks to this supervisor's control socket as actor "moni-ai". Its tools
+ * are allowed outright: they only record MONI AI's own plans and proposals.
+ */
+function mcpArgs() {
+  if (!cfg.mcp) return [];
+  const server = path.join(__dirname, "bin", "moni-ai-mcp");
+  if (!fs.existsSync(server)) return [];
+  const conf = { mcpServers: { "moni-ai": { type: "stdio", command: process.execPath, args: [server], env: { MONI_AI_SOCKET: CONTROL_SOCKET } } } };
+  return ["--mcp-config", JSON.stringify(conf), "--allowedTools", "mcp__moni-ai"];
 }
 
 function setState(state, extra = {}) {
@@ -355,6 +383,8 @@ async function start() {
     "--effort", cfg.effort,
     "--permission-mode", cfg.permission_mode,
     "--permission-prompt-tool", "stdio",
+    ...mcpArgs(),
+    ...(Array.isArray(cfg.cli_extra_args) ? cfg.cli_extra_args.map(String) : []),
     ...(resume ? ["--resume", id] : ["--session-id", id]),
   ];
 
@@ -431,12 +461,13 @@ function onExit(gen, code, signal) {
     const row = ledger.updateTurn(turns.running.id, { status: "lost", ended_at: now(), error: "process exited mid-turn" });
     emit("turn", { phase: "end", turn: publicTurn(row) });
     turns.running = null;
+    features.hooks.onTurnEnd(row);
   }
   // Turns written to the old process but not yet started would be lost with
   // it; they were never answered, so re-queue them for the next process.
   for (const [uuid, tid] of turns.byUuid) {
     const row = ledger.get("turns", tid);
-    if (row && row.status === "queued" && row.source === "dashboard") {
+    if (row && row.status === "queued" && OUR_SOURCES.has(row.source)) {
       turns.pending.push({ row, message: userMessage(row) });
     }
     turns.byUuid.delete(uuid);
@@ -508,6 +539,21 @@ function userMessage(row) {
       `Delegate it there unless it is plainly something you should answer yourself.]`;
   }
   return { type: "user", message: { role: "user", content }, parent_tool_use_id: null, session_id: "", uuid: row.uuid };
+}
+
+/** Turns this supervisor wrote itself: their replayed text is already recorded. */
+const OUR_SOURCES = new Set(["dashboard", "order", "watcher", "mission-request", "decision"]);
+
+/**
+ * Queue a turn for MONI AI. The CLI queues it behind a running turn rather
+ * than interrupting; nothing here ever interrupts.
+ */
+function queueTurn({ source, actor, text, target, order_id, mission_id, decision_id }) {
+  const row = ledger.addTurn({ uuid: crypto.randomUUID(), source, actor, text, target: target || null, status: "queued", order_id, mission_id, decision_id });
+  turns.pending.push({ row, message: userMessage(row) });
+  emit("turn", { phase: "queued", turn: publicTurn(row) });
+  pump();
+  return publicTurn(row);
 }
 
 function pump() {
@@ -659,6 +705,7 @@ function onLifecycle(ev) {
         ended_at: now(),
       });
       emit("turn", { phase: "end", turn: publicTurn(row) });
+      features.hooks.onTurnEnd(row);
     }
     if (turns.running && turns.running.uuid === uuid) turns.running = null;
     turns.byUuid.delete(uuid);
@@ -691,7 +738,7 @@ function onUser(ev) {
   else if (ev.isSynthetic || ev.isMeta) source = "system";
 
   let row = uuid && (turns.byUuid.has(uuid) ? ledger.get("turns", turns.byUuid.get(uuid)) : ledger.turnByUuid(uuid));
-  if (row && row.source === "dashboard") return; // our own message, already recorded
+  if (row && OUR_SOURCES.has(row.source)) return; // our own message, already recorded
   const shown = source === "peer" && ev.origin && ev.origin.body ? ev.origin.body : text;
   if (row) {
     row = ledger.updateTurn(row.id, { source, text: clip(shown, 20000), actor: fromName });
@@ -808,7 +855,8 @@ function onResult(ev) {
       result_text: clip(ev.result || "", 20000),
       error: ev.is_error ? clip(ev.result || ev.subtype || "error", 2000) : null,
     });
-    emit("result", { turn: publicTurn(row), is_error: !!ev.is_error, subtype: ev.subtype });
+    features.hooks.onResult(row, ev, proc.startedAt);
+    emit("result", { turn: publicTurn(ledger.get("turns", row.id)), is_error: !!ev.is_error, subtype: ev.subtype });
   } else {
     emit("result", { is_error: !!ev.is_error, subtype: ev.subtype, cost_usd: ev.total_cost_usd, text: clip(ev.result || "", 4000) });
   }
@@ -826,6 +874,8 @@ function onControlRequest(ev) {
   }
   const tool = req.tool_name || "unknown";
   const input = req.input || {};
+  const auto = features.autoDecision(tool, input);
+  if (auto) return autoAnswer(ev, req, tool, input, auto);
   const gate = classifier.gateDecision(tool, input, cfg) || {};
   const summary =
     tool === "SendMessage"
@@ -856,7 +906,39 @@ function onControlRequest(ev) {
     emitSteps();
   }
   log(`approval #${row.id} raised: ${tool} ${clip(summary, 120)}`);
-  emit("approval", { approval: publicApproval(row) });
+  features.hooks.onApproval(row, input, turns.running ? ledger.get("turns", turns.running.id) : null);
+  emit("approval", { approval: publicApproval(ledger.get("approvals", row.id)) });
+}
+
+/**
+ * A rule answered this can_use_tool before anyone had to: an "Always allow
+ * this" rule, or a deny. Recorded as an approval row like any other, decided
+ * by "rule:<id>", so the audit trail shows it.
+ */
+function autoAnswer(ev, req, tool, input, auto) {
+  const summary = tool === "SendMessage" ? `SendMessage to ${peers.bareName(input.to)}: ${input.message || ""}` : typeof input.command === "string" ? input.command : JSON.stringify(input);
+  const t = now();
+  const row = ledger.addApproval({
+    request_id: ev.request_id,
+    tool_use_id: req.tool_use_id,
+    turn_id: turns.running && turns.running.id,
+    tool,
+    input_json: clip(JSON.stringify(redactDeep(input)), 16000),
+    summary: clip(redact(summary), 4000),
+    category: auto.allow ? "rule" : "rule-deny",
+    label: auto.allow ? "Allowed by a rule" : "Denied by a rule",
+    reason: auto.explain,
+    expires_at: t,
+  });
+  const who = auto.rule ? "rule:" + auto.rule.id : "rule";
+  const response = auto.allow
+    ? { behavior: "allow", updatedInput: input }
+    : { behavior: "deny", message: `MONI AI rules: ${auto.explain} Do not retry it or route it through another session; tell the user it is not allowed.` };
+  writeChild({ type: "control_response", response: { subtype: "success", request_id: ev.request_id, response } });
+  const upd = ledger.updateApproval(row.id, { status: auto.allow ? "approved" : "denied", decided_at: t, decided_by: who, rule_id: auto.rule ? auto.rule.id : null, note: auto.explain });
+  log(`approval #${row.id} ${auto.allow ? "allowed" : "denied"} by ${who}: ${tool} ${clip(summary, 120)}`);
+  if (!auto.allow) recordDeniedDelegation({ tool, input, toolUseId: req.tool_use_id }, upd, `denied by ${who}`);
+  emit("approval", { approval: publicApproval(upd) });
 }
 
 function answer(approvalId, allow, message) {
@@ -890,15 +972,23 @@ function recordDeniedDelegation(a, row, why) {
     status: "denied",
     note: why,
   });
-  emit("delegation", { delegation: publicDelegation(d) });
+  emitDelegation(d);
 }
 
-function decide(approvalId, allow, actor, note) {
+function decide(approvalId, allow, actor, note, alwaysRule) {
   const row = ledger.get("approvals", approvalId);
   if (!row) throw new Error("no such approval");
   if (row.status !== "pending") throw new Error(`that approval is already ${row.status}`);
   const a = approvals.get(approvalId);
   if (!a) throw new Error("that request is no longer waiting (the process restarted)");
+  let rule = null;
+  if (allow && alwaysRule) {
+    // "Always allow this": the rule must at least cover this very call, and
+    // is saved before the call runs so the next identical one needs no card.
+    const probe = rulesLib.evaluate(a.tool, a.input, [{ id: 0, effect: "allow", tool: alwaysRule.tool, pattern: alwaysRule.pattern, scope_session: "moni-ai", scope_machine: "this" }], {});
+    if (!(probe.decision === "allow" && probe.source === "rule")) throw new Error("that rule would not match this request; narrow it to this command");
+    rule = features.publicRule(features.createRule({ effect: "allow", tool: alwaysRule.tool, pattern: alwaysRule.pattern, note: `Always allow, from approval #${approvalId}` }, actor, approvalId));
+  }
   const msg = allow
     ? null
     : `Denied by ${actor} in the MONI AI dashboard${note ? ": " + note : ""}. Do not retry it, do not route it through another session, and tell the user it was denied.`;
@@ -910,9 +1000,9 @@ function decide(approvalId, allow, actor, note) {
     note: note || null,
   });
   if (!allow) recordDeniedDelegation(a, updated, `denied by ${actor}`);
-  log(`approval #${approvalId} ${allow ? "approved" : "denied"} by ${actor}`);
+  log(`approval #${approvalId} ${allow ? "approved" : "denied"} by ${actor}${rule ? " and rule #" + rule.id + " saved" : ""}`);
   emit("approval", { approval: publicApproval(updated) });
-  return publicApproval(updated);
+  return rule ? { approval: publicApproval(updated), rule } : publicApproval(updated);
 }
 
 function expireApproval(approvalId) {
@@ -941,6 +1031,13 @@ function onControlCancel(ev) {
 
 /* ------------------------------------------------------------ delegations --- */
 
+/** Publish a delegation change, after letting its mission step follow it. */
+function emitDelegation(d) {
+  if (!d) return;
+  features.hooks.onDelegation(d);
+  emit("delegation", { delegation: publicDelegation(ledger.get("delegations", d.id) || d) });
+}
+
 function currentTurnId() {
   return turns.running ? turns.running.id : null;
 }
@@ -961,6 +1058,7 @@ function findSession({ name, pid }) {
 function onHookEvent(msg) {
   const ours = readState().session_id;
   if (!msg || (msg.session_id && ours && msg.session_id !== ours)) return; // someone else working in /root/moni-ai
+  if (features.hooks.onHook(msg)) return;
   if (msg.event === "PostToolUse" && msg.tool_name === "SendMessage") return onSendMessageResult(msg);
   if (msg.event === "UserPromptSubmit") return onInboundPrompt(msg.prompt);
   if (msg.event === "PostToolUse" && msg.tool_name === "ListAgents") return refreshSessions();
@@ -997,7 +1095,7 @@ function onSendMessageResult(msg) {
     status: ok ? "sent" : "failed",
     note: ok ? null : clip(resp.message || resp.error || "SendMessage failed", 500),
   });
-  if (d) emit("delegation", { delegation: publicDelegation(d) });
+  if (d) emitDelegation(d);
   refreshSessions();
 }
 
@@ -1029,7 +1127,7 @@ function onInboundPrompt(prompt) {
           ? ledger.updateDelegation(d.id, { status: "held", note: "held by the target for its user's approval" })
           : null;
     }
-    if (upd) emit("delegation", { delegation: publicDelegation(upd) });
+    if (upd) emitDelegation(upd);
   }
 }
 
@@ -1236,6 +1334,7 @@ function refreshSessions() {
       };
     });
     sessionsCache = { at: now(), list: merged, error: null };
+    features.hooks.onSessions(merged);
     advanceDelegations(merged);
     const sig = JSON.stringify(
       merged.map((s) => [
@@ -1244,6 +1343,8 @@ function refreshSessions() {
         s.name,
         s.waiting_for,
         (subagentsCache.get(s.session_id) || []).map((a) => [a.id, a.status]),
+        // the mission tint and cost change without the session changing
+        JSON.stringify(features.sessionExtras(s)),
       ])
     );
     if (sig !== lastSessionsSig) {
@@ -1274,7 +1375,7 @@ function advanceDelegations(list) {
         upd = ledger.updateDelegation(d.id, { status: "done", done_at: now(), note: d.note || "target went idle" });
       }
     }
-    if (upd) emit("delegation", { delegation: publicDelegation(upd) });
+    if (upd) emitDelegation(upd);
   }
 }
 
@@ -1291,6 +1392,7 @@ function sessionsWithLedger() {
       open_delegations: open,
       last_delegation: last ? publicDelegation(last) : null,
       subagents: (s.session_id && subagentsCache.get(s.session_id)) || [],
+      ...features.sessionExtras(s),
     };
   });
 }
@@ -1341,11 +1443,27 @@ function vitals() {
 }
 let vitalsCache = vitals();
 
+const features = createFeatures({
+  ledger,
+  cfg,
+  emit,
+  queueTurn: (t) => queueTurn(t),
+  log,
+  warn,
+  vitals: () => vitalsCache,
+  sessions: () => sessionsCache.list || [],
+  sessionsWithLedger: () => sessionsWithLedger(),
+  selfSessionId: () => readState().session_id || null,
+  currentTurnId: () => (turns.running ? turns.running.id : null),
+  projectsDir: PROJECTS_DIR,
+  describeTool: (n, i) => describeTool(n, i),
+});
+
 /* ------------------------------------------------------------ public views --- */
 
 function publicTurn(row) {
   if (!row) return null;
-  return { id: row.id, source: row.source, actor: row.actor, text: row.text, target: row.target, status: row.status, created_at: row.created_at, started_at: row.started_at, ended_at: row.ended_at, duration_ms: row.duration_ms, cost_usd: row.cost_usd, result_text: row.result_text, error: row.error };
+  return { id: row.id, source: row.source, actor: row.actor, text: row.text, target: row.target, status: row.status, created_at: row.created_at, started_at: row.started_at, ended_at: row.ended_at, duration_ms: row.duration_ms, cost_usd: row.cost_usd, cost_delta_usd: row.cost_delta_usd == null ? null : row.cost_delta_usd, result_text: row.result_text, error: row.error, order_id: row.order_id || null, mission_id: row.mission_id || null, decision_id: row.decision_id || null };
 }
 function publicDelegation(d) {
   if (!d) return null;
@@ -1361,7 +1479,7 @@ function publicApproval(a) {
     input = a.input_json;
   }
   const { input_json, ...rest } = a;
-  return { ...rest, input };
+  return { ...rest, input, ...features.approvalExtras({ ...a, input }) };
 }
 
 function status() {
@@ -1388,7 +1506,9 @@ function status() {
     queued: turns.pending.map((p) => publicTurn(p.row)),
     remote_control: { enabled: rc.enabled, state: rc.state, url: rc.enabled ? rc.url : null, error: rc.error },
     approvals: ledger.pendingApprovals().map(publicApproval),
-    counts: ledger.counts(),
+    counts: { ...ledger.counts(), ...features.counts() },
+    machine: features.machine(),
+    cost_today: features.costToday(),
     vitals: vitalsCache,
     sessions_at: sessionsCache.at,
     approval_timeout_s: cfg.approval_timeout_s,
@@ -1432,11 +1552,9 @@ async function handle(req, sock) {
         const live = (sessionsCache.list || []).some((s) => s.name === p.target && !s.self);
         if (!live) throw new Error(`no live session is named "${p.target}"`);
       }
-      const row = ledger.addTurn({ uuid: crypto.randomUUID(), source: "dashboard", actor: req.actor, text: p.text, target: p.target && p.target !== "auto" ? p.target : null, status: "queued" });
-      turns.pending.push({ row, message: userMessage(row) });
-      emit("turn", { phase: "queued", turn: publicTurn(row) });
-      pump();
-      return { turn: publicTurn(row), process: proc.state, queued_behind: turns.running ? 1 : 0 };
+      const busy = !!turns.running;
+      const turn = queueTurn({ source: "dashboard", actor: req.actor, text: p.text, target: p.target && p.target !== "auto" ? p.target : null });
+      return { turn, process: proc.state, queued_behind: busy ? 1 : 0 };
     }
     case "interrupt": {
       if (!proc.child) throw new Error("MONI AI is not running");
@@ -1444,8 +1562,13 @@ async function handle(req, sock) {
       emit("notice", { level: "info", text: `Interrupted by ${req.actor}` });
       return { interrupted: true };
     }
-    case "approve":
+    case "approve": {
+      if (p.rule_pattern !== undefined || p.rule_tool !== undefined) {
+        if (!p.rule_pattern || !p.rule_tool) throw new Error("an always-allow rule needs rule_pattern and rule_tool");
+        return decide(p.approval_id, true, req.actor, p.note, { pattern: p.rule_pattern, tool: p.rule_tool });
+      }
       return { approval: decide(p.approval_id, true, req.actor, p.note) };
+    }
     case "deny":
       return { approval: decide(p.approval_id, false, req.actor, p.note) };
     case "rc":
@@ -1462,6 +1585,7 @@ async function handle(req, sock) {
       return { restarted: true, state: proc.state };
     }
     default:
+      if (Object.prototype.hasOwnProperty.call(features.ops, req.op)) return await features.ops[req.op](p, req);
       throw new Error("unknown op");
   }
 }
@@ -1626,6 +1750,7 @@ async function main() {
     emit("vitals", { vitals: vitalsCache });
   }, 5000);
 
+  features.start();
   await start();
 
   let stopping = false;
@@ -1637,6 +1762,7 @@ async function main() {
     clearTimeout(proc.timer);
     clearInterval(pollSessions);
     clearInterval(pollVitals);
+    features.stop();
     control.close();
     hooks.close();
     for (const v of viewers) v.destroy();

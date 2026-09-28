@@ -29,6 +29,7 @@ const ACTOR_RE = /^[A-Za-z0-9._@-]{1,64}$/;
 const ID_RE = /^[A-Za-z0-9._:-]{1,64}$/;
 
 const TABLES = ["delegations", "inbound", "approvals", "turns", "audit"];
+const WATCHERS = ["service_failed", "ban_burst", "disk", "agent_failing", "odoo_errors"];
 const STATUSES = {
   delegations: ["sent", "working", "ack", "held", "done", "failed", "denied"],
   approvals: ["pending", "approved", "denied", "expired", "cancelled"],
@@ -61,13 +62,157 @@ const OPS = {
     },
   },
   interrupt: { mutating: true, params: {} },
-  approve: { mutating: true, params: { approval_id: int(1, Number.MAX_SAFE_INTEGER), note: optText(500) } },
+  approve: {
+    mutating: true,
+    params: { approval_id: int(1, Number.MAX_SAFE_INTEGER), note: optText(500), rule_pattern: optText(2000), rule_tool: optEnum(["Bash", "SendMessage"]) },
+  },
   deny: { mutating: true, params: { approval_id: int(1, Number.MAX_SAFE_INTEGER), note: optText(500) } },
   rc: { mutating: true, params: { enabled: bool() } },
   restart: { mutating: true, params: {} },
+
+  /* ---- phase 1 of Command Center v3: reads ---- */
+  machine: { mutating: false, params: {} },
+  missions: { mutating: false, params: { status: optEnum(["active", "all"]), limit: optInt(1, 200) } },
+  mission: { mutating: false, params: { mission_id: missionId() } },
+  decisions: { mutating: false, params: { status: optEnum(["open", "all"]), limit: optInt(1, 200) } },
+  watchers: { mutating: false, params: {} },
+  orders: { mutating: false, params: {} },
+  "order-runs": { mutating: false, params: { order_id: int(1, Number.MAX_SAFE_INTEGER), limit: optInt(1, 100) } },
+  rules: { mutating: false, params: {} },
+  "rule-test": { mutating: false, params: { command: text(1, 8000), tool: optEnum(["Bash", "SendMessage"]) } },
+  "rule-suggest": { mutating: false, params: { approval_id: int(1, Number.MAX_SAFE_INTEGER) } },
+  cost: { mutating: false, params: {} },
+  "session-mirror": { mutating: false, params: { session_id: str(36, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/) } },
+
+  /* ---- writes ---- */
+  "mission-create": { mutating: true, params: { title: text(1, 200), goal: optText(4000), steps: optArray(stepSpec(), 50) } },
+  "mission-step-add": { mutating: true, params: { mission_id: missionId(), title: text(1, 300), detail: optText(4000), target: optString(300, /^[^\n\r\u0000]*$/) } },
+  "mission-step-update": {
+    mutating: true,
+    params: {
+      mission_id: missionId(),
+      step: int(1, 1000),
+      status: optEnum(["planned", "delegated", "working", "waiting_approval", "done", "failed", "skipped"]),
+      target: optString(300, /^[^\n\r\u0000]*$/),
+      result: optText(4000),
+      note: optText(1000),
+      title: optText(300),
+      detail: optText(4000),
+    },
+  },
+  "mission-update": { mutating: true, params: { mission_id: missionId(), status: optEnum(["planned", "active", "done", "failed", "cancelled"]), title: optText(200), goal: optText(4000) } },
+  "mission-request": { mutating: true, params: { goal: text(1, 4000) } },
+  "decision-propose": { mutating: true, params: { decision_id: int(1, Number.MAX_SAFE_INTEGER), summary: text(1, 4000), evidence: optText(8000), fix_command: optText(4000) } },
+  "decision-update": { mutating: true, params: { decision_id: int(1, Number.MAX_SAFE_INTEGER), status: enumOf(["done", "failed"]), result: optText(4000) } },
+  "decision-approve": { mutating: true, params: { decision_id: int(1, Number.MAX_SAFE_INTEGER), note: optText(500) } },
+  "decision-dismiss": { mutating: true, params: { decision_id: int(1, Number.MAX_SAFE_INTEGER), note: optText(500) } },
+  "decision-ask": { mutating: true, params: { decision_id: int(1, Number.MAX_SAFE_INTEGER), text: text(1, 4000) } },
+  "watcher-set": { mutating: true, params: { key: enumOf(WATCHERS), enabled: bool() } },
+  "watcher-inject": { mutating: true, params: { watcher: enumOf(WATCHERS), subject: str(120, /^[A-Za-z0-9@._\/-]{1,120}$/), detail: optText(2000), evidence: optText(4000) } },
+  "order-create": { mutating: true, params: orderParams(false) },
+  "order-update": { mutating: true, params: { order_id: int(1, Number.MAX_SAFE_INTEGER), ...orderParams(true) } },
+  "order-delete": { mutating: true, params: { order_id: int(1, Number.MAX_SAFE_INTEGER) } },
+  "order-run": { mutating: true, params: { order_id: int(1, Number.MAX_SAFE_INTEGER) } },
+  "order-pause": { mutating: true, params: { order_id: int(1, Number.MAX_SAFE_INTEGER), paused: bool() } },
+  "rule-create": { mutating: true, params: { effect: enumOf(["allow", "ask", "deny"]), tool: enumOf(["Bash", "SendMessage", "any"]), pattern: text(1, 2000), note: optText(500) } },
+  "rule-update": {
+    mutating: true,
+    params: { rule_id: int(1, Number.MAX_SAFE_INTEGER), effect: optEnum(["allow", "ask", "deny"]), tool: optEnum(["Bash", "SendMessage", "any"]), pattern: optText(2000), note: optText(500) },
+  },
+  "rule-delete": { mutating: true, params: { rule_id: int(1, Number.MAX_SAFE_INTEGER) } },
+  "cost-budget": { mutating: true, params: { daily_usd: nullableNumber(0, 100000), warn_pct: int(50, 100) } },
 };
 
 /* ------------------------------------------------------------ validators --- */
+
+function optEnum(values) {
+  const f = enumOf(values);
+  f.optional = true;
+  return f;
+}
+function str(max, re) {
+  return (v, name) => {
+    if (typeof v !== "string" || v.length > max || !re.test(v)) throw new Error(`${name} is not valid`);
+    return v.trim();
+  };
+}
+function missionId() {
+  return (v, name) => {
+    const s = typeof v === "number" ? String(v) : v;
+    if (typeof s !== "string" || !/^(M-)?[1-9][0-9]{0,8}$/i.test(s.trim())) throw new Error(`${name} must look like M-12`);
+    return Number(s.trim().replace(/^M-/i, ""));
+  };
+}
+function nullableNumber(min, max) {
+  const f = (v, name) => {
+    if (v === false) return null;
+    if (typeof v !== "number" || !isFinite(v) || v < min || v > max) throw new Error(`${name} must be a number ${min}..${max} or null`);
+    return Math.round(v * 100) / 100;
+  };
+  f.nullable = true;
+  return f;
+}
+/** An array of objects, each checked by `item`. */
+function optArray(item, max) {
+  const f = (v, name) => {
+    if (!Array.isArray(v)) throw new Error(`${name} must be a list`);
+    if (v.length > max) throw new Error(`${name} has more than ${max} items`);
+    return v.map((x, i) => item(x, `${name}[${i}]`));
+  };
+  f.optional = true;
+  return f;
+}
+/** An object with exactly these fields. */
+function objOf(spec) {
+  return (v, name) => {
+    if (!v || typeof v !== "object" || Array.isArray(v)) throw new Error(`${name} must be an object`);
+    for (const k of Object.keys(v)) if (!Object.prototype.hasOwnProperty.call(spec, k)) throw new Error(`${name} has an unexpected field: ${k.slice(0, 40)}`);
+    const out = {};
+    for (const [k, check] of Object.entries(spec)) {
+      if (v[k] === undefined || v[k] === null) {
+        if (check.optional) continue;
+        throw new Error(`${name}.${k} is required`);
+      }
+      out[k] = check(v[k], `${name}.${k}`);
+    }
+    return out;
+  };
+}
+function stepSpec() {
+  return objOf({ title: text(1, 300), detail: optText(4000), target: optString(300, /^[^\n\r\u0000]*$/) });
+}
+function orderParams(partial) {
+  const o = (f) => {
+    if (!partial) return f;
+    const g = (v, n) => f(v, n);
+    g.optional = true;
+    return g;
+  };
+  const schedule = objOf({
+    kind: enumOf(["daily", "weekdays", "weekly", "hours", "cron"]),
+    at: optString(5, /^([01][0-9]|2[0-3]):[0-5][0-9]$/),
+    dow: optInt(0, 6),
+    every_h: optInt(1, 24),
+    cron: optString(100, /^[0-9*,\/ -]{9,100}$/),
+  });
+  const delivery = (v, name) => {
+    if (!Array.isArray(v) || !v.length || v.length > 2 || v.some((x) => !["cc", "telegram"].includes(x))) throw new Error(`${name} must be a list of cc / telegram`);
+    return [...new Set(v)];
+  };
+  return {
+    name: o(text(1, 120)),
+    schedule: o(schedule),
+    target: o(str(300, /^[^\n\r\u0000]{1,300}$/)),
+    prompt: o(text(1, 8000)),
+    delivery: o(delivery),
+    paused: optBool(),
+  };
+}
+function optBool() {
+  const f = bool();
+  f.optional = true;
+  return f;
+}
 
 function int(min, max) {
   return (v, name) => {
@@ -152,6 +297,10 @@ function parseRequest(line) {
   }
   for (const [name, check] of Object.entries(spec.params)) {
     const v = msg[name];
+    if (v === null && check.nullable) {
+      params[name] = null;
+      continue;
+    }
     if (v === undefined || v === null) {
       if (check.optional) continue;
       return { ok: false, id, error: `${name} is required` };
@@ -179,4 +328,4 @@ function replyError(id, error) {
   return JSON.stringify({ id, ok: false, error: String(error).slice(0, 500) }) + "\n";
 }
 
-module.exports = { OPS, TABLES, STATUSES, MAX_LINE, MAX_TEXT, ACTOR_RE, parseRequest, reply, replyError };
+module.exports = { OPS, TABLES, WATCHERS, STATUSES, MAX_LINE, MAX_TEXT, ACTOR_RE, parseRequest, reply, replyError };

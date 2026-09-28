@@ -19,7 +19,7 @@ const os = require("os");
 const SOCKET = process.env.MONI_AI_SOCKET || "/run/moni-ai/moni-ai.sock";
 const [op, json] = process.argv.slice(2);
 if (!op || op === "-h" || op === "--help") {
-  console.log("usage: moni-ai-ctl <op> [json-params]\nops: ping status sessions rc-url events ledger send interrupt approve deny rc restart");
+  console.log("usage: moni-ai-ctl <op> [json-params]\nops: ping status sessions rc-url events ledger send interrupt approve deny rc restart\n     machine missions mission mission-create mission-step-add mission-step-update mission-update mission-request\n     decisions decision-propose decision-update decision-approve decision-dismiss decision-ask watchers watcher-set\n     orders order-runs order-create order-update order-delete order-run order-pause\n     rules rule-test rule-suggest rule-create rule-update rule-delete cost cost-budget session-mirror\n(see lib/protocol.js for each op's params)");
   process.exit(op ? 0 : 2);
 }
 let params = {};
