@@ -66,8 +66,11 @@ check("offers System, Dark and Light", ["system", "dark", "light"].every((t) => 
 check("System is the default choice", /data-theme-opt="system" aria-checked="true"/.test(html));
 check("every icon reference has a symbol", (() => {
   const used = new Set([...html.matchAll(/href="#cc-i-([a-z]+)"/g)].map((m) => m[1]));
-  const js = fs.readFileSync(path.join(ROOT, "public", "moni-ai.js"), "utf8");
-  for (const m of js.matchAll(/ic\("([a-z]+)"/g)) used.add(m[1]);
+  for (const f of ["moni-ai.js", "cc-panels.js"]) {
+    const js = fs.readFileSync(path.join(ROOT, "public", f), "utf8");
+    for (const m of js.matchAll(/ic\("([a-z0-9]+)"/g)) used.add(m[1]);
+    for (const m of js.matchAll(/ic\(o\.it\.icon\)|icon: "([a-z0-9]+)"/g)) if (m[1]) used.add(m[1]);
+  }
   const missing = [...used].filter((n) => !views.SPRITE[n]);
   return missing.length === 0 || (console.log("   missing:", missing.join(", ")), false);
 })());
@@ -79,7 +82,7 @@ check("every id is unique", (() => {
 })());
 check("a page without an OpenAI key says so and points to Settings", (() => {
   const p = views.page({ csrf: "t", user: { name: "a", perm: admin }, voice: { configured: false, manage: true } });
-  return p.includes(">no key<") && p.includes("Add an OpenAI key in Settings") && /id="cc-mic-big"[^>]*disabled/.test(p);
+  return p.includes(">no key<") && p.includes("Add an OpenAI key in Settings") && /id="cc-c-mic"[^>]*disabled/.test(p);
 })());
 
 /* ----------------------------------------------------------- the shell --- */
@@ -200,9 +203,14 @@ check("a streamed markdown reply is read word for word, whatever the chunk size"
 /* The strings the client builds as markup must not carry inline style either:
    CSP refuses a style="" set through innerHTML just as it refuses one in the
    served page. */
-check("client markup builds no style attributes", !/style=\\?"/.test(client.replace(/\.style\./g, "")));
-check("client builds no inline handlers", !/\son(click|error|load|mouse\w+|key\w+)=/i.test(client));
-check("client talks only to this origin", !/(fetch|EventSource)\(\s*["']https?:/.test(client));
+// The page's three scripts: the main one and the two it loads beside it.
+const clients = ["moni-ai.js", "cc-panels.js", "cc-map.js"].map((f) => [f, fs.readFileSync(path.join(ROOT, "public", f), "utf8")]);
+for (const [f, src] of clients) {
+  check(f + " builds no style attributes", !/style=\\?"/.test(src.replace(/\.style\./g, "")));
+  check(f + " builds no inline handlers", !/\son(click|error|load|mouse\w+|key\w+)=/i.test(src));
+  check(f + " talks only to this origin", !/(fetch|EventSource)\(\s*["']https?:/.test(src) && !/api\(\s*["']https?:/.test(src));
+  check(f + " never writes a style attribute through setAttribute", !/setAttribute\(\s*["']style/.test(src));
+}
 check("the Remote Control link is only opened for claude.ai", /\^https:\\\/\\\/claude\\\.ai\\\//.test(client));
 const appJs = fs.readFileSync(path.join(ROOT, "public", "app.js"), "utf8");
 const initJs = fs.readFileSync(path.join(ROOT, "public", "theme-init.js"), "utf8");

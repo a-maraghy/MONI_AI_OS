@@ -1,7 +1,7 @@
 /**
  * Tests for showing a delegation's FULL sent text in the Command Center
- * (administrator request, 2026-09-28): the session card's message popover
- * and the Timeline's delegation rows must carry the whole `text` field from
+ * (administrator request, 2026-09-28): the session deep view (v3; it replaced
+ * the v2 card's message popover) and the Timeline's delegation rows must carry the whole `text` field from
  * the ledger, not a clipped summary or first line -- while still escaping it
  * (it is arbitrary content MONI AI sent, not trusted markup) and staying
  * inside its own scrolling box rather than growing the page.
@@ -49,32 +49,42 @@ function cut(name) {
 /* ---------------------------------------------------------------- icon --- */
 
 check("a message icon exists for the sprite", !!views.SPRITE.message);
-check("the client references the message icon", /ic\("message"\)/.test(client));
+check("the page references the message icon", /ic\("message"\)/.test(client + fs.readFileSync(path.join(ROOT, "public", "cc-panels.js"), "utf8")));
 
-/* ------------------------------------------------------- session card --- */
+/* ------------------------------------------------------- deep view --- */
+/* v3: clicking a session card opens its read-only deep view, whose "What MONI
+   AI told it · full text" box replaced v2's message popover. */
 
-check(
-  "the session card only offers the message popover when there is text to show",
-  /s\.last_delegation && \(s\.last_delegation\.text \|\| s\.last_delegation\.summary\)/.test(client)
-);
-check("the message button carries data-msg keyed by the session", /data-msg="\s*'\s*\+\s*esc\(key\)/.test(client.replace(/\s+/g, " ")));
-check("openMsgPopover is defined", client.includes("function openMsgPopover("));
-{
-  const fn = cut("openMsgPopover");
-  check("the popover shows the full text (falls back to summary only), not a clip() or firstLine()", /esc\(d\.text \|\| d\.summary \|\| ""\)/.test(fn));
-  check("openMsgPopover never truncates the body with clip() or firstLine()", !/\b(clip|firstLine)\(\s*d\.text/.test(fn));
-  check("the popover body sits in its own .cc-pop-body block", fn.includes('cc-pop-body'));
-  check("the popover shows when it was sent and the current status", /esc\(hm\(when\)\)/.test(fn) && /TL_LAB\[d\.status\]/.test(fn));
-  check("the close button is wired, no inline handler", fn.includes("data-close") && !/on[a-z]+\s*=/.test(fn));
+const panels = fs.readFileSync(path.join(ROOT, "public", "cc-panels.js"), "utf8");
+function cutFrom(src, name) {
+  const start = src.indexOf("function " + name + "(");
+  if (start < 0) throw new Error("no function " + name);
+  let depth = 0;
+  for (let i = src.indexOf("{", start); i < src.length; i++) {
+    if (src[i] === "{") depth++;
+    else if (src[i] === "}" && --depth === 0) return src.slice(start, i + 1);
+  }
+  throw new Error("unbalanced " + name);
 }
-check(
-  "clicking a message button opens the popover (wired in the sessions click handler)",
-  /data-msg.*openMsgPopover|openMsgPopover\(sm, m\)/.test(client)
-);
-check(
-  "clicking outside the popover does not close it while a message button triggered it",
-  /!e\.target\.closest\("\[data-msg\]"\)/.test(client)
-);
+check("the session card opens the deep view (wired in the sessions click handler)", /data-sess[\s\S]{0,200}P\.openDeep\(/.test(client));
+{
+  const fn = cutFrom(panels, "deepToldHTML");
+  check("the deep view shows each delegation's full text (summary only as a fallback)", /esc\(d\.text \|\| d\.summary \|\| ""\)/.test(fn));
+  check("the deep view never truncates the text with clip() or firstLine()", !/\b(clip|firstLine)\(\s*d\.text/.test(fn));
+  check("the text sits in its own .cc-told block", fn.includes("cc-told"));
+  check("each message shows when it was sent and its status", /esc\(hm\(d\.created_at\)\)/.test(fn) && /TL_LAB\[d\.status\]/.test(fn));
+  check("no inline handler in the deep view text", !/on[a-z]+\s*=/.test(fn));
+  // Run it: the text comes out whole and escaped.
+  const vm = require("vm");
+  const box = { esc: null, hm: (x) => "12:00", CC: { TL_LAB: { done: "done" } } };
+  vm.runInNewContext(cut("esc") + "\n" + fn.replace("function deepToldHTML", "this.deepToldHTML = function"), box);
+  const long = "Step 1: " + "x".repeat(5000) + "\n<img src=x onerror=alert(1)>\nLine three.";
+  const out = box.deepToldHTML([{ text: long, status: "done", created_at: "2026-09-28T10:00:00Z" }], { self: false });
+  check("the whole long message is there", out.includes("x".repeat(5000)) && out.includes("Line three."));
+  check("markup in the message is escaped", !out.includes("<img") && out.includes("&lt;img"));
+  check("MONI AI's own deep view says it is the one delegating", /one delegating/.test(box.deepToldHTML([], { self: true })));
+}
+check("the deep view reads the full delegation rows from the mirror", /d\.delegations \|\|/.test(panels));
 
 /* -------------------------------------------------------------- timeline --- */
 
@@ -111,20 +121,20 @@ check(
   /\.cc-tl-cmd \.t\.full\s*\{[^}]*white-space:\s*pre-wrap/s.test(css.replace(/\n/g, " "))
 );
 check(
-  "the session popover's message body scrolls within itself, not the page",
-  /\.cc-pop-msg \.cc-pop-body\s*\{[^}]*overflow-y:\s*auto/s.test(css.replace(/\n/g, " "))
+  "the deep view's full-text box scrolls within itself, not the page",
+  /\.cc-told\s*\{[^}]*overflow-y:\s*auto/s.test(css.replace(/\n/g, " "))
 );
 check(
-  "the session popover's message body wraps long words instead of overflowing",
-  /\.cc-pop-msg \.cc-pop-body\s*\{[^}]*overflow-wrap:\s*anywhere/s.test(css.replace(/\n/g, " "))
+  "the deep view's full-text box wraps long words instead of overflowing",
+  /\.cc-told\s*\{[^}]*overflow-wrap:\s*anywhere/s.test(css.replace(/\n/g, " "))
 );
 check(
-  "the popover has a fixed max-height (never grows the page)",
-  /\.cc-pop-msg \.cc-pop-body\s*\{[^}]*max-height:\s*\d/s.test(css.replace(/\n/g, " "))
+  "the full-text box has a fixed max-height (never grows the page) and keeps line breaks",
+  /\.cc-told\s*\{[^}]*max-height:\s*\d/s.test(css.replace(/\n/g, " ")) && /\.cc-told\s*\{[^}]*white-space:\s*pre-wrap/s.test(css.replace(/\n/g, " "))
 );
 // No new colour literal was introduced; the theme rule from test-moniai-page.cjs already
 // checks the whole file, but a scoped check here documents the intent locally.
-check("the new rules use theme tokens, not literal colours", !/\.cc-pop-msg[\s\S]{0,400}#[0-9a-fA-F]{3,8}/.test(css));
+check("the new rules use theme tokens, not literal colours", !/\.cc-told[\s\S]{0,400}#[0-9a-fA-F]{3,8}/.test(css));
 
 /* ---------------------------------------------------- escaping, in practice --- */
 
@@ -143,8 +153,8 @@ check("the new rules use theme tokens, not literal colours", !/\.cc-pop-msg[\s\S
 
 /* ---------------------------------------------------- no CSP regressions --- */
 
-check("no inline style attribute was introduced by this feature", !/cc-pop-msg[\s\S]{0,200}style=\\?"/.test(client));
-check("no inline event handler was introduced by this feature", !/data-msg[\s\S]{0,400}\son[a-z]+=/.test(client));
+check("no inline style attribute was introduced by this feature", !/cc-told[\s\S]{0,200}style=\\?"/.test(panels));
+check("no inline event handler was introduced by this feature", !/cc-told[\s\S]{0,400}\son[a-z]+=/.test(panels));
 
 console.log(`\n${passes} passed, ${failures} failed`);
 process.exit(failures ? 1 : 0);

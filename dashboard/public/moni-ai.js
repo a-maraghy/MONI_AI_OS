@@ -1,24 +1,33 @@
 "use strict";
 /*
- * The MONI AI Command Center, live.
+ * The MONI AI Command Center (v3), live.
  *
  * Reads the JSON API under /moni-ai/api/ once on load (overview, the turns,
- * approvals, delegations and inbound ledgers), then follows the supervisor's
- * event stream over Server-Sent Events. Everything on screen is built here from
- * that data, and every string that came from the server goes through esc() or
- * the console's markdown renderer (MD, from console.js), which escapes first.
+ * approvals, delegations and inbound ledgers, then missions, decisions,
+ * watchers, rules, standing orders and cost through cc-panels.js), then follows
+ * the supervisor's event stream over Server-Sent Events. Everything on screen
+ * is built here from that data, and every string that came from the server
+ * goes through esc() or the console's markdown renderer (MD, from console.js),
+ * which escapes first. Sizes that depend on data are set through element.style
+ * after the markup is in place (applyBars), never as a style attribute: the
+ * CSP would refuse it.
  *
- * The seed core in the middle is one canvas driven by requestAnimationFrame:
- * DPR-aware, paused while the tab is hidden, and a still frame for anyone who
- * has asked for reduced motion. Its states come from real events -- thinking
- * while a turn runs, delegating when a SendMessage lands (light runs down the
- * root to that session), listening while the microphone records, speaking
- * while a reply is read aloud.
+ * The orbit map in the middle is cc-map.js: MONI AI's seed core with the live
+ * sessions around it. Its states come from real events -- thinking while a
+ * turn runs, delegating when a SendMessage lands (a bead runs out to that
+ * session), a reply bead back when the session answers, listening while the
+ * microphone records, speaking while a reply is read aloud.
+ *
+ * The missions board, the Decisions inbox, Rules and Watchers, the standing
+ * orders, the cost view, the session deep view and the Ctrl+K palette are
+ * cc-panels.js, handed this file's helpers and state (the CC object below).
  *
  * Voice goes through OpenAI, on the server only: the page posts its recording
  * to /moni-ai/api/transcribe and each sentence of a reply to /moni-ai/api/speak
  * (a WAV comes back), with the same end-of-utterance detection and barge-in.
  * No key set, no voice: the controls say where to add one.
+ *
+ * Only this VPS is shown. The live Odoo server appears nowhere on this page.
  *
  * Loaded only on the Command Center (html.cc-page); returns at once elsewhere.
  */
@@ -30,7 +39,6 @@
   var VIEWER = root.getAttribute("data-viewer") || "you";
   var READY = root.getAttribute("data-voice-ready") === "1";   // an OpenAI key is set
   var VOICE = root.getAttribute("data-voice") || "";
-  var reduced = !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
 
   /* ================================================================ helpers */
 
@@ -52,6 +60,18 @@
   function num(n) { return n == null || !isFinite(n) ? "—" : Number(n).toLocaleString("en-US"); }
   function clip(s, n) { s = String(s || ""); return s.length > n ? s.slice(0, n - 1) + "…" : s; }
   function firstLine(s) { return String(s || "").split("\n").filter(function (l) { return l.trim(); })[0] || ""; }
+  /** Dollars, to the cent; under a cent shows as <$0.01 rather than $0.00. */
+  function money(v) {
+    if (v == null || !isFinite(v)) return "—";
+    v = Number(v);
+    if (v > 0 && v < 0.01) return "<$0.01";
+    return "$" + v.toFixed(2);
+  }
+  /** Plain text of a markdown reply, for one-line previews. */
+  function plain(s) {
+    return String(s || "").replace(/```[\s\S]*?```/g, " ").replace(/`([^`]*)`/g, "$1").replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
+      .replace(/^\s*[#>*+-]+\s*/gm, "").replace(/[*_~|]/g, "").replace(/\s+/g, " ").trim();
+  }
 
   var TZ = "Africa/Cairo";
   var fmtHMS, fmtHM, fmtDate, fmtDay;
@@ -70,6 +90,8 @@
     return Date.now() - d.getTime() > 20 * 3600 * 1000 ? fmtDay.format(d) : fmtHM.format(d);
   }
   function hms(iso) { var d = t(iso); return d ? fmtHMS.format(d) : ""; }
+  /** Day and time together, for anything that may be days away (next runs). */
+  function when(iso) { var d = t(iso); return d ? fmtDay.format(d) + " " + fmtHM.format(d) : ""; }
   function ago(iso) {
     var d = t(iso); if (!d) return "";
     var s = Math.max(0, Math.round((Date.now() - d.getTime()) / 1000));
@@ -95,6 +117,18 @@
     var m = /claude-([a-z]+)-(\d+)(?:-(\d+))?/.exec(String(id || ""));
     if (!m) return String(id || "");
     return m[1].charAt(0).toUpperCase() + m[1].slice(1) + " " + m[2] + (m[3] && m[3].length < 3 ? "." + m[3] : "");
+  }
+  function pct(v) { return Math.max(0, Math.min(100, Number(v) || 0)); }
+  /** Widths, custom properties and offsets that depend on data, set after the
+      markup is in place (a style attribute would be refused by the CSP). */
+  function applyBars(el) {
+    if (!el) return;
+    var i, list = el.querySelectorAll("[data-w]");
+    for (i = 0; i < list.length; i++) list[i].style.width = pct(list[i].getAttribute("data-w")) + "%";
+    list = el.querySelectorAll("[data-v]");
+    for (i = 0; i < list.length; i++) list[i].style.setProperty("--v", pct(list[i].getAttribute("data-v")) + "%");
+    list = el.querySelectorAll("[data-l]");
+    for (i = 0; i < list.length; i++) list[i].style.left = pct(list[i].getAttribute("data-l")) + "%";
   }
 
   var toastTimer = 0;
@@ -158,17 +192,42 @@
     skew: 0,               // server clock minus ours, ms
     target: "auto",
     delegatingUntil: 0,
+    view: "map",           // centre: map | missions
+    pane: "conv",          // drawer: conv | dec | tl | rules
   };
 
   function nowServer() { return Date.now() + S.skew; }
 
   function liveSessions() { return S.sessions.filter(function (s) { return !s.self; }); }
+  /** Take a sessions list from the server. MONI AI itself is always shown,
+      even when the list does not carry it (then it is made from the status),
+      and a session the event did not tag with its mission gets it from the
+      missions board. */
+  function setSessions(list) {
+    list = (list || []).slice();
+    var st = S.status || {};
+    if (!list.some(function (s) { return s.self; }) && (st.session_id || (st.process && st.process.pid))) {
+      list.push({ self: true, synthetic: true, name: "MONI AI", pid: st.process && st.process.pid, session_id: st.session_id || null,
+        cwd: "/root/moni-ai", where: "headless · supervisor", kind: "supervisor", status: st.busy ? "busy" : "idle", subagents: [],
+        started_at: st.process && st.process.started_at, cost_today_usd_est: st.cost_today ? st.cost_today.moni_ai_usd : null });
+    }
+    list.forEach(function (s) {
+      if ((!s.mission || s.mission.derived) && !s.self && s.name && typeof P !== "undefined" && P) s.mission = P.missionFor(s.name);
+      if (s.self && s.cost_today_usd_est == null && st.cost_today) s.cost_today_usd_est = st.cost_today.moni_ai_usd;
+    });
+    S.sessions = list;
+  }
   function selfSession() { return S.sessions.filter(function (s) { return s.self; })[0] || null; }
   function sessState(s) { return s.status === "busy" ? "working" : s.status === "waiting" ? "waiting" : "idle"; }
   function sessionFor(d) {
     var list = S.sessions;
     for (var i = 0; i < list.length; i++) if (d.target_pid && list[i].pid === d.target_pid) return list[i];
     for (var j = 0; j < list.length; j++) if (list[j].name && list[j].name === d.target_name && !list[j].self) return list[j];
+    return null;
+  }
+  function sessionNamed(name) {
+    name = String(name || "").replace(/\s*\[[0-9a-f]+\]$/, "");
+    for (var i = 0; i < S.sessions.length; i++) if (!S.sessions[i].self && S.sessions[i].name === name) return S.sessions[i];
     return null;
   }
   function pendingApprovals() {
@@ -192,343 +251,15 @@
 
   document.addEventListener("moni-theme", function () { Orb.palette(); });
 
-  /* ================================================================ the seed core
-     A sunflower head of florets laid on the golden angle, with a root grown out
-     to every live session. A delegation sends a bead of sap down that root and
-     the session blooms when it lands. States blend through weights. No per-frame
-     allocation: typed arrays, cached sprites, cached label widths. */
+  /* ================================================================ the orbit map */
 
-  var Orb = (function () {
-    var canvas = $("cc-orb"), ctx = canvas.getContext("2d");
-    var W = 0, H = 0, DPR = 1, CX = 0, CY = 0, R = 60, RX = 100, RY = 100;
-    var STATES = ["idle", "listening", "thinking", "delegating", "speaking"];
-    var SI = 0;
-    var WGT = new Float32Array([1, 0, 0, 0, 0]);
-    var GOLDEN = Math.PI * (3 - Math.sqrt(5)), TAU = Math.PI * 2;
-    var N = 460;
-    var FX = new Float32Array(N), FY = new Float32Array(N), FS = new Float32Array(N), FBK = new Uint8Array(N);
-    var MAXN = 12;
-    var NODES = [];                      // {key, label, st}
-    var NS = 0;
-    var NODE_ANG = new Float32Array(MAXN), NX = new Float32Array(MAXN), NY = new Float32Array(MAXN), BLOOM = new Float32Array(MAXN);
-    var RT = new Float32Array(MAXN * 8);
-    var BEND = new Float32Array([0.22, -0.2, 0.18, -0.22, 0.2, -0.18, 0.21, -0.19, 0.17, -0.21, 0.19, -0.17]);
-    var LABEL_W = new Float32Array(MAXN);
-    var DASH = [3, 5], NODASH = [];
-    var PAL = {}, SPR_GLOW = null, SPR_SAP = null;
-    var PK_N = 4, PK_K = new Int8Array(PK_N).fill(-1), PK_T0 = new Float64Array(PK_N), PK_DUR = 1300;
-    var BP = { x: 0, y: 0 };
-    var mic = 0, amp = 0, rot = 0, targetK = 0, micLevel = null, outLevel = null;
-    var t0 = performance.now(), last = t0, running = false;
-    var STATS = { frames: 0, total: 0 };
-    window.__orbStats = STATS;
-    var FONT_LABEL = "600 11.5px ui-sans-serif, -apple-system, 'Segoe UI', Roboto, sans-serif";
-    var FONT_TITLE = "700 15px ui-sans-serif, -apple-system, 'Segoe UI', Roboto, sans-serif";
-    var FONT_SUB = "700 9.5px ui-sans-serif, -apple-system, 'Segoe UI', Roboto, sans-serif";
-
-    function sprite(color, size) {
-      var c = document.createElement("canvas"); c.width = c.height = size; var g = c.getContext("2d");
-      var gr = g.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
-      gr.addColorStop(0, color); gr.addColorStop(1, "rgba(0,0,0,0)");
-      g.fillStyle = gr; g.fillRect(0, 0, size, size); return c;
-    }
-    function measure() {
-      ctx.font = FONT_LABEL;
-      for (var k = 0; k < NS; k++) LABEL_W[k] = ctx.measureText(NODES[k].label).width;
-    }
-    function palette() {
-      var cs = getComputedStyle(document.documentElement);
-      ["floret", "floret-mid", "floret-hi", "core", "root", "root-hi", "sap", "glow", "hud", "node-bg", "label-bg", "label-line", "label-ink", "ink", "sub", "work", "wait", "idle", "off", "off-ink"].forEach(function (k) {
-        PAL[k.replace("-", "_")] = cs.getPropertyValue("--orb-" + k).trim();
-      });
-      PAL.light = cs.getPropertyValue("color-scheme").indexOf("light") >= 0;
-      SPR_GLOW = sprite(PAL.glow || "rgba(95,191,63,.5)", 256);
-      SPR_SAP = sprite(PAL.sap || "#eaffd2", 64);
-      measure();
-      if (!running) draw(performance.now());
-    }
-    function stateCol(k) { var s = NODES[k].st; return s === "working" ? PAL.work : s === "waiting" ? PAL.wait : s === "offline" ? PAL.off : PAL.idle; }
-
-    /** Angles spread evenly, starting up and to the left as in the design. */
-    function angles() {
-      var step = TAU / Math.max(1, NS), start = -Math.PI / 2 - step / 2;
-      for (var k = 0; k < NS; k++) {
-        var a = start + k * step;
-        a = a - TAU * Math.floor((a + Math.PI) / TAU);
-        NODE_ANG[k] = a;
-      }
-    }
-    function setNodes(list) {
-      NODES = list.slice(0, MAXN);
-      NS = NODES.length;
-      angles();
-      measure();
-      if (targetK >= NS) targetK = 0;
-      if (!running) draw(performance.now());
-    }
-    function resize() {
-      var r = canvas.getBoundingClientRect(); DPR = Math.min(2, window.devicePixelRatio || 1);
-      W = r.width; H = r.height; if (!W || !H) return;
-      canvas.width = Math.round(W * DPR); canvas.height = Math.round(H * DPR);
-      ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-      CX = W / 2; CY = H * 0.5;
-      R = Math.max(40, Math.min(W * 0.12, H * 0.17));
-      RX = Math.min(W * 0.38, W / 2 - 110); RY = Math.min(H * 0.36, H / 2 - 64);
-      measure();
-      draw(performance.now());
-    }
-    function bez(k, tt) {
-      var o = k * 8, u = 1 - tt, a = u * u * u, b = 3 * u * u * tt, c = 3 * u * tt * tt, d = tt * tt * tt;
-      BP.x = a * RT[o] + b * RT[o + 2] + c * RT[o + 4] + d * RT[o + 6];
-      BP.y = a * RT[o + 1] + b * RT[o + 3] + c * RT[o + 5] + d * RT[o + 7];
-    }
-    function layoutNodes(time) {
-      for (var k = 0; k < NS; k++) {
-        var a = NODE_ANG[k] + (reduced ? 0 : 0.035 * Math.sin(time * 0.25 + k * 1.7));
-        var nx = CX + Math.cos(a) * RX, ny = CY + Math.sin(a) * RY;
-        NX[k] = nx; NY[k] = ny;
-        var ang = Math.atan2(ny - CY, nx - CX), sx = CX + Math.cos(ang) * R * 0.78, sy = CY + Math.sin(ang) * R * 0.78;
-        var dx = nx - sx, dy = ny - sy, L = Math.sqrt(dx * dx + dy * dy) || 1, px = -dy / L, py = dx / L;
-        var sway = reduced ? 0 : Math.sin(time * 0.6 + k * 2.1) * 0.05;
-        var b = (BEND[k] + sway) * L, o = k * 8;
-        RT[o] = sx; RT[o + 1] = sy;
-        RT[o + 2] = sx + dx * 0.3 + px * b; RT[o + 3] = sy + dy * 0.3 + py * b;
-        RT[o + 4] = sx + dx * 0.7 - px * b * 0.55; RT[o + 5] = sy + dy * 0.7 - py * b * 0.55;
-        RT[o + 6] = nx; RT[o + 7] = ny;
-      }
-    }
-    function strokeRoot(k, upto) {
-      var o = k * 8;
-      ctx.beginPath(); ctx.moveTo(RT[o], RT[o + 1]);
-      if (upto >= 1) ctx.bezierCurveTo(RT[o + 2], RT[o + 3], RT[o + 4], RT[o + 5], RT[o + 6], RT[o + 7]);
-      else for (var i = 1; i <= 24; i++) { bez(k, upto * i / 24); ctx.lineTo(BP.x, BP.y); }
-      ctx.stroke();
-    }
-    function drawRoots(time) {
-      ctx.lineCap = "round";
-      for (var k = 0; k < NS; k++) {
-        var st = NODES[k].st, off = st === "offline";
-        ctx.strokeStyle = off ? PAL.off : PAL.root;
-        ctx.setLineDash(off ? DASH : NODASH);
-        ctx.globalAlpha = off ? 0.55 : 0.9; ctx.lineWidth = off ? 1.2 : 2.2; strokeRoot(k, 1);
-        ctx.setLineDash(NODASH);
-        ctx.lineWidth = 1; ctx.globalAlpha = off ? 0.3 : 0.55;
-        ctx.beginPath();
-        for (var j = 1; j <= 3; j++) {
-          var tt = 0.22 * j + 0.06, side = (j + k) % 2 ? 1 : -1;
-          bez(k, tt); var x0 = BP.x, y0 = BP.y; bez(k, tt + 0.02);
-          var tx = BP.x - x0, ty = BP.y - y0, tl = Math.sqrt(tx * tx + ty * ty) || 1; tx /= tl; ty /= tl;
-          var len = 9 + 5 * ((j * 7 + k) % 3), ca = 0.8 * side;
-          var rx = tx * Math.cos(ca) - ty * Math.sin(ca), ry = tx * Math.sin(ca) + ty * Math.cos(ca);
-          ctx.moveTo(x0, y0); ctx.quadraticCurveTo(x0 + rx * len * 0.6 + tx * 3, y0 + ry * len * 0.6 + ty * 3, x0 + rx * len, y0 + ry * len);
-        }
-        ctx.stroke();
-        if (st === "working") {
-          for (var s = 0; s < 3; s++) {
-            var u = reduced ? (s + 0.5) / 3 : (time * 0.32 + s / 3) % 1;
-            bez(k, u); ctx.globalAlpha = 0.9 * Math.sin(u * Math.PI);
-            ctx.drawImage(SPR_SAP, BP.x - 9, BP.y - 9, 18, 18);
-            ctx.fillStyle = PAL.sap; ctx.beginPath(); ctx.arc(BP.x, BP.y, 1.8, 0, TAU); ctx.fill();
-          }
-        }
-      }
-      ctx.globalAlpha = 1;
-    }
-    function drawHud(time) {
-      var wl = WGT[1], ws = WGT[4], wt = WGT[2];
-      ctx.save(); ctx.translate(CX, CY);
-      ctx.strokeStyle = PAL.hud; ctx.globalAlpha = 0.13; ctx.lineWidth = 1; ctx.setLineDash(DASH);
-      ctx.beginPath(); ctx.ellipse(0, 0, Math.max(1, RX), Math.max(1, RY), 0, 0, TAU); ctx.stroke(); ctx.setLineDash(NODASH);
-      ctx.rotate(reduced ? 0 : time * (0.05 + wt * 0.25));
-      var r1 = R * 1.34, i, a;
-      ctx.globalAlpha = 0.18; ctx.beginPath();
-      for (i = 0; i < 120; i++) { if (i % 10 === 0) continue; a = i / 120 * TAU; ctx.moveTo(Math.cos(a) * r1, Math.sin(a) * r1); ctx.lineTo(Math.cos(a) * (r1 + 4), Math.sin(a) * (r1 + 4)); }
-      ctx.stroke();
-      ctx.globalAlpha = 0.55; ctx.beginPath();
-      for (i = 0; i < 120; i += 10) { a = i / 120 * TAU; ctx.moveTo(Math.cos(a) * r1, Math.sin(a) * r1); ctx.lineTo(Math.cos(a) * (r1 + 9), Math.sin(a) * (r1 + 9)); }
-      ctx.stroke();
-      ctx.restore();
-      ctx.save(); ctx.translate(CX, CY); ctx.rotate(reduced ? 0 : -time * (0.1 + wt * 0.5));
-      ctx.strokeStyle = PAL.hud; ctx.globalAlpha = 0.5 + 0.3 * wt; ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.arc(0, 0, R * 1.22, 0, 0.7); ctx.stroke();
-      ctx.beginPath(); ctx.arc(0, 0, R * 1.22, 1.3, 1.75); ctx.stroke();
-      ctx.beginPath(); ctx.arc(0, 0, R * 1.22, 2.6, 3.9); ctx.stroke();
-      ctx.beginPath(); ctx.arc(0, 0, R * 1.22, 4.4, 4.85); ctx.stroke();
-      ctx.restore();
-      if (wl > 0.01) {
-        ctx.strokeStyle = PAL.hud; ctx.lineWidth = 2; ctx.globalAlpha = 0.75 * wl; ctx.beginPath();
-        for (i = 0; i < 72; i++) {
-          a = i / 72 * TAU;
-          var lv = mic * (0.45 + 0.55 * Math.abs(Math.sin(a * 3 + time * 3.1) * Math.sin(a * 5 - time * 1.7)));
-          var q1 = R * 1.06, q2 = q1 + 3 + lv * R * 0.34;
-          ctx.moveTo(CX + Math.cos(a) * q1, CY + Math.sin(a) * q1); ctx.lineTo(CX + Math.cos(a) * q2, CY + Math.sin(a) * q2);
-        }
-        ctx.stroke();
-      }
-      if (ws > 0.01) {
-        ctx.strokeStyle = PAL.hud; ctx.lineWidth = 1.5;
-        for (i = 0; i < 4; i++) {
-          var kk = reduced ? i / 4 : (time * 0.55 + i / 4) % 1;
-          ctx.globalAlpha = ws * (0.45 * (1 - kk)) * (0.5 + amp);
-          ctx.beginPath(); ctx.arc(CX, CY, R * (1.05 + kk * 1.1), 0, TAU); ctx.stroke();
-        }
-      }
-      ctx.globalAlpha = 1;
-    }
-    function drawHead(time) {
-      var wi = WGT[0], wl = WGT[1], wt = WGT[2], wd = WGT[3], ws = WGT[4];
-      var breathe = 1 + (reduced ? 0 : 0.035 * Math.sin(time * 1.15)) * (wi + 0.4);
-      var div = GOLDEN + wt * 0.0065 * Math.sin(time * 0.9);
-      var tang = NS ? Math.atan2(NY[targetK] - CY, NX[targetK] - CX) : 0;
-      var glow = 0.55 + 0.15 * wl + 0.3 * wt + 0.25 * wd + 0.35 * ws * amp;
-      ctx.globalAlpha = Math.min(1, glow * (PAL.light ? 0.7 : 0.85));
-      var gs = R * (2.9 + 0.35 * mic * wl + 0.3 * amp * ws);
-      ctx.drawImage(SPR_GLOW, CX - gs / 2, CY - gs / 2, gs, gs);
-      var sp = R * Math.sqrt(Math.PI / N), i;
-      for (i = 0; i < N; i++) {
-        var f = (i + 0.5) / N, rn = Math.sqrt(f), th = i * div + rot;
-        var r = R * rn * breathe;
-        var b = 0.25 + 0.45 * (1 - rn);
-        if (wl > 0.01) r += wl * mic * R * 0.22 * f * (0.6 + 0.4 * Math.sin(th * 3 + time * 4));
-        if (wt > 0.01) { var wv = Math.sin(i * 0.045 - time * 6); b += wt * 0.5 * (wv > 0.6 ? wv : 0); }
-        if (ws > 0.01) { var sw = Math.sin(rn * 14 - time * 9); r += ws * (0.3 + amp) * R * 0.06 * sw; b += ws * (0.25 + amp) * 0.6 * (sw > 0.25 ? sw : 0); }
-        if (wd > 0.01 && NS) {
-          var dA = th - tang; dA = dA - TAU * Math.floor((dA + Math.PI) / TAU);
-          var arm = 1 - Math.abs(dA) / 0.55;
-          if (arm > 0) { var pulse = 0.5 + 0.5 * Math.sin(rn * 12 - time * 14); arm *= wd * pulse; r *= 1 + 0.16 * arm * rn; b += arm * 0.9; }
-        }
-        FX[i] = CX + Math.cos(th) * r; FY[i] = CY + Math.sin(th) * r;
-        FS[i] = sp * (0.26 + 0.2 * rn) * (1 + 0.22 * (b - 0.25));
-        FBK[i] = b > 0.85 ? 3 : b > 0.6 ? 2 : b > 0.4 ? 1 : 0;
-      }
-      for (var bk = 0; bk < 4; bk++) {
-        ctx.beginPath();
-        for (i = 0; i < N; i++) if (FBK[i] === bk) { ctx.moveTo(FX[i] + FS[i], FY[i]); ctx.arc(FX[i], FY[i], FS[i], 0, TAU); }
-        ctx.fillStyle = bk === 3 ? PAL.floret_hi : bk === 2 ? PAL.floret_mid : PAL.floret;
-        ctx.globalAlpha = bk === 3 ? 0.95 : PAL.light ? 0.62 + bk * 0.13 : 0.45 + bk * 0.2;
-        ctx.fill();
-      }
-      ctx.globalAlpha = 0.9; ctx.fillStyle = PAL.core;
-      ctx.beginPath(); ctx.arc(CX, CY, R * 0.07 * (1 + 0.5 * wt + 0.6 * amp * ws + 0.4 * mic * wl), 0, TAU); ctx.fill();
-      ctx.globalAlpha = 1;
-      ctx.textAlign = "center"; ctx.font = FONT_TITLE; ctx.fillStyle = PAL.ink;
-      ctx.fillText("MONI AI", CX, CY + R * 1.34 + 26);
-      ctx.font = FONT_SUB; ctx.fillStyle = PAL.sub;
-      ctx.fillText("CEO · ALL SESSIONS", CX, CY + R * 1.34 + 40);
-    }
-    function roundRect(x, y, w, h, r) { ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r); ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath(); }
-    function drawNodes(time) {
-      for (var k = 0; k < NS; k++) {
-        var x = NX[k], y = NY[k], st = NODES[k].st, col = stateCol(k), r = 7;
-        if (BLOOM[k] > 0) {
-          var bl = BLOOM[k], open = 1 - bl, pr = 8 + open * 22;
-          ctx.fillStyle = PAL.idle; ctx.globalAlpha = 0.55 * bl;
-          ctx.beginPath();
-          for (var p = 0; p < 8; p++) {
-            var pa = p / 8 * TAU + open * 0.6, px = x + Math.cos(pa) * pr * 0.6, py = y + Math.sin(pa) * pr * 0.6;
-            ctx.moveTo(px + pr * 0.42, py); ctx.ellipse(px, py, pr * 0.42, pr * 0.16, pa, 0, TAU);
-          }
-          ctx.fill();
-        }
-        ctx.globalAlpha = 1;
-        ctx.beginPath(); ctx.arc(x, y, r + 5, 0, TAU); ctx.fillStyle = PAL.node_bg; ctx.fill();
-        ctx.lineWidth = 1.2; ctx.strokeStyle = st === "offline" ? PAL.off : PAL.hud; ctx.globalAlpha = st === "offline" ? 0.8 : 0.6; ctx.stroke();
-        if (st === "working" || st === "waiting") {
-          var kk = reduced ? 0.4 : (time * 0.8) % 1;
-          ctx.beginPath(); ctx.arc(x, y, r + 5 + kk * 13, 0, TAU); ctx.strokeStyle = col; ctx.globalAlpha = 0.7 * (1 - kk); ctx.stroke();
-        }
-        ctx.globalAlpha = 1;
-        if (st !== "offline") { ctx.globalAlpha = 0.8; ctx.drawImage(st === "working" ? SPR_SAP : SPR_GLOW, x - 13, y - 13, 26, 26); ctx.globalAlpha = 1; }
-        ctx.beginPath(); ctx.arc(x, y, r * 0.62, 0, TAU); ctx.fillStyle = col; ctx.fill();
-        var tw = LABEL_W[k], lw = tw + 16, lh = 20;
-        var above = NODE_ANG[k] < -0.3;
-        var lx = x - lw / 2, ly = above ? y - r - 10 - lh : y + r + 9;
-        if (lx < 8) lx = 8; if (lx + lw > W - 8) lx = W - 8 - lw;
-        ctx.fillStyle = PAL.label_bg; ctx.strokeStyle = BLOOM[k] > 0 ? PAL.hud : PAL.label_line; ctx.lineWidth = 1;
-        roundRect(lx, ly, lw, lh, 10); ctx.fill(); ctx.stroke();
-        ctx.font = FONT_LABEL; ctx.textAlign = "left"; ctx.fillStyle = st === "offline" ? PAL.off_ink : PAL.label_ink;
-        ctx.fillText(NODES[k].label, lx + 8, ly + 14);
-      }
-    }
-    function drawPackets(now, dt) {
-      for (var p = 0; p < PK_N; p++) {
-        var k = PK_K[p]; if (k < 0) continue;
-        if (k >= NS) { PK_K[p] = -1; continue; }
-        var e = (now - PK_T0[p]) / PK_DUR;
-        if (e >= 1.6) { PK_K[p] = -1; continue; }
-        var u = e < 1 ? (e < 0.5 ? 2 * e * e : 1 - Math.pow(-2 * e + 2, 2) / 2) : 1;
-        var fade = e < 1 ? 1 : (1.6 - e) / 0.6;
-        ctx.strokeStyle = PAL.sap; ctx.lineWidth = 8; ctx.globalAlpha = 0.18 * fade; strokeRoot(k, u);
-        ctx.strokeStyle = PAL.root_hi; ctx.lineWidth = 3; ctx.globalAlpha = 0.95 * fade; strokeRoot(k, u);
-        if (e < 1) {
-          for (var j = 7; j >= 0; j--) {
-            var tu = u - j * 0.022; if (tu < 0) continue;
-            bez(k, tu); var sz = (1 - j / 8);
-            ctx.globalAlpha = 0.85 * sz; ctx.drawImage(SPR_SAP, BP.x - 14 * sz, BP.y - 14 * sz, 28 * sz, 28 * sz);
-          }
-          bez(k, u); ctx.globalAlpha = 1; ctx.fillStyle = PAL.sap; ctx.beginPath(); ctx.arc(BP.x, BP.y, 3.6, 0, TAU); ctx.fill();
-        } else if (BLOOM[k] <= 0 && e < 1.05) { BLOOM[k] = 1; }
-      }
-      for (var k2 = 0; k2 < NS; k2++) if (BLOOM[k2] > 0) BLOOM[k2] = Math.max(0, BLOOM[k2] - dt * 0.9);
-      ctx.globalAlpha = 1;
-    }
-    function draw(now) {
-      if (!W || !SPR_GLOW) return;
-      var tStart = performance.now();
-      var time = (now - t0) / 1000, dt = Math.min(0.05, Math.max(0, (now - last) / 1000)); last = now;
-      for (var s = 0; s < 5; s++) { var tg = s === SI ? 1 : 0; WGT[s] += (tg - WGT[s]) * (reduced ? 1 : Math.min(1, dt * 4)); }
-      // The microphone's real level while listening, and the reply's real level
-      // while it is read aloud (from an analyser on the speaker). A voice-like
-      // envelope stands in only when no level is on offer.
-      var lvl = micLevel ? micLevel() : 0;
-      mic += ((0.12 + Math.min(1, lvl * 9)) - mic) * Math.min(1, dt * 12);
-      var out = outLevel ? outLevel() : -1;
-      var sy = out >= 0 ? Math.min(1, out * 5) : Math.abs(Math.sin(time * 9.5)) * (0.55 + 0.45 * Math.sin(time * 1.7)) * (Math.sin(time * 0.8) > -0.55 ? 1 : 0.1);
-      amp += (sy - amp) * Math.min(1, dt * 14);
-      if (reduced) { mic = 0.5; amp = 0.6; }
-      rot += dt * (0.05 + WGT[2] * 0.55 + WGT[3] * 0.1 + WGT[1] * 0.05);
-      ctx.clearRect(0, 0, W, H);
-      layoutNodes(time);
-      drawHud(time);
-      drawRoots(time);
-      drawPackets(now, dt);
-      drawHead(time);
-      drawNodes(time);
-      STATS.frames++; STATS.total += performance.now() - tStart;
-    }
-    function loop(now) { if (!running) return; draw(now); requestAnimationFrame(loop); }
-    function start() { if (reduced || running || document.hidden) return; running = true; last = performance.now(); requestAnimationFrame(loop); }
-    function stop() { running = false; }
-    document.addEventListener("visibilitychange", function () { if (document.hidden) stop(); else start(); });
-    if (window.ResizeObserver) new ResizeObserver(resize).observe(canvas); else window.addEventListener("resize", resize);
-
-    return {
-      palette: palette,
-      resize: resize,
-      start: start,
-      setNodes: setNodes,
-      setState: function (name) {
-        var i = STATES.indexOf(name);
-        if (i < 0 || i === SI) return;
-        SI = i;
-        if (!running) draw(performance.now());
-      },
-      pulse: function (key) {
-        var k = -1;
-        for (var i = 0; i < NS; i++) if (NODES[i].key === key) k = i;
-        if (k < 0) return false;
-        targetK = k;
-        for (var p = 0; p < PK_N; p++) if (PK_K[p] < 0) { PK_K[p] = k; PK_T0[p] = performance.now(); break; }
-        if (reduced) { BLOOM[k] = 0.6; draw(performance.now()); }
-        return true;
-      },
-      micSource: function (fn) { micLevel = fn; },
-      outSource: function (fn) { outLevel = fn; },
-    };
-  })();
+  var Orb = window.MoniMap($("cc-map"), {
+    visible: function () { return S.view === "map"; },
+    onClick: function (key) { P.openDeep(key); },
+  });
 
   /* ================================================================ core state
-     One place decides what the seed core shows and what the pills say. */
+     One place decides what the core shows and what the pills say. */
 
   var stateTimer = 0;
   function orbState() {
@@ -539,6 +270,10 @@
     return "idle";
   }
   var LABEL = { idle: "Idle", listening: "Listening", thinking: "Thinking", delegating: "Delegating", speaking: "Speaking" };
+  function failedServices() {
+    var m = S.status && S.status.machine;
+    return (m && m.services && m.services.failed) || [];
+  }
   function paintState() {
     var st = orbState();
     Orb.setState(st);
@@ -548,15 +283,19 @@
     if (!S.online) {
       label.textContent = "Offline"; dot.className = "cc-dot bad"; pill.classList.add("bad");
     } else if (pending) {
-      label.textContent = "Awaiting approval"; dot.className = "cc-dot warn"; pill.classList.add("warn");
+      label.textContent = "Waiting for you"; dot.className = "cc-dot warn"; pill.classList.add("warn");
     } else {
-      label.textContent = LABEL[st]; dot.className = "cc-dot" + (st === "thinking" || st === "delegating" ? " work" : "");
+      label.textContent = LABEL[st];
+      var busy = st === "thinking" || st === "delegating" || st === "speaking" || st === "listening";
+      dot.className = "cc-dot" + (busy ? " work" : "");
+      if (busy) pill.classList.add("work");
     }
     var chip = $("cc-sys"), cdot = $("cc-sys-dot");
     var lng = chip.querySelector(".long"), sht = chip.querySelector(".short");
     function lab(l, s) { lng.textContent = l; sht.textContent = s; }
     chip.className = "cc-sys-chip";
     var proc = S.status && S.status.process;
+    var failed = failedServices().length;
     if (!S.online) {
       chip.classList.add("bad"); cdot.className = "cc-dot bad"; lab("MONI AI offline", "Offline");
     } else if (proc && proc.state !== "ready") {
@@ -564,6 +303,8 @@
       cdot.className = "cc-dot warn"; lab("MONI AI " + proc.state, proc.state);
     } else if (pending) {
       chip.classList.add("warn"); cdot.className = "cc-dot warn"; lab("Awaiting approval", "Approval");
+    } else if (failed) {
+      chip.classList.add("warn"); cdot.className = "cc-dot warn"; lab(failed + " failed service" + (failed === 1 ? "" : "s"), failed + " issue" + (failed === 1 ? "" : "s"));
     } else if (S.status && S.status.busy) {
       cdot.className = "cc-dot work"; lab("MONI AI working", "Working");
     } else {
@@ -576,91 +317,100 @@
 
   /* ================================================================ left rail */
 
-  function setCore(key, sub, st, cls) {
-    var li = document.querySelector('[data-core="' + key + '"]');
-    if (!li) return;
-    li.querySelector("[data-sub]").textContent = sub;
-    var el = li.querySelector("[data-st]");
-    el.textContent = st;
-    el.className = "cc-st" + (cls ? " " + cls : "");
+  function renderRail() {
+    renderMachine();
+    renderCore();
   }
 
-  function renderRail() {
+  /** This VPS: vitals and failed services from status.machine (older
+      supervisors only send status.vitals, which is used instead). */
+  function renderMachine() {
+    var st = S.status || {};
+    var m = st.machine || {};
+    var v = m.vitals || st.vitals || {};
+    var host = m.host || v.host || "";
+    $("cc-host").textContent = "This VPS";
+    var sv = m.services || null;
+    var failed = (sv && sv.failed) || [];
+    var badge = $("cc-mach-badge");
+    if (!S.online && !st.vitals) { badge.className = "cc-badge b-mute"; badge.textContent = "unknown"; }
+    else if (failed.length) { badge.className = "cc-badge b-warn"; badge.textContent = failed.length + " failed"; }
+    else { badge.className = "cc-badge b-ok"; badge.textContent = "healthy"; }
+    var sub = [host || "this box"];
+    if (v.uptime_s) sub.push(upDur(v.uptime_s));
+    if (v.cpus) sub.push(v.cpus + " vCPU");
+    if (v.mem && v.mem.total) sub.push(bytesGB(v.mem.total));
+    $("cc-mach-sub").textContent = sub.join(" · ");
+    function bar(key, label, val) {
+      var el = document.querySelector('[data-mb="' + key + '"]');
+      if (!el) return;
+      el.firstChild.nodeValue = label + " " + (val == null ? "—" : Math.round(pct(val)) + "%");
+      el.classList.toggle("hot", val != null && val > 75);
+      el.style.setProperty("--v", (val == null ? 0 : pct(val)) + "%");
+    }
+    bar("cpu", "CPU", v.cpu_pct);
+    bar("ram", "RAM", v.mem && v.mem.pct);
+    bar("disk", "DISK", v.disk && v.disk.pct);
+    var note = $("cc-mach-note");
+    note.className = "cc-mach-note" + (failed.length ? " bad" : "");
+    if (failed.length) {
+      var f = failed[0];
+      note.innerHTML = ic("alert") + "<span>" + esc(String(f.unit || "a service").replace(/\.service$/, "")) + " failed" + (f.since ? " " + esc(hm(f.since)) : "") +
+        (failed.length > 1 ? " · +" + (failed.length - 1) + " more" : "") + "</span>";
+      note.title = failed.map(function (x) { return x.unit + (x.since ? " since " + hm(x.since) : ""); }).join("\n");
+    } else if (sv && sv.total) {
+      note.innerHTML = ic("check") + "<span>" + esc(sv.up + " of " + sv.total + " services up") + "</span>";
+      note.title = "";
+    } else {
+      note.innerHTML = ic("clock") + "<span>" + esc(v.load ? "load " + v.load.map(function (x) { return Number(x).toFixed(2); }).join(" · ") : "waiting for vitals") + "</span>";
+      note.title = "";
+    }
+    $("cc-mach-aside").textContent = m.at || sv && sv.at ? "checked " + hm(m.at || sv.at) : "this VPS";
+  }
+
+  function setCore(key, val, cls, title) {
+    var cell = document.querySelector('[data-core="' + key + '"]');
+    if (!cell) return;
+    var b = cell.querySelector("[data-st]");
+    b.textContent = val;
+    b.className = cls || "";
+    cell.title = title || "";
+  }
+
+  function renderCore() {
     var st = S.status || {};
     var proc = st.process || {};
-    var vit = st.vitals || {};
-    $("cc-host").textContent = vit.host || "—";
-    if (!S.online) setCore("core", S.offlineMsg || "supervisor unreachable", "Offline", "bad");
-    else setCore("core", modelLabel(proc.model) + (proc.effort ? " · " + proc.effort : ""), proc.state === "ready" ? "Online" : proc.state || "—", proc.state === "ready" ? "" : "warn");
+    var c = st.counts || {};
+    $("cc-core-aside").textContent = proc.model ? modelLabel(proc.model) + (proc.effort ? " · " + proc.effort : "") : "—";
+    if (!S.online) setCore("core", "offline", "bad", S.offlineMsg || "supervisor unreachable");
+    else setCore("core", proc.state === "ready" ? "online" : proc.state || "—", proc.state === "ready" ? "ok" : "warn", "MONI AI's own Claude session");
 
     var live = liveSessions();
-    var c = { working: 0, waiting: 0, idle: 0 };
-    live.forEach(function (s) { c[sessState(s)]++; });
-    var parts = [];
-    if (c.working) parts.push(c.working + " working");
-    if (c.waiting) parts.push(c.waiting + " waiting");
-    parts.push(c.idle + " idle");
-    setCore("sessions", parts.join(" · "), live.length + " live", "");
+    var cnt = { working: 0, waiting: 0, idle: 0 };
+    live.forEach(function (s) { cnt[sessState(s)]++; });
+    setCore("sessions", live.length + " live", "", cnt.working + " working · " + cnt.waiting + " waiting · " + cnt.idle + " idle");
 
     var ag = S.agents;
     if (ag && !ag.error && ag.total != null) {
-      var names = (ag.channels || []).map(function (x) { return x.charAt(0).toUpperCase() + x.slice(1); });
-      setCore("agents", names.length ? names.join(" · ") : "no channels", ag.active + (ag.active !== ag.total ? "/" + ag.total : ""), ag.active ? "" : "off");
-    } else {
-      setCore("agents", ag === null && S.online && S.status ? "not in your role" : "unavailable", "—", "off");
-    }
+      var down = ag.total - ag.active;
+      setCore("agents", down > 0 ? down + " down" : ag.active + " ok", down > 0 ? "warn" : "ok", (ag.channels || []).join(" · "));
+    } else setCore("agents", "—", "off", ag === null && S.online ? "not in your role" : "unavailable");
 
     var mem = S.memory;
-    if (mem && !mem.error) {
-      setCore("memory", num(mem.facts) + " facts", mem.healthy ? "Synced" : "Degraded", mem.healthy ? "" : "warn");
-    } else setCore("memory", "unavailable", "—", "off");
+    if (mem && !mem.error) setCore("memory", num(mem.facts), mem.healthy ? "" : "warn", num(mem.facts) + " facts · " + num(mem.chunks) + " chunks" + (mem.healthy ? "" : " · degraded"));
+    else setCore("memory", "—", "off", "unavailable");
 
-    setCore("voice", READY ? "OpenAI · " + (VOICE || "voice") : "OpenAI · no key", Voice.listening ? "Live" : READY ? "Ready" : "Off", Voice.listening ? "warn" : READY ? "" : "off");
+    if (c.watchers_total != null) setCore("watchers", c.watchers_on + " on", c.watchers_on ? "ok" : "off", c.watchers_on + " of " + c.watchers_total + " watchers listening");
+    else setCore("watchers", "—", "off", "");
+    if (c.rules_user != null || c.rules_builtin != null) setCore("rules", String((c.rules_user || 0) + (c.rules_builtin || 0)), "", (c.rules_user || 0) + " of yours · " + (c.rules_builtin || 0) + " built in");
+    else setCore("rules", "—", "off", "");
+
+    setCore("voice", Voice.listening ? "live" : READY ? "ready" : "no key", Voice.listening ? "warn" : READY ? "ok" : "off", READY ? "OpenAI · " + (VOICE || "voice") : "Add an OpenAI key in Settings to use voice");
 
     var pend = pendingApprovals().length;
     var mins = Math.round((st.approval_timeout_s || 300) / 60);
-    setCore("guard", "Asks before destructive", pend ? pend + " waiting" : "On", pend ? "warn" : "");
-    var gl = document.querySelector('[data-core="guard"]');
-    if (gl) gl.title = "Destructive steps wait for Approve; nobody answering in " + mins + " min means denied.";
-
-    renderVitals();
-    renderMemory();
+    setCore("guard", pend ? String(pend) : "on", pend ? "warn" : "ok", "Destructive steps wait for Approve; nobody answering in " + mins + " min means denied.");
   }
-
-  var RING_C = 2 * Math.PI * 30;
-  function ring(label, v) {
-    var pct = v == null ? 0 : Math.max(0, Math.min(100, v));
-    return '<div><div class="cc-ring"><svg viewBox="0 0 76 76" aria-hidden="true"><circle class="trk" cx="38" cy="38" r="30" fill="none" stroke-width="6"/>' +
-      (v == null ? "" : '<circle class="val' + (pct > 75 ? " hot" : "") + '" cx="38" cy="38" r="30" fill="none" stroke-width="6" stroke-linecap="round" stroke-dasharray="' + (RING_C * pct / 100).toFixed(1) + " " + RING_C.toFixed(1) + '"/>') +
-      '<circle class="tick" cx="38" cy="38" r="36" fill="none" stroke-width="1" stroke-dasharray="1 4"/></svg>' +
-      '<span class="v">' + (v == null ? "—" : Math.round(pct) + "%") + '</span></div><div class="cc-ring-l">' + label + "</div></div>";
-  }
-  function renderVitals() {
-    var v = (S.status && S.status.vitals) || {};
-    $("cc-rings").innerHTML = ring("CPU", v.cpu_pct) + ring("RAM", v.mem && v.mem.pct) + ring("DISK", v.disk && v.disk.pct);
-    $("cc-vit-aside").textContent = "live" + (v.cpus ? " · " + v.cpus + " vCPU" : "") + (v.mem ? " · " + bytesGB(v.mem.total) : "");
-    $("cc-load").textContent = v.load ? "Load " + v.load.map(function (x) { return x.toFixed(2); }).join(" · ") : "Load —";
-    $("cc-up").textContent = v.uptime_s ? upDur(v.uptime_s) : "—";
-  }
-  function renderMemory() {
-    var m = S.memory || {};
-    $("cc-mem-facts").textContent = num(m.facts);
-    $("cc-mem-chunks").textContent = num(m.chunks);
-    $("cc-mem-sessions").textContent = num(m.sessions);
-    $("cc-mem-last").textContent = m.last_facts ? hm(m.last_facts) : "—";
-    $("cc-mem-aside").textContent = m.last_ingest ? "ingest " + hm(m.last_ingest) : m.error ? "unavailable" : "—";
-    $("cc-mem-topics").innerHTML = (m.topics || []).slice(0, 4).map(function (x) { return '<span class="cc-tag">' + esc(x) + "</span>"; }).join("");
-  }
-  (function constellation() {
-    var pts = [], s = "", i, j;
-    for (i = 0; i < 18; i++) { var a = i * 2.39996, rr = 6 + 36 * Math.sqrt((i + 0.5) / 18); pts.push([48 + rr * Math.cos(a), 48 + rr * Math.sin(a)]); }
-    for (i = 0; i < pts.length; i++) for (j = i + 1; j < pts.length; j++) {
-      var dx = pts[i][0] - pts[j][0], dy = pts[i][1] - pts[j][1];
-      if (dx * dx + dy * dy < 420) s += '<line class="ln" x1="' + pts[i][0].toFixed(1) + '" y1="' + pts[i][1].toFixed(1) + '" x2="' + pts[j][0].toFixed(1) + '" y2="' + pts[j][1].toFixed(1) + '" stroke-width=".8"/>';
-    }
-    pts.forEach(function (p, k) { s += '<circle class="pt' + (k % 5 === 0 ? " big" : "") + '" cx="' + p[0].toFixed(1) + '" cy="' + p[1].toFixed(1) + '" r="' + (k % 5 === 0 ? 3 : 1.8) + '"/>'; });
-    $("cc-constellation").innerHTML = '<circle class="rim" cx="48" cy="48" r="46" stroke-dasharray="2 3"/>' + s;
-  })();
 
   /* ================================================================ sessions */
 
@@ -674,46 +424,46 @@
     if (/Remote/.test(w)) return "remote";
     return "sessions";
   }
-  function sessLast(s) {
-    var d = s.last_delegation;
-    if (s.self) return S.status && S.status.busy ? "working on a turn now" : "the CEO session · ready";
-    if (d && Date.now() - Date.parse(d.updated_at || d.created_at) < 6 * 3600 * 1000) {
-      return ago(d.updated_at || d.created_at) + " · " + (d.status === "ack" ? "replied" : d.status) + ": " + clip(d.summary || firstLine(d.text), 60);
-    }
-    if (s.waiting_for) return "waiting for " + s.waiting_for;
-    return (sessState(s) === "idle" ? "idle " : "busy ") + (s.status_since ? ago(s.status_since) : "") + " · " + (s.cwd || "");
+  function sessWhere(s) {
+    var w = String(s.where || s.kind || "");
+    return /Desktop/.test(w) ? "Desktop" : /Terminal/.test(w) ? "Terminal" : /Remote/.test(w) ? "Remote" : w ? clip(w, 14) : "session";
   }
   function subagentLabel(a) { return a.description || a.type || ("agent-" + a.id); }
-  function subagentsHtml(s) {
-    var list = s.subagents || [];
-    if (!list.length) return "";
-    var chips = list.map(function (a) {
-      var since = a.modified ? ago(a.modified) : "";
-      return '<li class="cc-sa" title="' + esc(subagentLabel(a) + (since ? " · running " + since : "")) + '">' +
-        '<span class="cc-dot work"></span><span class="cc-sa-name">' + esc(clip(subagentLabel(a), 34)) + '</span>' +
-        (since ? '<span class="cc-sa-time">' + esc(since) + '</span>' : "") + "</li>";
-    }).join("");
-    return '<ul class="cc-sess-agents">' + chips + "</ul>";
-  }
   function sortSessions(list) {
     return list.slice().sort(function (a, b) {
       if (a.self !== b.self) return a.self ? 1 : -1;
       return String(a.started_at || "").localeCompare(String(b.started_at || "")) || (a.pid || 0) - (b.pid || 0);
     });
   }
+  function selfState() { return S.status && S.status.busy ? "working" : "idle"; }
+  function sessLine(s) {
+    var bits = [];
+    var n = (s.subagents || []).length;
+    if (n) bits.push("<b>" + n + " sub-agent" + (n === 1 ? "" : "s") + "</b>");
+    if (s.self) bits.push(S.status && S.status.busy ? "working on a turn" : "CEO · ready");
+    else if (s.waiting_for) bits.push("waiting for " + esc(s.waiting_for));
+    else {
+      var d = s.last_delegation;
+      if (d && Date.now() - Date.parse(d.updated_at || d.created_at) < 6 * 3600 * 1000) bits.push(esc((d.status === "ack" ? "replied" : d.status) + " " + ago(d.updated_at || d.created_at)));
+      else bits.push(esc(sessState(s) + (s.status_since ? " " + ago(s.status_since) : "")));
+    }
+    if (s.cost_today_usd_est != null) bits.push(esc(money(s.cost_today_usd_est)) + (s.self ? "" : " est"));
+    return bits.join(" · ");
+  }
   function renderSessions(force) {
     var list = sortSessions(S.sessions);
     var sig = JSON.stringify(list.map(function (s) {
       return [s.pid, s.name, s.status, s.waiting_for, s.where, s.open_delegations, s.last_delegation && [s.last_delegation.id, s.last_delegation.status],
-        (s.subagents || []).map(function (a) { return [a.id, a.status, a.description, a.modified]; })];
+        s.mission && [s.mission.ref, s.mission.step_n, s.mission.step_status], s.cost_today_usd_est,
+        (s.subagents || []).map(function (a) { return [a.id, a.status, a.description]; })];
     })) + "|" + S.target + "|" + (S.status && S.status.busy);
     var live = liveSessions();
-    $("cc-sess-aside").textContent = live.length + " live" + (S.status && S.status.sessions_at ? " · polled " + ago(S.status.sessions_at) : "") + " · → delegate · open where it runs";
+    $("cc-sess-aside").textContent = live.length + " live" + (S.status && S.status.sessions_at ? " · polled " + ago(S.status.sessions_at) : "") + " · click one for the deep view";
     if (sig === sessSig && !force) return;
     sessSig = sig;
 
     Orb.setNodes(sortSessions(live).map(function (s) {
-      return { key: sessKey(s), label: clip(s.name || "unnamed session", 26), st: sessState(s) };
+      return { id: sessKey(s), label: clip(s.name || "unnamed session", 26), st: sessState(s), subs: s.subagents || [], mission: !!s.mission };
     }));
 
     var el = $("cc-sessions");
@@ -722,21 +472,17 @@
       return;
     }
     el.innerHTML = list.map(function (s) {
-      var st = s.self ? (S.status && S.status.busy ? "working" : "idle") : sessState(s);
+      var st = s.self ? selfState() : sessState(s);
       var key = sessKey(s);
-      var name = s.name || "unnamed session";
-      return '<article class="cc-card cc-sess ' + st + (s.self ? " self" : "") + '" data-sess="' + esc(key) + '" title="' + esc((s.cwd || "") + " · pid " + (s.pid || "?")) + '">' +
-        '<span class="cc-sess-ic">' + ic(sessIcon(s)) + "</span>" +
-        '<div class="cc-sess-main"><div class="cc-sess-name">' + esc(name) + "</div>" +
-        '<div class="cc-sess-where"><span class="cc-st-inline ' + st + '">' + st + " · </span>" + esc(s.where || s.kind || "session") + "</div>" +
-        '<div class="cc-sess-last">' + esc(sessLast(s)) + "</div>" + subagentsHtml(s) + "</div>" +
-        '<span class="cc-sess-state ' + st + '"><span class="cc-dot ' + (st === "working" ? "work" : st === "waiting" ? "wait" : "idle") + '"></span>' + st + "</span>" +
-        '<div class="cc-sess-actions">' +
-        (s.last_delegation && (s.last_delegation.text || s.last_delegation.summary)
-          ? '<button type="button" class="cc-ib" data-msg="' + esc(key) + '" title="Show the full message sent to ' + esc(name) + '" aria-label="Show the full message sent to ' + esc(name) + '">' + ic("message") + "</button>"
-          : "") +
-        '<button type="button" class="cc-ib pri" data-delegate="' + esc(key) + '" title="' + (s.self ? "MONI AI is the one you are talking to" : "Delegate to " + esc(name) + "…") + '" aria-label="Delegate to ' + esc(name) + '"' + (s.self ? " disabled" : "") + ">" + ic("delegate") + "</button>" +
-        '<button type="button" class="cc-ib" data-open="' + esc(key) + '" title="' + (s.self ? "Open in Claude Desktop" : "Where it runs") + '" aria-label="Open ' + esc(name) + '">' + ic("open") + "</button></div></article>";
+      var name = s.self ? "MONI AI" : s.name || "unnamed session";
+      var tags = s.self ? '<span class="cc-badge b-self">' + ic("core") + "CEO · you talk to it</span>" : "";
+      if (s.mission) tags += '<span class="cc-badge b-mis">' + ic("flag") + esc(s.mission.ref || "mission") + (s.mission.step_n ? " · step " + esc(s.mission.step_n) : "") + "</span>";
+      if (!s.self && !s.mission) tags += '<span class="cc-badge b-mute">' + esc(sessWhere(s)) + "</span>";
+      var dot = st === "working" ? "work" : st === "waiting" ? "wait" : "idle";
+      return '<button type="button" class="cc-sc ' + st + (s.self ? " self" : "") + (s.mission ? " mis" : "") + (!s.self && S.target === s.name ? " target" : "") +
+        '" data-sess="' + esc(key) + '" title="' + esc(name + " · " + (s.cwd || "") + " · pid " + (s.pid || "?") + " · open the deep view") + '">' +
+        '<span class="cc-sc-ic">' + ic(sessIcon(s)) + '</span><span class="cc-sc-name"><b>' + esc(name) + '</b><span class="cc-dot ' + dot + '" title="' + esc(st) + '"></span></span>' +
+        '<span class="cc-sc-tags">' + tags + '</span><span class="cc-sc-line">' + sessLine(s) + "</span></button>";
     }).join("");
   }
   function findSess(key) {
@@ -751,92 +497,8 @@
   }
 
   $("cc-sessions").addEventListener("click", function (e) {
-    var d = e.target.closest("[data-delegate]"), o = e.target.closest("[data-open]"), m = e.target.closest("[data-msg]");
-    if (d && !d.disabled) {
-      var s = findSess(d.getAttribute("data-delegate"));
-      if (s) setTarget(s.name);
-      $("cc-input").focus();
-    }
-    if (o) {
-      var so = findSess(o.getAttribute("data-open"));
-      if (so) openPopover(so, o);
-    }
-    if (m) {
-      var sm = findSess(m.getAttribute("data-msg"));
-      if (sm) openMsgPopover(sm, m);
-    }
-  });
-
-  /* A small card by the button: where the session runs, and how to get to it. */
-  var pop = null;
-  function closePop() { if (pop) { pop.remove(); pop = null; } }
-  function placePop(el, anchor) {
-    var r = anchor.getBoundingClientRect();
-    var w = 320, h = el.offsetHeight;
-    var x = Math.min(window.innerWidth - w - 12, Math.max(12, r.right - w));
-    var y = r.top - h - 8;
-    if (y < 64) y = Math.min(window.innerHeight - h - 12, r.bottom + 8);
-    el.style.left = x + "px";
-    el.style.top = y + "px";
-  }
-  function openPopover(s, anchor) {
-    closePop();
-    pop = document.createElement("div");
-    pop.className = "cc-pop";
-    pop.setAttribute("role", "dialog");
-    var st = s.self ? (S.status && S.status.busy ? "working" : "idle") : sessState(s);
-    var rows = [
-      ["runs in", s.where || s.kind || "—"],
-      ["directory", s.cwd || "—"],
-      ["state", st + (s.status_since ? " since " + hm(s.status_since) : "")],
-      ["started", s.started_at ? hm(s.started_at) + " · pid " + (s.pid || "?") : "—"],
-    ];
-    if (!s.self) rows.push(["open", String(s.open_delegations || 0) + " delegation" + (s.open_delegations === 1 ? "" : "s")]);
-    var how = s.self
-      ? "MONI AI is reached from Claude Desktop through Remote Control only — never by resuming its session, which would fork it."
-      : /Desktop/.test(s.where || "")
-      ? "It is a Claude Desktop session: open it from the Desktop app's session list on the machine that started it" + (s.remote_control ? ", or from claude.ai/code, since Remote Control is on." : ".")
-      : s.remote_control
-      ? "Remote Control is on: it is listed in Claude Desktop and at claude.ai/code."
-      : "It runs in a terminal on this machine; attach to it there.";
-    pop.innerHTML = "<h4>" + ic(sessIcon(s)) + esc(clip(s.name || "unnamed session", 40)) + "</h4><dl>" +
-      rows.map(function (r) { return "<dt>" + esc(r[0]) + "</dt><dd>" + esc(r[1]) + "</dd>"; }).join("") + "</dl><p>" + esc(how) + "</p>" +
-      '<div class="cc-pop-act">' + (s.self ? '<button type="button" class="cc-btn pri" data-rc>' + ic("open") + "Open in Claude Desktop</button>" : "") +
-      '<button type="button" class="cc-btn" data-close>Close</button></div>';
-    document.body.appendChild(pop);
-    placePop(pop, anchor);
-    pop.addEventListener("click", function (ev) {
-      if (ev.target.closest("[data-close]")) closePop();
-      if (ev.target.closest("[data-rc]")) { openRemoteControl(); closePop(); }
-    });
-    var first = pop.querySelector("button");
-    if (first) first.focus();
-  }
-  /** The full text of a session's last delegation, in its own scrolling popover. */
-  function openMsgPopover(s, anchor) {
-    closePop();
-    var d = s.last_delegation;
-    if (!d) return;
-    pop = document.createElement("div");
-    pop.className = "cc-pop cc-pop-msg";
-    pop.setAttribute("role", "dialog");
-    pop.setAttribute("aria-label", "Message sent to " + (s.name || "session"));
-    var when = d.updated_at || d.created_at;
-    var status = TL_LAB[d.status] || d.status || "";
-    pop.innerHTML = "<h4>" + ic("delegate") + "Sent to " + esc(clip(s.name || "unnamed session", 34)) + "</h4>" +
-      '<div class="cc-pop-meta">' + esc(hm(when)) + (status ? " · " + esc(status) : "") + "</div>" +
-      '<div class="cc-pop-body">' + esc(d.text || d.summary || "") + "</div>" +
-      '<div class="cc-pop-act"><button type="button" class="cc-btn" data-close>Close</button></div>';
-    document.body.appendChild(pop);
-    placePop(pop, anchor);
-    pop.addEventListener("click", function (ev) {
-      if (ev.target.closest("[data-close]")) closePop();
-    });
-    var first = pop.querySelector("button");
-    if (first) first.focus();
-  }
-  document.addEventListener("click", function (e) {
-    if (pop && !pop.contains(e.target) && !e.target.closest("[data-open]") && !e.target.closest("[data-msg]")) closePop();
+    var b = e.target.closest("[data-sess]");
+    if (b) P.openDeep(b.getAttribute("data-sess"));
   });
 
   /** The Remote Control link, fetched when asked for and never kept on the page. */
@@ -858,6 +520,14 @@
   }
   $("cc-rc-open").addEventListener("click", openRemoteControl);
 
+  /** Interrupt MONI AI's current turn. */
+  function interrupt(btn) {
+    if (btn) btn.disabled = true;
+    return api("interrupt", { body: {} }).then(function () { toast("Interrupting the current turn…"); })
+      .catch(function (e) { toast("Could not interrupt: " + e.message, true); })
+      .then(function () { if (btn) btn.disabled = false; });
+  }
+
   /* ================================================================ composer */
 
   var input = $("cc-input");
@@ -868,7 +538,7 @@
     $("cc-vb-target").textContent = set ? "→ " + clip(S.target, 22) : "Auto-route";
     $("cc-target").classList.toggle("set", set);
     $("cc-target").title = set ? "Addressed to " + S.target + " (MONI AI delegates it there)" : "MONI AI picks the session";
-    input.placeholder = set ? "Tell " + clip(S.target, 30) + " what to do…" : "Tell MONI AI what to do…";
+    input.placeholder = set ? "Tell " + clip(S.target, 30) + " what to do (through MONI AI)…" : "Tell MONI AI what to do…";
     renderSessions(true);
   }
 
@@ -946,8 +616,12 @@
       hint("");
       if (!opts.voice) input.value = "";
       if (r && r.turn) {
-        upsertTurn(r.turn);
-        if (opts.voice || Voice.speakAll) voiceTurns.add(r.turn.id);
+        var tr = upsertTurn(r.turn);
+        if (opts.voice || Voice.speakAll) {
+          // The turn may already be over by the time this reply lands: read it now.
+          if (tr && tr.ended_at && aiText(tr)) Voice.flush(tr.id, aiText(tr));
+          else voiceTurns.add(r.turn.id);
+        }
         if (opts.voice && r.queued_behind) Voice.say("Got it. I'll pick that up as soon as I'm free.");
         else if (opts.voice && !opts.acked) Voice.say("On it.");
       }
@@ -967,20 +641,19 @@
     e.preventDefault();
     send(input.value);
   });
-  $("cc-stop").addEventListener("click", function () {
-    $("cc-stop").disabled = true;
-    api("interrupt", { body: {} }).then(function () { toast("Interrupting the current turn…"); })
-      .catch(function (e) { toast("Could not interrupt: " + e.message, true); })
-      .then(function () { $("cc-stop").disabled = false; });
-  });
+  $("cc-stop").addEventListener("click", function () { interrupt($("cc-stop")); });
 
   /* ================================================================ drawer */
 
   function showPane(id) {
+    S.pane = id;
     var bs = document.querySelectorAll(".cc-dr-tabs button");
     for (var i = 0; i < bs.length; i++) bs[i].setAttribute("aria-selected", bs[i].getAttribute("data-pane") === id ? "true" : "false");
-    ["conv", "tl", "feed"].forEach(function (p) { $("cc-pane-" + p).hidden = p !== id; });
+    ["conv", "dec", "tl", "rules"].forEach(function (p) { $("cc-pane-" + p).hidden = p !== id; });
+    if (root.classList.contains("drawer-closed")) { root.classList.remove("drawer-closed"); setTimeout(Orb.resize, 240); }
     if (id === "conv") toBottom(true);
+    if (id === "rules") P.renderRules();
+    if (id === "dec") P.renderDecisions();
   }
   document.querySelector(".cc-dr-tabs").addEventListener("click", function (e) {
     var b = e.target.closest("button[data-pane]");
@@ -994,14 +667,16 @@
   function toBottom(force) { if (force || atBottom()) scroller.scrollTop = scroller.scrollHeight; }
 
   /* ---------------------------------------------------------- conversation
-     One block per turn: what came in (you, Remote Control, or a peer session),
-     then MONI AI's bubble -- its text as it streams, the delegations the turn
-     made and any approval it is waiting on. */
+     One block per turn: what came in (you, Remote Control, a peer session, a
+     standing order, a watcher), then MONI AI's bubble -- its text as it
+     streams, the delegations the turn made and any approval it is waiting on.
+     A standing order's turn is a briefing card instead. */
 
   var chat = $("cc-chat");
   var TURN_SRC = {
     dashboard: "You", remote: "You · Remote Control", peer: "Message from a session",
     idle: "Idle notice", delivery: "Delivery notice", system: "System", unknown: "Turn",
+    watcher: "Watcher", order: "Standing order", "mission-request": "New mission", decision: "Decision",
   };
 
   function upsertTurn(row) {
@@ -1013,7 +688,10 @@
       S.turnOrder.push(row.id);
       S.turnOrder.sort(function (a, b) { return a - b; });
     }
-    for (var k in row) if (Object.prototype.hasOwnProperty.call(row, k)) cur[k] = row[k];
+    // A snapshot taken before the turn ended (the reply to POST send, when the
+    // turn was quick) must not put a finished turn back to queued or running.
+    var stale = cur.ended_at && !row.ended_at;
+    if (!stale) for (var k in row) if (Object.prototype.hasOwnProperty.call(row, k)) cur[k] = row[k];
     if (S.oldestTurn == null || row.id < S.oldestTurn) S.oldestTurn = row.id;
     renderTurn(cur);
     return cur;
@@ -1042,19 +720,41 @@
     return txt;
   }
 
+  var ORDER_RE = /^\s*\[Standing order: ([^\]\n]{1,120})\]/;
+  function isOrderTurn(tr) { return tr.source === "order" || !!tr.order_id; }
+  function orderName(tr) {
+    var m = ORDER_RE.exec(String(tr.text || ""));
+    if (m) return m[1];
+    var o = tr.order_id && P.orderById(tr.order_id);
+    return o ? o.name : "Standing order";
+  }
+
   function inboundHTML(tr) {
     var who = TURN_SRC[tr.source] || "Turn";
     var when = hm(tr.created_at);
     var text = tr.text || "";
-    if (tr.source === "dashboard" || tr.source === "remote") {
-      var name = tr.source === "dashboard" ? (tr.actor && tr.actor !== VIEWER ? esc(tr.actor) : "You") : "You · via Remote Control";
-      return '<div class="cc-msg me"><div class="who"><b>' + name + "</b> · " + esc(when) + (tr.target ? " · → " + esc(clip(tr.target, 30)) : "") + '</div><div class="cc-bubble">' + esc(text) + "</div></div>";
+    if (isOrderTurn(tr)) return "";
+    if (tr.source === "dashboard" || tr.source === "remote" || tr.source === "mission-request") {
+      var name = tr.source === "remote" ? "You · via Remote Control" : tr.actor && tr.actor !== VIEWER ? esc(tr.actor) : "You";
+      var tag = tr.source === "mission-request" ? ' · <span class="cc-badge b-mis">' + ic("flag") + "new mission</span>" : "";
+      return '<div class="cc-msg me"><div class="who"><b>' + name + "</b> · " + esc(when) + tag + (tr.target ? " · → " + esc(clip(tr.target, 30)) : "") + '</div><div class="cc-bubble">' + esc(text) + "</div></div>";
     }
     if (tr.source === "peer") {
       return '<div class="cc-msg ai"><div class="who"><span class="cc-av"></span><b>' + esc(tr.actor || "A session") + "</b> · " + esc(when) + ' · peer message</div><div class="cc-bubble"><div class="cc-relay"><div class="src">' + esc(tr.actor || "session") + " → MONI AI</div>" + md(clip(text, 4000)) + "</div></div></div>";
     }
     var line = clip(firstLine(text.replace(/\[Cross-session [a-z ]+\]/i, "")) || who, 160);
-    return '<div class="cc-msg sys"><div class="cc-bubble">' + esc(who) + (tr.actor ? " · " + esc(tr.actor) : "") + " · " + esc(when) + (line && line !== who ? " — " + esc(line) : "") + "</div></div>";
+    return '<div class="cc-msg sys"><div class="cc-bubble">' + esc(who) + (tr.actor && tr.actor.toLowerCase() !== String(tr.source).toLowerCase() ? " · " + esc(tr.actor) : "") + " · " + esc(when) + (line && line !== who ? " — " + esc(line) : "") + "</div></div>";
+  }
+
+  /** A standing order's run, as a briefing card. */
+  function briefHTML(tr, body) {
+    var o = tr.order_id ? P.orderById(tr.order_id) : null;
+    var label = o ? o.label : "";
+    return '<div class="cc-msg ai wide"><div class="cc-brief"><div class="cc-brief-h">' + ic("sun2") + "<b>" + esc(orderName(tr)) + "</b><span>" +
+      esc(hm(tr.ended_at || tr.started_at || tr.created_at)) + (tr.duration_ms ? " · " + esc(dur(tr.duration_ms)) : "") + "</span></div>" +
+      '<div class="cc-brief-b cc-bubble' + (tr.status === "error" ? " err" : "") + '">' + body + "</div>" +
+      '<div class="cc-brief-f">' + ic("clock") + "<span>Standing order" + (label ? " · " + esc(label) : "") + (o && o.next_run_at ? " · next " + esc(P.whenText(o.next_run_at)) : "") + "</span>" +
+      (o ? '<button type="button" class="cc-link" data-order="' + esc(o.id) + '">Edit</button>' : "") + "</div></div></div>";
   }
 
   function delegCardHTML(d) {
@@ -1081,24 +781,40 @@
     if (typeof inp.command === "string") return { text: inp.command, shell: true };
     return { text: a.summary || a.tool, shell: false };
   }
+  /** Who decided an approval, in words: a person, a rule, or the clock. */
+  function decidedBy(a) {
+    var by = String(a.decided_by || "");
+    var m = /^rule:(.+)$/.exec(by);
+    if (m) return "rule #" + m[1];
+    return by || "you";
+  }
+  /** An approval card: Approve once, Always allow this (which shows the rule
+      it would add before saving it), or Deny. Used in the conversation and in
+      the Decisions inbox alike; one click handler serves both. */
   function approvalHTML(a) {
     var res = a.status === "pending" ? "" : a.status === "approved" ? "ok" : "no";
     var cmd = approvalCmd(a);
-    var head = res === "ok" ? "Approved" : a.status === "denied" ? "Denied" : a.status === "expired" ? "Expired" : a.status === "cancelled" ? "Withdrawn" : "Approval needed";
+    var byRule = /^rule:/.test(String(a.decided_by || ""));
+    var head = res === "ok" ? (byRule ? "Auto-approved" : "Approved") : a.status === "denied" ? "Denied" : a.status === "expired" ? "Expired" : a.status === "cancelled" ? "Withdrawn" : "Approval needed";
     var what = a.tool === "SendMessage" ? "send this to <b>" + esc(String((a.input || {}).to || "a session").replace(/\s*\[[0-9a-f]+\]$/, "")) + "</b>" : a.tool === "Bash" || a.tool === "Monitor" ? "run this command" : "use <b>" + esc(a.tool) + "</b>";
-    var resText = a.status === "approved" ? "Approved by " + esc(a.decided_by || "you") + " · " + esc(hm(a.decided_at))
-      : a.status === "denied" ? "Denied by " + esc(a.decided_by || "you") + " · " + esc(hm(a.decided_at)) + " — nothing ran"
+    var resText = a.status === "approved" ? (byRule ? "Approved automatically by " + esc(decidedBy(a)) : "Approved by " + esc(decidedBy(a))) + " · " + esc(hm(a.decided_at))
+      : a.status === "denied" ? "Denied by " + esc(decidedBy(a)) + " · " + esc(hm(a.decided_at)) + " — nothing ran"
       : a.status === "expired" ? "Nobody answered in time — denied by default at " + esc(hm(a.decided_at))
       : a.status === "cancelled" ? "Withdrawn — answered elsewhere or the turn was interrupted" : "";
-    return '<div class="cc-approval' + (res ? " resolved " + res : "") + '" data-ap="' + a.id + '">' +
+    var sug = a.rule_suggestion;
+    return '<div class="cc-approval' + (res ? " resolved " + res : "") + (a.status === "denied" ? " denied" : "") + '" data-ap="' + a.id + '">' +
       '<div class="cc-ap-h">' + ic("shield") + "<span>" + head + '</span><span class="risk">destructive</span>' +
+      (a.mission_ref ? '<span class="cc-badge b-mis">' + esc(a.mission_ref) + (a.step_n ? " · step " + esc(a.step_n) : "") + "</span>" : "") +
       (a.status === "pending" ? '<span class="timer" data-timer title="Nobody answering means denied">—</span><span class="cc-ap-bar" data-bar></span>' : "") + "</div>" +
       '<div class="cc-ap-body"><p>' + (a.status === "pending" ? "MONI AI wants to " + what + ". Nothing runs until you choose." : "MONI AI asked to " + what + ".") + "</p>" +
       '<div class="cc-ap-cmd' + (cmd.shell ? " shell" : "") + '">' + esc(clip(cmd.text, 2000)) + "</div>" +
       '<dl class="cc-ap-dl"><dt>target</dt><dd>' + esc(approvalTarget(a)) + "</dd>" +
       "<dt>effect</dt><dd>" + esc(a.category ? a.category.replace(/_/g, " ") + (a.label && a.label !== a.category ? " — " + a.label : "") : a.label || "a step the gate treats as destructive") + "</dd>" +
       (a.reason ? "<dt>reason</dt><dd>" + esc(clip(a.reason, 400)) + "</dd>" : "") + "</dl>" +
-      '<div class="cc-ap-act"><button type="button" class="cc-btn danger" data-approve="' + a.id + '">' + ic("check") + 'Approve &amp; run</button><button type="button" class="cc-btn" data-deny="' + a.id + '">' + ic("close") + "Deny</button></div>" +
+      '<div class="cc-ap-act"><button type="button" class="cc-btn pri sm" data-approve="' + a.id + '">' + ic("check") + 'Approve once</button>' +
+      '<button type="button" class="cc-btn sm" data-always="' + a.id + '">' + ic("scale") + "Always allow this</button>" +
+      '<button type="button" class="cc-btn sm" data-deny="' + a.id + '">' + ic("close") + "Deny</button></div>" +
+      (a.status === "pending" && sug && sug.pattern ? '<div class="cc-ap-hint">“Always allow this” would add an allow rule for <code>' + esc(clip(sug.pattern, 160)) + "</code> — you see it before it is saved.</div>" : "") +
       '<div class="cc-ap-res">' + (res === "ok" ? ic("check") : ic("close")) + "<span>" + resText + "</span></div>" +
       '<div class="cc-ap-err" data-err hidden></div></div></div>';
   }
@@ -1127,6 +843,7 @@
       renderOrphans();
       tickApprovals();
       toBottom(stick);
+      renderSay();
     });
   }
   function paintTurn(tr) {
@@ -1142,7 +859,8 @@
     if (tr.status === "error" && tr.error) body += '<p class="cc-muted">Stopped with an error: ' + esc(clip(tr.error, 300)) + "</p>";
     body += dels.map(delegCardHTML).join("");
     body += aps.map(approvalHTML).join("");
-    if (body) {
+    if (isOrderTurn(tr)) h += briefHTML(tr, body || '<span class="cc-muted">Nothing reported.</span>');
+    else if (body) {
       h += '<div class="cc-msg ai' + (aps.length ? " wide" : "") + '"><div class="who"><span class="cc-av"></span><b>MONI AI</b> · ' + esc(hm(tr.ended_at || tr.started_at || tr.created_at)) +
         (tr.duration_ms ? " · " + dur(tr.duration_ms) : "") + '</div><div class="cc-bubble' + (tr.status === "error" ? " err" : "") + '">' + body + "</div></div>";
     }
@@ -1191,6 +909,26 @@
   }
   function visibleTurn(row) { return row && row.source !== "system"; }
 
+  /** MONI AI's latest words, in the map's corner. */
+  var saySig = "";
+  function renderSay() {
+    var box = $("cc-map-say");
+    var last = null;
+    for (var i = S.turnOrder.length - 1; i >= 0 && !last; i--) {
+      var x = S.turns.get(S.turnOrder[i]);
+      if (x && aiText(x)) last = x;
+    }
+    if (!last) { box.hidden = true; return; }
+    var text = clip(String(aiText(last)).split(/\n+/).map(plain).filter(Boolean).join(" · "), 260);
+    var sig = last.id + "|" + text;
+    if (sig === saySig) return;
+    saySig = sig;
+    box.hidden = false;
+    box.innerHTML = '<div class="who"><span class="cc-av"></span>MONI AI<time>' + esc(hm(last.ended_at || last.started_at || last.created_at)) + "</time></div><p>" + esc(text) + "</p>";
+    box.title = "Open the conversation";
+  }
+  $("cc-map-say").addEventListener("click", function () { showPane("conv"); });
+
   /* ---------------------------------------------------------- approvals */
 
   function tickApprovals() {
@@ -1215,31 +953,28 @@
     S.approvals.set(a.id, a);
     var tr = S.turns.get(a.turn_id);
     if (tr) renderTurn(tr); else renderTurn({ id: -1 });
-    renderApprovalCount();
+    P.renderDecisions();
     renderTimeline();
     if (!replay && a.status === "pending" && (!cur || cur.status !== "pending")) {
-      showPane("conv");
+      if (S.pane !== "conv" && S.pane !== "dec") showPane("dec");
       feedPush({ key: "ap" + a.id + "p", ts: a.created_at, kind: "approval", html: "<b>Approval needed</b> · " + esc(clip(a.summary, 140)) });
       if (Voice.on) Voice.say("I need your approval before I go on.");
     }
-    if (!replay && a.status !== "pending" && cur && cur.status === "pending") {
-      feedPush({ key: "ap" + a.id + a.status, ts: a.decided_at, kind: a.status === "approved" ? "approved" : a.status, html: "<b>" + esc(a.status === "approved" ? "Approved" : a.status === "denied" ? "Denied" : a.status === "expired" ? "Expired" : "Withdrawn") + "</b>" + (a.decided_by && a.decided_by !== "timeout" ? " by " + esc(a.decided_by) : "") + " · " + esc(clip(a.summary, 120)) });
+    if (!replay && a.status !== "pending" && (!cur || cur.status === "pending")) {
+      feedPush({ key: "ap" + a.id + a.status, ts: a.decided_at, kind: a.status === "approved" ? "approved" : a.status, html: "<b>" + esc(a.status === "approved" ? "Approved" : a.status === "denied" ? "Denied" : a.status === "expired" ? "Expired" : "Withdrawn") + "</b>" + (a.decided_by && a.decided_by !== "timeout" ? " by " + esc(decidedBy(a)) : "") + " · " + esc(clip(a.summary, 120)) });
     }
     paintState();
     renderRail();
   }
-  function renderApprovalCount() {
-    var n = pendingApprovals().length;
-    $("cc-ap-count").hidden = !n;
-    $("cc-ap-count").textContent = n;
-  }
 
-  chat.addEventListener("click", function (e) {
-    var a = e.target.closest("[data-approve]"), d = e.target.closest("[data-deny]");
-    var btn = a || d;
-    if (!btn) return;
-    var id = Number(btn.getAttribute(a ? "data-approve" : "data-deny"));
+  /* One handler for every approval card on the page (conversation or inbox). */
+  function approvalClick(e) {
+    var a = e.target.closest("[data-approve]"), d = e.target.closest("[data-deny]"), al = e.target.closest("[data-always]");
+    var btn = a || d || al;
+    if (!btn || btn.disabled) return;
     var card = btn.closest("[data-ap]");
+    if (al) { P.openAlways(Number(al.getAttribute("data-always"))); return; }
+    var id = Number(btn.getAttribute(a ? "data-approve" : "data-deny"));
     var buttons = card.querySelectorAll(".cc-ap-act button");
     for (var i = 0; i < buttons.length; i++) buttons[i].disabled = true;
     var err = card.querySelector("[data-err]");
@@ -1249,6 +984,12 @@
       for (var j = 0; j < buttons.length; j++) buttons[j].disabled = false;
       if (err) { err.hidden = false; err.textContent = "Not recorded: " + ex.message; }
     });
+  }
+  chat.addEventListener("click", approvalClick);
+  $("cc-dec-list").addEventListener("click", approvalClick);
+  chat.addEventListener("click", function (e) {
+    var o = e.target.closest("[data-order]");
+    if (o) P.openOrder(o.getAttribute("data-order"));
   });
 
   /* ---------------------------------------------------------- activity */
@@ -1315,7 +1056,7 @@
           else if (r.status === "ack" && r.replied_at) bits.push("replied " + hms(r.replied_at));
           return '<li><span class="cc-tl-node ' + esc(r.status) + '"></span><span class="cc-tl-time">' + esc(hm(r.created_at)) + '</span><div class="cc-tl-cmd"><div class="t full">' + esc(r.text || r.summary || "") + "</div><small>→ <b>" + esc(r.target_name) + "</b>" + (bits.length ? " · " + esc(clip(bits.join(" · "), 90)) : "") + '</small></div><span class="cc-badge b-' + esc(r.status) + '">' + esc(TL_LAB[r.status] || r.status) + "</span></li>";
         }
-        var who = r.decided_by && r.decided_by !== "timeout" ? (r.status === "approved" ? "approved" : "decided") + " by " + r.decided_by : r.status === "expired" ? "nobody answered" : "";
+        var who = r.decided_by && r.decided_by !== "timeout" ? (r.status === "approved" ? "approved" : "decided") + " by " + decidedBy(r) : r.status === "expired" ? "nobody answered" : "";
         return '<li><span class="cc-tl-node ' + esc(r.status) + '"></span><span class="cc-tl-time">' + esc(hm(r.created_at)) + '</span><div class="cc-tl-cmd"><div class="t">' + esc(clip(approvalCmd(r).text, 160)) + "</div><small>→ <b>" + esc(r.tool === "SendMessage" ? approvalTarget(r).replace(" · peer message", "") : "MONI AI") + "</b> · approval" + (r.category ? " · " + esc(r.category.replace(/_/g, " ")) : "") + (who ? " · " + esc(who) : "") + '</small></div><span class="cc-badge b-' + esc(r.status) + '">' + esc(TL_LAB[r.status] || r.status) + "</span></li>";
       }).join("");
     });
@@ -1326,13 +1067,15 @@
     var cur = S.delegations.get(d.id);
     if (cur && d.updated_at && cur.updated_at && d.updated_at < cur.updated_at) return;
     S.delegations.set(d.id, d);
+    var s = sessionFor(d);
     if (!replay && !cur && d.status === "sent") {
-      var s = sessionFor(d);
       S.delegatingUntil = Date.now() + 2600;
-      if (s && Orb.pulse(sessKey(s))) highlightSess(sessKey(s));
+      if (s && Orb.send(sessKey(s))) highlightSess(sessKey(s));
       paintState();
-      feedPush({ key: "d" + d.id + "sent", ts: d.created_at, kind: "live", html: "Delegated to <b>" + esc(d.target_name) + "</b> · " + esc(clip(d.summary || firstLine(d.text), 120)) });
+      feedPush({ key: "d" + d.id + "sent", ts: d.created_at, kind: "live", label: "sent", html: "Delegated to <b>" + esc(d.target_name) + "</b> · " + esc(clip(d.summary || firstLine(d.text), 120)) });
     }
+    // An acknowledgement is the session answering: a reply bead comes back.
+    if (!replay && cur && cur.status !== d.status && d.status === "ack" && s) Orb.reply(sessKey(s));
     if (!replay && cur && cur.status !== d.status && (d.status === "failed" || d.status === "held")) {
       feedPush({ key: "d" + d.id + d.status, ts: d.updated_at, kind: d.status === "failed" ? "failed" : "held", html: "<b>" + esc(d.target_name) + "</b> · delegation " + esc(d.status) + (d.note ? " — " + esc(clip(d.note, 120)) : "") });
     }
@@ -1342,7 +1085,7 @@
     renderStats();
   }
 
-  /* ---------------------------------------------------------- live feed */
+  /* ---------------------------------------------------------- event log */
 
   var FEED_MAX = 100;
   function feedPush(item, quiet) {
@@ -1362,7 +1105,7 @@
       $("cc-feed-count").textContent = S.feed.length;
       if (!S.feed.length) { $("cc-feed").innerHTML = '<li class="empty">Replies, idle notices and service events appear here as they happen.</li>'; return; }
       $("cc-feed").innerHTML = S.feed.map(function (f) {
-        return "<li" + (f.isNew ? ' class="new"' : "") + '><span class="cc-badge b-' + esc(f.kind) + '">' + esc(f.label || f.kind) + "</span><p>" + f.html + "</p><time>" + esc(hm(f.ts)) + "</time></li>";
+        return "<li" + (f.isNew ? ' class="new"' : "") + "><time>" + esc(hm(f.ts)) + "</time><p>" + f.html + '</p><span class="cc-badge b-' + esc(f.kind) + '">' + esc(f.label || f.kind) + "</span></li>";
       }).join("");
       S.feed.forEach(function (f) { f.isNew = false; });
     });
@@ -1376,6 +1119,11 @@
       key: "in" + row.id, ts: row.received_at, kind: kind, label: kind,
       html: "<b>" + esc(row.from_name || "a session") + "</b> → " + (row.kind === "message" ? "" : esc(row.kind) + " ") + '<span class="q">' + esc(clip(text, 300)) + "</span>",
     }, quiet);
+    // A session writing back to MONI AI: a reply bead comes home.
+    if (!quiet) {
+      var s = sessionNamed(row.from_name);
+      if (s) Orb.reply(sessKey(s));
+    }
   }
 
   /* ---------------------------------------------------------- stats */
@@ -1414,9 +1162,9 @@
     renderSteps();
     renderStats();
     renderDrawerHead();
-    renderApprovalCount();
     renderTimeline();
     renderFeed();
+    P.renderAll();
     paintState();
     var off = $("cc-offline");
     off.hidden = S.online;
@@ -1426,7 +1174,9 @@
   /* ================================================================ loading */
 
   function setStatus(st) {
+    var keepMachine = S.status && S.status.machine;
     S.status = st;
+    if (st && !st.machine && keepMachine) st.machine = keepMachine;
     if (st && st.approvals) st.approvals.forEach(function (a) { S.approvals.set(a.id, a); });
   }
 
@@ -1435,11 +1185,12 @@
       S.online = true;
       S.offlineMsg = "";
       setStatus(ov.status);
-      S.sessions = (ov.sessions && ov.sessions.sessions) || [];
+      setSessions((ov.sessions && ov.sessions.sessions) || []);
       S.memory = ov.memory;
       S.agents = ov.agents;
       S.loadSeq = ov.status.seq || 0;
       (ov.timeline || []).forEach(function (d) { S.delegations.set(d.id, d); });
+      P.load(ov);
       return Promise.all([
         api("ledger/turns?limit=40").catch(function () { return { rows: [] }; }),
         api("ledger/approvals?limit=60").catch(function () { return { rows: [] }; }),
@@ -1472,7 +1223,8 @@
   /* ================================================================ events */
 
   var es = null, reconnectTimer = 0;
-  var EVENTS = ["proc", "init", "rc", "status", "turn", "text", "assistant", "tool", "tool_result", "steps", "result", "approval", "delegation", "inbound", "sessions", "vitals", "notice", "offline"];
+  var EVENTS = ["proc", "init", "rc", "status", "turn", "text", "assistant", "tool", "tool_result", "steps", "result", "approval", "delegation", "inbound", "sessions", "vitals", "notice", "offline",
+    "mission", "decision", "watcher", "order", "order_run", "rule", "machine"];
 
   function connect(since) {
     if (es) es.close();
@@ -1487,6 +1239,7 @@
           setStatus(st);
           renderAll();
         }).catch(function () { /* the stream will say */ });
+        P.load();
         renderAll();
       }
     };
@@ -1520,15 +1273,25 @@
     switch (type) {
       case "vitals":
         st.vitals = ev.vitals;
-        renderVitals();
+        if (st.machine && ev.vitals) st.machine.vitals = ev.vitals;
+        renderMachine();
+        return;
+      case "machine":
+        if (ev.machine) {
+          if (st.machine && st.machine.services && ev.machine.services && !replay) diffServices(st.machine.services, ev.machine.services, ev.ts);
+          st.machine = ev.machine;
+        }
+        renderMachine();
+        paintState();
         return;
       case "sessions": {
         var before = S.sessions;
-        S.sessions = ev.sessions || [];
+        setSessions(ev.sessions || []);
         st.sessions_at = ev.ts;
         if (!replay) diffSessions(before, S.sessions, ev.ts);
         renderSessions();
         renderRail();
+        P.sessionsChanged();
         if (S.target !== "auto" && !liveSessions().some(function (s) { return s.name === S.target; })) {
           if (!replay) toast("“" + S.target + "” stopped running — back to auto-route.", true);
           setTarget("auto");
@@ -1624,7 +1387,7 @@
         if (ev.state) st.remote_control.state = ev.state;
         else if (ev.url) st.remote_control.state = "connected";
         renderDrawerHead();
-        // The bridge reports several states on the way up; the feed wants the
+        // The bridge reports several states on the way up; the log wants the
         // ones a person would care about, once each.
         var rcSay = ev.state === "connected" ? "connected" : typeof ev.enabled === "boolean" && !ev.enabled ? "off" : ev.state === "disconnected" || ev.state === "error" ? ev.state : null;
         if (rcSay && rcSay !== S.rcLast) {
@@ -1633,6 +1396,10 @@
         }
         return;
       case "status":
+        return;
+      default:
+        // mission, decision, watcher, order, order_run, rule
+        P.onEvent(type, ev, replay);
         return;
     }
   }
@@ -1650,6 +1417,13 @@
       if (!s.self && !now[s.pid]) feedPush({ key: "s-" + s.pid + ts, ts: ts, kind: "session", label: "session", html: "<b>" + esc(s.name || "A session") + "</b> ended" });
     });
   }
+  function diffServices(before, after, ts) {
+    var was = {};
+    (before.failed || []).forEach(function (f) { was[f.unit] = 1; });
+    (after.failed || []).forEach(function (f) {
+      if (!was[f.unit]) feedPush({ key: "svc" + f.unit + (f.since || ts), ts: f.since || ts, kind: "error", label: "service", html: "<b>" + esc(f.unit) + "</b> failed" });
+    });
+  }
 
   var countsTimer = 0;
   function refreshCounts() {
@@ -1664,7 +1438,7 @@
     }, 400);
   }
   // Status is the source of truth for anything the events do not carry
-  // (counts, queued turns); a slow poll keeps it honest.
+  // (counts, queued turns, today's cost); a slow poll keeps it honest.
   setInterval(function () { if (!document.hidden && S.online) refreshCounts(); }, 30000);
   setInterval(function () { if (!document.hidden) renderSessions(true); }, 30000);
 
@@ -1677,7 +1451,7 @@
      to this panel. Without a key the controls stay off and say so. */
 
   var Voice = (function () {
-    var bigBtn = $("cc-mic-big"), cMic = $("cc-c-mic"), dock = $("cc-dock"), vbText = $("cc-vb-text"), wave = $("cc-vb-wave");
+    var cMic = $("cc-c-mic"), dock = $("cc-dock"), vbText = $("cc-vb-text"), wave = $("cc-vb-wave");
     var speakBtn = $("cc-speak-toggle");
     var api_ = {
       on: false, listening: false, speaking: false, speakAll: false,
@@ -1688,11 +1462,10 @@
     var supported = canRecord && READY;
     if (!READY) {
       // The server rendered the "Add an OpenAI key in Settings" state; keep it.
-      bigBtn.disabled = true; cMic.disabled = true;
+      cMic.disabled = true;
     } else if (!canRecord) {
-      bigBtn.disabled = true; cMic.disabled = true;
-      $("cc-mic-label").textContent = "Voice unavailable";
-      $("cc-mic-sub").textContent = "This browser cannot record audio here.";
+      cMic.disabled = true;
+      cMic.title = "Voice unavailable: this browser cannot record audio here.";
     }
 
     var stream = null, ac = null, analyser = null, rec = null, chunks = [], poll = 0;
@@ -1803,12 +1576,9 @@
       if (!READY) return;
       var live = api_.on || ptt;
       dock.classList.toggle("voice-on", live);
-      bigBtn.classList.toggle("live", live);
-      bigBtn.setAttribute("aria-pressed", live ? "true" : "false");
-      if (canRecord) {
-        $("cc-mic-label").textContent = api_.speaking ? "Speaking…" : ptt ? "Listening — release to send" : api_.on ? (api_.listening ? "Listening…" : "Working…") : "Tap to talk";
-        $("cc-mic-sub").innerHTML = api_.on ? "tap again to stop · talk over a reply to cut in" : "or hold <kbd>Space</kbd> to talk";
-      }
+      cMic.classList.toggle("live", live);
+      cMic.setAttribute("aria-pressed", live ? "true" : "false");
+      if (live && api_.speaking) vbText.textContent = "Speaking… talk over it to cut in";
       paintState();
       renderRail();
     }
@@ -2083,8 +1853,7 @@
       setUi();
     }
 
-    bigBtn.addEventListener("click", function () { api_.on ? stop() : start(); });
-    cMic.addEventListener("click", start);
+    cMic.addEventListener("click", function () { api_.on ? stop() : start(); });
     $("cc-vb-stop").addEventListener("click", function () {
       // Stop and send what has been said so far, if anything.
       if (rec && rec.state === "recording" && heard) { api_.on = false; rec.stop(); setTimeout(stop, 50); }
@@ -2124,7 +1893,8 @@
       api_.speakAll = !api_.speakAll;
       if (api_.speakAll) outContext();
       speakBtn.setAttribute("aria-pressed", api_.speakAll ? "true" : "false");
-      speakBtn.innerHTML = ic(api_.speakAll ? "speaker" : "mute") + "<span>" + (api_.speakAll ? "replies aloud" : "replies silent") + "</span>";
+      speakBtn.innerHTML = ic(api_.speakAll ? "speaker" : "mute");
+      speakBtn.title = api_.speakAll ? "Replies are read aloud — click to keep them silent" : "Replies are silent — click to read MONI AI's replies aloud";
       if (!api_.speakAll && !api_.on) { silence(); setUi(); }
     });
 
@@ -2154,10 +1924,28 @@
     return api_;
   })();
 
+  /* ================================================================ panels
+     Missions, Decisions, Rules and Watchers, standing orders, cost, the deep
+     view and the palette live in cc-panels.js; this is what they are given. */
+
+  var CC = {
+    S: S, root: root, api: api, esc: esc, ic: ic, md: md, num: num, clip: clip, firstLine: firstLine, plain: plain, money: money,
+    hm: hm, hms: hms, when: when, ago: ago, dur: dur, modelLabel: modelLabel, applyBars: applyBars, toast: toast,
+    fmtDay: fmtDay, fmtHM: fmtHM, fmtDate: fmtDate, TZ: TZ,
+    liveSessions: liveSessions, selfSession: selfSession, sessKey: sessKey, sessState: sessState, sessIcon: sessIcon, sessWhere: sessWhere,
+    selfState: selfState, findSess: findSess, sessionNamed: sessionNamed, sortSessions: sortSessions, subagentLabel: subagentLabel,
+    setTarget: setTarget, showPane: showPane, send: send, focusInput: function () { input.focus(); },
+    pendingApprovals: pendingApprovals, approvalHTML: approvalHTML, approvalCmd: approvalCmd, upsertApproval: upsertApproval,
+    upsertTurn: upsertTurn, feedPush: feedPush, renderRail: renderRail, renderSessions: renderSessions, renderTurn: renderTurn, paintState: paintState,
+    openRemoteControl: openRemoteControl, interrupt: interrupt, map: Orb, TL_LAB: TL_LAB,
+    resyncSessions: function () { setSessions(S.sessions.filter(function (s) { return !s.synthetic; })); renderSessions(true); },
+  };
+  var P = window.MoniPanels(CC);
+
   /* ================================================================ keys */
 
   document.addEventListener("keydown", function (e) {
-    if (e.key === "Escape") { closeMenu(); closePop(); }
+    if (e.key === "Escape") closeMenu();
   });
 
   /* ================================================================ start */

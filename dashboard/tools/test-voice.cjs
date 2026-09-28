@@ -574,13 +574,15 @@ function viewTests() {
   const user = { name: "Tester", username: "tester", perm: rbac.actor({ permissions: ["*"] }) };
   const off = views.page({ csrf: "c", user, voice: { configured: false, manage: true, voice: "marin" } });
   check("Command Center without a key: 'Add an OpenAI key in Settings', linked", /Add an OpenAI key in Settings/.test(off) && /href="\/credentials\/openai-voice"/.test(off));
-  check("  both mic buttons disabled, voice-ready flag off",
-    /id="cc-mic-big"[^>]*disabled/.test(off) && /id="cc-c-mic"[^>]*disabled/.test(off) && /data-voice-ready=""/.test(off));
+  // v3: the big "Talk to MONI" card left the rail; the composer mic is the one control.
+  check("  the composer mic disabled, voice-ready flag off, no big mic card",
+    /id="cc-c-mic"[^>]*disabled/.test(off) && /data-voice-ready=""/.test(off) && !/id="cc-mic-big"/.test(off));
   const offNoManage = views.page({ csrf: "c", user, voice: { configured: false, manage: false } });
   check("  someone who cannot manage it is told to ask an administrator, with no link", /ask an administrator/.test(offNoManage) && !/href="\/credentials\/openai-voice"/.test(offNoManage));
   const on = views.page({ csrf: "c", user, voice: { configured: true, manage: true, voice: "marin", model: "gpt-realtime-mini" } });
   check("with a key: mic enabled, OpenAI and the voice named, no setup prompt",
-    !/id="cc-mic-big"[^>]*disabled/.test(on) && /data-voice-ready="1"/.test(on) && />OpenAI</.test(on) && />marin</.test(on) && !/Add an OpenAI key/.test(on));
+    !/id="cc-c-mic"[^>]*disabled/.test(on) && /data-voice-ready="1"/.test(on) && />OpenAI</.test(on) && />marin</.test(on) && !/Add an OpenAI key/.test(on) &&
+    /id="cc-speak-toggle"/.test(on) && /Space<\/kbd> hold to talk/.test(on));
   check("no Whisper or Piper left on the page", !/Whisper|Piper/i.test(on + off));
 
   const session = { id: 7, access: "full", cwd: "/", model: "claude-opus-5", effort: "medium", mode: "auto", title: "t", root_on: 1 };
