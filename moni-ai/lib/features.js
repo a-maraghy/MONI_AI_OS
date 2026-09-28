@@ -34,7 +34,7 @@ const MORNING_BRIEFING = {
     "3. Failed sign-ins and bans since yesterday morning: count SSH failures in `journalctl -u ssh --since yesterday` and read `fail2ban-client status sshd`.",
     "4. Your own activity since the last briefing: `moni-ai-ctl ledger '{\"table\":\"turns\",\"limit\":50}'` and the delegations and approvals ledgers the same way.",
     "5. Missions: mission_list (or `moni-ai-ctl missions`).",
-    "Do not touch live Odoo (test.gizaseeds.cloud) and do not use any live credential.",
+    "Stay on this VPS: do not reach any other server and do not use any live credential.",
     "Answer in at most six short lines, each starting with a bold label: **Services**, **Disk**, **Sign-ins**, **MONI AI**, **Missions**, **Needs you**. Lead with anything that needs the administrator.",
   ].join("\n"),
 };

@@ -113,6 +113,8 @@ check("the classifier still asks for destructive commands", bash("rm -rf /tmp/x"
   check("no suggestion for tools rules do not cover", r.suggestion("Read", { file_path: "/x" }) === null);
   check("an allow covering a built-in is refused up front", throws(() => r.checkAllowable({ effect: "allow", pattern: "git push *" })));
   check("an exact allow is accepted", !throws(() => r.checkAllowable({ effect: "allow", pattern: "systemctl restart odoo" })));
+check("an allow with a trailing * is accepted (the live-server ask still wins at run time)", !throws(() => r.checkAllowable({ effect: "allow", pattern: "rm /tmp/x-*" })));
+check("the live-server built-in is worded without the host", !/gizaseeds|rpc\.py/.test(r.BUILTINS.find((b) => b.key === "ask-live-odoo").pattern + r.BUILTINS.find((b) => b.key === "ask-live-odoo").note));
   check("validateRule refuses a bad effect", throws(() => r.validateRule({ effect: "maybe", tool: "Bash", pattern: "x" })));
 }
 

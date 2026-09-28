@@ -71,8 +71,10 @@ const BUILTINS = [
     key: "ask-live-odoo",
     effect: "ask",
     tool: "any",
-    pattern: "* test.gizaseeds.cloud *  (or /root/rpcwork/rpc.py)",
-    note: "Always ask before anything that touches live Odoo. Live is read-only unless the administrator says otherwise.",
+    // Worded without the host: the Command Center does not show the live
+    // server anywhere, but the gate still guards it.
+    pattern: "anything touching the live production server (its host or RPC client)",
+    note: "Always ask first. The live server stays read-only unless the administrator says otherwise; no rule can allow it.",
     hard: true,
     test: (text) => LIVE_ODOO_RE.test(String(text)),
   },
@@ -238,7 +240,7 @@ function suggestion(tool, input) {
 }
 
 /** Would an allow rule with this pattern override a built-in or a deny? Refuse those up front. */
-const PROBES = ["", "--force origin main", "-f", "origin a-maraghy/gizaseeds-Odoo19", "https://test.gizaseeds.cloud/web"];
+const PROBES = ["", "--force origin main", "-f", "origin a-maraghy/gizaseeds-Odoo19"];
 function checkAllowable(rule) {
   if (rule.effect !== "allow") return;
   // Evaluation would let the built-in win anyway; refusing here tells the
@@ -246,7 +248,9 @@ function checkAllowable(rule) {
   for (const fill of PROBES) {
     const probe = rule.pattern.replace(/(^|[^\\])\*/g, (m, pre) => pre + fill).replace(/\\\*/g, "*");
     for (const b of BUILTINS) {
-      if (b.display) continue;
+      // only the denies: the built-in ask always wins at evaluation anyway,
+      // and refusing every trailing * because it could match a URL helps nobody
+      if (b.display || b.effect !== "deny") continue;
       if (b.test(probe)) throw new Error(`an allow rule cannot cover what the built-in rule "${b.key}" guards`);
     }
   }

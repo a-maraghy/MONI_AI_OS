@@ -334,7 +334,7 @@ const ready = () => until(async () => (await call("status")).data.process.state 
     const brief = o0.data.orders.find((o) => o.seed_key === "morning-briefing");
     check("the Morning briefing is seeded: 07:30 Africa/Cairo daily, MONI AI, Command Center", brief && brief.cron === "30 7 * * *" && brief.tz === "Africa/Cairo" && brief.target === "moni-ai" && brief.delivery.join() === "cc" && !brief.paused);
     check("its next run is in the future at 07:30 Cairo", brief && Date.parse(brief.next_run_at) > Date.now() && new Intl.DateTimeFormat("en-GB", { timeZone: "Africa/Cairo", hour: "2-digit", minute: "2-digit" }).format(new Date(brief.next_run_at)) === "07:30");
-    check("the brief never mentions live Odoo except to forbid it", brief && !/rpc\.py/.test(brief.prompt) && /Do not touch live Odoo/.test(brief.prompt));
+    check("the brief stays on this VPS and names no live server", brief && !/rpc\.py|gizaseeds\.cloud|live Odoo/i.test(brief.prompt) && /Stay on this VPS/.test(brief.prompt));
     check("Telegram delivery is reported unavailable, with a reason", o0.data.telegram && o0.data.telegram.available === false && o0.data.telegram.why);
     const run = await call("order-run", { order_id: brief.id }, "amaraghy");
     check("Run now starts a run", run.ok && run.data.run.status === "running" && run.data.run.manual === 1);
