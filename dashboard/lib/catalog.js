@@ -207,6 +207,15 @@ const OS_SERVICES = [
     detail: "The desktop you reach over an SSH tunnel to run Obsidian." },
   { unit: "xrdp-sesman", name: "RDP session manager", icon: "devices", critical: false,
     detail: "Session broker for xrdp. Needed for remote desktop logins." },
+  // Reported, not controlled: the helper refuses to act on these (READONLY_UNITS).
+  { unit: "odoo", name: "Odoo 19", icon: "activity", critical: false, readonly: true,
+    detail: "The trial Odoo on :8444. Shown here so its state is visible; it is managed outside the panel." },
+  { unit: "postgresql@16-main", name: "PostgreSQL 16", icon: "network", critical: false, readonly: true,
+    detail: "Holds the Odoo database and the memory service's claude_memory. Managed outside the panel." },
+  { unit: "claude-memory", name: "Memory service", icon: "memory", critical: false, readonly: true,
+    detail: "Embeddings and search for Claude Code's long-term memory. Restart it from Claude Code › Memory." },
+  { unit: "moni-ai", name: "MONI AI", icon: "core", critical: false, readonly: true,
+    detail: "The supervisor of MONI AI's Claude Code session. Restart it from the Command Center." },
 ];
 
 function byScope(scope) {

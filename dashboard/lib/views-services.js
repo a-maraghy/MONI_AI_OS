@@ -1,7 +1,7 @@
 "use strict";
 /** Service management — system units, and the per-agent units. */
 
-const { esc, bytes, shell, statusPill, agentPill, card, flashes, empty, icon, ago } =
+const { esc, bytes, shell, statusPill, agentPill, card, flashes, empty, icon, ago, can } =
   require("./ui");
 const { OS_SERVICES } = require("./catalog");
 
@@ -35,6 +35,33 @@ function controls(csrf, action, target, state) {
 
 /* ------------------------------------------------------- system services -- */
 
+function unitMeta(s) {
+  const unit = String(s.unit || "");
+  if (DETAIL.has(unit)) return DETAIL.get(unit);
+  if (s.kind === "agent" || unit.startsWith("moni-agent@")) {
+    return { name: "Agent · " + unit.slice("moni-agent@".length), icon: "agents",
+      detail: "A Telegram agent's process. Start, stop and restart it from Agent services." };
+  }
+  if (s.kind === "whatsapp" || unit.startsWith("moni-whatsapp@")) {
+    return { name: "WhatsApp · " + unit.slice("moni-whatsapp@".length), icon: "whatsapp",
+      detail: "A WhatsApp channel's bridge. Managed from its channel." };
+  }
+  return {};
+}
+
+/** What a reported-only unit offers instead of controls: where it is managed, if anywhere here. */
+function readOnly(s, meta, user) {
+  const unit = String(s.unit || "");
+  const tag = `<span class="lockt" title="Reported here; the panel does not control this unit from this page">${icon("lock", 12)}read-only</span>`;
+  let link = "";
+  if (unit.startsWith("moni-agent@") && can(user, "agents.view")) link = `<a class="btn small" href="/services/agents">${icon("agents", 14)}Agent services</a>`;
+  else if (unit.startsWith("moni-whatsapp@") && can(user, "channels.view"))
+    link = `<a class="btn small" href="/channels/${encodeURIComponent(unit.slice("moni-whatsapp@".length))}">${icon("whatsapp", 14)}Channel</a>`;
+  else if (unit === "claude-memory" && can(user, "claude.memory.read")) link = `<a class="btn small" href="/claude/memory">${icon("memory", 14)}Memory</a>`;
+  else if (unit === "moni-ai" && can(user, "moniai.use")) link = `<a class="btn small" href="/moni-ai">${icon("core", 14)}Command Center</a>`;
+  return tag + link;
+}
+
 exports.system = ({ csrf, user, services, flash, err }) =>
   shell(
     "Services",
@@ -42,14 +69,16 @@ exports.system = ({ csrf, user, services, flash, err }) =>
     <div class="alert info">${icon("info")}<div>SSH, nginx, the firewall and this panel
       can be restarted but not stopped from here. Stopping any of them would cut off
       access to the machine or to this page, and getting back in would need the Contabo
-      console.</div></div>
+      console. Rows marked <em>read-only</em> are reported here so the picture is complete;
+      the panel does not control them from this page.</div></div>
 
     <section class="card table-card fill-card hud">
       <div class="tbl"><table class="rows">
         <thead><tr><th scope="col">Service</th><th scope="col">State</th><th scope="col">At boot</th><th scope="col">Memory</th><th scope="col">Since</th><th scope="col" class="right">Actions</th></tr></thead>
         <tbody>${services
           .map((s) => {
-            const meta = DETAIL.get(s.unit) || {};
+            const meta = unitMeta(s);
+            const managed = s.managed !== false;
             const mb = s.memory != null ? s.memory / 1024 / 1024 : null;
             return `<tr>
               <td><div class="svc-name"><span class="svc-ic">${icon(meta.icon || "services", 16)}</span><div>
@@ -67,10 +96,12 @@ exports.system = ({ csrf, user, services, flash, err }) =>
                   : `<span class="muted">—</span>`
               }</td>
               <td class="mono small nowrap">${esc(String(s.since || "").replace(/^[A-Z][a-z]{2} /, "").slice(0, 19) || "—")}</td>
-              <td class="right"><div class="row-end">
-                ${controls(csrf, "/services/action", s.unit, s)}
-                <a class="btn small" href="/services/logs?unit=${encodeURIComponent(s.unit)}">${icon("logs", 14)}Logs</a>
-              </div></td>
+              <td class="right"><div class="row-end">${
+                managed
+                  ? `${controls(csrf, "/services/action", s.unit, s)}
+                     <a class="btn small" href="/services/logs?unit=${encodeURIComponent(s.unit)}">${icon("logs", 14)}Logs</a>`
+                  : readOnly(s, meta, user)
+              }</div></td>
             </tr>`;
           })
           .join("")}</tbody></table></div>

@@ -109,10 +109,10 @@ const osPage = views.osDashboard({
 });
 check("the OS overview is one screen (A)", /class="content pat-a"/.test(osPage));
 check("it is headed Machine core", /<h1>Machine core<\/h1>/.test(osPage));
-const coreJson = /data-machine-core="([^"]*)"/.exec(osPage);
-const core = coreJson && JSON.parse(coreJson[1].replace(/&quot;/g, '"').replace(/&amp;/g, "&"));
-check("growth rings are capped at 60 days", core && core.days === 60, core && core.days);
-check("a root per service plus the fleet", core && core.nodes.length === 3 && core.nodes[1].state === "warn" && core.nodes[2].fleet === true);
+const mycJson = /data-myc="([^"]*)"/.exec(osPage);
+const myc = mycJson && JSON.parse(mycJson[1].replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&"));
+check("the Machine core hero is the mycelium (growth rings gone)", myc && Array.isArray(myc.nodes) && /<h2>Mycelium<\/h2>/.test(osPage) && !/data-machine-core/.test(osPage));
+check("its pill counts every service", /1 of 2 services up/.test(osPage));
 check("vitals rings are live-refreshable", /data-vitals/.test(osPage) && /data-ring="cpu"/.test(osPage) && /data-load/.test(osPage));
 check("what users and the audit log wrote is escaped", osPage.includes("&lt;u&gt;") && osPage.includes("a&lt;x&gt;") && !osPage.includes("<u>"));
 check("the hostname is escaped", osPage.includes("vm&lt;1&gt;"));

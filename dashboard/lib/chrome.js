@@ -75,6 +75,24 @@ async function facts() {
   return got ? got.data : null;
 }
 
+/**
+ * The tracked units one actor may see. An agent's unit is as private as the
+ * agent (a role scoped to one agent must not learn the others' names from
+ * the services list), and a WhatsApp bridge as private as its channel.
+ * Every count of services -- badge, chip, overview, /services -- goes
+ * through this, so they all agree for any given viewer.
+ */
+function visibleServices(services, perm) {
+  if (!Array.isArray(services)) return services;
+  if (!perm) return services;
+  return services.filter((s) => {
+    const unit = String((s && s.unit) || "");
+    if (s.kind === "agent" || unit.startsWith("moni-agent@")) return perm.seesAgent(unit.slice("moni-agent@".length));
+    if (s.kind === "whatsapp" || unit.startsWith("moni-whatsapp@")) return perm.seesChannel(unit.slice("moni-whatsapp@".length));
+    return true;
+  });
+}
+
 const plural = (n, one, many) => n + " " + (n === 1 ? one : many || one + "s");
 
 function uptimeShort(sec) {
@@ -95,7 +113,7 @@ function forActor(perm, data) {
   const d = data || {};
   const badges = {};
 
-  const services = Array.isArray(d.services) ? d.services : null;
+  const services = Array.isArray(d.services) ? visibleServices(d.services, perm) : null;
   const agents = Array.isArray(d.agents) ? d.agents.filter((a) => sees(a.slug)) : null;
   const channels = Array.isArray(d.channels) ? d.channels.filter((c) => seesCh(c.slug)) : null;
   const down = services ? services.filter((s) => s.active !== "active") : [];
@@ -151,8 +169,13 @@ function forActor(perm, data) {
 
   // The health chip: what needs attention, among what this actor may see.
   let health = null;
-  const svcIssue = services && can("services.view") ? down.length : 0;
   const agentIssue = agents && can("agents.view") ? failed.length : 0;
+  // A failed agent is an agent unit that is down too; when the agent count
+  // already says so, the service count leaves it out rather than say it twice.
+  const svcIssue =
+    services && can("services.view")
+      ? down.filter((s) => !(agentIssue && (s.kind === "agent" || String(s.unit).startsWith("moni-agent@")) && s.active === "failed")).length
+      : 0;
   if (svcIssue || agentIssue) {
     const parts = [];
     if (svcIssue) parts.push(plural(svcIssue, "service") + (svcIssue === 1 ? " needs" : " need") + " attention");
@@ -198,9 +221,21 @@ function middleware() {
   };
 }
 
+/**
+ * Fold a fresher fact into the shared cache, so the frame agrees with the page
+ * that just read it: the overview and /services read the unit list fresh, and
+ * a badge or a live update still showing the 30 s old list next to it would
+ * contradict the page. Returns the merged facts (or null with no cache yet).
+ */
+function prime(partial) {
+  if (!cache || !partial) return cache ? cache.data : null;
+  cache = { at: cache.at, data: Object.assign({}, cache.data, partial) };
+  return cache.data;
+}
+
 /** Forget the cache, so a page after a change shows the change. */
 function invalidate() {
   if (cache) cache.at = 0;
 }
 
-module.exports = { configure, facts, forActor, middleware, invalidate, CACHE_MS };
+module.exports = { configure, facts, forActor, middleware, invalidate, prime, visibleServices, CACHE_MS };

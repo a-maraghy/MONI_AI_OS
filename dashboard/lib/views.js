@@ -129,9 +129,11 @@ const gib = (n) => (n == null ? "—" : (n / 1024 ** 3).toFixed(n >= 10 * 1024 *
 /**
  * The OS dashboard: the machine, not the fleet -- "Machine core".
  *
- * One screen (pattern A). The centre is the host drawn as a tree in cross
- * section: a growth ring per day of uptime, capped at 60, and a root out to
- * every system service, with sap running along the healthy ones. Around it,
+ * One screen (pattern A). The centre is the host drawn as a mycelium: every
+ * tracked unit a knot on the web, every thread a real dependency (thicker for
+ * more real traffic in the last 24 h), and pulses running along the threads
+ * as real events happen (public/mycelium.js, fed by /api/os/pulse). A unit
+ * that stops withers and takes its threads dark. Around it,
  * the machine's vitals, what it is capable of, who can reach it, and what
  * happened lately. It still opens with what is wrong rather than what is fine:
  * a green wall of statistics is the least useful thing an operations page can
@@ -146,6 +148,8 @@ exports.osDashboard = ({
   services,
   agents,
   channels,
+  graph,
+  totals,
   probe,
   logins,
   users,
@@ -155,7 +159,6 @@ exports.osDashboard = ({
 }) => {
   const svcDown = services.filter((s) => s.active !== "active");
   const running = agents.filter((a) => a.state && a.state.active === "active").length;
-  const failedAgents = agents.filter((a) => a.state && a.state.active === "failed").length;
   const jails = (status && status.jails) || {};
   const sshd = jails.sshd || { banned: 0, total_failed: 0 };
   const panelJail = jails["moni-dashboard"] || { banned: 0, total_failed: 0 };
@@ -182,7 +185,7 @@ exports.osDashboard = ({
   }
   if (svcDown.length) {
     warnings.push(
-      `${svcDown.length} system service${svcDown.length === 1 ? " is" : "s are"} not running:
+      `${svcDown.length} service${svcDown.length === 1 ? " is" : "s are"} not running:
        ${svcDown.map((s) => "<strong>" + esc(s.unit) + "</strong>").join(", ")}.
        <a href="/services">Check services</a>.`
     );
@@ -211,32 +214,20 @@ exports.osDashboard = ({
   ];
   const missing = capabilities.filter(([, ok]) => !ok).length;
 
-  const DETAIL = new Map(require("./catalog").OS_SERVICES.map((s) => [s.unit, s]));
-  const nodes = services.map((s) => ({
-    name: (DETAIL.get(s.unit) || {}).name || s.unit,
-    unit: s.unit,
-    state: s.active === "active" ? "ok" : s.active === "failed" ? "bad" : "warn",
-  }));
-  if (agents.length || can(user, "agents.view")) {
-    nodes.push({
-      name: "Agent fleet",
-      unit: running + " of " + agents.length + " running",
-      state: failedAgents ? "bad" : running || !agents.length ? "ok" : "warn",
-      fleet: true,
-    });
-  }
   const cpuPct = Math.min(100, (stats.loadavg[0] / Math.max(1, stats.cpus)) * 100);
   const ramPct = stats.memTotal ? (stats.memUsed / stats.memTotal) * 100 : 0;
   const diskPct = stats.diskTotal ? (stats.diskUsed / stats.diskTotal) * 100 : 0;
-  const days = Math.max(1, Math.min(60, Math.floor(stats.uptimeSec / 86400) || 1));
-  const coreData = {
-    days,
-    vitals: [cpuPct / 100, ramPct / 100, diskPct / 100],
-    nodes: nodes.map((n) => ({ state: n.state, fleet: !!n.fleet })),
-  };
-  const nodeHref = (n) =>
-    n.fleet ? "/agents/dashboard" : can(user, "services.logs") ? "/services/logs?unit=" + encodeURIComponent(n.unit) : "/services";
   const upCount = services.length - svcDown.length;
+  // The web's nodes, edges and 24 h counts. The page draws it; without
+  // JavaScript the verdict line and the counts below still say it all.
+  const web = graph || { nodes: [], edges: [] };
+  const mycData = {
+    nodes: web.nodes,
+    edges: web.edges,
+    totals: totals || null,
+    audit: can(user, "audit.view"),
+  };
+  const downNames = svcDown.map((s) => (web.nodes.find((n) => n.id === s.unit) || {}).name || s.unit);
 
   const loginRows = logins.slice(0, 20).map(
     (l) => `<tr>
@@ -295,25 +286,24 @@ exports.osDashboard = ({
         </section>
       </div>
 
-      <section class="core-hero" aria-label="Machine core: services grown from the host" data-machine-core="${esc(JSON.stringify(coreData))}">
+      <section class="core-hero myc-hero" id="mc-hero" aria-label="Machine core: what runs on the host and what depends on what" data-myc="${esc(JSON.stringify(mycData))}">
         <canvas aria-hidden="true"></canvas>
-        <div class="hero-title"><h2>Growth rings</h2><p>Each ring a day of uptime${
-          days >= 60 ? " (the last 60)" : ""
-        } · each root a service</p></div>
-        <span class="pill ${svcDown.length ? "warn" : "ok"} hero-pill">${upCount} of ${services.length} services up</span>
-        <div class="node-labels">${nodes
-          .map(
-            (n) => `<a class="node-lbl ${n.state === "ok" ? "" : esc(n.state)}" href="${esc(nodeHref(n))}">
-              <span class="dot${n.state === "ok" ? "" : " " + esc(n.state)}"></span>${esc(n.name)} <small>${esc(n.unit)}</small></a>`
-          )
-          .join("")}</div>
-        <div class="hero-legend"><span><i class="dot"></i>active</span><span><i class="dot warn"></i>inactive</span><span><i class="dot bad"></i>failed</span></div>
+        <div class="hero-title"><h2>Mycelium</h2><p data-mc-sub>${
+          svcDown.length
+            ? `<span class="v-bad">${downNames.map(esc).join(", ")} ${svcDown.length === 1 ? "is" : "are"} not running</span>`
+            : "<b>All up</b> · nothing affected · threads = what needs what"
+        }</p></div>
+        <span class="pill ${svcDown.length ? "bad" : "ok"} hero-pill" data-mc-pill>${upCount} of ${services.length} services up</span>
+        <div class="mc-ticker" data-mc-ticker aria-live="off"><div class="th">Live events</div><ol></ol></div>
+        <div class="node-labels" data-mc-labels></div>
+        <div class="hero-legend" data-mc-legend><span><i class="dot"></i>active</span><span><i class="dot bad"></i>failed</span><span><i class="ring"></i>affected</span><span>pulses = live events · threads = 24 h traffic</span></div>
         <div class="hero-stats">
-          <a href="/services"><b>${upCount} / ${services.length}</b><span>services</span></a>
+          <a href="/services"><b data-mc-count>${upCount} / ${services.length}</b><span>services</span></a>
           <a href="/guide"><b>${capabilities.length - missing} / ${capabilities.length}</b><span>capabilities</span></a>
           ${users ? `<a href="/users"><b>${users.length}</b><span>users</span></a>` : ""}
           <div><b>${sshd.banned + panelJail.banned}</b><span>IPs banned</span></div>
         </div>
+        <div class="mc-tip" data-mc-tip role="tooltip" hidden></div>
       </section>
 
       <div class="col">
@@ -408,6 +398,7 @@ exports.osDashboard = ({
       csrf,
       active: "os",
       pattern: "a",
+      assets: ["mycelium-graph.js", "mycelium.js"],
       heading: "Machine core",
       subtitle: "The machine everything runs on — host health, capabilities, and who can reach it.",
       statusChip: esc(stats.hostname) + " · up " + esc(duration(stats.uptimeSec)),

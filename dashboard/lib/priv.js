@@ -202,6 +202,11 @@ module.exports = {
     callHelper("service-logs", [unit, String(lines)], { timeout: 40000 }).then(
       redactDeep
     ),
+  // The Machine core's live events. The cursor is the helper's own, handed
+  // back unchanged; it goes over stdin because it is structured, not secret.
+  pulseFeed: (cursor) =>
+    callHelper("pulse-feed", [], { stdin: JSON.stringify({ cursor: cursor || null }), timeout: 15000 }).then(redactDeep),
+  pulseTotals: () => callHelper("pulse-feed", ["totals"], { timeout: 30000 }),
 
   /* ------------------------------------------------------------ firewall -- */
   firewallStatus: () => callHelper("firewall-status", [], { timeout: 30000 }),

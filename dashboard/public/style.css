@@ -61,6 +61,11 @@
   --orb-root: #a9b58f;
   --orb-root-hi: #306935;
   --orb-sap: #2f7d22;
+  /* the Machine core's mycelium (public/mycelium.js) */
+  --dry: #b7ab93; --dry-crack: #7d705a;
+  --sub-a: rgba(111, 166, 83, .09); --hypha: rgba(71, 114, 62, .55); --hypha-faint: rgba(71, 114, 62, .16);
+  --pulse: #2f7d22; --pulse-glow: rgba(95, 191, 63, .45); --spore: #b3261e;
+  --dark-thread: rgba(80, 70, 55, .28);
   --orb-glow: rgba(139, 212, 106, .45);
   --orb-hud: #47723e;
   --orb-node-bg: #fffdf7;
@@ -154,6 +159,10 @@
   --code-bg: rgba(0, 0, 0, .35); --input-bg: rgba(0, 0, 0, .28); --row-hover: rgba(139, 212, 106, .06);
   --orb-floret: #5fbf3f; --orb-floret-mid: #8bd46a; --orb-floret-hi: #d8f7bd; --orb-core: #f4ffe8;
   --orb-root: #3f6b35; --orb-root-hi: #a6e37f; --orb-sap: #eaffd2; --orb-glow: rgba(95, 191, 63, .55);
+  --dry: #7a6f5c; --dry-crack: #b0a288;
+  --sub-a: rgba(95, 191, 63, .12); --hypha: rgba(166, 227, 127, .55); --hypha-faint: rgba(139, 212, 106, .13);
+  --pulse: #eaffd2; --pulse-glow: rgba(139, 212, 106, .6); --spore: #ef7a6a;
+  --dark-thread: rgba(120, 120, 110, .16);
   --orb-hud: #8bd46a; --orb-node-bg: #0f140f; --orb-wood-a: #1d2f1a; --orb-wood-b: #142214;
   --g-people: #fb923c; --g-topic: #a78bfa; --g-conv: #22d3ee; --g-doc: #facc15; --g-decision: #4ade80;
   --g-figure: #60a5fa; --g-trap: #fb7185; --g-pref: #e879f9; --g-issue: #fbbf24; --g-fact: #a3e635;
@@ -186,6 +195,10 @@
     --code-bg: rgba(0, 0, 0, .35); --input-bg: rgba(0, 0, 0, .28); --row-hover: rgba(139, 212, 106, .06);
     --orb-floret: #5fbf3f; --orb-floret-mid: #8bd46a; --orb-floret-hi: #d8f7bd; --orb-core: #f4ffe8;
     --orb-root: #3f6b35; --orb-root-hi: #a6e37f; --orb-sap: #eaffd2; --orb-glow: rgba(95, 191, 63, .55);
+    --dry: #7a6f5c; --dry-crack: #b0a288;
+    --sub-a: rgba(95, 191, 63, .12); --hypha: rgba(166, 227, 127, .55); --hypha-faint: rgba(139, 212, 106, .13);
+    --pulse: #eaffd2; --pulse-glow: rgba(139, 212, 106, .6); --spore: #ef7a6a;
+    --dark-thread: rgba(120, 120, 110, .16);
     --orb-hud: #8bd46a; --orb-node-bg: #0f140f; --orb-wood-a: #1d2f1a; --orb-wood-b: #142214;
     --g-people: #fb923c; --g-topic: #a78bfa; --g-conv: #22d3ee; --g-doc: #facc15; --g-decision: #4ade80;
     --g-figure: #60a5fa; --g-trap: #fb7185; --g-pref: #e879f9; --g-issue: #fbbf24; --g-fact: #a3e635;

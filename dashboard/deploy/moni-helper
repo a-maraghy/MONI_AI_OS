@@ -87,6 +87,12 @@ MANAGED_UNITS = (
 # through the web panel" needs physical console access.
 UNSTOPPABLE_UNITS = ("ssh", "nginx", "ufw", "moni-dashboard")
 
+# Units the panel reports on but may not touch. Odoo and its database belong to
+# the planning work, the memory service and MONI AI have their own pages and
+# their own controls; listing them here makes the machine's picture complete
+# without adding a single thing the panel can do to them.
+READONLY_UNITS = ("odoo", "postgresql@16-main", "claude-memory", "moni-ai")
+
 CHANNEL_TYPES = ("telegram", "whatsapp")
 
 SLUG_RE = re.compile(r"^[a-z][a-z0-9-]{1,30}$")
@@ -1985,43 +1991,105 @@ def check_unit(unit):
     return unit
 
 
-def service_state(unit):
-    active = run(["systemctl", "is-active", unit]).stdout.strip() or "unknown"
-    enabled = run(["systemctl", "is-enabled", unit]).stdout.strip() or "unknown"
+SHOW_PROPS = ("Id", "LoadState", "ActiveState", "UnitFileState", "ActiveEnterTimestamp", "MemoryCurrent")
 
-    # Socket-activated units look alarming otherwise: on Ubuntu 24.04 ssh.service
-    # is 'disabled' while ssh.socket is enabled, and SSH comes back on boot
-    # perfectly well. Reporting the raw service state would have an operator
-    # "fixing" a service that was never broken.
-    via_socket = False
-    if enabled in ("disabled", "static", "unknown"):
-        socket_unit = unit.split(".")[0] + ".socket"
-        if run(["systemctl", "is-enabled", socket_unit]).stdout.strip() == "enabled":
+
+def parse_show(text):
+    """`systemctl show u1 u2 -p ...` output: one KEY=VALUE block per unit, in order."""
+    blocks, cur = [], {}
+    for line in text.splitlines():
+        if not line.strip():
+            if cur:
+                blocks.append(cur)
+                cur = {}
+            continue
+        k, _, v = line.partition("=")
+        cur[k] = v
+    if cur:
+        blocks.append(cur)
+    return blocks
+
+
+def service_states(units, kinds=None):
+    """The state of several units in one systemctl call rather than four each.
+
+    The overview asks for every tracked unit on every render, and four
+    subprocesses per unit made that the slowest thing on the page.
+    """
+    units = list(units)
+    if not units:
+        return []
+    r = run(["systemctl", "show", "-p", ",".join(SHOW_PROPS), "--"] + [u + ".service" for u in units], timeout=20)
+    blocks = parse_show(r.stdout)
+    by_id = {b.get("Id", ""): b for b in blocks}
+    out = []
+    for i, unit in enumerate(units):
+        b = by_id.get(unit + ".service") or (blocks[i] if i < len(blocks) else {})
+        active = b.get("ActiveState") or "unknown"
+        if b.get("LoadState") == "not-found":
+            active = "inactive"
+        enabled = b.get("UnitFileState") or "unknown"
+        if enabled == "enabled-runtime":
             enabled = "enabled"
-            via_socket = True
-    since = run(
-        ["systemctl", "show", unit, "-p", "ActiveEnterTimestamp", "--value"]
-    ).stdout.strip()
-    mem = run(["systemctl", "show", unit, "-p", "MemoryCurrent", "--value"]).stdout.strip()
-    try:
-        mem_bytes = int(mem)
-        if mem_bytes < 0:
+        # Socket-activated units look alarming otherwise: on Ubuntu 24.04
+        # ssh.service is 'disabled' while ssh.socket is enabled, and SSH comes
+        # back on boot perfectly well. Reporting the raw service state would
+        # have an operator "fixing" a service that was never broken.
+        via_socket = False
+        if enabled in ("disabled", "static", "unknown", ""):
+            socket_unit = unit.split("@")[0].split(".")[0] + ".socket"
+            if run(["systemctl", "is-enabled", socket_unit]).stdout.strip() == "enabled":
+                enabled = "enabled"
+                via_socket = True
+        try:
+            mem_bytes = int(b.get("MemoryCurrent", ""))
+            if mem_bytes < 0 or mem_bytes >= 2 ** 63 - 1:
+                mem_bytes = None
+        except (TypeError, ValueError):
             mem_bytes = None
-    except (TypeError, ValueError):
-        mem_bytes = None
-    return {
-        "unit": unit,
-        "active": active,
-        "enabled": enabled,
-        "socket_activated": via_socket,
-        "since": since,
-        "memory": mem_bytes,
-        "stoppable": unit not in UNSTOPPABLE_UNITS,
-    }
+        kind = (kinds or {}).get(unit, "system")
+        out.append({
+            "unit": unit,
+            "active": active,
+            "enabled": enabled,
+            "socket_activated": via_socket,
+            "since": b.get("ActiveEnterTimestamp", ""),
+            "memory": mem_bytes,
+            "kind": kind,
+            # Only MANAGED_UNITS can be started, stopped or restarted from
+            # /services; the rest are shown there read-only.
+            "managed": unit in MANAGED_UNITS,
+            "stoppable": unit in MANAGED_UNITS and unit not in UNSTOPPABLE_UNITS,
+        })
+    return out
+
+
+def service_state(unit):
+    return service_states([unit])[0]
+
+
+def tracked_units():
+    """Every unit the panel reports on, with its kind.
+
+    MANAGED_UNITS can be acted on; READONLY_UNITS, the agents and the WhatsApp
+    bridges are only reported, so the dashboard's picture of the machine is
+    complete without widening what it may do to it.
+    """
+    kinds = {}
+    for u in MANAGED_UNITS + READONLY_UNITS:
+        kinds[u] = "system"
+    for slug in all_agent_slugs():
+        kinds[UNIT_PREFIX + slug] = "agent"
+    for meta in all_channels():
+        slug = meta.get("slug")
+        if meta.get("type") == "whatsapp" and isinstance(slug, str) and SLUG_RE.match(slug):
+            kinds[WA_UNIT_PREFIX + slug] = "whatsapp"
+    return kinds
 
 
 def cmd_service_list(args):
-    ok([service_state(u) for u in MANAGED_UNITS])
+    kinds = tracked_units()
+    ok(service_states(list(kinds), kinds))
 
 
 def cmd_service_action(args):
@@ -2059,6 +2127,436 @@ def cmd_service_logs(args):
         timeout=30,
     )
     ok({"unit": unit, "lines": r.stdout.splitlines()[-n:]})
+
+
+# ============================================================= pulse feed ====
+#
+# What happened on the machine since the last time the overview asked: the
+# events its "Machine core" web draws as pulses. Read-only, and deliberately
+# thin: every event is a type, a time and at most a unit, jail or agent name.
+# No address, no user name, no message text ever leaves this function -- the
+# lines are parsed here and only the verdict is returned.
+#
+# The cursor is opaque to the dashboard and handed back on the next call: a
+# journal cursor, an (inode, offset) per log file and the last message id per
+# agent. A first call (no cursor) looks back PULSE_LOOKBACK seconds so the
+# ticker opens with what just happened, then carries on from the end.
+
+PULSE_FILES = {
+    "f2b": "/var/log/fail2ban.log",
+    "hooks": "/var/log/claude-memory-hooks.log",
+    "web_panel": "/var/log/nginx/moni-access.log",
+    "web_odoo": "/var/log/nginx/odoo-access.log",
+    "web_other": "/var/log/nginx/access.log",
+}
+PULSE_LOOKBACK = 15 * 60
+PULSE_MAX_READ = 512 * 1024
+PULSE_MAX_EVENTS = 60  # per type and call; the rest are counted, not listed
+JOURNAL_CURSOR_RE = re.compile(r"^[a-z0-9=;_-]{20,400}$")
+SSH_OK_RE = re.compile(r"^Accepted \S+ for ")
+SSH_FAIL_RE = re.compile(r"^(Connection (closed|reset) by (authenticating|invalid) user |Failed (password|publickey|none|keyboard-interactive) for )")
+F2B_RE = re.compile(
+    r"^(\d{4}-\d\d-\d\d \d\d:\d\d:\d\d),\d+ fail2ban\.actions\s+\[\d+\]:\s+NOTICE\s+\[([A-Za-z0-9_.-]{1,40})\] (Ban|Unban) "
+)
+HOOK_RE = re.compile(r"^(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d) (\w+) (\{.*\})\s*$")
+NGINX_TIME_RE = re.compile(r"\[(\d\d/\w{3}/\d{4}:\d\d:\d\d:\d\d [+-]\d{4})\]")
+
+
+def pulse_journal(argv):
+    """journalctl -o json lines as dicts; injectable so the tests can feed fixtures."""
+    r = run(["journalctl", "--no-pager", "-o", "json",
+             "--output-fields=MESSAGE,UNIT,JOB_TYPE,JOB_RESULT,_SYSTEMD_UNIT,_PID"] + argv, timeout=20)
+    if r.returncode not in (0, 1):
+        raise RuntimeError("journalctl failed")
+    out = []
+    for line in r.stdout.splitlines():
+        try:
+            out.append(json.loads(line))
+        except ValueError:
+            continue
+    return out
+
+
+def pulse_iso(epoch):
+    return datetime.fromtimestamp(epoch, timezone.utc).isoformat(timespec="seconds")
+
+
+def pulse_msg(entry):
+    m = entry.get("MESSAGE")
+    if isinstance(m, list):  # journald hands non-UTF-8 messages over as bytes
+        try:
+            m = bytes(m).decode("utf-8", "replace")
+        except Exception:
+            m = ""
+    return m if isinstance(m, str) else ""
+
+
+def pulse_classify_journal(entries, units, since_epoch=None):
+    """Journal entries -> events. `units` is the set of tracked unit names."""
+    events, counts = [], {}
+    for e in entries:
+        try:
+            ts = int(e.get("__REALTIME_TIMESTAMP", "0")) / 1e6
+        except ValueError:
+            continue
+        if since_epoch is not None and ts < since_epoch:
+            continue
+        msg = pulse_msg(e)
+        ev = None
+        if e.get("_SYSTEMD_UNIT") == "ssh.service":
+            if SSH_OK_RE.match(msg):
+                ev = {"type": "ssh-login"}
+            elif SSH_FAIL_RE.match(msg):
+                ev = {"type": "ssh-fail"}
+        elif str(e.get("_PID")) == "1" and e.get("JOB_TYPE") == "start" and e.get("JOB_RESULT") == "done":
+            unit = str(e.get("UNIT", ""))
+            if unit.endswith(".service") and unit[:-8] in units:
+                ev = {"type": "start", "unit": unit[:-8]}
+        if not ev:
+            continue
+        counts[ev["type"]] = counts.get(ev["type"], 0) + 1
+        if counts[ev["type"]] <= PULSE_MAX_EVENTS:
+            ev["at"] = pulse_iso(ts)
+            events.append(ev)
+    return events, counts
+
+
+def pulse_read_new(path, state, tail_bytes=0):
+    """New complete lines of an append-only log since `state` = [inode, offset].
+
+    No state: start at the end (or `tail_bytes` before it). A different inode or
+    a shorter file means the log was rotated: read the new one from the start.
+    Returns (lines, new_state). Never reads more than PULSE_MAX_READ.
+    """
+    st = os.stat(path)
+    size, ino = st.st_size, st.st_ino
+    if state is None:
+        start = max(0, size - tail_bytes)
+    elif state[0] != ino or state[1] > size:
+        start = 0
+    else:
+        start = state[1]
+    if size - start > PULSE_MAX_READ:
+        start = size - PULSE_MAX_READ
+    if start >= size:
+        return [], [ino, size]
+    with open(path, "rb") as fh:
+        fh.seek(start)
+        chunk = fh.read(size - start)
+    end = chunk.rfind(b"\n")
+    if end < 0:
+        return [], [ino, start]
+    lines = chunk[:end].decode("utf-8", "replace").split("\n")
+    if start > 0 and (state is None or state[0] != ino or start != state[1]):
+        lines = lines[1:]  # began mid-line
+    return lines, [ino, start + end + 1]
+
+
+def pulse_f2b(lines, since_epoch=None):
+    events = []
+    for line in lines:
+        m = F2B_RE.match(line)
+        if not m:
+            continue
+        ts = time_local(m.group(1))
+        if ts is None or (since_epoch is not None and ts < since_epoch):
+            continue
+        events.append({"type": "ban" if m.group(3) == "Ban" else "unban", "jail": m.group(2), "at": pulse_iso(ts)})
+    return events[-PULSE_MAX_EVENTS:]
+
+
+def time_local(text):
+    try:
+        return datetime.strptime(text, "%Y-%m-%d %H:%M:%S").timestamp()  # the box's own zone
+    except ValueError:
+        return None
+
+
+def pulse_hooks(lines, now):
+    """claude-memory hook lines that started an ingest.
+
+    The hook log is written by processes in different time zones, so its
+    stamps are not trusted for live events: a line new since the last call
+    happened within the last poll, and is stamped with the time it was read.
+    """
+    n = 0
+    for line in lines:
+        m = HOOK_RE.match(line)
+        if not m:
+            continue
+        try:
+            if json.loads(m.group(3)).get("ingest") is True:
+                n += 1
+        except ValueError:
+            continue
+    return [{"type": "ingest", "at": pulse_iso(now)} for _ in range(min(n, PULSE_MAX_EVENTS))]
+
+
+def agent_db_path(slug):
+    return os.path.join(agent_dir(slug), "data", "bot.db")
+
+
+def pulse_replies(slug, last_id, since_epoch=None):
+    """Replies an agent sent: rows of its own messages table that carry a response.
+
+    The agents do not log replies to the journal (only start-up and errors), so
+    their bot.db is the record. Opened read-only; only ids and times are read.
+    """
+    import sqlite3
+    path = agent_db_path(slug)
+    if not os.path.isfile(path):
+        raise FileNotFoundError(path)
+    con = sqlite3.connect("file:" + path + "?mode=ro", uri=True, timeout=2)
+    try:
+        if last_id is None:
+            row = con.execute("SELECT COALESCE(MAX(message_id), 0) FROM messages").fetchone()
+            top = int(row[0] or 0)
+            rows = con.execute(
+                "SELECT message_id, timestamp FROM messages WHERE response IS NOT NULL ORDER BY message_id DESC LIMIT 20"
+            ).fetchall()
+            rows = list(reversed(rows))
+        else:
+            rows = con.execute(
+                "SELECT message_id, timestamp FROM messages WHERE message_id > ? AND response IS NOT NULL "
+                "ORDER BY message_id LIMIT ?", (int(last_id), PULSE_MAX_EVENTS)
+            ).fetchall()
+            top = max([int(last_id)] + [int(r[0]) for r in rows])
+    finally:
+        con.close()
+    events = []
+    for mid, stamp in rows:
+        ts = parse_any_time(stamp)
+        if ts is None:
+            continue
+        if since_epoch is not None and ts < since_epoch:
+            continue
+        events.append({"type": "reply", "agent": slug, "at": pulse_iso(ts)})
+    return events, top
+
+
+def parse_any_time(stamp):
+    if not isinstance(stamp, str) or not stamp:
+        return None
+    s = stamp.strip().replace(" ", "T", 1)
+    try:
+        d = datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    if d.tzinfo is None:
+        d = d.replace(tzinfo=timezone.utc)  # SQLite CURRENT_TIMESTAMP is UTC
+    return d.timestamp()
+
+
+def pulse_check_cursor(cur):
+    """Refuse anything but the exact shape this helper hands out."""
+    if cur is None:
+        return None
+    if not isinstance(cur, dict) or set(cur) - {"j", "f", "r"}:
+        fail("bad cursor")
+    j = cur.get("j")
+    if j is not None and (not isinstance(j, str) or not JOURNAL_CURSOR_RE.match(j)):
+        fail("bad cursor")
+    f = cur.get("f") or {}
+    if not isinstance(f, dict) or set(f) - set(PULSE_FILES):
+        fail("bad cursor")
+    for v in f.values():
+        if not (isinstance(v, list) and len(v) == 2 and all(isinstance(x, int) and 0 <= x < 2 ** 63 for x in v)):
+            fail("bad cursor")
+    r = cur.get("r") or {}
+    if not isinstance(r, dict) or len(r) > 200:
+        fail("bad cursor")
+    for k, v in r.items():
+        if not SLUG_RE.match(k) or not isinstance(v, int) or not 0 <= v < 2 ** 63:
+            fail("bad cursor")
+    return {"j": j, "f": f, "r": r}
+
+
+def pulse_feed(cur, now=None):
+    now = now or datetime.now(timezone.utc).timestamp()
+    first = cur is None
+    cur = cur or {"j": None, "f": {}, "r": {}}
+    since = now - PULSE_LOOKBACK if first else None
+    units = set(tracked_units())
+    events, counts, unavailable = [], {}, []
+    nxt = {"j": cur.get("j"), "f": dict(cur.get("f") or {}), "r": dict(cur.get("r") or {})}
+
+    # the journal: SSH and unit starts, one call
+    try:
+        argv = ["_SYSTEMD_UNIT=ssh.service", "+", "_PID=1"]
+        if cur.get("j"):
+            argv = ["--after-cursor", cur["j"]] + argv
+        else:
+            argv = ["--since", "-%ds" % PULSE_LOOKBACK] + argv
+        entries = pulse_journal(argv)
+        if entries and isinstance(entries[-1].get("__CURSOR"), str) and JOURNAL_CURSOR_RE.match(entries[-1]["__CURSOR"]):
+            nxt["j"] = entries[-1]["__CURSOR"]
+        ev, cn = pulse_classify_journal(entries, units)
+        events += ev
+        for k, v in cn.items():
+            counts[k] = counts.get(k, 0) + v
+    except Exception:
+        unavailable.append("journal")
+
+    # fail2ban's own log: bans and unbans, with the jail
+    try:
+        lines, nxt["f"]["f2b"] = pulse_read_new(PULSE_FILES["f2b"], cur["f"].get("f2b"), 64 * 1024 if first else 0)
+        ev = pulse_f2b(lines, since)
+        events += ev
+        for e in ev:
+            counts[e["type"]] = counts.get(e["type"], 0) + 1
+    except Exception:
+        unavailable.append("fail2ban")
+
+    # the memory service's hook log: ingests
+    try:
+        lines, nxt["f"]["hooks"] = pulse_read_new(PULSE_FILES["hooks"], cur["f"].get("hooks"))
+        ev = pulse_hooks(lines if not first else [], now)
+        events += ev
+        if ev:
+            counts["ingest"] = len(ev)
+    except Exception:
+        unavailable.append("memory-hooks")
+
+    # nginx: request counts only, for the faint traffic
+    for key in ("web_panel", "web_odoo", "web_other"):
+        try:
+            lines, nxt["f"][key] = pulse_read_new(PULSE_FILES[key], cur["f"].get(key))
+            counts[key] = 0 if first else sum(1 for ln in lines if ln.strip())
+        except Exception:
+            unavailable.append(key.replace("_", "-"))
+
+    # agent replies, from each agent's own database
+    slugs = all_agent_slugs()
+    for slug in slugs:
+        try:
+            ev, top = pulse_replies(slug, cur["r"].get(slug) if not first else None, since)
+            nxt["r"][slug] = top
+            events += ev
+            if ev:
+                counts["reply"] = counts.get("reply", 0) + len(ev)
+        except Exception:
+            unavailable.append("replies:" + slug)
+    for gone in [s for s in nxt["r"] if s not in slugs]:
+        del nxt["r"][gone]
+
+    events.sort(key=lambda e: e["at"])
+    return {"cursor": nxt, "events": events, "counts": counts, "unavailable": unavailable, "now": pulse_iso(now)}
+
+
+def pulse_totals(now=None):
+    """The last 24 hours per event type: what the web's thread thickness is drawn from."""
+    now = now or datetime.now(timezone.utc).timestamp()
+    since = now - 86400
+    units = set(tracked_units())
+    totals, unavailable, starts = {}, [], {}
+    try:
+        entries = pulse_journal(["--since", "-24h", "_SYSTEMD_UNIT=ssh.service", "+", "_PID=1"])
+        global PULSE_MAX_EVENTS
+        keep, PULSE_MAX_EVENTS = PULSE_MAX_EVENTS, 10 ** 9
+        try:
+            ev, cn = pulse_classify_journal(entries, units, since)
+        finally:
+            PULSE_MAX_EVENTS = keep
+        totals.update({k: v for k, v in cn.items() if k != "start"})
+        for e in ev:
+            if e["type"] == "start":
+                starts[e["unit"]] = starts.get(e["unit"], 0) + 1
+        totals["start"] = sum(starts.values())
+    except Exception:
+        unavailable.append("journal")
+
+    def lines_of(path):
+        out = []
+        for p in (path + ".1", path):
+            if os.path.isfile(p):
+                with open(p, "rb") as fh:
+                    if os.path.getsize(p) > 64 * 1024 * 1024:
+                        fh.seek(-64 * 1024 * 1024, 2)
+                    out += fh.read().decode("utf-8", "replace").splitlines()
+        return out
+
+    try:
+        n_ban = n_unban = 0
+        for line in lines_of(PULSE_FILES["f2b"]):
+            m = F2B_RE.match(line)
+            if m:
+                ts = time_local(m.group(1))
+                if ts is not None and ts >= since:
+                    if m.group(3) == "Ban":
+                        n_ban += 1
+                    else:
+                        n_unban += 1
+        totals["ban"], totals["unban"] = n_ban, n_unban
+    except Exception:
+        unavailable.append("fail2ban")
+    try:
+        # Stamps in this log come from processes in more than one zone; an hour
+        # of slack either way is the honest precision of this count.
+        n = 0
+        for line in lines_of(PULSE_FILES["hooks"]):
+            m = HOOK_RE.match(line)
+            if not m:
+                continue
+            ts = time_local(m.group(1).replace("T", " "))
+            if ts is None or ts < since:
+                continue
+            try:
+                if json.loads(m.group(3)).get("ingest") is True:
+                    n += 1
+            except ValueError:
+                pass
+        totals["ingest"] = n
+    except Exception:
+        unavailable.append("memory-hooks")
+    for key in ("web_panel", "web_odoo", "web_other"):
+        try:
+            n = 0
+            for line in lines_of(PULSE_FILES[key]):
+                m = NGINX_TIME_RE.search(line)
+                if not m:
+                    continue
+                try:
+                    ts = datetime.strptime(m.group(1), "%d/%b/%Y:%H:%M:%S %z").timestamp()
+                except ValueError:
+                    continue
+                if ts >= since:
+                    n += 1
+            totals[key] = n
+        except Exception:
+            unavailable.append(key.replace("_", "-"))
+    replies, by_agent = 0, {}
+    for slug in all_agent_slugs():
+        try:
+            import sqlite3
+            path = agent_db_path(slug)
+            if not os.path.isfile(path):
+                raise FileNotFoundError(path)
+            con = sqlite3.connect("file:" + path + "?mode=ro", uri=True, timeout=2)
+            try:
+                for (stamp,) in con.execute("SELECT timestamp FROM messages WHERE response IS NOT NULL ORDER BY message_id DESC LIMIT 5000"):
+                    ts = parse_any_time(stamp)
+                    if ts is not None and ts >= since:
+                        replies += 1
+                        by_agent[slug] = by_agent.get(slug, 0) + 1
+            finally:
+                con.close()
+        except Exception:
+            unavailable.append("replies:" + slug)
+    totals["reply"] = replies
+    totals["reply_by_agent"] = by_agent
+    return {"totals": totals, "starts": starts, "unavailable": unavailable, "now": pulse_iso(now)}
+
+
+def cmd_pulse_feed(args):
+    """pulse-feed [totals] -- cursor as {"cursor": ...} on stdin."""
+    if args and args[0] == "totals":
+        return ok(pulse_totals())
+    if args:
+        fail("usage: pulse-feed [totals]")
+    payload = read_stdin_json()
+    if set(payload) - {"cursor"}:
+        fail("unexpected field")
+    ok(pulse_feed(pulse_check_cursor(payload.get("cursor"))))
 
 
 # =============================================================== firewall ====
@@ -5291,6 +5789,7 @@ COMMANDS = {
     "service-list": cmd_service_list,
     "service-action": cmd_service_action,
     "service-logs": cmd_service_logs,
+    "pulse-feed": cmd_pulse_feed,
     "firewall-status": cmd_firewall_status,
     "firewall-ban": cmd_firewall_ban,
     "firewall-unban": cmd_firewall_unban,

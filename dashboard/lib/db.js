@@ -503,4 +503,11 @@ module.exports = {
 
   recentLogins: (n = 25) =>
     db.prepare("SELECT * FROM login_log ORDER BY id DESC LIMIT ?").all(n),
+
+  /** For the Machine core's live feed: ids, times and outcomes only, oldest first. */
+  loginsAfter: (afterId, n = 200, sinceTs = null) =>
+    sinceTs
+      ? db.prepare("SELECT id, ts, outcome FROM login_log WHERE id > ? AND ts >= ? ORDER BY id LIMIT ?").all(afterId, sinceTs, n)
+      : db.prepare("SELECT id, ts, outcome FROM login_log WHERE id > ? ORDER BY id LIMIT ?").all(afterId, n),
+  lastLoginId: () => (db.prepare("SELECT COALESCE(MAX(id), 0) AS id FROM login_log").get() || {}).id || 0,
 };

@@ -41,6 +41,7 @@ const totp = require("./lib/totp");
 const voice = require("./lib/voice");
 const chrome = require("./lib/chrome");
 const memgraph = require("./lib/memgraph");
+const pulse = require("./lib/pulse");
 
 const PORT = Number(process.env.MONI_PORT || 3000);
 const BIND = process.env.MONI_BIND || "127.0.0.1";
@@ -236,6 +237,11 @@ app.use(loadActor);
 // lib/chrome.js). A change made through the panel forgets the cache, so the
 // page it redirects to counts what is true now rather than half a minute ago.
 chrome.configure({ priv, db, catalog });
+
+// The Machine core's live feed: one poller for every viewer, reading the
+// helper's pulse-feed, this panel's own sign-ins and audit log, and MONI AI's
+// ledger. It only runs while someone has the overview open.
+const pulseFeed = pulse.createFeed({ priv, db, moniai, auditLog: path.join(LOG_DIR, "audit.log") });
 app.use((req, res, next) => {
   if (req.method === "POST") chrome.invalidate();
   next();
@@ -569,6 +575,35 @@ async function gather(map) {
   return out;
 }
 
+/**
+ * The unit list, at most UNITS_MS old, shared by every overview's poll. Each
+ * fresh read is folded into the frame's cache so badge, chip and page agree.
+ */
+const UNITS_MS = 10 * 1000;
+let unitsCache = { at: 0, list: null, pending: null };
+function freshServices() {
+  if (unitsCache.list && Date.now() - unitsCache.at < UNITS_MS) return Promise.resolve(unitsCache.list);
+  if (!unitsCache.pending) {
+    unitsCache.pending = priv
+      .serviceList()
+      .then((list) => {
+        unitsCache = { at: Date.now(), list, pending: null };
+        chrome.prime({ services: list });
+        return list;
+      })
+      .catch((e) => {
+        unitsCache.pending = null;
+        throw e;
+      });
+  }
+  return unitsCache.pending;
+}
+function primeFrame(req, services) {
+  unitsCache = { at: Date.now(), list: services, pending: null };
+  const merged = chrome.prime({ services });
+  if (merged && req.chrome) req.chrome = chrome.forActor(req.perm, merged);
+}
+
 app.get("/", requireAuth, requirePerm("os.view"), async (req, res) => {
   const data = await gather({
     status: () => priv.status(),
@@ -578,6 +613,7 @@ app.get("/", requireAuth, requirePerm("os.view"), async (req, res) => {
     probe: () => priv.systemProbe(),
     audit: () => (req.perm.can("audit.view") ? priv.auditTail(14) : Promise.resolve(null)),
   });
+  if (Array.isArray(data.services)) primeFrame(req, data.services);
   res.send(
     views.osDashboard({
       csrf: res.locals.csrf,
@@ -585,9 +621,16 @@ app.get("/", requireAuth, requirePerm("os.view"), async (req, res) => {
       stats: systemStats(),
       status: data.status || { services: {}, jails: {} },
       statusError: data.errors.status || null,
-      services: data.services || [],
+      services: chrome.visibleServices(data.services || [], req.perm),
       agents: data.agents || [],
       channels: data.channels || [],
+      graph: pulse.buildGraph({
+        services: chrome.visibleServices(data.services || [], req.perm),
+        agents: scopeAgents(req, data.agents),
+        channels: scopeChannels(req, data.channels),
+        detail: new Map(catalog.OS_SERVICES.map((s) => [s.unit, s])),
+      }),
+      totals: await pulseFeed.getTotals(),
       probe: data.probe || null,
       logins: db.recentLogins(20),
       audit: data.audit || null,
@@ -596,6 +639,50 @@ app.get("/", requireAuth, requirePerm("os.view"), async (req, res) => {
       devices: req.perm.can("devices.view") ? db.listDevices() : null,
     })
   );
+});
+
+/**
+ * The Machine core's events since `since` (a sequence number this endpoint
+ * handed out), plus the units' current states from the shared 30 s cache.
+ * Cheap on purpose: the page asks every few seconds, and however many pages
+ * ask, the sources are read at most once per pulse.MIN_INTERVAL_MS.
+ */
+app.get("/api/os/pulse", requireAuth, requirePerm("os.view"), async (req, res) => {
+  const since = /^[0-9]{1,12}$/.test(String(req.query.since || "")) ? Number(req.query.since) : 0;
+  const wantTotals = since === 0 || req.query.totals === "1";
+  try {
+    await Promise.race([pulseFeed.poll(), new Promise((r) => setTimeout(r, 2500))]);
+  } catch (_) {
+    /* the feed logs its own failures; an empty answer is still an answer */
+  }
+  let all = [];
+  try {
+    all = await freshServices();
+  } catch (_) {
+    const facts = (await chrome.facts()) || {};
+    all = Array.isArray(facts.services) ? facts.services : [];
+  }
+  const services = chrome.visibleServices(all, req.perm);
+  const seen = new Set(services.map((s) => s.unit));
+  const canAudit = req.perm.can("audit.view");
+  const allow = (e) => {
+    if (e.type === "audit") return canAudit;
+    if (e.type === "start") return seen.has(e.unit);
+    if (e.type === "reply") return seen.has("moni-agent@" + e.agent);
+    return true;
+  };
+  const events = pulseFeed.since(since, allow).map((e) => {
+    const o = { seq: e.seq, type: e.type, at: e.at };
+    for (const k of ["unit", "jail", "agent", "source", "action", "n"]) if (e[k] != null) o[k] = e[k];
+    return o;
+  });
+  res.set("Cache-Control", "no-store");
+  res.json({
+    seq: pulseFeed.seq,
+    events,
+    units: services.map((s) => ({ unit: s.unit, active: s.active, since: pulse.shortSince(s.since), memory: s.memory })),
+    totals: wantTotals ? await pulseFeed.getTotals() : undefined,
+  });
 });
 
 app.get("/api/stats", requireAuth, requirePerm("os.view"), async (req, res) => {
@@ -1573,7 +1660,9 @@ app.post("/channels/:slug/delete", requireAuth, requirePerm("channels.delete"), 
 
 app.get("/services", requireAuth, requirePerm("services.view"), async (req, res) => {
   try {
-    const services = await priv.serviceList();
+    const list = await priv.serviceList();
+    primeFrame(req, list);
+    const services = chrome.visibleServices(list, req.perm);
     res.send(
       serviceViews.system({
         csrf: res.locals.csrf,
