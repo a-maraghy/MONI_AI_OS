@@ -58,8 +58,10 @@ function readRules(cfg) {
 function report(sessionId, r) {
   return new Promise((resolve) => {
     const sock = process.env.MONI_AI_HOOK_SOCKET;
-    if (!sock || !(r.rule || r.builtin)) return resolve();
-    const msg = { event: "RuleHit", session_id: sessionId, rule_id: r.rule ? r.rule.id : null, builtin: r.builtin || null, at: new Date().toISOString() };
+    // the classifier's asks count against its built-in row ("asked 12x")
+    const builtin = r.builtin || (r.source === "classifier" && r.decision === "ask" ? "classifier" : null);
+    if (!sock || !(r.rule || builtin)) return resolve();
+    const msg = { event: "RuleHit", session_id: sessionId, rule_id: r.rule ? r.rule.id : null, builtin, at: new Date().toISOString() };
     const timer = setTimeout(resolve, 1000);
     const s = net.createConnection(sock, () => s.end(JSON.stringify(msg) + "\n"));
     s.on("close", () => {
