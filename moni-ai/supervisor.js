@@ -226,6 +226,7 @@ const requestToApproval = new Map(); // CLI request_id -> approval id
 const rc = { enabled: false, url: null, bridgeSessionId: null, state: null, error: null };
 
 let sessionsCache = { at: null, list: [], error: null };
+let subagentsCache = new Map(); // session_id -> running sub-agents (see refreshSubagents)
 
 function sessionId() {
   let s = readState();
@@ -1063,9 +1064,144 @@ function where(reg, kind) {
   return reg.entrypoint || kind || "session";
 }
 
+/**
+ * Sub-agents run inside their parent session's own CLI process (spawned via
+ * the Agent/Task tool) and never register in ~/.claude/sessions, so
+ * `claude agents --json` never sees them. The only outside sign of one at
+ * work is its own transcript file under the parent session's `subagents/`
+ * directory, growing without a final answer yet -- the same evidence the
+ * dashboard's `cc-running` privileged helper reads for /claude/running
+ * (moni-helper `cc_subagents`/`cc_running`). This supervisor runs as root
+ * with HOME=/root already, so it can read these files directly with no
+ * helper hop.
+ */
+const SUBAGENT_FILE_RE = /^agent-([A-Za-z0-9_-]{1,64})\.jsonl$/;
+const SUBAGENT_SLUG_RE = /^[A-Za-z0-9_.-]{1,255}$/;
+const SUBAGENT_RUNNING_WINDOW_S = 120; // a subagent file written this recently may still be working
+
+function readTail(filePath, maxBytes) {
+  const fd = fs.openSync(filePath, "r");
+  try {
+    const size = fs.fstatSync(fd).size;
+    const start = Math.max(0, size - maxBytes);
+    const buf = Buffer.alloc(size - start);
+    if (buf.length) fs.readSync(fd, buf, 0, buf.length, start);
+    return buf.toString("utf8");
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+/** done | running | stopped, from the last assistant record's stop reason. */
+function subagentStatus(filePath, mtimeMs) {
+  const recent = (Date.now() - mtimeMs) / 1000 < SUBAGENT_RUNNING_WINDOW_S;
+  let tail;
+  try {
+    tail = readTail(filePath, 128 * 1024);
+  } catch (_) {
+    return recent ? "running" : "stopped";
+  }
+  const lines = tail.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    let rec;
+    try {
+      rec = JSON.parse(line);
+    } catch (_) {
+      continue;
+    }
+    if (rec.type === "assistant") {
+      const stop = rec.message && rec.message.stop_reason;
+      return stop === "end_turn" ? "done" : recent ? "running" : "stopped";
+    }
+  }
+  return recent ? "running" : "stopped";
+}
+
+/** Every sub-agent transcript under one session directory, newest last. */
+function sessionSubagents(sdir) {
+  const adir = path.join(sdir, "subagents");
+  let names;
+  try {
+    if (!fs.lstatSync(adir).isDirectory()) return [];
+    names = fs.readdirSync(adir);
+  } catch (_) {
+    return [];
+  }
+  const out = [];
+  for (const name of names) {
+    const m = SUBAGENT_FILE_RE.exec(name);
+    if (!m) continue;
+    const p = path.join(adir, name);
+    let st;
+    try {
+      st = fs.lstatSync(p);
+    } catch (_) {
+      continue;
+    }
+    if (!st.isFile()) continue;
+    let meta = {};
+    try {
+      const mp = path.join(adir, `agent-${m[1]}.meta.json`);
+      const mst = fs.lstatSync(mp);
+      if (mst.isFile()) meta = JSON.parse(fs.readFileSync(mp, "utf8")) || {};
+    } catch (_) {
+      /* no meta yet, or unreadable -- name/description just come back null */
+    }
+    out.push({
+      id: m[1],
+      type: meta.agentType || null,
+      description: meta.description || null,
+      background: meta.requestShape === "background",
+      bytes: st.size,
+      modified: st.mtime.toISOString(),
+      status: subagentStatus(p, st.mtimeMs),
+    });
+  }
+  out.sort((a, b) => a.modified.localeCompare(b.modified));
+  return out;
+}
+
+/**
+ * A cheap snapshot poll (not a tail of every transcript continuously): walk
+ * every session directory under ~/.claude/projects once, keep only sub-agents
+ * still "running", keyed by their parent session's id. Cost is one readdir
+ * per project + per session + per subagents dir, which on this box is a few
+ * hundred entries -- fine on the same 5s cadence as refreshSessions.
+ */
+function refreshSubagents() {
+  const bySession = new Map();
+  let slugs;
+  try {
+    slugs = fs.readdirSync(PROJECTS_DIR);
+  } catch (_) {
+    subagentsCache = bySession;
+    return;
+  }
+  for (const slug of slugs) {
+    if (!SUBAGENT_SLUG_RE.test(slug)) continue;
+    const pdir = path.join(PROJECTS_DIR, slug);
+    let sessDirs;
+    try {
+      if (!fs.lstatSync(pdir).isDirectory()) continue;
+      sessDirs = fs.readdirSync(pdir);
+    } catch (_) {
+      continue;
+    }
+    for (const sess of sessDirs) {
+      if (!SUBAGENT_SLUG_RE.test(sess)) continue; // real session ids are UUIDs; the same charset guard is enough
+      const agents = sessionSubagents(path.join(pdir, sess)).filter((a) => a.status === "running");
+      if (agents.length) bySession.set(sess, agents);
+    }
+  }
+  subagentsCache = bySession;
+}
+
 function refreshSessions() {
   if (sessionsBusy) return;
   sessionsBusy = true;
+  refreshSubagents();
   execFile(cfg.cli, ["agents", "--json"], { timeout: 20000, env: childEnv(), maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
     sessionsBusy = false;
     if (err) {
@@ -1101,7 +1237,15 @@ function refreshSessions() {
     });
     sessionsCache = { at: now(), list: merged, error: null };
     advanceDelegations(merged);
-    const sig = JSON.stringify(merged.map((s) => [s.pid, s.status, s.name, s.waiting_for]));
+    const sig = JSON.stringify(
+      merged.map((s) => [
+        s.pid,
+        s.status,
+        s.name,
+        s.waiting_for,
+        (subagentsCache.get(s.session_id) || []).map((a) => [a.id, a.status]),
+      ])
+    );
     if (sig !== lastSessionsSig) {
       lastSessionsSig = sig;
       emit("sessions", { sessions: sessionsWithLedger() });
@@ -1142,7 +1286,12 @@ function sessionsWithLedger() {
     const open = ledger.db
       .prepare("SELECT count(*) AS n FROM delegations WHERE status IN ('sent','working','ack','held') AND (target_pid = ? OR (target_pid IS NULL AND target_name = ?))")
       .get(s.pid, s.name || "").n;
-    return { ...s, open_delegations: open, last_delegation: last ? publicDelegation(last) : null };
+    return {
+      ...s,
+      open_delegations: open,
+      last_delegation: last ? publicDelegation(last) : null,
+      subagents: (s.session_id && subagentsCache.get(s.session_id)) || [],
+    };
   });
 }
 

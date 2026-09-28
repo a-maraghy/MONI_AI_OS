@@ -252,6 +252,36 @@ async function until(fn, ms = 10000) {
     const sess = await call("sessions");
     check("sessions merge the ledger", sess.ok && sess.data.sessions.some((s) => s.name === "fake-target" && s.last_delegation && s.last_delegation.id === dSent.delegation.id));
 
+    // --- sub-agents: a Task/Agent tool run shows up under its parent session,
+    // and drops off once it is no longer running (end_turn, or gone stale).
+    const subDir = path.join(home, ".claude", "projects", "-fake", "fake-target-session", "subagents");
+    fs.mkdirSync(subDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(subDir, "agent-test1.jsonl"),
+      JSON.stringify({ type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", name: "Bash" }] } }) + "\n"
+    );
+    fs.writeFileSync(path.join(subDir, "agent-test1.meta.json"), JSON.stringify({ agentType: "general-purpose", description: "Run the fake test suite", requestShape: "background" }));
+    const withAgent = await until(async () => {
+      const s = await call("sessions");
+      const t = s.data.sessions.find((x) => x.session_id === "fake-target-session");
+      return t && t.subagents && t.subagents.length ? t : null;
+    }, 5000);
+    check(
+      "a running sub-agent appears under its parent session",
+      !!withAgent && withAgent.subagents[0].id === "test1" && withAgent.subagents[0].description === "Run the fake test suite" && withAgent.subagents[0].status === "running",
+      withAgent && JSON.stringify(withAgent.subagents)
+    );
+    fs.writeFileSync(
+      path.join(subDir, "agent-test1.jsonl"),
+      JSON.stringify({ type: "assistant", message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "done" }] } }) + "\n"
+    );
+    const gone = await until(async () => {
+      const s = await call("sessions");
+      const t = s.data.sessions.find((x) => x.session_id === "fake-target-session");
+      return t && (!t.subagents || !t.subagents.length) ? true : null;
+    }, 5000);
+    check("it drops off the session once it finishes (end_turn)", !!gone);
+
     // --- audit
     const audit = await call("ledger", { table: "audit", limit: 100 });
     const ops = audit.data.rows.map((r) => r.op + ":" + r.actor);

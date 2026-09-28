@@ -683,6 +683,18 @@
     if (s.waiting_for) return "waiting for " + s.waiting_for;
     return (sessState(s) === "idle" ? "idle " : "busy ") + (s.status_since ? ago(s.status_since) : "") + " · " + (s.cwd || "");
   }
+  function subagentLabel(a) { return a.description || a.type || ("agent-" + a.id); }
+  function subagentsHtml(s) {
+    var list = s.subagents || [];
+    if (!list.length) return "";
+    var chips = list.map(function (a) {
+      var since = a.modified ? ago(a.modified) : "";
+      return '<li class="cc-sa" title="' + esc(subagentLabel(a) + (since ? " · running " + since : "")) + '">' +
+        '<span class="cc-dot work"></span><span class="cc-sa-name">' + esc(clip(subagentLabel(a), 34)) + '</span>' +
+        (since ? '<span class="cc-sa-time">' + esc(since) + '</span>' : "") + "</li>";
+    }).join("");
+    return '<ul class="cc-sess-agents">' + chips + "</ul>";
+  }
   function sortSessions(list) {
     return list.slice().sort(function (a, b) {
       if (a.self !== b.self) return a.self ? 1 : -1;
@@ -692,7 +704,8 @@
   function renderSessions(force) {
     var list = sortSessions(S.sessions);
     var sig = JSON.stringify(list.map(function (s) {
-      return [s.pid, s.name, s.status, s.waiting_for, s.where, s.open_delegations, s.last_delegation && [s.last_delegation.id, s.last_delegation.status]];
+      return [s.pid, s.name, s.status, s.waiting_for, s.where, s.open_delegations, s.last_delegation && [s.last_delegation.id, s.last_delegation.status],
+        (s.subagents || []).map(function (a) { return [a.id, a.status, a.description, a.modified]; })];
     })) + "|" + S.target + "|" + (S.status && S.status.busy);
     var live = liveSessions();
     $("cc-sess-aside").textContent = live.length + " live" + (S.status && S.status.sessions_at ? " · polled " + ago(S.status.sessions_at) : "") + " · → delegate · open where it runs";
@@ -716,7 +729,7 @@
         '<span class="cc-sess-ic">' + ic(sessIcon(s)) + "</span>" +
         '<div class="cc-sess-main"><div class="cc-sess-name">' + esc(name) + "</div>" +
         '<div class="cc-sess-where"><span class="cc-st-inline ' + st + '">' + st + " · </span>" + esc(s.where || s.kind || "session") + "</div>" +
-        '<div class="cc-sess-last">' + esc(sessLast(s)) + "</div></div>" +
+        '<div class="cc-sess-last">' + esc(sessLast(s)) + "</div>" + subagentsHtml(s) + "</div>" +
         '<span class="cc-sess-state ' + st + '"><span class="cc-dot ' + (st === "working" ? "work" : st === "waiting" ? "wait" : "idle") + '"></span>' + st + "</span>" +
         '<div class="cc-sess-actions">' +
         '<button type="button" class="cc-ib pri" data-delegate="' + esc(key) + '" title="' + (s.self ? "MONI AI is the one you are talking to" : "Delegate to " + esc(name) + "…") + '" aria-label="Delegate to ' + esc(name) + '"' + (s.self ? " disabled" : "") + ">" + ic("delegate") + "</button>" +
