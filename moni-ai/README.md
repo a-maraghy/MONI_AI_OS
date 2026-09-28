@@ -178,10 +178,110 @@ Events: `proc`, `init`, `rc`, `turn` (queued / start / source / end), `text`
 (streamed deltas, not buffered), `assistant`, `tool`, `tool_result`, `steps`,
 `result`, `approval`, `delegation`, `inbound`, `sessions`, `vitals`, `notice`.
 
+Command Center v3, phase 1 (all re-validated in `lib/protocol.js`, writes audited):
+
+| op | params | |
+|---|---|---|
+| `machine`, `watchers`, `orders`, `rules`, `cost` | – | read |
+| `missions` / `mission` | `status?` / `mission_id` (`M-12`) | read |
+| `decisions` | `status?` (open, all) | read |
+| `order-runs` | `order_id` | read |
+| `rule-test`, `rule-suggest` | `command, tool?` / `approval_id` | read |
+| `session-mirror` | `session_id` (uuid) | read: the transcript's last turns, tools today, delegations, cost |
+| `mission-create`, `mission-step-add`, `mission-step-update`, `mission-update` | see the protocol | MONI AI's MCP tools call these as actor `moni-ai` |
+| `mission-request` | `goal` | "New mission": a queued turn asking MONI AI to plan it |
+| `decision-propose`, `decision-update` | `decision_id, summary, evidence?, fix_command?` / `status, result?` | MONI AI |
+| `decision-approve`, `decision-dismiss`, `decision-ask` | `decision_id, note?` / `text` | administrator |
+| `watcher-set` | `key, enabled` | persisted |
+| `watcher-inject` | `watcher, subject, detail?, evidence?` | fault injection; refused unless `watcher_inject` is true in the config (tests only) |
+| `order-create`, `order-update`, `order-delete`, `order-run`, `order-pause` | name, schedule, target, prompt, delivery, paused | standing orders |
+| `rule-create`, `rule-update`, `rule-delete` | effect, tool, pattern, note | built-ins refused |
+| `approve` | + `rule_pattern, rule_tool` | "Always allow this": saves the rule, then approves |
+| `cost-budget` | `daily_usd` (or null), `warn_pct` | |
+
+New events: `mission`, `decision`, `watcher`, `order`, `order_run`, `rule`, `machine`.
+
+## Command Center v3, phase 1
+
+`lib/features.js` holds everything below and is wired into the supervisor at
+a few points (a turn's result and end, a delegation, an approval, a hook
+event). All of its state is in the ledger, so a restart loses nothing.
+
+- **Missions** (`lib/missions.js`, tables `missions`, `steps`, `mission_turns`).
+  MONI AI plans a multi-step goal with its own MCP tools (`bin/moni-ai-mcp`,
+  passed with `--mcp-config` and allowed with `--allowedTools mcp__moni-ai`):
+  `mission_create`, `mission_step_add`, `mission_step_update`,
+  `mission_update`, `mission_list`, `mission_get`. A delegation whose first line
+  carries `M-<id> step <n>` is linked to that step (or, untagged, to the one
+  step marked delegated to that target), and its lifecycle then drives the
+  step: sent → delegated, working/ack → working, held or a pending card →
+  waiting approval, done → done, failed/denied → failed. A mission is done when
+  every step is done or skipped. Chosen over a CLI because typed tools need no
+  shell quoting and do not go through the Bash gate; `moni-ai-ctl` speaks the
+  same ops for a human.
+- **Decisions and watchers** (`lib/watchers.js`, tables `decisions`,
+  `watchers`). Every 30 s: the helper's `service-list` (a unit failed) and
+  `pulse-feed` (fail2ban bans > 20 in 10 min; an agent started 3 times in 10
+  min), statfs (root filesystem ≥ 85 %), and a read-only tail of the TRIAL
+  box's `/var/log/odoo/odoo.log` (≥ 5 ERROR lines in 5 min). Live Odoo is not
+  watched. A firing raises a decision card and queues (never interrupts) a
+  MONI AI turn to investigate read-only and call `decision_propose`. Approve
+  queues a turn to run exactly the proposed fix, which still goes through the
+  gate (a destructive fix raises its own card; that is deliberate, not a
+  bypass); Ask more queues a follow-up; Dismiss closes it. One open card per
+  (watcher, subject) — repeats bump its count; a closed subject is quiet for
+  `watcher_cooldown_s` (1800); at most `watcher_max_investigations_per_hour`
+  (4) investigations, past that the card is raised "rate-limited" with an
+  Investigate button. Switches persist in `watchers`.
+- **Standing orders** (`lib/schedule.js`, tables `orders`, `order_runs`).
+  Five-field cron in `Africa/Cairo` (DST-aware: a doubled time runs once, a
+  skipped one just after the jump). The editor's kinds compile to cron: daily,
+  Sunday–Thursday (Egypt's working week), weekly, every N hours, cron. A 15 s
+  tick moves `next_run_at` on BEFORE starting a run, so a crash or a supervisor
+  that was down across several runs runs a missed order once, never a burst; a
+  run still going is not stacked. Seeded: **Morning briefing, 07:30 daily**,
+  THIS VPS only (services, disk, sign-ins and bans, MONI AI's activity,
+  missions), no live Odoo, no live credential. The result is the turn's reply,
+  shown as a card in the Conversation. **Delivery is the Command Center only**:
+  the Telegram agents keep their bot tokens to themselves and offer no
+  supported way to post on MONI AI's behalf.
+- **Approval rules** (`lib/rules.js`, table `rules`). allow / ask / deny, a glob
+  pattern over the whole Bash command (deny and ask also match one command of a
+  compound) or `"<target>: <message>"` for SendMessage, scope MONI AI on this
+  VPS. Order: built-in deny (force push; pushing `a-maraghy/gizaseeds-Odoo19` or
+  from `/opt/odoo/custom`) > config deny (the delegation allow-list) > a deny
+  rule > built-in ask (anything touching live Odoo — no allow overrides it) >
+  the most specific allow/ask rule (ask on a tie) > the classifier. `hooks/gate.js`
+  reads the rules read-only from the ledger (built-ins are in code, so they hold
+  without it; an unreadable store asks) and reports a matched rule's use to the
+  hook socket. The supervisor applies the same rules to `can_use_tool`, so a
+  rule answers there too (recorded as an approval `decided_by rule:<id>`).
+  "Always allow this" saves an exact-command rule that must match the card's
+  own call. Built-ins cannot be edited or deleted. Rules for other sessions
+  (their settings) are a phase 2 question; phase 1 never writes other sessions'
+  settings.
+- **Cost** (`lib/cost.js`, tables `cost_daily`, `cost_files`, `cost_names`,
+  `settings`). **Trap:** `turns.cost_usd` is the CLI's running total for the
+  process. Each result now stores `proc_start` and `cost_delta_usd` (difference
+  from the previous turn of the same process; a new process — by stamp, or the
+  total going down — starts from its own total); old rows are backfilled at
+  start. Other sessions: token usage from their transcripts (sub-agents
+  included, once per message id) × list prices, scanned incrementally with
+  offsets in the ledger — "estimated API-equivalent". Optional daily budget with
+  a warn percentage.
+- **Machine**: this VPS only — vitals and the tracked units from `service-list`.
+- **Session mirror**: a read-only view of any session's transcript tail.
+
+
 ## Tests
 
 ```bash
 node moni-ai/tools/test-classifier.cjs        # the gate's classifier
+node moni-ai/tools/test-rules.cjs             # approval rules + the real gate hook
+node moni-ai/tools/test-schedule.cjs          # cron, Cairo DST, missed runs
+node moni-ai/tools/test-watchers.cjs          # thresholds, dedup, cooldown, rate limit
+node moni-ai/tools/test-missions-cost.cjs     # missions store, cost deltas, transcript scan
+sudo node moni-ai/tools/test-features.cjs     # all of phase 1 through a real supervisor
 node moni-ai/tools/test-protocol.cjs          # socket validation, peer-text parsing
 sudo node moni-ai/tools/test-supervisor.cjs   # the whole supervisor against a fake CLI
 node dashboard/tools/test-moniai.cjs          # the panel's client and permission

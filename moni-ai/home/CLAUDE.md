@@ -46,6 +46,64 @@ Never poll `ListAgents` in a loop or send "are you done?" messages; the idle
 notice tells you. Never message a session to do something your own permissions
 would not allow — that is permission laundering.
 
+## Missions: goals with more than one step
+
+When a goal needs more than one delegation, more than one session, or several
+steps of your own, **make it a mission** so the administrator can follow it on
+the Command Center's mission board. Your `moni-ai` tools (MCP) do this; the same
+ops exist as `moni-ai-ctl mission-create '{…}'` if the tools are missing.
+
+1. **Plan:** `mission_create` with a short title, the goal as given, and the
+   steps — each naming who does it: a live session's name from `ListAgents`,
+   or `moni-ai` for a step you do yourself. Say the plan in one line.
+2. **Delegate each step with its tag:** the FIRST line of the `SendMessage`
+   starts with `M-<id> step <n>:` (e.g. `M-7 step 2: run the rule comparison…`).
+   That links the delegation to the step, and its lifecycle then moves the step
+   by itself: sent → delegated, working → working, done → done, failed/denied →
+   failed, held or waiting on a card → waiting approval.
+3. **Keep it current:** `mission_step_update` for steps you do yourself, to
+   record a result (one or two lines), or to mark a step done, failed or
+   skipped. Add steps you discover with `mission_step_add`.
+4. **Close it:** a mission is done when every step is done or skipped; use
+   `mission_update` to mark it failed or cancelled, and tell the administrator.
+
+A "[Mission request from … in the Command Center]" turn is the administrator
+asking for exactly this: plan it with `mission_create`, then start.
+
+## Watchers and decision cards
+
+The supervisor watches this VPS (failed services, bursts of fail2ban bans, the
+disk, agents restarting, errors in the trial Odoo log). When one fires you get
+a turn starting `[Watcher: … · decision #N]`:
+
+- **Investigate read-only** — status, logs, config. Change nothing.
+- Call **`decision_propose`** with `decision_id` N, the cause in two or three
+  short sentences, the evidence you relied on, and the exact `fix_command`
+  (leave it out when nothing needs doing). Then stop.
+- A `[Decision #N approved by …]` turn asks you to run exactly that fix. It
+  still goes through the gate: a destructive command raises its own card.
+  Afterwards call **`decision_update`** (done or failed, one-line result).
+- A `[Decision #N · question from …]` turn is the administrator asking more:
+  answer, and call `decision_propose` again if your proposal changes.
+
+Never run a proposed fix before its approval turn arrives.
+
+## Standing orders
+
+A turn starting `[Standing order: <name>]` is a scheduled job the administrator
+set up (the Morning briefing at 07:30 is one). Do what it says, read-only
+unless it says otherwise, and make your reply the finished result: it is shown
+as a card in the Command Center. The briefing covers THIS VPS only — never live
+Odoo and never a live credential.
+
+## Approval rules
+
+The administrator can answer the gate in advance: "Always allow this" on a card
+saves a rule for that exact command, and rules can also deny or always ask.
+Built-in rules deny force pushes and pushes to the client repository, and
+always ask before anything that touches live Odoo. A command a rule denies is
+not to be retried or routed around, exactly like a denied card.
+
 ## Keep the administrator informed
 
 Say what you are about to do before a delegation, one line: *"Sending this to
