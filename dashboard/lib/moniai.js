@@ -184,7 +184,136 @@ function cleanSince(raw) {
   return Number(s);
 }
 
+/* ------------------------------------------ Command Center v3, phase 1 --- */
+/*
+ * The same shapes the supervisor checks again (moni-ai/lib/protocol.js). These
+ * turn a browser's JSON into exactly the fields the supervisor accepts, and
+ * refuse anything else with a message a person can act on.
+ */
+
+function str(v, name, { max = 4000, min = 1, optional = false, re = null } = {}) {
+  if (v === undefined || v === null || v === "") {
+    if (optional) return undefined;
+    throw bad(`${name} is required.`);
+  }
+  if (typeof v !== "string" || v.includes("\u0000")) throw bad(`${name} must be text.`);
+  const t = v.trim();
+  if (t.length < min) throw bad(`${name} is required.`);
+  if (v.length > max) throw bad(`${name} must be at most ${max} characters.`);
+  if (re && !re.test(t)) throw bad(`${name} is not valid.`);
+  return t;
+}
+function oneOf(v, name, values, optional) {
+  if (v === undefined || v === null || v === "") {
+    if (optional) return undefined;
+    throw bad(`${name} is required.`);
+  }
+  if (!values.includes(v)) throw bad(`${name} must be one of ${values.join(", ")}.`);
+  return v;
+}
+function intOf(v, name, min, max, optional) {
+  if (v === undefined || v === null || v === "") {
+    if (optional) return undefined;
+    throw bad(`${name} is required.`);
+  }
+  const n = typeof v === "number" ? v : /^-?[0-9]{1,16}$/.test(String(v)) ? Number(v) : NaN;
+  if (!Number.isInteger(n) || n < min || n > max) throw bad(`${name} must be a whole number ${min}–${max}.`);
+  return n;
+}
+function idOf(raw, what) {
+  const s = String(raw == null ? "" : raw);
+  if (!/^[1-9][0-9]{0,15}$/.test(s)) throw bad(`No such ${what}.`);
+  return Number(s);
+}
+function missionIdOf(raw) {
+  const s = String(raw == null ? "" : raw);
+  if (!/^(M-)?[1-9][0-9]{0,8}$/i.test(s)) throw bad("No such mission.");
+  return s.toUpperCase().startsWith("M-") ? s.toUpperCase() : "M-" + s;
+}
+function strip(o) {
+  const out = {};
+  for (const [k, v] of Object.entries(o)) if (v !== undefined) out[k] = v;
+  return out;
+}
+
+const WATCHERS = ["service_failed", "ban_burst", "disk", "agent_failing", "odoo_errors"];
+const SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+function cleanAlwaysRule(body) {
+  const r = body && body.rule;
+  if (r === undefined || r === null) return null;
+  if (typeof r !== "object" || Array.isArray(r)) throw bad("The rule is not valid.");
+  return { rule_pattern: str(r.pattern, "The rule's pattern", { max: 2000 }), rule_tool: oneOf(r.tool, "The rule's tool", ["Bash", "SendMessage"]) };
+}
+
+function cleanSchedule(s) {
+  if (!s || typeof s !== "object" || Array.isArray(s)) throw bad("Pick a schedule.");
+  return strip({
+    kind: oneOf(s.kind, "Schedule", ["daily", "weekdays", "weekly", "hours", "cron"]),
+    at: str(s.at, "Time", { max: 5, optional: true, re: /^([01][0-9]|2[0-3]):[0-5][0-9]$/ }),
+    dow: intOf(s.dow, "Weekday", 0, 6, true),
+    every_h: intOf(s.every_h, "Every N hours", 1, 24, true),
+    cron: str(s.cron, "Cron", { max: 100, optional: true, re: /^[0-9*,\/ -]{9,100}$/ }),
+  });
+}
+
+function cleanOrder(body, partial) {
+  const b = body || {};
+  const out = strip({
+    name: str(b.name, "Name", { max: 120, optional: partial }),
+    schedule: b.schedule === undefined && partial ? undefined : cleanSchedule(b.schedule),
+    target: str(b.target, "Runs as", { max: 300, optional: partial, re: /^[^\r\n\u0000]+$/ }),
+    prompt: str(b.prompt, "What to do", { max: 8000, optional: partial }),
+    delivery:
+      b.delivery === undefined
+        ? partial
+          ? undefined
+          : ["cc"]
+        : Array.isArray(b.delivery) && b.delivery.length && b.delivery.length <= 2 && b.delivery.every((x) => x === "cc" || x === "telegram")
+        ? [...new Set(b.delivery)]
+        : (() => {
+            throw bad("Deliver to the Command Center.");
+          })(),
+    paused: b.paused === undefined ? undefined : typeof b.paused === "boolean" ? b.paused : (() => {
+      throw bad("paused must be true or false.");
+    })(),
+  });
+  return out;
+}
+
+function cleanRule(body, partial) {
+  const b = body || {};
+  return strip({
+    effect: oneOf(b.effect, "Effect", ["allow", "ask", "deny"], partial),
+    tool: oneOf(b.tool, "Tool", ["Bash", "SendMessage", "any"], partial),
+    pattern: str(b.pattern, "Pattern", { max: 2000, optional: partial }),
+    note: str(b.note, "Note", { max: 500, optional: true }),
+  });
+}
+
+function cleanBudget(body) {
+  const b = body || {};
+  let daily = b.daily_usd;
+  if (daily === "" || daily === undefined) daily = null;
+  if (daily !== null) {
+    daily = typeof daily === "number" ? daily : Number(daily);
+    if (!isFinite(daily) || daily < 0 || daily > 100000) throw bad("The daily budget must be a number of dollars, or empty for none.");
+  }
+  return { daily_usd: daily, warn_pct: intOf(b.warn_pct === undefined ? 80 : b.warn_pct, "Warn at", 50, 100) };
+}
+
 module.exports = {
+  WATCHERS,
+  SESSION_ID_RE,
+  str,
+  oneOf,
+  intOf,
+  idOf,
+  missionIdOf,
+  cleanAlwaysRule,
+  cleanOrder,
+  cleanRule,
+  cleanBudget,
   SOCKET,
   MAX_TEXT,
   TABLES,

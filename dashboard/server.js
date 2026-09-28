@@ -2990,14 +2990,19 @@ app.get("/moni-ai/api/status", ...moniAiGuard, async (req, res) => {
 /** Everything the page needs on load, in one round trip. */
 app.get("/moni-ai/api/overview", ...moniAiGuard, async (req, res) => {
   const who = req.me.username;
-  const [status, sessions, delegations, memory, agents, voiceInfo] = await Promise.allSettled([
+  const [status, sessions, delegations, memory, agents, voiceInfo, missions, decisions, orders, watchers] = await Promise.allSettled([
     moniai.call("status", {}, who),
     moniai.call("sessions", {}, who),
     moniai.call("ledger", { table: "delegations", limit: 30 }, who),
     moniAiMemoryCounts(),
     moniAiAgentCounts(req),
     moniAiVoice(req),
+    moniai.call("missions", { status: "all", limit: 20 }, who),
+    moniai.call("decisions", { status: "open" }, who),
+    moniai.call("orders", {}, who),
+    moniai.call("watchers", {}, who),
   ]);
+  const opt = (r, key) => (r.status === "fulfilled" ? r.value[key] : null);
   if (status.status === "rejected") return moniAiFail(res, status.reason);
   res.json({
     status: status.value,
@@ -3007,6 +3012,12 @@ app.get("/moni-ai/api/overview", ...moniAiGuard, async (req, res) => {
     agents: agents.status === "fulfilled" ? agents.value : { error: agents.reason.message },
     voice: voiceInfo.status === "fulfilled" ? voiceInfo.value : { configured: false },
     viewer: { name: req.me.display_name || req.me.username, csrf: res.locals.csrf },
+    missions: opt(missions, "missions"),
+    decisions: opt(decisions, "decisions"),
+    orders: opt(orders, "orders"),
+    orders_tz: opt(orders, "tz"),
+    telegram: opt(orders, "telegram"),
+    watchers: opt(watchers, "watchers"),
   });
 });
 
@@ -3102,8 +3113,10 @@ app.post("/moni-ai/api/approvals/:id/:decision", ...moniAiWrite, async (req, res
     const params = { approval_id: moniai.cleanApprovalId(req.params.id) };
     const note = moniai.cleanNote(req.body && req.body.note);
     if (note) params.note = note;
+    const always = decision === "approve" ? moniai.cleanAlwaysRule(req.body) : null;
+    if (always) Object.assign(params, always);
     const out = await moniai.call(decision, params, req.me.username);
-    db.logLogin(req.ip, req.me.username, "moni-ai", `${decision === "approve" ? "approved" : "denied"} request ${params.approval_id}`);
+    db.logLogin(req.ip, req.me.username, "moni-ai", `${decision === "approve" ? "approved" : "denied"} request ${params.approval_id}${always ? " and saved an always-allow rule" : ""}`);
     res.json(out);
   } catch (e) {
     moniAiFail(res, e);
@@ -3140,6 +3153,154 @@ app.post("/moni-ai/api/restart", ...moniAiWrite, async (req, res) => {
   } catch (e) {
     moniAiFail(res, e);
   }
+});
+
+/* ------------------------------- MONI AI: Command Center v3, phase 1 --- */
+/*
+ * Missions, decisions and watchers, standing orders, approval rules, cost, the
+ * machine card and the read-only session mirror. Each route is a thin, checked
+ * proxy to one supervisor op (moni-ai/lib/protocol.js re-validates all of it).
+ * Writes carry CSRF, reach the supervisor with the panel user as actor (it
+ * audits them) and leave a line in the panel's own log too.
+ */
+
+async function moniAiOp(req, res, op, params, { log: what, timeout } = {}) {
+  try {
+    const out = await moniai.call(op, params || {}, req.me.username, timeout ? { timeout } : undefined);
+    if (what) db.logLogin(req.ip, req.me.username, "moni-ai", String(what).slice(0, 200));
+    res.json(out);
+  } catch (e) {
+    moniAiFail(res, e);
+  }
+}
+/** Run a cleaner; answer 400 on a bad request. Returns undefined when it already answered. */
+function moniAiClean(res, fn) {
+  try {
+    return fn();
+  } catch (e) {
+    moniAiFail(res, e);
+    return undefined;
+  }
+}
+
+app.get("/moni-ai/api/machine", ...moniAiGuard, (req, res) => moniAiOp(req, res, "machine"));
+
+// approvals: the narrow "Always allow this" rule to show before saving it
+app.get("/moni-ai/api/approvals/:id/rule-suggestion", ...moniAiGuard, (req, res) => {
+  const id = moniAiClean(res, () => moniai.cleanApprovalId(req.params.id));
+  if (id !== undefined) moniAiOp(req, res, "rule-suggest", { approval_id: id });
+});
+
+// missions
+app.get("/moni-ai/api/missions", ...moniAiGuard, (req, res) => {
+  const status = req.query && req.query.status === "active" ? "active" : "all";
+  moniAiOp(req, res, "missions", { status });
+});
+app.get("/moni-ai/api/missions/:id", ...moniAiGuard, (req, res) => {
+  const id = moniAiClean(res, () => moniai.missionIdOf(req.params.id));
+  if (id !== undefined) moniAiOp(req, res, "mission", { mission_id: id });
+});
+app.post("/moni-ai/api/missions/request", ...moniAiWrite, (req, res) => {
+  const goal = moniAiClean(res, () => moniai.str(req.body && req.body.goal, "The goal", { max: 4000 }));
+  if (goal !== undefined) moniAiOp(req, res, "mission-request", { goal }, { log: "asked for a mission" });
+});
+
+// decisions
+app.get("/moni-ai/api/decisions", ...moniAiGuard, (req, res) => {
+  moniAiOp(req, res, "decisions", { status: req.query && req.query.status === "all" ? "all" : "open" });
+});
+app.post("/moni-ai/api/decisions/:id/:action", ...moniAiWrite, (req, res) => {
+  const action = req.params.action;
+  if (!["approve", "dismiss", "ask"].includes(action)) return res.status(404).json({ error: "No such action." });
+  const params = moniAiClean(res, () => {
+    const p = { decision_id: moniai.idOf(req.params.id, "decision") };
+    if (action === "ask") p.text = moniai.str(req.body && req.body.text, "Your question", { max: 4000 });
+    else {
+      const note = moniai.cleanNote(req.body && req.body.note);
+      if (note) p.note = note;
+    }
+    return p;
+  });
+  if (params) moniAiOp(req, res, "decision-" + action, params, { log: `${action} decision ${params.decision_id}` });
+});
+
+// watchers
+app.get("/moni-ai/api/watchers", ...moniAiGuard, (req, res) => moniAiOp(req, res, "watchers"));
+app.post("/moni-ai/api/watchers/:key", ...moniAiWrite, (req, res) => {
+  const params = moniAiClean(res, () => {
+    const key = moniai.oneOf(req.params.key, "Watcher", moniai.WATCHERS);
+    const enabled = req.body && req.body.enabled;
+    if (typeof enabled !== "boolean") throw new moniai.MoniAiError("enabled must be true or false.", "invalid");
+    return { key, enabled };
+  });
+  if (params) moniAiOp(req, res, "watcher-set", params, { log: `watcher ${params.key} ${params.enabled ? "on" : "off"}` });
+});
+
+// standing orders
+app.get("/moni-ai/api/orders", ...moniAiGuard, (req, res) => moniAiOp(req, res, "orders"));
+app.get("/moni-ai/api/orders/:id/runs", ...moniAiGuard, (req, res) => {
+  const id = moniAiClean(res, () => moniai.idOf(req.params.id, "standing order"));
+  if (id !== undefined) moniAiOp(req, res, "order-runs", { order_id: id });
+});
+app.post("/moni-ai/api/orders", ...moniAiWrite, (req, res) => {
+  const p = moniAiClean(res, () => moniai.cleanOrder(req.body, false));
+  if (p) moniAiOp(req, res, "order-create", p, { log: "created a standing order" });
+});
+app.post("/moni-ai/api/orders/:id", ...moniAiWrite, (req, res) => {
+  const p = moniAiClean(res, () => ({ order_id: moniai.idOf(req.params.id, "standing order"), ...moniai.cleanOrder(req.body, true) }));
+  if (p) moniAiOp(req, res, "order-update", p, { log: `updated standing order ${p.order_id}` });
+});
+app.post("/moni-ai/api/orders/:id/:action", ...moniAiWrite, (req, res) => {
+  const action = req.params.action;
+  if (!["delete", "run", "pause"].includes(action)) return res.status(404).json({ error: "No such action." });
+  const p = moniAiClean(res, () => {
+    const o = { order_id: moniai.idOf(req.params.id, "standing order") };
+    if (action === "pause") {
+      if (typeof (req.body && req.body.paused) !== "boolean") throw new moniai.MoniAiError("paused must be true or false.", "invalid");
+      o.paused = req.body.paused;
+    }
+    return o;
+  });
+  if (p) moniAiOp(req, res, "order-" + action, p, { log: `${action} standing order ${p.order_id}` });
+});
+
+// approval rules
+app.get("/moni-ai/api/rules", ...moniAiGuard, (req, res) => moniAiOp(req, res, "rules"));
+app.post("/moni-ai/api/rules/test", ...moniAiWrite, (req, res) => {
+  const p = moniAiClean(res, () =>
+    strip2({ command: moniai.str(req.body && req.body.command, "The command", { max: 8000 }), tool: moniai.oneOf(req.body && req.body.tool, "Tool", ["Bash", "SendMessage"], true) })
+  );
+  if (p) moniAiOp(req, res, "rule-test", p);
+});
+app.post("/moni-ai/api/rules", ...moniAiWrite, (req, res) => {
+  const p = moniAiClean(res, () => moniai.cleanRule(req.body, false));
+  if (p) moniAiOp(req, res, "rule-create", p, { log: `added a ${p.effect} rule` });
+});
+app.post("/moni-ai/api/rules/:id", ...moniAiWrite, (req, res) => {
+  const p = moniAiClean(res, () => ({ rule_id: moniai.idOf(req.params.id, "rule"), ...moniai.cleanRule(req.body, true) }));
+  if (p) moniAiOp(req, res, "rule-update", p, { log: `changed rule ${p.rule_id}` });
+});
+app.post("/moni-ai/api/rules/:id/delete", ...moniAiWrite, (req, res) => {
+  const id = moniAiClean(res, () => moniai.idOf(req.params.id, "rule"));
+  if (id !== undefined) moniAiOp(req, res, "rule-delete", { rule_id: id }, { log: `deleted rule ${id}` });
+});
+function strip2(o) {
+  const out = {};
+  for (const [k, v] of Object.entries(o)) if (v !== undefined) out[k] = v;
+  return out;
+}
+
+// cost
+app.get("/moni-ai/api/cost", ...moniAiGuard, (req, res) => moniAiOp(req, res, "cost"));
+app.post("/moni-ai/api/cost/budget", ...moniAiWrite, (req, res) => {
+  const p = moniAiClean(res, () => moniai.cleanBudget(req.body));
+  if (p) moniAiOp(req, res, "cost-budget", p, { log: "set the daily budget" });
+});
+
+// the read-only session deep view
+app.get("/moni-ai/api/sessions/:sid/mirror", ...moniAiGuard, (req, res) => {
+  if (!moniai.SESSION_ID_RE.test(String(req.params.sid || ""))) return res.status(404).json({ error: "No such session." });
+  moniAiOp(req, res, "session-mirror", { session_id: req.params.sid });
 });
 
 /* ------------------------------------------------------- channel members --- */
