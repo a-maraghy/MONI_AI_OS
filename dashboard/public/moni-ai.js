@@ -732,6 +732,9 @@
         '<div class="cc-sess-last">' + esc(sessLast(s)) + "</div>" + subagentsHtml(s) + "</div>" +
         '<span class="cc-sess-state ' + st + '"><span class="cc-dot ' + (st === "working" ? "work" : st === "waiting" ? "wait" : "idle") + '"></span>' + st + "</span>" +
         '<div class="cc-sess-actions">' +
+        (s.last_delegation && (s.last_delegation.text || s.last_delegation.summary)
+          ? '<button type="button" class="cc-ib" data-msg="' + esc(key) + '" title="Show the full message sent to ' + esc(name) + '" aria-label="Show the full message sent to ' + esc(name) + '">' + ic("message") + "</button>"
+          : "") +
         '<button type="button" class="cc-ib pri" data-delegate="' + esc(key) + '" title="' + (s.self ? "MONI AI is the one you are talking to" : "Delegate to " + esc(name) + "…") + '" aria-label="Delegate to ' + esc(name) + '"' + (s.self ? " disabled" : "") + ">" + ic("delegate") + "</button>" +
         '<button type="button" class="cc-ib" data-open="' + esc(key) + '" title="' + (s.self ? "Open in Claude Desktop" : "Where it runs") + '" aria-label="Open ' + esc(name) + '">' + ic("open") + "</button></div></article>";
     }).join("");
@@ -748,7 +751,7 @@
   }
 
   $("cc-sessions").addEventListener("click", function (e) {
-    var d = e.target.closest("[data-delegate]"), o = e.target.closest("[data-open]");
+    var d = e.target.closest("[data-delegate]"), o = e.target.closest("[data-open]"), m = e.target.closest("[data-msg]");
     if (d && !d.disabled) {
       var s = findSess(d.getAttribute("data-delegate"));
       if (s) setTarget(s.name);
@@ -757,6 +760,10 @@
     if (o) {
       var so = findSess(o.getAttribute("data-open"));
       if (so) openPopover(so, o);
+    }
+    if (m) {
+      var sm = findSess(m.getAttribute("data-msg"));
+      if (sm) openMsgPopover(sm, m);
     }
   });
 
@@ -805,8 +812,31 @@
     var first = pop.querySelector("button");
     if (first) first.focus();
   }
+  /** The full text of a session's last delegation, in its own scrolling popover. */
+  function openMsgPopover(s, anchor) {
+    closePop();
+    var d = s.last_delegation;
+    if (!d) return;
+    pop = document.createElement("div");
+    pop.className = "cc-pop cc-pop-msg";
+    pop.setAttribute("role", "dialog");
+    pop.setAttribute("aria-label", "Message sent to " + (s.name || "session"));
+    var when = d.updated_at || d.created_at;
+    var status = TL_LAB[d.status] || d.status || "";
+    pop.innerHTML = "<h4>" + ic("delegate") + "Sent to " + esc(clip(s.name || "unnamed session", 34)) + "</h4>" +
+      '<div class="cc-pop-meta">' + esc(hm(when)) + (status ? " · " + esc(status) : "") + "</div>" +
+      '<div class="cc-pop-body">' + esc(d.text || d.summary || "") + "</div>" +
+      '<div class="cc-pop-act"><button type="button" class="cc-btn" data-close>Close</button></div>';
+    document.body.appendChild(pop);
+    placePop(pop, anchor);
+    pop.addEventListener("click", function (ev) {
+      if (ev.target.closest("[data-close]")) closePop();
+    });
+    var first = pop.querySelector("button");
+    if (first) first.focus();
+  }
   document.addEventListener("click", function (e) {
-    if (pop && !pop.contains(e.target) && !e.target.closest("[data-open]")) closePop();
+    if (pop && !pop.contains(e.target) && !e.target.closest("[data-open]") && !e.target.closest("[data-msg]")) closePop();
   });
 
   /** The Remote Control link, fetched when asked for and never kept on the page. */
@@ -1283,7 +1313,7 @@
           if (r.status === "done" && r.done_at) bits.push(dur(Date.parse(r.done_at) - Date.parse(r.created_at)));
           if (r.note) bits.push(r.note);
           else if (r.status === "ack" && r.replied_at) bits.push("replied " + hms(r.replied_at));
-          return '<li><span class="cc-tl-node ' + esc(r.status) + '"></span><span class="cc-tl-time">' + esc(hm(r.created_at)) + '</span><div class="cc-tl-cmd"><div class="t">' + esc(r.summary || firstLine(r.text)) + "</div><small>→ <b>" + esc(r.target_name) + "</b>" + (bits.length ? " · " + esc(clip(bits.join(" · "), 90)) : "") + '</small></div><span class="cc-badge b-' + esc(r.status) + '">' + esc(TL_LAB[r.status] || r.status) + "</span></li>";
+          return '<li><span class="cc-tl-node ' + esc(r.status) + '"></span><span class="cc-tl-time">' + esc(hm(r.created_at)) + '</span><div class="cc-tl-cmd"><div class="t full">' + esc(r.text || r.summary || "") + "</div><small>→ <b>" + esc(r.target_name) + "</b>" + (bits.length ? " · " + esc(clip(bits.join(" · "), 90)) : "") + '</small></div><span class="cc-badge b-' + esc(r.status) + '">' + esc(TL_LAB[r.status] || r.status) + "</span></li>";
         }
         var who = r.decided_by && r.decided_by !== "timeout" ? (r.status === "approved" ? "approved" : "decided") + " by " + r.decided_by : r.status === "expired" ? "nobody answered" : "";
         return '<li><span class="cc-tl-node ' + esc(r.status) + '"></span><span class="cc-tl-time">' + esc(hm(r.created_at)) + '</span><div class="cc-tl-cmd"><div class="t">' + esc(clip(approvalCmd(r).text, 160)) + "</div><small>→ <b>" + esc(r.tool === "SendMessage" ? approvalTarget(r).replace(" · peer message", "") : "MONI AI") + "</b> · approval" + (r.category ? " · " + esc(r.category.replace(/_/g, " ")) : "") + (who ? " · " + esc(who) : "") + '</small></div><span class="cc-badge b-' + esc(r.status) + '">' + esc(TL_LAB[r.status] || r.status) + "</span></li>";
