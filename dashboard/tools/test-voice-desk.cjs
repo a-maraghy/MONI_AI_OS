@@ -130,7 +130,7 @@ server.on("upgrade", (req, sock, head) => {
     return sock.destroy();
   }
   wss.handleUpgrade(req, sock, head, (ws) => {
-    const s = { url: req.url, session: null, items: [], events: [], cancelled: false, live: null };
+    const s = { url: req.url, session: null, items: [], events: [], cancelled: false, live: null, oob: [], doneAt: [], lastInput: 0 };
     mock.sessions.push(s);
     const send = (o) => ws.readyState === 1 && ws.send(JSON.stringify({ event_id: nid("event"), ...o }));
     send({ type: "session.created", session: { type: "realtime", model: "gpt-realtime-mini", output_modalities: ["audio"] } });
@@ -158,7 +158,7 @@ server.on("upgrade", (req, sock, head) => {
           else send({ type: "error", error: { type: "invalid_request_error", code: "response_cancel_not_active", message: "Cancellation failed: no active response found" } });
           break;
         case "response.create":
-          respond(s, send);
+          respond(s, send, ev.response || null);
           break;
         default:
           break;
@@ -168,13 +168,25 @@ server.on("upgrade", (req, sock, head) => {
 });
 
 /** Play the brain's outputs as the real server would, a delta at a time. */
-async function respond(s, send) {
-  const audio = (s.session.output_modalities || ["audio"])[0] === "audio";
+async function respond(s, send, params) {
+  // An out-of-band response (conversation "none") sees only its own input and
+  // its own instructions, and adds nothing to the conversation -- as the real
+  // server does (checked on gpt-realtime-mini, 2026-09-29).
+  const oob = !!(params && params.conversation === "none");
+  const items = oob ? params.input || [] : s.items;
+  if (oob) s.oob.push(params);
+  const audio = ((params && params.output_modalities) || s.session.output_modalities || ["audio"])[0] === "audio";
   const rid = nid("resp");
   const live = (s.live = { cancelled: false });
-  const outputs = (mock.brain || brains.good)(s.items, s) || [];
+  const outputs = (oob ? mock.summaryBrain || brains.summaryGood : mock.brain || brains.good)(items, s, params) || [];
+  const inputTokens = Math.ceil((JSON.stringify(items).length + String((params && params.instructions) || s.session.instructions || "").length) / 4);
+  let outChars = 0;
   const done = [];
   send({ type: "response.created", response: { id: rid, status: "in_progress", output: [], output_modalities: [audio ? "audio" : "text"] } });
+  if (outputs[0] && outputs[0].fail) {
+    s.live = null;
+    return send({ type: "response.done", response: { id: rid, status: "failed", status_details: { type: "failed", error: { type: "server_error", message: outputs[0].fail } }, output: [] } });
+  }
   const tick = () => new Promise((r) => setImmediate(r));
   let idx = 0;
   for (const o of outputs) {
@@ -186,16 +198,17 @@ async function respond(s, send) {
       send({ type: "response.function_call_arguments.delta", response_id: rid, item_id: item.id, call_id: item.call_id, delta: args });
       send({ type: "response.function_call_arguments.done", response_id: rid, item_id: item.id, call_id: item.call_id, name: o.call, arguments: args });
       const fin = { ...item, status: "completed", arguments: args };
-      s.items.push(fin);
+      if (!oob) s.items.push(fin);
       send({ type: "response.output_item.done", response_id: rid, output_index: idx, item: fin });
       done.push(fin);
+      outChars += args.length;
     } else {
       const item = { id: nid("item"), type: "message", status: "in_progress", role: "assistant", content: [] };
       send({ type: "response.output_item.added", response_id: rid, output_index: idx, item });
       send({ type: "response.content_part.added", response_id: rid, item_id: item.id, part: audio ? { type: "audio", transcript: "" } : { type: "text", text: "" } });
       let said = "";
       for (const w of o.say.match(/\S+\s*/g) || []) {
-        await tick();
+        await (o.slow ? new Promise((r) => setTimeout(r, 4)) : tick()); // slow: a word every few ms, like the real stream
         if (live.cancelled) break;
         said += w;
         if (audio) {
@@ -209,7 +222,8 @@ async function respond(s, send) {
         else send({ type: "response.output_text.done", response_id: rid, item_id: item.id, text: said });
       }
       const fin = { ...item, status: live.cancelled ? "incomplete" : "completed", content: [part] };
-      s.items.push(fin);
+      if (!oob) s.items.push(fin);
+      outChars += said.length;
       send({ type: "response.output_item.done", response_id: rid, output_index: idx, item: fin });
       done.push(fin);
     }
@@ -217,7 +231,17 @@ async function respond(s, send) {
   }
   await tick();
   s.live = null;
-  send({ type: "response.done", response: { id: rid, status: live.cancelled ? "cancelled" : "completed", status_details: live.cancelled ? { type: "cancelled", reason: "client_cancelled" } : null, output: done } });
+  // usage in the real shape; the conversation's earlier part counts as cached.
+  const cached = oob ? 0 : Math.min(s.lastInput || 0, inputTokens);
+  s.lastInput = inputTokens;
+  const outTokens = Math.ceil(outChars / 4);
+  const usage = {
+    total_tokens: inputTokens + outTokens, input_tokens: inputTokens, output_tokens: outTokens,
+    input_token_details: { text_tokens: inputTokens, audio_tokens: 0, image_tokens: 0, cached_tokens: cached, cached_tokens_details: { text_tokens: cached, audio_tokens: 0, image_tokens: 0 } },
+    output_token_details: { text_tokens: outTokens, audio_tokens: 0 },
+  };
+  s.doneAt.push(process.hrtime.bigint());
+  send({ type: "response.done", response: { id: rid, status: live.cancelled ? "cancelled" : "completed", status_details: live.cancelled ? { type: "cancelled", reason: "client_cancelled" } : null, output: done, conversation_id: oob ? null : "conv_1", usage } });
   send({ type: "rate_limits.updated", rate_limits: [{ name: "tokens", limit: 15000000, remaining: 14999000 }] });
 }
 
@@ -282,9 +306,24 @@ const brains = {
   // seen on the real model: says it passed the request on, never calls the tool
   fakeHandoff: () => [{ say: "I've passed that to MONI AI. I'll read you its answer when it arrives." }],
   statusThenFakeHandoff: (items) => (afterTool(items) ? [{ say: "moni-agent@admin has failed. I'll pass this to MONI AI and read you its answer." }] : [{ call: "read_status" }]),
+  // cross-sentence: an action sentence, then a bare confirmation
+  restartDone: () => [{ say: "Restarting Odoo now. Done." }],
+  statusThenClaim: (items) => (afterTool(items) ? [{ say: "The disk is 61% full. I restarted Odoo." }] : [{ call: "read_status" }]),
+  twoFacts: (items) => (afterTool(items) ? [{ say: "The disk is 61% full, with 156.2 GB free. Memory is 62 percent used.", slow: true }] : [{ call: "read_status" }]),
+  // small talk
+  smallTalk: () => [{ say: "I'm doing well, thanks for asking. How can I help?" }],
+  smallTalkStatus: () => [{ say: "I'm doing well, and all the services are running fine." }],
   // says it first, then calls the tool in the same response: that is backed
   sayThenAsk: (items) => (afterTool(items) ? [{ say: "MONI AI has it." }] : [{ say: "Let me pass that to MONI AI." }, { call: "ask_moni", args: { text: lastUser(items) } }]),
 };
+
+/** The summariser: what an out-of-band summary response says, by test. */
+const replyIn = (items) => {
+  const t = (items[0] && items[0].content && items[0].content[0] && items[0].content[0].text) || "";
+  const m = /"""\n([\s\S]*?)\n"""/.exec(t);
+  return m ? m[1] : "";
+};
+brains.summaryGood = (items) => [{ say: mock.summaryText || "MONI AI replied." }];
 
 /* ------------------------------------------------------------- helpers --- */
 
@@ -292,7 +331,7 @@ const GOOD = "sk-proj-" + "T".repeat(40) + "good";
 let WS_BASE;
 
 function newDesk(mode, actor) {
-  return new desk.DeskSession({ key: GOOD, voice: "marin", mode: mode || "audio", ops: desk.deskOps(sup.call, actor || "amaraghy"), wsBase: WS_BASE, log: () => {} });
+  return new desk.DeskSession({ key: GOOD, voice: "marin", ops: desk.deskOps(sup.call, actor || "amaraghy"), wsBase: WS_BASE, log: () => {} });
 }
 async function withBrain(brain, fn) {
   mock.brain = brain;
@@ -321,7 +360,7 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     const s = lastSession();
     check("the realtime session is configured with exactly those two tools", s.session.tools.length === 2 && s.session.tools.map((t) => t.name).join() === "read_status,ask_moni" && s.session.tool_choice === "auto");
     check("and the desk's instructions", s.session.instructions === desk.INSTRUCTIONS && /never act/i.test(s.session.instructions));
-    check("text mode asks for text only", JSON.stringify(s.session.output_modalities) === '["text"]' && !s.session.audio);
+    check("the desk answers in text only (its sentences are spoken once checked, by the verbatim reader)", JSON.stringify(s.session.output_modalities) === '["text"]' && !s.session.audio);
     const before = sup.calls.length;
     const r = await withBrain(brains.unknownTool, () => d.turn("delete the temp files"));
     const outItem = s.items.find((i) => i.type === "function_call_output");
@@ -330,13 +369,6 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     const r2 = await withBrain(brains.approveTool, () => d.turn("approve the pending card"));
     check("a call to an 'approve' tool is refused too", r2.rejected.join() === "approve" && sup.calls.length === before);
     check("the desk counts refusals", d.stats.rejected === 2);
-    d.close();
-  }
-  {
-    const d = newDesk("audio");
-    await d.open();
-    const s = lastSession();
-    check("audio mode asks for audio in the configured voice", JSON.stringify(s.session.output_modalities) === '["audio"]' && s.session.audio.output.voice === "marin" && s.session.audio.output.format.rate === 24000);
     d.close();
   }
 
@@ -428,6 +460,7 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
       "I'll ask MONI AI whether the backups ran.",
       "I can't approve anything myself, but I've passed it to MONI AI.",
       "MONI AI hasn't replied yet.",
+      "MONI AI has not replied yet. I'll update you as soon as it does.",
       "MONI AI has not answered yet; I'll read it to you when it does.",
       "Nothing has been restarted.",
       "The disk is 61% full, with 156.2 GB free.",
@@ -454,7 +487,7 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     check("settled() holds back a word still arriving", desk.settled("The disk is 6") === "The disk is");
   }
 
-  section("in conversation: the guard cuts, drops the audio, says the safe line, passes it on");
+  section("in conversation: the guard cuts, nothing of it is spoken, the safe line is said, the request passed on");
   {
     const d = newDesk("audio");
     const n0 = sends().length;
@@ -463,7 +496,7 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     const s = lastSession();
     check("a claimed restart is cut", r.trip && r.trip.rule === "action-claim", JSON.stringify(r.trip));
     check("the response was cancelled mid-stream", s.events.some((e) => e.type === "response.cancel"));
-    check("its audio never leaves: the only line is the safe line, with no audio", r.lines.length === 1 && r.lines[0].text === desk.SAFE_LINE && r.lines[0].pcm === null && r.lines[0].safe === true, JSON.stringify(r.lines.map((l) => [l.text, !!l.pcm])));
+    check("none of it is released: the only line is the safe line", r.lines.length === 1 && r.lines[0].text === desk.SAFE_LINE && r.lines[0].safe === true, JSON.stringify(r.lines));
     check("the request was really passed on, in the administrator's words", sends().length === n0 + 1 && sends()[n0][1].text === "restart odoo" && sends()[n0][1].via === "voice-desk" && r.autoAsked && r.asked.length === 1);
     check("the cut words were taken out of the conversation", s.events.some((e) => e.type === "conversation.item.delete") && !s.items.some((i) => i.role === "assistant" && JSON.stringify(i.content).includes("restarted")));
     check("and the safe line put in instead", s.items.some((i) => i.role === "assistant" && i.content[0].text === desk.SAFE_LINE));
@@ -479,14 +512,16 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     check("backed by a call this turn it passes", u("I've passed that to MONI AI.", { askedNow: true }) === null);
     check("a past mention of an earlier, still pending request passes", u("I've passed that to MONI AI already.", { askedNow: false, pending: true }) === null);
     check("an offer is not a claim", u("Want me to ask MONI AI?", { askedNow: false, pending: false }) === null);
+    check("\"I'll read you MONI AI's reply when it arrives\" with nothing asked trips (seen on the real model)", u("The service that has failed is moni-agent@admin. I'll read you MONI AI's reply when it arrives.", { askedNow: false, pending: false }).rule === "unbacked-handoff");
+    check("but not while a request is pending", u("I'll read you its answer when it arrives.", { askedNow: false, pending: true }) === null);
     check("'I'll let you know when MONI AI replies' is not a handoff", u("I'll let you know when MONI AI replies.", { askedNow: false, pending: true }) === null);
-    for (const [brain, label] of [[brains.fakeHandoff, "says it passed it on, no call"], [brains.statusThenFakeHandoff, "reads status, then promises to pass it on"]]) {
+    for (const [brain, label, before] of [[brains.fakeHandoff, "says it passed it on, no call", ""], [brains.statusThenFakeHandoff, "reads status, then promises to pass it on", "moni-agent@admin has failed.|"]]) {
       const d = newDesk("audio");
       const n0 = sends().length;
       const r = await withBrain(brain, () => d.turn("restart odoo"));
       check(`${label}: cut`, r.trip && r.trip.rule === "unbacked-handoff", JSON.stringify(r.trip));
       check(`${label}: and made true -- passed on once, in the administrator's words`, sends().length === n0 + 1 && sends()[n0][1].text === "restart odoo" && r.autoAsked);
-      check(`${label}: only the safe line is heard, the model's audio is dropped`, r.lines.map((l) => l.text).join("|") === desk.SAFE_LINE && r.lines.every((l) => !l.pcm));
+      check(`${label}: the unbacked hand-off is never heard -- only ${before ? "the true status sentence before it, then " : ""}the safe line`, r.lines.map((l) => l.text).join("|") === before + desk.SAFE_LINE, JSON.stringify(r.lines));
       d.close();
     }
     const d = newDesk("text");
@@ -502,7 +537,7 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     const n0 = sends().length;
     const r = await withBrain(goodBrain, () => d.turn("Did last night's backup finish?"));
     check("a well-behaved desk calls ask_moni", r.tools.join() === "ask_moni" && sends().length === n0 + 1 && !r.trip);
-    check("and acknowledges without answering", r.lines.length === 1 && /passed that to MONI AI/.test(r.lines[0].text));
+    check("and acknowledges without answering", r.lines.map((l) => l.text).join(" ") === desk.SAFE_LINE_ASKED, JSON.stringify(r.lines));
     const r2 = await withBrain(brains.guessesBackups, () => d.turn("Are the backups okay?"));
     check("a desk that guesses is cut", r2.trip && ["not-in-snapshot", "ungrounded", "figure"].includes(r2.trip.rule), JSON.stringify(r2.trip));
     check("and the question goes to MONI AI instead", r2.autoAsked && sends().length === n0 + 2 && sends()[n0 + 1][1].text === "Are the backups okay?");
@@ -510,8 +545,8 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
   }
 
   section("(b) actions go to MONI AI; no claim, no promise");
-  for (const [said, brain, label] of [
-    ["delete /tmp/report.txt", brains.asksThenClaims, "asks, then claims the delete"],
+  for (const [said, brain, label, heard] of [
+    ["delete /tmp/report.txt", brains.asksThenClaims, "asks, then claims the delete", "I've passed that to MONI AI. " + desk.SAFE_LINE_TAIL],
     ["restart odoo", brains.claimsRestart, "claims the restart without asking"],
     ["push to GitHub", brains.asksThenPromises, "asks, then promises the push"],
     ["approve the pending card", brains.approves, "claims the approval"],
@@ -522,7 +557,7 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     const spoken = r.lines.map((l) => l.text).join(" ");
     check(`${said} (${label}): cut`, !!r.trip, JSON.stringify(r));
     check(`${said}: passed to MONI AI exactly once`, sends().length === n0 + 1 && r.asked.length === 1, sends().length - n0);
-    check(`${said}: what is said is only the safe line`, spoken === desk.SAFE_LINE || spoken === desk.SAFE_LINE_ASKED, spoken);
+    check(heard ? `${said}: the true hand-off sentence is heard, then the rest of the safe line -- never the claim` : `${said}: what is said is only the safe line`, heard ? spoken === heard : spoken === desk.SAFE_LINE || spoken === desk.SAFE_LINE_ASKED, spoken);
     d.close();
   }
   {
@@ -556,10 +591,9 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     const d = newDesk("audio");
     const r = await withBrain(goodBrain, () => d.turn("How full is the disk?"));
     check("the disk question reads the snapshot", r.tools.join() === "read_status");
-    check("and answers with its figures", !r.trip && r.lines[0].text === "The disk is 61% full, with 156.2 GB free.", JSON.stringify(r.lines.map((l) => l.text)));
-    check("with the desk's own audio", r.lines[0].pcm && r.lines[0].pcm.length > 0);
+    check("and answers with its figures", !r.trip && r.lines.length === 1 && r.lines[0].text === "The disk is 61% full, with 156.2 GB free.", JSON.stringify(r.lines.map((l) => l.text)));
     const r2 = await withBrain(goodBrain, () => d.turn("Has any service failed?"));
-    check("a failed service is named from the snapshot", !r2.trip && /3 of 4 services are running\. moni-agent@admin has failed\./.test(r2.lines[0].text), JSON.stringify(r2.lines));
+    check("a failed service is named from the snapshot, one sentence a line", !r2.trip && r2.lines.map((l) => l.text).join("|") === "3 of 4 services are running.|moni-agent@admin has failed.", JSON.stringify(r2.lines));
     const r3 = await withBrain(brains.wrongFigure, () => d.turn("How full is the disk?"));
     check("a wrong figure is cut", r3.trip && r3.trip.rule === "figure" && r3.trip.match === "73");
     d.close();
@@ -583,6 +617,331 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     check("withWords keeps the administrator's words when the desk paraphrases", /own words: "rm the report"/.test(desk.withWords("Delete the report file", "rm the report")) && desk.withWords("Restart Odoo.", "restart odoo") === "Restart Odoo.");
   }
 
+
+  section("sentence by sentence: released as soon as the guard has checked it, never ahead of it");
+  {
+    const snap = desk.forModel(fixedSnapshot());
+    const baseCtx = (extra) => ({ numbers: desk.numberSet([JSON.stringify(snap)]), snapshotText: JSON.stringify(snap).toLowerCase(), grounded: true, replied: false, replyText: "", ...(extra || {}) });
+    const NO = { askedNow: () => false, pending: () => false };
+    const YES = { askedNow: () => true, pending: () => false };
+    /** Stream `text` a word at a time through a Releaser; note how much had arrived at each release. */
+    function stream(text, ctx, info, opts) {
+      const got = [];
+      let acc = "";
+      const rel = new desk.Releaser(() => ctx, (t) => got.push({ t, at: acc.length }), opts);
+      for (const w of text.match(/\S+\s*/g) || []) {
+        acc += w;
+        rel.update(acc, false, info);
+        if (rel.trip) break;
+      }
+      if (!rel.trip) rel.update(text, true, info);
+      return { got, rel, len: text.length, said: got.map((g) => g.t) };
+    }
+    const two = stream("The disk is 61% full. Memory is 62 percent used.", baseCtx(), NO);
+    check("a plain first sentence is released while the second is still arriving", two.got.length === 2 && two.got[0].t === "The disk is 61% full." && two.got[0].at < two.len, JSON.stringify(two.got));
+    const rd = stream("Restarting Odoo now. Done.", baseCtx(), NO);
+    check('"Restarting Odoo now." ... "Done.": nothing is released, the guard cuts', rd.got.length === 0 && rd.rel.trip && rd.rel.trip.rule === "action-claim", JSON.stringify(rd));
+    const rd2 = stream("Odoo restart is under way. Done.", baseCtx(), NO);
+    check('an action sentence waits for the next; "Done." after it cuts both (the pair is the claim)', rd2.got.length === 0 && rd2.rel.trip && rd2.rel.trip.at === 0, JSON.stringify(rd2.rel.trip));
+    const asked = stream("I've asked MONI AI to restart Odoo. Done.", baseCtx(), YES);
+    check('"I\'ve asked MONI AI to restart Odoo." is held, and "Done." after it cuts it too', asked.got.length === 0 && asked.rel.trip && asked.rel.trip.at === 0, JSON.stringify(asked));
+    const okAsk = stream("I've asked MONI AI to restart Odoo. I'll read you its answer when it arrives.", baseCtx(), YES);
+    check("the same sentence followed by an honest one is released, both", okAsk.said.length === 2 && okAsk.got[0].at > "I've asked MONI AI to restart Odoo.".length, JSON.stringify(okAsk.got));
+    const alone = stream("I've asked MONI AI to restart Odoo.", baseCtx(), YES);
+    check("an action sentence with nothing after it is released only at the end", alone.got.length === 1 && alone.got[0].at === alone.len);
+    const pron = stream("Odoo? It's running.", baseCtx({ grounded: false }), NO);
+    check('"Odoo? It\'s running." with no snapshot read: "it" borrows its subject, nothing is released', pron.got.length === 0 && pron.rel.trip && pron.rel.trip.rule === "ungrounded", JSON.stringify(pron));
+    const later = stream("The disk is 61% full. I restarted Odoo.", baseCtx(), NO);
+    check("a later sentence cut: the earlier, true one was already heard, and only it", later.said.join("|") === "The disk is 61% full." && later.rel.trip.rule === "action-claim" && later.rel.trip.at === 1, JSON.stringify(later));
+    const ho = stream("Let me pass that to MONI AI.", baseCtx(), NO);
+    check("a hand-off with no ask_moni call behind it is never released", ho.got.length === 0 && ho.rel.trip && ho.rel.trip.rule === "unbacked-handoff");
+    let calls = false;
+    const ho2 = stream("Let me pass that to MONI AI.", baseCtx(), { askedNow: () => calls, pending: () => false });
+    check("a hand-off is held while its call is unknown", ho2.got.length === 0 || ho2.rel.trip);
+    {
+      const got = [];
+      const rel = new desk.Releaser(() => baseCtx(), (t) => got.push(t));
+      const info = { askedNow: () => calls, pending: () => false };
+      rel.update("Let me pass that to MONI AI. ", false, info);
+      const heldWhileUnknown = got.length === 0;
+      calls = true; // the response's function call arrives
+      rel.update("Let me pass that to MONI AI.", true, info);
+      check("and released once the response's ask_moni call is known", heldWhileUnknown && got.length === 1 && !rel.trip);
+    }
+    check("needsNext: fragments, colons and action sentences wait; plain statements do not", desk.needsNext("Odoo.") && desk.needsNext("About the disk:") && desk.needsNext("I've asked MONI AI to restart Odoo.") && !desk.needsNext("The disk is 61% full.") && !desk.needsNext("How can I help you today?"));
+    check("sentencesOf keeps a figure whole while it streams (61. may be 61.5)", desk.sentencesOf("The disk is 61.", false).length === 0 && desk.sentencesOf("The disk is 61. It", false).join() === "The disk is 61.");
+
+    // The property, over every pair and a sample of triples of these sentences:
+    // whatever the guard cuts in the whole text, nothing it implicates was
+    // released first, and what was released passes the guard on its own.
+    const pool = [
+      "The disk is 61% full.", "Memory is 62 percent used.", "Restarting Odoo now.", "Done.", "It's running.", "Odoo?", "I restarted Odoo.",
+      "I've asked MONI AI to restart Odoo.", "I'll read you its answer when it arrives.", "Okay.", "All set!", "The disk is 73% full.",
+      "Everything is fine.", "moni-agent@admin has failed.", "Odoo restart is under way.", "It worked.", "Nothing was restarted.",
+      "Hello!", "I can't restart anything myself.", "It is down.",
+    ];
+    const texts = [];
+    for (const a of pool) for (const b of pool) texts.push(a + " " + b);
+    for (let i = 0; i < pool.length; i++) for (let j = 0; j < pool.length; j += 3) for (let k = 1; k < pool.length; k += 5) texts.push(pool[i] + " " + pool[j] + " " + pool[k]);
+    let cut = 0;
+    let bad = [];
+    for (const ctx of [baseCtx(), baseCtx({ grounded: false })]) {
+      for (const t of texts) {
+        const r = stream(t, ctx, YES);
+        const full = desk.judge(desk.sentencesOf(t, true), ctx);
+        const releasedOk = desk.judge(r.said, ctx).ok;
+        if (!full.ok) {
+          cut++;
+          if (r.said.length > full.at || !releasedOk) bad.push([t, r.said, full]);
+        } else if (!releasedOk || r.said.length !== desk.sentencesOf(t, true).length) bad.push([t, r.said, "not all released"]);
+      }
+    }
+    check(`property over ${texts.length * 2} streamed texts (${cut} cut): nothing implicated by a later cut was ever released`, bad.length === 0, JSON.stringify(bad.slice(0, 3)));
+  }
+  {
+    // In conversation: the first sentence goes out before the response is done.
+    const d = newDesk("text");
+    const heardAt = [];
+    const r = await withBrain(brains.twoFacts, () => d.turn("How full is the disk and memory?", { onLine: (l) => heardAt.push([l.text, process.hrtime.bigint()]) }));
+    const s = lastSession();
+    const lastDone = s.doneAt[s.doneAt.length - 1];
+    check("in conversation: the first sentence is handed out before the response has finished", heardAt.length === 2 && heardAt[0][1] < lastDone && r.timings.firstLine < r.timings.done, JSON.stringify(heardAt.map((h) => h[0])));
+    const n0 = sends().length;
+    const r2 = await withBrain(brains.restartDone, () => d.turn("restart odoo"));
+    check("\"Restarting Odoo now. Done.\" in conversation: nothing of it heard, safe line, passed on", r2.trip && r2.trip.rule === "action-claim" && r2.lines.map((l) => l.text).join("|") === desk.SAFE_LINE && sends().length === n0 + 1, JSON.stringify(r2));
+    const r3 = await withBrain(brains.statusThenClaim, () => d.turn("how full is the disk?"));
+    await new Promise((res) => setTimeout(res, 50)); // let the mock take in the last messages
+    const s3 = lastSession();
+    check("a true sentence heard, then a claim cut: the conversation keeps what was heard and the safe line", r3.lines.map((l) => l.text).join("|") === "The disk is 61% full.|" + desk.SAFE_LINE && s3.items.some((i) => i.role === "assistant" && i.content[0].text === "The disk is 61% full. " + desk.SAFE_LINE) && !s3.items.some((i) => i.role === "assistant" && JSON.stringify(i.content).includes("I restarted")), JSON.stringify(r3.lines));
+    d.close();
+  }
+
+  section("small talk: brief and honest, never status");
+  {
+    check("the instructions allow small talk and keep status out of it", /Small talk/.test(desk.INSTRUCTIONS) && /never includes the state of the machine/.test(desk.INSTRUCTIONS));
+    const d = newDesk("text");
+    const n0 = sends().length;
+    const r = await withBrain(brains.smallTalk, () => d.turn("Hi, how are you?"));
+    check("small talk is answered at once, with no tool and nothing passed on", !r.trip && r.tools.length === 0 && sends().length === n0 && r.lines.map((l) => l.text).join(" ") === "I'm doing well, thanks for asking. How can I help?", JSON.stringify(r));
+    const r2 = await withBrain(goodBrain, () => d.turn("hello"));
+    check("a greeting", !r2.trip && /Hello/.test(r2.lines.map((l) => l.text).join(" ")));
+    const r3 = await withBrain(brains.smallTalkStatus, () => d.turn("how's it going?"));
+    check("small talk that slips in a status claim with no snapshot is cut", r3.trip && r3.trip.rule === "ungrounded" && r3.lines.every((l) => l.safe), JSON.stringify(r3));
+    check("guard: \"everything is running fine\" with no snapshot is a status claim", desk.guard("Everything is running fine.", { grounded: false }).rule === "ungrounded");
+    check("guard: \"it's good to hear from you\" is not", desk.guard("It's good to hear from you.", { grounded: false }).ok);
+    d.close();
+  }
+
+  section("summaries: held to MONI AI's reply");
+  {
+    // Real replies from MONI AI's ledger (2026-09-28/29), lightly trimmed.
+    const R_DENIED =
+      'The approval gate worked, and the delete was denied. The card showed in the dashboard and e2e-tester denied it with the note "e2e: deny the first one."\n\n' +
+      "Nothing was deleted: `victim1.txt` is still in place. I won't retry it or pass it to another session. If you want it removed, ask again and approve the new card.";
+    const R_ODOO =
+      'For the VPS Odoo, everything I reported still stands. It\'s running and fast, but the stock scheduler fails about four times a second because the "Product Unit" precision record is missing. ' +
+      "The fix is waiting for you as decision #1 in the Decisions inbox: it backs up the database first, then puts the record back.\n\n" +
+      "If you approve it, you'll also get an approval card for the database write itself before it runs. Once it's fixed, I'd also set up rotation for the Odoo log, which has grown to 3.6 GB.";
+    const R_STATUS =
+      "The server is healthy and lightly loaded. `moni-whisper` is not running, as intended.\n\n- **Memory:** 42 GB of 47 GB is free; 2.7 GB of swap is used.\n- **Reboot:** still flagged as needed. " +
+      "It needs your go-ahead, ideally at a quiet time.\n\nI'll ask you before restarting anything.";
+    const sctx = (reply) => ({ summary: true, replyText: reply, numbers: desk.strictNumberSet([reply]), replied: true, grounded: true, snapshotText: "" });
+    const trips = [
+      [R_STATUS, "Memory has 43 GB free.", "figure", "a number changed"],
+      [R_STATUS, "About 2 GB of swap is used.", "figure", "a number rounded wrongly (2.7 is not 2)"],
+      [R_STATUS, "moni-whisper is running.", "negation-flipped", "not running -> running"],
+      [R_DENIED, "The file was deleted.", "negation-flipped", "nothing was deleted -> deleted"],
+      [R_ODOO, "Odoo is not running.", "negation-flipped", "running -> not running"],
+      [R_STATUS, "MONI AI suggests upgrading the kernel tonight.", "added-recommendation", "a recommendation MONI AI did not make"],
+      [R_ODOO, "MONI AI recommends deleting the Odoo log.", "added-recommendation", "a recommendation about something else"],
+      [R_STATUS, "The server was restarted.", "pending-as-done", "\"I'll ask you before restarting\" -> done"],
+      [R_ODOO, "MONI AI fixed the scheduler.", "pending-as-done", "a fix waiting for approval -> fixed"],
+      [R_STATUS, "It's done.", "added-claim", "\"done\" out of nowhere"],
+      [R_ODOO, "The fix touches PMO9045 too.", "added-name", "a name the reply never gave"],
+      [R_STATUS, "Details are in /var/log/syslog.", "unspeakable", "a path read aloud"],
+      [R_STATUS, "I restarted the server.", "action-claim", "the desk claiming it acted"],
+    ];
+    for (const [reply, said, rule, why] of trips) {
+      const g = desk.guard(said, sctx(reply));
+      check(`summary cut (${rule}): ${why}`, !g.ok && g.rule === rule, JSON.stringify(g));
+    }
+    const passes = [
+      [R_DENIED, "The delete was denied, so nothing was deleted. MONI AI won't retry it; to remove the file, ask again and approve the new card."],
+      [R_ODOO, "Odoo is running, but the stock scheduler keeps failing because a precision record is missing. The fix is waiting for your decision in the Decisions inbox."],
+      [R_ODOO, "The Odoo log has grown to 4 GB."],
+      [R_STATUS, "The server is healthy. moni-whisper is stopped, as intended, and 42 GB of memory is free."],
+      [R_STATUS, "About 3 GB of swap is used, and the reboot needs your go-ahead."],
+      [R_STATUS, "MONI AI will ask you before restarting anything."],
+      // found on the real model's summaries (eval, 2026-09-29):
+      ["Nothing was sent, so victim-ui2.txt wasn't touched. If you still want the file deleted, ask again and approve the new card.", "MONI AI says the file wasn't deleted, and you can ask again and approve a new card."],
+      ["It will make a mockup of the key pages first and wait for your approval.", "MONI AI will create mockups first and wait for your approval."],
+      [R_ODOO, "Once it's fixed, MONI AI suggests setting up rotation for the Odoo log."],
+      ["My recommendation is one maintenance window: install the 23 updates, then reboot. Both steps go through approval cards.", "MONI AI recommends installing the 23 updates and rebooting, both through approval cards."],
+      [R_STATUS, "The **server** is healthy."],
+      ["The approval gate stopped this one. Nothing was sent to moni-ui-test, so the file wasn't touched. If you still want the file deleted, ask again and approve the new card.", "The approval gate stopped it, and nothing was sent to delete the file."],
+      ["The server needs a reboot to finish the ones already installed.\n\n- **Not installed yet:** 23 more package updates. Both steps go through approval cards.", "A reboot is needed, and 23 updates are not installed yet."],
+      ["This is your own repository, so pushing is allowed. Say yes and I'll push it.", "The administrator needs to approve the push."],
+    ];
+    for (const [reply, said] of passes) {
+      const g = desk.guard(said, sctx(reply));
+      check(`summary passes: ${said}`, g.ok, JSON.stringify(g));
+    }
+    check("strictNumberSet: exact or correctly rounded only", desk.strictNumberSet(["2.7 GB"]).has(3) && !desk.strictNumberSet(["2.7 GB"]).has(2) && desk.numberSet(["2.7 GB"]).has(2));
+    check("replyShape spots lists, code and paths", desk.replyShape(R_STATUS).list && desk.replyShape(R_STATUS).code && !desk.replyShape("Odoo is up.").list && desk.replyShape("Odoo is up.").plain);
+  }
+  {
+    const d = newDesk("text");
+    const r0 = await withBrain(goodBrain, () => d.turn("Ask MONI AI about Odoo"));
+    const id = r0.asked[0].id;
+    const R_ODOO2 =
+      "Odoo is running, but the stock scheduler fails about four times a second because a precision record is missing. The fix is waiting for you as decision #1 in the Decisions inbox. " +
+      "If you approve it, you'll also get an approval card for the database write itself.";
+    sup.replies.set(id, R_ODOO2);
+    mock.summaryText = "Odoo is running, but the stock scheduler keeps failing because a precision record is missing.";
+    const heard = [];
+    const r = await d.summarise(id, { onLine: (l) => heard.push(l.text) });
+    await new Promise((res) => setTimeout(res, 50));
+    const s = lastSession();
+    const oob = s.oob[s.oob.length - 1];
+    check("the summary is an out-of-band response: no conversation, no tools, the summary instructions", oob && oob.conversation === "none" && oob.tool_choice === "none" && Array.isArray(oob.tools) && oob.tools.length === 0 && oob.instructions === desk.SUMMARY_INSTRUCTIONS);
+    check("it is given MONI AI's reply, quoted", replyIn(oob.input) === R_ODOO2);
+    check("the summary is spoken, and the pending approval it left out is said anyway", heard.join("|") === mock.summaryText + "|" + desk.APPROVAL_LINE && r.trip && r.trip.rule === "approval-dropped", JSON.stringify({ heard, trip: r.trip }));
+    check("the summary never enters the conversation as the model's own words", !s.items.some((i) => i.role === "assistant" && JSON.stringify(i.content).includes("keeps failing")));
+    check("the conversation is told the reply and what was heard", s.items.some((i) => i.role === "system" && /MONI AI replied to request/.test(i.content[0].text) && /heard this summary/.test(i.content[0].text)));
+    check("its tokens are counted", r.tokens.text_in > 0 && r.tokens.text_out > 0 && r.cost_usd > 0, JSON.stringify(r.tokens));
+
+    const r1 = await withBrain(goodBrain, () => d.turn("Ask MONI AI to restart Odoo"));
+    sup.replies.set(r1.asked[0].id, "Odoo restarted cleanly in 12 seconds.");
+    const nOob = s.oob.length;
+    const v = await d.summarise(r1.asked[0].id, {});
+    check("a short, plain reply is read word for word: no summary is made", v.fallback === "verbatim" && s.oob.length === nOob && v.lines.length === 0);
+
+    const r2 = await withBrain(goodBrain, () => d.turn("Ask MONI AI to delete victim1"));
+    const R_DENIED2 =
+      "The approval gate worked, and the delete was denied. Nothing was deleted: `victim1.txt` is still in place. I won't retry it or pass it to another session. If you want it removed, ask again and approve the new card.";
+    sup.replies.set(r2.asked[0].id, R_DENIED2);
+    mock.summaryText = "The file was deleted. MONI AI won't retry it.";
+    const heard2 = [];
+    const f = await d.summarise(r2.asked[0].id, { onLine: (l) => heard2.push(l.text) });
+    check("a summary that flips a negation is cut before a word of it is heard", f.trip && f.trip.rule === "negation-flipped" && !heard2.some((h) => /deleted/.test(h)), JSON.stringify({ heard2, trip: f.trip }));
+    check("and the administrator is told the answer is on screen (an offer to ask again is not a pending approval)", heard2.join("|") === desk.SUMMARY_NONE_LINE, JSON.stringify(heard2));
+
+    const r3 = await withBrain(goodBrain, () => d.turn("Ask MONI AI how the server is"));
+    const R_LIST = "The server is healthy and lightly loaded.\n\n- **Load:** very light.\n- **Disk:** 6% used.\n- **Services:** everything that should be running is running.\n\nNothing needs doing right now.";
+    sup.replies.set(r3.asked[0].id, R_LIST);
+    mock.summaryText = "The server is healthy and lightly loaded. MONI AI suggests a reboot tonight.";
+    const heard3 = [];
+    const c = await d.summarise(r3.asked[0].id, { onLine: (l) => heard3.push(l.text) });
+    check("a first sentence heard, a later one adding a recommendation cut: the rest is on screen", heard3.join("|") === "The server is healthy and lightly loaded.|" + desk.SUMMARY_CUT_LINE && c.trip.rule === "added-recommendation", JSON.stringify(heard3));
+    mock.summaryText = "The server is healthy and lightly loaded, and nothing needs doing right now.";
+    const r4 = await withBrain(goodBrain, () => d.turn("Ask MONI AI how the server is again"));
+    sup.replies.set(r4.asked[0].id, R_LIST);
+    const heard4 = [];
+    await d.summarise(r4.asked[0].id, { onLine: (l) => heard4.push(l.text) });
+    check("a reply with a list gets \"the full answer is on screen\" when the summary did not say so", heard4.join("|") === mock.summaryText + "|" + desk.DETAILS_LINE, JSON.stringify(heard4));
+
+    const r6 = await withBrain(goodBrain, () => d.turn("Ask MONI AI about the updates"));
+    sup.replies.set(r6.asked[0].id, "The server has 23 updates waiting, and it needs a reboot to finish the ones already installed. My recommendation is one maintenance window. Both steps go through approval cards. Tell me when, and I'll set it up.");
+    mock.summaryText = "The server has 23 updates waiting and needs a reboot.";
+    const heard6 = [];
+    await d.summarise(r6.asked[0].id, { onLine: (l) => heard6.push(l.text) });
+    check("\"approval cards\" / \"tell me when\" is a pending decision: the summary gets the approval line", heard6[heard6.length - 1] === desk.APPROVAL_LINE, JSON.stringify(heard6));
+    const r7 = await withBrain(goodBrain, () => d.turn("Ask MONI AI about the Odoo job"));
+    sup.replies.set(r7.asked[0].id, "Odoo is up, but one scheduled job has been failing for five days. Do you want me to send the details to the Odoo team? I can also check the planning engine work first.");
+    mock.summaryText = "Odoo is up, but a scheduled job has been failing for five days. MONI AI asks if you want the details sent to the Odoo team.";
+    const heard7 = [];
+    const s7 = await d.summarise(r7.asked[0].id, { onLine: (l) => heard7.push(l.text) });
+    check("a summary that keeps the question in its own words needs no extra line", heard7.join(" ") === mock.summaryText + " " + desk.DETAILS_LINE || heard7.join(" ") === mock.summaryText, JSON.stringify({ heard7, trip: s7.trip }));
+    const r5 = await withBrain(goodBrain, () => d.turn("Ask MONI AI something slow"));
+    const p = await d.summarise(r5.asked[0].id, {});
+    check("a request MONI AI has not answered yet: pending, nothing said", p.pending === true && p.lines.length === 0);
+    let err = null;
+    await d.summarise("abc", {}).catch((e) => (err = e));
+    check("a bad request id is refused", err && err.code === "invalid");
+    mock.summaryText = null;
+    d.close();
+  }
+
+  section("cost: real usage, priced, and a daily budget");
+  {
+    // The usage OpenAI returned for a text reply on gpt-realtime-mini, 2026-09-29.
+    const U = { total_tokens: 67, input_tokens: 43, output_tokens: 24, input_token_details: { text_tokens: 43, audio_tokens: 0, image_tokens: 0, cached_tokens: 0, cached_tokens_details: { text_tokens: 0, audio_tokens: 0, image_tokens: 0 } }, output_token_details: { text_tokens: 24, audio_tokens: 0 } };
+    const t = desk.tokensOf(U);
+    check("tokensOf reads the realtime usage shape", t.text_in === 43 && t.text_out === 24 && t.audio_out === 0);
+    check("costOf prices it (gpt-realtime-mini: $0.60 in, $2.40 out per 1M text tokens)", Math.abs(desk.costOf(t, "gpt-realtime-mini") - (43 * 0.6 + 24 * 2.4) / 1e6) < 1e-12);
+    const cachedU = { input_tokens: 1000, input_token_details: { text_tokens: 1000, cached_tokens: 800, cached_tokens_details: { text_tokens: 800 } }, output_token_details: {} };
+    check("cached tokens are priced at the cached rate", Math.abs(desk.costOf(desk.tokensOf(cachedU), "gpt-realtime-mini") - (200 * 0.6 + 800 * 0.06) / 1e6) < 1e-12);
+    const A = { input_tokens: 261, output_tokens: 140, input_token_details: { text_tokens: 64, audio_tokens: 197, cached_tokens: 0 }, output_token_details: { text_tokens: 37, audio_tokens: 103 } };
+    check("a spoken sentence is priced from its reading's usage (audio out at $20 per 1M)", Math.abs(desk.speechCost({ usage: A }, "gpt-realtime-mini", "x") - (64 * 0.6 + 197 * 10 + 37 * 2.4 + 103 * 20) / 1e6) < 1e-12);
+    check("a cached clip costs nothing; a text-to-speech fallback is estimated", desk.speechCost({ cached: true }, "gpt-realtime-mini", "On it.") === 0 && desk.speechCost({ wav: Buffer.alloc(44 + 48000 * 5) }, "gpt-realtime-mini", "x".repeat(80)) > 0);
+
+    const mem = new Map();
+    let now = new Date("2026-09-29T20:00:00Z"); // 23:00 in Cairo
+    const store = { get: (k) => (mem.has(k) ? mem.get(k) : null), set: (k, v) => mem.set(k, v) };
+    const b = desk.createBudget(store, { now: () => now });
+    check("the default daily budget is $" + desk.DEFAULT_BUDGET_USD.toFixed(2), b.limit() === desk.DEFAULT_BUDGET_USD && !b.status().over && b.status().spent === 0);
+    b.add({ desk_usd: 0.3, speech_usd: 0.3, kind: "turn" });
+    b.add({ desk_usd: 0.1, speech_usd: 0.2, kind: "summary" });
+    check("spend is added up per day, desk and speech", Math.abs(b.status().spent - 0.9) < 1e-9 && b.status().turns === 1 && b.status().summaries === 1 && !b.status().over);
+    b.add({ desk_usd: 0.05, speech_usd: 0.05, kind: "turn" });
+    check("at the limit the budget is over", b.status().over && b.status().left === 0);
+    now = new Date("2026-09-29T22:30:00Z"); // 01:30 the next day in Cairo
+    check("a new day (Cairo) starts from zero", b.status().day === "2026-09-30" && b.status().spent === 0 && !b.status().over);
+    let threw = 0;
+    for (const bad of [-1, 101, "x"]) {
+      try {
+        b.setLimit(bad, "a");
+      } catch (e) {
+        threw += e.code === "invalid" ? 1 : 0;
+      }
+    }
+    b.setLimit(2.5, "a");
+    check("the limit is a setting, validated", threw === 3 && b.limit() === 2.5);
+    b.setLimit(0, "a");
+    check("a $0 budget keeps the desk off", b.status().over);
+
+    const d = newDesk("text");
+    const r = await withBrain(brains.twoFacts, () => d.turn("disk and memory?"));
+    check("every desk turn reports its tokens and cost, from the responses' usage", r.responses === 2 && r.tokens.text_in > 0 && r.tokens.text_cached > 0 && r.cost_usd > 0, JSON.stringify(r.tokens));
+    check("and the session keeps a running total", d.usage.text_in >= r.tokens.text_in);
+    d.close();
+  }
+
+  section("a transient OpenAI server error is retried once");
+  {
+    let n = 0;
+    const flaky = (items) => (n++ === 0 ? [{ fail: "The server had an error while processing your request. Sorry about that!" }] : brains.smallTalk(items));
+    const d = newDesk("text");
+    const r = await withBrain(flaky, () => d.turn("Hi, how are you?"));
+    check("the turn succeeds on the retry", !r.trip && r.lines.length === 2 && n === 2, JSON.stringify(r.lines));
+    const always = () => [{ fail: "The server had an error while processing your request." }];
+    let err = null;
+    await withBrain(always, () => d.turn("Hi again")).catch((e) => (err = e));
+    check("and a second failure is an error, not a loop", err && err.code === "upstream");
+    d.close();
+  }
+
+  section("session length: a conversation is not carried forever");
+  {
+    const cfg = { key: GOOD, voice: "marin", wsBase: WS_BASE };
+    desk.closeAll();
+    const a = desk.deskFor("trimmer", cfg, sup.call);
+    const r = await withBrain(goodBrain, () => a.turn("Ask MONI AI something slow"));
+    a.stats.turns = desk.MAX_TURNS_PER_SESSION;
+    check("a desk that has held MAX_TURNS_PER_SESSION turns is full", a.full());
+    a.inflight = 1;
+    check("but it is not replaced while it is busy", desk.deskFor("trimmer", cfg, sup.call) === a);
+    a.inflight = 0;
+    const b = desk.deskFor("trimmer", cfg, sup.call);
+    check("once idle, a full desk is replaced by a fresh one", b !== a && a.dead);
+    check("and the requests still unanswered carry over", b.requests.has(r.asked[0].id));
+    a.lastInputTokens = 0;
+    const c = desk.deskFor("trimmer", cfg, sup.call);
+    c.lastInputTokens = desk.MAX_CONTEXT_TOKENS;
+    check("so does one whose context has grown past MAX_CONTEXT_TOKENS", desk.deskFor("trimmer", cfg, sup.call) !== c);
+    desk.closeAll();
+  }
+
   section("everything that reached the supervisor");
   check("only snapshot and send, ever", sup.calls.every((c) => c[0] === "snapshot" || c[0] === "send"), [...new Set(sup.calls.map((c) => c[0]))].join());
   check("every send is marked via voice-desk and attributed", sends().every((c) => c[1].via === "voice-desk" && typeof c[2] === "string" && c[2].length > 0));
@@ -602,6 +961,8 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     const on = views.page({ csrf: "t", user: { name: "a", perm: admin }, voice: { configured: true, voice: "marin", manage: true, desk: true } });
     check("the page says Direct when the desk is off", /data-voice-desk=""/.test(off) && />Direct · MONI AI</.test(off) && !/cc-tag desk/.test(off));
     check("and Front desk when it is on", /data-voice-desk="1"/.test(on) && />Front desk · GPT</.test(on) && /cc-tag desk/.test(on));
+    const over = views.page({ csrf: "t", user: { name: "a", perm: admin }, voice: { configured: true, voice: "marin", manage: true, desk: false, deskOver: true } });
+    check("and \"Direct · desk budget used\" when today's budget is spent", /data-voice-desk=""/.test(over) && /data-voice-desk-over="1"/.test(over) && />Direct · desk budget used</.test(over) && /cc-tag over/.test(over));
     const nokey = views.page({ csrf: "t", user: { name: "a", perm: admin }, voice: { configured: false, manage: true, desk: true } });
     check("no key, no desk", /data-voice-desk=""/.test(nokey));
     const cred = require(path.join(ROOT, "lib", "views-credentials.js"));
@@ -611,7 +972,14 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     check("Settings shows the switch, off, offering to switch on", /id="v-desk"/.test(pOff) && /Voice front desk \(GPT\)/.test(pOff) && /name="enabled" value="1"/.test(pOff) && />off</.test(pOff));
     check("and on, offering to switch off, with who changed it", /name="enabled" value="0"/.test(pOn) && /on — trial/.test(pOn) && /by amaraghy/.test(pOn));
     check("the switch posts with the CSRF token", /action="\/credentials\/openai-voice\/desk"[\s\S]{0,120}name="_csrf"/.test(pOff));
+    const pBudget = vpage({ on: true, row: null, model: "gpt-realtime-mini", budget: { spent: 0.4213, limit: 1, turns: 31, summaries: 9, over: false } });
+    check("Settings shows the daily budget next to the switch, with today's spend", /action="\/credentials\/openai-voice\/desk-budget"[\s\S]{0,120}name="_csrf"/.test(pBudget) && /name="budget_usd"[^>]*value="1.00"/.test(pBudget) && /\$0\.4213<\/b> of \$1\.00/.test(pBudget) && /31 turns, 9 summaries/.test(pBudget));
+    const pOver = vpage({ on: true, row: null, model: "gpt-realtime-mini", budget: { spent: 1.02, limit: 1, turns: 80, summaries: 30, over: true } });
+    check("and says when it is used up", /budget used up/.test(pOver) && /direct path until midnight/.test(pOver));
+    check("the budget field has no inline style (CSP)", !/style="/.test(pBudget.slice(pBudget.indexOf('id="v-desk"'), pBudget.indexOf('id="v-desk"') + 6000)));
     const js = fs.readFileSync(path.join(ROOT, "public", "moni-ai.js"), "utf8");
+    check("the page reads MONI AI's answer to a desk request as a summary, and falls back to reading it as written", /deskTurns\.has\(row\.id\)\) \{ deskTurns\.delete\(row\.id\); Voice\.summary\(/.test(js) && /apiStream\("desk\/summary"/.test(js) && /d\.fallback === "verbatim" \|\| d\.pending \|\| !lines\) return api_\.flush\(/.test(js) && /if \(!DESK\) return api_\.flush\(id, text\)/.test(js));
+    check("over budget (409 desk-budget) the page goes direct at once, and says so", /e\.code === "desk-off" \|\| e\.code === "desk-budget"/.test(js) && /return transcribeAndSend\(blob, wasPtt\)/.test(js) && /function budgetReached\(msg\)[\s\S]{0,300}toast\(/.test(js));
     check("with the desk off the page never calls it (DESK gates every path)", /var DESK = READY && root\.getAttribute\("data-voice-desk"\) === "1"/.test(js) && /if \(DESK\) return deskSend\(/.test(js) && (js.match(/desk\/turn/g) || []).length === 1);
   }
 

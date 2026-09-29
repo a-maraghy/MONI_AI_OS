@@ -1,7 +1,7 @@
 "use strict";
 /**
  * The voice front desk (TRIAL, off by default): a GPT realtime model that
- * holds the spoken conversation, so a simple question gets a sub-second answer
+ * holds the spoken conversation, so a simple question gets a quick answer
  * instead of a full MONI AI turn.
  *
  * The administrator's standing choice is "voice only, Claude thinks", and this
@@ -14,9 +14,12 @@
  *   ask_moni(text)  hand the request to MONI AI as an ordinary `send` turn,
  *                   attributed to the panel user and marked via "voice-desk"
  *
- * and it says a short acknowledgement. MONI AI's answer is read aloud by the
- * page's existing verbatim reader (the /speak route with its word-for-word
- * guard), exactly as in the direct voice path -- the desk never paraphrases it.
+ * and it talks: a short acknowledgement, a brief bit of small talk, an answer
+ * from the snapshot -- and, when MONI AI's answer arrives, a short spoken
+ * SUMMARY of it (the administrator's decision of 2026-09-29; the full text
+ * stays on screen in the Command Center exactly as before). A reply that is
+ * already one or two plain sentences is read word for word instead: there is
+ * nothing to shorten.
  *
  * Enforcement, in layers (each holds without the others):
  *
@@ -25,16 +28,35 @@
  *   3. deskOps() is the only door to the supervisor, and it opens for two ops:
  *      `snapshot` (read) and `send` (with via "voice-desk") -- never approve,
  *      deny, interrupt, rules or decisions;
- *   4. the output guard reads the desk's own words as they stream. A claim that
- *      something was done, deleted, restarted, pushed or approved; a promise of
- *      such a result; a figure found neither in the snapshot, nor in MONI AI's
- *      replies, nor in what the administrator said; a status claim with no
- *      snapshot behind it; "MONI AI said ..." before MONI AI has replied --
- *      any of these cuts the response off. Its audio is dropped (it was never
- *      sent to the browser: a reply is released only once it has passed), the
- *      words are taken out of the conversation, and a safe line is said
- *      instead ("Let me pass that to MONI AI."), with the request really
- *      passed to MONI AI if the desk had not done so.
+ *   4. the output guard reads the desk's words. The desk answers in TEXT; a
+ *      sentence is spoken (by the ordinary verbatim reader, lib/voice.js) only
+ *      once the guard has passed it, so what is heard is exactly what was
+ *      checked. It cuts a claim that something was done, deleted, restarted,
+ *      pushed or approved (or is being); a promise of one; a figure found
+ *      neither in the snapshot, nor in MONI AI's replies, nor in what the
+ *      administrator said; a status claim with no snapshot behind it; "MONI AI
+ *      said ..." before MONI AI has replied; "I've passed that on" with no
+ *      ask_moni call behind it. A summary is held to MONI AI's reply: a figure
+ *      changed or rounded wrongly, a negation flipped, a recommendation MONI AI
+ *      did not make, "I'll ask the administrator" turned into "done", a name or
+ *      a path it did not give -- each is cut, and a pending approval that the
+ *      summary left out is said anyway.
+ *
+ * Sentence by sentence. A sentence is released as soon as the guard has
+ * checked it, instead of holding the whole reply. That must not let a later
+ * sentence change the meaning of one already heard ("Restarting Odoo." ...
+ * "Done."). So the guard judges every sentence with the ones before it (a
+ * confirmation after an action sentence is a claim about THAT sentence; "it"
+ * borrows its subject from the sentence before), and a sentence that cannot be
+ * judged alone -- one that mentions an action, a fragment, a hand-off whose
+ * ask_moni call is not known yet -- is held until the next one (or the end)
+ * arrives. What is released has passed the guard in the context that decides
+ * it; whatever comes later can only cut itself.
+ *
+ * Cost. Every response's `usage` is priced (PRICES, the official list, read
+ * 2026-09-29) and, with the speech of what the desk says, counted against a
+ * daily budget kept by the server (createBudget). Over the budget the page
+ * falls back to the direct path and says so.
  *
  * Everything runs on the server, like the rest of the voice: the browser never
  * talks to OpenAI and never sees the key.
@@ -53,9 +75,86 @@ const MAX_ASK_CHARS = 2000;
 const IDLE_MS = 10 * 60 * 1000;
 const MAX_AGE_MS = 25 * 60 * 1000;
 const GROUNDED_MS = 5 * 60 * 1000; // a snapshot this old still counts as read
+// The conversation a kept session carries is re-read (mostly from the prompt
+// cache) on every response. Past either limit the next utterance starts a
+// fresh session; unanswered requests carry over. See the README for the
+// trade-off measured on the real model.
+const MAX_TURNS_PER_SESSION = 12;
+const MAX_CONTEXT_TOKENS = 12000;
+const REPLY_IN_CONTEXT_CHARS = 1500;
+const SUMMARY_MAX_TOKENS = 220;
+const VERBATIM_MAX_CHARS = 220; // a reply this short, in plain prose, is read as it is
+const DEFAULT_BUDGET_USD = 1.0;
 
 const SAFE_LINE = "Let me pass that to MONI AI.";
 const SAFE_LINE_ASKED = "I've passed that to MONI AI. I'll read you its answer when it arrives.";
+const SAFE_LINE_TAIL = "I'll read you its answer when it arrives."; // when "I've passed that on" was already heard
+const APPROVAL_LINE = "It needs your approval or your answer. The details are on screen.";
+const APPROVAL_LINE_SHORT = "It needs your approval or your answer.";
+const DETAILS_LINE = "The full answer is on screen.";
+const SUMMARY_CUT_LINE = "The rest of MONI AI's answer is on screen.";
+const SUMMARY_NONE_LINE = "MONI AI has replied. Its answer is on screen.";
+
+/* ------------------------------------------------------------- prices -- */
+
+/**
+ * USD per 1M tokens (and per minute for transcription), from OpenAI's pricing
+ * page, https://developers.openai.com/api/docs/pricing, read 2026-09-29.
+ */
+const PRICES = Object.freeze({
+  "gpt-realtime-mini": { text_in: 0.6, text_cached: 0.06, text_out: 2.4, audio_in: 10.0, audio_cached: 0.3, audio_out: 20.0 },
+  "gpt-realtime": { text_in: 4.0, text_cached: 0.4, text_out: 16.0, audio_in: 32.0, audio_cached: 0.4, audio_out: 64.0 },
+  "gpt-4o-mini-tts": { text_in: 0.6, audio_out: 12.0 },
+  "gpt-4o-mini-transcribe": { per_minute: 0.003 },
+  "gpt-4o-transcribe": { per_minute: 0.006 },
+});
+// Measured on gpt-realtime-mini (2026-09-29): 103 audio tokens for 5.15 s of speech.
+const AUDIO_TOKENS_PER_SECOND = 20;
+
+/** A realtime `usage` object as billable counts. */
+function tokensOf(usage) {
+  const u = usage || {};
+  const i = u.input_token_details || {};
+  const c = i.cached_tokens_details || {};
+  const o = u.output_token_details || {};
+  const cachedText = c.text_tokens || 0;
+  const cachedAudio = c.audio_tokens || 0;
+  return {
+    text_in: Math.max(0, (i.text_tokens || 0) - cachedText),
+    text_cached: cachedText,
+    audio_in: Math.max(0, (i.audio_tokens || 0) - cachedAudio),
+    audio_cached: cachedAudio,
+    text_out: o.text_tokens || 0,
+    audio_out: o.audio_tokens || 0,
+  };
+}
+
+function addTokens(a, b) {
+  const out = { ...(a || {}) };
+  for (const [k, v] of Object.entries(b || {})) out[k] = (out[k] || 0) + (v || 0);
+  return out;
+}
+
+/** USD for counts (tokensOf) on a model. */
+function costOf(tokens, model) {
+  const p = PRICES[model] || PRICES[DESK_MODEL];
+  let usd = 0;
+  for (const k of ["text_in", "text_cached", "audio_in", "audio_cached", "text_out", "audio_out"]) usd += ((tokens && tokens[k]) || 0) * (p[k] || 0);
+  return usd / 1e6;
+}
+
+/**
+ * What one spoken line cost: the realtime reading's own usage when it has one,
+ * else an estimate for the text-to-speech fallback (its API reports no usage),
+ * nothing for a cached clip.
+ */
+function speechCost(out, model, text) {
+  if (!out || out.cached) return 0;
+  if (out.usage) return costOf(tokensOf(out.usage), model);
+  const seconds = out.wav ? Math.max(0, (out.wav.length - 44) / (RATE * 2)) : 0;
+  const p = PRICES["gpt-4o-mini-tts"];
+  return ((String(text || "").length / 4) * p.text_in + seconds * AUDIO_TOKENS_PER_SECOND * p.audio_out) / 1e6;
+}
 
 /* --------------------------------------------------------------- tools -- */
 
@@ -75,7 +174,7 @@ const TOOLS = Object.freeze([
     description:
       "Pass the administrator's request to MONI AI, the Claude agent that runs this VPS, which will answer or act. " +
       "Use it for anything that is not answered by the snapshot, for every action or change of any kind (delete, restart, push, deploy, " +
-      "approve, deny, fix, run, send), and whenever you are unsure. MONI AI's answer is read aloud to the administrator when it arrives.",
+      "approve, deny, fix, run, send), and whenever you are unsure. A short summary of MONI AI's answer is read aloud when it arrives.",
     parameters: {
       type: "object",
       properties: { text: { type: "string", description: "The request, in the administrator's own words as closely as possible." } },
@@ -88,18 +187,33 @@ const TOOL_NAMES = new Set(TOOLS.map((t) => t.name));
 
 const INSTRUCTIONS = [
   "You are the voice front desk of MONI AI, the assistant that runs this VPS. The administrator is speaking to you; your words are read aloud.",
-  "You never think for MONI AI and you never act. You do exactly two things:",
+  "You never think for MONI AI and you never act. You do exactly three things:",
   "1. Answer questions about the machine's current state, but ONLY from the read_status tool. Call read_status first, then answer from it and nothing else. Quote figures exactly as the snapshot gives them.",
   "2. Hand everything else to MONI AI by CALLING the ask_moni tool, then say a short acknowledgement such as \"I've passed that to MONI AI. I'll read you its answer when it arrives.\"",
+  "3. Small talk: a greeting, thanks, \"how are you\", \"can you hear me\" get one short, friendly, honest sentence. Small talk never includes the state of the machine, a service, a task or a request: for those, use read_status or ask_moni first.",
   "Saying that you passed something on does not pass it on: only an ask_moni call does. Never say you passed, sent or will pass a request unless you called ask_moni for it in this same turn.",
   "Hard rules:",
   "- If the answer is not in the snapshot, do not guess and do not answer from general knowledge: call ask_moni right away, in the same response. Do not merely say you will ask.",
   "- Every request to do or change something (delete, restart, stop, start, push, deploy, approve, deny, fix, run, install, send a message) goes to ask_moni. You cannot do these yourself.",
-  "- Never say that anything was done, deleted, restarted, pushed, approved or fixed, and never promise that it will be. You only know that you passed the request on.",
+  "- Never say that anything was done, deleted, restarted, pushed, approved or fixed, or that it is being done, and never promise that it will be. You only know that you passed the request on.",
   "- Never invent MONI AI's answer. MONI AI's replies reach you as system messages beginning \"MONI AI replied\". If there is none yet, say MONI AI has not replied yet.",
   "- Never quote a number that is not in the snapshot or in MONI AI's reply.",
   "- Approvals and decisions are for the administrator to decide in the Command Center; you cannot approve or deny anything.",
-  "Style: one or two short spoken sentences, plain English, no lists, no markdown. A brief greeting or thanks may get a brief, friendly reply.",
+  "Style: one or two short spoken sentences, plain English, no lists, no markdown.",
+].join("\n");
+
+const SUMMARY_INSTRUCTIONS = [
+  "You turn MONI AI's written reply into a short spoken summary for the administrator, who can see the full text on screen.",
+  "Rules:",
+  "- One to three short sentences, at most 45 words. Plain English. No lists, no markdown.",
+  "- Say only what the reply says. Add no fact, figure, name, reason, recommendation or action of your own.",
+  "- Keep every negation: if the reply says something did NOT happen, is NOT running, or is not known yet, say so.",
+  "- Keep figures exactly as written, or leave them out. Never round them differently or convert them.",
+  "- If MONI AI says it will do something, is waiting, needs the administrator's approval, decision or answer, or does not know yet, say exactly that. Never say it is done.",
+  "- If the reply needs the administrator's approval, decision or answer, the summary MUST say so.",
+  "- Only repeat a recommendation MONI AI itself made, as MONI AI's.",
+  "- Do not read lists, code, commands, links or file paths aloud: say the details are on screen.",
+  "- Speak about MONI AI in the third person (\"MONI AI says...\", \"MONI AI restarted...\"). Never say \"I\" did anything.",
 ].join("\n");
 
 /* ------------------------------------------------ the supervisor door -- */
@@ -173,30 +287,46 @@ const DONE_WORDS =
 const DO_WORDS =
   "delete|remove|erase|wipe|purge|restart|reboot|reload|stop|start|kill|terminate|push|merge|commit|deploy|release|approve|deny|reject|grant|" +
   "install|uninstall|upgrade|update|patch|fix|resolve|repair|clear|reset|roll back|revert|create|execute|run|shut down|disable|enable|change|" +
-  "apply|back up|clean|free|move|rename|cancel|pause|resume|take care of|handle|sort out|deal with|be done|be fixed|be back";
-const NEGATION = /\b(not|never|no|nothing|none|cannot|unable|without|n't|cant|can't|wont|won't|haven't|hasn't|hadn't|didn't|isn't|aren't|wasn't|weren't|don't|doesn't)\b/;
+  "apply|back up|clean up|free up|move|rename|cancel|pause|resume|take care of|handle|sort out|deal with|be done|be fixed|be back";
+// "-ing" forms: "Restarting Odoo." is a claim that it is happening. ("running"
+// is left out: "Odoo is running" is a state.)
+const DO_ING =
+  "deleting|removing|erasing|wiping|purging|restarting|rebooting|reloading|stopping|starting|killing|terminating|pushing|merging|committing|" +
+  "deploying|releasing|approving|denying|rejecting|granting|installing|uninstalling|upgrading|updating|patching|fixing|resolving|repairing|" +
+  "clearing|resetting|rolling back|reverting|creating|executing|shutting down|disabling|enabling|changing|applying|backing up|cleaning|freeing|" +
+  "moving|renaming|cancell?ing|pausing|resuming|messaging|scheduling";
+const NEGATION = /\b(not|never|no|nothing|none|cannot|unable|without|n't|cant|can't|wont|won't|haven't|hasn't|hadn't|didn't|isn't|aren't|wasn't|weren't|don't|doesn't|nobody|neither|nor|no longer)\b|n't\b/;
 // "I've passed that to MONI AI", "I asked MONI AI to ..." -- the one thing the
 // desk may say it did. Removed before any claim is looked for.
 const HANDOFF = new RegExp(
   [
-    "\\b(?:pass(?:ed|ing)?|hand(?:ed|ing)?|sen[dt]|sending|forward(?:ed|ing)?|relay(?:ed|ing)?|put(?:ting)?|flag(?:ged|ging)?|rais(?:e|ed|ing)|giv(?:e|en|ing)|gave|refer(?:red|ring)?)\\b[^.,;!?]{0,50}?\\b(?:to|with|on to|onto|over to)\\s+moni(?:\\s+ai)?\\b",
-    "\\b(?:ask(?:ed|ing)?|tell(?:ing)?|told|check(?:ed|ing)? with)\\s+moni(?:\\s+ai)?\\b",
+    "\\b(?:pass(?:ed|ing)?|hand(?:ed|ing)?|sen[dt]|sending|forward(?:ed|ing)?|relay(?:ed|ing)?|put(?:ting)?|flag(?:ged|ging)?|rais(?:e|ed|ing)|giv(?:e|en|ing)|gave|refer(?:red|ring)?)\\b[^.,;!?]{0,50}?\\b(?:to|with|on to|onto|over to)\\s+moni(?:\\s+ai)?\\b(?!\\s+agent)",
+    "\\b(?:ask(?:ed|ing)?|tell(?:ing)?|told|check(?:ed|ing)? with)\\s+moni(?:\\s+ai)?\\b(?!\\s+agent)",
     "\\blet(?:ting)?\\s+moni(?:\\s+ai)?\\s+know\\b",
   ].join("|"),
   "g"
 );
-const FIRST_PERSON = /\b(i|i've|ive|i have|i had|i'd|i just|we|we've|weve|we have|i'm|im|i am)\b/;
 const CLAIM_FIRST = new RegExp("\\b(i|i've|ive|i have|i had|i just|we|we've|weve|we have)\\b(?:\\s+\\w+){0,4}?\\s+(" + DONE_WORDS + ")\\b");
 const CLAIM_THIRD = new RegExp("\\b(has|have|had|was|were|is|are|it's|its|that's|thats|got|been|now|already|successfully)\\b(?:\\s+\\w+){0,3}?\\s+(" + DONE_WORDS + ")\\b");
-const CLAIM_BARE = /^\s*(?:all\s+|it's\s+|its\s+|that's\s+|thats\s+)?(done|finished|completed|sorted|handled|taken care of|all set)\b/;
-const PROMISE = new RegExp("\\b(will|'ll|ll|shall|going to|gonna)\\s+(?:\\w+\\s+){0,2}?(" + DO_WORDS + ")\\b");
+const CLAIM_BARE = /^\s*(?:all\s+|it's\s+|its\s+|that's\s+|thats\s+)?(done|finished|completed|complete|sorted|handled|taken care of|all set|success|successful)\b/;
+const PROGRESSIVE_FIRST = new RegExp("\\b(i'm|im|i am|we're|were|we are)\\s+(?:now\\s+|just\\s+|already\\s+|currently\\s+)?(" + DO_ING + ")\\b");
+const PROGRESSIVE_BARE = new RegExp("^\\s*(?:ok(?:ay)?\\s+|sure\\s+|alright\\s+|right\\s+)?(" + DO_ING + ")\\b");
+// ("I'll update you when it replies" is a promise to talk, not to act.)
+const PROMISE = new RegExp("\\b(will|'ll|ll|shall|going to|gonna)\\s+(?:\\w+\\s+){0,2}?(" + DO_WORDS + ")\\b(?!\\s+(?:you|the administrator)\\b)");
 const SHOULD_BE = new RegExp("\\bshould\\s+(?:now\\s+)?be\\s+(" + DONE_WORDS + "|back up|back online|working)\\b");
+// A short confirmation right after a sentence that mentions an action turns
+// that sentence into a claim: "Restarting Odoo." ... "Done."
+const CONFIRM = /^\s*(?:yes|yep|yeah|ok|okay|done|all good|all set|success|successful|complete|completed|finished|there you go|it worked|that worked|worked|it's back|its back|back up|good to go|and done|sorted)\b/;
+const ACTION_ANY = new RegExp("\\b(" + DONE_WORDS + "|" + DO_WORDS + "|" + DO_ING + ")\\b");
 const ATTRIBUTION = /\bmoni(?:\s+ai)?\b(?:\s+\w+){0,3}?\s+(said|says|replied|replies|answered|answers|reported|reports|confirmed|confirms|told|found|responded|thinks|wrote|mentioned|suggests|suggested|recommends|recommended|explained|explains)\b/;
 const ANSWER_IS = /\b(its|the|moni ai's|monis|moni's)\s+(answer|reply|response)\s+(is|was|says|said)\b/;
 const STATUS_TERM =
-  /\b(disk|disks|storage|memory|ram|cpu|load|uptime|service|services|odoo|nginx|postgres|postgresql|fail2ban|ssh|firewall|ufw|dashboard|session|sessions|mission|missions|step|steps|decision|decisions|approval|approvals|backup|backups|server|machine|vps|database|logs?|certificate|website|site|email|cron|agents?|telegram|github|repo|repository|commit|branch)\b/g;
+  /\b(disk|disks|storage|memory|ram|cpu|load|uptime|service|services|odoo|nginx|postgres|postgresql|fail2ban|ssh|firewall|ufw|dashboard|session|sessions|mission|missions|step|steps|decision|decisions|approval|approvals|backup|backups|server|machine|vps|database|logs?|certificate|website|site|email|cron|agents?|telegram|github|repo|repository|commit|branch|system|systems)\b/g;
 const STATE_WORD =
   /\b(running|up|down|healthy|fine|ok|okay|good|bad|failed|failing|active|inactive|full|empty|busy|idle|stopped|working|broken|stable|pending|open|online|offline|clean|dirty|expired|valid|current|behind|ahead|synced|succeeded|successful)\b/;
+// Strong enough to be a status claim even when the subject is only "it" or "everything".
+const STATE_STRONG = /\b(running|up|down|healthy|failed|failing|active|inactive|full|busy|idle|stopped|working|broken|stable|pending|online|offline|expired)\b/;
+const PRONOUN_SUBJECT = /^(?:and |but |so |also )?(it|it's|its|that|that's|thats|they|they're|theyre|this|these|those|everything|everything's|all|both|all of them)\b/;
 const HEDGE = /\b(whether|if|ask|asked|asking|check|checking|find out|look into|looking into|wants? to know|want me to)\b|\?\s*$/;
 
 const NUMBER_WORDS = {
@@ -210,6 +340,7 @@ function norm(text) {
   return String(text || "")
     .toLowerCase()
     .replace(/[’‘`]/g, "'")
+    .replace(/[“”]/g, '"')
     .replace(/\s+/g, " ");
 }
 
@@ -247,9 +378,25 @@ function numberSet(texts) {
   return s;
 }
 
+/**
+ * The figures a SUMMARY may say: exactly as written, or rounded correctly
+ * (to a whole number or one decimal). 2.7 may become 3, never 2.
+ */
+function strictNumberSet(texts) {
+  const s = new Set();
+  for (const t of texts) {
+    for (const n of numbersIn(t)) {
+      s.add(n);
+      s.add(Math.round(n));
+      s.add(Math.round(n * 10) / 10);
+    }
+  }
+  return s;
+}
+
 function clauses(text) {
   return norm(text)
-    .split(/[.!?;:\n]+|,\s|\s[—–-]\s|\s(?:but|and|so|then|because)\s/)
+    .split(/[.!?;:\n]+|,\s|\s[—–-]\s|\s(?:but|and|so|then|because|while|although)\s/)
     .map((c) => c.trim())
     .filter(Boolean);
 }
@@ -259,60 +406,335 @@ function negatedBefore(clause, idx) {
   return NEGATION.test(clause.slice(0, idx));
 }
 
+/* ------------------------------------------------ sentences, in order -- */
+
+const SENTENCE_END = /[.!?]+["'”’)\]]*(?=\s|$)/g;
+
 /**
- * Check the desk's own words.
- *
- * @param text  what it has said so far (the transcript, or the text output)
- * @param ctx   { numbers: Set (numberSet over snapshot + replies + what the
- *                administrator said), replyText: MONI AI's replies joined,
- *                snapshotText: the snapshot as the model saw it, lowercased,
- *                replied: bool, grounded: bool }
- * @returns { ok: true } or { ok: false, rule, match }
+ * The complete sentences of `text`. While a response is still streaming the
+ * last, unfinished piece is left out; once it is `final` it counts too.
  */
-function guard(text, ctx) {
-  const c = ctx || {};
-  const replyText = norm(c.replyText || "");
-  const snapText = norm(c.snapshotText || "");
-  // Talking about missions and their steps, from a snapshot that has step
-  // statuses: "done" is a status there, not a claim. (Judged over the whole
-  // reply, since commas split "the first step, Design, is done".)
-  const stepTalk = !!c.grounded && /\b(step|steps|mission|missions)\b/.test(norm(text)) && /"status":"(done|skipped)"/.test(snapText);
-  for (const raw of clauses(text)) {
-    const cl = raw.replace(HANDOFF, " «handoff» ");
-    let m;
-    if ((m = CLAIM_BARE.exec(cl)) && !(stepTalk && /^(done|finished|completed)$/.test(m[1]))) return { ok: false, rule: "action-claim", match: raw };
-    if ((m = CLAIM_FIRST.exec(cl)) && !negatedBefore(cl, m.index + m[0].length - m[2].length)) return { ok: false, rule: "action-claim", match: raw };
-    if ((m = CLAIM_THIRD.exec(cl)) && !negatedBefore(cl, m.index + m[0].length - m[2].length)) {
-      const word = m[2];
-      const fromReply = replyText && new RegExp("\\b" + word.replace(/ /g, "\\s+") + "\\b").test(replyText);
-      // "1 of 4 steps done", "the mission has completed 1 out of 4 steps": a status, from the snapshot.
-      const stepStatus = /^(done|completed|finished)$/.test(word) && stepTalk;
-      if (!fromReply && !stepStatus) return { ok: false, rule: "action-claim", match: raw };
-    }
-    if ((m = PROMISE.exec(cl)) && !negatedBefore(cl, m.index + m[0].length - m[2].length)) return { ok: false, rule: "promise", match: raw };
-    if ((m = SHOULD_BE.exec(cl)) && !negatedBefore(cl, m.index)) return { ok: false, rule: "promise", match: raw };
-    if (!c.replied) {
-      if ((m = ATTRIBUTION.exec(cl)) && !negatedBefore(cl, m.index + m[0].length)) return { ok: false, rule: "invented-reply", match: raw };
-      if ((m = ANSWER_IS.exec(cl)) && !negatedBefore(cl, m.index)) return { ok: false, rule: "invented-reply", match: raw };
-    }
-    // A status claim needs the snapshot behind it, and must be about something
-    // the snapshot covers ("the backups are fine" never is).
-    const terms = [...cl.matchAll(STATUS_TERM)].map((x) => x[1]);
-    if (terms.length && STATE_WORD.test(cl) && !HEDGE.test(cl) && !/moni/.test(cl)) {
-      if (!c.grounded) return { ok: false, rule: "ungrounded", match: raw };
-      const known = terms.some((t) => snapText.includes(t.replace(/s$/, "")));
-      if (!known && !(replyText && terms.some((t) => replyText.includes(t.replace(/s$/, ""))))) return { ok: false, rule: "not-in-snapshot", match: raw };
-    }
+function sentencesOf(text, final) {
+  const t = String(text || "");
+  const out = [];
+  let at = 0;
+  SENTENCE_END.lastIndex = 0;
+  let m;
+  while ((m = SENTENCE_END.exec(t))) {
+    const end = m.index + m[0].length;
+    if (end === t.length && !final) break; // "... 61." may still be "... 61.5"
+    const s = t.slice(at, end).trim();
+    at = end;
+    if (s) out.push(s);
   }
-  const numbers = c.numbers || new Set();
-  for (const n of numbersIn(text)) {
-    if (!numbers.has(n)) return { ok: false, rule: "figure", match: String(n) };
+  if (final) {
+    const rest = t.slice(at).trim();
+    if (rest) out.push(rest);
   }
-  return { ok: true };
+  return out;
 }
 
 const HANDOFF_ANY = new RegExp(HANDOFF.source); // not global: no lastIndex to trip over
 const HANDOFF_FUTURE = /\b(let me|i'll|i will|ill|i'm going to|im going to|going to|i'd|i would)\b/;
+
+function withoutHandoff(text) {
+  return norm(text).replace(HANDOFF, " «handoff» ");
+}
+
+/**
+ * Can this sentence be released before the next one arrives? Not when it
+ * mentions an action (the next sentence could be "Done."), when it is a
+ * fragment ("Odoo." / "About the disk:"), or when it ends on a colon.
+ */
+function needsNext(sentence) {
+  const s = withoutHandoff(sentence);
+  const words = norm(sentence).match(/[a-z0-9']+/g) || [];
+  if (words.length < 3) return true;
+  if (/[:,;]\s*$/.test(String(sentence).trim())) return true;
+  return ACTION_ANY.test(s);
+}
+
+/** Does this sentence mention passing something to MONI AI? */
+function mentionsHandoff(sentence) {
+  return HANDOFF_ANY.test(norm(sentence));
+}
+
+/* ---------------------------------------- the summary: held to the reply -- */
+
+const STEM_IRREG = { ran: "run", sent: "send", did: "do", done: "do", made: "make", took: "take", gave: "give", told: "tell", found: "find", got: "get", went: "go", came: "come", wrote: "write", written: "write", shut: "shut", set: "set", put: "put", froze: "freeze", began: "begin", begun: "begin" };
+// Words a summary may fairly use for one another ("make a mockup" / "create mockups").
+// (Keys and values are stems.)
+const SYNONYM = { creat: "mak", build: "mak", remov: "delet", eras: "delet", wip: "delet", purg: "delet", reboot: "restart", repair: "fix", resolv: "fix", pass: "send", forward: "send", deni: "deny", declin: "deny", reject: "deny", launch: "start" };
+function stem(word) {
+  let w = String(word || "").toLowerCase().split(" ")[0];
+  if (STEM_IRREG[w]) w = STEM_IRREG[w];
+  const s = w
+    .replace(/ied$/, "y")
+    .replace(/(ing|ed|es|s)$/, "")
+    .replace(/([^aeiou])\1$/, "$1")
+    .replace(/e$/, "");
+  return SYNONYM[s] || s;
+}
+
+// "up"/"down" are states only after a verb of being: "Odoo is up", not "pick them up".
+const ALIVE = { running: 1, active: 1, online: 1, working: 1, healthy: 1, answering: 1, live: 1, stopped: -1, inactive: -1, offline: -1, failed: -1, failing: -1, fails: -1, fail: -1, broken: -1, dead: -1, crashed: -1 };
+const ALIVE_RE = /\b(running|active|online|working|healthy|answering|live|stopped|inactive|offline|failed|failing|fails|fail|broken|dead|crashed)\b|\b(?:is|are|was|were|'s|s|be|been|stays?|still|back|go|goes|going|went)\s+(up|down)\b/g;
+const ACTION_RE = new RegExp("\\b(" + DONE_WORDS + ")\\b|\\b(" + DO_WORDS + "|" + DO_ING + ")\\b", "g");
+const FUTURE_RE = /\b(will|'ll|ll|going to|gonna|shall|would|could|can|may|might|once|if|when|after|before|until|unless|should|wants? to|asked (?:it|them|me|you) to|ask(?:ed)? to|needs? (?:your|you)|to be|ready to|about to|plan(?:s|ned)? to|try(?:ing)? to|still to|yet to)\b/;
+
+/**
+ * The polar statements in one clause: a state ("running", "is down") or an
+ * action ("deleted", "will restart"), with its sign (a negation before it
+ * flips it) and whether it is only intended (future, conditional, asked-for).
+ */
+function polarClaims(clause) {
+  const out = [];
+  ALIVE_RE.lastIndex = 0;
+  let m;
+  while ((m = ALIVE_RE.exec(clause))) {
+    const w = m[1] || m[2];
+    const base = w === "up" ? 1 : w === "down" ? -1 : ALIVE[w];
+    const idx = m.index + m[0].length - w.length;
+    out.push({ concept: "alive", word: w, sign: negatedBefore(clause, idx) ? -base : base, future: FUTURE_RE.test(clause.slice(0, idx)), idx });
+  }
+  ACTION_RE.lastIndex = 0;
+  while ((m = ACTION_RE.exec(clause))) {
+    const w = m[1] || m[2];
+    if (ALIVE[w] !== undefined || w === "running") continue; // a state, counted above
+    const past = !!m[1];
+    const idx = m.index;
+    const before = clause.slice(0, idx);
+    out.push({ concept: "act:" + stem(w), word: w, sign: 1, future: !past || FUTURE_RE.test(before), idx });
+  }
+  // A negation reaches the next polar word after it, not every one after it:
+  // "nothing was SENT to delete the file" negates the sending, not the delete.
+  out.sort((a, b) => a.idx - b.idx);
+  let from = 0;
+  for (const p of out) {
+    const neg = NEGATION.test(clause.slice(from, p.idx));
+    const base = p.concept === "alive" ? Math.abs(p.sign) * (p.word === "up" ? 1 : p.word === "down" ? -1 : ALIVE[p.word]) : 1;
+    p.sign = neg ? -base : base;
+    from = p.idx + p.word.length;
+  }
+  return out;
+}
+
+const STOP = new Set(
+  "the a an and or but so to of in on at for with from by is are was were be been being it its it's this that these those there here have has had do does did not no yes you your yours i i'm i've me my we our they them their he she his her moni ai says said about also just only still now then than more most some any all each every which what when where who whom how why will would could should can may might must shall into onto over under again once very really".split(" ")
+);
+function contentWords(text) {
+  return (norm(text).match(/[a-z][a-z0-9'@._-]{2,}/g) || [])
+    .map((w) => w.replace(/['._-]+$/, "").replace(/'s$/, ""))
+    .filter((w) => !STOP.has(w) && w.length >= 4)
+    .map(stem);
+}
+
+const RECOMMEND = /\b(should|recommends?|recommended|recommendation|suggests?|suggested|advises?|advised|(?:best|better) to|you (?:may|might) want|consider|ought to|proposes?|proposed|you need to|you'll need to|you will need to|you have to|you must)\b/;
+const REPLY_RECOMMEND = /\b(should|recommend\w*|suggest\w*|advis\w*|best|better|consider|ought|propos\w*|need to|needs your|have to|must|if you (?:still )?want|want me to|say yes|reply|tell me|ask again|i'd|i would)\b|^\W*(?:\d+\W+)?(?:connect|check|open|run|get|use|ask|reply|say|tell|install|reboot|restart|approve|type|go|click|enter|switch|pick|choose|add|remove|delete|update)\b/;
+const REPLY_NEEDS_APPROVAL =
+  /\b(needs?|waiting (?:for|on)|requires?|awaiting|wants?)\b[^.\n]{0,40}\b(approval|go-ahead|go ahead|decision|confirmation|answer|choice)\b|\bapproval cards?\b|\bdecisions? inbox\b|\bif you approve\b|\bsay yes\b|\bplease (?:confirm|approve|decide|choose|pick|reply)\b|\breply "|\btell me (?:which|when|whether|if)\b|\bdo you want\b|\bshould i\b/;
+const SUMMARY_MENTIONS_APPROVAL = /\b(approv\w*|go-ahead|go ahead|your ok|your okay|your yes|confirm\w*|decid\w*|decision|your answer|your choice|choose|pick|asks? (?:if|whether|you|the administrator)|wants? to know|would like|your call|let (?:it|moni ai) know)\b/;
+const UNSPEAKABLE = /(?:^|\s)\/[\w.-]+\/[\w./-]*|https?:\/\/|`|\b(?:sudo|systemctl|rm -\w+|git push)\b|\s--[a-z]/i;
+const NAME_ALLOW = new Set(["moni", "ai", "i", "i'm", "i've", "command", "center", "centre", "claude", "gpt", "ok", "okay", "the", "it"]);
+
+/** Names and identifiers in a summary that the reply (or snapshot, or the request) never gave. */
+function unknownName(sentence, known) {
+  const toks = String(sentence).split(/\s+/);
+  for (let i = 0; i < toks.length; i++) {
+    const tok = toks[i].replace(/^[("'“‘[]+|[)"'”’\].,;:!?]+$/g, "").replace(/['’]s$/, "");
+    if (!tok || /^\d[\d,.%]*$/.test(tok)) continue;
+    const lower = tok.toLowerCase();
+    if (NAME_ALLOW.has(lower)) continue;
+    const ident = (/\d/.test(tok) && /[a-z]/i.test(tok)) || /\w[._@/]\w/.test(tok);
+    const capital = i > 0 && /^[A-Z][a-zA-Z]+$/.test(tok) && !/[.!?:]$/.test(toks[i - 1]);
+    if ((ident || capital) && !known.includes(lower)) return tok;
+  }
+  return null;
+}
+
+/**
+ * The summary rules for one clause. `reply` is { clauses: [{text, claims}], text }.
+ */
+const ADMIN_DECIDES = /\b(administrator|you|your)\b/;
+const DECIDE_STEMS = new Set(["approv", "confirm", "decid", "choos", "pick", "answer", "reply", "enabl", "disabl"]);
+function summaryClause(cl, rawClause, reply) {
+  const rec = recommendationAdded(cl, rawClause, reply);
+  if (rec) return rec;
+  // "The administrator needs to approve the push" restates a pending approval,
+  // which the reply has: it is not a claim about an action.
+  const aboutApproval = reply.needsApproval && ADMIN_DECIDES.test(cl) && /\b(needs?|waiting|wait|required?|asks?|asking|asked|wants?|up to)\b/.test(cl);
+  for (const p of polarClaims(cl)) {
+    if (aboutApproval && DECIDE_STEMS.has(p.concept.slice(4))) continue;
+    let cands = reply.clauses.flatMap((rc) => rc.claims.filter((q) => q.concept === p.concept).map((q) => ({ ...q, anchors: rc.anchors })));
+    if (!cands.length && p.concept.startsWith("act:")) {
+      // The reply may say it with a verb outside the action list ("make a mockup"
+      // for "create mockups"): any word of the same stem, read the same way.
+      const want = p.concept.slice(4);
+      cands = reply.clauses.flatMap((rc) => {
+        const out = [];
+        for (const m of rc.text.matchAll(/[a-z][a-z']+/g)) {
+          if (stem(m[0]) !== want) continue;
+          const before = rc.text.slice(0, m.index);
+          out.push({ concept: p.concept, sign: negatedBefore(rc.text, m.index) ? -1 : 1, future: FUTURE_RE.test(before) || !/(ed|en|t)$/.test(m[0]), anchors: rc.anchors });
+        }
+        return out;
+      });
+    }
+    if (!cands.length) {
+      if (p.concept === "alive") return { rule: "not-in-reply", match: rawClause };
+      return { rule: p.future ? "promise" : "added-claim", match: rawClause };
+    }
+    const anchors = contentWords(cl).filter((w) => w !== stem(p.word));
+    const anchored = cands.filter((q) => anchors.some((a) => q.anchors.includes(a)));
+    const pool = anchored.length ? anchored : cands;
+    if (p.concept !== "alive" && p.sign > 0 && !p.future) {
+      if (pool.some((q) => q.sign > 0 && !q.future)) continue;
+      if (pool.some((q) => q.sign < 0 && !q.future)) return { rule: "negation-flipped", match: rawClause };
+      return { rule: "pending-as-done", match: rawClause };
+    }
+    // "It wasn't deleted" is fair when the reply never says it was (only
+    // that it might be): only a reply saying it happened contradicts it.
+    if (p.concept !== "alive" && p.sign < 0 && !p.future) {
+      if (pool.some((q) => q.sign > 0 && !q.future)) return { rule: "negation-flipped", match: rawClause };
+      continue;
+    }
+    if (pool.some((q) => q.sign === p.sign)) continue;
+    return { rule: "negation-flipped", match: rawClause };
+  }
+  return null;
+}
+
+/** "MONI AI suggests ..." -- only if MONI AI suggested it. */
+function recommendationAdded(cl, rawClause, reply) {
+  const r = RECOMMEND.exec(cl);
+  if (!r || negatedBefore(cl, r.index)) return null;
+  const words = contentWords(cl).filter((w) => !/^(recommend|suggest|advis|consider|propos|should|need)/.test(w));
+  const replyWords = contentWords(reply.text);
+  const shared = words.filter((w) => replyWords.includes(w));
+  const backed = reply.sentences.some((s) => REPLY_RECOMMEND.test(norm(s).replace(/^[\s*#>-]+/, "")) && contentWords(s).some((w) => words.includes(w)));
+  // Every action it recommends must be one the reply names ("rotate the log" is not "delete the log").
+  const acts = polarClaims(cl).filter((p) => p.concept.startsWith("act:")).map((p) => p.concept.slice(4));
+  const replyActs = new Set(reply.clauses.flatMap((c) => c.claims.filter((p) => p.concept.startsWith("act:")).map((p) => p.concept.slice(4))));
+  if (!backed || shared.length * 2 < words.length || acts.some((a) => !replyActs.has(a))) return { rule: "added-recommendation", match: rawClause };
+  return null;
+}
+
+function replyModel(text) {
+  const sentences = sentencesOf(text, true);
+  return {
+    text: String(text || ""),
+    sentences,
+    clauses: withAnchors(clauses(text)),
+    needsApproval: REPLY_NEEDS_APPROVAL.test(norm(text)),
+  };
+}
+
+/**
+ * Each clause of a reply with the words it is about. "It's running" is about
+ * whatever the clause before was about, so a pronoun subject borrows them.
+ */
+function withAnchors(list) {
+  let prev = [];
+  const out = list.map((c) => {
+    const own = contentWords(c);
+    const anchors = PRONOUN_SUBJECT.test(c) ? [...own, ...prev] : own;
+    prev = anchors;
+    return { text: c, claims: polarClaims(c), anchors };
+  });
+  // A short label ("Not installed yet:") is about what follows it.
+  for (let i = 0; i < out.length - 1; i++) if ((out[i].text.match(/[a-z0-9']+/g) || []).length <= 4) out[i].anchors = [...out[i].anchors, ...contentWords(out[i + 1].text)];
+  return out;
+}
+
+/**
+ * Judge sentences in order, each with the ones before it.
+ *
+ * @param sentences  the desk's sentences (sentencesOf)
+ * @param ctx   { numbers: Set, replyText, snapshotText, heardText, replied,
+ *                grounded, summary: bool (the words are a summary of replyText) }
+ * @returns { ok: true } or { ok: false, rule, match, at } -- `at` is the index
+ *          of the earliest sentence the failure implicates.
+ */
+function judge(sentences, ctx) {
+  const c = ctx || {};
+  const replyText = norm(c.replyText || "");
+  const snapText = norm(c.snapshotText || "");
+  const summary = !!c.summary;
+  const reply = summary ? c.replyModel || replyModel(c.replyText || "") : null;
+  const known = summary ? [norm(c.replyText || ""), snapText, norm(c.heardText || "")].join("\n") : "";
+  const whole = norm(sentences.join(" "));
+  // Talking about missions and their steps, from a snapshot that has step
+  // statuses: "done" is a status there, not a claim. (Judged over the whole
+  // text, since commas split "the first step, Design, is done".)
+  const stepTalk = !summary && !!c.grounded && /\b(step|steps|mission|missions)\b/.test(whole) && /"status":"(done|skipped)"/.test(snapText);
+  const numbers = c.numbers || new Set();
+  let prevTerms = [];
+  let prevAction = false;
+  const fail = (rule, match, at) => ({ ok: false, rule, match: String(match), at });
+  for (let si = 0; si < sentences.length; si++) {
+    const sentence = sentences[si];
+    const sClauses = clauses(sentence);
+    // A confirmation right after an action sentence: the pair is the claim.
+    if (si > 0 && prevAction && sClauses.length && CONFIRM.test(sClauses[0])) return fail("action-claim", sentences[si - 1] + " " + sentence, si - 1);
+    for (const raw of sClauses) {
+      const cl = summary ? raw : raw.replace(HANDOFF, " «handoff» ");
+      let m;
+      if ((m = CLAIM_FIRST.exec(cl)) && !negatedBefore(cl, m.index + m[0].length - m[2].length)) return fail("action-claim", raw, si);
+      if ((m = PROGRESSIVE_FIRST.exec(cl)) && !negatedBefore(cl, m.index + m[0].length - m[2].length)) return fail("action-claim", raw, si);
+      if (!summary && (m = PROGRESSIVE_BARE.exec(cl))) return fail("action-claim", raw, si); // in a summary a gerund is a noun ("recommends rebooting"), judged below
+      if (summary) {
+        const s = summaryClause(cl, raw, reply);
+        if (s) return fail(s.rule, s.match, si);
+        if ((m = CLAIM_BARE.exec(cl)) && !polarClaims(cl).length) return fail("added-claim", raw, si);
+      } else {
+        if ((m = CLAIM_BARE.exec(cl)) && !(stepTalk && /^(done|finished|completed)$/.test(m[1]))) return fail("action-claim", raw, si);
+        if ((m = CLAIM_THIRD.exec(cl)) && !negatedBefore(cl, m.index + m[0].length - m[2].length)) {
+          const word = m[2];
+          const fromReply = replyText && new RegExp("\\b" + word.replace(/ /g, "\\s+") + "\\b").test(replyText);
+          // "1 of 4 steps done", "the mission has completed 1 out of 4 steps": a status, from the snapshot.
+          const stepStatus = /^(done|completed|finished)$/.test(word) && stepTalk;
+          if (!fromReply && !stepStatus) return fail("action-claim", raw, si);
+        }
+        if ((m = PROMISE.exec(cl)) && !negatedBefore(cl, m.index + m[0].length - m[2].length)) return fail("promise", raw, si);
+        if ((m = SHOULD_BE.exec(cl)) && !negatedBefore(cl, m.index)) return fail("promise", raw, si);
+        if (!c.replied) {
+          if ((m = ATTRIBUTION.exec(cl)) && !negatedBefore(cl, m.index + m[0].length)) return fail("invented-reply", raw, si);
+          if ((m = ANSWER_IS.exec(cl)) && !negatedBefore(cl, m.index)) return fail("invented-reply", raw, si);
+        }
+        // A status claim needs the snapshot behind it, and must be about something
+        // the snapshot covers ("the backups are fine" never is). "It" and
+        // "everything" borrow their subject from the clause before.
+        let terms = [...cl.matchAll(STATUS_TERM)].map((x) => x[1]);
+        if (!terms.length && PRONOUN_SUBJECT.test(cl) && STATE_STRONG.test(cl)) terms = prevTerms.length ? prevTerms : ["(unnamed)"];
+        if (terms.length && STATE_WORD.test(cl) && !HEDGE.test(cl) && !/moni/.test(cl)) {
+          if (!c.grounded) return fail("ungrounded", raw, si);
+          const knownTerm = terms.some((t) => t === "(unnamed)" || snapText.includes(t.replace(/s$/, "")));
+          if (!knownTerm && !(replyText && terms.some((t) => replyText.includes(t.replace(/s$/, ""))))) return fail("not-in-snapshot", raw, si);
+        }
+        if (terms.length) prevTerms = terms;
+      }
+    }
+    if (summary) {
+      if (UNSPEAKABLE.test(sentence)) return fail("unspeakable", sentence, si);
+      const name = unknownName(sentence, known);
+      if (name) return fail("added-name", name, si);
+    }
+    for (const n of numbersIn(sentence)) {
+      if (!numbers.has(n)) return fail("figure", String(n), si);
+    }
+    const s = withoutHandoff(sentence);
+    prevAction = !/\?\s*$/.test(sentence.trim()) && ACTION_ANY.test(s) && !NEGATION.test(s);
+  }
+  return { ok: true };
+}
+
+/**
+ * Check the desk's own words (all of them, as one text).
+ * @returns { ok: true } or { ok: false, rule, match, at }
+ */
+function guard(text, ctx) {
+  return judge(sentencesOf(text, true), ctx);
+}
 
 /**
  * Does this say the request was (or is being) passed to MONI AI when no
@@ -320,9 +742,12 @@ const HANDOFF_FUTURE = /\b(let me|i'll|i will|ill|i'm going to|im going to|going
  * very response). `pending`: an earlier request is still unanswered, which
  * backs a past-tense mention ("I've passed that on") but not a new promise.
  */
+const ANSWER_PROMISE = /\b(?:read|tell|give|pass|let) you\b[^.]{0,40}\b(?:answer|reply|response)\b|\b(?:its|moni ai's|the) (?:answer|reply|response)\b[^.]{0,20}\bwhen it (?:arrives|comes)\b/;
 function unbackedHandoff(text, { askedNow, pending } = {}) {
   if (askedNow) return null;
   for (const cl of clauses(text)) {
+    // "I'll read you MONI AI's reply when it arrives" -- with nothing asked, there is no reply coming.
+    if (!pending && ANSWER_PROMISE.test(cl) && !negatedBefore(cl, cl.search(ANSWER_PROMISE))) return { ok: false, rule: "unbacked-handoff", match: cl };
     const m = HANDOFF_ANY.exec(cl);
     if (!m) continue;
     if (/\?\s*$/.test(cl) || /\b(want me to|shall i|should i|do you want|i can|i could|can i|could i)\b/.test(cl)) continue; // an offer, not a claim
@@ -340,20 +765,85 @@ function settled(text) {
   return i < 0 ? "" : t.slice(0, i);
 }
 
+/**
+ * Releases a streaming response sentence by sentence, each only once the
+ * guard has passed it in context (see the header).
+ *
+ *   update(text, final, info)  text so far; `final` once the response is done;
+ *                              info: { askedNow(), pending() } for hand-offs
+ *
+ * `released` counts sentences handed to onLine; `trip` is set once the guard
+ * cuts, after which nothing more is released.
+ */
+class Releaser {
+  constructor(ctxFn, onLine, opts) {
+    this.ctxFn = ctxFn;
+    this.onLine = onLine || (() => {});
+    this.summary = !!(opts && opts.summary);
+    this.released = 0;
+    this.sentences = [];
+    this.trip = null;
+  }
+
+  update(text, final, info) {
+    if (this.trip) return;
+    const i = info || {};
+    // A summary's markdown emphasis (`code`, **bold**) is formatting, not words.
+    const list = sentencesOf(this.summary ? String(text).replace(/[`*]+/g, "") : text, final);
+    this.sentences = list;
+    const g = judge(list, this.ctxFn());
+    if (!g.ok) {
+      this.trip = g;
+      return;
+    }
+    // While streaming, also judge the unfinished tail (settled words only), so
+    // a response going wrong is cancelled early. It releases nothing.
+    // (Not for a summary: its rules need whole clauses -- "It recommends" is
+    // not yet a recommendation of anything.)
+    if (!final && !this.summary) {
+      const partial = settled(text);
+      const g2 = judge(sentencesOf(partial, true), this.ctxFn());
+      if (!g2.ok) {
+        this.trip = g2;
+        return;
+      }
+    }
+    if (final && !this.summary) {
+      const u = unbackedHandoff(list.slice(this.released).join(" "), { askedNow: i.askedNow && i.askedNow(), pending: i.pending && i.pending() });
+      if (u) {
+        this.trip = { ...u, at: this.released };
+        return;
+      }
+    }
+    for (let k = this.released; k < list.length; k++) {
+      const s = list[k];
+      const last = k === list.length - 1;
+      if (!final && last && needsNext(s)) break; // judged with the next one, or at the end
+      if (!final && !this.summary && mentionsHandoff(s) && !(i.askedNow && i.askedNow())) break; // backed only once the calls are known
+      this.released = k + 1;
+      this.onLine(s);
+    }
+  }
+
+  /** The sentences already heard, as one text. */
+  heardText() {
+    return this.sentences.slice(0, this.released).join(" ");
+  }
+}
+
 /* ------------------------------------------------------ the session -- */
 
 let seq = 0;
 
 /**
- * One realtime conversation, for one panel user. `ops` is deskOps(); `mode`
- * "audio" (the Command Center) or "text" (the evaluation).
+ * One realtime conversation, for one panel user. `ops` is deskOps(). The desk
+ * answers in text; its sentences are spoken, once released, by the caller.
  */
 class DeskSession {
-  constructor({ key, voice, model, mode, ops, wsBase, log, sayId }) {
+  constructor({ key, voice, model, ops, wsBase, log, sayId }) {
     this.key = key;
     this.voice = voice || "marin";
     this.model = model || DESK_MODEL;
-    this.mode = mode === "text" ? "text" : "audio";
     this.ops = ops;
     this.wsBase = wsBase || WS_BASE;
     this.log = log || (() => {});
@@ -369,12 +859,20 @@ class DeskSession {
     this.heard = []; // what the administrator said
     this.snapshotText = "";
     this.groundedAt = 0;
-    this.stats = { rejected: 0, trips: 0, turns: 0 };
+    this.lastInputTokens = 0;
+    this.inflight = 0;
+    this.usage = {}; // billable tokens, whole session
+    this.stats = { rejected: 0, trips: 0, turns: 0, summaries: 0 };
     this.id = sayId || "desk" + ++seq;
   }
 
   usable() {
     return !this.dead && Date.now() - this.bornAt < MAX_AGE_MS && (!this.ws || this.ws.readyState <= WebSocket.OPEN);
+  }
+
+  /** Has this conversation grown past what is worth carrying? */
+  full() {
+    return this.stats.turns >= MAX_TURNS_PER_SESSION || this.lastInputTokens >= MAX_CONTEXT_TOKENS;
   }
 
   open() {
@@ -401,16 +899,10 @@ class DeskSession {
       ws.on("error", (e) => fail(new DeskError("Could not reach OpenAI: " + scrub(e.message), "network")));
       ws.on("close", () => fail(new DeskError("OpenAI closed the front desk's connection", "upstream")));
       ws.on("open", () => {
-        const session = {
-          type: "realtime",
-          instructions: INSTRUCTIONS,
-          output_modalities: [this.mode],
-          tools: TOOLS,
-          tool_choice: "auto",
-          max_output_tokens: 400,
-        };
-        if (this.mode === "audio") session.audio = { output: { format: { type: "audio/pcm", rate: RATE }, voice: this.voice } };
-        this.send({ type: "session.update", session });
+        this.send({
+          type: "session.update",
+          session: { type: "realtime", instructions: INSTRUCTIONS, output_modalities: ["text"], tools: TOOLS, tool_choice: "auto", max_output_tokens: 400 },
+        });
       });
       ws.on("message", (data) => {
         let ev;
@@ -461,6 +953,16 @@ class DeskSession {
     };
   }
 
+  /** Tell the model about a reply (clipped: the conversation is re-read every response). */
+  noteReply(id, reply, spoken) {
+    const clipped = reply.length > REPLY_IN_CONTEXT_CHARS ? reply.slice(0, REPLY_IN_CONTEXT_CHARS) + " [...the rest is on the administrator's screen]" : reply;
+    const how = spoken ? `the administrator heard this summary of it: "${spoken}", and has the full text on screen` : "the administrator has it on screen";
+    this.send({
+      type: "conversation.item.create",
+      item: { type: "message", role: "system", content: [{ type: "input_text", text: `MONI AI replied to request ${id} (${how}):\n${clipped}` }] },
+    });
+  }
+
   /** Learn the replies to earlier requests, and tell the model about them. */
   async refreshReplies() {
     const pending = [...this.requests.entries()].filter(([, r]) => !r.answered).map(([id]) => id);
@@ -478,25 +980,32 @@ class DeskSession {
       mine.answered = true;
       mine.reply = String(r.reply || "");
       this.replies.push(mine.reply);
-      this.send({
-        type: "conversation.item.create",
-        item: {
-          type: "message",
-          role: "system",
-          content: [{ type: "input_text", text: `MONI AI replied to request ${r.id} (it has already been read aloud to the administrator word for word):\n${mine.reply}` }],
-        },
-      });
+      this.noteReply(r.id, mine.reply, null);
     }
   }
 
-  /** One realtime response: text, audio, function calls. Cut short when the guard trips. */
-  respond(t0, timings, ctxFn) {
+  /**
+   * One realtime response: text and function calls, released sentence by
+   * sentence through `rel`. `create` is the response.create payload (an
+   * out-of-band summary passes its own).
+   */
+  respond(t0, timings, rel, info, create) {
     return new Promise((resolve, reject) => {
-      const st = { text: "", pcm: [], calls: [], itemIds: [], trip: null, status: null };
+      const st = { text: "", calls: [], itemIds: [], status: null, usage: null };
       const timer = setTimeout(() => {
         this.handler = null;
         reject(new DeskError("the front desk took too long to answer", "timeout"));
       }, RESPONSE_TIMEOUT_MS);
+      let cancelled = false;
+      const check = (final) => {
+        const before = rel.released;
+        rel.update(st.text, final, info);
+        if (rel.released > before && !timings.firstLine) timings.firstLine = Date.now() - t0;
+        if (rel.trip && !final && !cancelled) {
+          cancelled = true;
+          this.send({ type: "response.cancel" });
+        }
+      };
       this.handler = (ev) => {
         switch (ev.type) {
           case "__fail":
@@ -514,18 +1023,7 @@ class DeskSession {
           case "response.audio_transcript.delta":
             if (!timings.firstText) timings.firstText = Date.now() - t0;
             st.text += ev.delta || "";
-            if (!st.trip) {
-              const g = guard(settled(st.text), ctxFn());
-              if (!g.ok) {
-                st.trip = g;
-                this.send({ type: "response.cancel" });
-              }
-            }
-            break;
-          case "response.output_audio.delta":
-          case "response.audio.delta":
-            if (!timings.firstAudio) timings.firstAudio = Date.now() - t0;
-            if (!st.trip && ev.delta) st.pcm.push(Buffer.from(ev.delta, "base64"));
+            if (!rel.trip) check(false);
             break;
           case "response.output_item.added":
             if (ev.item && ev.item.type === "message" && ev.item.id) st.itemIds.push(ev.item.id);
@@ -535,31 +1033,58 @@ class DeskSession {
             this.handler = null;
             const r = ev.response || {};
             st.status = r.status || "completed";
+            st.usage = r.usage || null;
             for (const o of r.output || []) {
               if (o.type === "function_call") st.calls.push({ name: o.name, call_id: o.call_id, arguments: o.arguments });
               if (o.type === "message") {
                 if (o.id && !st.itemIds.includes(o.id)) st.itemIds.push(o.id);
                 // The finished text is authoritative (deltas can be missed on a cancel).
                 const full = (o.content || []).map((p) => p.transcript || p.text || "").join("");
-                if (full && !st.trip) st.text = full;
+                if (full && !rel.trip) st.text = full;
               }
-            }
-            if (!st.trip && st.text) {
-              const g = guard(st.text, ctxFn());
-              if (!g.ok) st.trip = g;
             }
             if (r.status === "failed") {
               const d = r.status_details || {};
               return reject(new DeskError("OpenAI did not finish: " + scrub((d.error && d.error.message) || d.reason || "failed"), "upstream"));
             }
+            if (!rel.trip) check(true);
             return resolve(st);
           }
           default:
             break;
         }
       };
-      this.send({ type: "response.create" });
+      // The calls of this very response back a hand-off said in it.
+      const askedNow = info.askedNow;
+      info.askedNow = () => askedNow() || st.calls.some((c) => c.name === "ask_moni");
+      this.send(create || { type: "response.create" });
     });
+  }
+
+  /**
+   * respond(), retried once when OpenAI reports a transient server error and
+   * nothing of the response was released (seen once in ~70 real calls on
+   * 2026-09-29: "The server had an error while processing your request").
+   */
+  async respondOnce(t0, timings, relFn, info, create) {
+    let rel = relFn();
+    try {
+      return { st: await this.respond(t0, timings, rel, info, create), rel };
+    } catch (e) {
+      if (!(e instanceof DeskError) || e.code !== "upstream" || !/server had an error|server_error|try again|retry/i.test(e.message) || rel.released) throw e;
+      this.log("desk: OpenAI server error, retrying once: " + e.message.slice(0, 120));
+      rel = relFn();
+      return { st: await this.respond(t0, timings, rel, info, create), rel };
+    }
+  }
+
+  /** Count what a response cost. */
+  account(st, turn) {
+    if (!st || !st.usage) return;
+    const t = tokensOf(st.usage);
+    turn.tokens = addTokens(turn.tokens, t);
+    this.usage = addTokens(this.usage, t);
+    this.lastInputTokens = (st.usage.input_tokens || 0);
   }
 
   /** Run one tool call. Returns the output string for the model. */
@@ -584,6 +1109,7 @@ class DeskSession {
       this.snapshotText = json.toLowerCase();
       this.groundedAt = Date.now();
       turn.tools.push("read_status");
+      turn.snapshotChars = json.length;
       return json;
     }
     // ask_moni
@@ -600,18 +1126,31 @@ class DeskSession {
       status: "passed to MONI AI",
       request: t ? t.id : null,
       queued_behind_other_work: !!(r && r.queued_behind),
-      note: "MONI AI has NOT replied yet. Say only that you passed it on. Its answer will be read aloud when it arrives.",
+      note: "MONI AI has NOT replied yet. Say only that you passed it on. A summary of its answer will be read aloud when it arrives.",
     });
   }
 
-  /** One utterance in; what to say out. Serialised per session. */
-  turn(heard) {
-    const run = this.queue.then(() => this._turn(heard));
+  /**
+   * One utterance in; what to say out. `opts.onLine(line)` is called for each
+   * line as soon as it may be spoken ({text, safe}). Serialised per session.
+   */
+  turn(heard, opts) {
+    return this.serial(() => this._turn(heard, opts || {}));
+  }
+
+  /** One thing at a time per conversation; `inflight` keeps deskFor from replacing a busy desk. */
+  serial(fn) {
+    this.inflight++;
+    const run = this.queue.then(fn);
     this.queue = run.catch(() => {});
+    const done = () => {
+      this.inflight--;
+    };
+    run.then(done, done);
     return run;
   }
 
-  async _turn(heard) {
+  async _turn(heard, opts) {
     await this.open();
     this.usedAt = Date.now();
     this.stats.turns++;
@@ -619,35 +1158,34 @@ class DeskSession {
     if (!said) throw new DeskError("nothing heard", "invalid");
     await this.refreshReplies();
     this.heard.push(said);
-    const turn = { heard: said, asked: [], tools: [], rejected: [], lines: [], trip: null };
+    const turn = { kind: "turn", heard: said, asked: [], tools: [], rejected: [], lines: [], trip: null, tokens: {}, responses: 0 };
     const timings = {};
     const t0 = Date.now();
+    const emit = (line) => {
+      turn.lines.push(line);
+      if (!timings.firstLine) timings.firstLine = Date.now() - t0;
+      if (opts.onLine) opts.onLine(line, Date.now() - t0);
+    };
     this.send({ type: "conversation.item.create", item: { type: "message", role: "user", content: [{ type: "input_text", text: said }] } });
+    let heardThisResponse = "";
     for (let round = 0; round < MAX_ROUNDS; round++) {
       const rt0 = Date.now();
       const rtim = {};
-      const st = await this.respond(rt0, rtim, () => this.context());
+      const info = { askedNow: () => turn.asked.length > 0, pending: () => [...this.requests.values()].some((r) => !r.answered) };
+      const askedBefore = info.askedNow;
+      const { st, rel } = await this.respondOnce(rt0, rtim, () => ((info.askedNow = askedBefore), new Releaser(() => this.context(), (text) => emit({ text, safe: false }))), info);
+      turn.responses++;
+      this.account(st, turn);
       if (!timings.firstText && rtim.firstText) timings.firstText = rt0 - t0 + rtim.firstText;
-      if (!timings.firstAudio && rtim.firstAudio) timings.firstAudio = rt0 - t0 + rtim.firstAudio;
-      // "I've passed that to MONI AI" is only true once ask_moni has run. Found
-      // on the real model: it said so without calling the tool for 5 of 6
-      // action requests. Checked here, once the response's calls are known.
-      if (!st.trip && st.text) {
-        const u = unbackedHandoff(st.text, { askedNow: turn.asked.length > 0 || st.calls.some((c) => c.name === "ask_moni"), pending: [...this.requests.values()].some((r) => !r.answered) });
-        if (u) st.trip = u;
-      }
-      const first = Math.min(rtim.firstText || Infinity, rtim.firstAudio || Infinity);
-      // When the administrator hears the first word, from when they stopped speaking.
-      if (!timings.firstWords && isFinite(first)) timings.firstWords = rt0 - t0 + first;
-      if (turn.asked.length && !timings.ackFirst && isFinite(first)) timings.ackFirst = first;
-      if (st.trip) {
-        turn.trip = { ...st.trip, said: st.text.slice(0, 400) };
+      if (turn.asked.length && !timings.ackFirst && rtim.firstLine) timings.ackFirst = rtim.firstLine;
+      if (rel.trip) {
+        turn.trip = { ...rel.trip, said: st.text.slice(0, 400), released: rel.released };
+        heardThisResponse = rel.heardText();
         this.stats.trips++;
-        this.log(`desk: guard cut a reply (${st.trip.rule}): ${JSON.stringify(st.trip.match).slice(0, 160)}`);
+        this.log(`desk: guard cut a reply (${rel.trip.rule}): ${JSON.stringify(rel.trip.match).slice(0, 160)}`);
         for (const id of st.itemIds) this.send({ type: "conversation.item.delete", item_id: id });
         break;
       }
-      if (st.text) turn.lines.push({ text: st.text.trim(), pcm: st.pcm.length ? Buffer.concat(st.pcm) : null });
       if (!st.calls.length) break;
       for (const call of st.calls) {
         let output;
@@ -662,8 +1200,8 @@ class DeskSession {
     }
     if (turn.trip) {
       // Say the safe line, and make it true: pass the request on if the desk
-      // had not. The words the guard stopped are out of the conversation; the
-      // safe line goes in, so the model's memory matches what was heard.
+      // had not. The words the guard stopped are out of the conversation; what
+      // was heard and the safe line go in, so the model's memory matches.
       if (!turn.asked.length) {
         try {
           const r = await this.ops.ask(said);
@@ -673,31 +1211,162 @@ class DeskSession {
           turn.autoAsked = true;
         } catch (e) {
           this.log("desk: could not pass the request on after the guard: " + e.message);
-          turn.lines.push({ text: "Sorry, I could not reach MONI AI.", pcm: null, safe: true });
+          emit({ text: "Sorry, I could not reach MONI AI.", safe: true });
           timings.done = Date.now() - t0;
           return this.result(turn, timings);
         }
       }
-      const line = turn.autoAsked ? SAFE_LINE : SAFE_LINE_ASKED;
-      this.send({ type: "conversation.item.create", item: { type: "message", role: "assistant", content: [{ type: "output_text", text: line }] } });
-      turn.lines.push({ text: line, pcm: null, safe: true });
+      const saidHandoff = turn.lines.some((l) => !l.safe && mentionsHandoff(l.text));
+      const line = turn.autoAsked ? SAFE_LINE : saidHandoff ? SAFE_LINE_TAIL : SAFE_LINE_ASKED;
+      const text = (heardThisResponse ? heardThisResponse + " " : "") + line;
+      this.send({ type: "conversation.item.create", item: { type: "message", role: "assistant", content: [{ type: "output_text", text }] } });
+      emit({ text: line, safe: true });
     }
     timings.done = Date.now() - t0;
     return this.result(turn, timings);
   }
 
+  /**
+   * A short spoken summary of MONI AI's reply to one of this user's desk
+   * requests. `opts.onLine` as for turn(). Resolves with
+   * { fallback: "verbatim" } when the reply should simply be read as written
+   * (short and plain, or the summary was cut before a word was said), or
+   * { pending: true } when MONI AI has not answered yet.
+   */
+  summarise(turnId, opts) {
+    return this.serial(() => this._summarise(turnId, opts || {}));
+  }
+
+  async _summarise(turnId, opts) {
+    const id = Number(turnId);
+    if (!Number.isInteger(id) || id <= 0) throw new DeskError("no such request", "invalid");
+    const t0 = Date.now();
+    const timings = {};
+    const turn = { kind: "summary", heard: "", asked: [], tools: [], rejected: [], lines: [], trip: null, tokens: {}, responses: 0 };
+    let r = null;
+    for (let attempt = 0; attempt < 6; attempt++) {
+      const snap = await this.ops.snapshot([id]);
+      r = (snap.requests_to_moni_ai || []).find((x) => x.id === id) || null;
+      if (!r || r.answered) break;
+      await new Promise((res) => setTimeout(res, 400)); // the page heard the end a moment before the ledger shows it
+    }
+    if (!r) throw new DeskError("that is not one of your front desk requests", "invalid");
+    if (!r.answered) return { ...this.result(turn, timings), pending: true };
+    const reply = String(r.reply || "").trim();
+    const mine = this.requests.get(id) || { text: "", answered: false, reply: null };
+    this.requests.set(id, mine);
+    const shape = replyShape(reply);
+    turn.shape = shape;
+    const finish = (spoken, fallback) => {
+      // Tell the conversation (if one is open; otherwise the next turn's
+      // refreshReplies will), so "what did MONI AI say?" has its answer.
+      if (!mine.answered && this.ready && !this.dead) {
+        mine.answered = true;
+        mine.reply = reply;
+        this.replies.push(reply);
+        this.noteReply(id, reply, spoken);
+      }
+      timings.done = Date.now() - t0;
+      return { ...this.result(turn, timings), fallback: fallback || null, shape };
+    };
+    if (!reply) return finish("", "verbatim");
+    if (shape.plain && reply.length <= VERBATIM_MAX_CHARS && shape.sentences <= 2) return finish("", "verbatim"); // nothing to shorten
+    await this.open();
+    this.usedAt = Date.now();
+    this.stats.summaries++;
+    const emit = (line) => {
+      turn.lines.push(line);
+      if (!timings.firstLine) timings.firstLine = Date.now() - t0;
+      if (opts.onLine) opts.onLine(line, Date.now() - t0);
+    };
+    const model = replyModel(reply);
+    const ctx = {
+      summary: true,
+      replyText: reply,
+      replyModel: model,
+      heardText: mine.text || "",
+      snapshotText: "",
+      numbers: strictNumberSet([reply, mine.text || ""]),
+      replied: true,
+      grounded: true,
+    };
+    const quoted = reply.replace(/"""/g, '"');
+    const create = {
+      type: "response.create",
+      response: {
+        conversation: "none",
+        output_modalities: ["text"],
+        tool_choice: "none",
+        tools: [],
+        max_output_tokens: SUMMARY_MAX_TOKENS,
+        metadata: { purpose: "summary" },
+        instructions: SUMMARY_INSTRUCTIONS,
+        input: [
+          {
+            type: "message",
+            role: "user",
+            content: [
+              {
+                type: "input_text",
+                text:
+                  (mine.text ? `The administrator asked: "${mine.text.slice(0, 500)}"\n\n` : "") +
+                  `MONI AI's reply, between the triple quotes:\n"""\n${quoted}\n"""\n` +
+                  (shape.list || shape.code || shape.paths ? "It has lists, code or paths: do not read them, say the details are on screen.\n" : ""),
+              },
+            ],
+          },
+        ],
+      },
+    };
+    const { st, rel } = await this.respondOnce(t0, timings, () => new Releaser(() => ctx, (text) => emit({ text, safe: false }), { summary: true }), { askedNow: () => true, pending: () => false }, create);
+    turn.responses++;
+    this.account(st, turn);
+    if (rel.trip) {
+      turn.trip = { ...rel.trip, said: st.text.slice(0, 400), released: rel.released };
+      this.stats.trips++;
+      this.log(`desk: guard cut a summary (${rel.trip.rule}): ${JSON.stringify(rel.trip.match).slice(0, 160)}`);
+      if (!rel.released && reply.length <= VERBATIM_MAX_CHARS * 2 && shape.plain) return finish("", "verbatim");
+      emit({ text: rel.released ? SUMMARY_CUT_LINE : SUMMARY_NONE_LINE, safe: true });
+    }
+    const spoken = turn.lines.map((l) => l.text).join(" ");
+    // A pending approval or question must survive the summary.
+    if (REPLY_NEEDS_APPROVAL.test(norm(reply)) && !SUMMARY_MENTIONS_APPROVAL.test(norm(spoken))) {
+      turn.approvalAdded = true;
+      if (!turn.trip) turn.trip = { rule: "approval-dropped", match: "", said: st.text.slice(0, 400), released: rel.released, appended: true };
+      emit({ text: /\bscreen\b/.test(norm(spoken)) ? APPROVAL_LINE_SHORT : APPROVAL_LINE, safe: true });
+    } else if (!turn.trip && (shape.list || shape.code || shape.paths || reply.length > 600) && !/\bscreen\b/.test(norm(spoken))) {
+      emit({ text: DETAILS_LINE, safe: true });
+    }
+    return finish(turn.lines.map((l) => l.text).join(" "));
+  }
+
   result(turn, timings) {
     return {
+      kind: turn.kind,
       heard: turn.heard,
       lines: turn.lines,
       asked: turn.asked.filter(Boolean),
       autoAsked: !!turn.autoAsked,
       tools: turn.tools,
       rejected: turn.rejected,
-      trip: turn.trip ? { rule: turn.trip.rule, match: String(turn.trip.match || "").slice(0, 200), said: turn.trip.said } : null,
+      trip: turn.trip ? { rule: turn.trip.rule, match: String(turn.trip.match || "").slice(0, 200), said: turn.trip.said, released: turn.trip.released || 0 } : null,
+      tokens: turn.tokens,
+      cost_usd: costOf(turn.tokens, this.model),
+      responses: turn.responses,
+      snapshot_chars: turn.snapshotChars || 0,
       timings,
     };
   }
+}
+
+/** What kind of reply this is: lists, code, paths, how many sentences. */
+function replyShape(reply) {
+  const t = String(reply || "");
+  const list = /^\s*(?:[-*+]|\d+\.)\s+/m.test(t);
+  const code = /```|`[^`\n]+`/.test(t);
+  const paths = /(?:^|\s)\/[\w.-]+\/|https?:\/\//.test(t);
+  const markup = /\*\*|^#+\s/m.test(t);
+  return { chars: t.length, sentences: sentencesOf(t, true).length, list, code, paths, plain: !list && !code && !paths && !markup };
 }
 
 /** The administrator's own words go with the desk's phrasing, so nothing is lost in paraphrase. */
@@ -715,25 +1384,89 @@ function scrub(text) {
     .slice(0, 300);
 }
 
+/* ------------------------------------------------- the daily budget -- */
+
+/**
+ * The desk's spend per day (Africa/Cairo), kept by the server from real usage.
+ * `store` is { get(key) -> string|null, set(key, value) } (the panel's
+ * settings table). The limit is a setting too; 0 means no desk at all.
+ */
+function createBudget(store, opts) {
+  const o = opts || {};
+  const tz = o.tz || "Africa/Cairo";
+  const now = o.now || (() => new Date());
+  const LIMIT_KEY = "voice_desk_budget_usd";
+  const SPEND_KEY = "voice_desk_spend";
+  const day = () => new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }).format(now());
+  const read = () => {
+    let s = null;
+    try {
+      s = JSON.parse(store.get(SPEND_KEY) || "null");
+    } catch (_) {
+      s = null;
+    }
+    const d = day();
+    if (!s || s.day !== d) s = { day: d, usd: 0, desk_usd: 0, speech_usd: 0, turns: 0, summaries: 0 };
+    return s;
+  };
+  const limit = () => {
+    const v = Number(store.get(LIMIT_KEY));
+    return store.get(LIMIT_KEY) == null || !isFinite(v) || v < 0 ? DEFAULT_BUDGET_USD : v;
+  };
+  return {
+    LIMIT_KEY,
+    SPEND_KEY,
+    day,
+    limit,
+    setLimit(usd, by) {
+      const v = Number(usd);
+      if (!isFinite(v) || v < 0 || v > 100) throw new DeskError("Give a daily budget between $0 and $100.", "invalid");
+      store.set(LIMIT_KEY, String(Math.round(v * 100) / 100), by);
+    },
+    /** { day, spent, limit, turns, summaries, over, left } */
+    status() {
+      const s = read();
+      const l = limit();
+      return { day: s.day, spent: s.usd, desk_usd: s.desk_usd, speech_usd: s.speech_usd, turns: s.turns, summaries: s.summaries, limit: l, over: s.usd >= l, left: Math.max(0, l - s.usd) };
+    },
+    /** Count one turn or summary: the desk's own tokens and the speech of its lines. */
+    add({ desk_usd, speech_usd, kind }) {
+      const s = read();
+      s.desk_usd += desk_usd || 0;
+      s.speech_usd += speech_usd || 0;
+      s.usd = s.desk_usd + s.speech_usd;
+      if (kind === "summary") s.summaries++;
+      else s.turns++;
+      store.set(SPEND_KEY, JSON.stringify(s));
+      return this.status();
+    },
+  };
+}
+
 /* ------------------------------------------- one desk per panel user -- */
 
 const desks = new Map(); // actor -> DeskSession
 
 /**
  * The desk for this panel user, opened on first use and reused while fresh.
- * `call` is moniai.call; the desk only ever reaches it through deskOps().
+ * `call` is moniai.call; the desk only ever reaches it through deskOps(). A
+ * conversation that has grown past MAX_TURNS_PER_SESSION or
+ * MAX_CONTEXT_TOKENS is replaced by a fresh one; unanswered requests carry over.
  */
 function deskFor(actor, cfg, call, opts) {
   const o = opts || {};
   const id = String(actor) + "|" + String(cfg.key).slice(-6) + "|" + (cfg.voice || "");
   let d = desks.get(actor);
-  if (d && (!d.usable() || d.cfgId !== id || Date.now() - d.usedAt > IDLE_MS)) {
+  let carry = null;
+  if (d && (!d.usable() || d.cfgId !== id || Date.now() - d.usedAt > IDLE_MS || (d.full() && !d.inflight))) {
+    if (d.cfgId === id) carry = [...d.requests.entries()].filter(([, r]) => !r.answered);
     d.close();
     d = null;
   }
   if (!d) {
-    d = new DeskSession({ key: cfg.key, voice: cfg.voice, model: cfg.desk_model || DESK_MODEL, mode: o.mode || "audio", ops: deskOps(call, actor), wsBase: cfg.wsBase, log: o.log });
+    d = new DeskSession({ key: cfg.key, voice: cfg.voice, model: cfg.desk_model || DESK_MODEL, ops: deskOps(call, actor), wsBase: cfg.wsBase, log: o.log });
     d.cfgId = id;
+    if (carry) for (const [k, v] of carry) d.requests.set(k, v);
     desks.set(actor, d);
   }
   return d;
@@ -758,22 +1491,48 @@ module.exports = {
   TOOLS,
   TOOL_NAMES,
   INSTRUCTIONS,
+  SUMMARY_INSTRUCTIONS,
   DESK_OPS,
   DESK_MODEL,
   SAFE_LINE,
   SAFE_LINE_ASKED,
+  SAFE_LINE_TAIL,
+  APPROVAL_LINE,
+  APPROVAL_LINE_SHORT,
+  DETAILS_LINE,
+  SUMMARY_CUT_LINE,
+  SUMMARY_NONE_LINE,
   FORBIDDEN_KEYS,
+  PRICES,
+  AUDIO_TOKENS_PER_SECOND,
+  DEFAULT_BUDGET_USD,
+  MAX_TURNS_PER_SESSION,
+  MAX_CONTEXT_TOKENS,
+  VERBATIM_MAX_CHARS,
   DeskSession,
   DeskError,
+  Releaser,
   deskOps,
   deskFor,
   closeAll,
   forModel,
   guard,
+  judge,
+  sentencesOf,
+  needsNext,
+  replyShape,
+  replyModel,
+  strictNumberSet,
+  polarClaims,
   unbackedHandoff,
   numbersIn,
   numberSet,
   settled,
   withWords,
+  tokensOf,
+  addTokens,
+  costOf,
+  speechCost,
+  createBudget,
   RATE,
 };

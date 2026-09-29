@@ -575,6 +575,7 @@ table { width: 100%; border-collapse: collapse; }
 .btn[disabled], .btn[aria-disabled="true"] { opacity: .45; cursor: not-allowed; }
 
 .btn-row { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
+.num-short { width: 7em; max-width: 100%; display: inline-block; margin-left: 6px; }
 .card-head .btn-row { margin-top: 0; }
 form.inline { display: inline; margin: 0; }
 

@@ -42,6 +42,8 @@
   // The voice front desk (GPT, trial): switched on by an administrator in
   // Settings. When off -- the default -- nothing below changes behaviour.
   var DESK = READY && root.getAttribute("data-voice-desk") === "1";
+  // Today's desk budget was already spent when the page loaded: direct path, said so.
+  var DESK_OVER = READY && root.getAttribute("data-voice-desk-over") === "1";
 
   /* ================================================================ helpers */
 
@@ -145,6 +147,48 @@
     document.body.appendChild(el);
     clearTimeout(toastTimer);
     toastTimer = setTimeout(function () { el.remove(); }, bad ? 5000 : 2600);
+  }
+
+  /**
+   * A streamed API call (NDJSON): `onEvent` gets each object as it arrives;
+   * resolves with the last {type:"done"}. A refusal before the stream starts
+   * rejects like api() does, with .status and .code.
+   */
+  function apiStream(path, body, onEvent) {
+    return fetch("/moni-ai/api/" + path, {
+      method: "POST", credentials: "same-origin",
+      headers: { Accept: "application/x-ndjson", "Content-Type": "application/json", "X-CSRF-Token": CSRF },
+      body: JSON.stringify(body),
+    }).then(function (r) {
+      if (!r.ok) {
+        return r.json().catch(function () { return {}; }).then(function (j) {
+          var e = new Error(j.error || "HTTP " + r.status);
+          e.status = r.status; e.code = j.code;
+          throw e;
+        });
+      }
+      var reader = r.body.getReader(), dec = new TextDecoder(), buf = "", done = null;
+      function take(line) {
+        if (!line.trim()) return;
+        var ev;
+        try { ev = JSON.parse(line); } catch (e) { return; }
+        if (ev.type === "error" || ev.type === "refused") { var err = new Error(ev.error || "error"); err.code = ev.code; err.refused = ev.type === "refused"; throw err; }
+        if (ev.type === "done") done = ev;
+        onEvent(ev);
+      }
+      function pump() {
+        return reader.read().then(function (x) {
+          if (x.value) {
+            buf += dec.decode(x.value, { stream: true });
+            var i;
+            while ((i = buf.indexOf("\n")) >= 0) { take(buf.slice(0, i)); buf = buf.slice(i + 1); }
+          }
+          if (x.done) { take(buf); return done || {}; }
+          return pump();
+        });
+      }
+      return pump();
+    });
   }
 
   /** JSON API call. Writes carry the CSRF token in a header. */
@@ -408,7 +452,7 @@
     if (c.rules_user != null || c.rules_builtin != null) setCore("rules", String((c.rules_user || 0) + (c.rules_builtin || 0)), "", (c.rules_user || 0) + " of yours · " + (c.rules_builtin || 0) + " built in");
     else setCore("rules", "—", "off", "");
 
-    setCore("voice", Voice.listening ? "live" : READY ? "ready" : "no key", Voice.listening ? "warn" : READY ? "ok" : "off", READY ? "OpenAI · " + (VOICE || "voice") + (DESK ? " · front desk (GPT, trial)" : "") : "Add an OpenAI key in Settings to use voice");
+    setCore("voice", Voice.listening ? "live" : READY ? "ready" : "no key", Voice.listening ? "warn" : READY ? "ok" : "off", READY ? "OpenAI · " + (VOICE || "voice") + (DESK ? " · front desk (GPT, trial)" : DESK_OVER ? " · front desk budget used today, direct" : "") : "Add an OpenAI key in Settings to use voice");
 
     var pend = pendingApprovals().length;
     var mins = Math.round((st.approval_timeout_s || 300) / 60);
@@ -601,6 +645,7 @@
   }
 
   var voiceTurns = new Set();    // turns whose reply is read aloud
+  var deskTurns = new Set();     // turns the front desk passed on: their reply is summarised aloud
   var sending = false;
   function send(text, opts) {
     opts = opts || {};
@@ -1313,7 +1358,11 @@
         if (ev.phase === "end") {
           if (st.current_turn && st.current_turn.id === row.id) st.current_turn = null;
           st.busy = false;
-          if (tr) { tr.partial = ""; if (!replay && voiceTurns.has(row.id)) { Voice.flush(row.id, aiText(tr)); voiceTurns.delete(row.id); } }
+          if (tr) {
+            tr.partial = "";
+            if (!replay && voiceTurns.has(row.id)) { Voice.flush(row.id, aiText(tr)); voiceTurns.delete(row.id); }
+            else if (!replay && deskTurns.has(row.id)) { deskTurns.delete(row.id); Voice.summary(row.id, aiText(tr)); }
+          }
           if (!replay && row.status === "error") feedPush({ key: "t" + row.id + "err", ts: ev.ts, kind: "error", html: "<b>Turn ended with an error</b> · " + esc(clip(row.error || "", 140)) });
           refreshCounts();
         }
@@ -1458,7 +1507,7 @@
     var speakBtn = $("cc-speak-toggle");
     var api_ = {
       on: false, listening: false, speaking: false, speakAll: false,
-      say: function () {}, feed: function () {}, flush: function () {}, unlock: function () {},
+      say: function () {}, feed: function () {}, flush: function () {}, unlock: function () {}, summary: function () {},
     };
     var AC = window.AudioContext || window.webkitAudioContext;
     var canRecord = !!(navigator.mediaDevices && window.MediaRecorder && AC);
@@ -1794,42 +1843,77 @@
     }
 
     /* Front desk mode: the recording goes to the desk, which answers from the
-       snapshot or passes the request to MONI AI; MONI AI's answer is then read
-       by the same verbatim reader as always. */
+       snapshot, makes small talk, or passes the request to MONI AI. Its
+       sentences stream in one by one, each already checked and spoken on the
+       server, and play as they arrive. MONI AI's answer is later summarised
+       aloud (deskSummary); its full text is on screen as always. */
     function deskSend(blob, data, wasPtt) {
-      api("desk/turn", { body: { data: data, mime: blob.type } }).then(function (d) {
-        var said = String(d.heard || "").trim();
-        if (!said) throw new Error("nothing said");
-        vbText.textContent = "“" + clip(said, 80) + "”";
-        (d.lines || []).forEach(function (l) { enqueueAudio(l.text, l.audio); });
-        (d.asked || []).forEach(function (t) {
-          var tr = upsertTurn(t);
-          if (tr && tr.ended_at && aiText(tr)) api_.flush(tr.id, aiText(tr));
-          else voiceTurns.add(t.id);
-        });
-        if ((d.asked || []).length) showPane("conv");
+      var lines = 0;
+      apiStream("desk/turn", { data: data, mime: blob.type }, function (ev) {
+        if (ev.type === "heard") {
+          if (ev.text) vbText.textContent = "“" + clip(ev.text, 80) + "”";
+        } else if (ev.type === "line") {
+          lines++;
+          enqueueAudio(ev.text, ev.audio);
+        } else if (ev.type === "asked" && ev.turn) {
+          var t = ev.turn, tr = upsertTurn(t);
+          if (tr && tr.ended_at && aiText(tr)) deskSummary(tr.id, aiText(tr));
+          else deskTurns.add(t.id);
+          showPane("conv");
+        }
+      }).then(function (d) {
         if (d.guard) console.info("[voice] the front desk's guard replaced a reply (" + d.guard.rule + ")");
-        if (!(d.lines || []).length && api_.on && !busy) listen(true);
+        if (d.budget && d.budget.over) budgetReached("Today's voice front desk budget is used up. Your next words go straight to MONI AI.");
+        if (!lines && api_.on && !busy) listen(true);
       }).catch(function (e) {
-        if (e.code === "desk-off") {
-          // Switched off in Settings since this page loaded: go direct.
-          DESK = false;
-          paintMode();
+        if (e.code === "desk-off" || e.code === "desk-budget") {
+          // Switched off in Settings, or today's budget is spent: go direct.
+          if (e.code === "desk-budget") budgetReached(e.message);
+          else { DESK = false; paintMode(); }
           return transcribeAndSend(blob, wasPtt);
         }
         if (e.message !== "nothing said") toast("The front desk could not answer: " + e.message, true);
-        enqueue("Sorry, I didn't catch that.");
+        if (!lines) enqueue("Sorry, I didn't catch that.");
         if (api_.on) listen(true);
       }).then(function () {
         if (!api_.on && wasPtt) keepStream();
         setUi();
       });
     }
+    /* MONI AI's answer to a request the desk passed on: a short summary,
+       spoken sentence by sentence. Read word for word instead when the desk
+       says so (a short, plain reply), and whenever the desk cannot: switched
+       off, over budget, or failing -- the direct path, as before. */
+    function deskSummary(id, text) {
+      if (!DESK) return api_.flush(id, text);
+      var lines = 0;
+      apiStream("desk/summary", { turn: id }, function (ev) {
+        if (ev.type === "line") { lines++; enqueueAudio(ev.text, ev.audio); }
+      }).then(function (d) {
+        if (d.fallback === "verbatim" || d.pending || !lines) return api_.flush(id, text);
+        if (d.budget && d.budget.over) budgetReached("Today's voice front desk budget is used up. Your next words go straight to MONI AI.");
+        if (api_.on && !busy && !queue.length) listen(true);
+      }).catch(function (e) {
+        if (e.code === "desk-budget") budgetReached(e.message);
+        else if (e.code === "desk-off") { DESK = false; paintMode(); }
+        else console.warn("[voice] the front desk could not summarise; reading the answer as written:", e.message);
+        if (!lines) api_.flush(id, text);
+      });
+    }
+    function budgetReached(msg) {
+      var was = DESK;
+      DESK = false;
+      DESK_OVER = true;
+      paintMode();
+      if (was) toast(msg || "Today's voice front desk budget is used up. Voice goes straight to MONI AI until midnight (Cairo).", true);
+    }
     function paintMode() {
       var tag = $("cc-voice-mode");
       if (!tag) return;
-      tag.textContent = DESK ? "Front desk · GPT" : "Direct · MONI AI";
+      tag.textContent = DESK ? "Front desk · GPT" : DESK_OVER ? "Direct · desk budget used" : "Direct · MONI AI";
       tag.classList.toggle("desk", DESK);
+      tag.classList.toggle("over", !DESK && DESK_OVER);
+      if (!DESK && DESK_OVER) tag.title = "Today's voice front desk budget is used up, so voice goes straight to MONI AI until midnight (Cairo). Settings › OpenAI voice.";
       renderRail();
     }
 
@@ -1963,6 +2047,7 @@
     });
 
     api_.unlock = function () { if (READY) outContext(); };
+    api_.summary = function (id, text) { if (READY) deskSummary(id, text); };
     api_.say = function (text) { if (READY) enqueue(text); };
     var spokenTurn = null;
     api_.feed = function (id, text) {

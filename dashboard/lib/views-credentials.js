@@ -258,6 +258,14 @@ function option(value, label, current) {
 function deskCard(csrf, v, desk) {
   const d = desk || { on: false };
   const row = d.row;
+  const b = d.budget || null;
+  const money = (n) => "$" + (Number(n) || 0).toFixed(2);
+  const spend = b
+    ? `<p class="small mt-12" id="voice-desk-budget-state"><span class="pill ${b.over ? "bad" : "neutral"}">${b.over ? "budget used up" : "today"}</span>
+        <span class="muted">Spent today (Cairo): <b>${esc("$" + (Number(b.spent) || 0).toFixed(4))}</b> of ${esc(money(b.limit))}
+        — ${esc(String(b.turns || 0))} turn${b.turns === 1 ? "" : "s"}, ${esc(String(b.summaries || 0))} summar${b.summaries === 1 ? "y" : "ies"}.
+        ${b.over ? "The Command Center is using the direct path until midnight, and says so." : ""}</span></p>`
+    : "";
   return card(
     "Voice front desk (GPT)",
     `<p class="small"><span class="pill ${d.on ? "warn" : "neutral"}" id="voice-desk-state">${d.on ? "on — trial" : "off"}</span>
@@ -265,15 +273,26 @@ function deskCard(csrf, v, desk) {
     <p class="muted small mt-12">A trial. When on, the Command Center's microphone talks to a GPT realtime model
       (${esc(d.model || "gpt-realtime-mini")}) that answers at once from a read-only snapshot of this VPS — services,
       disk, memory, sessions, missions, open decisions and pending approvals, counted and titled, never a command —
-      and passes everything else to MONI AI as your request. It cannot run anything, message a session, or approve or
-      deny anything; a guard cuts it off if it claims an action or quotes a figure it was not given. MONI AI's answers
-      are read aloud word for word, as now. When off, voice goes straight to MONI AI.</p>
+      makes brief small talk, and passes everything else to MONI AI as your request. It cannot run anything, message a
+      session, or approve or deny anything; a guard checks every sentence before it is spoken and cuts it off if it
+      claims an action or quotes a figure it was not given. MONI AI's answers are summarised aloud, held to what MONI AI
+      wrote — the full text stays on screen. When off, voice goes straight to MONI AI.</p>
     <form method="post" action="/credentials/openai-voice/desk" class="btn-row">
       <input type="hidden" name="_csrf" value="${esc(csrf)}">
       <input type="hidden" name="enabled" value="${d.on ? "0" : "1"}">
       <button class="btn ${d.on ? "" : "primary "}small" type="submit" id="voice-desk-toggle"${v.configured || d.on ? "" : " disabled"}>
         ${icon(d.on ? "close" : "play")} ${d.on ? "Switch the front desk off" : "Switch the front desk on"}</button>
       ${v.configured ? "" : `<span class="muted small">Needs the OpenAI key above.</span>`}
+    </form>
+    ${spend}
+    <form method="post" action="/credentials/openai-voice/desk-budget" class="btn-row mt-12" id="voice-desk-budget-form">
+      <input type="hidden" name="_csrf" value="${esc(csrf)}">
+      <label class="small">Daily budget (USD)
+        <input type="number" name="budget_usd" id="voice-desk-budget" min="0" max="100" step="0.01" inputmode="decimal" class="num-short" value="${esc((b ? Number(b.limit) : 1).toFixed(2))}">
+      </label>
+      <button class="btn small" type="submit" id="voice-desk-budget-save">${icon("check")} Save budget</button>
+      <span class="muted small">Counted on the server from what OpenAI reports for each desk reply and each sentence it speaks. When today's
+        spend reaches it, the voice falls back to the direct path, with a notice, until midnight (Cairo). 0 keeps the desk off in practice.</span>
     </form>`,
     { icon: "voice", id: "v-desk" }
   );

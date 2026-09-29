@@ -213,32 +213,72 @@ OpenAI voice > *Voice front desk (GPT)* (`POST /credentials/openai-voice/desk`,
 `voice.manage`, audited in the sign-in log; stored in the panel's `settings`
 table, not with the key). While it is off nothing about the voice changes.
 While on, the Command Center's mic posts each utterance to
-`POST /moni-ai/api/desk/turn` (`moniai.use` + CSRF; 409 `desk-off` when
-switched off, and the page falls back to the direct path). The voice bar shows
-**Front desk · GPT** or **Direct · MONI AI**.
+`POST /moni-ai/api/desk/turn` (`moniai.use` + CSRF). The voice bar shows
+**Front desk · GPT**, **Direct · MONI AI**, or **Direct · desk budget used**.
 
-gpt-realtime-mini holds the conversation, server-side, with exactly two tools:
-`read_status()` (the supervisor's read-only `snapshot` op: services, disk,
-memory, sessions, active missions and steps, open decisions and pending
+gpt-realtime-mini holds the conversation, server-side, **in text**, with exactly
+two tools: `read_status()` (the supervisor's read-only `snapshot` op: services,
+disk, memory, sessions, active missions and steps, open decisions and pending
 approvals as counts and titles, never a command; no live Odoo) and
 `ask_moni(text)` (a normal `send`, `via: "voice-desk"`, as the panel user; the
-administrator's own words go along when the desk paraphrases). MONI AI's answer
-is read by the ordinary verbatim reader, word for word, never paraphrased.
-Enforcement: only those two tools in the session; any other function call is
-refused; `deskOps()` opens for `snapshot` and `send` only; and an output guard
-over the desk's own words, holding back all of its audio until they pass. It
-cuts a claim that something was done/deleted/restarted/pushed/approved, a
-promise of one, a figure not in the snapshot / MONI AI's reply / what was said,
-a status claim with no snapshot or about something the snapshot does not hold,
-"MONI AI said ..." before a reply, and "I've passed that on" with no ask_moni
-call behind it. A cut reply is replaced by "Let me pass that to MONI AI." and
-the request really is passed on.
+administrator's own words go along when the desk paraphrases). It may make
+brief small talk, never with a status claim in it. Enforcement: only those two
+tools in the session; any other function call is refused; `deskOps()` opens for
+`snapshot` and `send` only; and an output guard over the desk's own words.
+
+**Sentence by sentence.** The desk answers in text; each sentence is released
+as soon as the guard has passed it and is spoken by the ordinary verbatim
+reader (`lib/voice.js`), so what is heard is exactly what was checked. The
+route streams NDJSON: `heard`, then one `line` (text + WAV) per sentence,
+`asked`, `done`. The guard judges each sentence with the ones before it (a
+bare "Done." after an action sentence is a claim about that sentence; "it"
+borrows its subject), and holds a sentence it cannot judge alone -- one that
+mentions an action, a fragment, a hand-off whose `ask_moni` call is not known
+yet -- until the next sentence or the end. So whatever a later sentence does,
+it can only cut itself (property-tested over ~1,900 streamed texts).
+
+It cuts: a claim that something was done/deleted/restarted/pushed/approved (or
+is being: "Restarting Odoo."), a promise of one, a figure not in the snapshot /
+MONI AI's reply / what was said, a status claim with no snapshot or about
+something the snapshot does not hold, "MONI AI said ..." before a reply, and "I've
+passed that on" (or "I'll read you its answer") with no `ask_moni` call behind
+it. A cut reply is replaced by "Let me pass that to MONI AI." and the request
+really is passed on. A transient OpenAI server error is retried once.
+
+**Summaries.** MONI AI's answer to a desk request stays on screen exactly as
+written; aloud, the page asks `POST /moni-ai/api/desk/summary {turn}` for a
+short summary (an out-of-band response: no conversation, no tools, the reply
+quoted). A reply of one or two plain sentences is read word for word instead
+(`fallback: "verbatim"`). The summary is held to the reply: a figure changed
+or rounded wrongly (2.7 may become 3, never 2), a negation flipped, a
+recommendation MONI AI did not make, "I'll ask you first" turned into "done", a
+name or a path it did not give, the desk saying "I did" -- each is cut, and the
+rest becomes "The rest of MONI AI's answer is on screen." A pending approval or
+question the summary left out is said anyway ("It needs your approval or your
+answer."). MONI AI is told its reply will be summarised.
+
+**Cost and the daily budget.** Every desk response's `usage` and every spoken
+line's reading usage are priced (`PRICES`, OpenAI's list read 2026-09-29) and
+added to today's spend (Africa/Cairo day) in the `settings` table. The budget
+(default **$1.00/day**, Settings next to the switch, `POST
+/credentials/openai-voice/desk-budget`) is checked before each turn or summary:
+over it, the desk refuses (`desk-budget`; to a streaming page as a `refused`
+line, to plain JSON callers as 409) and the page goes the direct way at once,
+with a notice. Measured on the real API: small talk ~$0.0015 per utterance,
+a snapshot answer ~$0.0022, a hand-off ~$0.0008 plus ~$0.0054 for the summary
+(transcription, ~$0.00025 per utterance, on top of each). Speech is 85-95% of
+it ($0.024 per minute heard); the desk's own text tokens are $0.0001-0.0005.
+A kept conversation is replaced after 12 turns or 12k input tokens.
 
 Tests: `node dashboard/tools/test-voice-desk.cjs` (mock realtime server with the
-real event shapes; tools, the supervisor door, the snapshot payload, the guard,
-scripted conversations). `sudo node dashboard/tools/eval-voice-desk.cjs
-[--audio]` runs ~20 prompts against the real model with a stubbed supervisor
-(nothing reaches MONI AI; the key is read through the helper and never printed).
+real event shapes, including out-of-band responses and `usage`; tools, the
+supervisor door, the snapshot payload, the guard, sentence release and its
+property, small talk, summaries, cost, the budget, session length).
+`sudo node dashboard/tools/eval-voice-desk.cjs --replies <copy.json> [--speak]
+[--session]` runs ~25 prompts and summaries of MONI AI's real replies (from a
+read-only copy of the ledger) against the real model with a stubbed supervisor
+(nothing reaches MONI AI; the key is read through the helper and never
+printed).
 
 ### Themes
 

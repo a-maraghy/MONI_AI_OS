@@ -121,7 +121,8 @@ function page(o) {
      data-voice-manage="${voice.manage ? "1" : ""}"
      data-voice="${esc(voice.voice || "")}"
      data-voice-model="${esc(voice.model || "")}"
-     data-voice-desk="${voice.configured && voice.desk ? "1" : ""}">
+     data-voice-desk="${voice.configured && voice.desk ? "1" : ""}"
+     data-voice-desk-over="${voice.configured && voice.deskOver ? "1" : ""}">
 
   <aside class="cc-rail" aria-label="Machine, core, cost and standing orders">
     <section class="cc-card cc-hud" aria-labelledby="cc-mach-h">
@@ -217,11 +218,13 @@ function page(o) {
         <button type="button" class="cc-c-mic live" id="cc-vb-stop" title="Stop talking" aria-label="Stop voice mode">${ic("voice")}</button>
         <div class="cc-vb-text"><b>TALK TO MONI</b><span id="cc-vb-text">Listening…</span></div>
         <div class="cc-vb-wave" id="cc-vb-wave" aria-hidden="true"></div>
-        <span class="cc-vb-tags"><span class="cc-tag${voice.configured && voice.desk ? " desk" : ""}" id="cc-voice-mode" title="${
+        <span class="cc-vb-tags"><span class="cc-tag${voice.configured && voice.desk ? " desk" : voice.configured && voice.deskOver ? " over" : ""}" id="cc-voice-mode" title="${
           voice.configured && voice.desk
-            ? "Voice front desk (GPT, trial): quick answers from a read-only snapshot; everything else goes to MONI AI. Switch it off in Settings › OpenAI voice."
+            ? "Voice front desk (GPT, trial): quick answers from a read-only snapshot, and short summaries of MONI AI's answers; everything else goes to MONI AI. Switch it off in Settings › OpenAI voice."
+            : voice.configured && voice.deskOver
+            ? "Today's voice front desk budget is used up, so voice goes straight to MONI AI until midnight (Cairo). Settings › OpenAI voice."
             : "Voice goes straight to MONI AI: OpenAI only hears and reads aloud."
-        }">${voice.configured && voice.desk ? "Front desk · GPT" : "Direct · MONI AI"}</span><span class="cc-tag">OpenAI</span><span class="cc-tag" id="cc-voice-tag">${esc(voice.configured ? String(voice.voice || "voice") : "no key")}</span></span>
+        }">${voice.configured && voice.desk ? "Front desk · GPT" : voice.configured && voice.deskOver ? "Direct · desk budget used" : "Direct · MONI AI"}</span><span class="cc-tag">OpenAI</span><span class="cc-tag" id="cc-voice-tag">${esc(voice.configured ? String(voice.voice || "voice") : "no key")}</span></span>
         <span class="cc-target cc-static">${ic("route")}<span id="cc-vb-target">Auto-route</span></span>
         <button type="button" class="cc-c-kbd" id="cc-vb-close" title="Back to typing" aria-label="Back to typing">${ic("close")}</button>
       </div>

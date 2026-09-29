@@ -438,7 +438,7 @@ class RealtimeConn {
           // trusted with the next sentence.
           if (killSocket !== false) this.kill();
           reject(err);
-        } else resolve({ pcm: Buffer.concat(st.chunks), transcript: st.transcript.trim(), firstAudioAt: st.firstAudioAt });
+        } else resolve({ pcm: Buffer.concat(st.chunks), transcript: st.transcript.trim(), firstAudioAt: st.firstAudioAt, usage: st.usage || null });
       };
       const timer = setTimeout(() => finish(new VoiceError("OpenAI took too long to speak that", "timeout")), timeoutMs);
       this.job = {
@@ -470,6 +470,7 @@ class RealtimeConn {
                 const why = (d.error && d.error.message) || d.reason || r.status;
                 return finish(new VoiceError("OpenAI did not finish speaking: " + scrub(why), "upstream"));
               }
+              st.usage = r.usage || null; // what OpenAI billed for this reading (the front desk counts it)
               finish(null);
               break;
             }
@@ -744,7 +745,7 @@ async function speak(text, cfg) {
       if (check.ok) {
         const result = { wav: wav(out.pcm, RATE), transcript: out.transcript, attempts: attempt, engine: model };
         cacheIt(result);
-        return { ...result, cached: false, ms: Date.now() - t0, warm: !!out.warm, firstAudioMs: out.firstAudioMs == null ? null : out.firstAudioMs };
+        return { ...result, cached: false, ms: Date.now() - t0, warm: !!out.warm, firstAudioMs: out.firstAudioMs == null ? null : out.firstAudioMs, usage: out.usage || null };
       }
       last = new VoiceError("the voice did not read the text as written", "unfaithful", out.transcript);
     }
