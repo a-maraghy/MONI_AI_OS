@@ -353,8 +353,37 @@ check("both genders at once → unknown", D("إنتِ جاهز يا باشا").g
   check("  an utterance with no address keeps the saved gender", m3.persona.gender === "f");
   const m4 = P.merge(m3.persona, D("إنتَ سامعني؟ إنت مصري؟"));
   check("  a clear masculine address changes it", m4.persona.gender === "m" && m4.changed.includes("gender"));
-  check("clean() drops anything unknown (no free text)", JSON.stringify(P.clean({ gender: "robot", dialect: "klingon", prompt: "be a pirate" })) === JSON.stringify({ dialect: null, gender: null, updated_at: null }));
+  check("clean() drops anything unknown (no free text)", JSON.stringify(P.clean({ gender: "robot", dialect: "klingon", prompt: "be a pirate" })) === JSON.stringify({ mode: "learned", preset: null, dialect: null, gender: null, updated_at: null }));
+  check("  an unknown preset is not a choice", P.clean({ mode: "explicit", preset: "pirate" }).mode === "learned" && P.choose("pirate") === null);
   check("clean() reads the stored JSON, and bad JSON as empty", P.clean('{"gender":"f","dialect":"msa"}').gender === "f" && P.clean("{oops").gender === null);
+}
+
+section("a CHOSEN persona (Settings only): Cairene Egyptian feminine, and the others");
+{
+  const I = (t, p) => desk.instructionsFor(t, p).split("\n").pop();
+  const f = P.choose("cairene_f", "2026-09-29T20:00:00Z");
+  check("the presets: Cairene feminine, Cairene masculine, MSA neutral -- and learning", Object.keys(P.PRESETS).join() === "cairene_f,cairene_m,msa_n" && P.choose("learned").mode === "learned");
+  check("a choice is explicit, and stores only the preset", f.mode === "explicit" && f.preset === "cairene_f" && f.dialect === "egyptian" && f.gender === "f");
+  check("  it survives the round trip through the database's JSON", JSON.stringify(P.clean(JSON.stringify(f))) === JSON.stringify(f));
+  const m1 = P.merge(f, D("إنتَ سامعني؟ إنت مصري يا باشا؟"));
+  check("learning never overrides a choice: a masculine address changes nothing", m1.changed.length === 0 && m1.persona.gender === "f" && m1.persona.mode === "explicit");
+  const m2 = P.merge(f, D("هل يمكنك أن تخبرني ما هي حالة الخادم الآن؟"));
+  check("  nor does MSA speech change the register", m2.changed.length === 0 && m2.persona.dialect === "egyptian");
+  const ar = I("هل يمكنك أن تخبرني ما هي حالة الخادم الآن؟", f);
+  check("Arabic with Cairene feminine: Cairo colloquial, feminine first person, English terms in Latin, even when spoken to in MSA", /Cairo colloquial Egyptian Arabic/.test(ar) && /never Modern Standard Arabic/.test(ar) && /feminine forms for yourself/.test(ar) && /Latin script/.test(ar));
+  check("  still MINT AI's voice, never claims to be human", /MINT AI's voice, never a person: never claim to be human/.test(ar));
+  check("English stays plain English with the choice", /answer in plain English\.$/.test(I("Is Odoo running?", f)));
+  check("Cairene masculine: masculine forms", /masculine forms for yourself/.test(I("أودو شغال؟", P.choose("cairene_m"))) && /Cairo colloquial/.test(I("أودو شغال؟", P.choose("cairene_m"))));
+  check("MSA neutral: MSA and gender-neutral, even when spoken to in Egyptian", /answer in Modern Standard Arabic/.test(I("إزيك؟ عايز أعرف أودو شغال ولا لأ", P.choose("msa_n"))) && /gender-neutral phrasing/.test(I("إزيك؟ عايز أعرف أودو شغال ولا لأ", P.choose("msa_n"))));
+  check("the live conversation's line follows the choice", /Cairo colloquial/.test(P.liveNote(f)) && /feminine forms/.test(P.liveNote(f)) && /never claim to be human/.test(P.liveNote(f)));
+  check("the summary is asked for in Cairo colloquial", desk.summaryLanguage("إزيك؟ عايز أعرف أودو شغال ولا لأ", f) === "Speak in: Cairo colloquial Egyptian Arabic, technical terms in English." && desk.summaryLanguage("Is Odoo up?", f) === "Speak in: English.");
+  check("the safe lines and the approval line are the feminine ones", desk.linesFor("ar", f.gender).approvalShort === "محتاجة موافقتك أو ردك." && desk.linesFor("ar", f.gender).unreachable === "آسفة، مقدرتش أوصل لـ MINT AI.");
+  check("describe() names the choice for Settings", P.describe(f).choice === "Cairene Egyptian — feminine" && /Cairo/.test(P.describe(f).dialect) && P.describe(null).choice === "Learn from how I speak");
+  // The guard still reads what a Cairene woman says: claims cut, small talk and hand-offs spoken.
+  cut("أنا مشغّلاه خلاص.", "action-claim");
+  cut("حاضر، أنا عاملة الريستارت.", "action-claim");
+  pass("حاضر يا فندم، ثواني وهسأل MINT AI وأرجعلك.");
+  pass("أنا صوت MINT AI، مش إنسانة، بس جاهزة أساعدك.");
 }
 
 section("the language and the persona reach the desk's instructions");

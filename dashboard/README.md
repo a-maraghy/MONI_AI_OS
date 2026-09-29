@@ -309,6 +309,22 @@ the helper -- `tools/scratch-server.cjs` -- saving, carrying over, the audit,
 Reset), and the persona and gender sections of `test-voice-arabic.cjs` and
 `test-voice-desk.cjs`.
 
+**A chosen persona** (the administrator, 2026-09-29: «البرسونا بتاعتك بنت
+عربية مصرية من القاهرة»). Settings > OpenAI voice > *Voice persona* is a fixed
+list, posted to `POST /credentials/openai-voice/persona` (voice.manage + CSRF,
+audited with the old and new choice): **Learn from how I speak** (the default,
+as above), **Cairene Egyptian -- feminine**, **Cairene Egyptian -- masculine**,
+**Modern Standard Arabic -- neutral** (`voicePersona.PRESETS`). A choice is
+stored as `{mode:"explicit", preset, dialect, gender, updated_at}`; an explicit
+choice always wins and learning never changes it (`merge` returns it untouched).
+Cairene feminine means Arabic replies in Cairo colloquial Egyptian with feminine
+first-person forms -- the relay turn instructions, the live conversation's
+instructions, the summary language, the safe lines and the approval line
+(`linesFor("ar","f")`); English replies stay plain English, and it is still
+MINT AI's voice, never claiming to be human. **Reset** (or picking *Learn from
+how I speak*) clears the choice and returns to learning. Nothing sets a user's
+value except that form.
+
 **Cost, on screen -- no cap.** The daily budget was removed (the
 administrator's decision of 2026-09-29): nothing refuses or diverts the desk for
 what it has spent. Instead every OpenAI call the voice makes is priced from the

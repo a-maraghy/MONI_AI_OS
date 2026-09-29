@@ -282,7 +282,9 @@ const SUMMARY_INSTRUCTIONS = [
 function summaryLanguage(utterance, persona) {
   const t = personaLib.detect(utterance);
   if (t.lang !== "ar") return "Speak in: English.";
-  const d = t.dialect || personaLib.clean(persona).dialect;
+  const p = personaLib.clean(persona);
+  if (p.mode === "explicit" && personaLib.PRESETS[p.preset].cairene) return "Speak in: Cairo colloquial Egyptian Arabic, technical terms in English.";
+  const d = p.mode === "explicit" ? p.dialect : t.dialect || p.dialect;
   return d === "msa" ? "Speak in: Modern Standard Arabic, technical terms in English." : d === "egyptian" ? "Speak in: Egyptian colloquial Arabic, technical terms in English." : "Speak in: Arabic, in the register of the administrator's request, technical terms in English.";
 }
 

@@ -304,24 +304,43 @@ function deskCard(csrf, v, desk) {
 }
 
 /**
- * The voice persona: learned from how this administrator speaks, shown here
- * read-only, with a Reset. There is deliberately no field to type one in.
+ * The voice persona: learned from how this administrator speaks, or chosen
+ * from a fixed list (lib/voice-persona.js PRESETS). There is deliberately no
+ * field to type one in.
  */
+const PERSONA_CHOICES = [
+  ["learned", "Learn from how I speak", "The register and how it refers to itself follow how you speak to it (the default)."],
+  ["cairene_f", "Cairene Egyptian — feminine", "Arabic replies in Cairo colloquial, feminine first person (أنا جاهزة، حاضر), warm; English terms in Latin script."],
+  ["cairene_m", "Cairene Egyptian — masculine", "Arabic replies in Cairo colloquial, masculine first person (أنا جاهز، حاضر); English terms in Latin script."],
+  ["msa_n", "Modern Standard Arabic — neutral", "Arabic replies in MSA, gender-neutral phrasing for itself."],
+];
 function personaCard(csrf, p) {
-  const x = p || { dialect: "not known yet", gender: "not known yet (gender-neutral)", updated_at: null };
+  const x = p || { mode: "learned", preset: null, choice: "Learn from how I speak", dialect: "not known yet", gender: "not known yet (gender-neutral)", updated_at: null };
+  const cur = x.mode === "explicit" ? x.preset : "learned";
+  const opts = PERSONA_CHOICES.map(
+    ([v, label, hint]) =>
+      `<label class="radio-row"><input type="radio" name="preset" value="${v}"${v === cur ? " checked" : ""}> <b>${esc(label)}</b> <span class="muted small" dir="auto">${esc(hint)}</span></label>`
+  ).join("");
   return card(
     "Voice persona",
-    `<p class="muted small">Learned from how you speak, never typed. The voice answers in the language you last used; in Arabic it
-      matches your register and refers to itself in the gender you address it with. It is always MINT AI's voice and never
-      claims to be human. It changes only when your speech clearly shows a change.</p>
+    `<p class="muted small">How the voice speaks Arabic, in the front desk and in live conversation. It always answers in the language
+      you last used — English stays plain English — and it is always MINT AI's voice: it never claims to be human. Learned, it follows how
+      you speak and changes only when your speech clearly shows a change; chosen, it stays as chosen until you change it here.</p>
     <table class="kv mt-12" id="voice-persona">
+      <tr><td>Now</td><td id="voice-persona-choice">${esc(x.choice)}</td></tr>
       <tr><td>Arabic register</td><td id="voice-persona-dialect">${esc(x.dialect)}</td></tr>
       <tr><td>How it refers to itself</td><td id="voice-persona-gender">${esc(x.gender)}</td></tr>
-      <tr><td>Last learned</td><td class="mono small">${x.updated_at ? esc(stamp(x.updated_at)) : "—"}</td></tr>
+      <tr><td>${x.mode === "explicit" ? "Chosen" : "Last learned"}</td><td class="mono small">${x.updated_at ? esc(stamp(x.updated_at)) : "—"}</td></tr>
     </table>
+    <form method="post" action="/credentials/openai-voice/persona" class="mt-12" id="voice-persona-form">
+      <input type="hidden" name="_csrf" value="${esc(csrf)}">
+      <fieldset class="radio-list"><legend class="small">Arabic persona</legend>${opts}</fieldset>
+      <div class="btn-row mt-12"><button class="btn primary small" type="submit" id="voice-persona-save">${icon("save")} Save</button></div>
+    </form>
     <form method="post" action="/credentials/openai-voice/persona/reset" class="btn-row mt-12">
       <input type="hidden" name="_csrf" value="${esc(csrf)}">
       <button class="btn small" type="submit" id="voice-persona-reset">${icon("close")} Reset</button>
+      <span class="muted small">Back to learning from how you speak, starting from nothing.</span>
     </form>`,
     { icon: "voice", id: "v-persona" }
   );

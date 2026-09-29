@@ -1857,3 +1857,10 @@ h2 { font-weight: 700; }
   .brand .lk-wm { display: none; }
   .topbar { gap: 8px; padding: 0 10px; }
 }
+
+/* Settings › OpenAI voice › Voice persona: a short list of choices, never free text. */
+fieldset.radio-list { border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 14px; margin: 0; display: grid; gap: 8px; }
+fieldset.radio-list legend { font-size: 12px; font-weight: 700; color: var(--ink); padding: 0 6px; }
+.radio-row { display: grid; grid-template-columns: auto 1fr; column-gap: 8px; align-items: baseline; cursor: pointer; }
+.radio-row input { margin: 0; }
+.radio-row .muted { grid-column: 2; }

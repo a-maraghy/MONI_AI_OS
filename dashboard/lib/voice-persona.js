@@ -111,6 +111,20 @@ function detect(text) {
   return out;
 }
 
+/**
+ * The persona can also be CHOSEN (the administrator's request of 2026-09-29:
+ * «بنت عربية مصرية من القاهرة», "an Egyptian Arab girl from Cairo"), in
+ * Settings > OpenAI voice > Voice persona only -- never by speech. A choice is
+ * {mode: "explicit", preset}; learning never overrides it, and Reset goes back
+ * to learning. The presets, and nothing else (no free text):
+ */
+const PRESETS = Object.freeze({
+  cairene_f: Object.freeze({ dialect: "egyptian", gender: "f", cairene: true, label: "Cairene Egyptian — feminine" }),
+  cairene_m: Object.freeze({ dialect: "egyptian", gender: "m", cairene: true, label: "Cairene Egyptian — masculine" }),
+  msa_n: Object.freeze({ dialect: "msa", gender: null, cairene: false, label: "Modern Standard Arabic — neutral" }),
+});
+const LEARNED_LABEL = "Learn from how I speak";
+
 /** A saved persona, cleaned: only known values survive. */
 function clean(v) {
   let o = v;
@@ -122,19 +136,36 @@ function clean(v) {
     }
   }
   o = o && typeof o === "object" ? o : {};
+  const at = typeof o.updated_at === "string" ? o.updated_at.slice(0, 40) : null;
+  if (o.mode === "explicit" && Object.prototype.hasOwnProperty.call(PRESETS, o.preset)) {
+    const p = PRESETS[o.preset];
+    return { mode: "explicit", preset: o.preset, dialect: p.dialect, gender: p.gender, updated_at: at };
+  }
   return {
+    mode: "learned",
+    preset: null,
     dialect: o.dialect === "egyptian" || o.dialect === "msa" ? o.dialect : null,
     gender: o.gender === "f" || o.gender === "m" ? o.gender : null,
-    updated_at: typeof o.updated_at === "string" ? o.updated_at.slice(0, 40) : null,
+    updated_at: at,
   };
+}
+
+/** The persona for a Settings choice ("learned" or a preset), or null if unknown. */
+function choose(preset, nowIso) {
+  if (preset === "learned") return { mode: "learned", preset: null, dialect: null, gender: null, updated_at: nowIso || new Date().toISOString() };
+  if (!Object.prototype.hasOwnProperty.call(PRESETS, preset)) return null;
+  const p = PRESETS[preset];
+  return { mode: "explicit", preset, dialect: p.dialect, gender: p.gender, updated_at: nowIso || new Date().toISOString() };
 }
 
 /**
  * The saved persona after one utterance: { persona, changed: [field...] }.
  * Only a clear signal (detect) moves a field; nothing is ever cleared here.
+ * A chosen persona is never changed by speech.
  */
 function merge(saved, detected, nowIso) {
   const p = clean(saved);
+  if (p.mode === "explicit") return { persona: p, changed: [] };
   const d = detected || {};
   const changed = [];
   if (d.dialect && d.dialect !== p.dialect) {
@@ -155,42 +186,50 @@ const GENDER_LABEL = { f: "feminine", m: "masculine" };
 /** For Settings and the audit log. */
 function describe(p) {
   const c = clean(p);
+  const chosen = c.mode === "explicit" ? PRESETS[c.preset] : null;
   return {
-    dialect: c.dialect ? DIALECT_LABEL[c.dialect] : "not known yet",
-    gender: c.gender ? GENDER_LABEL[c.gender] : "not known yet (gender-neutral)",
+    mode: c.mode,
+    preset: c.preset,
+    choice: chosen ? chosen.label : LEARNED_LABEL,
+    dialect: chosen && chosen.cairene ? "Cairene Egyptian (Cairo colloquial)" : c.dialect ? DIALECT_LABEL[c.dialect] : "not known yet",
+    gender: c.gender ? GENDER_LABEL[c.gender] : c.mode === "explicit" ? "gender-neutral" : "not known yet (gender-neutral)",
     updated_at: c.updated_at,
   };
+}
+
+/** The register and self-gender sentences, shared by the desk's and the live instructions. */
+function registerLine(dialect, p, live) {
+  if (p.mode === "explicit" && PRESETS[p.preset].cairene)
+    return "answer in Cairo colloquial Egyptian Arabic (as spoken in Cairo, never Modern Standard Arabic), in the voice of a Cairene " + (p.gender === "f" ? "woman" : "man");
+  if (p.mode === "explicit") return "answer in Modern Standard Arabic";
+  if (dialect === "msa") return live ? "they usually speak Modern Standard Arabic, so answer in MSA" : "answer in Modern Standard Arabic, as they speak it";
+  if (dialect === "egyptian") return live ? "they usually speak Egyptian colloquial Arabic, so answer in Egyptian (not Modern Standard Arabic)" : "answer in Egyptian colloquial Arabic (not Modern Standard Arabic), as they speak it";
+  return live ? "answer in the same register they use (Egyptian colloquial or Modern Standard Arabic)" : "answer in Arabic, in the same register they used (Egyptian colloquial if they spoke Egyptian, Modern Standard Arabic if they spoke MSA)";
+}
+function genderLine(p) {
+  const why = p.mode === "explicit" ? "The administrator chose this persona" : null;
+  if (p.gender === "f") return (why || "They address you in the feminine") + ", so use feminine forms for yourself (أنا جاهزة، متأكدة، هبعتلك، حاضر).";
+  if (p.gender === "m") return (why || "They address you in the masculine") + ", so use masculine forms for yourself (أنا جاهز، متأكد، هبعتلك).";
+  return (p.mode === "explicit" ? "Use" : "Their form of address does not show a gender: use") + " gender-neutral phrasing for yourself (تحت أمرك، ثواني وهسأل MINT AI), not gendered adjectives.";
 }
 
 /**
  * The instruction line for one response: the language of the last utterance,
  * and for Arabic the register and the voice's own gender. `turn` is detect()
- * of this utterance (its clear dialect wins for this reply), `saved` the
- * merged persona.
+ * of this utterance (its clear dialect wins for this reply, unless a persona
+ * was chosen), `saved` the merged persona.
  */
 function noteFor(turn, saved) {
   const t = turn || { lang: "en" };
   if (t.lang !== "ar") return "The administrator's last utterance was in English: answer in plain English.";
   const p = clean(saved);
-  const dialect = t.dialect || p.dialect;
-  const reg =
-    dialect === "msa"
-      ? "answer in Modern Standard Arabic, as they speak it"
-      : dialect === "egyptian"
-        ? "answer in Egyptian colloquial Arabic (not Modern Standard Arabic), as they speak it"
-        : "answer in Arabic, in the same register they used (Egyptian colloquial if they spoke Egyptian, Modern Standard Arabic if they spoke MSA)";
-  const g =
-    p.gender === "f"
-      ? "They address you in the feminine, so use feminine forms for yourself (أنا جاهزة، متأكدة، هبعتلك)."
-      : p.gender === "m"
-        ? "They address you in the masculine, so use masculine forms for yourself (أنا جاهز، متأكد، هبعتلك)."
-        : "Their form of address does not show a gender: use gender-neutral phrasing for yourself (تحت أمرك، ثواني وهسأل MINT AI), not gendered adjectives.";
+  const dialect = p.mode === "explicit" ? p.dialect : t.dialect || p.dialect;
   return (
     "The administrator's last utterance was in Arabic: " +
-    reg +
+    registerLine(dialect, p, false) +
     ", with a warm manner, keeping technical terms and units in English in Latin script (Odoo, disk, restart, dashboard, GB). " +
-    g +
-    " MINT AI is \"he\" (ردّه). You are MINT AI's voice, never a person."
+    genderLine(p) +
+    " MINT AI is \"he\" (ردّه). You are MINT AI's voice, never a person: never claim to be human."
   );
 }
 
@@ -201,25 +240,13 @@ function noteFor(turn, saved) {
  */
 function liveNote(saved) {
   const p = clean(saved);
-  const reg =
-    p.dialect === "msa"
-      ? "they usually speak Modern Standard Arabic, so answer in MSA"
-      : p.dialect === "egyptian"
-        ? "they usually speak Egyptian colloquial Arabic, so answer in Egyptian (not Modern Standard Arabic)"
-        : "answer in the same register they use (Egyptian colloquial or Modern Standard Arabic)";
-  const g =
-    p.gender === "f"
-      ? "They address you in the feminine: use feminine forms for yourself (أنا جاهزة، متأكدة)."
-      : p.gender === "m"
-        ? "They address you in the masculine: use masculine forms for yourself (أنا جاهز، متأكد)."
-        : "Use gender-neutral phrasing for yourself (تحت أمرك، ثواني وهسأل MINT AI), not gendered adjectives.";
   return (
-    "Language: always reply in the language the administrator has just spoken. English gets English. Arabic, or Arabic mixed with English: " +
-    reg +
+    "Language: always reply in the language the administrator has just spoken. English gets plain English. Arabic, or Arabic mixed with English: " +
+    registerLine(p.dialect, p, true) +
     ", keeping technical terms and units in English (Odoo, disk, restart, dashboard, GB). " +
-    g +
-    " MINT AI is \"he\". You are MINT AI's voice, never a person."
+    genderLine(p) +
+    " MINT AI is \"he\". You are MINT AI's voice, never a person: never claim to be human."
   );
 }
 
-module.exports = { liveNote, detect, clean, merge, describe, noteFor, feminineVerb, EGYPTIAN, MSA, DIALECT_LABEL, GENDER_LABEL };
+module.exports = { PRESETS, LEARNED_LABEL, choose, liveNote, detect, clean, merge, describe, noteFor, feminineVerb, EGYPTIAN, MSA, DIALECT_LABEL, GENDER_LABEL };

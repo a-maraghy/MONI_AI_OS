@@ -2288,10 +2288,26 @@ app.post("/credentials/openai-voice/options", requireAuth, requirePerm("voice.ma
   }
 });
 
-/* The voice persona is learned, never typed: the only thing Settings can do to it is forget it. */
+/*
+ * The voice persona: learned from speech, or chosen here from a fixed list of
+ * presets (lib/voice-persona.js PRESETS) -- never typed. A choice is kept until
+ * it is changed here or reset; speech never overrides it. Reset forgets it and
+ * learns again.
+ */
+app.post("/credentials/openai-voice/persona", requireAuth, requirePerm("voice.manage"), requireCsrf, (req, res) => {
+  const preset = field(req.body, "preset");
+  const p = voicePersona.choose(preset);
+  if (!p) return res.redirect("/credentials/openai-voice?err=" + encodeURIComponent("Choose one of the voice personas.") + "#v-persona");
+  const was = voicePersona.describe(personaOf(req.me.id));
+  db.setVoicePersona(req.me.id, p.mode === "explicit" ? JSON.stringify(p) : "");
+  const now = voicePersona.describe(p);
+  db.logLogin(req.ip, req.me.username, "voice", `voice persona set to "${now.choice}" (was "${was.choice}")`);
+  res.redirect("/credentials/openai-voice?msg=" + encodeURIComponent(p.mode === "explicit" ? `Voice persona: ${now.choice}. Arabic replies use it from the next utterance; English stays English.` : "Voice persona: learned from how you speak again.") + "#v-persona");
+});
+
 app.post("/credentials/openai-voice/persona/reset", requireAuth, requirePerm("voice.manage"), requireCsrf, (req, res) => {
   db.setVoicePersona(req.me.id, "");
-  db.logLogin(req.ip, req.me.username, "voice", "reset the voice persona (register and self-gender forgotten)");
+  db.logLogin(req.ip, req.me.username, "voice", "reset the voice persona (back to learning from speech; register and self-gender forgotten)");
   res.redirect("/credentials/openai-voice?msg=" + encodeURIComponent("Voice persona reset. It is learned again from how you speak.") + "#v-persona");
 });
 
