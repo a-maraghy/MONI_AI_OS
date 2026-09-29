@@ -51,6 +51,10 @@
   function voiceModeFrom(stored) {
     return stored === "handsfree" ? "handsfree" : "ptt";
   }
+  /** What was said is only "stop listening" or the like (public/voice-stop.js; without it, never). */
+  function isStopCommand(said) {
+    return !!(window.VoiceStop && window.VoiceStop.heard(said));
+  }
 
   function esc(s) {
     return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
@@ -1557,7 +1561,7 @@
     // What the voice did, for the console and for tests: window.__moniVoice.
     // items: one record per sentence played -- when it was asked for, when its
     // first chunk arrived, when it started playing, when its stream ended.
-    var diag = window.__moniVoice = { fetched: 0, played: 0, playedSeconds: 0, skipped: 0, blocked: 0, bargeIns: 0, cuts: 0, silentDrops: 0, uploads: 0, engines: [], said: [], items: [], cutAt: [] };
+    var diag = window.__moniVoice = { fetched: 0, played: 0, playedSeconds: 0, skipped: 0, blocked: 0, bargeIns: 0, cuts: 0, silentDrops: 0, voiceStops: 0, uploads: 0, engines: [], said: [], items: [], cutAt: [] };
 
     // Wave bars for the voice bar, driven by the real level.
     var BARS = 44;
@@ -2014,6 +2018,16 @@
       if (!api_.on) keepStream();
       setUi();
     }
+    /* "Stop listening" said aloud: the mic closes exactly as if its button
+       were clicked, and the words go nowhere -- not to MINT AI, not to the
+       desk. A note says so; nothing is spoken. */
+    function stoppedByVoice(said) {
+      diag.voiceStops++;
+      console.info("[voice] \"" + clip(said, 60) + "\" is the stop command: listening stopped, nothing sent");
+      stop();
+      vbText.textContent = "Stopped listening.";
+      toast("Stopped listening.");
+    }
     function recording(want) {
       if (want) { if (rec && rec.state === "recording") return; newRecorder(); }
       else {
@@ -2062,6 +2076,9 @@
       var dl = deskLines(gen);
       apiStream("desk/turn", { data: data, mime: blob.type, vt: vt, level: level }, function (ev) {
         if (ev.type === "heard") {
+          // The desk does not answer the stop command (ev.stop); a desk that
+          // predates it would, so the page checks the words as well.
+          if (ev.stop || (ev.text && isStopCommand(ev.text))) return stoppedByVoice(ev.text || "");
           if (ev.text) vbText.textContent = "“" + clip(ev.text, 80) + "”";
         } else if (ev.type === "asked" && ev.turn) {
           var t = ev.turn, tr = upsertTurn(t);
@@ -2131,6 +2148,7 @@
         api("transcribe", { body: { data: String(reader.result).split(",")[1] || "", mime: blob.type, vt: vt, level: level } }).then(function (d) {
           var said = String(d.text || "").trim();
           if (!said || /^[\[(]/.test(said)) throw new Error("nothing said");
+          if (isStopCommand(said)) return stoppedByVoice(said);
           vbText.textContent = "“" + clip(said, 80) + "”";
           return send(said, { voice: true, acked: true, vt: vt });
         }).catch(function (e) {

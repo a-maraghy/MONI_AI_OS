@@ -1018,6 +1018,9 @@ var MD = (function () {
             // A bracketed label ("[music]") is a noise, not something said.
             // Sending those would answer a cough.
             if (!said || /^[\[(]/.test(said)) throw new Error("nothing said");
+            // "Stop listening" said aloud (public/voice-stop.js) ends live
+            // mode as the button would, and is not sent.
+            if (window.VoiceStop && window.VoiceStop.heard(said)) return stoppedByVoice();
             spoken = 0;
             send(said);
           })
@@ -1100,6 +1103,13 @@ var MD = (function () {
       btn.classList.remove("on");
       btn.setAttribute("aria-pressed", "false");
       status.textContent = "";
+    }
+
+    /** The stop command was heard: off, with a note that fades. */
+    function stoppedByVoice() {
+      stop();
+      status.textContent = "stopped listening";
+      setTimeout(function () { if (!on && status.textContent === "stopped listening") status.textContent = ""; }, 4000);
     }
 
     btn.addEventListener("click", function () {
