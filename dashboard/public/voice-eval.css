@@ -1,0 +1,19 @@
+/* The live voice evaluation page (lib/views-voice-eval.js). Brand tokens from style.css. */
+.ve-list { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 6px; }
+.ve-row { display: grid; grid-template-columns: 28px 1fr auto; grid-template-areas: "n text ctl" "n kind ctl"; gap: 2px 10px; align-items: center; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+.ve-n { grid-area: n; font-weight: 600; color: var(--accent); text-align: right; }
+.ve-text { grid-area: text; color: var(--ink); font-size: 15px; }
+.ve-kind { grid-area: kind; color: var(--muted); font-size: 12px; }
+.ve-ctl { grid-area: ctl; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+.ve-opts { display: flex; gap: 24px; flex-wrap: wrap; margin: 8px 0; }
+.ve-chk { margin-left: 10px; font-size: 13px; color: var(--body); white-space: nowrap; }
+.ve-table-wrap { overflow-x: auto; }
+.ve-table { border-collapse: collapse; font-size: 13px; min-width: 760px; }
+.ve-table th, .ve-table td { padding: 6px 8px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
+.ve-table th:first-child, .ve-table td:first-child { text-align: left; }
+.ve-detail { margin-top: 12px; }
+.ve-detail li { margin: 6px 0; }
+@media (max-width: 640px) {
+  .ve-row { grid-template-columns: 22px 1fr; grid-template-areas: "n text" "n kind" "n ctl"; }
+  .ve-ctl { justify-content: flex-start; }
+}

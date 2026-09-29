@@ -879,7 +879,7 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     check("  or per minute when it reports seconds", Math.abs(vu.costOf(vu.transcribeTokens({ type: "duration", seconds: 30 }), "gpt-4o-mini-transcribe") - 0.0015) < 1e-12);
     check("a cached clip (no billing) costs nothing", vu.billingCost([]) === 0);
     check("the price list is in one place, with the date it was read", vu.PRICES_READ === "2026-09-29" && /openai\.com/.test(vu.PRICES_SOURCE) && desk.PRICES === vu.PRICES);
-    check("categories: small talk, snapshot answers, hand-offs, direct", vu.CATEGORIES.join() === "small_talk,snapshot,handoff,direct");
+    check("categories: small talk, snapshot answers, hand-offs, direct, and the live conversation (trial)", vu.CATEGORIES.join() === "small_talk,snapshot,handoff,direct,live" && vu.PARTS.join() === "transcription,desk,speech,realtime");
     check("categoryOf: asked -> hand-off, read_status -> snapshot, else small talk, a summary -> hand-off",
       desk.categoryOf({ kind: "turn", asked: [{ id: 1 }], tools: ["read_status", "ask_moni"] }) === "handoff" && desk.categoryOf({ kind: "turn", asked: [], tools: ["read_status"] }) === "snapshot" &&
       desk.categoryOf({ kind: "turn", asked: [], tools: [] }) === "small_talk" && desk.categoryOf({ kind: "summary", asked: [], tools: [] }) === "handoff");

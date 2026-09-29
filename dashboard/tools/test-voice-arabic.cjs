@@ -374,6 +374,34 @@ check("always MINT AI's voice, never a person; no fixed persona", /never claim t
 check("the instructions no longer say plain English only", !/plain English, no lists/.test(desk.INSTRUCTIONS) && /LAST utterance/.test(desk.INSTRUCTIONS));
 check("the summary is asked for in the register of the last utterance", desk.summaryLanguage("Is Odoo up?", {}) === "Speak in: English." && /Egyptian/.test(desk.summaryLanguage("إزيك؟ عايز أعرف أودو شغال ولا لأ؟", {})) && /Modern Standard/.test(desk.summaryLanguage("أودو؟", { dialect: "msa" })));
 
+section("a pure hand-off in the passive is true once the ask_moni call happened");
+check("«تم تمرير الطلب لـ MINT AI» with the call behind it: spoken", desk.guard("تم تمرير الطلب لـ MINT AI، وهقرألك ردّه أول ما يوصل.", ctx({ askedNow: true })).ok);
+check("  without the call: cut (it would be false)", !desk.guard("تم تمرير الطلب لـ MINT AI.", ctx()).ok);
+check("«تم إرسال طلبك لـ MINT AI» with the call: spoken", desk.guard("تم إرسال طلبك لـ MINT AI.", ctx({ askedNow: true })).ok);
+check("the call backs only the hand-off: «تم تمرير الطلب لـ MINT AI وتم إعادة تشغيل أودو» is still cut", !desk.guard("تم تمرير الطلب لـ MINT AI، وتم إعادة تشغيل أودو.", ctx({ askedNow: true })).ok);
+cut("وتم إعادة تشغيل أودو.", "action-claim"); // "and Odoo has been restarted": و + تم is read too
+check("English \"I've passed that to MINT AI\" was already a hand-off", desk.guard("I've passed that to MINT AI.", ctx({ askedNow: true })).ok);
+{
+  // Streaming: «تم ...» waits for its next word instead of tripping at once.
+  const rel = new desk.Releaser(() => ctx(), () => {});
+  const info = { askedNow: () => true, pending: () => true };
+  let t = "";
+  for (const w of "تم تمرير الطلب لـ MINT AI، وهقرألك ردّه أول ما يوصل.".match(/\S+\s*/g)) {
+    t += w;
+    rel.update(t, false, info);
+  }
+  rel.update(t, true, info);
+  check("streamed word by word with the call behind it: not cut, released", !rel.trip && rel.released === 1, JSON.stringify(rel.trip));
+  const rel2 = new desk.Releaser(() => ctx(), () => {});
+  let u = "";
+  for (const w of "تم إعادة تشغيل أودو.".match(/\S+\s*/g)) {
+    u += w;
+    rel2.update(u, false, { askedNow: () => true, pending: () => false });
+  }
+  check("  a real claim streamed the same way is still cut before it ends", !!rel2.trip && rel2.released === 0);
+}
+check("the live persona line follows the saved persona", /feminine/.test(require(path.join(ROOT, "lib", "voice-persona.js")).liveNote({ gender: "f" })) && /gender-neutral/.test(require(path.join(ROOT, "lib", "voice-persona.js")).liveNote({})));
+
 section("hand-offs said in Arabic must be backed by an ask_moni call");
 const NO = { askedNow: false, pending: false };
 check("«بعتّ ده لـ MINT AI» with no call: unbacked", !!desk.unbackedHandoff("بعتّ ده لـ MINT AI.", NO));

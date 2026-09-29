@@ -1,0 +1,1087 @@
+"use strict";
+/**
+ * Live conversation (TRIAL, M-3 Phase 1, option C of the full-duplex
+ * proposal): the administrator talks and the voice answers at once, and can be
+ * interrupted -- without the voice model ever thinking or acting for MINT AI.
+ *
+ *   browser mic ──PCM16 24 kHz──▶ this server ──▶ OpenAI realtime (speech to speech)
+ *   browser speaker ◀──held, guarded PCM── this server ◀── its audio + transcript
+ *
+ * The browser talks only to this server (an authenticated WebSocket, see
+ * server.js); the key never leaves it. One LiveCall per browser call, owning
+ * one upstream realtime session with a fixed configuration:
+ *
+ *   - model gpt-realtime-2.1-mini, server VAD with 700 ms of silence (500 ms
+ *     split an Egyptian greeting's pause into a false turn), interrupt_response;
+ *   - exactly two tools, read_status and ask_mint_ai; any other name is refused
+ *     here and never runs, and both go through deskOps() (lib/voice-desk.js):
+ *     `snapshot` and `send` only;
+ *   - the instructions: the desk's rules, spoken, plus the language and persona
+ *     line learned from how the administrator speaks (lib/voice-persona.js).
+ *
+ * Guard before sound. The model's audio arrives with its own transcript, a
+ * little ahead of it (40-360 ms, measured 2026-09-29). Every audio chunk is
+ * tagged with the sentence the transcript was in when the chunk arrived --
+ * that sentence or a later one, since the transcript leads -- and is HELD here
+ * until that sentence has passed the desk's guard (Releaser / judge(), with
+ * the sentences before it, the Arabic rules, and fail-closed). On a cut, the
+ * held audio is dropped, the response is cancelled, the item is truncated at
+ * what was sent, and the safe line is read (in the cut sentence's language)
+ * by the ordinary verbatim reader. The request is passed to MINT AI if it had
+ * not been. What cannot be guaranteed: the guard reads the model's transcript
+ * of its audio, not the audio itself (see the README).
+ *
+ * MINT AI's answers never come from the speech model. When MINT AI answers a
+ * request passed on here, the reply goes through the desk's guarded summary
+ * (SUMMARY_INSTRUCTIONS -> judge()) and the verbatim reader, and is played into
+ * the same stream; the realtime conversation is then told what was said.
+ *
+ * Hand-offs carry this server's own transcript of the turn -- a full-turn
+ * gpt-4o-mini-transcribe of the audio this server relayed (or, failing that,
+ * the session's own input transcription) that passed the transcript guard --
+ * never the model's `text`. At most one per utterance.
+ *
+ * Barge-in: when the upstream VAD hears the administrator start speaking, the
+ * page is told to flush what it has buffered (it answers with the millisecond
+ * it had played), the response is cancelled, and the item truncated there.
+ * MINT AI summaries being read stop too.
+ *
+ * Also here: the echo guard (a transcript that matches what the voice just
+ * said is dropped: the speaker leaking into the mic), the spoken stop command
+ * (public/voice-stop.js: ends the call), usage per response priced into the
+ * voice_usage table under the category "live", and a 20-minute cap.
+ *
+ * Pure of I/O except through what it is given (tests pass fakes).
+ */
+
+const WebSocket = require("ws");
+const desk = require("./voice-desk");
+const voiceGuard = require("./voice-guard");
+const personaLib = require("./voice-persona");
+const usageLib = require("./voice-usage");
+const arabic = require("./voice-arabic");
+
+const LIVE_MODEL = "gpt-realtime-2.1-mini";
+const RATE = 24000;
+const BYTES_PER_MS = (RATE * 2) / 1000; // 48
+const SILENCE_MS = 700;
+const MAX_CALL_MS = 20 * 60 * 1000;
+const KEEP_INPUT_MS = 90 * 1000; // the relayed audio kept for full-turn transcripts
+const HEARD_WAIT_MS = 6000; // how long a hand-off waits for the turn's transcript
+const REPLY_POLL_MS = 2000;
+const REPLY_WATCH_MS = 30 * 60 * 1000;
+const TRUNCATE_WAIT_MS = 400;
+const ECHO_WINDOW_MS = 30 * 1000;
+const MAX_ROUNDS = 4;
+const MAX_ASK_CHARS = 2000;
+const VERBATIM_MAX_SENTENCES = 8;
+const REPLY_IN_CONTEXT_CHARS = 1500;
+const WS_BASE = process.env.MONI_OPENAI_WS || "wss://api.openai.com/v1";
+
+const TOOLS = Object.freeze([
+  {
+    type: "function",
+    name: "read_status",
+    description:
+      "Read a fresh, read-only snapshot of this VPS: services and their state, disk, memory, CPU and load, the live Claude sessions, " +
+      "MINT AI's own state, active missions with their steps, open decisions and pending approvals (counts and titles only). " +
+      "Call it before answering any question about the machine. It knows nothing else: not Odoo's data, not backups, not logs, not files.",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+  },
+  {
+    type: "function",
+    name: "ask_mint_ai",
+    description:
+      "Pass the administrator's request to MINT AI, the Claude agent that runs this VPS, which will answer or act. " +
+      "Use it for anything that is not answered by the snapshot, for every action or change of any kind (delete, restart, push, deploy, " +
+      "approve, deny, fix, run, send), and whenever you are unsure. MINT AI's answer is read to the administrator separately when it arrives.",
+    parameters: {
+      type: "object",
+      properties: { text: { type: "string", description: "The request, in the administrator's own words as closely as possible." } },
+      required: ["text"],
+      additionalProperties: false,
+    },
+  },
+]);
+const TOOL_NAMES = new Set(TOOLS.map((t) => t.name));
+
+const INSTRUCTIONS = [
+  "You are the voice of MINT AI, the assistant that runs this VPS, in a live spoken conversation with the administrator. You speak; you are heard at once.",
+  "You never think for MINT AI and you never act. You do exactly three things:",
+  "1. Answer questions about the machine's current state, but ONLY from the read_status tool. Call read_status first, then answer from it and nothing else. Quote figures exactly as the snapshot gives them.",
+  "2. Hand everything else to MINT AI by CALLING the ask_mint_ai tool, then say one short sentence that you passed it on and that its answer will be read when it arrives.",
+  "3. Small talk: a greeting, thanks, \"how are you\", \"can you hear me\" get one short, friendly, honest sentence, with nothing about the machine in it.",
+  "Hard rules:",
+  "- If the answer is not in the snapshot, do not guess: call ask_mint_ai right away.",
+  "- Every request to do or change something goes to ask_mint_ai. You cannot do anything yourself.",
+  "- Never say that anything was done, deleted, restarted, pushed, approved or fixed, or that it is being done, and never promise that it will be.",
+  "- Never say what MINT AI answered: its answers are read to the administrator separately, word for word or as a checked summary. If asked, say it is on screen.",
+  "- Never quote a number that is not in the snapshot.",
+  "- Approvals and decisions are for the administrator to make in the Command Center; you cannot approve or deny anything.",
+  "- Before a tool call say nothing, or at most a two-word acknowledgement.",
+  "Style: one or two short spoken sentences. If the administrator starts talking, stop and listen.",
+].join("\n");
+
+function instructionsFor(persona) {
+  return INSTRUCTIONS + "\n" + personaLib.liveNote(persona);
+}
+
+/* ------------------------------------------------------------ helpers -- */
+
+function scrub(text) {
+  return String(text == null ? "" : text)
+    .replace(/\bsk-[A-Za-z0-9_\-*.]{4,}/g, "sk-…")
+    .replace(/(Bearer\s+)\S+/gi, "$1…")
+    .slice(0, 300);
+}
+
+/**
+ * The sentence the transcript is in right now: the last one with any words in
+ * it. Audio that arrives now belongs to that sentence or an earlier one (the
+ * transcript leads the audio), so holding it until this one is released is safe.
+ */
+function audioTag(text) {
+  const complete = desk.sentencesOf(text, false).length;
+  const all = desk.sentencesOf(text, true).length;
+  return all > complete ? complete : Math.max(0, complete - 1);
+}
+
+/** A WAV around PCM16 mono 24 kHz, for the full-turn transcription. */
+function wav(pcm) {
+  const h = Buffer.alloc(44);
+  h.write("RIFF", 0);
+  h.writeUInt32LE(36 + pcm.length, 4);
+  h.write("WAVE", 8);
+  h.write("fmt ", 12);
+  h.writeUInt32LE(16, 16);
+  h.writeUInt16LE(1, 20);
+  h.writeUInt16LE(1, 22);
+  h.writeUInt32LE(RATE, 24);
+  h.writeUInt32LE(RATE * 2, 28);
+  h.writeUInt16LE(2, 32);
+  h.writeUInt16LE(16, 34);
+  h.write("data", 36);
+  h.writeUInt32LE(pcm.length, 40);
+  return Buffer.concat([h, pcm]);
+}
+
+/** MINT AI's reply as sentences to read aloud: no code, no links, no markup. */
+function speakableSentences(reply) {
+  const t = String(reply || "")
+    .replace(/```[\s\S]*?(```|$)/g, " ")
+    .replace(/`[^`\n]+`/g, (m) => m.replace(/`/g, ""))
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/https?:\/\/\S+/g, " ")
+    .replace(/^\s*[#>]+\s*/gm, "")
+    .replace(/^\s*(?:[-*+]|\d+\.)\s+/gm, "")
+    .replace(/[*_~|]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return desk.sentencesOf(t, true);
+}
+
+let callSeq = 0;
+
+/* ------------------------------------------------------------ the call -- */
+
+/**
+ * One live call.
+ *
+ * deps:
+ *   cfg        { key, voice, model (the reader's), transcribe_model, live_model?, wsBase? }
+ *   actor      the panel user (username); userId for the persona
+ *   ops        voiceDesk.deskOps(moniai.call, actor) -- the only supervisor door
+ *   client     { json(obj), audio(seg, pcmBuffer), close(code, why) } -- the browser
+ *   persona()  the saved persona; hearPersona(text) -> the persona after that utterance
+ *   speak      voice.speakStream (the verbatim reader)
+ *   transcribe voice.transcribeFull(audio, cfg, mime)
+ *   summarise  (turnId, {onLine, persona}) -> the desk's guarded summary
+ *   record     ({vt, cat, part, model, tokens}) -> usd
+ *   isStop     (text) -> the spoken stop command (public/voice-stop.js)
+ *   log, now, opts: { maxMs, silenceMs, handoff: "turn" | "session", pollMs }
+ */
+class LiveCall {
+  constructor(deps) {
+    const d = deps || {};
+    this.d = d;
+    this.cfg = d.cfg || {};
+    this.model = this.cfg.live_model || LIVE_MODEL;
+    this.opts = { maxMs: MAX_CALL_MS, silenceMs: SILENCE_MS, handoff: "turn", pollMs: REPLY_POLL_MS, ...(d.opts || {}) };
+    this.now = d.now || Date.now;
+    this.log = d.log || (() => {});
+    this.id = "lv" + (++callSeq).toString(36) + Math.random().toString(36).slice(2, 6);
+    this.ws = null;
+    this.ready = null;
+    this.closed = false;
+    this.muted = false;
+    this.bornAt = this.now();
+    this.persona = personaLib.clean(d.persona ? d.persona() : null);
+    // the relayed audio: [{at (ms from the call's start), buf}]
+    this.input = [];
+    this.inputMs = 0;
+    this.turns = new Map(); // user item id -> turn
+    this.turnSeq = 0;
+    this.lastTurn = null;
+    this.resp = null;
+    this.segSeq = 0;
+    this.segs = new Map(); // seg -> { kind, itemId, sentBytes, playedMs }
+    this.played = new Map(); // seg -> ms the page has played
+    this.speechChain = Promise.resolve();
+    this.speechGen = 0;
+    this.speechBusy = 0;
+    this.requests = new Map(); // MINT AI turn id -> { text, answered }
+    this.replies = [];
+    this.heard = [];
+    this.snapshotText = "";
+    this.groundedAt = 0;
+    this.spoken = []; // [{text, at}] what the voice said, for the echo guard
+    this.timers = new Set();
+    this.usd = 0;
+    this.diag = { responses: 0, trips: [], bargeIns: [], held: [], firstAudio: [], echoes: 0, stops: 0, refused: [], handoffs: [], transcripts: [] };
+    this.state = "connecting";
+  }
+
+  /* ---- plumbing ---- */
+
+  timer(fn, ms) {
+    const t = setTimeout(() => {
+      this.timers.delete(t);
+      fn();
+    }, ms);
+    this.timers.add(t);
+    return t;
+  }
+  send(obj) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(obj));
+  }
+  toClient(obj) {
+    if (!this.closed) this.d.client.json(obj);
+  }
+  setState(s, extra) {
+    if (this.closed) return;
+    if (this.muted && s !== "muted" && s !== "ended") s = "muted";
+    this.state = s;
+    this.toClient({ type: "state", state: s, ...(extra || {}) });
+  }
+  record(row) {
+    try {
+      const usd = this.d.record ? this.d.record({ cat: "live", actor: this.d.actor, ...row }) || 0 : 0;
+      this.usd += usd;
+      return usd;
+    } catch (e) {
+      this.log("live: could not record usage: " + e.message);
+      return 0;
+    }
+  }
+
+  /** Open the upstream session with the fixed configuration. */
+  open() {
+    if (this.ready) return this.ready;
+    this.ready = new Promise((resolve, reject) => {
+      const base = this.cfg.wsBase || WS_BASE;
+      const ws = (this.ws = new WebSocket(base + "/realtime?model=" + encodeURIComponent(this.model), {
+        headers: { Authorization: "Bearer " + this.cfg.key },
+        handshakeTimeout: 10000,
+        perMessageDeflate: false,
+      }));
+      let opened = false;
+      const fail = (why) => {
+        if (!opened) reject(new Error(why));
+        else this.close("upstream", why);
+      };
+      ws.on("unexpected-response", (req, res) => fail("OpenAI refused the live session (" + res.statusCode + ")"));
+      ws.on("error", (e) => fail("Could not reach OpenAI: " + scrub(e.message)));
+      ws.on("close", () => fail("OpenAI closed the live session"));
+      ws.on("open", () => this.send({ type: "session.update", session: this.sessionConfig() }));
+      ws.on("message", (data) => {
+        let ev;
+        try {
+          ev = JSON.parse(String(data));
+        } catch (_) {
+          return;
+        }
+        if (!opened) {
+          if (ev.type === "session.updated") {
+            opened = true;
+            this.sessionAt = this.now();
+            this.timer(() => this.close("max-length", "The live conversation reached its 20-minute limit."), this.opts.maxMs);
+            this.setState("listening");
+            return resolve(this);
+          }
+          if (ev.type === "error") return fail(scrub((ev.error && ev.error.message) || "OpenAI error"));
+          return;
+        }
+        try {
+          this.onUpstream(ev);
+        } catch (e) {
+          this.log("live: event " + ev.type + " failed: " + e.message);
+        }
+      });
+    });
+    this.ready.catch(() => {});
+    return this.ready;
+  }
+
+  sessionConfig() {
+    return {
+      type: "realtime",
+      instructions: instructionsFor(this.persona),
+      output_modalities: ["audio"],
+      tools: TOOLS,
+      tool_choice: "auto",
+      max_output_tokens: 1200,
+      audio: {
+        input: {
+          format: { type: "audio/pcm", rate: RATE },
+          turn_detection: { type: "server_vad", silence_duration_ms: this.opts.silenceMs, prefix_padding_ms: 300, create_response: true, interrupt_response: true },
+          transcription: { model: this.cfg.transcribe_model || "gpt-4o-mini-transcribe" },
+        },
+        output: { format: { type: "audio/pcm", rate: RATE }, voice: this.cfg.voice || "marin" },
+      },
+    };
+  }
+
+  close(why, text) {
+    if (this.closed) return;
+    this.toClient({ type: "ended", why: why || "ended", text: text || undefined });
+    this.closed = true;
+    this.speechGen++;
+    for (const t of this.timers) clearTimeout(t);
+    this.timers.clear();
+    try {
+      if (this.ws) this.ws.close();
+    } catch (_) {
+      /* closed */
+    }
+    try {
+      this.d.client.close(1000, why || "ended");
+    } catch (_) {
+      /* gone */
+    }
+    this.log(`live: call ${this.id} ended (${why}) after ${Math.round((this.now() - this.bornAt) / 1000)} s, $${this.usd.toFixed(4)}`);
+  }
+
+  /* ---- from the browser ---- */
+
+  /** PCM16 mono 24 kHz from the page's microphone. */
+  audioIn(buf) {
+    if (this.closed || this.muted || !buf || !buf.length || buf.length % 2) return;
+    this.input.push({ at: this.inputMs, buf });
+    this.inputMs += buf.length / BYTES_PER_MS;
+    while (this.input.length && this.input[0].at < this.inputMs - KEEP_INPUT_MS) this.input.shift();
+    this.send({ type: "input_audio_buffer.append", audio: buf.toString("base64") });
+  }
+
+  /** A control message from the page. */
+  message(m) {
+    if (!m || typeof m !== "object") return;
+    switch (m.type) {
+      case "played": {
+        const seg = Number(m.seg);
+        const ms = Number(m.ms);
+        if (this.segs.has(seg) && Number.isFinite(ms) && ms >= 0) this.played.set(seg, ms);
+        break;
+      }
+      case "flushed": {
+        const seg = Number(m.seg);
+        if (this.segs.has(seg) && Number.isFinite(Number(m.ms))) this.played.set(seg, Number(m.ms));
+        const b = this.diag.bargeIns[this.diag.bargeIns.length - 1];
+        if (b && !b.flushedAt) b.flushedAt = this.now();
+        if (this.pendingTruncate) this.pendingTruncate();
+        break;
+      }
+      case "mute":
+        this.mute(!!m.on);
+        break;
+      case "end":
+        this.close("hung-up");
+        break;
+      default:
+        break;
+    }
+  }
+
+  mute(on) {
+    if (this.closed) return;
+    this.muted = on;
+    if (on) this.send({ type: "input_audio_buffer.clear" });
+    this.setState(on ? "muted" : "listening");
+  }
+
+  /* ---- from OpenAI ---- */
+
+  onUpstream(ev) {
+    switch (ev.type) {
+      case "input_audio_buffer.speech_started":
+        return this.speechStarted(ev);
+      case "input_audio_buffer.speech_stopped":
+        return this.speechStopped(ev);
+      case "conversation.item.input_audio_transcription.completed":
+        return this.sessionTranscript(ev);
+      case "conversation.item.input_audio_transcription.failed": {
+        const t = this.turnFor(ev.item_id);
+        t.sessionFailed = true;
+        if (!t.sessionText) t.resolveSession(null);
+        return;
+      }
+      case "response.created":
+        return this.responseCreated(ev);
+      case "response.output_item.added":
+        if (this.resp && ev.item && ev.item.type === "message") this.resp.itemId = ev.item.id;
+        return;
+      case "response.output_audio_transcript.delta":
+      case "response.audio_transcript.delta":
+        if (!this.resp || this.resp.cancelled) return;
+        this.resp.text += ev.delta || "";
+        return this.release(false);
+      case "response.output_audio.delta":
+      case "response.audio.delta":
+        return this.audioOut(ev);
+      case "response.output_audio_transcript.done":
+      case "response.audio_transcript.done":
+        return this.transcriptDone(ev);
+      case "response.done":
+        return this.responseDone(ev);
+      case "error": {
+        const msg = String((ev.error && (ev.error.message || ev.error.code)) || "");
+        if (/cancel|no active response|already|not found/i.test(msg)) return; // a late cancel or truncate: harmless
+        this.log("live: OpenAI error: " + scrub(msg));
+        return;
+      }
+      default:
+        return;
+    }
+  }
+
+  /** One user turn per input item. */
+  turnFor(itemId) {
+    let t = this.turns.get(itemId);
+    if (!t) {
+      let resolveSession;
+      const sessionP = new Promise((r) => (resolveSession = r));
+      t = { itemId, n: ++this.turnSeq, startMs: null, endMs: null, sessionText: "", turnText: null, turnP: null, sessionP, resolveSession, asked: null, dropped: null };
+      t.vt = (this.id + "t" + t.n).slice(0, 48);
+      this.turns.set(itemId, t);
+      this.lastTurn = t;
+      if (this.turns.size > 60) this.turns.delete(this.turns.keys().next().value);
+    }
+    return t;
+  }
+
+  anythingAudible() {
+    if (this.resp && !this.resp.done && this.resp.sentBytes > 0) return true;
+    if (this.speechBusy) return true;
+    for (const [seg, s] of this.segs) if (s.sentBytes / BYTES_PER_MS > (this.played.get(seg) || 0) + 40) return true;
+    return false;
+  }
+
+  speechStarted(ev) {
+    const t = this.turnFor(ev.item_id);
+    t.startMs = ev.audio_start_ms != null ? ev.audio_start_ms : this.inputMs;
+    t.startedAt = this.now();
+    if (this.anythingAudible()) this.bargeIn();
+    this.setState("talking");
+  }
+
+  /**
+   * The administrator talked over the voice: the page drops what it has
+   * buffered (and says how far it had played), the response is cancelled, the
+   * realtime item is truncated there, and any summary being read stops.
+   */
+  bargeIn() {
+    const at = this.now();
+    const b = { at, flushedAt: null };
+    this.diag.bargeIns.push(b);
+    this.toClient({ type: "flush", at });
+    this.setState("interrupted");
+    this.speechGen++; // summaries and safe lines queued or being read stop here
+    const r = this.resp;
+    if (r && !r.done) {
+      r.cancelled = true;
+      r.chunks = [];
+      this.send({ type: "response.cancel" });
+    }
+    // Truncate the realtime item the administrator was hearing, at what was played.
+    const audible = [...this.segs.entries()].filter(([, s]) => s.kind === "desk" && s.itemId && !s.truncated && s.sentBytes > 0);
+    const target = audible.length ? audible[audible.length - 1] : null;
+    if (!target) return;
+    const [seg, s] = target;
+    const doIt = () => {
+      this.pendingTruncate = null;
+      if (s.truncated) return;
+      s.truncated = true;
+      const sent = Math.floor(s.sentBytes / BYTES_PER_MS);
+      const ms = Math.max(0, Math.min(sent, Math.floor(this.played.get(seg) || 0)));
+      this.send({ type: "conversation.item.truncate", item_id: s.itemId, content_index: 0, audio_end_ms: ms });
+      b.truncatedAt = ms;
+    };
+    this.pendingTruncate = doIt;
+    this.timer(() => this.pendingTruncate === doIt && doIt(), TRUNCATE_WAIT_MS);
+  }
+
+  speechStopped(ev) {
+    const t = this.turnFor(ev.item_id);
+    t.endMs = ev.audio_end_ms != null ? ev.audio_end_ms : this.inputMs;
+    t.stoppedAt = this.now();
+    if (t.startMs == null) t.startMs = Math.max(0, t.endMs - 3000);
+    this.setState("thinking");
+    if (this.opts.handoff === "turn" && this.d.transcribe) t.turnP = this.transcribeTurn(t);
+  }
+
+  /** The turn's audio, from what this server relayed. */
+  turnAudio(t) {
+    const from = Math.max(0, t.startMs - 200);
+    const to = t.endMs + 150;
+    const parts = [];
+    for (const c of this.input) {
+      const end = c.at + c.buf.length / BYTES_PER_MS;
+      if (end <= from || c.at >= to) continue;
+      const a = Math.max(0, Math.floor((from - c.at) * BYTES_PER_MS) & ~1);
+      const z = Math.min(c.buf.length, Math.ceil((to - c.at) * BYTES_PER_MS) & ~1);
+      if (z > a) parts.push(c.buf.subarray(a, z));
+    }
+    return Buffer.concat(parts);
+  }
+
+  /** A full-turn transcript of what this server relayed, through the transcript guard. */
+  async transcribeTurn(t) {
+    const pcm = this.turnAudio(t);
+    const t0 = this.now();
+    if (pcm.length < BYTES_PER_MS * 250) return null;
+    try {
+      const heard = await this.d.transcribe(wav(pcm), this.cfg, "audio/wav");
+      if (heard && heard.tokens) this.record({ vt: t.vt, part: "transcription", model: heard.model, tokens: heard.tokens });
+      const text = String((heard && heard.text) || "").trim();
+      const audioSeconds = pcm.length / BYTES_PER_MS / 1000;
+      const g = voiceGuard.checkTranscript(text, { audioSeconds, sources: liveSources() });
+      this.diag.transcripts.push({ turn: t.n, kind: "turn", ms: this.now() - t0, ok: g.ok });
+      t.turnText = g.ok ? text : "";
+      if (!g.ok) t.turnDropped = g.rule;
+      return t.turnText;
+    } catch (e) {
+      this.log("live: full-turn transcription failed: " + scrub(e.message));
+      t.turnText = null;
+      return null;
+    }
+  }
+
+  /** The session's own transcript of a user turn: the echo, stop and persona checks. */
+  sessionTranscript(ev) {
+    const t = this.turnFor(ev.item_id);
+    const text = String(ev.transcript || "").trim();
+    if (ev.usage) this.record({ vt: t.vt, part: "transcription", model: this.cfg.transcribe_model || "gpt-4o-mini-transcribe", tokens: usageLib.transcribeTokens(ev.usage) });
+    const audioSeconds = t.endMs != null && t.startMs != null ? (t.endMs - t.startMs) / 1000 : null;
+    const g = voiceGuard.checkTranscript(text, { audioSeconds, sources: liveSources() });
+    t.sessionText = g.ok ? text : "";
+    this.diag.transcripts.push({ turn: t.n, kind: "session", ms: t.stoppedAt ? this.now() - t.stoppedAt : null, ok: g.ok });
+    if (!g.ok) return this.drop(t, g.rule), t.resolveSession(null);
+    if (this.isEcho(text)) {
+      this.diag.echoes++;
+      return this.drop(t, "echo-of-voice"), t.resolveSession(null);
+    }
+    if (this.d.isStop && this.d.isStop(text)) {
+      this.diag.stops++;
+      t.resolveSession(null);
+      return this.stopByVoice(t, text);
+    }
+    if (this.d.hearPersona) {
+      const before = JSON.stringify([this.persona.dialect, this.persona.gender]);
+      this.persona = personaLib.clean(this.d.hearPersona(text));
+      if (JSON.stringify([this.persona.dialect, this.persona.gender]) !== before) this.send({ type: "session.update", session: { type: "realtime", instructions: instructionsFor(this.persona) } });
+    }
+    this.heard.push(text);
+    this.toClient({ type: "caption", who: "you", text, final: true });
+    t.resolveSession(text);
+  }
+
+  /** Was this "heard" text what the voice itself just said, coming back through the mic? */
+  isEcho(text) {
+    const cut = this.now() - ECHO_WINDOW_MS;
+    const recent = this.spoken.filter((s) => s.at >= cut).map((s) => s.text).join(" ");
+    if (!recent) return false;
+    const heard = voiceGuard.tokens(text);
+    if (heard.length < 2) return false;
+    const said = new Set(voiceGuard.tokens(recent));
+    const inSaid = heard.filter((w) => said.has(w)).length;
+    const run = voiceGuard.longestRun(heard, voiceGuard.tokens(recent));
+    return (inSaid / heard.length >= 0.8 && run >= Math.min(4, heard.length)) || run >= 6;
+  }
+
+  /** Nothing of this turn is answered or passed on; the model forgets it. */
+  drop(t, rule) {
+    t.dropped = rule;
+    this.log(`live: dropped a turn (${rule})`);
+    const r = this.resp;
+    if (r && r.turn === t && !r.done) {
+      r.cancelled = true;
+      r.chunks = [];
+      this.send({ type: "response.cancel" });
+    }
+    this.send({ type: "conversation.item.delete", item_id: t.itemId });
+    this.setState("listening");
+  }
+
+  /** "Stop listening" said aloud: the voice stops, and the call ends. */
+  stopByVoice(t, text) {
+    t.dropped = "stop-command";
+    const r = this.resp;
+    if (r && !r.done) {
+      r.cancelled = true;
+      r.chunks = [];
+      this.send({ type: "response.cancel" });
+    }
+    this.toClient({ type: "flush", at: this.now() });
+    this.toClient({ type: "stop", why: "voice-command", text });
+    this.close("voice-command");
+  }
+
+  responseCreated(ev) {
+    const id = ev.response && ev.response.id;
+    const turn = this.pendingRound ? this.pendingRound.turn : this.lastTurn;
+    const round = this.pendingRound ? this.pendingRound.round : 0;
+    this.pendingRound = null;
+    const r = {
+      id,
+      turn,
+      round,
+      text: "",
+      chunks: [],
+      sentBytes: 0,
+      seg: 0,
+      itemId: null,
+      calls: [],
+      done: false,
+      cancelled: false,
+      createdAt: this.now(),
+      firstAudioIn: null,
+      firstAudioOut: null,
+    };
+    r.rel = new desk.Releaser(() => this.context(), (text) => this.onRelease(r, text));
+    r.info = { askedNow: () => !!(turn && turn.asked), pending: () => [...this.requests.values()].some((x) => !x.answered) };
+    this.resp = r;
+    this.diag.responses++;
+    // A turn already dropped (an echo, a stop command) gets no answer.
+    if (turn && turn.dropped) {
+      r.cancelled = true;
+      this.send({ type: "response.cancel" });
+    }
+  }
+
+  /** The guard context: what the voice may say, from what it was given. */
+  context() {
+    const ids = [...this.requests.keys()].map(String);
+    return {
+      numbers: desk.numberSet([this.snapshotText, ...this.replies, ...this.heard, ...ids]),
+      replyText: this.replies.join("\n"),
+      snapshotText: this.snapshotText,
+      replied: this.replies.length > 0,
+      grounded: this.now() - this.groundedAt < 5 * 60 * 1000,
+    };
+  }
+
+  audioOut(ev) {
+    const r = this.resp;
+    if (!r || r.cancelled || r.trip) return;
+    const buf = Buffer.from(ev.delta || "", "base64");
+    if (!buf.length) return;
+    if (r.firstAudioIn == null) r.firstAudioIn = this.now();
+    if (!r.seg) {
+      r.seg = ++this.segSeq;
+      this.segs.set(r.seg, { kind: "desk", itemId: r.itemId || ev.item_id || null, sentBytes: 0 });
+      this.toClient({ type: "seg", seg: r.seg, kind: "desk" });
+    }
+    const s = this.segs.get(r.seg);
+    if (!s.itemId) s.itemId = r.itemId || ev.item_id || null;
+    r.chunks.push({ tag: audioTag(r.text), buf, at: this.now() });
+    this.pump(r);
+  }
+
+  /** Send every held chunk whose sentence has passed the guard. */
+  pump(r) {
+    if (r.cancelled || r.trip) return;
+    const s = this.segs.get(r.seg);
+    if (!s) return;
+    while (r.chunks.length && r.chunks[0].tag < r.rel.released) {
+      const c = r.chunks.shift();
+      if (r.firstAudioOut == null) {
+        r.firstAudioOut = this.now();
+        const t = r.turn;
+        this.diag.firstAudio.push({ turn: t && t.n, round: r.round, afterSpeechStop: t && t.stoppedAt ? r.firstAudioOut - t.stoppedAt : null, hold: r.firstAudioOut - r.firstAudioIn });
+        this.setState("speaking");
+      }
+      this.diag.held.push(this.now() - c.at);
+      s.sentBytes += c.buf.length;
+      r.sentBytes += c.buf.length;
+      this.d.client.audio(r.seg, c.buf);
+    }
+  }
+
+  onRelease(r, text) {
+    this.spoken.push({ text, at: this.now() });
+    if (this.spoken.length > 40) this.spoken.shift();
+    this.toClient({ type: "caption", who: "desk", text, final: true, seg: r.seg || undefined });
+  }
+
+  /**
+   * The spoken text is complete (its audio may still be arriving): judge it
+   * as final now rather than at response.done, so a one-sentence answer is not
+   * held until the whole response has been generated. Not when it mentions a
+   * hand-off -- a function call later in the same response could be what backs
+   * it -- which waits for response.done as before.
+   */
+  transcriptDone(ev) {
+    const r = this.resp;
+    if (!r || r.cancelled || r.trip || r.done) return;
+    if (typeof ev.transcript === "string" && ev.transcript) r.text = ev.transcript;
+    const passive = new RegExp(desk.HANDOFF_PASSIVE_AR.source, "u").test(arabic.normalize(r.text).toLowerCase());
+    if (desk.mentionsHandoff(r.text) || passive || desk.unbackedHandoff(r.text, { askedNow: false, pending: false })) return;
+    r.rel.update(r.text, true, r.info);
+    if (r.rel.trip) return this.trip(r);
+    r.textFinal = true;
+    this.pump(r);
+  }
+
+  /** The guard over the transcript so far; a cut stops the response. */
+  release(final) {
+    const r = this.resp;
+    if (!r || r.cancelled) return;
+    const before = r.rel.released;
+    r.rel.update(r.text, final, r.info);
+    if (r.rel.trip && !r.trip) return this.trip(r);
+    if (r.rel.released > before || final) this.pump(r);
+  }
+
+  trip(r) {
+    r.trip = { ...r.rel.trip };
+    r.chunks = [];
+    this.diag.trips.push({ rule: r.trip.rule, released: r.rel.released });
+    this.log(`live: guard cut a reply (${r.trip.rule}): ${JSON.stringify(String(r.trip.match || "")).slice(0, 160)}`);
+    if (!r.done) this.send({ type: "response.cancel" });
+  }
+
+  async responseDone(ev) {
+    const r = this.resp;
+    const resp = ev.response || {};
+    if (resp.usage) this.record({ vt: r && r.turn ? r.turn.vt : this.id, part: "realtime", model: this.model, tokens: usageLib.realtimeTokens(resp.usage) });
+    if (!r || (r.id && resp.id && r.id !== resp.id)) return;
+    r.done = true;
+    const calls = (resp.output || []).filter((o) => o.type === "function_call").map((o) => ({ name: o.name, call_id: o.call_id, arguments: o.arguments }));
+    for (const o of resp.output || []) {
+      if (o.type === "message" && !r.trip && !r.cancelled) {
+        const full = (o.content || []).map((p) => p.transcript || p.text || "").join("");
+        if (full) r.text = full;
+      }
+    }
+    if (!r.cancelled && !r.trip && !r.textFinal) {
+      const askedBefore = r.info.askedNow;
+      r.info.askedNow = () => askedBefore() || calls.some((c) => c.name === "ask_mint_ai");
+      r.rel.update(r.text, true, r.info);
+      if (r.rel.trip) this.trip(r);
+      else this.pump(r);
+    }
+    if (r.textFinal && !r.trip && !r.cancelled) this.pump(r);
+    if (r.trip) {
+      const s = this.segs.get(r.seg);
+      if (s && s.itemId) {
+        s.truncated = true;
+        this.send({ type: "conversation.item.truncate", item_id: s.itemId, content_index: 0, audio_end_ms: Math.floor(s.sentBytes / BYTES_PER_MS) });
+      }
+      return this.afterTrip(r);
+    }
+    if (r.cancelled) return;
+    if (calls.length) return this.runCalls(r, calls);
+    if (r.turn && r.turn.asked) this.setState("waiting");
+    else if (this.state !== "talking") this.setState("listening");
+  }
+
+  /** After a cut: make the safe line true (pass the request on), then say it. */
+  async afterTrip(r) {
+    const t = r.turn;
+    const lang = desk.langOf(r.trip.sentence || r.rel.sentences[r.trip.at] || "", t ? t.sessionText : "");
+    const L = desk.linesFor(lang, this.persona.gender);
+    let line = L.asked;
+    if (t && !t.asked && !t.dropped) {
+      const request = await this.groundedText(t);
+      if (request) {
+        try {
+          await this.passOn(t, request);
+          line = L.safe;
+        } catch (e) {
+          line = L.unreachable;
+        }
+      } else line = L.safe;
+    } else if (t && t.asked) {
+      const said = r.rel.sentences.slice(0, r.rel.released).join(" ");
+      line = desk.mentionsHandoff(said) ? L.tail : L.asked;
+    }
+    const heardSoFar = r.rel.sentences.slice(0, r.rel.released).join(" ");
+    this.send({ type: "conversation.item.create", item: { type: "message", role: "assistant", content: [{ type: "output_text", text: (heardSoFar ? heardSoFar + " " : "") + line }] } });
+    this.say([{ text: line, safe: true }], "safe", t);
+  }
+
+  /** The turn's words as this server heard them (the hand-off's text), or "". */
+  async groundedText(t) {
+    const wait = (p) => Promise.race([p, new Promise((res) => this.timer(() => res(null), HEARD_WAIT_MS))]);
+    let text = null;
+    if (this.opts.handoff === "turn" && t.turnP) text = await wait(t.turnP);
+    if (!text) text = await wait(t.sessionP);
+    if (t.dropped) return "";
+    return String(text || "").trim().slice(0, 20000);
+  }
+
+  async passOn(t, request) {
+    const res = await this.d.ops.ask(request);
+    const tt = res && res.turn;
+    t.asked = (tt && tt.id) || true;
+    if (tt && tt.id) this.requests.set(tt.id, { text: request, answered: false });
+    this.diag.handoffs.push({ turn: t.n, chars: request.length });
+    this.toClient({ type: "asked", turn: tt ? { id: tt.id, status: tt.status } : null });
+    this.setState("waiting");
+    if (tt && tt.id) this.watchReply(tt.id, request);
+    return tt;
+  }
+
+  async runCalls(r, calls) {
+    const outputs = [];
+    for (const call of calls) {
+      let output;
+      try {
+        output = await this.runTool(call, r);
+      } catch (e) {
+        output = JSON.stringify({ error: "that did not work: " + scrub(e.message) });
+      }
+      outputs.push({ call, output });
+    }
+    if (this.closed) return;
+    for (const o of outputs) this.send({ type: "conversation.item.create", item: { type: "function_call_output", call_id: o.call.call_id, output: o.output } });
+    if (r.round + 1 >= MAX_ROUNDS) return this.setState("listening");
+    // A new utterance in the meantime takes over; this round is not answered.
+    if (this.lastTurn !== r.turn && this.lastTurn && this.lastTurn.startedAt > r.createdAt) return;
+    this.pendingRound = { turn: r.turn, round: r.round + 1 };
+    this.send({ type: "response.create" });
+  }
+
+  /** One tool call, through the only door. Returns the output text for the model. */
+  async runTool(call, r) {
+    if (!TOOL_NAMES.has(call.name)) {
+      this.diag.refused.push(String(call.name).slice(0, 60));
+      this.log(`live: refused a call to an unknown tool ${JSON.stringify(String(call.name).slice(0, 60))}`);
+      return JSON.stringify({ error: "refused: that tool does not exist. You have read_status and ask_mint_ai only." });
+    }
+    let args = {};
+    try {
+      args = call.arguments ? JSON.parse(call.arguments) : {};
+    } catch (_) {
+      return JSON.stringify({ error: "the arguments were not valid JSON" });
+    }
+    if (!args || typeof args !== "object" || Array.isArray(args)) args = {};
+    if (call.name === "read_status") {
+      if (Object.keys(args).length) return JSON.stringify({ error: "read_status takes no arguments" });
+      const snap = desk.forModel(await this.d.ops.snapshot());
+      const json = JSON.stringify(snap);
+      this.snapshotText = json.toLowerCase();
+      this.groundedAt = this.now();
+      return json;
+    }
+    // ask_mint_ai: what MINT AI receives is this server's transcript of the
+    // turn -- never the model's `text` (a paraphrase can change the meaning).
+    const t = r.turn;
+    const text = typeof args.text === "string" ? args.text.trim() : "";
+    const extra = Object.keys(args).filter((k) => k !== "text");
+    if (!text || text.length > MAX_ASK_CHARS || extra.length) return JSON.stringify({ error: "ask_mint_ai takes one field, text, of 1 to " + MAX_ASK_CHARS + " characters" });
+    if (!t) return JSON.stringify({ error: "refused: nothing was said in this turn" });
+    if (t.asked) return JSON.stringify({ error: "already passed to MINT AI; do not ask again" });
+    const request = await this.groundedText(t);
+    const why = !request ? "ungrounded" : voiceGuard.refuseAtDoor(text) || voiceGuard.refuseAtDoor(request) ? "echo" : null;
+    if (why) {
+      this.diag.refused.push("ask_mint_ai:" + why);
+      this.log(`live: refused an ask_mint_ai (${why})`);
+      return JSON.stringify({ error: "refused: ask_mint_ai passes on only what the administrator said in this turn. Say you did not catch that." });
+    }
+    if (t.asked) return JSON.stringify({ error: "already passed to MINT AI; do not ask again" });
+    const normed = (s) => arabic.normalize(String(s)).toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+    if (normed(text) !== normed(request)) t.paraphrased = true; // counted, never logged in words
+    const tt = await this.passOn(t, request);
+    return JSON.stringify({
+      status: "passed to MINT AI",
+      request: tt ? tt.id : null,
+      note: "MINT AI has NOT replied yet. Say only, in one short sentence, that you passed it on. Its answer will be read to the administrator separately when it arrives.",
+    });
+  }
+
+  /* ---- MINT AI's answers: the guarded summary, then the verbatim reader ---- */
+
+  watchReply(id, request) {
+    const started = this.now();
+    const poll = async () => {
+      if (this.closed || this.now() - started > REPLY_WATCH_MS) return;
+      let snap = null;
+      try {
+        snap = await this.d.ops.snapshot([id]);
+      } catch (e) {
+        this.log("live: could not read MINT AI's reply: " + e.message);
+      }
+      const row = snap && (snap.requests_to_moni_ai || []).find((x) => x.id === id);
+      if (row && row.answered) return this.deliverReply(id, String(row.reply || ""), request);
+      this.timer(poll, this.opts.pollMs);
+    };
+    this.timer(poll, this.opts.pollMs);
+  }
+
+  async deliverReply(id, reply, request) {
+    const mine = this.requests.get(id);
+    if (!mine || mine.answered) return;
+    mine.answered = true;
+    this.toClient({ type: "replied", turn: id });
+    const lines = [];
+    let fallback = !this.d.summarise;
+    let deskTokens = null;
+    const vt = this.id + "r" + id;
+    if (this.d.summarise) {
+      try {
+        // Each summary line is read the moment the guard has released it.
+        const out = await this.d.summarise(id, {
+          onLine: (l) => {
+            lines.push(l);
+            this.say([l], "mint", null, vt);
+          },
+          persona: this.persona,
+        });
+        if (out && out.tokens) deskTokens = out.tokens;
+        if (out && (out.fallback === "verbatim" || out.pending) && !lines.length) fallback = true;
+      } catch (e) {
+        this.log("live: the summary failed: " + scrub(e.message));
+        if (!lines.length) fallback = true;
+      }
+    }
+    if (deskTokens) this.record({ vt, part: "desk", model: desk.DESK_MODEL, tokens: deskTokens });
+    if (fallback) {
+      const sents = speakableSentences(reply);
+      for (const s of sents.slice(0, VERBATIM_MAX_SENTENCES)) lines.push({ text: s, safe: false });
+      if (sents.length > VERBATIM_MAX_SENTENCES) lines.push({ text: desk.linesFor(arabic.isArabic(reply) ? "ar" : "en", this.persona.gender).details, safe: true });
+      if (lines.length) this.say(lines, "mint", null, vt);
+    }
+    // Tell the realtime conversation what MINT AI said and what was heard of it.
+    this.replies.push(reply);
+    const spoken = lines.map((l) => l.text).join(" ");
+    const clipped = reply.length > REPLY_IN_CONTEXT_CHARS ? reply.slice(0, REPLY_IN_CONTEXT_CHARS) + " [...the rest is on the administrator's screen]" : reply;
+    this.send({
+      type: "conversation.item.create",
+      item: { type: "message", role: "system", content: [{ type: "input_text", text: `MINT AI replied to request ${id} (the administrator heard${fallback ? " it read aloud" : " this summary of it"}: "${spoken.slice(0, 600)}", and has the full text on screen):\n${clipped}` }] },
+    });
+  }
+
+  /**
+   * Read lines with the verbatim reader into the call, one segment each, after
+   * whatever is being said now. A barge-in (speechGen) stops the rest.
+   */
+  say(lines, kind, turn, vt) {
+    const gen = this.speechGen;
+    this.speechChain = this.speechChain.then(async () => {
+      // Wait for the realtime model to finish talking.
+      for (let i = 0; i < 200 && this.resp && !this.resp.done && !this.closed; i++) await new Promise((r) => setTimeout(r, 50));
+      for (const line of lines) {
+        if (this.closed || gen !== this.speechGen) return;
+        await this.sayOne(line, kind, turn, vt, gen);
+      }
+      if (!this.closed && gen === this.speechGen && !this.resp_active()) this.setState(this.anyPending() ? "waiting" : "listening");
+    });
+    return this.speechChain;
+  }
+
+  resp_active() {
+    return !!(this.resp && !this.resp.done);
+  }
+  anyPending() {
+    return [...this.requests.values()].some((x) => !x.answered);
+  }
+
+  async sayOne(line, kind, turn, vt, gen) {
+    const seg = ++this.segSeq;
+    const s = { kind, itemId: null, sentBytes: 0 };
+    this.segs.set(seg, s);
+    this.speechBusy++;
+    const live = () => !this.closed && gen === this.speechGen;
+    this.toClient({ type: "seg", seg, kind });
+    this.toClient({ type: "caption", who: kind === "mint" ? "mint" : "desk", text: line.text, final: true, seg });
+    this.setState("speaking");
+    this.spoken.push({ text: line.text, at: this.now() });
+    try {
+      const res = await this.d.speak(line.text, { ...this.cfg, voice: this.cfg.voice }, {
+        start: () => {},
+        audio: (b) => {
+          if (!live()) return;
+          s.sentBytes += b.length;
+          this.d.client.audio(seg, b);
+        },
+        cut: () => {
+          if (!live()) return;
+          s.sentBytes = 0;
+          this.toClient({ type: "cut", seg });
+        },
+      });
+      const bill = (res && res.billing) || [];
+      for (const b of bill) this.record({ vt: vt || (turn ? turn.vt : this.id), part: "speech", model: b.model, tokens: b.tokens });
+      if (res && res.lateBilling) res.lateBilling.then((more) => (more || []).forEach((b) => this.record({ vt: vt || this.id, part: "speech", model: b.model, tokens: b.tokens })), () => {});
+    } catch (e) {
+      for (const b of (e && e.billing) || []) this.record({ vt: vt || this.id, part: "speech", model: b.model, tokens: b.tokens });
+      this.log("live: a line was not read (" + ((e && e.code) || "error") + ")");
+    } finally {
+      this.speechBusy--;
+      this.toClient({ type: "segend", seg });
+    }
+  }
+}
+
+/** Every text the live voice model was given as instructions (the echo guard's sources). */
+let liveSourcesCache = null;
+function liveSources() {
+  if (!liveSourcesCache) {
+    liveSourcesCache = [...voiceGuard.promptSources(), { name: "live instructions", kind: "prose", text: INSTRUCTIONS }];
+    for (const t of TOOLS) liveSourcesCache.push({ name: "live tool " + t.name, kind: "prose", text: t.description });
+  }
+  return liveSourcesCache;
+}
+
+/* ------------------------------------------------ one call per user -- */
+
+const calls = new Map(); // actor -> LiveCall
+
+function callFor(actor) {
+  const c = calls.get(actor);
+  return c && !c.closed ? c : null;
+}
+function register(actor, call) {
+  calls.set(actor, call);
+}
+function unregister(actor, call) {
+  if (calls.get(actor) === call) calls.delete(actor);
+}
+function closeAll(why) {
+  for (const c of calls.values()) c.close(why || "closed");
+  calls.clear();
+}
+function activeCount() {
+  return [...calls.values()].filter((c) => !c.closed).length;
+}
+
+module.exports = {
+  LIVE_MODEL,
+  RATE,
+  SILENCE_MS,
+  MAX_CALL_MS,
+  TOOLS,
+  TOOL_NAMES,
+  INSTRUCTIONS,
+  instructionsFor,
+  audioTag,
+  speakableSentences,
+  wav,
+  LiveCall,
+  callFor,
+  register,
+  unregister,
+  closeAll,
+  activeCount,
+  liveSources,
+};

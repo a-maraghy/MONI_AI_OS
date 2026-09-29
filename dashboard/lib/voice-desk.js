@@ -532,6 +532,18 @@ function sentencesOf(text, final) {
 }
 
 const HANDOFF_ANY = new RegExp(HANDOFF.source, "u"); // not global: no lastIndex to trip over
+/**
+ * The passive hand-off in Arabic: «تم تمرير الطلب لـ MINT AI», «طلبك اتبعت لـ
+ * MINT AI» ("the request has been passed to MINT AI"). It says an action was
+ * done, so it is a claim -- unless an ask_moni call really happened in this
+ * turn, when it is simply true (judge ctx.askedNow). The English forms ("has
+ * been passed to MINT AI") are hand-offs already.
+ */
+const HANDOFF_PASSIVE_AR = new RegExp(
+  "(?<![\\p{L}])[وف]?(?:(?:تم|اتم|اتعمل|جري)\\s+(?:تمرير|ارسال|تحويل|توصيل|رفع|نقل|تسليم|بعت)\\p{L}*|(?:اتبعت|اتحول|اتنقل|اترفع|اتسلم|اتوصل|اترسل|تم)\\p{L}*)" +
+    "(?:\\s+[^\\s.,;!?،؛؟]+){0,3}?\\s*(?:ل|لل|الي|علي|مع)?\\s*" + arabic.MINT + "(?![\\p{L}])",
+  "gu"
+);
 const HANDOFF_FUTURE = uni(/\b(let me|i'll|i will|ill|i'm going to|im going to|going to|i'd|i would)\b/);
 
 function withoutHandoff(text) {
@@ -560,8 +572,14 @@ function arabicAction(s) {
 // A hand-off verb, Arabic or English, that MINT AI's name has not followed yet.
 const HANDOFF_VERB_AR = new RegExp("(?<![\\p{L}])[وف]?(?:[هحب]|سا|س)?ا?(?:" + arabic.HANDOFF_STEMS + ")\\p{L}*", "u");
 const HANDOFF_VERB_EN = uni(/\b(?:pass(?:ed|ing)?|hand(?:ed|ing)?|sen[dt]|sending|forward(?:ed|ing)?|relay(?:ed|ing)?|ask(?:ed|ing)?|told|tell(?:ing)?)\b/);
+const PASSIVE_START_AR = /(?<![\p{L}])[وف]?(?:تم|اتم|جري)\s+(?:تمرير|ارسال|تحويل|توصيل|رفع|نقل|تسليم|بعت)/u;
 function mayBecomeHandoff(sentence) {
   const s = norm(sentence);
+  // «تم تمرير الطلب لـ ...»: a passive hand-off whose MINT AI has not arrived yet.
+  const p = PASSIVE_START_AR.exec(s);
+  if (p && !MINT_NAME.test(s.slice(p.index))) return true;
+  // ...or one whose next word has not arrived: «تم ...». (One word later it is judged again.)
+  if (/(?<![\p{L}])[وف]?(?:تم|اتم|جري)\s*$/u.test(s)) return true;
   const m = HANDOFF_VERB_AR.exec(s) || HANDOFF_VERB_EN.exec(s);
   return !!m && !MINT_NAME.test(s.slice(m.index));
 }
@@ -846,7 +864,7 @@ function judge(sentences, ctx) {
     // A confirmation right after an action sentence: the pair is the claim.
     if (si > 0 && prevAction && sClauses.length && (CONFIRM.test(sClauses[0]) || arabic.confirmFirst(sClauses[0]))) return fail("action-claim", sentences[si - 1] + " " + sentence, si - 1);
     for (const raw of sClauses) {
-      const cl = summary ? raw : raw.replace(HANDOFF, " «handoff» ");
+      const cl = summary ? raw : (c.askedNow ? raw.replace(HANDOFF_PASSIVE_AR, " «handoff» ") : raw).replace(HANDOFF, " «handoff» ");
       let m;
       if ((m = CLAIM_FIRST.exec(cl)) && !negatedBefore(cl, m.index + m[0].length - m[2].length)) return fail("action-claim", raw, si);
       if ((m = PROGRESSIVE_FIRST.exec(cl)) && !negatedBefore(cl, m.index + m[0].length - m[2].length)) return fail("action-claim", raw, si);
@@ -1035,7 +1053,9 @@ class Releaser {
     // A summary's markdown emphasis (`code`, **bold**) is formatting, not words.
     const list = sentencesOf(this.summary ? String(text).replace(/[`*]+/g, "") : text, final);
     this.sentences = list;
-    const g = judge(list, this.ctxFn());
+    // A hand-off said in the passive is true once the ask_moni call is known.
+    const ctxNow = () => ({ ...this.ctxFn(), askedNow: !!(i.askedNow && i.askedNow()) });
+    const g = judge(list, ctxNow());
     if (!g.ok) {
       this.trip = { ...g, sentence: list[g.at] || "" };
       return;
@@ -1047,7 +1067,7 @@ class Releaser {
     if (!final && !this.summary) {
       const partial = settled(text);
       const plist = sentencesOf(partial, true);
-      const g2 = judge(plist, this.ctxFn());
+      const g2 = judge(plist, ctxNow());
       // (Not while the unfinished sentence may still become a hand-off:
       // «بعتّ ده ...» is a claim until «... لـ MINT AI» arrives. The whole
       // sentence is judged before it is released either way.)
@@ -1860,6 +1880,8 @@ module.exports = {
   strictNumberSet,
   polarClaims,
   unbackedHandoff,
+  mentionsHandoff,
+  HANDOFF_PASSIVE_AR,
   numbersIn,
   numberSet,
   settled,

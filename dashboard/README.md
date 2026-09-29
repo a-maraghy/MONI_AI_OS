@@ -364,6 +364,152 @@ read-only copy of the ledger) against the real model with a stubbed supervisor
 (nothing reaches MINT AI; the key is read through the helper and never
 printed).
 
+### Live conversation (trial) -- off by default, administrators only
+
+`lib/voice-live.js` (server), `public/voice-live.js` + `public/voice-live-worklet.js`
++ `public/voice-live.css` (page). M-3 Phase 1, option C of the full-duplex
+proposal: you talk and the voice answers at once, and you can interrupt it --
+while the voice model still never thinks or acts for MINT AI.
+
+**The mode.** The front-desk setting is now three-way, in the same `settings`
+row (`voice_desk`), so existing values keep their meaning: `"0"` off (direct),
+`"1"` relay desk, `"live"` live conversation. Settings > OpenAI voice >
+*Voice front desk* > *Live conversation (trial)* (`POST
+/credentials/openai-voice/desk` with `mode=off|desk|live`; the older
+`enabled=1|0` still works; audited). In live mode administrators (`moniai.use`
++ `voice.manage`) get a third choice in the Command Center's voice menu, *Live
+conversation (trial)*; everyone else, and push to talk, keep the relay desk.
+
+**How it works.** The page opens the mic with echo cancellation, noise
+suppression and auto gain, and an AudioWorklet streams 24 kHz PCM16 in 20 ms
+frames to `GET /mint-ai/api/live?csrf=…` (a WebSocket). The server relays it to
+`gpt-realtime-2.1-mini` (server VAD at 700 ms of silence, interrupt_response)
+with exactly two tools, `read_status` and `ask_mint_ai`, dispatched only through
+`deskOps()` (`snapshot` / `send`); any other tool name is refused. The key never
+leaves the server.
+
+- **Guard before sound.** Each audio chunk is tagged with the sentence the
+  model's own transcript is in when the chunk arrives (the transcript leads the
+  audio by 40-360 ms, so that is the chunk's sentence or a later one) and held
+  until that sentence has passed the desk's guard (`Releaser` / `judge()`: the
+  sentences before it, the Arabic rules, fail-closed). The last sentence is
+  judged as soon as `response.output_audio_transcript.done` arrives (unless it
+  mentions a hand-off, which waits for the function calls). On a cut the held
+  audio is dropped, the response cancelled, the item truncated at what was
+  sent, the request passed to MINT AI if it had not been, and the safe line
+  read by the verbatim reader in the cut sentence's language (feminine /
+  masculine / neutral from the saved persona).
+- **MINT AI's answers never come from the speech model.** The server polls the
+  supervisor's snapshot for the reply to a hand-off; the reply goes through the
+  desk's guarded summary (`SUMMARY_INSTRUCTIONS` -> `judge()`) or, if short and
+  plain, word for word, and each line is read by the verbatim reader into the
+  same stream. The realtime conversation is then told (a system item) what MINT
+  AI said and what was heard.
+- **Hand-offs carry this server's transcript.** At the end of each utterance the
+  server transcribes the audio it relayed (a full-turn gpt-4o-mini-transcribe)
+  and sends that -- through the transcript guard -- never the model's `text`;
+  the session's own transcription is the fallback. Measured on the mixed clip:
+  the session transcript heard «ريكستور» / «ريكارك» for "restart", the full-turn
+  one "restart" (twice out of two). At most one hand-off per utterance. A pure
+  hand-off said in the passive («تم تمرير الطلب لـ MINT AI») is allowed once the
+  call really happened (`judge` ctx `askedNow`).
+- **Barge-in.** On the upstream VAD's `speech_started` the server tells the page
+  to flush (the playback worklet drops its buffer and answers with the
+  millisecond it had played), cancels the response and truncates the item there
+  (or at the page's last reported position after 400 ms). Summaries being read
+  stop too.
+- **Also:** the echo guard (a transcript matching what the voice said in the
+  last 30 s is dropped and the item deleted -- headphones are advised in the
+  tooltip); the spoken stop command (`public/voice-stop.js`, English and Arabic,
+  polite forms) ends the call; one call per user, at most 4 at once, 20 minutes
+  a call, frames of at most half a second, no more than twice real time; the
+  saved persona is in the instructions and refreshed when it changes.
+- **Usage.** Every response's `usage` is priced (gpt-realtime-2.1-mini's list
+  prices, read 2026-09-29) into `voice_usage` with category `live`, part
+  `realtime`; transcriptions and the readings are their own rows. Shown as
+  *Live* in the Cost today card.
+
+**What cannot be guaranteed.** The guard reads the model's transcript of its
+audio, not the audio itself; audio that differs from its own transcript would
+be heard. MINT AI's answers never take that path.
+
+**Measured (2026-09-29, real API, stubbed supervisor, TTS clips).** End of
+speech to the first audio the page plays, including the 700 ms VAD, a
+`read_status` round trip and the hold: English 1.0 s, Egyptian 1.75 s, mixed
+1.46 s. Hold per chunk: median 186 ms, p90 463 ms. Barge-in: the upstream VAD
+reported speech 183-191 ms after the talking-over began (286-636 ms while a
+reader line played); the flush reaches the page at once after that. Cost:
+$0.004-0.011 per turn (Arabic answers run longer), about $0.03 a conversation
+minute: ~$0.55 for 20 minutes a day, ~$1.7 for 60.
+
+**nginx.** No change is needed: `/etc/nginx/moni-proxy-params` (both the `:8443`
+and the `os.mint-stack.com` vhosts) already sends `proxy_http_version 1.1`,
+`Upgrade $http_upgrade` and `Connection "upgrade"`. Its `proxy_read_timeout 60s`
+would cut a quiet call; the server pings every 15 s, which keeps it open. If a
+longer idle is ever wanted, the location to add (before `location /`) is:
+
+```nginx
+location = /mint-ai/api/live {
+    proxy_pass http://127.0.0.1:3000;
+    include /etc/nginx/moni-proxy-params;
+    proxy_read_timeout 1300s;   # a 20-minute call and a margin
+    proxy_send_timeout 1300s;
+    proxy_buffering off;
+}
+```
+
+**Integration contract** (for any page, e.g. the Mint rebuild). Load
+`voice-live.css` and `voice-live.js` (before the page's own script); render
+`data-voice-live="1"` when the server's `voicePublic(req).live` is true, and
+`data-live-worklet="${asset("voice-live-worklet.js")}"`; then:
+
+```js
+if (window.VoiceLive && VoiceLive.supported() && root.getAttribute("data-voice-live") === "1") {
+  VoiceLive.start({
+    csrf: root.getAttribute("data-csrf"),
+    worklet: root.getAttribute("data-live-worklet"),
+    onState: (s) => {},   // connecting | listening | talking | thinking | speaking | interrupted | waiting | muted | ended | error
+    onCaption: (c) => {}, // {who: "you" | "desk" | "mint", text, final}
+    onLevel: (l) => {},   // {mic, out}, 0..1-ish
+    onEvent: (m) => {},   // every server message: asked, replied, stop, ended, error (code "busy": another tab)
+  }).catch((e) => {});    // refused, no mic, or the call could not connect
+}
+VoiceLive.stop();          // hang up
+VoiceLive.mute(true);      // hard mute; VoiceLive.muted(), .active(), .state()
+```
+
+Map `listening`/`talking`/`interrupted` to the core's *listening*, `thinking`
+to *thinking*, `speaking` to *speaking* (the caption: `onCaption` text of
+`who !== "you"`, word by word), `waiting` to *delegating* (to MINT AI); flash
+the voice bar on `interrupted`; feed `onLevel` to the core's amplitude. While a
+call is on, the mic button and Space belong to it. The Command Center's own
+wiring is the block marked `LIVE CONVERSATION (trial)` in `public/moni-ai.js`.
+
+**The Egyptian evaluation** (`lib/voice-live-eval.js`). Administrators open
+**`/mint-ai/voice-eval`** (also linked from Settings > OpenAI voice), record the
+20 phrases in their own voice (Egyptian, MSA, English and mixed: status
+questions, an action request, stop commands, small talk; kept in
+`DATA_DIR/voice-eval/<user id>/`), tick the models (gpt-realtime-mini,
+gpt-realtime-2.1-mini, gpt-realtime-2.1) and voices (marin, cedar) and press
+*Run*: each phrase goes through a real live session with a stubbed supervisor
+(nothing reaches MINT AI) and the page shows one row per model and voice --
+first audio, hold, transcription CER (session and full turn), guard cuts,
+hand-offs and stops right, dialect right, cost -- with the per-phrase detail
+underneath (saved as `results.json` / `results.md`). The same from a shell:
+`sudo NODE_PATH=/opt/moni-dashboard/node_modules node
+dashboard/tools/voice-live-eval.cjs --dir <that folder>` (or `--self-test` for 2-3
+TTS clips).
+
+Tests: `node dashboard/tools/test-voice-live.cjs` (a mock realtime server with
+the real event shapes: the session's configuration, the sentence hold,
+cross-sentence and Arabic cuts and fail-closed, the tool whitelist, hand-off
+grounding (the paraphrase sends exactly the transcript), MINT AI's answers via
+summary and reader only, barge-in (flush, cancel, truncate at the played ms),
+the stop command, the echo guard, usage rows, the persona, the maximum length;
+then the WebSocket route on the real server from a scratch copy that cannot
+reach the helper: auth, CSRF, origin, the mode, one call per user, frame size,
+the evaluation page's API).
+
 ### Themes
 
 System (the default), Dark and Light, from a switch in the top bar of every

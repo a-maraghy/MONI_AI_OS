@@ -43,6 +43,11 @@ const voice = require("./lib/voice");
 const voiceDesk = require("./lib/voice-desk");
 const voiceUsage = require("./lib/voice-usage");
 const voicePersona = require("./lib/voice-persona");
+const voiceLive = require("./lib/voice-live");
+const voiceEval = require("./lib/voice-live-eval");
+const voiceEvalViews = require("./lib/views-voice-eval");
+const { asset } = require("./lib/ui");
+const { WebSocketServer } = require("ws");
 const voiceGuard = require("./lib/voice-guard");
 const voiceIntake = require("./lib/voice-intake");
 // The spoken "stop listening" command; the same file runs in the browser.
@@ -137,7 +142,7 @@ app.use(express.urlencoded({ extended: false, limit: "64kb" }));
  * parser be the one that decides. Everything else keeps the small ceiling,
  * which is the point of having one.
  */
-const PAYLOAD_ROUTES = /^(\/console\/\d+\/(upload|transcribe)|\/mint-ai\/api\/transcribe)$/;
+const PAYLOAD_ROUTES = /^(\/console\/\d+\/(upload|transcribe)|\/mint-ai\/api\/transcribe|\/mint-ai\/api\/voice-eval\/clip)$/;
 const smallJson = express.json({ limit: "64kb" });
 app.use((req, res, next) =>
   PAYLOAD_ROUTES.test(req.path) ? next() : smallJson(req, res, next)
@@ -179,8 +184,9 @@ app.get("/favicon.ico", (req, res) => {
   });
 });
 
-app.use(
-  session({
+// Kept as a value: the live conversation's WebSocket upgrade reads the same
+// session (see liveUpgrade), and an upgrade never passes through app.use.
+const sessionMw = session({
     store: new SQLiteStore({ db: "sessions.db", dir: DATA_DIR }),
     secret: loadOrCreateSessionSecret(),
     name: "moni.sid",
@@ -193,8 +199,8 @@ app.use(
       sameSite: "strict",
       maxAge: 1000 * 60 * 60 * 8,
     },
-  })
-);
+  });
+app.use(sessionMw);
 
 function loadOrCreateSessionSecret() {
   const p = path.join(DATA_DIR, "session.secret");
@@ -1844,6 +1850,7 @@ function voiceForget() {
   voiceCache = { at: 0, cfg: null, pending: null };
   voice.clearCache();
   voiceDesk.closeAll(); // a changed key or voice must not keep a front desk open on the old one
+  voiceLive.closeAll("settings-changed"); // and no live call keeps talking on the old one
 }
 
 /**
@@ -1853,12 +1860,25 @@ function voiceForget() {
  * changes. A panel setting, not a secret, so it lives in the panel's database.
  */
 const VOICE_DESK_SETTING = "voice_desk";
-function voiceDeskOn() {
+/**
+ * The voice mode, one setting with three values (the existing ones kept):
+ *   "0" (or unset)  off: the direct path
+ *   "1"             the relay front desk
+ *   "live"          Live conversation (trial, lib/voice-live.js), for
+ *                   administrators (voice.manage); everyone else, and the
+ *                   push-to-talk mic, keep the relay desk
+ */
+const VOICE_MODES = { off: "0", desk: "1", live: "live" };
+function voiceMode() {
   try {
-    return db.getSetting(VOICE_DESK_SETTING, "0") === "1";
+    const v = db.getSetting(VOICE_DESK_SETTING, "0");
+    return v === "live" ? "live" : v === "1" ? "desk" : "off";
   } catch (_) {
-    return false;
+    return "off";
   }
+}
+function voiceDeskOn() {
+  return voiceMode() !== "off";
 }
 
 /**
@@ -1993,6 +2013,9 @@ async function voicePublic(req) {
     provider: "OpenAI",
     manage: !!(req && req.perm && req.perm.can("voice.manage")),
     desk: !!cfg.key && voiceDeskOn(),
+    mode: voiceMode(),
+    // Live conversation: a key, the mode set to live, and an administrator.
+    live: !!cfg.key && voiceMode() === "live" && liveAllowed(req && req.perm),
   };
 }
 
@@ -2213,7 +2236,7 @@ app.get("/credentials/openai-voice", requireAuth, requirePerm("voice.manage"), a
       user: ctx(req),
       credentials: list,
       voice: v,
-      desk: { on: voiceDeskOn(), row: db.settingRow(VOICE_DESK_SETTING), model: voiceDesk.DESK_MODEL, usage: voiceUsageSummary() },
+      desk: { on: voiceDeskOn(), mode: voiceMode(), row: db.settingRow(VOICE_DESK_SETTING), model: voiceDesk.DESK_MODEL, liveModel: voiceLive.LIVE_MODEL, usage: voiceUsageSummary() },
       persona: voicePersona.describe(personaOf(req.me.id)),
       models: voice.MODELS,
       voices: voice.VOICES,
@@ -2273,17 +2296,23 @@ app.post("/credentials/openai-voice/persona/reset", requireAuth, requirePerm("vo
 });
 
 app.post("/credentials/openai-voice/desk", requireAuth, requirePerm("voice.manage"), requireCsrf, (req, res) => {
-  const want = field(req.body, "enabled");
-  if (want !== "1" && want !== "0") return res.redirect("/credentials/openai-voice?err=" + encodeURIComponent("Choose on or off."));
-  const was = voiceDeskOn();
-  db.setSetting(VOICE_DESK_SETTING, want, req.me.username);
-  if (want === "0") voiceDesk.closeAll();
-  db.logLogin(req.ip, req.me.username, "voice", `voice front desk (GPT, trial) ${want === "1" ? "on" : "off"}${was === (want === "1") ? " (unchanged)" : ""}`);
-  res.redirect(
-    "/credentials/openai-voice?msg=" +
-      encodeURIComponent(want === "1" ? "Voice front desk is on. Reload the Command Center to use it." : "Voice front desk is off. The Command Center's voice talks to MINT AI directly again.") +
-      "#v-desk"
-  );
+  // mode=off|desk|live, or the older enabled=1|0 (off / relay desk).
+  const m = field(req.body, "mode");
+  const e = field(req.body, "enabled");
+  const mode = m ? (Object.prototype.hasOwnProperty.call(VOICE_MODES, m) ? m : null) : e === "1" ? "desk" : e === "0" ? "off" : null;
+  if (!mode) return res.redirect("/credentials/openai-voice?err=" + encodeURIComponent("Choose off, the relay desk or live conversation."));
+  const was = voiceMode();
+  db.setSetting(VOICE_DESK_SETTING, VOICE_MODES[mode], req.me.username);
+  if (mode === "off") voiceDesk.closeAll();
+  if (mode !== "live") voiceLive.closeAll("mode-changed");
+  const label = { off: "off", desk: "relay desk on", live: "live conversation (trial) on" }[mode];
+  db.logLogin(req.ip, req.me.username, "voice", `voice front desk (GPT, trial) ${label}${was === mode ? " (unchanged)" : ""}`);
+  const msg = {
+    off: "Voice front desk is off. The Command Center's voice talks to MINT AI directly again.",
+    desk: "Voice front desk is on. Reload the Command Center to use it.",
+    live: "Live conversation (trial) is on for administrators. Reload the Command Center and pick it in the voice menu; headphones are advised.",
+  }[mode];
+  res.redirect("/credentials/openai-voice?msg=" + encodeURIComponent(msg) + "#v-desk");
 });
 
 app.post("/credentials/openai-voice/test", requireAuth, requirePerm("voice.manage"), requireCsrf, async (req, res) => {
@@ -4870,6 +4899,103 @@ app.get("/guide", requireAuth, (req, res) => {
   );
 });
 
+/* ------------------------------------ live voice evaluation (admin) ---- */
+
+/**
+ * The Egyptian evaluation for the live conversation (lib/voice-live-eval.js):
+ * an administrator records the 20 phrases in their own voice here (PCM16 mono
+ * 24 kHz WAVs, kept in DATA_DIR/voice-eval/<user id>/, 0700), then runs them
+ * through each realtime model and voice. A stubbed supervisor: nothing reaches
+ * MINT AI, and nothing is written to the usage table (each run's cost is in
+ * its results). One run per user at a time, in this process.
+ */
+const evalGuard = [requireApiPerm("moniai.use"), requireApiPerm("voice.manage")];
+const evalJobs = new Map(); // user id -> {running, done, total, started_at, finished_at, summary, results, error}
+function evalDir(userId) {
+  const d = path.join(DATA_DIR, "voice-eval", String(Number(userId)));
+  fs.mkdirSync(d, { recursive: true, mode: 0o700 });
+  return d;
+}
+const evalClip = (userId, id) => path.join(evalDir(userId), "clip-" + String(id).padStart(2, "0") + ".wav");
+function evalClips(userId) {
+  return voiceEval.PHRASES.filter((p) => fs.existsSync(evalClip(userId, p.id))).map((p) => p.id);
+}
+
+app.get("/mint-ai/voice-eval", requireAuth, requirePerm("moniai.use"), requirePerm("voice.manage"), (req, res) => {
+  res.send(voiceEvalViews.page({ csrf: res.locals.csrf, user: ctx(req, "console"), phrases: voiceEval.PHRASES, models: voiceEval.MODELS, voices: voiceEval.VOICES, worklet: asset("voice-live-worklet.js") }));
+});
+
+app.get("/mint-ai/api/voice-eval/status", ...evalGuard, (req, res) => {
+  let saved = null;
+  try {
+    saved = JSON.parse(fs.readFileSync(path.join(evalDir(req.me.id), "results.json"), "utf8"));
+  } catch (_) {
+    /* none yet */
+  }
+  const job = evalJobs.get(req.me.id) || null;
+  res.json({ clips: evalClips(req.me.id), job: job ? { ...job, results: undefined } : null, last: saved });
+});
+
+app.get("/mint-ai/api/voice-eval/clip/:id", ...evalGuard, (req, res) => {
+  const id = Number(req.params.id);
+  if (!voiceEval.PHRASES.some((p) => p.id === id) || !fs.existsSync(evalClip(req.me.id, id))) return res.status(404).json({ error: "No such recording." });
+  res.set({ "Content-Type": "audio/wav", "Cache-Control": "no-store" }).send(fs.readFileSync(evalClip(req.me.id, id)));
+});
+
+app.post("/mint-ai/api/voice-eval/clip", ...evalGuard, express.json({ limit: "3mb" }), requireApiCsrf, (req, res) => {
+  const id = Number(req.body && req.body.id);
+  const data = typeof (req.body && req.body.data) === "string" ? req.body.data : "";
+  if (!voiceEval.PHRASES.some((p) => p.id === id)) return res.status(400).json({ error: "Which phrase?" });
+  if (!data || !/^[A-Za-z0-9+/=]+$/.test(data)) return res.status(400).json({ error: "No audio arrived." });
+  const wav = Buffer.from(data, "base64");
+  let pcm;
+  try {
+    pcm = voiceEval.readWav(wav);
+  } catch (e) {
+    return res.status(400).json({ error: e.message });
+  }
+  const seconds = pcm.length / 48000;
+  if (seconds < 0.4 || seconds > 20) return res.status(400).json({ error: "A recording must be between 0.4 and 20 seconds." });
+  fs.writeFileSync(evalClip(req.me.id, id), wav, { mode: 0o600 });
+  res.json({ ok: true, id, seconds: Math.round(seconds * 10) / 10 });
+});
+
+app.post("/mint-ai/api/voice-eval/run", ...evalGuard, requireApiCsrf, async (req, res) => {
+  const uid = req.me.id;
+  const cur = evalJobs.get(uid);
+  if (cur && cur.running) return res.status(409).json({ error: "A run is already going." });
+  const pick = (v, list) => (Array.isArray(v) ? v.filter((x) => list.includes(x)) : []);
+  const models = pick(req.body && req.body.models, voiceEval.MODELS);
+  const voices = pick(req.body && req.body.voices, voiceEval.VOICES);
+  if (!models.length || !voices.length) return res.status(400).json({ error: "Pick at least one model and one voice." });
+  const ids = evalClips(uid);
+  if (!ids.length) return res.status(400).json({ error: "Record at least one phrase first." });
+  const cfg = await voiceConfig();
+  if (!cfg.key) return res.status(409).json({ error: "Add an OpenAI key in Settings first." });
+  const clips = ids.map((id) => ({ phrase: voiceEval.PHRASES.find((p) => p.id === id), pcm: voiceEval.readWav(fs.readFileSync(evalClip(uid, id))) }));
+  const job = { running: true, done: 0, total: clips.length * models.length * voices.length, started_at: new Date().toISOString(), models, voices };
+  evalJobs.set(uid, job);
+  db.logLogin(req.ip, req.me.username, "voice", `live voice evaluation started: ${clips.length} phrases x ${models.join(",")} x ${voices.join(",")}`);
+  res.json({ ok: true, total: job.total });
+  voiceEval
+    .evaluate({
+      clips,
+      models,
+      voices,
+      concurrency: 2,
+      deps: { key: cfg.key, speak: voice.speakStream, transcribe: voice.transcribeFull, isStop: (t) => voiceStop.heard(t) },
+      onProgress: (p) => (job.done = p.done),
+    })
+    .then((out) => {
+      Object.assign(job, { running: false, finished_at: new Date().toISOString(), summary: out.summary, table: voiceEval.tableMarkdown(out.summary) });
+      const report = { at: job.finished_at, models, voices, summary: out.summary, results: out.results };
+      fs.writeFileSync(path.join(evalDir(uid), "results.json"), JSON.stringify(report, null, 1), { mode: 0o600 });
+      fs.writeFileSync(path.join(evalDir(uid), "results.md"), job.table + "\n", { mode: 0o600 });
+      console.log(`voice-eval: done for ${req.me.username}, $${out.summary.reduce((n, r) => n + r.usd_total, 0).toFixed(4)}`);
+    })
+    .catch((e) => Object.assign(job, { running: false, error: voice.scrub(e.message) }));
+});
+
 /* --------------------------------------------------------------- misc ----- */
 
 app.get("/healthz", (req, res) => res.type("text").send("ok"));
@@ -4881,7 +5007,182 @@ app.use((err, req, res, next) => {
   res.status(500).send(views.error("Server error", "Something went wrong."));
 });
 
-app.listen(PORT, BIND, () => {
+/* ------------------------------------------- live conversation (WS) ---- */
+
+/**
+ * Live conversation (TRIAL, lib/voice-live.js): the Command Center streams the
+ * microphone here over a WebSocket, and this server relays it to OpenAI's
+ * realtime model and plays back only what the guard has passed. The browser
+ * never talks to OpenAI and never sees the key.
+ *
+ * GET /mint-ai/api/live?csrf=<token> (Upgrade: websocket). Refused, before
+ * the upgrade, unless all of these hold:
+ *   - the Origin is this host (a page elsewhere cannot open it with the cookie);
+ *   - a signed-in session (the same cookie and store as every page), a user
+ *     who is not disabled, with moniai.use AND voice.manage (administrators);
+ *   - the session's CSRF token in the query;
+ *   - the voice mode is "live" and an OpenAI key is set.
+ * Then: one live call per user (a second is told "busy" and closed), at most
+ * LIVE_MAX_CALLS at once, 20 minutes at most (lib/voice-live.js), frames of at
+ * most half a second of audio or 4 KB of JSON, and no more audio than twice
+ * real time. A keep-alive ping every 15 s keeps nginx's 60 s read timeout from
+ * cutting a quiet call.
+ *
+ * Wire: page -> server: binary PCM16 mono 24 kHz; JSON {type: "played"|
+ * "flushed"|"mute"|"end"}. server -> page: binary [uint32 LE seg][PCM16];
+ * JSON {type: "ready"|"state"|"seg"|"segend"|"cut"|"flush"|"caption"|"asked"|
+ * "replied"|"stop"|"ended"|"error"}. See the README's integration contract.
+ */
+const LIVE_PATH = /^\/(?:mint|moni)-ai\/api\/live(?:\?|$)/;
+const LIVE_MAX_CALLS = 4;
+const LIVE_MAX_FRAME = voiceLive.RATE; // bytes: half a second of PCM16
+function liveAllowed(perm) {
+  return !!(perm && perm.can("moniai.use") && perm.can("voice.manage"));
+}
+function hostOnly(h) {
+  return String(h || "").trim().toLowerCase().replace(/:\d+$/, "").replace(/^\[|\]$/g, "");
+}
+/** The Origin must be this very host (by name; nginx sends Host without the port). */
+function liveOriginOk(req) {
+  const origin = req.headers.origin;
+  if (!origin) return false;
+  let u;
+  try {
+    u = new URL(origin);
+  } catch (_) {
+    return false;
+  }
+  const local = /^(127\.0\.0\.1|localhost|::1)$/.test(u.hostname);
+  if (u.protocol !== "https:" && !(local && u.protocol === "http:")) return false;
+  return hostOnly(u.host) === hostOnly(req.headers.host);
+}
+function sameToken(a, b) {
+  const x = Buffer.from(String(a || ""));
+  const y = Buffer.from(String(b || ""));
+  return x.length > 0 && x.length === y.length && crypto.timingSafeEqual(x, y);
+}
+function refuseUpgrade(socket, status, text) {
+  try {
+    socket.write(`HTTP/1.1 ${status} ${text}\r\nConnection: close\r\nContent-Type: text/plain\r\nContent-Length: ${Buffer.byteLength(text)}\r\n\r\n${text}`);
+  } catch (_) {
+    /* gone */
+  }
+  socket.destroy();
+}
+const liveWss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024, perMessageDeflate: false });
+
+function liveUpgrade(req, socket, head) {
+  if (!LIVE_PATH.test(req.url || "")) return refuseUpgrade(socket, 404, "Not Found");
+  if (!liveOriginOk(req)) return refuseUpgrade(socket, 403, "Forbidden origin");
+  sessionMw(req, {}, async () => {
+    try {
+      const sess = req.session;
+      const me = sess && sess.authed && sess.userId ? db.getUser(sess.userId) : null;
+      if (!me || me.disabled) return refuseUpgrade(socket, 401, "Unauthorized");
+      const perm = rbac.actor(me.role);
+      if (!liveAllowed(perm)) return refuseUpgrade(socket, 403, "Forbidden");
+      const q = new URL(req.url, "http://x").searchParams;
+      if (!sameToken(q.get("csrf"), sess.csrf)) return refuseUpgrade(socket, 403, "Invalid CSRF token");
+      if (voiceMode() !== "live") return refuseUpgrade(socket, 409, "Live conversation is off");
+      const cfg = await voiceConfig();
+      if (!cfg.key) return refuseUpgrade(socket, 409, "No OpenAI key");
+      if (voiceLive.activeCount() >= LIVE_MAX_CALLS && !voiceLive.callFor(me.username)) return refuseUpgrade(socket, 503, "Too many live calls");
+      const fwd = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
+      const ip = /^(127\.0\.0\.1|::1|::ffff:127\.0\.0\.1)$/.test(req.socket.remoteAddress || "") && fwd ? fwd : req.socket.remoteAddress;
+      liveWss.handleUpgrade(req, socket, head, (ws) => liveConnected(ws, { me, cfg, ip }));
+    } catch (e) {
+      console.log("live: upgrade failed: " + e.message);
+      refuseUpgrade(socket, 500, "Server error");
+    }
+  });
+}
+
+function liveConnected(ws, { me, cfg, ip }) {
+  const actor = me.username;
+  const json = (o) => ws.readyState === 1 && ws.send(JSON.stringify(o));
+  if (voiceLive.callFor(actor)) {
+    json({ type: "error", code: "busy", error: "You already have a live conversation open (another tab?). End it there first." });
+    return ws.close(4409, "busy");
+  }
+  const call = new voiceLive.LiveCall({
+    cfg: { key: cfg.key, voice: cfg.voice, model: cfg.model, transcribe_model: cfg.transcribe_model },
+    actor,
+    ops: voiceDesk.deskOps(moniai.call, actor),
+    client: {
+      json,
+      audio: (seg, buf) => {
+        if (ws.readyState !== 1) return;
+        const h = Buffer.alloc(4);
+        h.writeUInt32LE(seg >>> 0, 0);
+        ws.send(Buffer.concat([h, buf]));
+      },
+      close: (code, why) => {
+        try {
+          ws.close(code || 1000, String(why || "").slice(0, 100));
+        } catch (_) {
+          /* closed */
+        }
+      },
+    },
+    persona: () => personaOf(me.id),
+    hearPersona: (text) => personaHear({ userId: me.id, username: actor, ip }, text),
+    speak: voice.speakStream,
+    transcribe: voice.transcribeFull,
+    summarise: (id, o) => voiceDesk.deskFor(actor, cfg, moniai.call, { log: (m) => console.log(m) }).summarise(id, o),
+    record: (row) => recordVoice(() => voiceLedger.add(row).usd),
+    isStop: (t) => voiceStop.heard(t),
+    log: (m) => console.log(m),
+  });
+  voiceLive.register(actor, call);
+  db.logLogin(ip, actor, "voice", "live conversation (trial) started");
+  // Twice real time is the most a microphone can send; more is not a microphone.
+  let window0 = Date.now();
+  let bytes = 0;
+  ws.on("message", (data, isBinary) => {
+    if (isBinary) {
+      const buf = Buffer.isBuffer(data) ? data : Buffer.concat(data);
+      if (buf.length > LIVE_MAX_FRAME) return call.close("refused", "A frame was too large.");
+      if (Date.now() - window0 > 5000) {
+        window0 = Date.now();
+        bytes = 0;
+      }
+      bytes += buf.length;
+      if (bytes > voiceLive.RATE * 2 * 5 * 2) return call.close("refused", "Too much audio.");
+      return call.audioIn(buf);
+    }
+    if (data.length > 4096) return;
+    let m = null;
+    try {
+      m = JSON.parse(String(data));
+    } catch (_) {
+      return;
+    }
+    call.message(m);
+  });
+  const ping = setInterval(() => {
+    try {
+      ws.ping();
+    } catch (_) {
+      /* closed */
+    }
+  }, 15000);
+  ws.on("close", () => {
+    clearInterval(ping);
+    call.close("hung-up");
+    voiceLive.unregister(actor, call);
+    db.logLogin(ip, actor, "voice", `live conversation (trial) ended after ${Math.round((Date.now() - call.bornAt) / 1000)} s, $${call.usd.toFixed(4)}`);
+  });
+  ws.on("error", () => {});
+  call
+    .open()
+    .then(() => json({ type: "ready", call: call.id, model: call.model, voice: cfg.voice, max_s: Math.round(call.opts.maxMs / 1000), rate: voiceLive.RATE }))
+    .catch((e) => {
+      json({ type: "error", code: "upstream", error: voice.scrub(e.message) });
+      call.close("upstream");
+    });
+}
+
+const httpServer = app.listen(PORT, BIND, () => {
   console.log(`moni-dashboard listening on ${BIND}:${PORT}`);
   if (noUsersYet()) {
     // Materialise the token at startup so an operator with shell access can read
@@ -4890,3 +5191,4 @@ app.listen(PORT, BIND, () => {
     console.log("No admin account yet. Setup token is in " + DATA_DIR + "/setup.token");
   }
 });
+httpServer.on("upgrade", liveUpgrade);

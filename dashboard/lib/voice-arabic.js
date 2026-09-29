@@ -700,7 +700,8 @@ const NOUN_SUFFIX = ["هم", "ها", "كم", "ك", "ه", "ي", "نا"];
 function verbForms(word) {
   const out = [];
   const bases = [{ w: word, neg: false }];
-  if (CONJ.test(word) && word.length > 3) bases.push({ w: word.slice(1), neg: false });
+  // (وتم: a two-letter form after و is read too, when the lexicon knows it.)
+  if (CONJ.test(word) && (word.length > 3 || LEX.has(word.slice(1)))) bases.push({ w: word.slice(1), neg: false });
   // The future ه / ح written with a long alef: هاعمل, حامسح.
   for (const b of [...bases]) if (/^[هح]ا/.test(b.w) && b.w.length > 4) bases.push({ w: b.w[0] + b.w.slice(2), neg: false });
   for (const b of [...bases]) {

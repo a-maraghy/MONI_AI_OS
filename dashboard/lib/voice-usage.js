@@ -15,6 +15,10 @@
  *                spoken summary of MINT AI's answer
  *   direct       the direct path (front desk off): MINT AI's reply read aloud
  *                word for word
+ *   live         the live conversation (trial, lib/voice-live.js): the
+ *                realtime speech-to-speech model's audio in and out and its
+ *                text tokens (part "realtime"), and the safe lines and MINT
+ *                AI's summaries read into the same call (part "speech")
  *
  * and transcription (what the administrator said, turned into text) is its own
  * line, whichever path the turn took. There is no cap: the administrator
@@ -34,15 +38,18 @@ const PRICES_SOURCE = "https://developers.openai.com/api/docs/pricing";
 const PRICES = Object.freeze({
   "gpt-realtime-mini": { text_in: 0.6, text_cached: 0.06, text_out: 2.4, audio_in: 10.0, audio_cached: 0.3, audio_out: 20.0 },
   "gpt-realtime": { text_in: 4.0, text_cached: 0.4, text_out: 16.0, audio_in: 32.0, audio_cached: 0.4, audio_out: 64.0 },
+  // The live conversation's models (read on the pricing page 2026-09-29 as well).
+  "gpt-realtime-2.1-mini": { text_in: 0.6, text_cached: 0.06, text_out: 2.4, audio_in: 10.0, audio_cached: 0.3, audio_out: 20.0 },
+  "gpt-realtime-2.1": { text_in: 4.0, text_cached: 0.4, text_out: 24.0, audio_in: 32.0, audio_cached: 0.4, audio_out: 64.0 },
   "gpt-4o-mini-tts": { text_in: 0.6, audio_out: 12.0 },
   "gpt-4o-mini-transcribe": { text_in: 1.25, audio_in: 1.25, text_out: 5.0, per_minute: 0.003 },
   "gpt-4o-transcribe": { text_in: 2.5, audio_in: 2.5, text_out: 10.0, per_minute: 0.006 },
 });
 const TOKEN_KINDS = ["text_in", "text_cached", "audio_in", "audio_cached", "text_out", "audio_out"];
 
-const CATEGORIES = Object.freeze(["small_talk", "snapshot", "handoff", "direct"]);
-const CATEGORY_LABELS = Object.freeze({ small_talk: "Small talk", snapshot: "Snapshot answers", handoff: "Hand-offs", direct: "Direct (read aloud)", transcription: "Transcription" });
-const PARTS = Object.freeze(["transcription", "desk", "speech"]);
+const CATEGORIES = Object.freeze(["small_talk", "snapshot", "handoff", "direct", "live"]);
+const CATEGORY_LABELS = Object.freeze({ small_talk: "Small talk", snapshot: "Snapshot answers", handoff: "Hand-offs", direct: "Direct (read aloud)", live: "Live conversation", transcription: "Transcription" });
+const PARTS = Object.freeze(["transcription", "desk", "speech", "realtime"]);
 const TZ = "Africa/Cairo";
 
 /* ------------------------------------------------------------ tokens -- */
@@ -216,7 +223,7 @@ function aggregate(rows, nowMs, tz) {
       }
     }
     if (r.vt) {
-      const t = byVt.get(r.vt) || { vt: r.vt, at: 0, usd: 0, cat: null, parts: { transcription: 0, desk: 0, speech: 0 } };
+      const t = byVt.get(r.vt) || { vt: r.vt, at: 0, usd: 0, cat: null, parts: { transcription: 0, desk: 0, speech: 0, realtime: 0 } };
       t.usd += usd;
       t.parts[r.part] = (t.parts[r.part] || 0) + usd;
       t.at = Math.max(t.at, r.ts);

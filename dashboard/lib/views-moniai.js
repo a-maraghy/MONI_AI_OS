@@ -23,7 +23,7 @@
  * Only this VPS is shown. The live Odoo server appears nowhere on this page.
  */
 
-const { esc, shell, card } = require("./ui");
+const { esc, shell, card, asset } = require("./ui");
 const marks = require("./marks");
 const logic = require("../public/cc-logic");
 
@@ -195,7 +195,9 @@ function page(o) {
      data-voice-manage="${voice.manage ? "1" : ""}"
      data-voice="${esc(voice.voice || "")}"
      data-voice-model="${esc(voice.model || "")}"
-     data-voice-desk="${deskOn ? "1" : ""}">
+     data-voice-desk="${deskOn ? "1" : ""}"
+     data-voice-live="${voice.configured && voice.live ? "1" : ""}"
+     data-live-worklet="${voice.configured && voice.live ? esc(asset("voice-live-worklet.js")) : ""}">
   <div class="cc-bg" aria-hidden="true"></div>
   <div class="cc-halo" id="cc-halo" aria-hidden="true"></div>
   <canvas class="cc-core" id="cc-core" aria-hidden="true"></canvas>
@@ -228,6 +230,8 @@ function page(o) {
             : "Voice goes straight to MINT AI: OpenAI only hears and reads aloud."
         }">${deskOn ? "Front desk · GPT" : "Direct · MINT AI"}</span><span class="cc-tag">OpenAI</span><span class="cc-tag" id="cc-voice-tag">${esc(voice.configured ? String(voice.voice || "voice") : "no key")}</span></span>
         <span class="cc-target cc-static">${ic("route")}<span id="cc-vb-target">Auto-route</span></span>
+        <button type="button" class="cc-ibtn cc-live-only" id="cc-live-mute" title="Mute the microphone (the conversation stays open)" aria-label="Mute" aria-pressed="false" hidden>${ic("mute")}</button>
+        <button type="button" class="cc-btn sm cc-live-only cc-live-end" id="cc-live-end" title="End the live conversation" hidden>${ic("close")}End conversation</button>
         <button type="button" class="cc-ibtn" id="cc-vb-close" title="Back to typing" aria-label="Back to typing">${ic("close")}</button>
       </div>
       <div class="cc-hint" id="cc-hint"><button type="button" class="cc-vm" id="cc-vm" aria-haspopup="menu" aria-expanded="false" title="Voice and core settings">${ic("voice")}<span id="cc-mic-mode" data-mode="ptt">Push to talk</span>${ic("chevd")}</button>${
@@ -344,7 +348,7 @@ function page(o) {
     brand: "ai",
     heading: null,
     pageClass: "cc-page",
-    assets: ["moni-ai.css", "cc-logic.js", "mint-core.js", "cc-map.js", "cc-panels.js", "moni-ai.js"],
+    assets: ["moni-ai.css", "voice-live.css", "cc-logic.js", "mint-core.js", "cc-map.js", "cc-panels.js", "voice-live.js", "moni-ai.js"],
     topExtra: topExtra(),
     topEnd: TOP_CLOCK,
   });

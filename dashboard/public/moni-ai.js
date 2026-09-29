@@ -55,6 +55,10 @@
   function voiceModeFrom(stored) {
     return stored === "handsfree" ? "handsfree" : "ptt";
   }
+  /** A live conversation is on (the live integration block, further down; never in a sandbox without it). */
+  function liveActive() { return typeof LiveUI !== "undefined" && !!(LiveUI && LiveUI.active); }
+  /** The live call's microphone or speaker loudness, for the core. */
+  function liveLevel(k) { return liveActive() ? Math.min(1, (LiveUI[k] || 0) * (k === "mic" ? 3 : 2.5)) : 0; }
   /** What was said is only "stop listening" or the like (public/voice-stop.js; without it, never). */
   function isStopCommand(said) {
     return !!(window.VoiceStop && window.VoiceStop.heard(said));
@@ -410,7 +414,7 @@
     var cur = S.status && S.status.current_turn, tr = cur ? S.turns.get(cur.id) : null;
     var last = lastReplyTurn(), vb = $("cc-vb-text");
     var dg = Date.now() < S.delegatingUntil;
-    return {
+    var snap = {
       online: S.online, offlineMsg: S.offlineMsg,
       listening: Voice.listening, speaking: Voice.speaking, voiceLive: $("cc-dock").classList.contains("voice-on"),
       voiceText: vb ? vb.textContent : "", spoken: S.spoken,
@@ -420,6 +424,7 @@
       pending: q.length, needTitle: q.length ? (ML.card(q[0]) || {}).title : "",
       lastReply: last ? ML.gist(aiText(last)) : "",
     };
+    return liveSnapshot(snap);
   }
   var capSig = "";
   function paintCaption(snap) {
@@ -1365,10 +1370,11 @@
     $("cc-vm").setAttribute("aria-expanded", "false");
   }
   function openVoiceMenu() {
-    var p = $("cc-pop"), mode = Voice.mode(), ready = READY;
+    var p = $("cc-pop"), mode = liveSelected() ? "live" : Voice.mode(), ready = READY;
     var h = '<div class="grp">Voice</div>' +
       '<button type="button" role="menuitemradio" data-vmode="ptt" aria-checked="' + (mode === "ptt") + '"' + (ready ? "" : " disabled") + '><span class="chk"></span>Push to talk<small>hold the mic or Space</small></button>' +
       '<button type="button" role="menuitemradio" data-vmode="handsfree" aria-checked="' + (mode === "handsfree") + '"' + (ready ? "" : " disabled") + '><span class="chk"></span>Hands-free<small>a pause sends</small></button>' +
+      liveMenuItem(mode) +
       '<button type="button" role="menuitemcheckbox" data-vread aria-checked="' + Voice.speakAll + '"' + (ready ? "" : " disabled") + '><span class="chk"></span>Read replies aloud<small>streamed</small></button>' +
       '<div class="line">' + ic("route") + "<span>" + (DESK ? "Front desk · GPT (trial)" : "Direct to MINT AI") + "</span>" +
       (root.getAttribute("data-voice-manage") === "1" ? '<a href="/credentials/openai-voice#v-desk">Settings</a>' : "<small>set in Settings</small>") + "</div>" +
@@ -1393,7 +1399,7 @@
   $("cc-pop").addEventListener("click", function (e) {
     e.stopPropagation();
     var m = e.target.closest("[data-vmode]");
-    if (m && !m.disabled) { Voice.setMode(m.getAttribute("data-vmode")); openVoiceMenu(); return; }
+    if (m && !m.disabled) { var vm = m.getAttribute("data-vmode"); if (vm === "live") liveSelect(true); else { liveSelect(false); Voice.setMode(vm); } openVoiceMenu(); return; }
     var rd = e.target.closest("[data-vread]");
     if (rd && !rd.disabled) { $("cc-speak-toggle").click(); openVoiceMenu(); return; }
     var cs = e.target.closest("[data-core-set]");
@@ -1876,6 +1882,8 @@
       on: false, listening: false, speaking: false, speakAll: false,
       say: function () {}, feed: function () {}, flush: function () {}, unlock: function () {}, summary: function () {}, tag: function () {},
     };
+    // (Whether a live conversation holds the voice bar; false where the live block is absent, as in the tests' sandbox.)
+    function liveOn() { return typeof liveActive === "function" && liveActive(); }
     var AC = window.AudioContext || window.webkitAudioContext;
     var canRecord = !!(navigator.mediaDevices && window.MediaRecorder && AC);
     var supported = canRecord && READY;
@@ -1971,7 +1979,7 @@
       for (var i = 0; i < buf.length; i++) { var v = (buf[i] - 128) / 128; sum += v * v; }
       return Math.sqrt(sum / buf.length);
     }
-    Orb.micSource(function () { return api_.listening && !api_.speaking ? lastRms : 0; });
+    Orb.micSource(function () { return liveOn() ? liveLevel("mic") : api_.listening && !api_.speaking ? lastRms : 0; });
 
     /* ---- the speaker: one AudioContext, an analyser in front of it, so the
        seed core pulses with the reply's real loudness ---- */
@@ -1989,6 +1997,7 @@
       return outCtx;
     }
     function outLevel() {
+      if (liveOn()) return liveLevel("out");
       if (!api_.speaking) return -1;
       if (!source || !outAn) return 0;
       outAn.getByteTimeDomainData(outBuf);
@@ -2000,7 +2009,7 @@
 
     function setUi() {
       if (!READY) return;
-      var live = api_.on || ptt;
+      var live = api_.on || ptt || liveOn();
       dock.classList.toggle("voice-on", live);
       cMic.classList.toggle("live", live);
       cMic.setAttribute("aria-pressed", live ? "true" : "false");
@@ -2715,6 +2724,133 @@
     };
     return api_;
   })();
+
+  /* ================================================================ LIVE CONVERSATION (trial)
+     Integration block for public/voice-live.js, which holds all of the live
+     logic (see its header and the README's integration contract). This only:
+       - offers the mode in the voice menu (administrators, when Settings has it
+         on: data-voice-live="1"), remembered per browser;
+       - starts and ends a call from the mic, the voice bar's End and close
+         buttons, and mutes from its mute button (Space and push to talk are
+         left alone while a call is on);
+       - feeds the core and the caption: onState -> the state the core and the
+         caption show (listening / thinking / speaking / delegating, with an
+         "interrupted" flash on the voice bar), onCaption -> the caption's
+         sentence, word by word, onLevel -> the core's amplitude. */
+  var LIVE_OK = READY && root.getAttribute("data-voice-live") === "1" && !!(window.VoiceLive && window.VoiceLive.supported());
+  var LIVE_KEY = "mint-voice-live";
+  var LiveUI = { selected: false, active: false, state: "idle", caption: "", who: "", mic: 0, out: 0 };
+  try { LiveUI.selected = LIVE_OK && window.localStorage.getItem(LIVE_KEY) === "1"; } catch (e) { /* storage blocked: not selected */ }
+  var LIVE_TEXT = {
+    connecting: "Connecting…", listening: "Listening — just talk", talking: "You're talking…", thinking: "Thinking…",
+    speaking: "Speaking — talk over it to interrupt", interrupted: "Interrupted — go ahead", waiting: "Passed to MINT AI — waiting for its answer",
+    muted: "Muted — the microphone is off", ended: "Conversation ended", error: "The live conversation stopped", idle: "",
+  };
+  var LIVE_TIP = "Live conversation (trial): talk freely and interrupt any time. Headphones are advised — without them the speaker can leak into the microphone. Say “stop listening” or press End to finish.";
+  function liveSelected() { return !!(LiveUI && LiveUI.selected); }
+  function liveMenuItem(mode) {
+    if (!(READY && root.getAttribute("data-voice-live") === "1")) return "";
+    var ok = !!(window.VoiceLive && window.VoiceLive.supported());
+    return '<button type="button" role="menuitemradio" data-vmode="live" aria-checked="' + (mode === "live") + '"' + (ok ? "" : " disabled") + ' title="' + esc(LIVE_TIP) + '"><span class="chk"></span>Live conversation<small><b>trial</b> · headphones advised</small></button>';
+  }
+  function liveSelect(on) {
+    LiveUI.selected = !!(on && LIVE_OK);
+    try { window.localStorage.setItem(LIVE_KEY, LiveUI.selected ? "1" : "0"); } catch (e) { /* not remembered */ }
+    if (!LiveUI.selected && LiveUI.active) liveStop();
+    paintLiveMode();
+  }
+  function paintLiveMode() {
+    var mb = $("cc-mic-mode");
+    if (LiveUI.selected) {
+      if (mb) { mb.textContent = "Live conversation"; mb.setAttribute("data-mode", "live"); }
+      $("cc-c-mic").title = LIVE_TIP;
+    } else if (Voice.setMode) Voice.setMode(Voice.mode()); // repaint the ordinary mode
+  }
+  function paintLive(st) {
+    LiveUI.state = st;
+    var dock = $("cc-dock"), on = LiveUI.active;
+    dock.classList.toggle("live-on", on);
+    dock.classList.toggle("voice-on", on || Voice.on);
+    dock.setAttribute("data-live", on ? st : "");
+    $("cc-c-mic").classList.toggle("live", on);
+    $("cc-live-mute").hidden = !on;
+    $("cc-live-end").hidden = !on;
+    var muted = on && st === "muted";
+    $("cc-live-mute").setAttribute("aria-pressed", muted ? "true" : "false");
+    $("cc-live-mute").title = muted ? "Unmute the microphone" : "Mute the microphone (the conversation stays open)";
+    if (on) {
+      $("cc-vb-mode").textContent = "Live · trial";
+      $("cc-voice-mode").textContent = "Live · GPT";
+      $("cc-voice-mode").title = LIVE_TIP;
+      if (!(LiveUI.who === "you" && st === "thinking")) $("cc-vb-text").textContent = LIVE_TEXT[st] || st;
+    }
+    paintState();
+  }
+  function liveStart() {
+    if (LiveUI.active || !LIVE_OK) return;
+    LiveUI.active = true;
+    LiveUI.who = "";
+    if (Voice.on) $("cc-vb-close").click();
+    paintLive("connecting");
+    window.VoiceLive.start({
+      csrf: CSRF,
+      worklet: root.getAttribute("data-live-worklet") || undefined,
+      onState: function (st) { if (LiveUI.active) paintLive(st); },
+      onCaption: function (c) {
+        LiveUI.who = c.who;
+        LiveUI.caption = c.text;
+        if (c.who === "you") $("cc-vb-text").textContent = c.text;
+        paintState();
+      },
+      onLevel: function (l) { LiveUI.mic = l.mic || 0; LiveUI.out = l.out || 0; },
+      onEvent: function (m) {
+        if (m.type === "stop") toast("Stopped listening. The live conversation has ended.");
+        else if (m.type === "error" && m.code === "busy") toast(m.error, true);
+        if (m.type === "ended" || m.type === "error") liveEnded(m);
+      },
+    }).catch(function (e) {
+      toast("Live conversation: " + ((e && e.message) || "could not start"), true);
+      liveEnded({});
+    });
+  }
+  function liveEnded() {
+    if (!LiveUI.active) return;
+    LiveUI.active = false;
+    LiveUI.caption = "";
+    paintLive("idle");
+    Voice.setMode(Voice.mode());
+    paintLiveMode();
+  }
+  function liveStop() { if (window.VoiceLive) window.VoiceLive.stop(); liveEnded(); }
+  /** What the core and the caption show while a call is on (see snapshot()). */
+  function liveSnapshot(snap) {
+    if (!liveActive()) return snap;
+    var st = LiveUI.state;
+    snap.listening = st === "listening" || st === "talking" || st === "interrupted" || st === "connecting";
+    snap.speaking = st === "speaking";
+    snap.voiceLive = st === "thinking";
+    snap.voiceText = $("cc-vb-text").textContent;
+    snap.spoken = st === "speaking" && LiveUI.who !== "you" ? LiveUI.caption : "";
+    if (st === "waiting") { snap.delegatingTo = "MINT AI"; snap.delegation = "Passed to MINT AI — its answer will be read when it arrives."; }
+    return snap;
+  }
+  // The mic, Space and the voice bar belong to the call while one is on.
+  window.addEventListener("pointerdown", function (e) {
+    if (!LiveUI.selected || !e.target.closest || !e.target.closest("#cc-c-mic")) return;
+    e.stopPropagation();
+    e.preventDefault();
+  }, true);
+  window.addEventListener("click", function (e) {
+    if (!e.target.closest) return;
+    if (LiveUI.selected && e.target.closest("#cc-c-mic")) { e.stopPropagation(); e.preventDefault(); return LiveUI.active ? liveStop() : liveStart(); }
+    if (LiveUI.active && (e.target.closest("#cc-vb-close") || e.target.closest("#cc-live-end"))) { e.stopPropagation(); return liveStop(); }
+    if (LiveUI.active && e.target.closest("#cc-live-mute")) { e.stopPropagation(); return window.VoiceLive.mute(!window.VoiceLive.muted()); }
+  }, true);
+  window.addEventListener("keydown", function (e) { if (LiveUI.active && e.code === "Space" && !liveTyping(document.activeElement)) e.stopPropagation(); }, true);
+  function liveTyping(el) { return el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable || el.tagName === "BUTTON"); }
+  window.addEventListener("beforeunload", function () { if (LiveUI.active) window.VoiceLive.stop(); });
+  if (LiveUI.selected) paintLiveMode();
+  /* ============================================================ end of the live integration block */
 
   /* ================================================================ panels
      Missions, Decisions, Rules and Watchers, standing orders, cost, the deep

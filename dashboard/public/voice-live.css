@@ -1,0 +1,29 @@
+/*
+ * Live conversation (trial) in the Command Center's voice bar: the mute and
+ * "End conversation" controls, the mode tag and the live states. Colours are
+ * the Mint brand tokens from style.css, so all three themes follow.
+ */
+.cc-live-only[hidden] { display: none !important; }
+.cc-dock.live-on #cc-vb-stop { display: none; }
+.cc-dock.live-on .cc-tag-mode { color: var(--on-brand, #0D1117); background: var(--brand); border-color: transparent; }
+.cc-live-end { gap: 6px; border-color: var(--line-strong); }
+.cc-live-end:hover { border-color: var(--danger, #D1453B); color: var(--danger, #D1453B); }
+#cc-live-mute[aria-pressed="true"] { color: var(--warn); border-color: var(--warn); }
+
+/* The states, on the voice bar (data-live on #cc-dock). */
+.cc-dock[data-live="talking"] .cc-vb-text span,
+.cc-dock[data-live="speaking"] .cc-vb-text span { color: var(--accent); }
+.cc-dock[data-live="waiting"] .cc-vb-text span { color: var(--violet-ink); }
+.cc-dock[data-live="muted"] .cc-vb-text span { color: var(--warn); }
+.cc-dock[data-live="interrupted"] .cc-voicebar { animation: cc-live-flash .7s ease-out; }
+@keyframes cc-live-flash {
+  0% { box-shadow: 0 0 0 0 var(--glow); }
+  30% { box-shadow: 0 0 0 6px var(--accent-soft); }
+  100% { box-shadow: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .cc-dock[data-live="interrupted"] .cc-voicebar { animation: none; }
+}
+
+/* The voice menu's third mode. */
+.cc-pop [data-vmode="live"] small b { color: var(--accent); font-weight: 600; }

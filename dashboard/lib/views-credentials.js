@@ -267,7 +267,7 @@ function deskCard(csrf, v, desk) {
     : "";
   return card(
     "Voice front desk (GPT)",
-    `<p class="small"><span class="pill ${d.on ? "warn" : "neutral"}" id="voice-desk-state">${d.on ? "on — trial" : "off"}</span>
+    `<p class="small"><span class="pill ${d.on ? "warn" : "neutral"}" id="voice-desk-state">${d.mode === "live" ? "live conversation — trial" : d.on ? "on — trial" : "off"}</span>
       <span class="muted">${row ? "Last changed " + esc(stamp(row.updated_at)) + (row.updated_by ? " by " + esc(row.updated_by) : "") : "Never switched on."}</span></p>
     <p class="muted small mt-12">A trial. When on, the Command Center's microphone talks to a GPT realtime model
       (${esc(d.model || "gpt-realtime-mini")}) that answers at once from a read-only snapshot of this VPS — services,
@@ -282,6 +282,20 @@ function deskCard(csrf, v, desk) {
       <button class="btn ${d.on ? "" : "primary "}small" type="submit" id="voice-desk-toggle"${v.configured || d.on ? "" : " disabled"}>
         ${icon(d.on ? "close" : "play")} ${d.on ? "Switch the front desk off" : "Switch the front desk on"}</button>
       ${v.configured ? "" : `<span class="muted small">Needs the OpenAI key above.</span>`}
+    </form>
+    <h3 class="mt-16" id="v-live">Live conversation (trial)</h3>
+    <p class="muted small">A third mode, for administrators only, off unless chosen here. You talk and it answers at once, and you can
+      interrupt it: the microphone streams to this server, which relays it to ${esc(d.liveModel || "gpt-realtime-2.1-mini")} and plays back
+      only the sentences the same guard has passed. MINT AI's answers are still read from its own text (a checked summary or word for
+      word), never made up by the voice model; requests pass to MINT AI in your own words, as this server heard them. It can do nothing
+      else, and saying "stop listening" ends it. At most 20 minutes a call, one call at a time; headphones are advised (without them the
+      speaker can leak into the microphone). Other users, and push to talk, keep the relay desk.</p>
+    <form method="post" action="/credentials/openai-voice/desk" class="btn-row">
+      <input type="hidden" name="_csrf" value="${esc(csrf)}">
+      <input type="hidden" name="mode" value="${d.mode === "live" ? "desk" : "live"}">
+      <button class="btn small" type="submit" id="voice-live-toggle"${v.configured || d.mode === "live" ? "" : " disabled"}>
+        ${icon(d.mode === "live" ? "close" : "play")} ${d.mode === "live" ? "Back to the relay desk" : "Switch to live conversation (trial)"}</button>
+      <a class="btn small" href="/mint-ai/voice-eval" id="voice-eval-link">${icon("voice")} Evaluate models and voices with your own voice</a>
     </form>
     ${spend}
 `,

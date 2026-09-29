@@ -194,4 +194,32 @@ function noteFor(turn, saved) {
   );
 }
 
-module.exports = { detect, clean, merge, describe, noteFor, feminineVerb, EGYPTIAN, MSA, DIALECT_LABEL, GENDER_LABEL };
+/**
+ * The same rule for the live conversation (lib/voice-live.js), where the
+ * model hears the audio and answers before any transcript exists: one standing
+ * line in the session's instructions, refreshed when the saved persona changes.
+ */
+function liveNote(saved) {
+  const p = clean(saved);
+  const reg =
+    p.dialect === "msa"
+      ? "they usually speak Modern Standard Arabic, so answer in MSA"
+      : p.dialect === "egyptian"
+        ? "they usually speak Egyptian colloquial Arabic, so answer in Egyptian (not Modern Standard Arabic)"
+        : "answer in the same register they use (Egyptian colloquial or Modern Standard Arabic)";
+  const g =
+    p.gender === "f"
+      ? "They address you in the feminine: use feminine forms for yourself (أنا جاهزة، متأكدة)."
+      : p.gender === "m"
+        ? "They address you in the masculine: use masculine forms for yourself (أنا جاهز، متأكد)."
+        : "Use gender-neutral phrasing for yourself (تحت أمرك، ثواني وهسأل MINT AI), not gendered adjectives.";
+  return (
+    "Language: always reply in the language the administrator has just spoken. English gets English. Arabic, or Arabic mixed with English: " +
+    reg +
+    ", keeping technical terms and units in English (Odoo, disk, restart, dashboard, GB). " +
+    g +
+    " MINT AI is \"he\". You are MINT AI's voice, never a person."
+  );
+}
+
+module.exports = { liveNote, detect, clean, merge, describe, noteFor, feminineVerb, EGYPTIAN, MSA, DIALECT_LABEL, GENDER_LABEL };

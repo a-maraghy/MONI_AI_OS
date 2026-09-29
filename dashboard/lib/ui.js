@@ -687,6 +687,7 @@ function empty(iconName, title, body) {
 }
 
 module.exports = {
+  asset,
   docLayout,
   tocCard,
   esc,
