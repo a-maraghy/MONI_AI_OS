@@ -1114,7 +1114,13 @@ class LiveCall {
   }
 
   async passOn(t, request) {
-    const res = await this.d.ops.ask(request);
+    let ut = null;
+    try {
+      ut = this.d.uiTicket ? this.d.uiTicket() : null; // UI control Phase 2: MINT AI may change this tab's screen, in this turn
+    } catch (_) {
+      ut = null;
+    }
+    const res = await this.d.ops.ask(request, ut ? { ut } : undefined);
     const tt = res && res.turn;
     t.asked = (tt && tt.id) || true;
     if (tt && tt.id) this.requests.set(tt.id, { text: request, answered: false });
@@ -1263,6 +1269,31 @@ class LiveCall {
     this.log(`live: ui_action ${v.action} (turn ${t.n})`);
     audit("ok");
     return JSON.stringify(result);
+  }
+
+  /**
+   * MINT AI's own ui_action (Phase 2) for this call: call.end / call.mute /
+   * call.interrupt, relayed by the server after the supervisor and the ui
+   * token checks. call.end lets whatever is playing finish first.
+   */
+  deepUi(v) {
+    if (this.closed) return { ok: false, why: "the call has ended" };
+    const toast = UiActions.toast(v.action, v.args);
+    this.toClient({ type: "ui", action: v.action, args: v.args, toast, server: true });
+    if (v.action === "call.end") {
+      this.endAfterSpeech = this.now();
+      this.timer(() => this.endAfterSpeech && this.close("mint-ended", "Mint ended the call."), UI_END_MAX_MS);
+      if (!this.resp_active()) this.endWhenQuiet();
+    } else if (v.action === "call.mute") {
+      this.mute(true);
+    } else if (v.action === "call.interrupt") {
+      this.speechGen++;
+      this.toClient({ type: "flush", at: this.now() });
+      for (const s of this.segs.values()) s.over = true;
+    } else return { ok: false, why: "not a call action" };
+    this.diag.ui.push({ turn: "mint", action: v.action });
+    this.log(`live: ui_action ${v.action} (from MINT AI)`);
+    return { ok: true };
   }
 
   /* ---- MINT AI's answers: the guarded summary, then the verbatim reader ---- */

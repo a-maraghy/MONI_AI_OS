@@ -342,14 +342,26 @@ function deskOps(call, actor) {
   return {
     gate,
     snapshot: (turns) => gate("snapshot", turns && turns.length ? { turns } : {}),
-    ask: (text) => {
+    // extra.ut: the one-time ui token this server minted for the tab (UI control Phase 2).
+    ask: (text, extra) => {
       const t = String(text || "").trim();
       if (!t) throw new DeskError("nothing to pass on", "invalid");
       const door = voiceGuard.refuseAtDoor(t);
       if (door) throw new DeskError(`refused: that reads as ${door.source || "a prompt"}, not as something the administrator said`, "refused");
-      return gate("send", { text: t.slice(0, 20000), via: "voice-desk" });
+      const ut = extra && typeof extra.ut === "string" ? extra.ut : null;
+      return gate("send", { text: t.slice(0, 20000), via: "voice-desk", ...(ut ? { ut } : {}) });
     },
   };
+}
+
+/** A hand-off's ui token, minted by the server for the tab that spoke (or nothing). */
+function uiExtra(turn) {
+  try {
+    const ut = turn && typeof turn.uiTicket === "function" ? turn.uiTicket() : null;
+    return ut ? { ut } : undefined;
+  } catch (_) {
+    return undefined;
+  }
 }
 
 /* ------------------------------------------------ what the model sees -- */
@@ -1600,7 +1612,7 @@ class DeskSession {
       return JSON.stringify({ error: "refused: ask_moni works only on what the administrator said in this turn. Say you did not catch that." });
     }
     if (norm(text).replace(/[^\p{L}\p{N}]/gu, "") !== norm(request).replace(/[^\p{L}\p{N}]/gu, "")) turn.paraphrased = true; // counted, never logged in words
-    const r = await this.ops.ask(request);
+    const r = await this.ops.ask(request, uiExtra(turn));
     const t = r && r.turn;
     if (t && t.id) this.requests.set(t.id, { text: request, answered: false, reply: null });
     turn.asked.push(t || null);
@@ -1654,7 +1666,7 @@ class DeskSession {
     }
     await this.refreshReplies();
     this.heard.push(said);
-    const turn = { kind: "turn", heard: said, grounded: true, asked: [], tools: [], rejected: [], lines: [], trip: null, tokens: {}, responses: 0, ui: [], onUi: opts.onUi };
+    const turn = { kind: "turn", heard: said, grounded: true, asked: [], tools: [], rejected: [], lines: [], trip: null, tokens: {}, responses: 0, ui: [], onUi: opts.onUi, uiTicket: opts.uiTicket };
     this.curTurn = turn;
     const emit = (line) => {
       turn.lines.push(line);
@@ -1709,7 +1721,7 @@ class DeskSession {
       const L = linesFor(langOf(turn.trip.sentence, said), persona.gender);
       if (!turn.asked.length) {
         try {
-          const r = await this.ops.ask(said);
+          const r = await this.ops.ask(said, uiExtra(turn));
           const t = r && r.turn;
           if (t && t.id) this.requests.set(t.id, { text: said, answered: false, reply: null });
           turn.asked.push(t || null);

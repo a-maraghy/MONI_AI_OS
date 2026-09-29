@@ -74,7 +74,7 @@ check("the API routes are under /mint-ai/api", (server.match(/app\.(get|post)\("
   const ui = require(path.join(ROOT, "lib", "ui.js"));
   check("the top-bar tab points at /mint-ai", ui.NAV[0].href === "/mint-ai");
   const js = fs.readFileSync(path.join(ROOT, "public", "moni-ai.js"), "utf8");
-  check("the page's API base, event stream and speech are under /mint-ai", /fetch\("\/mint-ai\/api\/" \+ path/.test(js) && /new EventSource\("\/mint-ai\/api\/events"/.test(js) && /fetch\("\/mint-ai\/api\/speak"/.test(js));
+  check("the page's API base, event stream and speech are under /mint-ai", /fetch\("\/mint-ai\/api\/" \+ path/.test(js) && /new EventSource\("\/mint-ai\/api\/events[?"]/.test(js) && /fetch\("\/mint-ai\/api\/speak"/.test(js));
 }
 
 /* ------------------------------------------------------------- over HTTP --- */

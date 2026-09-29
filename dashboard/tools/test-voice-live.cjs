@@ -816,6 +816,19 @@ let WS_BASE;
     check(`«${said}»: the page is told to stop, and the call ends`, client.json.some((m) => m.type === "stop" && m.why === "voice-command") && client.json.some((m) => m.type === "ended") && (await until(() => s.closed, 500)));
     check("  the answer in flight is cancelled, nothing is passed on", s.of("response.cancel").length >= 1 && !sup.calls.some((x) => x[0] === "send"));
   }
+  section("MINT AI's own call.* (UI control Phase 2: deepUi, after the relay's checks)");
+  {
+    const { c, client } = makeCall();
+    await c.open();
+    const U = require(path.join(ROOT, "public", "ui-actions.js"));
+    const m = c.deepUi(U.validate("call.mute", {}));
+    check("call.mute: ok, the call is muted, the page told", m.ok && c.muted && client.json.some((x) => x.type === "ui" && x.action === "call.mute" && x.server));
+    check("a page action is not the call's to do", !c.deepUi(U.validate("sheet.open", { key: "missions" })).ok);
+    const e = c.deepUi(U.validate("call.end", {}));
+    check("call.end: ok, and the call ends once nothing is playing", e.ok && (await until(() => c.closed, 2000)));
+    check("  after the call: refused", !c.deepUi(U.validate("call.mute", {})).ok);
+  }
+
   section("a spoken undo reverses the last screen action, only while the page can undo it");
   for (const said of ["Undo.", "undo that", "Never mind", "رجّعها", "ألغي ده", "لأ خلاص"]) {
     const { c, client, sup, audited } = makeCall({ turnText: said });

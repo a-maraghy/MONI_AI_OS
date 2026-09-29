@@ -42,6 +42,7 @@ const { createFeatures } = require("./lib/features");
 const { buildSnapshot } = require("./lib/snapshot");
 const turnQueue = require("./lib/turnqueue");
 const names = require("./lib/names");
+const UiActions = require("./lib/ui-actions");
 
 /* ----------------------------------------------------------------- config --- */
 
@@ -197,6 +198,21 @@ let seq = 0;
 const ring = [];
 const viewers = new Set();
 
+/**
+ * Publish one event to the connected viewers only: never into the ring, so a
+ * reconnecting viewer can never replay it (UI control: "ui" events).
+ */
+function emitLive(type, data) {
+  const line = JSON.stringify({ event: redactDeep({ seq: 0, ts: now(), type, ...data }) }) + "\n";
+  for (const v of viewers) {
+    if (v.destroyed) {
+      viewers.delete(v);
+      continue;
+    }
+    v.write(line);
+  }
+}
+
 /** Publish one event to the ring buffer and every connected viewer. */
 function emit(type, data) {
   const ev = redactDeep({ seq: ++seq, ts: now(), type, ...data });
@@ -238,6 +254,14 @@ const proc = {
   initSessionId: null,
   generation: 0,
 };
+
+/* UI control (see uiAction below): in memory only, never in the ledger or the ring. */
+const UI_REFUSED_ACTORS = new Set(["moni-ai", "watcher", "supervisor", "flag-file", "scheduler", "order"]);
+const UI_ACK_MS = 5000;
+const uiTokens = new Map(); // turn id -> { ut, actor, source }
+const uiWaiting = new Map(); // nonce -> { actor, resolve }
+const uiLimit = UiActions.limiter();
+const uiTag = (ut) => crypto.createHash("sha256").update(String(ut)).digest("hex").slice(0, 16);
 
 const turns = {
   pending: [], // turns waiting their go: { row, message }. Handed to the CLI one at a time by pump().
@@ -537,6 +561,7 @@ function onExit(gen, code, signal) {
   if (turns.running) {
     const row = ledger.updateTurn(turns.running.id, { status: "lost", ended_at: now(), error: "process exited mid-turn" });
     emit("turn", { phase: "end", turn: publicTurn(row) });
+    uiTokens.delete(turns.running.id);
     turns.running = null;
     features.hooks.onTurnEnd(row);
   }
@@ -634,8 +659,13 @@ const OUR_SOURCES = new Set(["dashboard", "voice-desk", "order", "watcher", "mis
  * one turn at a time, user turns before background ones (lib/turnqueue.js).
  * Nothing here ever interrupts a running turn.
  */
-function queueTurn({ source, actor, text, target, order_id, mission_id, decision_id }) {
+function queueTurn({ source, actor, text, target, order_id, mission_id, decision_id, ut }) {
   const row = ledger.addTurn({ uuid: crypto.randomUUID(), source, actor, text, target: target || null, status: "queued", order_id, mission_id, decision_id });
+  // The ui token lives here only (memory): never in the ledger, the events or the audit.
+  if (ut && (source === "dashboard" || source === "voice-desk") && !UI_REFUSED_ACTORS.has(actor)) {
+    uiTokens.set(row.id, { ut, actor, source });
+    if (uiTokens.size > 200) uiTokens.delete(uiTokens.keys().next().value);
+  }
   turns.pending.push({ row, message: userMessage(row) });
   emit("turn", { phase: "queued", turn: publicTurn(row) });
   pump();
@@ -842,7 +872,10 @@ function onLifecycle(ev) {
       emit("turn", { phase: "end", turn: publicTurn(row) });
       features.hooks.onTurnEnd(row);
     }
-    if (turns.running && turns.running.uuid === uuid) turns.running = null;
+    if (turns.running && turns.running.uuid === uuid) {
+      uiTokens.delete(turns.running.id); // a turn's ui token dies with it
+      turns.running = null;
+    }
     if (turns.inflight && turns.inflight.uuid === uuid) clearInflight();
     turns.byUuid.delete(uuid);
     pump();
@@ -1735,7 +1768,7 @@ async function handle(req, sock) {
         const live = (sessionsCache.list || []).some((s) => s.name === target && !s.self);
         if (!live) throw new Error(`no live session is named "${target}"`);
       }
-      const turn = queueTurn({ source: p.via === "voice-desk" ? "voice-desk" : "dashboard", actor: req.actor, text: p.text, target: target !== "auto" ? target : null });
+      const turn = queueTurn({ source: p.via === "voice-desk" ? "voice-desk" : "dashboard", actor: req.actor, text: p.text, target: target !== "auto" ? target : null, ut: p.ut });
       // How many turns go before this one: whatever is running or handed
       // over, plus the user turns queued ahead of it (background ones wait).
       const ahead = turnQueue.order(turns.pending, Date.now(), cfg.queue_background_max_wait_s * 1000).findIndex((q) => q.row.id === turn.id);
@@ -1772,10 +1805,64 @@ async function handle(req, sock) {
     }
     case "fresh":
       return await freshStart(req.actor, p);
+    case "ui-action":
+      return await uiAction(req.actor, p);
+    case "ui-ack": {
+      const w = uiWaiting.get(p.nonce);
+      if (!w) throw new Error("no such screen action is waiting (or it was answered already)");
+      if (w.actor !== req.actor) throw new Error("that screen action is not yours to answer");
+      uiWaiting.delete(p.nonce);
+      w.resolve({ ok: p.ok, why: p.why || "" });
+      return { acked: true };
+    }
     default:
       if (Object.prototype.hasOwnProperty.call(features.ops, req.op)) return await features.ops[req.op](p, req);
       throw new Error("unknown op");
   }
+}
+
+/* ---------------------------------------------------------- UI control --- */
+
+/*
+ * MINT AI's ui_action (UI control, Phase 2). The Command Center mints a
+ * one-time ui token for each send the administrator makes and the supervisor
+ * keeps it with that turn, in memory. MINT AI's MCP tool asks for a screen
+ * action; the supervisor accepts it only
+ *   - from actor "moni-ai" (its own MCP tool),
+ *   - while a turn the administrator started (source dashboard / voice-desk)
+ *     is running and carries a token -- no watcher, order, scheduler, peer or
+ *     Remote Control turn has one,
+ *   - for an action on the shared allowlist (lib/ui-actions.js, the same file
+ *     as the dashboard's public/ui-actions.js), within its rate limits;
+ * then emits it live to the viewers (never into the ring: no replay). The
+ * dashboard forwards it only to the tab that holds that token, the page does
+ * it and answers (ui-ack). No answer in 5 s: "no Command Center open".
+ */
+async function uiAction(actor, p) {
+  if (actor !== "moni-ai") throw new Error("ui-action is MINT AI's own tool (actor moni-ai)");
+  const running = turns.running;
+  if (!running) throw new Error("no turn is running: a screen action answers the administrator's own request, during it");
+  const tok = uiTokens.get(running.id);
+  if (!tok || (running.source !== "dashboard" && running.source !== "voice-desk")) throw new Error("this turn was not started by the administrator from the Command Center, so it cannot change their screen");
+  const v = UiActions.validate(p.action, p.args || {});
+  if (!v.ok) throw new Error(v.why);
+  const lim = uiLimit.take(running.id, v.action, Date.now());
+  if (lim) throw new Error(lim);
+  const nonce = crypto.randomBytes(12).toString("hex");
+  const toast = UiActions.toast(v.action, v.args);
+  const answer = new Promise((resolve) => {
+    uiWaiting.set(nonce, { actor: tok.actor, resolve });
+    setTimeout(() => {
+      if (uiWaiting.delete(nonce)) resolve(null);
+    }, UI_ACK_MS).unref();
+  });
+  // The token itself never leaves this process again: viewers get a tag of it
+  // (sha256, 16 hex), enough for the dashboard that minted it to match it.
+  emitLive("ui", { actor: tok.actor, ut_tag: uiTag(tok.ut), nonce, action: v.action, args: v.args, toast, turn_id: running.id, expires: new Date(Date.now() + UI_ACK_MS).toISOString() });
+  const a = await answer;
+  if (!a) return { status: "no-screen", note: "No Command Center answered: the administrator's screen is not open. Tell them plainly; do not say it was done." };
+  if (!a.ok) return { status: "refused", why: a.why || "the screen refused it", note: "Tell the administrator plainly that it was not done, and why." };
+  return { status: "ok", done: toast };
 }
 
 /**
@@ -1889,6 +1976,7 @@ function serveControl() {
 
 function auditDetail(req) {
   const p = { ...req.params };
+  if (p.ut) p.ut = "(set)"; // the ui token is never written down
   if (typeof p.text === "string") p.text = clip(p.text, 300);
   return p;
 }

@@ -293,6 +293,20 @@ event). All of its state is in the ledger, so a restart loses nothing.
   Bash -- and holds counts, titles and figures, never a command, fix or evidence;
   the server drops the forbidden keys again and the desk's own request list. The
   charter tells MINT AI to use it first for status questions.
+- **Screen actions for MINT AI (UI control Phase 2).** `ui_action` (args:
+  `action` plus, as the action needs, `key` / `mode` / `name` / `core` / `page`,
+  flat, from the shared allowlist `lib/ui-actions.js` -- a byte-identical copy of
+  `dashboard/public/ui-actions.js`, tested) → op `ui-action`. The supervisor
+  accepts it only from actor `moni-ai`, only while a turn runs that the
+  administrator sent from the Command Center with a one-time ui token (`send.ut`,
+  minted by the dashboard; kept in memory with the turn, never in the ledger,
+  events or audit -- the audit writes `(set)` -- and dropped when the turn ends),
+  within 6 a turn / 20 a minute. It then emits a live-only `ui` event (seq 0,
+  never in the ring, so never replayed) carrying `ut_tag` = sha256(token)[0:16],
+  not the token; the dashboard delivers it only to the tab whose send minted the
+  token, and that tab answers with `ui-ack` (only the same user, once). The tool
+  returns `ok`, `refused` (with why) or `no-screen` after 5 s. Needs a moni-ai
+  restart to load (new ops, new MCP tool).
 - **Decisions and watchers** (`lib/watchers.js`, tables `decisions`,
   `watchers`). Every 30 s: the helper's `service-list` (a unit failed) and
   `pulse-feed` (fail2ban bans > 20 in 10 min; an agent started 3 times in 10
@@ -357,7 +371,8 @@ node moni-ai/tools/test-watchers.cjs          # thresholds, dedup, cooldown, rat
 node moni-ai/tools/test-missions-cost.cjs     # missions store, cost deltas, transcript scan
 sudo node moni-ai/tools/test-features.cjs     # all of phase 1 through a real supervisor
 node moni-ai/tools/test-protocol.cjs          # socket validation, peer-text parsing
-node moni-ai/tools/test-mcp.cjs               # the MCP server's status_snapshot tool
+node moni-ai/tools/test-mcp.cjs               # the MCP server's status_snapshot and ui_action tools
+sudo node moni-ai/tools/test-ui-action.cjs    # ui-action / ui-ack through a real supervisor
 node moni-ai/tools/test-turnqueue.cjs         # queue order: users first, FIFO, no starvation
 sudo node moni-ai/tools/test-queue.cjs        # the queue + status_snapshot through a real supervisor
 sudo node moni-ai/tools/test-supervisor.cjs   # the whole supervisor against a fake CLI

@@ -59,6 +59,16 @@
   function liveActive() { return typeof LiveUI !== "undefined" && !!(LiveUI && LiveUI.active); }
   /** The live call's microphone or speaker loudness, for the core. */
   function liveLevel(k) { return liveActive() ? Math.min(1, (LiveUI[k] || 0) * (k === "mic" ? 3 : 2.5)) : 0; }
+  /* This tab's id (per tab, sessionStorage): sent with every request to MINT AI
+     so that its screen actions (UI control Phase 2) come back to this tab only. */
+  var TAB_ID = (function () {
+    var fresh = "t" + Math.random().toString(36).slice(2, 12) + Date.now().toString(36);
+    try {
+      var t = window.sessionStorage.getItem("mint-tab");
+      if (!/^[A-Za-z0-9_-]{8,40}$/.test(t || "")) { t = fresh; window.sessionStorage.setItem("mint-tab", t); }
+      return t;
+    } catch (e) { return fresh; }
+  })();
   /** What was said is only "undo" or the like, and a screen action in this tab can still be undone. */
   function isUndoCommand(said) {
     return !!(window.VoiceStop && window.VoiceStop.undo && typeof uiUndoable === "function" && uiUndoable() && window.VoiceStop.undo(said));
@@ -810,7 +820,7 @@
     sending = true;
     if (opts.voice || Voice.speakAll) Voice.unlock();
     $("cc-send").disabled = true;
-    var body = { text: text };
+    var body = { text: text, tab: TAB_ID };
     if (S.target !== "auto") body.target = S.target;
     // A voice turn names its voice-turn id: the server sends it to MINT AI
     // only if it is exactly what the server heard for that id.
@@ -1648,11 +1658,11 @@
 
   var es = null, reconnectTimer = 0;
   var EVENTS = ["proc", "init", "rc", "status", "turn", "text", "assistant", "tool", "tool_result", "steps", "result", "approval", "delegation", "inbound", "sessions", "vitals", "notice", "offline",
-    "mission", "decision", "watcher", "order", "order_run", "rule", "machine"];
+    "mission", "decision", "watcher", "order", "order_run", "rule", "machine", "ui"];
 
   function connect(since) {
     if (es) es.close();
-    es = new EventSource("/mint-ai/api/events" + (since ? "?since=" + since : ""));
+    es = new EventSource("/mint-ai/api/events?tab=" + encodeURIComponent(TAB_ID) + (since ? "&since=" + since : ""));
     es.onopen = function () {
       if (!S.online) {
         // Back after an outage: the supervisor may have restarted, which resets
@@ -1683,6 +1693,14 @@
   }
 
   function onEvent(type, ev) {
+    if (type === "ui") {
+      // MINT AI's own screen action (its ui_action), sent to this tab only by the
+      // server; done like the voice's, and answered so MINT AI knows.
+      if (!ev || !ev.nonce || typeof runUiAction !== "function") return;
+      var res = runUiAction(ev);
+      api("ui/ack", { body: { nonce: ev.nonce, ok: !!res.ok, why: res.ok ? undefined : String(res.why || "").slice(0, 200) } }).catch(function () { /* the supervisor times out */ });
+      return;
+    }
     var replay = !!(ev.seq && ev.seq <= S.loadSeq);
     if (ev.seq) S.lastSeq = Math.max(S.lastSeq, ev.seq);
     if (!replay && ev.ts) S.skew = Date.parse(ev.ts) - Date.now();
@@ -2441,7 +2459,7 @@
     function deskSend(blob, data, wasPtt, vt, level) {
       var dl = deskLines(gen);
       // undoable: a spoken "undo" would reverse the last screen action here, so the desk does not answer it.
-      apiStream("desk/turn", { data: data, mime: blob.type, vt: vt, level: level, undoable: (typeof uiUndoable === "function" && uiUndoable()) || undefined }, function (ev) {
+      apiStream("desk/turn", { data: data, mime: blob.type, vt: vt, level: level, tab: TAB_ID, undoable: (typeof uiUndoable === "function" && uiUndoable()) || undefined }, function (ev) {
         if (ev.type === "heard") {
           // The desk does not answer the stop command (ev.stop); a desk that
           // predates it would, so the page checks the words as well.
@@ -2824,6 +2842,7 @@
     paintLive("connecting");
     window.VoiceLive.start({
       csrf: CSRF,
+      tab: TAB_ID,
       duplex: LiveUI.duplex,
       worklet: root.getAttribute("data-live-worklet") || undefined,
       onState: function (st) { if (LiveUI.active) paintLive(st); },

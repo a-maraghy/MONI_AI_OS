@@ -684,6 +684,16 @@ deploy.
   desk/turn body; the desk answers `heard.undo` and neither answers nor passes
   it on) and on the direct path. With nothing to undo the words go on as an
   ordinary turn; "undo the last git commit" is always a request.
+- **MINT AI itself (Phase 2):** its MCP tool `ui_action` reaches the tab that
+  asked, and only that tab. The page sends a per-tab id (`sessionStorage`
+  `mint-tab`) with every send, desk turn, live call and on its event stream;
+  this server mints a one-time token for each send (`lib/ui-relay.js`, in
+  memory, 1 h at most) and passes it to the supervisor; the supervisor's live
+  `ui` event names only a tag of it. The tab's stream acts on it once; call.*
+  go to that user's live call (`LiveCall.deepUi`), the rest to the page, which
+  answers through `POST /mint-ai/api/ui/ack` (CSRF'd, only a nonce delivered to
+  that user). A tag this server never minted -- a `send` forged straight onto
+  the supervisor's socket -- is dropped and audited ("never minted").
 - **Closing a panel:** `sheet.close` may name the panel ("close the missions",
   «اقفلي المهام», «اقفل الميشنز»); the page refuses when another is open. The
   tool's description gives the Arabic panel names (المهام / الميشنز, الجلسات /

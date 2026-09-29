@@ -44,6 +44,17 @@ const voiceDesk = require("./lib/voice-desk");
 const voiceUsage = require("./lib/voice-usage");
 const voicePersona = require("./lib/voice-persona");
 const voiceLive = require("./lib/voice-live");
+const UiActions = require("./public/ui-actions.js");
+// UI control Phase 2: the ui tokens this server minted, in memory only (lib/ui-relay.js).
+const uiRelay = require("./lib/ui-relay").createRelay();
+const uiTab = require("./lib/ui-relay").TAB_RE;
+/** moniai.call for the voice desk and the live call: a send carrying a ui token binds it to the turn it started. */
+function moniCall(op, params, actor, opts) {
+  return moniai.call(op, params, actor, opts).then((r) => {
+    if (op === "send" && params && params.ut && r && r.turn) uiRelay.bind(params.ut, r.turn.id);
+    return r;
+  });
+}
 const voiceEval = require("./lib/voice-live-eval");
 const voiceEvalViews = require("./lib/views-voice-eval");
 const { asset } = require("./lib/ui");
@@ -3455,6 +3466,8 @@ app.get("/mint-ai/api/ledger/:table", ...moniAiGuard, async (req, res) => {
  */
 app.get("/mint-ai/api/events", ...moniAiGuard, (req, res) => {
   const since = moniai.cleanSince(req.get("last-event-id") || (req.query && req.query.since));
+  // This tab's id (sessionStorage): MINT AI's screen actions reach only the tab that asked.
+  const tab = typeof (req.query && req.query.tab) === "string" && uiTab.test(req.query.tab) ? req.query.tab : null;
   res.status(200).set({
     "Content-Type": "text/event-stream; charset=utf-8",
     "Cache-Control": "no-store",
@@ -3468,6 +3481,7 @@ app.get("/mint-ai/api/events", ...moniAiGuard, (req, res) => {
     since,
     req.me.username,
     (ev) => {
+      if (ev.type === "ui") return uiDeliver(ev, req, tab, res); // never written as it came
       const data = JSON.stringify(ev);
       res.write((ev.seq ? `id: ${ev.seq}\n` : "") + `event: ${ev.type}\ndata: ${data}\n\n`);
     },
@@ -3483,6 +3497,49 @@ app.get("/mint-ai/api/events", ...moniAiGuard, (req, res) => {
   });
 });
 
+/**
+ * One of MINT AI's screen actions (its MCP ui_action, relayed live by the
+ * supervisor), as seen by the event stream of one tab. lib/ui-relay.js decides:
+ * only the tab whose send minted the token acts on it, once; an event with a
+ * token this server never minted (a send forged onto the supervisor's socket)
+ * is dropped and audited. call.* act on the administrator's live call here;
+ * everything else goes to the tab, which answers through /ui/ack.
+ */
+function uiDeliver(ev, req, tab, res) {
+  const actor = req.me.username;
+  const r = uiRelay.route(ev, actor, tab);
+  const what = `${String(ev.action || "?").slice(0, 40)}${ev.args && Object.keys(ev.args).length ? " " + JSON.stringify(ev.args).slice(0, 120) : ""}`;
+  const ack = (ok, why) => moniai.call("ui-ack", { nonce: ev.nonce, ok, ...(why ? { why: String(why).slice(0, 200) } : {}) }, actor).catch(() => {});
+  if (r.forged) {
+    db.logLogin(req.ip, actor, "mint-ui", `dropped a screen action (${what}) whose token this panel never minted`);
+    return;
+  }
+  if (!r.deliver) return;
+  const v = UiActions.validate(ev.action, ev.args || {});
+  if (!v.ok) return void ack(false, v.why);
+  db.logLogin(req.ip, actor, "mint-ui", `${what} by MINT AI (turn ${ev.turn_id}), to the tab that asked`);
+  if (v.where === "server") {
+    const call = voiceLive.callFor(actor);
+    if (!call) return void ack(false, "no voice call is open");
+    const out = call.deepUi(v);
+    return void ack(out.ok, out.why);
+  }
+  res.write(`event: ui\ndata: ${JSON.stringify({ type: "ui", nonce: ev.nonce, action: v.action, args: v.args, toast: UiActions.toast(v.action, v.args), deep: true })}\n\n`);
+}
+
+/** The tab's answer to one of MINT AI's screen actions: done, or refused and why. */
+app.post("/mint-ai/api/ui/ack", ...moniAiWrite, async (req, res) => {
+  const b = req.body || {};
+  if (typeof b.nonce !== "string" || !/^[A-Za-z0-9]{8,40}$/.test(b.nonce) || typeof b.ok !== "boolean") return res.status(400).json({ error: "Bad answer." });
+  if (!uiRelay.takeAck(b.nonce, req.me.username)) return res.status(404).json({ error: "No such screen action is waiting." });
+  try {
+    const why = typeof b.why === "string" ? b.why.replace(/[\u0000-\u001f]/g, " ").slice(0, 200) : "";
+    res.json(await moniai.call("ui-ack", { nonce: b.nonce, ok: b.ok, ...(why ? { why } : {}) }, req.me.username));
+  } catch (e) {
+    moniAiFail(res, e);
+  }
+});
+
 app.post("/mint-ai/api/send", ...moniAiWrite, async (req, res) => {
   try {
     const params = moniai.cleanSend(req.body || {});
@@ -3496,7 +3553,12 @@ app.post("/mint-ai/api/send", ...moniAiWrite, async (req, res) => {
       return res.status(422).json({ error: "That voice turn was not sent: it does not match what was heard.", code: "ungrounded" });
     }
     db.logLogin(req.ip, req.me.username, "moni-ai", `turn${params.target ? " for " + params.target : ""}`);
-    res.json(await moniai.call("send", params, req.me.username));
+    // A one-time ui token for this send, from this tab (lib/ui-relay.js).
+    const ut = uiRelay.mint({ actor: req.me.username, tab: (req.body || {}).tab, via: "page" });
+    if (ut) params.ut = ut;
+    const sent = await moniai.call("send", params, req.me.username);
+    if (ut && sent && sent.turn) uiRelay.bind(ut, sent.turn.id); // this token, that turn only
+    res.json(sent);
   } catch (e) {
     moniAiFail(res, e);
   }
@@ -3576,7 +3638,7 @@ app.post("/mint-ai/api/desk/turn", requireApiPerm("moniai.use"), moniAiAudioBody
   try {
     cfg = await voiceConfig();
     if (!cfg.key) throw new voice.VoiceError("Add an OpenAI key in Settings to use voice.", "no-key");
-    const desk = () => voiceDesk.deskFor(req.me.username, cfg, moniai.call, { log: (m) => console.log(m) });
+    const desk = () => voiceDesk.deskFor(req.me.username, cfg, moniCall, { log: (m) => console.log(m) });
     let dropped = null;
     if (typeof body.text === "string" && body.text.trim()) {
       if (body.text.length > 4000 || body.text.includes("\u0000")) return res.status(400).json({ error: "That is too long.", code: "invalid" });
@@ -3632,6 +3694,8 @@ app.post("/mint-ai/api/desk/turn", requireApiPerm("moniai.use"), moniAiAudioBody
     const r = await desk().turn(heard, {
       onLine: (line) => speaker.push(line),
       persona,
+      // A hand-off to MINT AI carries a ui token for this tab (UI control Phase 2).
+      uiTicket: () => uiRelay.mint({ actor, tab: body.tab, via: "page" }),
       // Screen actions (public/ui-actions.js) go back to this tab, in this stream; audited.
       onUi: (ui) => {
         out.write(ui);
@@ -3704,7 +3768,7 @@ app.post("/mint-ai/api/desk/summary", ...moniAiWrite, async (req, res) => {
     const cfg = await voiceConfig();
     if (!cfg.key) throw new voice.VoiceError("Add an OpenAI key in Settings to use voice.", "no-key");
     voice.warm(cfg);
-    const desk = voiceDesk.deskFor(req.me.username, cfg, moniai.call, { log: (m) => console.log(m) });
+    const desk = voiceDesk.deskFor(req.me.username, cfg, moniCall, { log: (m) => console.log(m) });
     out.start();
     started = true;
     const speaker = voiceDesk.createSpeaker({ speak: voice.speakStream, cfg, write: out.write, t0 });
@@ -5159,7 +5223,8 @@ function liveUpgrade(req, socket, head) {
       const audio = liveAudio();
       const duplex = voiceLive.DUPLEX.includes(q.get("duplex")) ? q.get("duplex") : audio.duplex;
       const route = q.get("route") === "loopback" ? "loopback" : q.get("route") === "direct" ? "direct" : "unknown";
-      liveWss.handleUpgrade(req, socket, head, (ws) => liveConnected(ws, { me, cfg, ip, duplex, noise: audio.noise, route }));
+      const tab = q.get("tab") || null;
+      liveWss.handleUpgrade(req, socket, head, (ws) => liveConnected(ws, { me, cfg, ip, duplex, noise: audio.noise, route, tab }));
     } catch (e) {
       console.log("live: upgrade failed: " + e.message);
       refuseUpgrade(socket, 500, "Server error");
@@ -5167,7 +5232,7 @@ function liveUpgrade(req, socket, head) {
   });
 }
 
-function liveConnected(ws, { me, cfg, ip, duplex, noise, route }) {
+function liveConnected(ws, { me, cfg, ip, duplex, noise, route, tab }) {
   const actor = me.username;
   const json = (o) => ws.readyState === 1 && ws.send(JSON.stringify(o));
   if (voiceLive.callFor(actor)) {
@@ -5177,7 +5242,7 @@ function liveConnected(ws, { me, cfg, ip, duplex, noise, route }) {
   const call = new voiceLive.LiveCall({
     cfg: { key: cfg.key, voice: cfg.voice, model: cfg.model, transcribe_model: cfg.transcribe_model, noise_reduction: noise },
     actor,
-    ops: voiceDesk.deskOps(moniai.call, actor),
+    ops: voiceDesk.deskOps(moniCall, actor),
     client: {
       json,
       audio: (seg, buf) => {
@@ -5199,10 +5264,12 @@ function liveConnected(ws, { me, cfg, ip, duplex, noise, route }) {
     audit: (line) => db.logLogin(ip, actor, "mint-ui", line),
     speak: voice.speakStream,
     transcribe: voice.transcribeFull,
-    summarise: (id, o) => voiceDesk.deskFor(actor, cfg, moniai.call, { log: (m) => console.log(m) }).summarise(id, o),
+    summarise: (id, o) => voiceDesk.deskFor(actor, cfg, moniCall, { log: (m) => console.log(m) }).summarise(id, o),
     record: (row) => recordVoice(() => voiceLedger.add(row).usd),
     isStop: (t) => voiceStop.heard(t),
     isUndo: (t) => voiceStop.undo(t),
+    // A hand-off to MINT AI carries a ui token for the tab that holds the call (UI control Phase 2).
+    uiTicket: () => uiRelay.mint({ actor, tab, via: "live", callId: call.id }),
     log: (m) => console.log(m),
     opts: { duplex },
   });

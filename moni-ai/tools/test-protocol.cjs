@@ -144,5 +144,21 @@ check("a refusal keeps the request id when it could be read", req({ id: "abc", o
   check("no pid from nonsense", peers.pidFromAddress("bridge:xyz") === null);
 }
 
+/* ------------------------------------------- UI control Phase 2 --- */
+{
+  const UT = "AbCdEfGhIjKlMnOpQrStUvWx";
+  check("send takes a ui token", good({ op: "send", text: "hi", ut: UT }).ok && good({ op: "send", text: "hi", ut: UT }).req.params.ut === UT);
+  check("  but not a malformed one (short, odd characters, too long)", !good({ op: "send", text: "hi", ut: "short" }).ok && !good({ op: "send", text: "hi", ut: "a b c d e f g h i j k l m" }).ok && !good({ op: "send", text: "hi", ut: "x".repeat(41) }).ok);
+  const ua = good({ op: "ui-action", action: "sheet.open", args: { key: "missions" } });
+  check("ui-action: an action name and flat args; mutating (audited)", ua.ok && ua.req.mutating === true && ua.req.params.args.key === "missions");
+  check("  args are optional", good({ op: "ui-action", action: "sheet.close" }).ok);
+  check("  refuses an unknown arg key, a nested value, a long value, a URL-ish value", !good({ op: "ui-action", action: "sheet.open", args: { url: "x" } }).ok && !good({ op: "ui-action", action: "sheet.open", args: { key: { a: 1 } } }).ok &&
+    !good({ op: "ui-action", action: "sheet.open", args: { key: "x".repeat(41) } }).ok && !good({ op: "ui-action", action: "settings.open", args: { page: "https://evil/x" } }).ok);
+  check("  refuses an action name that is not a.b form", !good({ op: "ui-action", action: "rm -rf /" }).ok && !good({ op: "ui-action", action: "" }).ok);
+  check("  refuses extra top-level fields (a token smuggled in)", !good({ op: "ui-action", action: "sheet.close", ut: UT }).ok);
+  check("ui-ack: nonce, ok, optional why", good({ op: "ui-ack", nonce: "abcdef012345", ok: true }).ok && good({ op: "ui-ack", nonce: "abcdef012345", ok: false, why: "no panel is open" }).ok);
+  check("  refuses a bad nonce or a non-boolean ok", !good({ op: "ui-ack", nonce: "../x", ok: true }).ok && !good({ op: "ui-ack", nonce: "abcdef012345", ok: "yes" }).ok);
+}
+
 console.log(`\n${passes} passed, ${failures} failed`);
 process.exit(failures ? 1 : 0);

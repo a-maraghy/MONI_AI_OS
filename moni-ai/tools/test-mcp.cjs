@@ -111,6 +111,22 @@ function hasKeyDeep(v, keys) {
     const bare = await rpc({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "status_snapshot" } });
     check("a call with no arguments object works", bare && !bare.result.isError);
 
+    // ui_action (UI control Phase 2): the shared allowlist's schema, flat args mapped to {action, args}.
+    {
+      const ui = list.result.tools.find((t) => t.name === "ui_action");
+      check("ui_action is listed, with the allowlist's action enum and no extras", ui && ui.inputSchema.properties.action.enum.includes("sheet.open") && !ui.inputSchema.properties.action.enum.some((a) => /approve|deny|settings\.set|theme|persona/.test(a)) && ui.inputSchema.additionalProperties === false, ui && JSON.stringify(ui.inputSchema.properties.action.enum));
+      check("  its description says it cannot approve and works only in the administrator's own request", ui && /cannot approve, deny or confirm/.test(ui.description) && /only while you answer a request the administrator sent/.test(ui.description));
+      seen.length = 0;
+      reply = { status: "ok", done: "Mint opened Missions" };
+      const r = await rpc({ jsonrpc: "2.0", id: 6, method: "tools/call", params: { name: "ui_action", arguments: { action: "sheet.open", key: "missions" } } });
+      const q = seen[0] || {};
+      check("  a call is the ui-action op as moni-ai, with {action, args} only", q.op === "ui-action" && q.actor === "moni-ai" && q.action === "sheet.open" && JSON.stringify(q.args) === '{"key":"missions"}' && Object.keys(q).sort().join() === "action,actor,args,id,op", JSON.stringify(q));
+      check("  and returns the supervisor's answer as is", r && !r.result.isError && JSON.parse(r.result.content[0].text).status === "ok");
+      seen.length = 0;
+      const bad = await rpc({ jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "ui_action", arguments: { action: "sheet.open", key: "missions", url: "https://x" } } });
+      check("  an unknown argument is refused before the socket", bad.result.isError && /does not take: url/.test(bad.result.content[0].text) && seen.length === 0);
+    }
+
     // The supervisor down: a clean tool error, not a crash.
     server.close();
     fs.rmSync(SOCK, { force: true });

@@ -208,7 +208,7 @@
 
   function openSocket(me) {
     var o = me.o;
-    var url = o.url || (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/mint-ai/api/live?csrf=" + encodeURIComponent(o.csrf || "") + "&duplex=" + me.duplex + "&route=" + me.route;
+    var url = o.url || (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/mint-ai/api/live?csrf=" + encodeURIComponent(o.csrf || "") + "&duplex=" + me.duplex + "&route=" + me.route + (o.tab ? "&tab=" + encodeURIComponent(o.tab) : "");
     return new Promise(function (resolve, reject) {
       var ws = (me.ws = new WebSocket(url));
       ws.binaryType = "arraybuffer";

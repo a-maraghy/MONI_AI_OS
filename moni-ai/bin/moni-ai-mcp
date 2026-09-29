@@ -21,6 +21,10 @@
  *   status_snapshot       this VPS at a glance (read-only): services, disk,
  *                         memory, live sessions, missions, open decisions and
  *                         pending approvals -- counts and titles, never a command
+ *   ui_action             change what the administrator sees in the Command
+ *                         Center tab they asked from (open a panel, switch the
+ *                         view, end the call...), during their own turn only;
+ *                         never approves, denies or changes a setting
  *
  * Plain JSON-RPC 2.0 over newline-delimited stdio (MCP's stdio transport).
  */
@@ -28,10 +32,33 @@ const net = require("net");
 const path = require("path");
 const readline = require("readline");
 const { FORBIDDEN_KEYS } = require(path.join(__dirname, "..", "lib", "snapshot.js"));
+const UiActions = require(path.join(__dirname, "..", "lib", "ui-actions.js"));
 
 const SOCKET = process.env.MONI_AI_SOCKET || "/run/moni-ai/moni-ai.sock";
 const STEP_STATUSES = ["planned", "delegated", "working", "waiting_approval", "done", "failed", "skipped"];
 const missionId = { type: "string", description: 'The mission, e.g. "M-12".' };
+
+/** ui_action: the shared allowlist's schema, the tool's flat args mapped to {action, args}. */
+function uiTool() {
+  const def = UiActions.tool();
+  return {
+    name: "ui_action",
+    op: "ui-action",
+    description:
+      "Change what the administrator sees in the Command Center tab they asked from, at once: open or close a panel, show the map or missions, " +
+      "switch the core (A/B/C), switch the voice mode, show or read your last reply, show the waiting decision card, suggest a settings page, " +
+      "or end / mute / interrupt their voice call (never unmute). It works only while you answer a request the administrator sent from the " +
+      "Command Center, and only when they asked for it in that request. It cannot approve, deny or confirm anything, change keys, users, rules or " +
+      "settings, restart or deploy: approving stays the administrator's click. The result says ok, refused (with why) or no-screen; say what really happened.",
+    inputSchema: def.parameters,
+    map(given) {
+      const f = UiActions.fromTool(given);
+      if (f.extra.length) throw new Error("ui_action does not take: " + f.extra.join(", "));
+      return { action: String(f.action || ""), args: f.args };
+    },
+    shape: (d) => d,
+  };
+}
 
 const TOOLS = [
   {
@@ -158,6 +185,7 @@ const TOOLS = [
     noArgs: true,
     shape: snapshotView,
   },
+  uiTool(),
 ];
 
 /**
@@ -239,7 +267,8 @@ async function onMessage(msg) {
         capabilities: { tools: {} },
         serverInfo: { name: "moni-ai", version: "1.0.0" },
         instructions:
-          "MINT AI's missions and decision proposals, recorded by the supervisor and shown in the Command Center, and status_snapshot: this VPS at a glance, read-only.",
+          "MINT AI's missions and decision proposals, recorded by the supervisor and shown in the Command Center; status_snapshot: this VPS at a glance, read-only; " +
+          "ui_action: change what the administrator sees in the tab they asked from, during their own request only.",
       },
     });
   }
@@ -253,7 +282,8 @@ async function onMessage(msg) {
       const given = (params && params.arguments) || {};
       if (tool.noArgs && (typeof given !== "object" || Array.isArray(given) || Object.keys(given).length))
         throw new Error(tool.name + " takes no arguments");
-      const args = tool.noArgs ? {} : { ...(tool.defaults || {}), ...given };
+      let args = tool.noArgs ? {} : { ...(tool.defaults || {}), ...given };
+      if (tool.map) args = tool.map(args);
       const data = await call(tool.op, args);
       const view = tool.shape ? tool.shape(data) : brief(data);
       return out({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(view) }] } });

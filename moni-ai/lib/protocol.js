@@ -62,8 +62,18 @@ const OPS = {
       // "voice-desk": passed on by the voice front desk (trial). Recorded as the
       // turn's source; it changes nothing else about the turn.
       via: optEnum(["voice-desk"]),
+      // The one-time ui token the Command Center minted for this send (UI
+      // control Phase 2): lets MINT AI's ui_action reach the tab that asked,
+      // during this turn only. Kept in memory, never in the ledger or events.
+      ut: optString(40, /^[A-Za-z0-9_-]{16,40}$/),
     },
   },
+  // MINT AI's ui_action (its MCP tool): change what the administrator sees in
+  // the tab that asked. Accepted only from actor "moni-ai", only while a turn
+  // the administrator started (dashboard / voice-desk) with a ui token runs.
+  "ui-action": { mutating: true, params: { action: str(40, /^[a-z]+(\.[a-z_]+)?$/), args: uiArgs() } },
+  // The Command Center's answer to one ui event (the page did it, or refused).
+  "ui-ack": { mutating: true, params: { nonce: str(40, /^[A-Za-z0-9]{8,40}$/), ok: bool(), why: optText(200) } },
   interrupt: { mutating: true, params: {} },
   approve: {
     mutating: true,
@@ -132,6 +142,24 @@ const OPS = {
 };
 
 /* ------------------------------------------------------------ validators --- */
+
+/** A screen action's flat arguments: at most six known keys, short strings or booleans. */
+function uiArgs() {
+  const KEYS = ["key", "mode", "name", "core", "page", "on"];
+  const f = (v, name) => {
+    if (!v || typeof v !== "object" || Array.isArray(v)) throw new Error(`${name} must be an object`);
+    const out = {};
+    for (const [k, x] of Object.entries(v)) {
+      if (!KEYS.includes(k)) throw new Error(`${name} has an unexpected field: ${k.slice(0, 40)}`);
+      if (typeof x === "boolean") out[k] = x;
+      else if (typeof x === "string" && x.length <= 40 && /^[A-Za-z0-9._-]*$/.test(x)) out[k] = x;
+      else throw new Error(`${name}.${k} is not valid`);
+    }
+    return out;
+  };
+  f.optional = true;
+  return f;
+}
 
 function optIntList(min, max, maxLen) {
   const f = (v, name) => {

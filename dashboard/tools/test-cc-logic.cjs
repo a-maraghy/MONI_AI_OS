@@ -143,7 +143,7 @@ const API = [
 ];
 const missingApi = API.filter((a) => !new RegExp(`["'/]${a.replace(/[/?]/g, "\\$&")}`).test(client) && !client.includes('"' + a));
 check("every API path the v3 page called is still called", missingApi.length === 0, missingApi.join(" "));
-check("the event stream and every event type it follows", /new EventSource\("\/mint-ai\/api\/events"/.test(main) && ["proc", "init", "rc", "status", "turn", "text", "assistant", "tool", "tool_result", "steps", "result", "approval", "delegation", "inbound", "sessions", "vitals", "notice", "offline", "mission", "decision", "watcher", "order", "order_run", "rule", "machine"].every((t) => main.includes('"' + t + '"')));
+check("the event stream and every event type it follows", /new EventSource\("\/mint-ai\/api\/events[?"]/.test(main) && ["proc", "init", "rc", "status", "turn", "text", "assistant", "tool", "tool_result", "steps", "result", "approval", "delegation", "inbound", "sessions", "vitals", "notice", "offline", "mission", "decision", "watcher", "order", "order_run", "rule", "machine"].every((t) => main.includes('"' + t + '"')));
 // Every element the client reaches by id exists in the served page (or is built by the client itself).
 {
   const built = new Set(["cc-ov", "cc-pal-q", "cc-pal-list", "cc-mis-goal", "cc-mis-err", "cc-mis-go", "cc-al-body", "cc-al-err", "cc-al-save", "cc-al-pat", "cc-al-match", "cc-try-in", "cc-try-btn", "cc-try-res", "cc-ord-form", "cc-ord-side", "cc-ord-foot", "cc-ord-name", "cc-ord-at", "cc-ord-every", "cc-ord-cron", "cc-ord-prompt", "cc-ord-words", "cc-ord-err", "cc-cost-body", "cc-bud", "cc-bud-err", "cc-bud-save", "cc-deep-in", "cc-vu-today", "cc-vu-month", "cc-vu-last", "cc-pop-vu"]);
