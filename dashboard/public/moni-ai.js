@@ -48,6 +48,11 @@
   /* ================================================================ helpers */
 
   function $(id) { return document.getElementById(id); }
+  /** The mic's mode from what this browser remembered: push to talk unless it chose hands-free. */
+  function voiceModeFrom(stored) {
+    return stored === "handsfree" ? "handsfree" : "ptt";
+  }
+
   function esc(s) {
     return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
       return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
@@ -2001,20 +2006,42 @@
       setUi();
     }
 
-    cMic.addEventListener("click", function () { api_.on ? stop() : start(); });
-    $("cc-vb-stop").addEventListener("click", function () {
-      // Stop and send what has been said so far, if anything.
-      if (rec && rec.state === "recording" && heard) { api_.on = false; rec.stop(); setTimeout(stop, 50); }
-      else stop();
-    });
-    $("cc-vb-close").addEventListener("click", stop);
+    /* ---- the mic's mode: push to talk (the default) or hands-free ----
+       Push to talk: hold the mic (or Space) and release to send; a quick tap
+       keeps it listening until the mic in the voice bar, or Space, sends it.
+       Hands-free: the mic stays open and a pause sends (the quiet window).
+       The choice is remembered per browser. */
+    var MODE_KEY = "moni-voice-mode", TAP_MS = 350;
+    var mode = voiceModeFrom(null), modeBtn = $("cc-mic-mode"), vbMode = $("cc-vb-mode"), downAt = 0, pttLabel = "";
+    try { mode = voiceModeFrom(window.localStorage.getItem(MODE_KEY)); } catch (e) { /* storage blocked: the default */ }
+    function paintVoiceMode() {
+      var ptt_ = mode === "ptt";
+      cMic.title = !READY ? cMic.title : !canRecord ? cMic.title
+        : ptt_ ? "Push to talk: hold to talk, release to send (a quick tap keeps listening). Or hold Space."
+        : "Hands-free: click to start listening; a pause sends what you said. Click again to stop.";
+      cMic.setAttribute("data-mode", mode);
+      if (modeBtn) {
+        modeBtn.textContent = ptt_ ? "Push to talk" : "Hands-free";
+        modeBtn.setAttribute("data-mode", mode);
+        modeBtn.setAttribute("aria-label", "Voice mode: " + (ptt_ ? "push to talk" : "hands-free") + ". Click to switch to " + (ptt_ ? "hands-free" : "push to talk") + ".");
+        modeBtn.title = ptt_ ? "Voice mode: push to talk — hold the mic or Space to talk. Click to switch to hands-free." : "Voice mode: hands-free — the mic listens and a pause sends. Click to switch to push to talk.";
+      }
+      if (vbMode) vbMode.textContent = ptt_ ? "Push to talk" : "Hands-free";
+    }
+    function setVoiceMode(m) {
+      mode = voiceModeFrom(m);
+      try { window.localStorage.setItem(MODE_KEY, mode); } catch (e) { /* not remembered; still switched */ }
+      if (mode === "ptt" && api_.on) stop();
+      paintVoiceMode();
+    }
+    if (modeBtn) modeBtn.addEventListener("click", function () { setVoiceMode(mode === "ptt" ? "handsfree" : "ptt"); });
+    paintVoiceMode();
 
-    /* Hold Space to talk, anywhere but a text field or a control. */
-    function typing(el) { return el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable || el.tagName === "BUTTON" || el.getAttribute("role") === "radio"); }
-    document.addEventListener("keydown", function (e) {
-      if (e.code !== "Space" || e.repeat || !supported || api_.on || ptt || typing(document.activeElement)) return;
-      e.preventDefault();
+    /** Start a push-to-talk recording (Space or the mic held). */
+    function pttDown(label) {
+      if (!supported || api_.on || ptt) return false;
       ptt = true;
+      pttLabel = label;
       outContext();
       warm();
       if (api_.speaking) bargeIn();
@@ -2024,16 +2051,65 @@
         calibrating = 0;
         recording(true);
         if (!poll) poll = setInterval(tick, SAMPLE_MS);
-        vbText.textContent = "Listening — release Space to send";
+        vbText.textContent = pttLabel;
         setUi();
       }).catch(function () { ptt = false; setUi(); toast("Talking to MONI needs the microphone, and it was refused.", true); });
+      return true;
+    }
+    /** Release: send what was said. */
+    function pttUp() {
+      if (!ptt) return;
+      // A short tail, so the last syllable is not cut off by a quick release.
+      if (rec && rec.state === "recording") { var r0 = rec; setTimeout(function () { if (r0.state === "recording") r0.stop(); }, PTT_TAIL_MS); }
+      else { ptt = false; keepStream(); setUi(); }
+    }
+    /** Back to typing without sending. */
+    function pttCancel() {
+      ptt = false;
+      recording(false);
+      if (poll && !api_.speaking) { clearInterval(poll); poll = 0; }
+      keepStream();
+      setUi();
+    }
+
+    cMic.addEventListener("pointerdown", function (e) {
+      if (mode !== "ptt" || (e.button !== undefined && e.button !== 0)) return;
+      e.preventDefault();
+      if (!pttDown("Listening — release to send")) return;
+      downAt = Date.now();
+      var up = function () {
+        window.removeEventListener("pointerup", up);
+        window.removeEventListener("pointercancel", up);
+        if (Date.now() - downAt >= TAP_MS) return pttUp();
+        // A tap: keep listening until the voice bar's mic or Space sends it.
+        if (ptt) vbText.textContent = pttLabel = "Listening — press the mic or Space to send";
+      };
+      window.addEventListener("pointerup", up);
+      window.addEventListener("pointercancel", up);
+    });
+    cMic.addEventListener("click", function () {
+      if (mode === "ptt") return; // pointerdown/up handle it
+      api_.on ? stop() : start();
+    });
+    $("cc-vb-stop").addEventListener("click", function () {
+      if (ptt) return pttUp();
+      // Stop and send what has been said so far, if anything.
+      if (rec && rec.state === "recording" && heard) { api_.on = false; rec.stop(); setTimeout(stop, 50); }
+      else stop();
+    });
+    $("cc-vb-close").addEventListener("click", function () { if (ptt) pttCancel(); stop(); });
+
+    /* Hold Space to talk, anywhere but a text field or a control. */
+    function typing(el) { return el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable || el.tagName === "BUTTON" || el.getAttribute("role") === "radio"); }
+    document.addEventListener("keydown", function (e) {
+      if (e.code !== "Space" || e.repeat || !supported || api_.on || ptt || typing(document.activeElement)) return;
+      e.preventDefault();
+      pttDown("Listening — release Space to send");
     });
     document.addEventListener("keyup", function (e) {
       if (e.code !== "Space" || !ptt) return;
       e.preventDefault();
-      // A short tail, so the last syllable is not cut off by a quick release.
-      if (rec && rec.state === "recording") { var r0 = rec; setTimeout(function () { if (r0.state === "recording") r0.stop(); }, PTT_TAIL_MS); }
-      else { ptt = false; keepStream(); setUi(); }
+      pttUp();
     });
 
     speakBtn.hidden = !READY;

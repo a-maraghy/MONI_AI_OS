@@ -497,6 +497,12 @@ html.cc-page .cc-mis-head h3 { margin: 0; color: var(--ink); font-size: 15px; li
 .cc-c-mic .cc-i { width: 18px; height: 18px; stroke-width: 2.1; }
 .cc-c-mic:disabled { filter: grayscale(1); opacity: .5; cursor: not-allowed; }
 .cc-c-mic.live { animation: cc-micpulse 1.2s infinite; }
+.cc-c-mic[data-mode="ptt"] { touch-action: none; user-select: none; -webkit-user-select: none; }
+.cc-mic-mode { flex: none; padding: 4px 9px; border-radius: 999px; border: 1px solid var(--line-strong); background: none;
+  color: var(--muted); font-size: 11px; font-weight: 600; white-space: nowrap; letter-spacing: .02em; }
+.cc-mic-mode:hover, .cc-mic-mode:focus-visible { color: var(--ink); border-color: var(--accent); }
+.cc-mic-mode[data-mode="ptt"] { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.cc-tag-mode { color: var(--accent); }
 @keyframes cc-micpulse { 50% { box-shadow: 0 0 0 8px var(--accent-soft), 0 0 26px var(--glow); } }
 html.cc-page .cc-composer input { flex: 1; min-width: 0; background: none; border: 0; outline: 0; color: var(--ink); font: 14px var(--ui); padding: 0; margin: 0; box-shadow: none; width: auto; }
 .cc-composer input::placeholder { color: var(--muted); }
