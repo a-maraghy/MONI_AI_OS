@@ -171,6 +171,7 @@ const TOP_CLOCK = `<div class="cc-clock" aria-hidden="true"><b id="cc-clock">--:
 function page(o) {
   const voice = o.voice || {};
   const core = logic.normCore(o.core);
+  const sessview = logic.normSessView(o.sessview);
   const perm = o.user && o.user.perm;
   const voiceOff = voice.configured
     ? ""
@@ -189,7 +190,7 @@ function page(o) {
 
   const body = `${sprite()}
 <div class="cc-shell" id="cc"
-     data-core="${core}" data-state="idle"
+     data-core="${core}" data-state="idle" data-sessview="${sessview}"
      data-csrf="${esc(o.csrf)}"
      data-viewer="${esc(o.user && o.user.name)}"
      data-voice-ready="${voice.configured ? "1" : ""}"
@@ -205,6 +206,9 @@ function page(o) {
   <canvas class="cc-core" id="cc-core" aria-hidden="true"></canvas>
   <div class="cc-spark" id="cc-spark" aria-hidden="true">${sparkSvg()}</div>
   <div class="cc-orbit" id="cc-orbit" role="group" aria-label="Live sessions"><svg class="cc-ring" id="cc-ring" aria-hidden="true" focusable="false"><ellipse/></svg></div>
+  <canvas class="cc-family" id="cc-family" aria-hidden="true"></canvas>
+  <div class="cc-kids" id="cc-kids" role="group" aria-label="Live sessions"></div>
+  <div class="cc-kcard" id="cc-kcard" aria-hidden="true"></div>
 
   <main class="cc-main" id="cc-center" aria-label="MINT AI">
     <h1 class="cc-sr">MINT AI Command Center</h1>
@@ -350,7 +354,7 @@ function page(o) {
     brand: "ai",
     heading: null,
     pageClass: "cc-page",
-    assets: ["moni-ai.css", "voice-live.css", "cc-logic.js", "mint-core.js", "cc-map.js", "cc-panels.js", "voice-live-detect.js", "voice-live.js", "ui-actions.js", "moni-ai.js"],
+    assets: ["moni-ai.css", "voice-live.css", "cc-logic.js", "mint-core.js", "cc-family.js", "cc-map.js", "cc-panels.js", "voice-live-detect.js", "voice-live.js", "ui-actions.js", "moni-ai.js"],
     topExtra: topExtra(),
     topEnd: TOP_CLOCK,
   });
@@ -360,7 +364,7 @@ function page(o) {
 
 /**
  * The Appearance card on /account: the three cores, each with a small live
- * preview, the saved one ticked. Works without JavaScript (a plain form post
+ * preview, the saved one ticked; and the sessions view (Spheres / Classic orbit). Works without JavaScript (a plain form post
  * to /account/appearance); mint-settings.js switches it in place instead, and
  * any open Command Center picks the change up on its next load -- or at once,
  * from its own quick switch.
@@ -369,6 +373,20 @@ function page(o) {
  */
 function appearance(o) {
   const core = logic.normCore(o.core);
+  const sessview = logic.normSessView(o.sessview);
+  const sessDesc = {
+    spheres: "New: each live session is a small sphere like MINT AI, with its name, drifting round her; delegations and replies stream between you.",
+    orbit: "The classic view: each live session is a dot on a faint orbit round the core.",
+  };
+  const sessOpts = Object.keys(logic.SESS_VIEWS)
+    .map(
+      (k) => `<label class="mint-sess-opt" data-sessview-opt="${k}">
+        <input type="radio" name="sessions_view" value="${k}"${k === sessview ? " checked" : ""}>
+        <span class="mint-core-name"><b>${esc(logic.SESS_VIEWS[k])}</b>${k === "spheres" ? " · new" : ""}</span>
+        <span class="mint-core-desc">${esc(sessDesc[k])}</span>
+      </label>`
+    )
+    .join("");
   const desc = {
     A: "A sphere of dots that ripples when you talk, knots while it thinks and gathers into rings when it needs you.",
     B: "A glassy fluid orb that melts into voice waves when it listens and speaks.",
@@ -391,6 +409,8 @@ function appearance(o) {
         <input type="hidden" name="_csrf" value="${esc(o.csrf)}">
         <p class="muted">The MINT AI core in the Command Center. Switch any time; an open Command Center can switch too, from its voice menu.</p>
         <fieldset class="mint-core-opts"><legend class="cc-sr">MINT AI core</legend>${opts}</fieldset>
+        <p class="muted mint-sess-h"><b>Sessions view</b> — how the live sessions are shown round the core.</p>
+        <fieldset class="mint-sess-opts"><legend class="cc-sr">Sessions view</legend>${sessOpts}</fieldset>
         <div class="btn-row"><button class="btn primary mint-core-save" type="submit">Save</button><span class="muted small" id="mint-appearance-note" role="status"></span></div>
       </form>`,
       { icon: "eye", id: "appearance" }

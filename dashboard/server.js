@@ -3433,6 +3433,7 @@ app.get("/mint-ai", requireAuth, async (req, res) => {
       user: ctx(req, "console"),
       voice: await moniAiVoice(req),
       core: req.me.mint_core,
+      sessview: req.me.sessions_view,
     })
   );
 });
@@ -3452,6 +3453,24 @@ function setMintCore(req, core) {
   db.setUserMintCore(req.me.id, core);
   db.logLogin(req.ip, req.me.username, "account", `MINT AI core ${was} -> ${core} (${mintLogic.CORES[core]})${was === core ? " (unchanged)" : ""}`);
 }
+/**
+ * The sessions view round the core, per person: "spheres" (the family of
+ * spheres, the default) or "orbit" (the classic dots). Stored and audited like
+ * the core (users.sessions_view; "account": "Sessions view ..."), written into
+ * the Command Center as data-sessview.
+ */
+function setSessionsView(req, view) {
+  const was = mintLogic.normSessView(req.me.sessions_view);
+  db.setUserSessionsView(req.me.id, view);
+  db.logLogin(req.ip, req.me.username, "account", `Sessions view ${was} -> ${view} (${mintLogic.SESS_VIEWS[view]})${was === view ? " (unchanged)" : ""}`);
+}
+app.post("/mint-ai/api/prefs/sessions", ...moniAiWrite, (req, res) => {
+  const view = req.body && req.body.view;
+  if (!mintLogic.isSessView(view)) return res.status(400).json({ error: "The sessions view must be spheres or orbit.", code: "invalid" });
+  setSessionsView(req, view);
+  res.json({ view, name: mintLogic.SESS_VIEWS[view] });
+});
+
 app.post("/mint-ai/api/prefs/core", ...moniAiWrite, (req, res) => {
   const core = req.body && req.body.core;
   if (!mintLogic.isCore(core)) return res.status(400).json({ error: "The core must be A, B or C.", code: "invalid" });
@@ -4533,7 +4552,7 @@ app.get("/account", requireAuth, (req, res) => {
       flash: req.query.msg || null,
       err: req.query.err || null,
       // The Appearance card only for those who can open the Command Center.
-      appearance: req.perm.can("moniai.use") ? moniAiViews.appearance({ csrf: res.locals.csrf, core: req.me.mint_core }) : null,
+      appearance: req.perm.can("moniai.use") ? moniAiViews.appearance({ csrf: res.locals.csrf, core: req.me.mint_core, sessview: req.me.sessions_view }) : null,
     })
   );
 });
@@ -4541,9 +4560,12 @@ app.get("/account", requireAuth, (req, res) => {
 /* Account > Appearance without JavaScript: a plain form post (see setMintCore). */
 app.post("/account/appearance", requireAuth, requirePerm("moniai.use"), requireCsrf, (req, res) => {
   const core = String((req.body && req.body.core) || "");
+  const view = req.body && req.body.sessions_view !== undefined ? String(req.body.sessions_view) : null;
   if (!mintLogic.isCore(core)) return res.redirect("/account?err=" + encodeURIComponent("Choose core A, B or C.") + "#appearance");
+  if (view !== null && !mintLogic.isSessView(view)) return res.redirect("/account?err=" + encodeURIComponent("Choose Spheres or Classic orbit.") + "#appearance");
   setMintCore(req, core);
-  res.redirect("/account?msg=" + encodeURIComponent(`MINT AI core: ${core} · ${mintLogic.CORES[core]}.`) + "#appearance");
+  if (view !== null) setSessionsView(req, view);
+  res.redirect("/account?msg=" + encodeURIComponent(`MINT AI core: ${core} · ${mintLogic.CORES[core]}${view ? ` · Sessions view: ${mintLogic.SESS_VIEWS[view]}` : ""}.`) + "#appearance");
 });
 
 app.post("/account/password", requireAuth, requireCsrf, async (req, res) => {

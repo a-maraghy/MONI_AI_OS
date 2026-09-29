@@ -347,10 +347,13 @@
 
   var Orb = window.MoniMap({
     root: root, stage: $("cc-stage"), canvas: $("cc-core"), orbit: $("cc-orbit"), ring: $("cc-ring"), halo: $("cc-halo"), spark: $("cc-spark"),
+    family: $("cc-family"), kids: $("cc-kids"), kcard: $("cc-kcard"),
   }, {
     onClick: function (key) { openSheet("sessions"); highlightSess(key); },
+    // A sphere: its conversation (the existing deep view), or the sessions sheet if that is not there.
+    onOpen: function (key) { if (P && P.openDeep && findSess(key)) P.openDeep(key); else { openSheet("sessions"); highlightSess(key); } },
   });
-  window.__mintCC = { core: Orb.core, orbit: Orb, S: S };
+  window.__mintCC = { core: Orb.core, orbit: Orb, S: S, renderSessions: function (f) { renderSessions(f); } };
 
   /* ---- the core setting: A dotted sphere, B Siri fluid, C hybrid. The
      server rendered the saved one as data-core; this browser remembers it too
@@ -599,7 +602,29 @@
 
   /* ================================================================ sessions */
 
-  var sessSig = "";
+  var sessSig = "", nodesSig = "";
+  /** One live session as the core shows it (cc-map.js / cc-family.js). Real data only. */
+  function familyNode(s) {
+    var name = s.name || "unnamed session", st = sessState(s), since = Date.now() - 24 * 3600 * 1000;
+    var subs = (s.subagents || []).filter(function (a) { return a && a.status !== "done" && a.status !== "failed" && a.status !== "completed"; });
+    // What it said last: its latest message to MINT AI, else the last delegation it got.
+    var last = "", lastAt = 0, dels = 0;
+    S.inbound.forEach(function (r) { if (r.from_name === s.name && Date.parse(r.received_at) > lastAt) { lastAt = Date.parse(r.received_at); last = String(r.text || "").replace(/\[Cross-session [a-z ]+\]/i, "").trim(); } });
+    S.delegations.forEach(function (d) { if ((d.target_pid && d.target_pid === s.pid) || (!d.target_pid && d.target_name === s.name)) { if (Date.parse(d.created_at) >= since) dels++; } });
+    var d = s.last_delegation;
+    var task = st === "waiting" ? "Waiting on you" + (s.waiting_for ? " — " + clip(s.waiting_for, 60) : "") :
+      s.mission && s.mission.ref ? s.mission.ref + (s.mission.step_n ? " step " + s.mission.step_n : "") + (d && (d.status === "sent" || d.status === "working") ? ": " + clip(d.summary || firstLine(d.text) || "", 70) : "") :
+      d && (d.status === "sent" || d.status === "working" || d.status === "ack") ? clip(d.summary || firstLine(d.text) || "", 80) :
+      st === "working" ? "Working" : "Nothing running";
+    if (!last && d) last = d.summary || firstLine(d.text) || "";
+    return {
+      id: sessKey(s), label: clip(name, 26), name: name, st: st, subs: subs, mission: s.mission ? s.mission.ref || "mission" : "",
+      cost: s.cost_today_usd_est, task: task, last: clip(last, 140),
+      // Size: what it did today (delegations, cost), never less than a little.
+      act: 1 + dels * 3 + Math.min(20, (+s.cost_today_usd_est || 0) * 4) + (st === "working" ? 2 : 0),
+      hired: s.hired === true,
+    };
+  }
   function sessKey(s) { return String(s.pid || s.session_id || s.name); }
   function sessIcon(s) {
     var w = String(s.where || "");
@@ -644,12 +669,12 @@
     })) + "|" + S.target + "|" + (S.status && S.status.busy) + "|" + (S.status && S.status.process && S.status.process.model);
     var live = liveSessions();
     $("cc-sess-aside").textContent = live.length + " live" + (S.status && S.status.sessions_at ? " · polled " + ago(S.status.sessions_at) : "");
+    // The core's sessions (the orbit's dots or the family of spheres): what each is doing, its last message, today's cost.
+    var nodes = sortSessions(live).map(familyNode);
+    var nodeSig = JSON.stringify(nodes);
+    if (nodeSig !== nodesSig || force) { nodesSig = nodeSig; Orb.setNodes(nodes); }
     if (sig === sessSig && !force) return;
     sessSig = sig;
-
-    Orb.setNodes(sortSessions(live).map(function (s) {
-      return { id: sessKey(s), label: clip(s.name || "unnamed session", 26), st: sessState(s), subs: s.subagents || [], mission: !!s.mission };
-    }));
     Orb.mark(S.target !== "auto" ? (function () { var x = sessionNamed(S.target); return x ? sessKey(x) : null; })() : null);
 
     var el = $("cc-sessions");
@@ -1517,6 +1542,7 @@
     if (tr) renderTurn(tr);
     renderTimeline();
     renderStats();
+    renderSessions(); // a sphere's task and size follow its delegations
   }
 
   /* ---------------------------------------------------------- event log */
@@ -1558,6 +1584,7 @@
       var s = sessionNamed(row.from_name);
       if (s) Orb.reply(sessKey(s));
     }
+    renderSessions(); // a sphere's hover card shows its last message
   }
 
   /* ---------------------------------------------------------- stats */

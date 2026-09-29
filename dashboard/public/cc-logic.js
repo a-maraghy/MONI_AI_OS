@@ -33,6 +33,15 @@
     return typeof c === "string" && Object.prototype.hasOwnProperty.call(CORES, c);
   }
 
+  /* The sessions view round the core: the family of spheres (the default) or the classic orbit of dots. */
+  var SESS_VIEWS = { spheres: "Spheres", orbit: "Classic orbit" };
+  var SESS_VIEW_DEFAULT = "spheres";
+  function normSessView(v) {
+    v = String(v == null ? "" : v).trim().toLowerCase();
+    return Object.prototype.hasOwnProperty.call(SESS_VIEWS, v) ? v : SESS_VIEW_DEFAULT;
+  }
+  function isSessView(v) { return typeof v === "string" && Object.prototype.hasOwnProperty.call(SESS_VIEWS, v); }
+
   var STATES = ["idle", "listening", "thinking", "delegating", "speaking", "needs"];
   var LABEL = { idle: "Ready", listening: "Listening", thinking: "Thinking", delegating: "Delegating", speaking: "Speaking", needs: "Needs you" };
 
@@ -252,6 +261,7 @@
 
   return {
     CORES: CORES, CORE_DEFAULT: CORE_DEFAULT, normCore: normCore, isCore: isCore,
+    SESS_VIEWS: SESS_VIEWS, SESS_VIEW_DEFAULT: SESS_VIEW_DEFAULT, normSessView: normSessView, isSessView: isSessView,
     STATES: STATES, LABEL: LABEL, coreState: coreState, caption: caption, lastSentence: lastSentence, gist: gist,
     needQueue: needQueue, card: card, doneText: doneText,
     SHEETS: SHEETS, sheetKeys: sheetKeys,

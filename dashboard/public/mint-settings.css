@@ -19,4 +19,14 @@
 .mint-core-desc { font-size: 12.5px; color: var(--muted); line-height: 1.45; }
 .mint-appearance.js .mint-core-save { display: none; }
 #mint-appearance-note.err { color: var(--bad); }
-@media (max-width: 720px) { .mint-core-opts { grid-template-columns: 1fr; } .mint-prev { height: 110px; } }
+/* The sessions view: two plain options under the cores. */
+.mint-sess-h { margin: 18px 0 0; }
+.mint-sess-h b { color: var(--ink); }
+.mint-sess-opts { border: 0; margin: 10px 0 12px; padding: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.mint-sess-opt { position: relative; display: flex; flex-direction: column; gap: 6px; padding: 12px; border-radius: 14px; border: 1px solid var(--line); background: var(--panel); cursor: pointer; transition: border-color .2s, box-shadow .2s; }
+.mint-sess-opt:hover { border-color: var(--line-strong); }
+.mint-sess-opt input { position: absolute; opacity: 0; pointer-events: none; }
+.mint-sess-opt:has(input:checked) { border-color: var(--accent-2); box-shadow: 0 0 0 3px var(--accent-soft); }
+.mint-sess-opt:has(input:focus-visible) { outline: 2px solid var(--accent-2); outline-offset: 2px; }
+.mint-sess-opt .mint-core-name b { display: inline; min-width: 0; height: auto; padding: 0; background: none; color: var(--ink); font-size: 14px; margin: 0; }
+@media (max-width: 720px) { .mint-core-opts, .mint-sess-opts { grid-template-columns: 1fr; } .mint-prev { height: 110px; } }

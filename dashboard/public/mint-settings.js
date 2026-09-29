@@ -71,6 +71,7 @@
     note.classList.toggle("err", !!bad);
   }
   form.addEventListener("change", function (e) {
+    if (e.target.name === "sessions_view") return saveSessView(e.target.value);
     if (e.target.name !== "core") return;
     var core = e.target.value;
     say("Saving…");
@@ -87,6 +88,21 @@
       });
     }).catch(function (x) { say("Not saved: " + x.message, true); });
   });
+  /* The sessions view: saved at once through the Command Center's own route, like the core. */
+  function saveSessView(view) {
+    say("Saving…");
+    fetch("/mint-ai/api/prefs/sessions", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json", Accept: "application/json", "X-CSRF-Token": CSRF },
+      body: JSON.stringify({ view: view }),
+    }).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (j) {
+        if (!r.ok) throw new Error(j.error || "HTTP " + r.status);
+        say("Saved. The Command Center shows the sessions as " + j.name + ".");
+      });
+    }).catch(function (x) { say("Not saved: " + x.message, true); });
+  }
   form.addEventListener("submit", function (e) {
     // With JavaScript the choice is saved as it is made.
     e.preventDefault();

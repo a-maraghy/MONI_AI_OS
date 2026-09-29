@@ -160,6 +160,29 @@ The top bar's MINT AI tab opens it. Someone with `console.use` but not
   real output level. Without a key the controls are off and say
   "Add an OpenAI key in Settings".
 
+- **The family of spheres** (`public/cc-family.js`, 2026-09-30, the default
+  sessions view; the approved mockup's Flat view): each live session is a
+  small dotted sphere like MINT AI, with its name and state under it, drifting
+  round her -- never over her, each other, the caption, the composer or voice
+  bar, the approval card, the icon rail, the top bar, the reply or an open
+  sheet (soft forces, then hard guarantees each frame; an overlap audit is
+  exposed for checks). Its own tint; size by what it did today (delegations,
+  cost); a kept ring (every session today -- hiring is not built, a session
+  marked `hired` would have none); working ones shimmer, idle ones dim, one
+  waiting on you glows amber with a pulsing "needs you" badge, one that just
+  finished blooms and says "done". Real events drive it: a `sent` delegation
+  streams dots from her to it, a reply (ack or inbound message) a thread back;
+  running sub-agents are specks circling it; a session that appears condenses
+  out of her, one that goes away dissolves back (nothing here retires
+  anything). Hover: a card with its task, last message and cost today; click,
+  or Tab to its name and Enter, opens its deep view. Same with cores A, B and
+  C. On a phone the core is smaller so the spheres fit round her. It rides the
+  core's own frame (about 1 ms of JS a frame for 7 spheres, 60 fps); under
+  reduced motion it is placed once and drawn still. **Account › Appearance ›
+  Sessions view** picks Spheres (new, the default) or Classic orbit, stored
+  per user (`users.sessions_view`, `POST /mint-ai/api/prefs/sessions`,
+  audited like the core) and rendered as `data-sessview` on `#cc`.
+
 Everything is built in `public/moni-ai.js` from the API; the frame is
 `lib/views-moniai.js`, the styles `public/moni-ai.css`. No inline script or
 style (the CSP forbids both) and no external requests.

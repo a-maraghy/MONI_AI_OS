@@ -186,6 +186,7 @@ addColumn("users", "email", "TEXT NOT NULL DEFAULT ''");
 // reads as the default, C (public/cc-logic.js normCore) -- so every existing
 // account gets the default without a value being written for it.
 addColumn("users", "mint_core", "TEXT NOT NULL DEFAULT ''");
+addColumn("users", "sessions_view", "TEXT NOT NULL DEFAULT ''"); // '' = spheres (the default), or "orbit"
 
 // How the voice speaks to this person, learned from how they speak to it
 // (lib/voice-persona.js): JSON {dialect, gender, updated_at}, empty = not known
@@ -376,6 +377,10 @@ module.exports = {
   /** The MINT AI core this person chose (A / B / C). The caller validates it. */
   setUserMintCore: (id, core) =>
     db.prepare("UPDATE users SET mint_core = ? WHERE id = ?").run(String(core), id),
+
+  /** The sessions view this person chose (spheres / orbit). The caller validates it. */
+  setUserSessionsView: (id, view) =>
+    db.prepare("UPDATE users SET sessions_view = ? WHERE id = ?").run(String(view), id),
 
   confirmUserTotp: (id) =>
     db.prepare("UPDATE users SET totp_confirmed = 1 WHERE id = ?").run(id),
