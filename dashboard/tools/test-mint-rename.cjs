@@ -54,7 +54,7 @@ console.log("the frame");
 {
   const page = ui.shell("Overview", "<p>x</p>", { user, csrf: "c", active: "services" });
   check("the page title ends in Mint OS", / — Mint OS$/.test(titleOf(page)), titleOf(page));
-  check("the top-bar brand reads Mint OS", /<span class="brand-text">Mint<em>OS<\/em><\/span>/.test(page), (/<span class="brand-text">.*?<\/span><\/span>|<span class="brand-text">[^\n]*/.exec(page) || [])[0]);
+  check("the top-bar brand is the MINT [OS] lockup", /<span class="lockup os brand-text" aria-label="MINT OS">[\s\S]*?<span class="lk-mint">MINT<\/span><span class="pill-brand pill-os">\[<b>OS<\/b>\]<\/span>/.test(page));
   check("the brand link is labelled Mint OS home", /aria-label="Mint OS home"/.test(page));
   check("the assistant's tab reads MINT AI", />MINT AI</.test(page) && /href="\/mint-ai"/.test(page));
   check("no old name anywhere a person reads", !OLD_NAME.test(visible(page)) && !/MONI AI/.test(page), (visible(page).match(/.{0,40}\bMONI\b.{0,40}/) || [])[0]);
@@ -66,7 +66,7 @@ console.log("login, setup, pair");
 {
   const login = views.login({ csrf: "c" });
   check("the login page title says Mint OS", /Mint OS/.test(titleOf(login)), titleOf(login));
-  check("the login heading says Sign in to Mint OS", /Sign in to Mint OS/.test(login));
+  check("the login card carries the MINT [OS] lockup and says Sign in", /class="card auth-card"><div class="auth-lockup"><span class="lockup os full" aria-label="MINT OS">/.test(login) && /<h2[^>]*>Sign in<\/h2>/.test(login));
   check("no old name on the login page", !OLD_NAME.test(visible(login)));
   for (const [name, html] of [["setup", views.setup({ csrf: "c", token: "t" })], ["pair", views.pair({ csrf: "c" })]]) {
     check(`the ${name} page says Mint OS, not MONI`, /Mint OS/.test(titleOf(html)) && !OLD_NAME.test(visible(html)), titleOf(html));

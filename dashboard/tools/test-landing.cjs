@@ -122,7 +122,7 @@ async function makeUser(username, roleName, permissions) {
   return { pw, secret };
 }
 
-const tabHrefs = (body) => [...body.matchAll(/<a href="([^"]+)" class="top-tab( on)?">/g)].map((m) => m[1] + (m[2] ? "*" : ""));
+const tabHrefs = (body) => [...body.matchAll(/<a href="([^"]+)" class="top-tab(?: ai)?( on)?"/g)].map((m) => m[1] + (m[2] ? "*" : ""));
 const brand = (body) => (body.match(/<a class="brand" href="([^"]+)"/) || [])[1];
 
 (async () => {

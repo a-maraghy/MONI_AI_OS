@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg class="mark mark-ai" viewBox="-6 -36 112 176" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="MINT AI"><title>MINT AI</title>
+<defs>
+<linearGradient id="mai-g" x1="12" y1="104" x2="90" y2="26" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#00E6A5"/><stop offset=".42" stop-color="#3FD2B8"/><stop offset=".7" stop-color="#7A62E6"/><stop offset="1" stop-color="#8A2BE2"/></linearGradient>
+<radialGradient id="mai-h" cx="50" cy="14" r="46" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#E9FFF6" stop-opacity=".32"/><stop offset="1" stop-color="#E9FFF6" stop-opacity="0"/></radialGradient>
+<linearGradient id="mai-v" x1="0" y1="120" x2="0" y2="-4" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#59E3B1"/><stop offset=".12" stop-color="#3FA98E"/><stop offset=".45" stop-color="#34718A"/><stop offset=".8" stop-color="#5E9FB0"/><stop offset="1" stop-color="#E9FFF6"/></linearGradient>
+<radialGradient id="mai-s" cx="50" cy="-4" r="24" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#FFFFFF"/><stop offset=".35" stop-color="#C9FFEC"/><stop offset="1" stop-color="#5FE8BF"/></radialGradient>
+<filter id="mai-f" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="5"/></filter>
+<filter id="mai-f2" filterUnits="userSpaceOnUse" x="-10" y="-40" width="120" height="180"><feGaussianBlur stdDeviation="1.5"/></filter>
+<clipPath id="mai-c"><path d="M50 4C58.5 11 96 33 96 68C96 96 76 116 50 116C24 116 4 96 4 68C4 33 41.5 11 50 4Z"/></clipPath>
+<mask id="mai-m" maskUnits="userSpaceOnUse" x="-5" y="-40" width="110" height="180"><rect x="-5" y="-40" width="110" height="180" fill="#fff"/>
+<g fill="none" stroke="#000" stroke-width="5.2"><path d="M50 32.5V121"/><path d="M35.6 45.4L50 57.4L64.4 45.4" stroke-linejoin="round"/><path d="M-3 43.5L42.5 84.5Q50 91 50 99M103 43.5L57.5 84.5Q50 91 50 99" stroke-linejoin="round"/></g></mask>
+</defs>
+<g class="ai-halo" opacity="0.75" filter="url(#mai-f)"><path d="M50 4C58.5 11 96 33 96 68C96 96 76 116 50 116C24 116 4 96 4 68C4 33 41.5 11 50 4Z" fill="url(#mai-g)"/></g>
+<g mask="url(#mai-m)"><path d="M50 4C58.5 11 96 33 96 68C96 96 76 116 50 116C24 116 4 96 4 68C4 33 41.5 11 50 4Z" fill="url(#mai-g)"/><path d="M50 4C58.5 11 96 33 96 68C96 96 76 116 50 116C24 116 4 96 4 68C4 33 41.5 11 50 4Z" fill="url(#mai-h)"/></g>
+<g class="ai-vein" fill="none" stroke-linejoin="round"><g clip-path="url(#mai-c)"><g filter="url(#mai-f2)" stroke="#F2FFF9" stroke-width="8.4" opacity="1"><path d="M50 32.5V121"/><path d="M35.6 45.4L50 57.4L64.4 45.4" stroke-linecap="round"/><path d="M-3 43.5L42.5 84.5Q50 91 50 99M103 43.5L57.5 84.5Q50 91 50 99"/></g><g stroke="#1B3552" stroke-width="4.2" opacity=".92"><path d="M35.6 45.4L50 57.4L64.4 45.4" stroke-linecap="round"/><path d="M-3 43.5L42.5 84.5Q50 91 50 99M103 43.5L57.5 84.5Q50 91 50 99"/></g></g><path d="M50 -2V120" stroke="url(#mai-v)" stroke-width="4.2"/><path d="M50 119V133" stroke="#59E3B1" stroke-width="4.2" stroke-linecap="round"/></g>
+<g class="ai-spark"><path d="M50.00 -28.50C51.68 -11.70 57.20 -7.70 74.00 -4.50C57.20 -1.30 51.68 -0.30 50.00 9.50C48.32 -0.30 42.80 -1.30 26.00 -4.50C42.80 -7.70 48.32 -11.70 50.00 -28.50Z" fill="#9FFBDD" opacity=".8" filter="url(#mai-f2)"/><path d="M50.00 -28.50C51.68 -11.70 57.20 -7.70 74.00 -4.50C57.20 -1.30 51.68 -0.30 50.00 9.50C48.32 -0.30 42.80 -1.30 26.00 -4.50C42.80 -7.70 48.32 -11.70 50.00 -28.50Z" fill="url(#mai-s)"/></g>
+</svg>

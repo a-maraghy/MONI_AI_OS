@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg class="mark mark-os" viewBox="0 0 100 120" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="MINT OS"><title>MINT OS</title>
+<defs><mask id="mos-m" maskUnits="userSpaceOnUse" x="-5" y="0" width="110" height="122"><rect x="-5" y="0" width="110" height="122" fill="#fff"/>
+<g fill="none" stroke="#000" stroke-width="5.2"><path d="M50 32.5V121"/><path d="M35.6 45.4L50 57.4L64.4 45.4" stroke-linejoin="round"/><path d="M-3 43.5L42.5 84.5Q50 91 50 99M103 43.5L57.5 84.5Q50 91 50 99" stroke-linejoin="round"/></g></mask>
+<clipPath id="mos-c"><path d="M50 4C58.5 11 96 33 96 68C96 96 76 116 50 116C24 116 4 96 4 68C4 33 41.5 11 50 4Z"/></clipPath></defs>
+<g mask="url(#mos-m)" clip-path="url(#mos-c)"><rect x="0" y="0" width="50" height="120" fill="#6DEBA8"/><rect x="50" y="0" width="50" height="120" fill="#248273"/></g></svg>

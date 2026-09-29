@@ -17,6 +17,7 @@ const fs = require("fs");
 const path = require("path");
 const { icon } = require("./icons");
 const { landing } = require("./rbac");
+const brand = require("./brand");
 
 /**
  * Cache-busting stamps for the static files.
@@ -328,7 +329,7 @@ function renderSidebar(active, dashKey, perm, chrome) {
 
   const id = (chrome && chrome.ids && chrome.ids[dash.key]) || null;
   const idBlock = id
-    ? `<div class="side-id"><span class="side-id-mark">${icon(dash.key === "agents" ? "agents" : "cpu", 18)}</span>
+    ? `<div class="side-id"><span class="side-id-mark">${dash.key === "agents" ? brand.seedling(3) : brand.osMark()}</span>
         <div><b>${esc(id.name)}</b><small>${esc(id.sub)}</small></div></div>`
     : "";
 
@@ -388,7 +389,11 @@ function shell(title, body, opts = {}) {
   if (!who || !who.name) {
     // Signed out: no chrome at all, just the card. Showing navigation you
     // cannot use is noise on the one screen that has to be unambiguous.
-    return page(title, `<main class="auth-wrap">${body}</main>`, opts);
+    // The full lockup heads the card, and a large faint leaf sits behind it.
+    const kind = opts.brand === "ai" ? "ai" : "os";
+    const head = `<div class="auth-lockup">${brand.lockup(kind, { sub: true })}</div>`;
+    const inner = /^\s*<div class="card">/.test(body) ? body.replace(/<div class="card">/, `<div class="card auth-card">${head}`) : head + body;
+    return page(title, `<main class="auth-wrap">${brand.watermark(kind)}${inner}</main>`, opts);
   }
 
   const perm = who.perm || opts.perm || null;
@@ -404,8 +409,8 @@ function shell(title, body, opts = {}) {
   const tabs = DASHBOARDS.filter((d) => !perm || perm.canDash(d.key))
     .map(
       (d) =>
-        `<a href="${d.href}" class="top-tab${dash === d.key ? " on" : ""}">
-         ${icon(d.icon, 17)}<span>${esc(d.label)}</span>
+        `<a href="${d.href}" class="top-tab${d.key === "console" ? " ai" : ""}${dash === d.key ? " on" : ""}"${dash === d.key ? ' aria-current="page"' : ""}>
+         ${d.key === "console" ? brand.spark(16) : icon(d.icon, 17)}<span>${esc(d.label)}</span>
        </a>`
     )
     .join("");
@@ -440,9 +445,8 @@ function shell(title, body, opts = {}) {
                      aria-expanded="false" aria-controls="sidebar"
                      data-nav-toggle>${icon("menu", 20)}</button>`
       }
-      <a class="brand" href="${perm ? landing(perm) : "/"}" aria-label="Mint OS home">
-        <span class="brand-mark">${icon("overview", 18)}</span>
-        <span class="brand-text">Mint<em>OS</em></span>
+      <a class="brand" href="${perm ? landing(perm) : "/"}" aria-label="${opts.brand === "ai" ? "MINT AI" : "Mint OS"} home">
+        ${brand.lockup(opts.brand === "ai" ? "ai" : "os", { cls: "brand-text" })}
       </a>
       <nav class="top-tabs" aria-label="Dashboards">${tabs}</nav>
       <div class="top-right">
@@ -505,14 +509,21 @@ function page(title, inner, opts = {}) {
   // light. A blocking external script because the CSP forbids inline ones.
   const theme = `<script src="${asset("theme-init.js")}"></script>\n`;
   const cls = opts.pageClass && /^[a-z0-9 -]+$/.test(opts.pageClass) ? ` class="${opts.pageClass}"` : "";
+  // The AI's own pages (the Command Center) carry the AI favicon and title;
+  // everything else is the OS.
+  const ai = opts.brand === "ai";
   return `<!doctype html>
 <html lang="en"${cls}><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${esc(title)} — Mint OS</title>
-<link rel="icon" href="${asset("favicon.svg")}" type="image/svg+xml">
-<link rel="alternate icon" href="/favicon.ico" sizes="48x48 32x32 16x16">
-<link rel="apple-touch-icon" href="${asset("favicon.svg")}">
+<title>${esc(title)} — ${ai ? "MINT AI" : "Mint OS"}</title>
+<link rel="icon" href="${asset(`brand/favicon-${ai ? "ai" : "os"}-16.svg`)}" type="image/svg+xml" sizes="16x16">
+<link rel="icon" href="${asset(`brand/favicon-${ai ? "ai" : "os"}-32.svg`)}" type="image/svg+xml" sizes="32x32">
+<link rel="icon" href="${asset(ai ? "favicon-ai.svg" : "favicon.svg")}" type="image/svg+xml" sizes="any">
+<link rel="alternate icon" href="${ai ? asset("favicon-ai.ico") : "/favicon.ico"}" sizes="48x48 32x32 16x16">
+<link rel="apple-touch-icon" href="${asset(ai ? "favicon-ai.svg" : "favicon.svg")}">
+<link rel="preload" href="/static/fonts/inter-latin-400-normal.woff2?v=5.3.0" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/static/fonts/space-grotesk-latin-700-normal.woff2?v=5.3.0" as="font" type="font/woff2" crossorigin>
 ${theme}<link rel="stylesheet" href="${asset("style.css")}">
 <link rel="stylesheet" href="${asset("os.css")}">
 ${css}

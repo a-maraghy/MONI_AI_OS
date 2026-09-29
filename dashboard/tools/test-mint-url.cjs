@@ -193,7 +193,7 @@ async function makeUser(username, roleName) {
     /* signed in, administrator */
     const a = await signIn("urladmin", admin.pw, admin.secret);
     check("GET /mint-ai signed in -> 200 Command Center", a.page.status === 200 && /id="cc"/.test(a.page.body) && !!a.csrf, a.page.status);
-    check("the page's own tab link is /mint-ai", /<a href="\/mint-ai" class="top-tab on">/.test(a.page.body));
+    check("the page's own tab link is /mint-ai", /<a href="\/mint-ai" class="top-tab ai on" aria-current="page">/.test(a.page.body));
     r = await req("GET", "/moni-ai", { cookie: a.cookie });
     check("signed in, the old URL still 301s to /mint-ai", r.status === 301 && r.headers.location === "/mint-ai", r.status);
     const st = { new: await req("GET", "/mint-ai/api/status", { cookie: a.cookie }), old: await req("GET", "/moni-ai/api/status", { cookie: a.cookie }) };
