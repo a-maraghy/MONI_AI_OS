@@ -289,6 +289,20 @@ function deskCard(csrf, v, desk) {
   );
 }
 
+/** How each voice sounds, for the voice cards. A word or two, not a promise. */
+const VOICE_NOTES = {
+  marin: "warm · clear · default",
+  cedar: "low · calm",
+  alloy: "neutral · even",
+  ash: "soft · steady",
+  ballad: "gentle · lilting",
+  coral: "bright · friendly",
+  echo: "crisp · measured",
+  sage: "calm · unhurried",
+  shimmer: "light · airy",
+  verse: "bright · quick",
+};
+
 exports.voice = ({ csrf, user, credentials, voice: v, desk, models, voices, transcribeModels, test, flash, err }) => {
   const known = (list, id) => list.some((m) => (m.id || m) === id);
   const modelList = known(models, v.model) ? models : [{ id: v.model, label: v.model }, ...models];
@@ -352,8 +366,14 @@ exports.voice = ({ csrf, user, credentials, voice: v, desk, models, voices, tran
         <input type="hidden" name="_csrf" value="${esc(csrf)}">
         <label>Speaking model <span class="hint">reads Claude's replies aloud, word for word</span>
           <select name="model">${modelList.map((m) => option(m.id, m.label + " (" + m.id + ")", v.model)).join("")}</select></label>
-        <label>Voice
-          <select name="voice">${voiceList.map((x) => option(x, x.charAt(0).toUpperCase() + x.slice(1), v.voice)).join("")}</select></label>
+        <fieldset class="voice-pick"><legend>Voice</legend>
+          <div class="voice-cards">${voiceList
+            .map(
+              (x) => `<label class="voice-card"><input type="radio" name="voice" value="${esc(x)}"${x === v.voice ? " checked" : ""}><b>${esc(
+                x.charAt(0).toUpperCase() + x.slice(1)
+              )}</b><span>${esc(VOICE_NOTES[x] || "")}</span></label>`
+            )
+            .join("")}</div></fieldset>
         <label>Listening model <span class="hint">turns what you say into text</span>
           <select name="transcribe_model">${tModels.map((m) => option(m.id, m.label + " (" + m.id + ")", v.transcribe_model)).join("")}</select></label>
         <button class="btn primary" type="submit">${icon("save")} Save voice settings</button>

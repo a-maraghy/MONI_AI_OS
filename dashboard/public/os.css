@@ -443,3 +443,14 @@ pre.logs .t { color: var(--muted); }
 .vault-art .v-leaf { display: block; height: 34px; width: auto; margin: 0 auto 6px; }
 .vault-art .v-center b { font: 700 24px/1 var(--brand-font); }
 .vault-art .v-center span { font: 700 10px var(--brand-font); }
+/* The voice picker: one card per voice, the chosen one outlined in mint. */
+.voice-pick { border: 0; padding: 0; margin: 0 0 12px; min-width: 0; }
+.voice-pick legend { font-weight: 650; color: var(--ink); font-size: 13px; margin-bottom: 6px; padding: 0; }
+.voice-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 8px; }
+.voice-card { position: relative; display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 9px 12px; border: 1px solid var(--line-strong); border-radius: 10px; cursor: pointer; background: var(--panel); }
+.voice-card input { position: absolute; opacity: 0; pointer-events: none; }
+.voice-card b { font: 700 13.5px var(--brand-font); color: var(--ink); }
+.voice-card span { font-size: 11.5px; color: var(--muted); }
+.voice-card:hover { border-color: var(--accent-2); }
+.voice-card:has(input:checked) { border-color: var(--accent-2); box-shadow: var(--glow-mint); background: var(--accent-soft); }
+.voice-card:has(input:focus-visible) { outline: 2px solid var(--accent-2); outline-offset: 2px; }
