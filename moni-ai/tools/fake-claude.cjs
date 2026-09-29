@@ -13,6 +13,7 @@
  *   DELEGATE  "sends" a message to fake-target: posts the PostToolUse event to
  *             the hook socket the way hooks/ledger.js would, then a reply and
  *             an idle notice as UserPromptSubmit events
+ *   SLOW <ms> takes that long (up to 30 s) before answering "slow done"
  *   RUN <cmd> asks permission to run <cmd> with Bash (rules may answer it)
  *   MISSION2  creates a two-step mission over the control socket (as the MCP
  *             server would) and delegates both steps, tagged, to fake-target
@@ -136,6 +137,9 @@ async function turn(msg) {
     reply = allowed ? "Fix ran." : "denied: " + resp.message;
   } else if (text.startsWith("[Standing order:")) {
     reply = "**Services** all 12 up\n**Disk** 6%\n**Needs you** nothing";
+  } else if (/^SLOW (\d+)/.test(text)) {
+    await sleep(Math.min(Number(/^SLOW (\d+)/.exec(text)[1]), 30000));
+    reply = "slow done";
   } else if (/^RUN /.test(text)) {
     const { allowed, resp } = await askTool("Bash", { command: text.slice(4).split("\n")[0], description: "test" });
     reply = allowed ? "allowed" : "denied: " + resp.message;
