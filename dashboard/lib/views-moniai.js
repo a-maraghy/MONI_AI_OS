@@ -87,6 +87,7 @@ Object.assign(SPRITE, {
   up: '<path d="M12 19V5M5.5 11.5 12 5l6.5 6.5"/>',
   cpu: '<rect x="6" y="6" width="12" height="12" rx="2"/><rect x="9.5" y="9.5" width="5" height="5"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/>',
   bot: '<rect x="5" y="8" width="14" height="11" rx="3"/><path d="M12 4v4M9 13h.01M15 13h.01"/>',
+  user: '<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-8 8-8s8 3.6 8 8"/>',
   spark: '<path d="M12 2.5c.6 4.6 2.9 6.9 9.5 9.5-6.6 2.6-8.9 4.9-9.5 9.5-.6-4.6-2.9-6.9-9.5-9.5 6.6-2.6 8.9-4.9 9.5-9.5Z"/>',
 });
 
@@ -121,7 +122,7 @@ function coreCell(key, label) {
 
 /** A sheet behind the dock: its head (title, a line under it, actions, close) and body. */
 function pane(key, title, sub, actions, body, foot) {
-  return `<section class="cc-pane" id="cc-pane-${key}" data-sheet-pane="${key}" role="dialog" aria-labelledby="cc-h-${key}" hidden>
+  return `<section class="cc-pane" id="cc-pane-${key}" data-sheet-pane="${key}" role="dialog" aria-labelledby="cc-h-${key}" tabindex="-1" hidden>
     <div class="sh-hd"><div class="cc-min0"><h2 id="cc-h-${key}">${esc(title)}</h2><div class="sub">${sub}</div></div><span class="sp"></span>${actions || ""}<button type="button" class="cc-ibtn" data-sheet-close title="Close (Esc)" aria-label="Close">${ic("close")}</button></div>
     <div class="sh-bd cc-scroll"${key === "conv" ? ' id="cc-chat-scroll"' : ""}>${body}</div>${foot ? `<div class="sh-ft">${foot}</div>` : ""}
   </section>`;
@@ -181,6 +182,7 @@ function page(o) {
     ["/agents/dashboard", "bot", "Agents", "agents"],
   ]
     .filter((d) => !perm || perm.canDash(d[3]))
+    .concat([["/account", "user", "Your account", ""]])
     .map((d) => `<a class="cc-card cc-link-card" href="${d[0]}">${ic(d[1])}<b>${esc(d[2])}</b><span class="sp"></span>${ic("chevr")}</a>`)
     .join("");
 

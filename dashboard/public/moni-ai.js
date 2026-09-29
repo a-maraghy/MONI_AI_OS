@@ -861,8 +861,8 @@
     if (id === "dec") P.renderDecisions();
     if (id === "missions") P.renderMissions();
     if (id === "sessions") renderSessions(true);
-    var f = $("cc-pane-" + id).querySelector("[data-sheet-close]");
-    if (f && !$("cc-sheet").contains(document.activeElement)) f.focus({ preventScroll: true });
+    // Focus moves into the sheet (for Escape, Tab and screen readers) without a ring on the close button.
+    if (!$("cc-sheet").contains(document.activeElement)) $("cc-pane-" + id).focus({ preventScroll: true });
   }
   function closeSheet() {
     if (!S.pane) return;

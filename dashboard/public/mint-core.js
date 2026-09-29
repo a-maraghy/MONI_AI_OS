@@ -20,7 +20,7 @@
  * to half resolution if frames come slower than ~45 fps.
  *
  * Ported from the approved mockup (scratchpad/mint-simple/src/core.js); the
- * shaders are the mockup's, unchanged.
+ * shaders are the mockup's, but for one guard in B (atan at y = 0).
  *
  * Exposes window.MintCore(canvas, opts) -> an instance. Used by cc-map.js on
  * the Command Center and by mint-settings.js for the Appearance previews.
@@ -202,7 +202,7 @@
     float along=dot(p,u_ddir); vec2 perp=p-along*u_ddir;
     float stretch=u_bdel*(0.35+0.12*sin(t*3.0));
     vec2 q=p; if(along>0.0){ q=perp+u_ddir*along/(1.0+stretch*1.6); }
-    float r=length(q); float an=atan(q.y,q.x);
+    float r=length(q); float an=atan(q.y+1e-5,q.x); /* +1e-5: atan(0,-x) is NaN on some GPUs (a seam at the left edge) */
     float wob=(0.018+0.05*u_bthink+0.06*u_amp*u_bw)*snoise(vec3(cos(an)*1.3,sin(an)*1.3,t*(0.45+1.1*u_bthink)));
     float R=Rb+wob*Rb;
     float inside=smoothstep(R+px*1.2,R-px*1.2,r);

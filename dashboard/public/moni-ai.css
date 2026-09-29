@@ -1020,6 +1020,9 @@ html.cc-page .cc-tbl { width: 100%; border-collapse: collapse; font-size: 12px; 
   .cc-rail { display: none; }
   .cc-ibtn.cc-evbtn { display: inline-grid; }
   .cc-mis-chip, .cc-clock { display: none; }
+  html.cc-page .top-tabs, html.cc-page .whoami { display: none; }
+  html.cc-page .brand .brand-text { display: inline-flex; }
+  html.cc-page .top-right { gap: 8px; }
   .cc-sys-chip #cc-sys-label { display: none; }
   html.cc-page .theme-seg { display: none; }
   html.cc-page .whoami-name, html.cc-page .whoami-role { display: none; }
@@ -1056,3 +1059,7 @@ html.cc-page .cc-tbl { width: 100%; border-collapse: collapse; font-size: 12px; 
 .cc-need .more { display: inline-flex; align-items: center; gap: 6px; margin-top: 10px; padding: 0; border: 0; background: none; color: var(--muted); font-size: 12px; }
 .cc-need .more:hover { color: var(--ink); }
 .cc-need .more .cc-i { width: 13px; height: 13px; }
+html.cc-page .topbar .cc-needpill { color: var(--on-brand); }
+html.cc-page .topbar .cc-needpill .cc-dot { background: var(--on-brand); }
+.cc-pane:focus { outline: none; }
+.cc-sheet .cc-mis-tab.new { display: none; }
