@@ -28,7 +28,17 @@
  *
  * Pure: no I/O. The prompt texts are pulled from their modules lazily (the
  * desk requires this file).
+ *
+ * Arabic (2026-09-29): words are counted in any script (de1b247) and compared
+ * in one spelling (lib/voice-arabic.js normalize: digits, alef/hamza, yaa,
+ * taa marbuta, tatweel, diacritics -- a diacritic no longer splits a word), so
+ * an echo, a silence phrase and a grounded transcript match however the model
+ * spelled them; and the Arabic subtitle credits and silence phrases these
+ * models write («ترجمة نانسي قنقر», «اشتركوا في القناة», «شكرا للمشاهدة») are
+ * dropped like the English ones.
  */
+
+const arabic = require("./voice-arabic");
 
 /* ------------------------------------------------------------- tokens -- */
 
@@ -42,7 +52,8 @@ const STOP = new Set(
 );
 
 function tokens(text) {
-  return String(text || "")
+  return arabic
+    .normalize(String(text || ""))
     .toLowerCase()
     .replace(/['’]/g, "")
     .split(/[^\p{L}\p{N}]+/u)
@@ -161,6 +172,7 @@ function echoOf(text, sources) {
 // What these models write for silence or noise. Dropped when the clip was short
 // or quiet; the credits always (nobody says them to MINT AI).
 const SILENCE_PHRASES = new Set([
+  ...arabic.SILENCE_AR,
   "you", "thank you", "thank you very much", "thanks", "thanks for watching", "thank you for watching", "thank you so much for watching",
   "bye", "bye bye", "goodbye", "okay", "ok", "so", "uh", "um", "hmm", "mm", "oh", "the end", "silence", "music", "applause",
 ]);
@@ -170,11 +182,13 @@ const SHORT_S = 1.2; // a clip shorter than this is "short"
 function hallucination(text, ctx) {
   const s = String(text || "").trim();
   if (CREDITS_RE.test(s)) return "credits";
+  if (arabic.CREDITS_AR.test(tokens(s).join(" "))) return "credits";
   const phrase = tokens(s).join(" ");
   if (!phrase) return "empty";
   const c = ctx || {};
   const short = c.audioSeconds != null && c.audioSeconds < SHORT_S;
   if (SILENCE_PHRASES.has(phrase) && (short || c.quiet)) return "silence-phrase";
+  if (arabic.CREDIT_NAME_AR.test(phrase) && (short || c.quiet)) return "credits";
   return null;
 }
 
