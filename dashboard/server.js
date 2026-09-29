@@ -478,7 +478,7 @@ app.post("/setup/confirm", requireCsrf, async (req, res) => {
 
 app.get("/login", (req, res) => {
   if (noUsersYet()) return res.redirect("/setup");
-  if (req.me) return res.redirect("/");
+  if (req.me) return res.redirect(rbac.landing(req.perm));
   res.send(
     views.login({
       csrf: res.locals.csrf,
@@ -543,7 +543,7 @@ app.post("/login", loginLimiter, requireCsrf, async (req, res) => {
     req.session.csrf = csrf;
     db.logLogin(ip, account.username, "success", null);
     const actor = rbac.actor(account.role);
-    res.redirect(actor.can("os.view") ? "/" : "/agents/dashboard");
+    res.redirect(rbac.landing(actor));
   });
 });
 
@@ -632,7 +632,12 @@ function primeFrame(req, services) {
   if (merged && req.chrome) req.chrome = chrome.forActor(req.perm, merged);
 }
 
-app.get("/", requireAuth, requirePerm("os.view"), async (req, res) => {
+// `/` is the default landing, not a page: MINT AI for those who may use it,
+// else the first dashboard the role can open (rbac.landing). A 302 so the
+// default can change again; the OS overview itself lives at /os.
+app.get("/", requireAuth, (req, res) => res.redirect(302, rbac.landing(req.perm)));
+
+app.get("/os", requireAuth, requirePerm("os.view"), async (req, res) => {
   const data = await gather({
     status: () => priv.status(),
     services: () => priv.serviceList(),

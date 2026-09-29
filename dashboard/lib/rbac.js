@@ -328,6 +328,24 @@ function scopeLabel(scope) {
   return scope.join(", ");
 }
 
+/**
+ * Where a signed-in actor lands: `/`, the brand link and the end of sign-in
+ * all go here. MINT AI first for those who may use it, then the first
+ * dashboard the role can open, and the account page -- which every signed-in
+ * user can open -- so nobody is ever sent to a refusal. One place, so the
+ * default can change again without hunting for links; `/` answers it with a
+ * 302, never a 301, for the same reason.
+ */
+const LANDINGS = [
+  ["moniai.use", "/mint-ai"],
+  ["os.view", "/os"],
+  ["agents.view", "/agents/dashboard"],
+];
+function landing(act) {
+  for (const [perm, href] of LANDINGS) if (act && act.can(perm)) return href;
+  return "/account";
+}
+
 module.exports = {
   PERMISSION_GROUPS,
   ALL_PERMISSIONS,
@@ -336,6 +354,7 @@ module.exports = {
   SYSTEM_ROLES,
   closure,
   actor,
+  landing,
   parseScope,
   inScope,
   scopeLabel,

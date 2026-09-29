@@ -99,7 +99,7 @@ const page = (title, body, { user, csrf, active, subtitle, actions, pattern, fil
     assets,
   });
 
-const memCrumbs = (here) => [["OS Dashboard", "/"], ["Claude Code", null], ["Memory", "/claude/memory"], [here, null]];
+const memCrumbs = (here) => [["OS Dashboard", "/os"], ["Claude Code", null], ["Memory", "/claude/memory"], [here, null]];
 
 function factStatus(f) {
   if (f.superseded_by == null) return pill("ok", "current");

@@ -201,7 +201,7 @@ exports.logs = ({ csrf, user, unit, lines, err }) =>
       active: "services",
       pattern: "b",
       fill: true,
-      crumbs: [["OS Dashboard", "/"], ["Platform", null], ["Services", "/services"], [unit, null]],
+      crumbs: [["OS Dashboard", "/os"], ["Platform", null], ["Services", "/services"], [unit, null]],
       heading: unit,
       subtitle: "Journal output for this unit.",
       actions: `<a class="btn" href="/services">${icon("chevron")} All services</a>`,

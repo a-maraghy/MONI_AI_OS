@@ -83,7 +83,7 @@ check("the current item is marked for assistive tech", /class="side-item on" ari
 check("the health chip is on every page", /class="sys-chip bad"[^>]*data-health/.test(page) && page.includes('href="/services"'));
 check("the sidebar can collapse to icons", /data-side-collapse/.test(page));
 check("the clock is in the top bar", /data-clock/.test(page));
-check("crumbs trace dashboard / section / page", /<nav class="crumbs"[^>]*><a href="\/">OS Dashboard<\/a>.*Platform.*<span>Services<\/span><\/nav>/s.test(page));
+check("crumbs trace dashboard / section / page", /<nav class="crumbs"[^>]*><a href="\/os">OS Dashboard<\/a>.*Platform.*<span>Services<\/span><\/nav>/s.test(page));
 check("the user's name is escaped", page.includes("Ann &lt;b&gt;") && !page.includes("Ann <b>"));
 check("os.css and os.js load on every page", /os\.css\?v=/.test(page) && /os\.js\?v=/.test(page));
 check("no inline script or style", !/<script>(?!<\/script>)|style="/.test(page.replace(/<script src[^>]*><\/script>/g, "")));

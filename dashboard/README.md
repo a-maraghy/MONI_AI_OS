@@ -43,6 +43,15 @@ It syntax-checks every file before restarting. Doing it by hand instead, always
 `node --check` first — a syntax error otherwise leaves the service in a restart
 loop with the panel down.
 
+## Where you land
+
+`/` is not a page: it 302s to the signed-in role's default landing,
+`rbac.landing()` -- `/mint-ai` for `moniai.use`, else `/os` (the OS overview,
+the Machine core) for `os.view`, else `/agents/dashboard` for `agents.view`,
+else `/account`. Sign-in and the brand link use the same function. The top
+bar's tabs are MINT AI (`/mint-ai`), OS Dashboard (`/os`) and Agents Dashboard
+(`/agents/dashboard`). Test: `tools/test-landing.cjs`.
+
 ## Claude Code pages
 
 OS Dashboard > Claude Code: **Memory** (`/claude/memory`), **Sessions**

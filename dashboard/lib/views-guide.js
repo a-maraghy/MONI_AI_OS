@@ -65,6 +65,12 @@ exports.guide = ({ csrf, user, publicHost, publicPort, sshHost }) => {
         <li><strong>The channel is not the agent.</strong> Swap the bot, or move it to
           WhatsApp, and the agent keeps every word of its memory.</li>
       </ul>
+  <h3>Getting around</h3>
+      <p>Signing in, or opening the panel's address, lands on <strong>MINT AI</strong>
+        (<code>/mint-ai</code>). The top bar holds the three dashboards: MINT AI, the
+        <strong>OS Dashboard</strong> (<code>/os</code>) and the <strong>Agents
+        Dashboard</strong> (<code>/agents/dashboard</code>). A role without MINT AI lands
+        on the first of the others it may open, or on its account page.</p>
     </div>
 
     <div class="card" id="bot">

@@ -16,6 +16,7 @@
 const fs = require("fs");
 const path = require("path");
 const { icon } = require("./icons");
+const { landing } = require("./rbac");
 
 /**
  * Cache-busting stamps for the static files.
@@ -122,10 +123,10 @@ const NAV = [
   },
   {
     key: "os",
-    href: "/",
+    href: "/os",
     label: "OS Dashboard",
     icon: "cpu",
-    home: { key: "os", href: "/", label: "Dashboard", icon: "overview", perm: "os.view" },
+    home: { key: "os", href: "/os", label: "Dashboard", icon: "overview", perm: "os.view" },
     categories: [
       {
         label: "Manage",
@@ -439,7 +440,7 @@ function shell(title, body, opts = {}) {
                      aria-expanded="false" aria-controls="sidebar"
                      data-nav-toggle>${icon("menu", 20)}</button>`
       }
-      <a class="brand" href="/" aria-label="Mint OS home">
+      <a class="brand" href="${perm ? landing(perm) : "/"}" aria-label="Mint OS home">
         <span class="brand-mark">${icon("overview", 18)}</span>
         <span class="brand-text">Mint<em>OS</em></span>
       </a>
