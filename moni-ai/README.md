@@ -19,7 +19,7 @@ It is one long-lived headless Claude Code session, run by a supervisor:
 
 ```
  dashboard (moniadmin)            Claude Desktop / claude.ai
-   /moni-ai/api/*  JSON + SSE            │  Remote Control
+   /mint-ai/api/*  JSON + SSE            │  Remote Control
         │                                │
         │ unix socket, group moniai      │
         ▼                                ▼
@@ -49,7 +49,7 @@ all of the above. Do not edit the installed copies.
 
 ## How a command travels
 
-1. The administrator types in the Command Center (`POST /moni-ai/api/send`).
+1. The administrator types in the Command Center (`POST /mint-ai/api/send`).
    The panel checks it, then the supervisor checks it again, queues it, and
    when MINT AI is free writes it to MINT AI's stdin as a stream-json user
    message with its own uuid (see *the turn queue* below).

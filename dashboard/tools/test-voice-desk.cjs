@@ -937,7 +937,7 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     const serverSrc = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
     check("the budget is gone: no desk-budget route, refusal or setting", !/desk-budget|deskBudget|voice_desk_budget_usd|createBudget/.test(serverSrc + fs.readFileSync(path.join(ROOT, "lib", "voice-desk.js"), "utf8")), "");
     check("the desk turn and summary routes refuse only when the desk is off", (serverSrc.match(/return deskRefuse\(req, res, \{ error: "The voice front desk is off\.", code: "desk-off" \}\)/g) || []).length === 2 && !/budget\.over/.test(serverSrc));
-    check("usage is still recorded server-side, per turn: transcription, desk and speech", /recordTranscription\(/.test(serverSrc) && /part: "desk"/.test(serverSrc) && /recordSpeech\(/.test(serverSrc) && /app\.get\("\/moni-ai\/api\/voice\/usage"/.test(serverSrc));
+    check("usage is still recorded server-side, per turn: transcription, desk and speech", /recordTranscription\(/.test(serverSrc) && /part: "desk"/.test(serverSrc) && /recordSpeech\(/.test(serverSrc) && /app\.get\("\/mint-ai\/api\/voice\/usage"/.test(serverSrc));
 
     const d = newDesk("text");
     const r = await withBrain(brains.twoFacts, () => d.turn("disk and memory?"));

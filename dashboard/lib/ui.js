@@ -113,7 +113,7 @@ const NAV = [
     // carry their own navigation inside the page, which is why this asks for
     // no sidebar -- two lists side by side would be one too many.
     key: "console",
-    href: "/moni-ai",
+    href: "/mint-ai",
     label: "MINT AI",
     icon: "core",
     noSidebar: true,

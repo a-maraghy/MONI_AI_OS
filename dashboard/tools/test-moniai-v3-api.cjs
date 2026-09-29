@@ -1,6 +1,6 @@
 /**
  * The panel's side of Command Center v3, phase 1: the request cleaners in
- * lib/moniai.js and the /moni-ai/api routes that use them.
+ * lib/moniai.js and the /mint-ai/api routes that use them.
  *
  *     node dashboard/tools/test-moniai-v3-api.cjs
  *
@@ -69,13 +69,13 @@ check("five watchers", m.WATCHERS.length === 5 && m.WATCHERS.includes("odoo_erro
 
 /* ------------------------------------------------------------ routes --- */
 const src = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
-const routes = [...src.matchAll(/app\.(get|post)\("(\/moni-ai\/api\/[^"]+)",\s*([^\n]*)/g)].map((x) => ({ method: x[1], path: x[2], rest: x[3] }));
+const routes = [...src.matchAll(/app\.(get|post)\("(\/mint-ai\/api\/[^"]+)",\s*([^\n]*)/g)].map((x) => ({ method: x[1], path: x[2], rest: x[3] }));
 const v3 = ["machine", "missions", "decisions", "watchers", "orders", "rules", "cost", "sessions/:sid/mirror", "rule-suggestion"];
 const mine = routes.filter((r) => v3.some((k) => r.path.includes(k)));
 check("the new routes are there", mine.length >= 20, String(mine.length));
 check("every new GET needs moniai.use", mine.filter((r) => r.method === "get").every((r) => /^\.\.\.moniAiGuard/.test(r.rest)), mine.filter((r) => r.method === "get" && !/^\.\.\.moniAiGuard/.test(r.rest)).map((r) => r.path).join(" "));
 check("every new POST needs moniai.use and CSRF", mine.filter((r) => r.method === "post").every((r) => /^\.\.\.moniAiWrite/.test(r.rest)), mine.filter((r) => r.method === "post" && !/^\.\.\.moniAiWrite/.test(r.rest)).map((r) => r.path).join(" "));
-check("rules/test is registered before rules/:id", src.indexOf('"/moni-ai/api/rules/test"') < src.indexOf('"/moni-ai/api/rules/:id"'));
+check("rules/test is registered before rules/:id", src.indexOf('"/mint-ai/api/rules/test"') < src.indexOf('"/mint-ai/api/rules/:id"'));
 check("no route passes the raw body to the supervisor", !/moniAiOp\([^)]*req\.body\s*[,)]/.test(src));
 check("watcher-inject is not reachable from the panel", !/watcher-inject/.test(src));
 

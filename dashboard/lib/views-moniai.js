@@ -10,7 +10,7 @@
  *
  * Everything that changes is filled in by public/moni-ai.js (with
  * public/cc-map.js and public/cc-panels.js) from the JSON and SSE API under
- * /moni-ai/api/ -- this renders the frame, the labels and the few facts the
+ * /mint-ai/api/ -- this renders the frame, the labels and the few facts the
  * server already knows (who is looking, whether a voice is installed), all
  * escaped here. No inline script, style or handler anywhere: the CSP refuses
  * them.

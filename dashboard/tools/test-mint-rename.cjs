@@ -56,7 +56,7 @@ console.log("the frame");
   check("the page title ends in Mint OS", / — Mint OS$/.test(titleOf(page)), titleOf(page));
   check("the top-bar brand reads Mint OS", /<span class="brand-text">Mint<em>OS<\/em><\/span>/.test(page), (/<span class="brand-text">.*?<\/span><\/span>|<span class="brand-text">[^\n]*/.exec(page) || [])[0]);
   check("the brand link is labelled Mint OS home", /aria-label="Mint OS home"/.test(page));
-  check("the assistant's tab reads MINT AI", />MINT AI</.test(page) && /href="\/moni-ai"/.test(page));
+  check("the assistant's tab reads MINT AI", />MINT AI</.test(page) && /href="\/mint-ai"/.test(page));
   check("no old name anywhere a person reads", !OLD_NAME.test(visible(page)) && !/MONI AI/.test(page), (visible(page).match(/.{0,40}\bMONI\b.{0,40}/) || [])[0]);
   const nav = ui.NAV.find((n) => n.key === "console");
   check("the NAV entry is labelled MINT AI", nav && nav.label === "MINT AI");

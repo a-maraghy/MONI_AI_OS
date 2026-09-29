@@ -58,7 +58,7 @@ function readOnly(s, meta, user) {
   else if (unit.startsWith("moni-whatsapp@") && can(user, "channels.view"))
     link = `<a class="btn small" href="/channels/${encodeURIComponent(unit.slice("moni-whatsapp@".length))}">${icon("whatsapp", 14)}Channel</a>`;
   else if (unit === "claude-memory" && can(user, "claude.memory.read")) link = `<a class="btn small" href="/claude/memory">${icon("memory", 14)}Memory</a>`;
-  else if (unit === "moni-ai" && can(user, "moniai.use")) link = `<a class="btn small" href="/moni-ai">${icon("core", 14)}Command Center</a>`;
+  else if (unit === "moni-ai" && can(user, "moniai.use")) link = `<a class="btn small" href="/mint-ai">${icon("core", 14)}Command Center</a>`;
   return tag + link;
 }
 

@@ -167,7 +167,7 @@ const REAL_SPEECH = [
     const sup = { calls: [], call(op, params, actor) { sup.calls.push([op, params, actor]); return Promise.resolve({ turn: { id: 1 } }); } };
     const grounds = new guard.Grounds();
     const actor = "amaraghy";
-    // /moni-ai/api/send, as server.js does it: cleanSend, sendRefusal, then call.
+    // /mint-ai/api/send, as server.js does it: cleanSend, sendRefusal, then call.
     const moniai = require(path.join(ROOT, "lib", "moniai.js"));
     async function sendRoute(body) {
       const params = moniai.cleanSend(body);
@@ -355,11 +355,11 @@ const REAL_SPEECH = [
     check("the transcribe route goes through the intake (and remembers the transcript)", /voiceIntake\.transcribeTurn\(/.test(tr) && /grounds: voiceGrounds/.test(tr) && !/voice\.transcribeFull\(audio/.test(tr));
     check("  a drop answers as for silence, with no text", /if \(got\.dropped\) return res\.json\(\{ text: "", dropped: got\.dropped \}\)/.test(tr));
     check("  and logs the rule, never the words", /dropped: got\.dropped \|\| undefined/.test(tr) && !/text: text|said:/.test(tr.slice(tr.indexOf("voiceLog"), tr.indexOf("voiceLog") + 600)));
-    const dt = route('app.post("/moni-ai/api/desk/turn"');
+    const dt = route('app.post("/mint-ai/api/desk/turn"');
     check("the desk route goes through the intake too", /voiceHear\(audio, mime, body\.level, cfg\)/.test(dt) && !/voice\.transcribeFull\(/.test(dt));
     check("  typed text to the desk is held at the door", /voiceGuard\.refuseAtDoor\(heard\)/.test(dt));
     check("  and nothing heard means no desk turn", /if \(!heard \|\| \/\^\[\\\[\(\]\/\.test\(heard\)\)/.test(dt));
-    const sd = route('app.post("/moni-ai/api/send"');
+    const sd = route('app.post("/mint-ai/api/send"');
     check("the send route refuses an ungrounded or prompt-like voice turn before calling MONI AI", /voiceIntake\.sendRefusal\(/.test(sd) && sd.indexOf("sendRefusal") < sd.indexOf('moniai.call("send"') && /status\(422\)/.test(sd));
     check("  and logs the refusal (rule only)", /voiceLog\("send", "refused", \{ rule: refusal\.rule/.test(sd));
     check("the console's dictation shares the transcribe route (and the guard)", /app\.post\("\/console\/:id\/transcribe"[\s\S]{0,400}return voiceTranscribeRoute\(req, res\)/.test(server));

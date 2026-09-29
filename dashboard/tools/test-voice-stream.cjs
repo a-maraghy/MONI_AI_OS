@@ -324,7 +324,7 @@ function boot(opts) {
     t.Voice.tag(41, { vt: "vturn41", cat: "direct" });
     t.Voice.flush(41, "Every service on this machine is healthy.");
     await settle();
-    check("one POST to /moni-ai/api/speak, asking for a stream", fetches.length === 1 && fetches[0].url === "/moni-ai/api/speak" && fetches[0].init.headers.Accept === "application/x-ndjson");
+    check("one POST to /mint-ai/api/speak, asking for a stream", fetches.length === 1 && fetches[0].url === "/mint-ai/api/speak" && fetches[0].init.headers.Accept === "application/x-ndjson");
     check("  it carries the sentence, the voice turn and its kind (for the usage figures)", fetches[0].body.text === "Every service on this machine is healthy." && fetches[0].body.vt === "vturn41" && fetches[0].body.cat === "direct", JSON.stringify(fetches[0].body));
     const f = fetches[0];
     f.push({ type: "start", engine: "gpt-realtime-mini", rate: 24000 });

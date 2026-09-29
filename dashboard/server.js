@@ -73,6 +73,30 @@ const app = express();
 // remote client spoof it.
 app.set("trust proxy", "loopback");
 
+/**
+ * The Command Center moved from /moni-ai to /mint-ai with the Mint rename.
+ * This is the only place that still knows the old prefix, and it runs first so
+ * everything after it -- the body parsers, auth, CSRF, permissions, the routes
+ * -- sees only the new one.
+ *
+ *  - /moni-ai/api/* is an alias, not a redirect: the URL is rewritten in place
+ *    and served by the same handlers with the same checks. A redirect would
+ *    break POST bodies, the SSE stream and CSRF'd fetches from pages opened
+ *    before the move.
+ *  - Any other GET/HEAD under /moni-ai (the page itself, bookmarks) is a 301 to
+ *    the same path under /mint-ai, query string kept.
+ */
+const LEGACY_CC = /^\/moni-ai(?=\/|\?|$)/i;
+app.use((req, res, next) => {
+  if (!LEGACY_CC.test(req.url)) return next();
+  const rest = req.url.replace(LEGACY_CC, "");
+  if (/^\/api(\/|\?|$)/i.test(rest) || (req.method !== "GET" && req.method !== "HEAD")) {
+    req.url = "/mint-ai" + rest;
+    return next();
+  }
+  return res.redirect(301, "/mint-ai" + rest);
+});
+
 app.use(
   helmet({
     contentSecurityPolicy: {
@@ -109,7 +133,7 @@ app.use(express.urlencoded({ extended: false, limit: "64kb" }));
  * parser be the one that decides. Everything else keeps the small ceiling,
  * which is the point of having one.
  */
-const PAYLOAD_ROUTES = /^(\/console\/\d+\/(upload|transcribe)|\/moni-ai\/api\/transcribe)$/;
+const PAYLOAD_ROUTES = /^(\/console\/\d+\/(upload|transcribe)|\/mint-ai\/api\/transcribe)$/;
 const smallJson = express.json({ limit: "64kb" });
 app.use((req, res, next) =>
   PAYLOAD_ROUTES.test(req.path) ? next() : smallJson(req, res, next)
@@ -1945,7 +1969,7 @@ const AUDIO_MIME_RE = /^audio\/[a-z0-9.+-]{1,30}$/;
 
 /**
  * The transcripts this server produced, per user and voice turn: a voice send
- * to MINT AI must be one of them (see /moni-ai/api/send). In memory only; a
+ * to MINT AI must be one of them (see /mint-ai/api/send). In memory only; a
  * restart just means a voice turn in flight is said again.
  */
 const voiceGrounds = new voiceGuard.Grounds();
@@ -3187,7 +3211,7 @@ function moniAiVoice(req) {
   return voicePublic(req);
 }
 
-app.get("/moni-ai", requireAuth, async (req, res) => {
+app.get("/mint-ai", requireAuth, async (req, res) => {
   // The tab is shared with the older console: someone who may use that but not
   // MINT AI lands where they are allowed to be rather than on a refusal.
   if (!req.perm.can("moniai.use")) {
@@ -3203,7 +3227,7 @@ app.get("/moni-ai", requireAuth, async (req, res) => {
   );
 });
 
-app.get("/moni-ai/api/status", ...moniAiGuard, async (req, res) => {
+app.get("/mint-ai/api/status", ...moniAiGuard, async (req, res) => {
   try {
     res.json(await moniai.call("status", {}, req.me.username));
   } catch (e) {
@@ -3212,7 +3236,7 @@ app.get("/moni-ai/api/status", ...moniAiGuard, async (req, res) => {
 });
 
 /** Everything the page needs on load, in one round trip. */
-app.get("/moni-ai/api/overview", ...moniAiGuard, async (req, res) => {
+app.get("/mint-ai/api/overview", ...moniAiGuard, async (req, res) => {
   const who = req.me.username;
   const [status, sessions, delegations, memory, agents, voiceInfo, missions, decisions, orders, watchers] = await Promise.allSettled([
     moniai.call("status", {}, who),
@@ -3245,7 +3269,7 @@ app.get("/moni-ai/api/overview", ...moniAiGuard, async (req, res) => {
   });
 });
 
-app.get("/moni-ai/api/sessions", ...moniAiGuard, async (req, res) => {
+app.get("/mint-ai/api/sessions", ...moniAiGuard, async (req, res) => {
   try {
     res.json(await moniai.call("sessions", {}, req.me.username));
   } catch (e) {
@@ -3253,11 +3277,11 @@ app.get("/moni-ai/api/sessions", ...moniAiGuard, async (req, res) => {
   }
 });
 
-app.get("/moni-ai/api/memory", ...moniAiGuard, async (req, res) => {
+app.get("/mint-ai/api/memory", ...moniAiGuard, async (req, res) => {
   res.json(await moniAiMemoryCounts());
 });
 
-app.get("/moni-ai/api/rc", ...moniAiGuard, async (req, res) => {
+app.get("/mint-ai/api/rc", ...moniAiGuard, async (req, res) => {
   try {
     res.json(await moniai.call("rc-url", {}, req.me.username));
   } catch (e) {
@@ -3265,7 +3289,7 @@ app.get("/moni-ai/api/rc", ...moniAiGuard, async (req, res) => {
   }
 });
 
-app.get("/moni-ai/api/ledger/:table", ...moniAiGuard, async (req, res) => {
+app.get("/mint-ai/api/ledger/:table", ...moniAiGuard, async (req, res) => {
   try {
     const params = moniai.cleanLedger(req.params.table, req.query || {});
     res.json(await moniai.call("ledger", params, req.me.username));
@@ -3282,7 +3306,7 @@ app.get("/moni-ai/api/ledger/:table", ...moniAiGuard, async (req, res) => {
  * from the supervisor's ring buffer after a reconnect. X-Accel-Buffering stops
  * nginx holding events back until a buffer fills.
  */
-app.get("/moni-ai/api/events", ...moniAiGuard, (req, res) => {
+app.get("/mint-ai/api/events", ...moniAiGuard, (req, res) => {
   const since = moniai.cleanSince(req.get("last-event-id") || (req.query && req.query.since));
   res.status(200).set({
     "Content-Type": "text/event-stream; charset=utf-8",
@@ -3312,7 +3336,7 @@ app.get("/moni-ai/api/events", ...moniAiGuard, (req, res) => {
   });
 });
 
-app.post("/moni-ai/api/send", ...moniAiWrite, async (req, res) => {
+app.post("/mint-ai/api/send", ...moniAiWrite, async (req, res) => {
   try {
     const params = moniai.cleanSend(req.body || {});
     // A voice turn (the page sends its voice-turn id): MINT AI gets exactly
@@ -3331,7 +3355,7 @@ app.post("/moni-ai/api/send", ...moniAiWrite, async (req, res) => {
   }
 });
 
-app.post("/moni-ai/api/interrupt", ...moniAiWrite, async (req, res) => {
+app.post("/mint-ai/api/interrupt", ...moniAiWrite, async (req, res) => {
   try {
     res.json(await moniai.call("interrupt", {}, req.me.username));
   } catch (e) {
@@ -3339,7 +3363,7 @@ app.post("/moni-ai/api/interrupt", ...moniAiWrite, async (req, res) => {
   }
 });
 
-app.post("/moni-ai/api/approvals/:id/:decision", ...moniAiWrite, async (req, res) => {
+app.post("/mint-ai/api/approvals/:id/:decision", ...moniAiWrite, async (req, res) => {
   const decision = req.params.decision;
   if (decision !== "approve" && decision !== "deny") return res.status(404).json({ error: "No such action." });
   try {
@@ -3356,7 +3380,7 @@ app.post("/moni-ai/api/approvals/:id/:decision", ...moniAiWrite, async (req, res
   }
 });
 
-app.post("/moni-ai/api/rc", ...moniAiWrite, async (req, res) => {
+app.post("/mint-ai/api/rc", ...moniAiWrite, async (req, res) => {
   const enabled = req.body && req.body.enabled;
   if (typeof enabled !== "boolean") return res.status(400).json({ error: "enabled must be true or false." });
   try {
@@ -3375,9 +3399,9 @@ app.post("/moni-ai/api/rc", ...moniAiWrite, async (req, res) => {
  */
 const moniAiAudioBody = express.json({ limit: "44mb" });
 
-app.post("/moni-ai/api/transcribe", requireApiPerm("moniai.use"), moniAiAudioBody, requireApiCsrf, voiceTranscribeRoute);
+app.post("/mint-ai/api/transcribe", requireApiPerm("moniai.use"), moniAiAudioBody, requireApiCsrf, voiceTranscribeRoute);
 
-app.post("/moni-ai/api/speak", ...moniAiWrite, voiceSpeakRoute);
+app.post("/mint-ai/api/speak", ...moniAiWrite, voiceSpeakRoute);
 
 /**
  * The voice front desk (TRIAL, off by default): one utterance in -- a recording,
@@ -3390,7 +3414,7 @@ app.post("/moni-ai/api/speak", ...moniAiWrite, voiceSpeakRoute);
  * /desk/summary. Refused with 409 while the Settings switch is off
  * ("desk-off"), so the page falls back to the direct path. There is no budget.
  */
-app.post("/moni-ai/api/desk/turn", requireApiPerm("moniai.use"), moniAiAudioBody, requireApiCsrf, async (req, res) => {
+app.post("/mint-ai/api/desk/turn", requireApiPerm("moniai.use"), moniAiAudioBody, requireApiCsrf, async (req, res) => {
   if (!voiceDeskOn()) return deskRefuse(req, res, { error: "The voice front desk is off.", code: "desk-off" });
   const t0 = Date.now();
   const body = req.body || {};
@@ -3494,7 +3518,7 @@ app.post("/moni-ai/api/desk/turn", requireApiPerm("moniai.use"), moniAiAudioBody
  * summary before a word was said); {pending:true} that MINT AI has not
  * answered yet. Refused like /desk/turn. Body: {turn, vt?}.
  */
-app.post("/moni-ai/api/desk/summary", ...moniAiWrite, async (req, res) => {
+app.post("/mint-ai/api/desk/summary", ...moniAiWrite, async (req, res) => {
   if (!voiceDeskOn()) return deskRefuse(req, res, { error: "The voice front desk is off.", code: "desk-off" });
   const id = Number(req.body && req.body.turn);
   if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: "Which request?", code: "invalid" });
@@ -3554,13 +3578,13 @@ app.post("/moni-ai/api/desk/summary", ...moniAiWrite, async (req, res) => {
  * The voice's usage figures for the Command Center: today's and this month's
  * spend (Cairo), split by kind of turn and transcription, and the last turn.
  */
-app.get("/moni-ai/api/voice/usage", ...moniAiGuard, (req, res) => {
+app.get("/mint-ai/api/voice/usage", ...moniAiGuard, (req, res) => {
   const u = voiceUsageSummary();
   if (u.error) return res.status(500).json({ error: "Voice usage is not available." });
   res.json(u);
 });
 
-app.post("/moni-ai/api/restart", ...moniAiWrite, async (req, res) => {
+app.post("/mint-ai/api/restart", ...moniAiWrite, async (req, res) => {
   try {
     db.logLogin(req.ip, req.me.username, "moni-ai", "restarted MINT AI");
     res.json(await moniai.call("restart", {}, req.me.username, { timeout: 90000 }));
@@ -3597,33 +3621,33 @@ function moniAiClean(res, fn) {
   }
 }
 
-app.get("/moni-ai/api/machine", ...moniAiGuard, (req, res) => moniAiOp(req, res, "machine"));
+app.get("/mint-ai/api/machine", ...moniAiGuard, (req, res) => moniAiOp(req, res, "machine"));
 
 // approvals: the narrow "Always allow this" rule to show before saving it
-app.get("/moni-ai/api/approvals/:id/rule-suggestion", ...moniAiGuard, (req, res) => {
+app.get("/mint-ai/api/approvals/:id/rule-suggestion", ...moniAiGuard, (req, res) => {
   const id = moniAiClean(res, () => moniai.cleanApprovalId(req.params.id));
   if (id !== undefined) moniAiOp(req, res, "rule-suggest", { approval_id: id });
 });
 
 // missions
-app.get("/moni-ai/api/missions", ...moniAiGuard, (req, res) => {
+app.get("/mint-ai/api/missions", ...moniAiGuard, (req, res) => {
   const status = req.query && req.query.status === "active" ? "active" : "all";
   moniAiOp(req, res, "missions", { status });
 });
-app.get("/moni-ai/api/missions/:id", ...moniAiGuard, (req, res) => {
+app.get("/mint-ai/api/missions/:id", ...moniAiGuard, (req, res) => {
   const id = moniAiClean(res, () => moniai.missionIdOf(req.params.id));
   if (id !== undefined) moniAiOp(req, res, "mission", { mission_id: id });
 });
-app.post("/moni-ai/api/missions/request", ...moniAiWrite, (req, res) => {
+app.post("/mint-ai/api/missions/request", ...moniAiWrite, (req, res) => {
   const goal = moniAiClean(res, () => moniai.str(req.body && req.body.goal, "The goal", { max: 4000 }));
   if (goal !== undefined) moniAiOp(req, res, "mission-request", { goal }, { log: "asked for a mission" });
 });
 
 // decisions
-app.get("/moni-ai/api/decisions", ...moniAiGuard, (req, res) => {
+app.get("/mint-ai/api/decisions", ...moniAiGuard, (req, res) => {
   moniAiOp(req, res, "decisions", { status: req.query && req.query.status === "all" ? "all" : "open" });
 });
-app.post("/moni-ai/api/decisions/:id/:action", ...moniAiWrite, (req, res) => {
+app.post("/mint-ai/api/decisions/:id/:action", ...moniAiWrite, (req, res) => {
   const action = req.params.action;
   if (!["approve", "dismiss", "ask"].includes(action)) return res.status(404).json({ error: "No such action." });
   const params = moniAiClean(res, () => {
@@ -3639,8 +3663,8 @@ app.post("/moni-ai/api/decisions/:id/:action", ...moniAiWrite, (req, res) => {
 });
 
 // watchers
-app.get("/moni-ai/api/watchers", ...moniAiGuard, (req, res) => moniAiOp(req, res, "watchers"));
-app.post("/moni-ai/api/watchers/:key", ...moniAiWrite, (req, res) => {
+app.get("/mint-ai/api/watchers", ...moniAiGuard, (req, res) => moniAiOp(req, res, "watchers"));
+app.post("/mint-ai/api/watchers/:key", ...moniAiWrite, (req, res) => {
   const params = moniAiClean(res, () => {
     const key = moniai.oneOf(req.params.key, "Watcher", moniai.WATCHERS);
     const enabled = req.body && req.body.enabled;
@@ -3651,20 +3675,20 @@ app.post("/moni-ai/api/watchers/:key", ...moniAiWrite, (req, res) => {
 });
 
 // standing orders
-app.get("/moni-ai/api/orders", ...moniAiGuard, (req, res) => moniAiOp(req, res, "orders"));
-app.get("/moni-ai/api/orders/:id/runs", ...moniAiGuard, (req, res) => {
+app.get("/mint-ai/api/orders", ...moniAiGuard, (req, res) => moniAiOp(req, res, "orders"));
+app.get("/mint-ai/api/orders/:id/runs", ...moniAiGuard, (req, res) => {
   const id = moniAiClean(res, () => moniai.idOf(req.params.id, "standing order"));
   if (id !== undefined) moniAiOp(req, res, "order-runs", { order_id: id });
 });
-app.post("/moni-ai/api/orders", ...moniAiWrite, (req, res) => {
+app.post("/mint-ai/api/orders", ...moniAiWrite, (req, res) => {
   const p = moniAiClean(res, () => moniai.cleanOrder(req.body, false));
   if (p) moniAiOp(req, res, "order-create", p, { log: "created a standing order" });
 });
-app.post("/moni-ai/api/orders/:id", ...moniAiWrite, (req, res) => {
+app.post("/mint-ai/api/orders/:id", ...moniAiWrite, (req, res) => {
   const p = moniAiClean(res, () => ({ order_id: moniai.idOf(req.params.id, "standing order"), ...moniai.cleanOrder(req.body, true) }));
   if (p) moniAiOp(req, res, "order-update", p, { log: `updated standing order ${p.order_id}` });
 });
-app.post("/moni-ai/api/orders/:id/:action", ...moniAiWrite, (req, res) => {
+app.post("/mint-ai/api/orders/:id/:action", ...moniAiWrite, (req, res) => {
   const action = req.params.action;
   if (!["delete", "run", "pause"].includes(action)) return res.status(404).json({ error: "No such action." });
   const p = moniAiClean(res, () => {
@@ -3679,22 +3703,22 @@ app.post("/moni-ai/api/orders/:id/:action", ...moniAiWrite, (req, res) => {
 });
 
 // approval rules
-app.get("/moni-ai/api/rules", ...moniAiGuard, (req, res) => moniAiOp(req, res, "rules"));
-app.post("/moni-ai/api/rules/test", ...moniAiWrite, (req, res) => {
+app.get("/mint-ai/api/rules", ...moniAiGuard, (req, res) => moniAiOp(req, res, "rules"));
+app.post("/mint-ai/api/rules/test", ...moniAiWrite, (req, res) => {
   const p = moniAiClean(res, () =>
     strip2({ command: moniai.str(req.body && req.body.command, "The command", { max: 8000 }), tool: moniai.oneOf(req.body && req.body.tool, "Tool", ["Bash", "SendMessage"], true) })
   );
   if (p) moniAiOp(req, res, "rule-test", p);
 });
-app.post("/moni-ai/api/rules", ...moniAiWrite, (req, res) => {
+app.post("/mint-ai/api/rules", ...moniAiWrite, (req, res) => {
   const p = moniAiClean(res, () => moniai.cleanRule(req.body, false));
   if (p) moniAiOp(req, res, "rule-create", p, { log: `added a ${p.effect} rule` });
 });
-app.post("/moni-ai/api/rules/:id", ...moniAiWrite, (req, res) => {
+app.post("/mint-ai/api/rules/:id", ...moniAiWrite, (req, res) => {
   const p = moniAiClean(res, () => ({ rule_id: moniai.idOf(req.params.id, "rule"), ...moniai.cleanRule(req.body, true) }));
   if (p) moniAiOp(req, res, "rule-update", p, { log: `changed rule ${p.rule_id}` });
 });
-app.post("/moni-ai/api/rules/:id/delete", ...moniAiWrite, (req, res) => {
+app.post("/mint-ai/api/rules/:id/delete", ...moniAiWrite, (req, res) => {
   const id = moniAiClean(res, () => moniai.idOf(req.params.id, "rule"));
   if (id !== undefined) moniAiOp(req, res, "rule-delete", { rule_id: id }, { log: `deleted rule ${id}` });
 });
@@ -3705,14 +3729,14 @@ function strip2(o) {
 }
 
 // cost
-app.get("/moni-ai/api/cost", ...moniAiGuard, (req, res) => moniAiOp(req, res, "cost"));
-app.post("/moni-ai/api/cost/budget", ...moniAiWrite, (req, res) => {
+app.get("/mint-ai/api/cost", ...moniAiGuard, (req, res) => moniAiOp(req, res, "cost"));
+app.post("/mint-ai/api/cost/budget", ...moniAiWrite, (req, res) => {
   const p = moniAiClean(res, () => moniai.cleanBudget(req.body));
   if (p) moniAiOp(req, res, "cost-budget", p, { log: "set the daily budget" });
 });
 
 // the read-only session deep view
-app.get("/moni-ai/api/sessions/:sid/mirror", ...moniAiGuard, (req, res) => {
+app.get("/mint-ai/api/sessions/:sid/mirror", ...moniAiGuard, (req, res) => {
   if (!moniai.SESSION_ID_RE.test(String(req.params.sid || ""))) return res.status(404).json({ error: "No such session." });
   moniAiOp(req, res, "session-mirror", { session_id: req.params.sid });
 });

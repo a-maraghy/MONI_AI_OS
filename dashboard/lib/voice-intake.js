@@ -1,8 +1,8 @@
 "use strict";
 /**
  * A recording in, what was said out -- or nothing. Shared by the Command
- * Center's direct path (/moni-ai/api/transcribe), the front desk
- * (/moni-ai/api/desk/turn) and the console's dictation, so none of them can
+ * Center's direct path (/mint-ai/api/transcribe), the front desk
+ * (/mint-ai/api/desk/turn) and the console's dictation, so none of them can
  * send a transcript the others would drop. See lib/voice-guard.js for why.
  *
  *   before OpenAI: a clip smaller than MIN_AUDIO_BYTES is not speech (a webm
@@ -65,7 +65,7 @@ async function intake({ audio, mime, level, cfg, transcribe, sources }) {
 }
 
 /**
- * The direct path's transcription (/moni-ai/api/transcribe): intake(), and a
+ * The direct path's transcription (/mint-ai/api/transcribe): intake(), and a
  * transcript that passed is remembered for (actor, vt), so the send that
  * follows can be held to it (sendRefusal).
  */

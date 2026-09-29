@@ -80,20 +80,20 @@ message every session on the box. API routes answer in JSON, refusals too
 (401 not signed in, 403 no permission or bad CSRF, 400 invalid, 409 refused
 by the supervisor, 503 supervisor down, 504 no answer).
 
-    GET  /moni-ai/api/overview             status + sessions + recent delegations + memory counts + csrf
-    GET  /moni-ai/api/status               process, current turn and its steps, pending approvals, vitals, counts
-    GET  /moni-ai/api/sessions             claude agents --json merged with the ledger
-    GET  /moni-ai/api/memory               fact / chunk / session counts (cached 60 s)
-    GET  /moni-ai/api/rc                   Remote Control state and session URL
-    GET  /moni-ai/api/ledger/:table        delegations | inbound | approvals | turns | audit
+    GET  /mint-ai/api/overview             status + sessions + recent delegations + memory counts + csrf
+    GET  /mint-ai/api/status               process, current turn and its steps, pending approvals, vitals, counts
+    GET  /mint-ai/api/sessions             claude agents --json merged with the ledger
+    GET  /mint-ai/api/memory               fact / chunk / session counts (cached 60 s)
+    GET  /mint-ai/api/rc                   Remote Control state and session URL
+    GET  /mint-ai/api/ledger/:table        delegations | inbound | approvals | turns | audit
                                            ?limit=&before_id=&status=
-    GET  /moni-ai/api/events               Server-Sent Events; Last-Event-ID or ?since= resumes
-    POST /moni-ai/api/send                 {text, target?}
-    POST /moni-ai/api/interrupt
-    POST /moni-ai/api/approvals/:id/approve   {note?}
-    POST /moni-ai/api/approvals/:id/deny      {note?}
-    POST /moni-ai/api/rc                   {enabled}
-    POST /moni-ai/api/restart
+    GET  /mint-ai/api/events               Server-Sent Events; Last-Event-ID or ?since= resumes
+    POST /mint-ai/api/send                 {text, target?}
+    POST /mint-ai/api/interrupt
+    POST /mint-ai/api/approvals/:id/approve   {note?}
+    POST /mint-ai/api/approvals/:id/deny      {note?}
+    POST /mint-ai/api/rc                   {enabled}
+    POST /mint-ai/api/restart
 
 Writes carry the CSRF token as `_csrf` in the JSON body or an `X-CSRF-Token`
 header (`/overview` returns it). SSE event names are the supervisor's event
@@ -111,14 +111,14 @@ sends, approvals and restarts in its own login log.
 `deploy-dashboard.sh` now tars the tree it replaces to
 `/root/backups/moni-dashboard_<timestamp>.tgz` before syncing.
 
-    POST /moni-ai/api/transcribe           {data: base64, mime?, vt?} -> {text}  (OpenAI transcription)
-    POST /moni-ai/api/speak                {text, vt?, cat?} -> NDJSON PCM stream (Accept: application/x-ndjson),
+    POST /mint-ai/api/transcribe           {data: base64, mime?, vt?} -> {text}  (OpenAI transcription)
+    POST /mint-ai/api/speak                {text, vt?, cat?} -> NDJSON PCM stream (Accept: application/x-ndjson),
                                            else audio/wav or 204            (OpenAI realtime voice)
-    GET  /moni-ai/api/voice/usage          today's / this month's voice spend, by kind, and the last turn
+    GET  /mint-ai/api/voice/usage          today's / this month's voice spend, by kind, and the last turn
 
 Tests: `node dashboard/tools/test-moniai.cjs` (client and permission).
 
-### The Command Center (`/moni-ai`)
+### The Command Center (`/mint-ai`)
 
 The top bar's MINT AI tab opens it. Someone with `console.use` but not
 `moniai.use` is sent on to `/console`. One screen, no page scroll at
@@ -161,11 +161,11 @@ Voice only: OpenAI hears the person and reads the replies aloud; Claude does
 all the thinking. Everything goes through this server -- the browser never
 talks to OpenAI and never sees the key (the CSP still forbids it to).
 
-- **Hearing**: the recording (webm/opus) is posted to `/moni-ai/api/transcribe`
+- **Hearing**: the recording (webm/opus) is posted to `/mint-ai/api/transcribe`
   or `/console/:id/transcribe`, and sent on to `POST /v1/audio/transcriptions`
   (`gpt-4o-mini-transcribe` by default), with a vocabulary prompt (Mint, MINT AI, Odoo,
   sessions, agents) so the panel's own words are spelled right.
-- **Speaking**: each sentence of a reply is posted to `/moni-ai/api/speak` or
+- **Speaking**: each sentence of a reply is posted to `/mint-ai/api/speak` or
   `/console/:id/speak`. The Command Center asks for it **streamed**
   (`Accept: application/x-ndjson`): `start {engine}`, then `audio {pcm}` (PCM16
   mono 24 kHz, base64, whole samples) as OpenAI produces it, then `end` -- and
@@ -231,7 +231,7 @@ OpenAI voice > *Voice front desk (GPT)* (`POST /credentials/openai-voice/desk`,
 `voice.manage`, audited in the sign-in log; stored in the panel's `settings`
 table, not with the key). While it is off nothing about the voice changes.
 While on, the Command Center's mic posts each utterance to
-`POST /moni-ai/api/desk/turn` (`moniai.use` + CSRF). The voice bar shows
+`POST /mint-ai/api/desk/turn` (`moniai.use` + CSRF). The voice bar shows
 **Front desk · GPT** or **Direct · MINT AI**.
 
 gpt-realtime-mini holds the conversation, server-side, **in text**, with exactly
@@ -267,7 +267,7 @@ it. A cut reply is replaced by "Let me pass that to MINT AI." and the request
 really is passed on. A transient OpenAI server error is retried once.
 
 **Summaries.** MINT AI's answer to a desk request stays on screen exactly as
-written; aloud, the page asks `POST /moni-ai/api/desk/summary {turn}` for a
+written; aloud, the page asks `POST /mint-ai/api/desk/summary {turn}` for a
 short summary (an out-of-band response: no conversation, no tools, the reply
 quoted). A reply of one or two plain sentences is read word for word instead
 (`fallback: "verbatim"`). The summary is held to the reply: a figure changed
@@ -288,7 +288,7 @@ pricing page, read 2026-09-29), and written to the panel's `voice_usage` table
 with its voice turn and kind: **small talk**, **snapshot** answers,
 **hand-offs** (the request and, later, its summary), **direct** (the direct
 path, front desk off), and transcription on its own line. The Command Center
-shows it under *Cost today* (`GET /moni-ai/api/voice/usage`): today's and this
+shows it under *Cost today* (`GET /mint-ai/api/voice/usage`): today's and this
 month's voice spend (Africa/Cairo) by kind, transcription, the total, and the
 last turn's cost. Measured on the real API: small talk ~$0.0015 per utterance,
 a snapshot answer ~$0.0022, a hand-off ~$0.0008 plus ~$0.0054 for the summary
@@ -312,7 +312,7 @@ is never transcribed (under 1,200 bytes, or measured by the page as under
 echoes the transcription prompt, the desk's instructions or tool descriptions,
 has more words than its audio could hold, or is a stock silence phrase on a
 short or quiet clip is dropped ("didn't catch that"); a voice send
-(`/moni-ai/api/send` with `vt`) must match what the server transcribed for that
+(`/mint-ai/api/send` with `vt`) must match what the server transcribed for that
 voice turn, once; the desk's `ask_moni` and its supervisor door refuse
 prompt-like text. Why: on 2026-09-29 a silent push-to-talk press came back from
 gpt-4o-mini-transcribe as its own prompt and reached MONI AI as a turn (ledger

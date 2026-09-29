@@ -74,7 +74,7 @@ check("every icon reference has a symbol", (() => {
   const missing = [...used].filter((n) => !views.SPRITE[n]);
   return missing.length === 0 || (console.log("   missing:", missing.join(", ")), false);
 })());
-check("the MINT AI tab is active and points at the Command Center", /<a href="\/moni-ai" class="top-tab on">/.test(html));
+check("the MINT AI tab is active and points at the Command Center", /<a href="\/mint-ai" class="top-tab on">/.test(html));
 check("no sidebar on this page", !html.includes('class="sidebar"'));
 check("every id is unique", (() => {
   const ids = [...html.matchAll(/\sid="([^"]+)"/g)].map((m) => m[1]);
@@ -102,7 +102,7 @@ check("a page class with markup is refused", !ui.page("x", "", { pageClass: 'a" 
 check("moniai.use alone reveals the MINT AI tab", rbac.actor({ permissions: ["moniai.use"] }).canDash("console"));
 check("console.use alone still reveals it (it redirects to /console)", rbac.actor({ permissions: ["console.use"] }).canDash("console"));
 check("a viewer without either does not see it", !rbac.actor({ permissions: ["os.view"] }).canDash("console"));
-check("the tab's href is /moni-ai", ui.NAV[0].key === "console" && ui.NAV[0].href === "/moni-ai");
+check("the tab's href is /mint-ai", ui.NAV[0].key === "console" && ui.NAV[0].href === "/mint-ai");
 
 /* ------------------------------------------------- server wiring (source) --- */
 
@@ -110,14 +110,14 @@ const server = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
 {
   const m = /const PAYLOAD_ROUTES = (\/.*\/);/.exec(server);
   const re = m && vm.runInNewContext(m[1]);
-  check("the transcribe route gets the large body parser", !!re && re.test("/moni-ai/api/transcribe"));
+  check("the transcribe route gets the large body parser", !!re && re.test("/mint-ai/api/transcribe"));
   check("the console's payload routes are still covered", !!re && re.test("/console/12/upload") && re.test("/console/3/transcribe"));
-  check("nothing else gets the large parser", !!re && !re.test("/moni-ai/api/send") && !re.test("/moni-ai/api/transcribe/x"));
+  check("nothing else gets the large parser", !!re && !re.test("/mint-ai/api/send") && !re.test("/mint-ai/api/transcribe/x"));
 }
-check("/moni-ai is behind requireAuth", /app\.get\("\/moni-ai", requireAuth,/.test(server));
-check("/moni-ai checks moniai.use", /app\.get\("\/moni-ai"[\s\S]{0,400}can\("moniai\.use"\)/.test(server));
-check("speak needs the permission and CSRF", /app\.post\("\/moni-ai\/api\/speak", \.\.\.moniAiWrite,/.test(server));
-check("transcribe checks permission before parsing and CSRF after", /app\.post\("\/moni-ai\/api\/transcribe", requireApiPerm\("moniai\.use"\), moniAiAudioBody, requireApiCsrf,/.test(server));
+check("/mint-ai is behind requireAuth", /app\.get\("\/mint-ai", requireAuth,/.test(server));
+check("/mint-ai checks moniai.use", /app\.get\("\/mint-ai"[\s\S]{0,400}can\("moniai\.use"\)/.test(server));
+check("speak needs the permission and CSRF", /app\.post\("\/mint-ai\/api\/speak", \.\.\.moniAiWrite,/.test(server));
+check("transcribe checks permission before parsing and CSRF after", /app\.post\("\/mint-ai\/api\/transcribe", requireApiPerm\("moniai\.use"\), moniAiAudioBody, requireApiCsrf,/.test(server));
 check("/console still has its route", /app\.get\("\/console", requireAuth, requirePerm\("console\.use"\)/.test(server));
 
 /* ------------------------------------------------ client helpers (source) --- */

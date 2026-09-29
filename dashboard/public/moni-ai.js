@@ -2,7 +2,7 @@
 /*
  * The MINT AI Command Center (v3), live.
  *
- * Reads the JSON API under /moni-ai/api/ once on load (overview, the turns,
+ * Reads the JSON API under /mint-ai/api/ once on load (overview, the turns,
  * approvals, delegations and inbound ledgers, then missions, decisions,
  * watchers, rules, standing orders and cost through cc-panels.js), then follows
  * the supervisor's event stream over Server-Sent Events. Everything on screen
@@ -23,7 +23,7 @@
  * cc-panels.js, handed this file's helpers and state (the CC object below).
  *
  * Voice goes through OpenAI, on the server only: the page posts its recording
- * to /moni-ai/api/transcribe and each sentence of a reply to /moni-ai/api/speak,
+ * to /mint-ai/api/transcribe and each sentence of a reply to /mint-ai/api/speak,
  * whose audio streams back as PCM chunks (NDJSON) and starts playing with the
  * first one, with the same end-of-utterance detection and barge-in.
  * No key set, no voice: the controls say where to add one.
@@ -159,7 +159,7 @@
    * rejects like api() does, with .status and .code.
    */
   function apiStream(path, body, onEvent) {
-    return fetch("/moni-ai/api/" + path, {
+    return fetch("/mint-ai/api/" + path, {
       method: "POST", credentials: "same-origin",
       headers: { Accept: "application/x-ndjson", "Content-Type": "application/json", "X-CSRF-Token": CSRF },
       body: JSON.stringify(body),
@@ -205,7 +205,7 @@
       init.headers["X-CSRF-Token"] = CSRF;
       init.body = JSON.stringify(opts.body);
     }
-    return fetch("/moni-ai/api/" + path, init).then(function (r) {
+    return fetch("/mint-ai/api/" + path, init).then(function (r) {
       if (opts.raw) {
         if (!r.ok) return r.json().catch(function () { return {}; }).then(function (j) { throw new Error(j.error || "HTTP " + r.status); });
         return r;
@@ -1295,7 +1295,7 @@
 
   function connect(since) {
     if (es) es.close();
-    es = new EventSource("/moni-ai/api/events" + (since ? "?since=" + since : ""));
+    es = new EventSource("/mint-ai/api/events" + (since ? "?since=" + since : ""));
     es.onopen = function () {
       if (!S.online) {
         // Back after an outage: the supervisor may have restarted, which resets
@@ -1744,7 +1744,7 @@
       var body = { text: st.text };
       if (st.meta.vt) body.vt = st.meta.vt;
       if (st.meta.cat) body.cat = st.meta.cat;
-      fetch("/moni-ai/api/speak", {
+      fetch("/mint-ai/api/speak", {
         method: "POST",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json", "X-CSRF-Token": CSRF, Accept: "application/x-ndjson" },

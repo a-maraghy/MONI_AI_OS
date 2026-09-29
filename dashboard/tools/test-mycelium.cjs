@@ -410,7 +410,7 @@ function viewTests() {
   check("managed units keep restart and logs", /name="target" value="nginx"/.test(sp) && /\/services\/logs\?unit=nginx/.test(sp) && /name="target" value="fail2ban"/.test(sp));
   check("Odoo, PostgreSQL, the memory service, MINT AI and agents are read-only here", ["odoo", "postgresql@16-main", "claude-memory", "moni-ai", "moni-agent@admin"].every((u) =>
     !sp.includes(`name="target" value="${u}"`) && !sp.includes("/services/logs?unit=" + encodeURIComponent(u))) && (sp.match(/read-only<\/span>/g) || []).length === 5);
-  check("read-only rows point to where they are managed", /href="\/services\/agents"/.test(sp) && /href="\/claude\/memory"/.test(sp) && /href="\/moni-ai"/.test(sp));
+  check("read-only rows point to where they are managed", /href="\/services\/agents"/.test(sp) && /href="\/claude\/memory"/.test(sp) && /href="\/mint-ai"/.test(sp));
 
   const scoped = rbac.actor({ permissions: ["os.view", "services.view", "agents.view"], agent_scope: "scout", channel_scope: "*" });
   const list = [{ unit: "nginx", active: "active" }, { unit: "moni-agent@scout", kind: "agent", active: "failed" }, { unit: "moni-agent@secret", kind: "agent", active: "active" }];
