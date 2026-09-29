@@ -664,6 +664,9 @@
     $("cc-send").disabled = true;
     var body = { text: text };
     if (S.target !== "auto") body.target = S.target;
+    // A voice turn names its voice-turn id: the server sends it to MONI AI
+    // only if it is exactly what the server heard for that id.
+    if (opts.voice && opts.vt) body.vt = opts.vt;
     return api("send", { body: body }).then(function (r) {
       hint("");
       if (!opts.voice) input.value = "";
@@ -1528,6 +1531,11 @@
 
     var stream = null, ac = null, analyser = null, rec = null, chunks = [], poll = 0;
     var heard = false, quietFor = 0, floor = 0.006, calibrating = 0, lastRms = 0;
+    // What this recording held: time above the speech threshold, and its peak.
+    // A recording with less than SPEECH_MS of it is never uploaded: silence
+    // sent to the transcription model comes back as its prompt (2026-09-29,
+    // a push-to-talk press with nothing said reached MONI AI as a turn).
+    var loudMs = 0, peak = 0, SPEECH_MS = 150;
     var ptt = false;
     // END_MS: how long a pause ends what you are saying. 700 ms cut the
     // administrator off mid-thought ("...when I ask you to delegate," went as
@@ -1538,7 +1546,7 @@
     // What the voice did, for the console and for tests: window.__moniVoice.
     // items: one record per sentence played -- when it was asked for, when its
     // first chunk arrived, when it started playing, when its stream ended.
-    var diag = window.__moniVoice = { fetched: 0, played: 0, playedSeconds: 0, skipped: 0, blocked: 0, bargeIns: 0, cuts: 0, engines: [], said: [], items: [], cutAt: [] };
+    var diag = window.__moniVoice = { fetched: 0, played: 0, playedSeconds: 0, skipped: 0, blocked: 0, bargeIns: 0, cuts: 0, silentDrops: 0, uploads: 0, engines: [], said: [], items: [], cutAt: [] };
 
     // Wave bars for the voice bar, driven by the real level.
     var BARS = 44;
@@ -1936,7 +1944,14 @@
         barEls[i].style.height = h.toFixed(0) + "%";
       }
       if (calibrating > 0) { calibrating--; floor = Math.max(floor * 0.8 + rms * 0.2, 0.004); return; }
-      if (ptt) return;
+      if (ptt) {
+        if (rec && rec.state === "recording") {
+          if (rms > peak) peak = rms;
+          if (rms > floor * 3 + 0.004) loudMs += SAMPLE_MS;
+          heard = loudMs >= SPEECH_MS;
+        }
+        return;
+      }
       if (api_.speaking) {
         // The first moments of a clip are when echo cancelling has not caught
         // up yet, and the speaker leaks into the microphone: do not count them,
@@ -1946,7 +1961,8 @@
         if (loudFor >= BARGE_MS) bargeIn();
         return;
       }
-      if (rms > floor * 3 + 0.004) { heard = true; quietFor = 0; vbText.textContent = "Listening…"; }
+      if (rms > peak) peak = rms;
+      if (rms > floor * 3 + 0.004) { heard = true; loudMs += SAMPLE_MS; quietFor = 0; vbText.textContent = "Listening…"; }
       else {
         quietFor += SAMPLE_MS;
         if (heard && quietFor >= END_MS) { if (rec && rec.state !== "inactive") rec.stop(); return; }
@@ -1955,19 +1971,36 @@
     }
 
     function newRecorder() {
-      chunks = []; heard = false; quietFor = 0;
+      chunks = []; heard = false; quietFor = 0; loudMs = 0; peak = 0;
       var started = Date.now();
       var r = rec = recorderFor(stream);
       r.ondataavailable = function (e) { if (e.data && e.data.size) chunks.push(e.data); };
       r.onstop = function () {
-        var enough = Date.now() - started > MIN_MS && chunks.length;
+        var ms = Date.now() - started;
+        var level = { ms: ms, loud_ms: loudMs, peak: Math.round(peak * 10000) / 10000 };
+        var enough = ms > MIN_MS && chunks.length;
         var type = String(r.mimeType || "audio/webm").split(";")[0];
-        var blob = enough ? new Blob(chunks, { type: type }) : null;
-        if (blob && (heard || ptt)) { ack(); transcribeAndSend(blob); }
+        // Speech, not just sound: long enough, and above the threshold for
+        // long enough -- in both modes. Push to talk used to send whatever it
+        // recorded, silence included.
+        var spoke = enough && heard && loudMs >= SPEECH_MS;
+        var blob = spoke ? new Blob(chunks, { type: type }) : null;
+        if (blob) { ack(); transcribeAndSend(blob, undefined, level); }
+        else if (ptt) nothingHeard();
         else if (api_.on) newRecorder();
       };
       r.start();
       api_.listening = true;
+      setUi();
+    }
+    /* A push to talk with nothing said: nothing is uploaded, nothing is sent. */
+    function nothingHeard() {
+      diag.silentDrops++;
+      console.info("[voice] nothing heard, so nothing was sent");
+      ptt = false;
+      listen(false);
+      vbText.textContent = "I didn't hear anything.";
+      if (!api_.on) keepStream();
       setUi();
     }
     function recording(want) {
@@ -2014,9 +2047,9 @@
         },
       };
     }
-    function deskSend(blob, data, wasPtt, vt) {
+    function deskSend(blob, data, wasPtt, vt, level) {
       var dl = deskLines(gen);
-      apiStream("desk/turn", { data: data, mime: blob.type, vt: vt }, function (ev) {
+      apiStream("desk/turn", { data: data, mime: blob.type, vt: vt, level: level }, function (ev) {
         if (ev.type === "heard") {
           if (ev.text) vbText.textContent = "“" + clip(ev.text, 80) + "”";
         } else if (ev.type === "asked" && ev.turn) {
@@ -2034,7 +2067,7 @@
         if (e.code === "desk-off") {
           // Switched off in Settings: go direct.
           DESK = false; paintMode();
-          return transcribeAndSend(blob, wasPtt);
+          return transcribeAndSend(blob, wasPtt, level);
         }
         if (e.message !== "nothing said") toast("The front desk could not answer: " + e.message, true);
         if (!dl.count) enqueue("Sorry, I didn't catch that.");
@@ -2073,17 +2106,18 @@
        its desk turn and every sentence spoken for it. */
     function newVt() { return "v" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
 
-    function transcribeAndSend(blob, wasPttAgain) {
+    function transcribeAndSend(blob, wasPttAgain, level) {
       var wasPtt = wasPttAgain === undefined ? ptt : wasPttAgain;
       var vt = newVt();
       ptt = false;
       listen(false);
       vbText.textContent = "Transcribing…";
+      diag.uploads++;
       setUi();
       var reader = new FileReader();
       reader.onload = function () {
-        if (DESK) return deskSend(blob, String(reader.result).split(",")[1] || "", wasPtt, vt);
-        api("transcribe", { body: { data: String(reader.result).split(",")[1] || "", mime: blob.type, vt: vt } }).then(function (d) {
+        if (DESK) return deskSend(blob, String(reader.result).split(",")[1] || "", wasPtt, vt, level);
+        api("transcribe", { body: { data: String(reader.result).split(",")[1] || "", mime: blob.type, vt: vt, level: level } }).then(function (d) {
           var said = String(d.text || "").trim();
           if (!said || /^[\[(]/.test(said)) throw new Error("nothing said");
           vbText.textContent = "“" + clip(said, 80) + "”";

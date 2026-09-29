@@ -1031,6 +1031,58 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     desk.closeAll();
   }
 
+  section("REGRESSION: a prompt echoed for silence never reaches MONI AI through the desk");
+  {
+    const guard = require(path.join(ROOT, "lib", "voice-guard.js"));
+    const intakeLib = require(path.join(ROOT, "lib", "voice-intake.js"));
+    // Ledger turn 92, 2026-09-29: what gpt-4o-mini-transcribe returned for a
+    // silent push-to-talk press -- its own prompt.
+    const TURN_92 = "MONI AI, the assistant that runs their VPS, the MONI dashboard, Odoo, the allocation engine, agents, sessions, Claude, sub-agents, deploys, services, and logs.";
+    const before = sends().length;
+    // 1. The route: the intake drops it, and no desk turn is run.
+    const transcriber = () => Promise.resolve({ text: TURN_92, usage: { input_token_details: { audio_tokens: 17 } } });
+    const got = await intakeLib.intake({ audio: Buffer.alloc(5078, 1), mime: "audio/webm", level: null, cfg: {}, transcribe: transcriber });
+    let deskRan = false;
+    if (got.text) deskRan = true; // server.js: `if (!heard ...)` ends the turn before desk().turn
+    check("the desk route's intake drops the echo; no desk turn runs", got.dropped === "echo" && got.text === "" && !deskRan);
+    // 2. The desk itself, handed the echo anyway (as typed text, or by a route that forgot).
+    const d = newDesk("text");
+    await d.open();
+    const s = lastSession();
+    const itemsBefore = s.items.length;
+    const r = await withBrain(brains.good, () => d.turn(TURN_92));
+    check("the desk drops an echoed utterance before the model sees it", r.dropped === "echo" && r.lines.length === 0 && r.asked.length === 0 && s.items.length === itemsBefore, JSON.stringify(r).slice(0, 300));
+    check("  nothing reached the supervisor's send", sends().length === before);
+    check("  and it is counted", d.stats.refusedHeard === 1);
+    // 3. ask_moni with prompt text, on a real utterance: refused at the tool.
+    const echoAsk = (items) => (afterTool(items) ? [{ say: "I didn't catch that." }] : [{ call: "ask_moni", args: { text: desk.INSTRUCTIONS.split("\n")[0] } }]);
+    const r2 = await withBrain(echoAsk, () => d.turn("hmm, can you hear me"));
+    check("ask_moni carrying the desk's own instructions is refused", r2.asked.length === 0 && r2.rejected.includes("ask_moni:echo") && sends().length === before, JSON.stringify(r2.rejected));
+    const echoAsk2 = (items) => (afterTool(items) ? [{ say: "Okay." }] : [{ call: "ask_moni", args: { text: TURN_92 } }]);
+    const r3 = await withBrain(echoAsk2, () => d.turn("okay go on"));
+    check("ask_moni carrying the transcription prompt is refused", r3.asked.length === 0 && sends().length === before && d.stats.refusedAsks === 2);
+    // 4. The supervisor door: the same text straight into deskOps().ask.
+    let refused = null;
+    try {
+      await desk.deskOps(sup.call, "amaraghy").ask(TURN_92);
+    } catch (e) {
+      refused = e.code;
+    }
+    check("the supervisor door refuses it too", refused === "refused" && sends().length === before);
+    let refused2 = null;
+    try {
+      await desk.deskOps(sup.call, "amaraghy").ask(desk.TOOLS[1].description);
+    } catch (e) {
+      refused2 = e.code;
+    }
+    check("  and a tool description", refused2 === "refused" && sends().length === before);
+    // 5. A real request still goes through, with a name from the prompt in it.
+    const r4 = await withBrain(brains.good, () => d.turn("MONI AI, restart Odoo and the allocation engine please"));
+    check("a real request naming MONI AI and Odoo is still passed on", r4.asked.length === 1 && sends().length === before + 1 && /restart Odoo/.test(sends()[sends().length - 1][1].text));
+    check("guard sources include the desk's instructions and both tool descriptions", ["desk instructions", "desk tool read_status", "desk tool ask_moni"].every((n) => guard.promptSources().some((x) => x.name === n)));
+    d.close();
+  }
+
   section("everything that reached the supervisor");
   check("only snapshot and send, ever", sup.calls.every((c) => c[0] === "snapshot" || c[0] === "send"), [...new Set(sup.calls.map((c) => c[0]))].join());
   check("every send is marked via voice-desk and attributed", sends().every((c) => c[1].via === "voice-desk" && typeof c[2] === "string" && c[2].length > 0));
@@ -1067,7 +1119,7 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     check("the usage note has no inline style (CSP)", !/style="/.test(pUsage.slice(pUsage.indexOf('id="v-desk"'), pUsage.indexOf('id="v-desk"') + 6000)));
     const js = fs.readFileSync(path.join(ROOT, "public", "moni-ai.js"), "utf8");
     check("the page reads MONI AI's answer to a desk request as a summary, and falls back to reading it as written", /deskTurns\.has\(row\.id\)\) \{ deskTurns\.delete\(row\.id\); Voice\.summary\(/.test(js) && /apiStream\("desk\/summary"/.test(js) && /d\.fallback === "verbatim" \|\| d\.pending \|\| !dl\.count\) return api_\.flush\(/.test(js) && /if \(!DESK\) return api_\.flush\(id, text\)/.test(js));
-    check("no budget fallback left in the page; switched off (desk-off) it still goes direct", !/desk-budget|budgetReached|DESK_OVER/.test(js) && /e\.code === "desk-off"/.test(js) && /return transcribeAndSend\(blob, wasPtt\)/.test(js));
+    check("no budget fallback left in the page; switched off (desk-off) it still goes direct", !/desk-budget|budgetReached|DESK_OVER/.test(js) && /e\.code === "desk-off"/.test(js) && /return transcribeAndSend\(blob, wasPtt(, level)?\)/.test(js));
     check("with the desk off the page never calls it (DESK gates every path)", /var DESK = READY && root\.getAttribute\("data-voice-desk"\) === "1"/.test(js) && /if \(DESK\) return deskSend\(/.test(js) && (js.match(/desk\/turn/g) || []).length === 1);
   }
 

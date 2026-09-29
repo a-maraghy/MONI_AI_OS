@@ -27,7 +27,10 @@
  *   2. a function call by any other name is refused here and never runs;
  *   3. deskOps() is the only door to the supervisor, and it opens for two ops:
  *      `snapshot` (read) and `send` (with via "voice-desk") -- never approve,
- *      deny, interrupt, rules or decisions;
+ *      deny, interrupt, rules or decisions; and `send` refuses text that is an
+ *      echo of a prompt (the transcription prompt, these instructions, a tool
+ *      description -- lib/voice-guard.js), as does ask_moni, which also needs
+ *      a real transcript for this turn that passed the transcript guard;
  *   4. the output guard reads the desk's words. The desk answers in TEXT; a
  *      sentence is spoken (by the ordinary verbatim reader, lib/voice.js) only
  *      once the guard has passed it, so what is heard is exactly what was
@@ -70,6 +73,7 @@
 const WebSocket = require("ws");
 const { redactDeep } = require("./priv");
 const usageLib = require("./voice-usage");
+const voiceGuard = require("./voice-guard");
 
 const WS_BASE = process.env.MONI_OPENAI_WS || "wss://api.openai.com/v1";
 const DESK_MODEL = "gpt-realtime-mini";
@@ -198,6 +202,8 @@ function deskOps(call, actor) {
     ask: (text) => {
       const t = String(text || "").trim();
       if (!t) throw new DeskError("nothing to pass on", "invalid");
+      const door = voiceGuard.refuseAtDoor(t);
+      if (door) throw new DeskError(`refused: that reads as ${door.source || "a prompt"}, not as something the administrator said`, "refused");
       return gate("send", { text: t.slice(0, 20000), via: "voice-desk" });
     },
   };
@@ -817,7 +823,7 @@ class DeskSession {
     this.lastInputTokens = 0;
     this.inflight = 0;
     this.usage = {}; // billable tokens, whole session
-    this.stats = { rejected: 0, trips: 0, turns: 0, summaries: 0 };
+    this.stats = { rejected: 0, trips: 0, turns: 0, summaries: 0, refusedAsks: 0, refusedHeard: 0 };
     this.id = sayId || "desk" + ++seq;
   }
 
@@ -1072,6 +1078,14 @@ class DeskSession {
     const extra = Object.keys(args).filter((k) => k !== "text");
     if (!text || text.length > MAX_ASK_CHARS || extra.length) return JSON.stringify({ error: "ask_moni takes one field, text, of 1 to " + MAX_ASK_CHARS + " characters" });
     if (turn.asked.length >= MAX_ASKS_PER_TURN) return JSON.stringify({ error: "already passed to MONI AI; do not ask again" });
+    // Only on the administrator's words from this turn, and never a prompt.
+    const why = !turn.grounded ? "ungrounded" : voiceGuard.refuseAtDoor(text) ? "echo" : null;
+    if (why) {
+      this.stats.refusedAsks = (this.stats.refusedAsks || 0) + 1;
+      turn.rejected.push("ask_moni:" + why);
+      this.log(`desk: refused an ask_moni (${why})`);
+      return JSON.stringify({ error: "refused: ask_moni passes on only what the administrator said in this turn. Say you did not catch that." });
+    }
     const r = await this.ops.ask(withWords(text, turn.heard));
     const t = r && r.turn;
     if (t && t.id) this.requests.set(t.id, { text, answered: false, reply: null });
@@ -1111,11 +1125,22 @@ class DeskSession {
     this.stats.turns++;
     const said = String(heard || "").trim().slice(0, 4000);
     if (!said) throw new DeskError("nothing heard", "invalid");
-    await this.refreshReplies();
-    this.heard.push(said);
-    const turn = { kind: "turn", heard: said, asked: [], tools: [], rejected: [], lines: [], trip: null, tokens: {}, responses: 0 };
     const timings = {};
     const t0 = Date.now();
+    // What was "heard" must be words, not a prompt echoed back by the
+    // transcription model (the route has checked it already; this holds
+    // without it). Nothing reaches the model or MONI AI.
+    const echo = voiceGuard.refuseAtDoor(said);
+    if (echo) {
+      this.stats.refusedHeard = (this.stats.refusedHeard || 0) + 1;
+      this.log(`desk: dropped an utterance that reads as ${echo.source || "a prompt"} (${echo.rule})`);
+      const empty = { kind: "turn", heard: "", asked: [], tools: [], rejected: ["heard:" + echo.rule], lines: [], trip: null, tokens: {}, responses: 0, dropped: echo.rule };
+      timings.done = Date.now() - t0;
+      return this.result(empty, timings);
+    }
+    await this.refreshReplies();
+    this.heard.push(said);
+    const turn = { kind: "turn", heard: said, grounded: true, asked: [], tools: [], rejected: [], lines: [], trip: null, tokens: {}, responses: 0 };
     const emit = (line) => {
       turn.lines.push(line);
       if (!timings.firstLine) timings.firstLine = Date.now() - t0;
@@ -1309,6 +1334,7 @@ class DeskSession {
       cost_usd: costOf(turn.tokens, this.model),
       responses: turn.responses,
       snapshot_chars: turn.snapshotChars || 0,
+      dropped: turn.dropped || null,
       timings,
     };
   }

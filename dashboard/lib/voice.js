@@ -94,9 +94,18 @@ const TRANSCRIBE_MODELS = [
   { id: "gpt-4o-mini-transcribe", label: "GPT-4o mini transcribe" },
   { id: "gpt-4o-transcribe", label: "GPT-4o transcribe" },
 ];
-const TRANSCRIBE_PROMPT =
-  "Someone talking to MONI AI, the assistant that runs their VPS: the MONI dashboard, Odoo, the allocation engine, " +
-  "agents, sessions, Claude, sub-agents, deploys, services and logs.";
+// A vocabulary list, not a sentence. The sentence used until 2026-09-29
+// ("Someone talking to MONI AI, the assistant that runs their VPS: ...") was
+// echoed word for word on silence and reached MONI AI as a turn the
+// administrator never said (ledger turn 92). Measured on the real API the same
+// day: silence, near-silence, a click and room noise echo ANY prompt (15 of 15
+// with the sentence; the list too), so the echo is caught by lib/voice-guard.js
+// and silence is never sent (lib/voice-intake.js). The list only makes an echo
+// easy to recognise (a string of names, never a plausible request) and keeps
+// what the prompt is for: with no prompt "MONI AI" came back as "Money AI";
+// with this list, as "MONI AI".
+const TRANSCRIBE_PROMPT = "MONI AI, MONI, Odoo, Giza, PMO, Claude, VPS, sub-agents";
+const TRANSCRIBE_PROMPT_KIND = "list";
 const DEFAULTS = { model: "gpt-realtime-mini", voice: "marin", transcribe_model: "gpt-4o-mini-transcribe" };
 
 const INSTRUCTIONS =
@@ -1043,7 +1052,8 @@ async function transcribeFull(audio, cfg, mime) {
   form.append("response_format", "json");
   // A vocabulary hint: the words this panel hears that a general model would
   // not guess ("MONI" came back as "money", "Odoo" as "OPC"). Supported by the
-  // gpt-4o transcribe models; it steers spelling, it does not add words.
+  // gpt-4o transcribe models; it steers spelling. On silence the model writes
+  // the prompt back instead -- every transcript goes through voice-guard.
   form.append("prompt", cfg.transcribe_prompt || TRANSCRIBE_PROMPT);
 
   let res;
@@ -1121,6 +1131,8 @@ module.exports = {
   MODELS,
   VOICES,
   TRANSCRIBE_MODELS,
+  TRANSCRIBE_PROMPT,
+  TRANSCRIBE_PROMPT_KIND,
   DEFAULTS,
   INSTRUCTIONS,
   MAX_CHARS,
