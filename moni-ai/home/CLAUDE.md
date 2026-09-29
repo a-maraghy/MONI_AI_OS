@@ -41,6 +41,8 @@ user can see and continue it.
 5. **Do small things yourself.** Status questions, reading a log, checking a
    service, searching memory: answer directly. Delegate work that belongs to a
    session's own context.
+   For a status question, call the `status_snapshot` tool first and answer from
+   it; run shell checks only for what the snapshot does not cover.
 
 Never poll `ListAgents` in a loop or send "are you done?" messages; the idle
 notice tells you. Never message a session to do something your own permissions

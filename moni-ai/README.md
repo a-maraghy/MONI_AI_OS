@@ -220,6 +220,13 @@ event). All of its state is in the ledger, so a restart loses nothing.
   every step is done or skipped. Chosen over a CLI because typed tools need no
   shell quoting and do not go through the Bash gate; `moni-ai-ctl` speaks the
   same ops for a human.
+- **Status snapshot for MONI AI.** The same server has `status_snapshot`: the
+  supervisor's read-only `snapshot` op (the voice desk's view, `lib/snapshot.js`)
+  asked for as actor `moni-ai`, with no arguments. It answers from the caches the
+  supervisor keeps anyway -- no helper call, no subprocess, no model round spent on
+  Bash -- and holds counts, titles and figures, never a command, fix or evidence;
+  the server drops the forbidden keys again and the desk's own request list. The
+  charter tells MONI AI to use it first for status questions.
 - **Decisions and watchers** (`lib/watchers.js`, tables `decisions`,
   `watchers`). Every 30 s: the helper's `service-list` (a unit failed) and
   `pulse-feed` (fail2ban bans > 20 in 10 min; an agent started 3 times in 10
@@ -284,6 +291,7 @@ node moni-ai/tools/test-watchers.cjs          # thresholds, dedup, cooldown, rat
 node moni-ai/tools/test-missions-cost.cjs     # missions store, cost deltas, transcript scan
 sudo node moni-ai/tools/test-features.cjs     # all of phase 1 through a real supervisor
 node moni-ai/tools/test-protocol.cjs          # socket validation, peer-text parsing
+node moni-ai/tools/test-mcp.cjs               # the MCP server's status_snapshot tool
 sudo node moni-ai/tools/test-supervisor.cjs   # the whole supervisor against a fake CLI
 node dashboard/tools/test-moniai.cjs          # the panel's client and permission
 ```

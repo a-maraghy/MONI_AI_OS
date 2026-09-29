@@ -18,11 +18,16 @@
  *   mission_get           one mission with its steps
  *   decision_propose      the finding and fix for a watcher's decision card
  *   decision_update       the result of running an approved fix
+ *   status_snapshot       this VPS at a glance (read-only): services, disk,
+ *                         memory, live sessions, missions, open decisions and
+ *                         pending approvals -- counts and titles, never a command
  *
  * Plain JSON-RPC 2.0 over newline-delimited stdio (MCP's stdio transport).
  */
 const net = require("net");
+const path = require("path");
 const readline = require("readline");
+const { FORBIDDEN_KEYS } = require(path.join(__dirname, "..", "lib", "snapshot.js"));
 
 const SOCKET = process.env.MONI_AI_SOCKET || "/run/moni-ai/moni-ai.sock";
 const STEP_STATUSES = ["planned", "delegated", "working", "waiting_approval", "done", "failed", "skipped"];
@@ -142,7 +147,36 @@ const TOOLS = [
       additionalProperties: false,
     },
   },
+  {
+    name: "status_snapshot",
+    op: "snapshot",
+    description:
+      "This VPS at a glance, read-only and instant: CPU, memory and disk (in GB and whole percent), the tracked services and which failed, " +
+      "the live sessions, open missions with their steps, open decisions and pending approvals (counts and titles), and your own queue. " +
+      "Use it FIRST for any status question; run shell checks only for what it does not cover.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    noArgs: true,
+    shape: snapshotView,
+  },
 ];
+
+/**
+ * What status_snapshot hands the model: the supervisor's snapshot minus
+ * anything that is not status. The supervisor already redacts and clips it
+ * and never puts a command in it; this drops the forbidden keys again at any
+ * depth (belt and braces) and the voice desk's own request list, which is not
+ * MONI AI's to read.
+ */
+function snapshotView(data) {
+  const strip = (v) => {
+    if (Array.isArray(v)) return v.map(strip);
+    if (!v || typeof v !== "object") return v;
+    const o = {};
+    for (const [k, x] of Object.entries(v)) if (!FORBIDDEN_KEYS.includes(k) && k !== "requests_to_moni_ai") o[k] = strip(x);
+    return o;
+  };
+  return strip(data || {});
+}
 
 let n = 0;
 function call(op, params) {
@@ -204,7 +238,8 @@ async function onMessage(msg) {
         protocolVersion: (params && params.protocolVersion) || "2025-06-18",
         capabilities: { tools: {} },
         serverInfo: { name: "moni-ai", version: "1.0.0" },
-        instructions: "MONI AI's missions and decision proposals, recorded by the supervisor and shown in the Command Center.",
+        instructions:
+          "MONI AI's missions and decision proposals, recorded by the supervisor and shown in the Command Center, and status_snapshot: this VPS at a glance, read-only.",
       },
     });
   }
@@ -215,9 +250,13 @@ async function onMessage(msg) {
     const tool = TOOLS.find((t) => t.name === (params && params.name));
     if (!tool) return out({ jsonrpc: "2.0", id, error: { code: -32602, message: "unknown tool" } });
     try {
-      const args = { ...(tool.defaults || {}), ...((params && params.arguments) || {}) };
+      const given = (params && params.arguments) || {};
+      if (tool.noArgs && (typeof given !== "object" || Array.isArray(given) || Object.keys(given).length))
+        throw new Error(tool.name + " takes no arguments");
+      const args = tool.noArgs ? {} : { ...(tool.defaults || {}), ...given };
       const data = await call(tool.op, args);
-      return out({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(brief(data)) }] } });
+      const view = tool.shape ? tool.shape(data) : brief(data);
+      return out({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(view) }] } });
     } catch (e) {
       return out({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: "Error: " + e.message }], isError: true } });
     }
@@ -239,4 +278,4 @@ if (require.main === module) {
   rl.on("close", () => process.exit(0));
 }
 
-module.exports = { TOOLS, brief };
+module.exports = { TOOLS, brief, snapshotView, onMessage };
