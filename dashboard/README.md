@@ -17,8 +17,8 @@ and [docs/agents.md](../docs/agents.md).
     lib/views-agents.js    agent management pages
     lib/views-guide.js     the operator's manual, served from the panel
     lib/views-claude.js    Claude Code: memory, sessions, running processes
-    lib/moniai.js          client for the MONI AI supervisor's unix socket
-    lib/views-moniai.js    the MONI AI Command Center's frame
+    lib/moniai.js          client for the MINT AI supervisor's unix socket
+    lib/views-moniai.js    the MINT AI Command Center's frame
     lib/telegram.js        Bot API client, used only to validate configuration
     public/style.css       styles, and the light and dark palettes
     public/app.js          confirmations + live stat refresh + Running refresh + theme switch
@@ -66,9 +66,9 @@ after that. Every write is in the audit log with the panel user.
 Known follow-up: the memory search service on 127.0.0.1:8765 takes no token, so
 any local process can query it. Adding one is deliberately left for later.
 
-## MONI AI API
+## MINT AI API
 
-MONI AI (the renamed MONI Bot) is one root Claude Code session that delegates
+MINT AI (formerly MONI AI, and before that MONI Bot) is one root Claude Code session that delegates
 commands to every other session on the machine. It is run by its own
 supervisor, `moni-ai.service`; the design, the approval gate and the traps are
 in [`moni-ai/README.md`](../moni-ai/README.md). The panel's part is a JSON and
@@ -120,12 +120,12 @@ Tests: `node dashboard/tools/test-moniai.cjs` (client and permission).
 
 ### The Command Center (`/moni-ai`)
 
-The top bar's MONI AI tab opens it. Someone with `console.use` but not
+The top bar's MINT AI tab opens it. Someone with `console.use` but not
 `moniai.use` is sent on to `/console`. One screen, no page scroll at
 1920×1080, 1600×900 and 1440×900 -- only its panels scroll:
 
-- **Left rail** -- MONI AI Core (process, sessions, agents, memory, voice,
-  guardrails), Talk to MONI, vitals rings (the supervisor's own vitals, which
+- **Left rail** -- MINT AI Core (process, sessions, agents, memory, voice,
+  guardrails), Talk to MINT, vitals rings (the supervisor's own vitals, which
   arrive on the stream every 5 s) and memory counts.
 - **Centre** -- the seed core: one canvas, `requestAnimationFrame`, DPR-aware,
   paused while the tab is hidden, a still frame under reduced motion. Its
@@ -135,7 +135,7 @@ The top bar's MONI AI tab opens it. Someone with `console.use` but not
   light runs down the root to that session), *listening* while the microphone
   records, *speaking* while a reply is read aloud. Below it the sessions strip
   (Delegate… prefills the composer for that session; Open says where it runs,
-  and for MONI AI itself opens the Remote Control link) and the composer
+  and for MINT AI itself opens the Remote Control link) and the composer
   (target chip, `@` to pick, interrupt while a turn runs).
 - **Drawer** -- Conversation (the turns ledger, then live: streamed text,
   delegation cards, approval cards), Timeline (delegations and approvals),
@@ -163,7 +163,7 @@ talks to OpenAI and never sees the key (the CSP still forbids it to).
 
 - **Hearing**: the recording (webm/opus) is posted to `/moni-ai/api/transcribe`
   or `/console/:id/transcribe`, and sent on to `POST /v1/audio/transcriptions`
-  (`gpt-4o-mini-transcribe` by default), with a vocabulary prompt (MONI, Odoo,
+  (`gpt-4o-mini-transcribe` by default), with a vocabulary prompt (Mint, MINT AI, Odoo,
   sessions, agents) so the panel's own words are spelled right.
 - **Speaking**: each sentence of a reply is posted to `/moni-ai/api/speak` or
   `/console/:id/speak`. The Command Center asks for it **streamed**
@@ -232,7 +232,7 @@ OpenAI voice > *Voice front desk (GPT)* (`POST /credentials/openai-voice/desk`,
 table, not with the key). While it is off nothing about the voice changes.
 While on, the Command Center's mic posts each utterance to
 `POST /moni-ai/api/desk/turn` (`moniai.use` + CSRF). The voice bar shows
-**Front desk · GPT** or **Direct · MONI AI**.
+**Front desk · GPT** or **Direct · MINT AI**.
 
 gpt-realtime-mini holds the conversation, server-side, **in text**, with exactly
 two tools: `read_status()` (the supervisor's read-only `snapshot` op: services,
@@ -260,23 +260,23 @@ it can only cut itself (property-tested over ~1,900 streamed texts).
 
 It cuts: a claim that something was done/deleted/restarted/pushed/approved (or
 is being: "Restarting Odoo."), a promise of one, a figure not in the snapshot /
-MONI AI's reply / what was said, a status claim with no snapshot or about
-something the snapshot does not hold, "MONI AI said ..." before a reply, and "I've
+MINT AI's reply / what was said, a status claim with no snapshot or about
+something the snapshot does not hold, "MINT AI said ..." before a reply, and "I've
 passed that on" (or "I'll read you its answer") with no `ask_moni` call behind
-it. A cut reply is replaced by "Let me pass that to MONI AI." and the request
+it. A cut reply is replaced by "Let me pass that to MINT AI." and the request
 really is passed on. A transient OpenAI server error is retried once.
 
-**Summaries.** MONI AI's answer to a desk request stays on screen exactly as
+**Summaries.** MINT AI's answer to a desk request stays on screen exactly as
 written; aloud, the page asks `POST /moni-ai/api/desk/summary {turn}` for a
 short summary (an out-of-band response: no conversation, no tools, the reply
 quoted). A reply of one or two plain sentences is read word for word instead
 (`fallback: "verbatim"`). The summary is held to the reply: a figure changed
 or rounded wrongly (2.7 may become 3, never 2), a negation flipped, a
-recommendation MONI AI did not make, "I'll ask you first" turned into "done", a
+recommendation MINT AI did not make, "I'll ask you first" turned into "done", a
 name or a path it did not give, the desk saying "I did" -- each is cut, and the
-rest becomes "The rest of MONI AI's answer is on screen." A pending approval or
+rest becomes "The rest of MINT AI's answer is on screen." A pending approval or
 question the summary left out is said anyway ("It needs your approval or your
-answer."). MONI AI is told its reply will be summarised.
+answer."). MINT AI is told its reply will be summarised.
 
 **Cost, on screen -- no cap.** The daily budget was removed (the
 administrator's decision of 2026-09-29): nothing refuses or diverts the desk for
@@ -306,9 +306,9 @@ out of `public/moni-ai.js`) against a fake Web Audio clock: playback from the
 first chunk, order, a clean cut and the fallback after it, barge-in during a
 stream, the desk's streamed lines.
 `sudo node dashboard/tools/eval-voice-desk.cjs --replies <copy.json> [--speak]
-[--session]` runs ~25 prompts and summaries of MONI AI's real replies (from a
+[--session]` runs ~25 prompts and summaries of MINT AI's real replies (from a
 read-only copy of the ledger) against the real model with a stubbed supervisor
-(nothing reaches MONI AI; the key is read through the helper and never
+(nothing reaches MINT AI; the key is read through the helper and never
 printed).
 
 ### Themes

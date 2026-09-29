@@ -88,7 +88,7 @@ MANAGED_UNITS = (
 UNSTOPPABLE_UNITS = ("ssh", "nginx", "ufw", "moni-dashboard")
 
 # Units the panel reports on but may not touch. Odoo and its database belong to
-# the planning work, the memory service and MONI AI have their own pages and
+# the planning work, the memory service and MINT AI have their own pages and
 # their own controls; listing them here makes the machine's picture complete
 # without adding a single thing the panel can do to them.
 READONLY_UNITS = ("odoo", "postgresql@16-main", "claude-memory", "moni-ai")
@@ -3079,7 +3079,7 @@ def cmd_credential_list(args):
 
 # ========================================================== OpenAI voice ====
 #
-# The key the panel's voice uses: OpenAI's realtime model speaks MONI AI's
+# The key the panel's voice uses: OpenAI's realtime model speaks MINT AI's
 # replies and OpenAI's transcription model hears the person. Voice only --
 # Claude does the thinking, so this key never reaches an agent or a model.
 #
@@ -3343,7 +3343,7 @@ CONSOLE_ACCESS = {
 # mentioned that sudo was there.
 CONSOLE_PROMPT = {
     "full": (
-        "You are running inside the MONI AI OS panel, on the VPS itself, talking "
+        "You are running inside the Mint OS panel, on the VPS itself, talking "
         "to the administrator through a web console. You are the user "
         "'moniconsole' and you hold passwordless sudo for every command: prefix "
         "with sudo whenever a command needs root, rather than reporting that "
@@ -3360,7 +3360,7 @@ CONSOLE_PROMPT = {
     # Same account and the same view of the machine, with escalation switched
     # off at the kernel. Saying so plainly saves a turn spent discovering it.
     "full_noroot": (
-        "You are running inside the MONI AI OS panel, on the VPS itself, talking "
+        "You are running inside the Mint OS panel, on the VPS itself, talking "
         "to the administrator through a web console. You are the user "
         "'moniconsole' and you can read the whole machine, including the system "
         "journal.\n\n"
@@ -3376,7 +3376,7 @@ CONSOLE_PROMPT = {
         "rather than doing it."
     ),
     "workspace": (
-        "You are running inside the MONI AI OS panel, talking to the "
+        "You are running inside the Mint OS panel, talking to the "
         "administrator through a web console. You are the 'moniagent' service "
         "account and are confined to the agent workspaces under "
         "/opt/moni-agents. You have no sudo: if something genuinely needs root, "
@@ -3780,13 +3780,13 @@ CC_HOMES = {
         "writable": True,
     },
     "console": {
-        "label": "MONI AI console",
+        "label": "MINT AI console",
         "base": "/var/lib/moni-console/home/.claude",
         "projects": "/var/lib/moni-console/home/.claude/projects",
         "writable": True,
     },
     "agents": {
-        "label": "MONI agents",
+        "label": "Mint OS agents",
         "base": "/opt/moni-agents/shared/home/.claude",
         "projects": "/opt/moni-agents/shared/home/.claude/projects",
         "writable": True,

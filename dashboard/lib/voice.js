@@ -2,7 +2,7 @@
 /**
  * The panel's voice, through OpenAI -- as a voice and nothing more.
  *
- * Claude (MONI AI, or a console chat) does all the thinking. OpenAI does two
+ * Claude (MINT AI, or a console chat) does all the thinking. OpenAI does two
  * mechanical jobs around it: it turns what the person said into text, and it
  * reads Claude's reply back out loud. Nothing here asks a GPT model what it
  * thinks; a model that answers instead of reading is treated as a fault.
@@ -95,7 +95,7 @@ const TRANSCRIBE_MODELS = [
   { id: "gpt-4o-transcribe", label: "GPT-4o transcribe" },
 ];
 const TRANSCRIBE_PROMPT =
-  "Someone talking to MONI AI, the assistant that runs their VPS: the MONI dashboard, Odoo, the allocation engine, " +
+  "Someone talking to MINT AI, the assistant that runs their VPS: the Mint OS dashboard, Odoo, the allocation engine, " +
   "agents, sessions, Claude, sub-agents, deploys, services and logs.";
 const DEFAULTS = { model: "gpt-realtime-mini", voice: "marin", transcribe_model: "gpt-4o-mini-transcribe" };
 
@@ -1042,7 +1042,8 @@ async function transcribeFull(audio, cfg, mime) {
   form.append("model", cfg.transcribe_model || DEFAULTS.transcribe_model);
   form.append("response_format", "json");
   // A vocabulary hint: the words this panel hears that a general model would
-  // not guess ("MONI" came back as "money", "Odoo" as "OPC"). Supported by the
+  // not guess (the old name "MONI" came back as "money", "Odoo" as "OPC"; the
+  // product is now "Mint" / "MINT AI"). Supported by the
   // gpt-4o transcribe models; it steers spelling, it does not add words.
   form.append("prompt", cfg.transcribe_prompt || TRANSCRIBE_PROMPT);
 
@@ -1121,6 +1122,7 @@ module.exports = {
   MODELS,
   VOICES,
   TRANSCRIBE_MODELS,
+  TRANSCRIBE_PROMPT,
   DEFAULTS,
   INSTRUCTIONS,
   MAX_CHARS,

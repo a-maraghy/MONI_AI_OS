@@ -1,4 +1,7 @@
-# MONI AI OS
+# Mint OS
+
+Formerly MONI AI OS; its assistant, MINT AI, was MONI AI. The repository, services,
+paths and internal identifiers (`moni-ai`, `moni-dashboard`, `MONI_*`) keep their old names.
 
 Control panel for a fleet of Claude agents on a single VPS.
 
@@ -36,7 +39,7 @@ You, on Telegram or WhatsApp
 | Path | What it is |
 |---|---|
 | `dashboard/` | The web panel: Node, server-rendered, no client framework |
-| `moni-ai/` | MONI AI: the supervisor for the root CEO Claude Code session, its approval gate, ledger and hooks |
+| `moni-ai/` | MINT AI: the supervisor for the root CEO Claude Code session, its approval gate, ledger and hooks |
 | `dashboard/deploy/` | Privileged helper, systemd units, nginx, fail2ban, sudoers |
 | `memory/` | `moni-memory` — vector + keyword memory over an Obsidian vault, exposed to Claude over MCP |
 | `whatsapp/` | The WhatsApp bridge — Baileys + Claude Agent SDK, one process per channel |

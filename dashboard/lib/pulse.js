@@ -13,7 +13,7 @@
  *     request counts, agent replies (each agent's own database);
  *   - this panel's login_log: sign-ins, failed sign-ins, panel actions;
  *   - the helper's audit log, which this process may read: audit actions;
- *   - MONI AI's ledger over its socket: turns and delegations.
+ *   - MINT AI's ledger over its socket: turns and delegations.
  *
  * Every event is a type, a time and at most a unit, jail, agent or action
  * name. No address, user name or text is kept. One poller serves every
@@ -160,7 +160,7 @@ function loginEvent(row) {
   const at = row.ts;
   if (row.outcome === "success") return { type: "panel-login", at };
   if (row.outcome === "fail" || row.outcome === "failed") return { type: "panel-fail", at };
-  if (row.outcome === "moni-ai") return null; // MONI AI's ledger reports these as turns
+  if (row.outcome === "moni-ai") return null; // MINT AI's ledger reports these as turns
   if (ACTION_RE.test(String(row.outcome || ""))) return { type: "panel-action", action: row.outcome, at };
   return null;
 }

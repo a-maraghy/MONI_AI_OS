@@ -109,12 +109,12 @@ function stamp(iso) {
 const NAV = [
   {
     // The main point of contact, so it sits first in the bar. It opens the
-    // MONI AI Command Center; the older console chat stays at /console. Both
+    // MINT AI Command Center; the older console chat stays at /console. Both
     // carry their own navigation inside the page, which is why this asks for
     // no sidebar -- two lists side by side would be one too many.
     key: "console",
     href: "/moni-ai",
-    label: "MONI AI",
+    label: "MINT AI",
     icon: "core",
     noSidebar: true,
     home: { key: "console", href: "/console", label: "Chat", icon: "agents" },
@@ -439,9 +439,9 @@ function shell(title, body, opts = {}) {
                      aria-expanded="false" aria-controls="sidebar"
                      data-nav-toggle>${icon("menu", 20)}</button>`
       }
-      <a class="brand" href="/" aria-label="MONI AI OS home">
+      <a class="brand" href="/" aria-label="Mint OS home">
         <span class="brand-mark">${icon("overview", 18)}</span>
-        <span class="brand-text">MONI<em>AI OS</em></span>
+        <span class="brand-text">Mint<em>OS</em></span>
       </a>
       <nav class="top-tabs" aria-label="Dashboards">${tabs}</nav>
       <div class="top-right">
@@ -508,7 +508,7 @@ function page(title, inner, opts = {}) {
 <html lang="en"${cls}><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${esc(title)} — MONI AI OS</title>
+<title>${esc(title)} — Mint OS</title>
 <link rel="icon" href="${asset("favicon.svg")}" type="image/svg+xml">
 <link rel="alternate icon" href="/favicon.ico" sizes="48x48 32x32 16x16">
 <link rel="apple-touch-icon" href="${asset("favicon.svg")}">

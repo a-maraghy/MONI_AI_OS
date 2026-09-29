@@ -476,7 +476,7 @@ function boot(opts) {
     const t = boot({ desk: true });
     t.Voice.unlock();
     t.Voice.tag(77, { vt: "vdesk77", cat: "handoff" });
-    t.Voice.summary(77, "MONI AI's full answer, on screen.");
+    t.Voice.summary(77, "MINT AI's full answer, on screen.");
     await settle();
     check("the summary is asked for with the hand-off's voice turn", deskCalls.length === 1 && deskCalls[0].path === "desk/summary" && deskCalls[0].body.turn === 77 && deskCalls[0].body.vt === "vdesk77", JSON.stringify(deskCalls[0] && deskCalls[0].body));
     const on = deskCalls[0].onEvent;

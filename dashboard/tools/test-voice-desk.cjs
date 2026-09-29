@@ -2,7 +2,7 @@
 "use strict";
 /**
  * Tests for the voice front desk (lib/voice-desk.js), against a mock OpenAI
- * Realtime server and a fake supervisor. No real key, no real MONI AI.
+ * Realtime server and a fake supervisor. No real key, no real MINT AI.
  *
  *   NODE_PATH=/opt/moni-dashboard/node_modules node dashboard/tools/test-voice-desk.cjs
  *
@@ -74,7 +74,7 @@ function fixedSnapshot(extra) {
       { unit: "moni-agent@admin", active: "failed" },
     ],
     servicesAt: "2026-09-29T10:14:40.000Z",
-    sessions: [{ name: "MONI AI", status: "idle", self: true }, { name: "Odoo 19 VPS setup customizations", status: "busy" }, { name: "MONI Agent OS", status: "idle" }],
+    sessions: [{ name: "MINT AI", status: "idle", self: true }, { name: "Odoo 19 VPS setup customizations", status: "busy" }, { name: "MONI Agent OS", status: "idle" }],
     process: { state: "ready", busy: false, queued: 0 },
     missions: [
       { ref: "M-7", title: "Prepare the weekly ops review", status: "active", metrics: { steps_done: 1, steps_total: 3 }, steps: [{ n: 1, title: "Collect uptime", status: "done" }, { n: 2, title: "Summarise sign-ins", status: "working" }, { n: 3, title: "Draft the page", status: "planned" }] },
@@ -278,12 +278,12 @@ function goodBrain(items) {
       if (/mission/.test(q)) return [{ say: `Mission ${s.missions.list[0].ref} has ${s.missions.list[0].steps_done} of ${s.missions.list[0].steps_total} steps done.` }];
       return [{ say: "I can only see the machine's status." }];
     }
-    return [{ say: "I've passed that to MONI AI. I'll read you its answer when it arrives." }];
+    return [{ say: "I've passed that to MINT AI. I'll read you its answer when it arrives." }];
   }
   const q = lastUser(items).toLowerCase();
-  if (/what did moni/.test(q)) {
+  if (/what did (?:mint|moni)/.test(q)) {
     const r = systemReplies(items);
-    return [{ say: r.length ? "MONI AI replied that " + r[r.length - 1].split("\n").slice(1).join(" ") : "MONI AI hasn't replied yet." }];
+    return [{ say: r.length ? "MINT AI replied that " + r[r.length - 1].split("\n").slice(1).join(" ") : "MINT AI hasn't replied yet." }];
   }
   if (/^(hi|hello|thanks)/.test(q)) return [{ say: "Hello! What would you like to know?" }];
   if (/disk|fail|service|approval|mission/.test(q) && !/restart|delete|approve|push/.test(q)) return [{ call: "read_status" }];
@@ -294,18 +294,18 @@ const brains = {
   good: goodBrain,
   // answers without looking, and claims results
   claimsRestart: (items) => (afterTool(items) ? [{ say: "Odoo has been restarted." }] : [{ say: "Done, I've restarted Odoo for you." }]),
-  asksThenClaims: (items) => (afterTool(items) ? [{ say: "I've passed that to MONI AI. The file has been deleted." }] : [{ call: "ask_moni", args: { text: lastUser(items) } }]),
-  asksThenPromises: (items) => (afterTool(items) ? [{ say: "Sure, MONI AI will push it to GitHub in a minute." }] : [{ call: "ask_moni", args: { text: lastUser(items) } }]),
+  asksThenClaims: (items) => (afterTool(items) ? [{ say: "I've passed that to MINT AI. The file has been deleted." }] : [{ call: "ask_moni", args: { text: lastUser(items) } }]),
+  asksThenPromises: (items) => (afterTool(items) ? [{ say: "Sure, MINT AI will push it to GitHub in a minute." }] : [{ call: "ask_moni", args: { text: lastUser(items) } }]),
   approves: () => [{ say: "Okay, I approved the pending card." }],
   guessesBackups: () => [{ say: "The nightly backups are fine and ran at 3 AM." }],
-  inventsReply: () => [{ say: "MONI AI said the backup finished at 2:30 and everything is fine." }],
+  inventsReply: () => [{ say: "MINT AI said the backup finished at 2:30 and everything is fine." }],
   wrongFigure: (items) => (afterTool(items) ? [{ say: "The disk is 73% full." }] : [{ call: "read_status" }]),
-  unknownTool: (items) => (afterTool(items) ? [{ say: "I can't run commands, but I can pass that to MONI AI." }] : [{ call: "run_shell", args: { command: "rm -rf /tmp/x" } }]),
+  unknownTool: (items) => (afterTool(items) ? [{ say: "I can't run commands, but I can pass that to MINT AI." }] : [{ call: "run_shell", args: { command: "rm -rf /tmp/x" } }]),
   approveTool: (items) => (afterTool(items) ? [{ say: "I can't approve anything myself." }] : [{ call: "approve", args: { approval_id: 3 } }]),
   loops: () => [{ call: "read_status" }],
   // seen on the real model: says it passed the request on, never calls the tool
-  fakeHandoff: () => [{ say: "I've passed that to MONI AI. I'll read you its answer when it arrives." }],
-  statusThenFakeHandoff: (items) => (afterTool(items) ? [{ say: "moni-agent@admin has failed. I'll pass this to MONI AI and read you its answer." }] : [{ call: "read_status" }]),
+  fakeHandoff: () => [{ say: "I've passed that to MINT AI. I'll read you its answer when it arrives." }],
+  statusThenFakeHandoff: (items) => (afterTool(items) ? [{ say: "moni-agent@admin has failed. I'll pass this to MINT AI and read you its answer." }] : [{ call: "read_status" }]),
   // cross-sentence: an action sentence, then a bare confirmation
   restartDone: () => [{ say: "Restarting Odoo now. Done." }],
   statusThenClaim: (items) => (afterTool(items) ? [{ say: "The disk is 61% full. I restarted Odoo." }] : [{ call: "read_status" }]),
@@ -314,7 +314,7 @@ const brains = {
   smallTalk: () => [{ say: "I'm doing well, thanks for asking. How can I help?" }],
   smallTalkStatus: () => [{ say: "I'm doing well, and all the services are running fine." }],
   // says it first, then calls the tool in the same response: that is backed
-  sayThenAsk: (items) => (afterTool(items) ? [{ say: "MONI AI has it." }] : [{ say: "Let me pass that to MONI AI." }, { call: "ask_moni", args: { text: lastUser(items) } }]),
+  sayThenAsk: (items) => (afterTool(items) ? [{ say: "MINT AI has it." }] : [{ say: "Let me pass that to MINT AI." }, { call: "ask_moni", args: { text: lastUser(items) } }]),
 };
 
 /** The summariser: what an out-of-band summary response says, by test. */
@@ -323,7 +323,7 @@ const replyIn = (items) => {
   const m = /"""\n([\s\S]*?)\n"""/.exec(t);
   return m ? m[1] : "";
 };
-brains.summaryGood = (items) => [{ say: mock.summaryText || "MONI AI replied." }];
+brains.summaryGood = (items) => [{ say: mock.summaryText || "MINT AI replied." }];
 
 /* ------------------------------------------------------------- helpers --- */
 
@@ -387,7 +387,7 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     }
     await ops.ask("restart odoo please");
     check("ask_moni maps to send, marked via voice-desk, as the panel user", calls.length === 1 && calls[0][0] === "send" && calls[0][1].via === "voice-desk" && calls[0][1].text === "restart odoo please" && calls[0][2] === "amaraghy", JSON.stringify(calls));
-    check("send carries no target (MONI AI routes it)", !("target" in calls[0][1]));
+    check("send carries no target (MINT AI routes it)", !("target" in calls[0][1]));
     await ops.snapshot();
     check("read_status maps to snapshot, a read", calls[1][0] === "snapshot" && JSON.stringify(calls[1][1]) === "{}");
     check("DESK_OPS is exactly snapshot:read and send:write", JSON.stringify(desk.DESK_OPS) === '{"snapshot":"read","send":"write"}' && Object.isFrozen(desk.DESK_OPS));
@@ -414,7 +414,7 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     const m = JSON.stringify(desk.forModel(leaky));
     check("forModel drops command-like fields a supervisor might leak", !m.includes("rm -rf") && !m.includes("systemctl restart") && !m.includes("fix_command"), m.slice(0, 300));
     check("forModel redacts secrets", !m.includes(SECRET) && m.includes("«openai-key»"));
-    check("forModel gives the desk's requests as answered or not, never the reply", /"your_requests_to_moni_ai":\[\{"request":9,"answered":true\}\]/.test(m) && !m.includes("I ran"));
+    check("forModel gives the desk's requests as answered or not, never the reply", /"your_requests_to_mint_ai":\[\{"request":9,"answered":true\}\]/.test(m) && !m.includes("I ran"));
     // What the model actually received.
     const d = newDesk("text");
     await withBrain(goodBrain, () => d.turn("how full is the disk?"));
@@ -438,11 +438,11 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
       ["The first step is done, and the cache has been deleted.", "action-claim"],
       ["All set!", "action-claim"],
       ["No problem, I've taken care of it.", "action-claim"],
-      ["I've passed that to MONI AI, and the file has been deleted.", "action-claim"],
-      ["MONI AI will restart Odoo in a minute.", "promise"],
+      ["I've passed that to MINT AI, and the file has been deleted.", "action-claim"],
+      ["MINT AI will restart Odoo in a minute.", "promise"],
       ["I'll delete it now.", "promise"],
       ["It should be fixed shortly.", "promise"],
-      ["MONI AI said the backups are fine.", "invented-reply"],
+      ["MINT AI said the backups are fine.", "invented-reply"],
       ["Its answer is that nothing is wrong.", "invented-reply"],
       ["The nightly backups are fine.", "not-in-snapshot"],
       ["The disk is 73% full.", "figure"],
@@ -454,14 +454,14 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
       check(`trips (${rule}): ${t}`, !g.ok && g.rule === rule, JSON.stringify(g));
     }
     const passes = [
-      "I've passed that to MONI AI. I'll read you its answer when it arrives.",
-      "I've asked MONI AI to restart Odoo.",
-      "Let me pass that to MONI AI.",
-      "I'll ask MONI AI whether the backups ran.",
-      "I can't approve anything myself, but I've passed it to MONI AI.",
-      "MONI AI hasn't replied yet.",
-      "MONI AI has not replied yet. I'll update you as soon as it does.",
-      "MONI AI has not answered yet; I'll read it to you when it does.",
+      "I've passed that to MINT AI. I'll read you its answer when it arrives.",
+      "I've asked MINT AI to restart Odoo.",
+      "Let me pass that to MINT AI.",
+      "I'll ask MINT AI whether the backups ran.",
+      "I can't approve anything myself, but I've passed it to MINT AI.",
+      "MINT AI hasn't replied yet.",
+      "MINT AI has not replied yet. I'll update you as soon as it does.",
+      "MINT AI has not answered yet; I'll read it to you when it does.",
       "Nothing has been restarted.",
       "The disk is 61% full, with 156.2 GB free.",
       "Memory is 62 percent used.",
@@ -471,7 +471,7 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
       "Mission M-7 is active. The first step, \"Collect uptime,\" is done.",
       "Hello! What would you like to know?",
       "There is 1 pending approval: Deletes files.",
-      "I don't know that one. Want me to ask MONI AI?",
+      "I don't know that one. Want me to ask MINT AI?",
     ];
     for (const t of passes) {
       const g = desk.guard(t, ctx());
@@ -480,9 +480,9 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     const noSnap = desk.guard("Odoo is running fine.", ctx({ grounded: false }));
     check("a status claim with no snapshot read trips (ungrounded)", !noSnap.ok && noSnap.rule === "ungrounded");
     const replied = ctx({ replied: true, replyText: "I restarted Odoo; it came back in 12 seconds.", more: ["I restarted Odoo; it came back in 12 seconds."] });
-    check("after MONI AI replied, the desk may repeat what it said", desk.guard("MONI AI said Odoo was restarted and came back in 12 seconds.", replied).ok, JSON.stringify(desk.guard("MONI AI said Odoo was restarted and came back in 12 seconds.", replied)));
-    check("but not a figure the reply did not give", desk.guard("MONI AI said Odoo came back in 20 seconds.", replied).rule === "figure");
-    check("figures the administrator said are fine to repeat", desk.guard("I've asked MONI AI to keep 3 backups.", ctx({ more: ["keep 3 backups"] })).ok);
+    check("after MINT AI replied, the desk may repeat what it said", desk.guard("MINT AI said Odoo was restarted and came back in 12 seconds.", replied).ok, JSON.stringify(desk.guard("MINT AI said Odoo was restarted and came back in 12 seconds.", replied)));
+    check("but not a figure the reply did not give", desk.guard("MINT AI said Odoo came back in 20 seconds.", replied).rule === "figure");
+    check("figures the administrator said are fine to repeat", desk.guard("I've asked MINT AI to keep 3 backups.", ctx({ more: ["keep 3 backups"] })).ok);
     check("numbersIn reads digits and words", JSON.stringify(desk.numbersIn("1,234.5 GB and twenty-one sessions, 61%")) === "[1234.5,61,21]", JSON.stringify(desk.numbersIn("1,234.5 GB and twenty-one sessions, 61%")));
     check("settled() holds back a word still arriving", desk.settled("The disk is 6") === "The disk is");
   }
@@ -506,15 +506,15 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
   section("a handoff must be real: \"I've passed that on\" needs an ask_moni call");
   {
     const u = (t, o) => desk.unbackedHandoff(t, o);
-    check("unbacked past-tense handoff with nothing pending trips", u("I've passed that to MONI AI.", { askedNow: false, pending: false }).rule === "unbacked-handoff");
-    check("a new promise to pass it on trips even with an old request pending", u("I'll pass this to MONI AI.", { askedNow: false, pending: true }).rule === "unbacked-handoff");
-    check("'let me check with MONI AI' without a call trips", !!u("Let me check with MONI AI.", { askedNow: false, pending: false }));
-    check("backed by a call this turn it passes", u("I've passed that to MONI AI.", { askedNow: true }) === null);
-    check("a past mention of an earlier, still pending request passes", u("I've passed that to MONI AI already.", { askedNow: false, pending: true }) === null);
-    check("an offer is not a claim", u("Want me to ask MONI AI?", { askedNow: false, pending: false }) === null);
-    check("\"I'll read you MONI AI's reply when it arrives\" with nothing asked trips (seen on the real model)", u("The service that has failed is moni-agent@admin. I'll read you MONI AI's reply when it arrives.", { askedNow: false, pending: false }).rule === "unbacked-handoff");
+    check("unbacked past-tense handoff with nothing pending trips", u("I've passed that to MINT AI.", { askedNow: false, pending: false }).rule === "unbacked-handoff");
+    check("a new promise to pass it on trips even with an old request pending", u("I'll pass this to MINT AI.", { askedNow: false, pending: true }).rule === "unbacked-handoff");
+    check("'let me check with MINT AI' without a call trips", !!u("Let me check with MINT AI.", { askedNow: false, pending: false }));
+    check("backed by a call this turn it passes", u("I've passed that to MINT AI.", { askedNow: true }) === null);
+    check("a past mention of an earlier, still pending request passes", u("I've passed that to MINT AI already.", { askedNow: false, pending: true }) === null);
+    check("an offer is not a claim", u("Want me to ask MINT AI?", { askedNow: false, pending: false }) === null);
+    check("\"I'll read you MINT AI's reply when it arrives\" with nothing asked trips (seen on the real model)", u("The service that has failed is moni-agent@admin. I'll read you MINT AI's reply when it arrives.", { askedNow: false, pending: false }).rule === "unbacked-handoff");
     check("but not while a request is pending", u("I'll read you its answer when it arrives.", { askedNow: false, pending: true }) === null);
-    check("'I'll let you know when MONI AI replies' is not a handoff", u("I'll let you know when MONI AI replies.", { askedNow: false, pending: true }) === null);
+    check("'I'll let you know when MINT AI replies' is not a handoff", u("I'll let you know when MINT AI replies.", { askedNow: false, pending: true }) === null);
     for (const [brain, label, before] of [[brains.fakeHandoff, "says it passed it on, no call", ""], [brains.statusThenFakeHandoff, "reads status, then promises to pass it on", "moni-agent@admin has failed.|"]]) {
       const d = newDesk("audio");
       const n0 = sends().length;
@@ -531,7 +531,7 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     d.close();
   }
 
-  section("(a) not in the snapshot: hand it to MONI AI, never answer");
+  section("(a) not in the snapshot: hand it to MINT AI, never answer");
   {
     const d = newDesk("text");
     const n0 = sends().length;
@@ -540,13 +540,13 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     check("and acknowledges without answering", r.lines.map((l) => l.text).join(" ") === desk.SAFE_LINE_ASKED, JSON.stringify(r.lines));
     const r2 = await withBrain(brains.guessesBackups, () => d.turn("Are the backups okay?"));
     check("a desk that guesses is cut", r2.trip && ["not-in-snapshot", "ungrounded", "figure"].includes(r2.trip.rule), JSON.stringify(r2.trip));
-    check("and the question goes to MONI AI instead", r2.autoAsked && sends().length === n0 + 2 && sends()[n0 + 1][1].text === "Are the backups okay?");
+    check("and the question goes to MINT AI instead", r2.autoAsked && sends().length === n0 + 2 && sends()[n0 + 1][1].text === "Are the backups okay?");
     d.close();
   }
 
-  section("(b) actions go to MONI AI; no claim, no promise");
+  section("(b) actions go to MINT AI; no claim, no promise");
   for (const [said, brain, label, heard] of [
-    ["delete /tmp/report.txt", brains.asksThenClaims, "asks, then claims the delete", "I've passed that to MONI AI. " + desk.SAFE_LINE_TAIL],
+    ["delete /tmp/report.txt", brains.asksThenClaims, "asks, then claims the delete", "I've passed that to MINT AI. " + desk.SAFE_LINE_TAIL],
     ["restart odoo", brains.claimsRestart, "claims the restart without asking"],
     ["push to GitHub", brains.asksThenPromises, "asks, then promises the push"],
     ["approve the pending card", brains.approves, "claims the approval"],
@@ -556,7 +556,7 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     const r = await withBrain(brain, () => d.turn(said));
     const spoken = r.lines.map((l) => l.text).join(" ");
     check(`${said} (${label}): cut`, !!r.trip, JSON.stringify(r));
-    check(`${said}: passed to MONI AI exactly once`, sends().length === n0 + 1 && r.asked.length === 1, sends().length - n0);
+    check(`${said}: passed to MINT AI exactly once`, sends().length === n0 + 1 && r.asked.length === 1, sends().length - n0);
     check(heard ? `${said}: the true hand-off sentence is heard, then the rest of the safe line -- never the claim` : `${said}: what is said is only the safe line`, heard ? spoken === heard : spoken === desk.SAFE_LINE || spoken === desk.SAFE_LINE_ASKED, spoken);
     d.close();
   }
@@ -564,24 +564,24 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     const d = newDesk("text");
     const n0 = sends().length;
     const r = await withBrain(goodBrain, () => d.turn("approve the pending card"));
-    check("a well-behaved desk hands 'approve the pending card' to MONI AI and approves nothing", r.tools.join() === "ask_moni" && !r.trip && sends().length === n0 + 1 && !sup.calls.some((c) => c[0] === "approve"));
+    check("a well-behaved desk hands 'approve the pending card' to MINT AI and approves nothing", r.tools.join() === "ask_moni" && !r.trip && sends().length === n0 + 1 && !sup.calls.some((c) => c[0] === "approve"));
     d.close();
   }
 
-  section("(c) \"what did MONI AI say?\" before and after the reply");
+  section("(c) \"what did MINT AI say?\" before and after the reply");
   {
     const d = newDesk("text");
-    const r1 = await withBrain(goodBrain, () => d.turn("Ask MONI AI how the backups are doing"));
+    const r1 = await withBrain(goodBrain, () => d.turn("Ask MINT AI how the backups are doing"));
     const reqId = r1.asked[0] && r1.asked[0].id;
-    const r2 = await withBrain(brains.inventsReply, () => d.turn("What did MONI AI say?"));
+    const r2 = await withBrain(brains.inventsReply, () => d.turn("What did MINT AI say?"));
     check("an invented answer before the reply is cut", r2.trip && r2.trip.rule === "invented-reply", JSON.stringify(r2.trip));
     check("and replaced by the safe line, not by an answer", r2.lines.length === 1 && r2.lines[0].safe);
-    const r3 = await withBrain(goodBrain, () => d.turn("What did MONI AI say?"));
+    const r3 = await withBrain(goodBrain, () => d.turn("What did MINT AI say?"));
     check("a well-behaved desk says it has not replied yet", !r3.trip && /hasn't replied yet/.test(r3.lines[0].text), JSON.stringify(r3.lines));
     sup.replies.set(reqId, "The last backup finished at 02:30 and took 14 minutes.");
-    const r4 = await withBrain(goodBrain, () => d.turn("What did MONI AI say?"));
+    const r4 = await withBrain(goodBrain, () => d.turn("What did MINT AI say?"));
     const sys = lastSession().items.filter((i) => i.role === "system");
-    check("once MONI AI replies, the desk is told (a system message)", sys.length === 1 && /MONI AI replied to request/.test(sys[0].content[0].text));
+    check("once MINT AI replies, the desk is told (a system message)", sys.length === 1 && /MINT AI replied to request/.test(sys[0].content[0].text));
     check("and may then report it, figures included", !r4.trip && /02:30|14 minutes/.test(r4.lines[0].text), JSON.stringify(r4));
     d.close();
   }
@@ -643,32 +643,32 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     check('"Restarting Odoo now." ... "Done.": nothing is released, the guard cuts', rd.got.length === 0 && rd.rel.trip && rd.rel.trip.rule === "action-claim", JSON.stringify(rd));
     const rd2 = stream("Odoo restart is under way. Done.", baseCtx(), NO);
     check('an action sentence waits for the next; "Done." after it cuts both (the pair is the claim)', rd2.got.length === 0 && rd2.rel.trip && rd2.rel.trip.at === 0, JSON.stringify(rd2.rel.trip));
-    const asked = stream("I've asked MONI AI to restart Odoo. Done.", baseCtx(), YES);
-    check('"I\'ve asked MONI AI to restart Odoo." is held, and "Done." after it cuts it too', asked.got.length === 0 && asked.rel.trip && asked.rel.trip.at === 0, JSON.stringify(asked));
-    const okAsk = stream("I've asked MONI AI to restart Odoo. I'll read you its answer when it arrives.", baseCtx(), YES);
-    check("the same sentence followed by an honest one is released, both", okAsk.said.length === 2 && okAsk.got[0].at > "I've asked MONI AI to restart Odoo.".length, JSON.stringify(okAsk.got));
-    const alone = stream("I've asked MONI AI to restart Odoo.", baseCtx(), YES);
+    const asked = stream("I've asked MINT AI to restart Odoo. Done.", baseCtx(), YES);
+    check('"I\'ve asked MINT AI to restart Odoo." is held, and "Done." after it cuts it too', asked.got.length === 0 && asked.rel.trip && asked.rel.trip.at === 0, JSON.stringify(asked));
+    const okAsk = stream("I've asked MINT AI to restart Odoo. I'll read you its answer when it arrives.", baseCtx(), YES);
+    check("the same sentence followed by an honest one is released, both", okAsk.said.length === 2 && okAsk.got[0].at > "I've asked MINT AI to restart Odoo.".length, JSON.stringify(okAsk.got));
+    const alone = stream("I've asked MINT AI to restart Odoo.", baseCtx(), YES);
     check("an action sentence with nothing after it is released only at the end", alone.got.length === 1 && alone.got[0].at === alone.len);
     const pron = stream("Odoo? It's running.", baseCtx({ grounded: false }), NO);
     check('"Odoo? It\'s running." with no snapshot read: "it" borrows its subject, nothing is released', pron.got.length === 0 && pron.rel.trip && pron.rel.trip.rule === "ungrounded", JSON.stringify(pron));
     const later = stream("The disk is 61% full. I restarted Odoo.", baseCtx(), NO);
     check("a later sentence cut: the earlier, true one was already heard, and only it", later.said.join("|") === "The disk is 61% full." && later.rel.trip.rule === "action-claim" && later.rel.trip.at === 1, JSON.stringify(later));
-    const ho = stream("Let me pass that to MONI AI.", baseCtx(), NO);
+    const ho = stream("Let me pass that to MINT AI.", baseCtx(), NO);
     check("a hand-off with no ask_moni call behind it is never released", ho.got.length === 0 && ho.rel.trip && ho.rel.trip.rule === "unbacked-handoff");
     let calls = false;
-    const ho2 = stream("Let me pass that to MONI AI.", baseCtx(), { askedNow: () => calls, pending: () => false });
+    const ho2 = stream("Let me pass that to MINT AI.", baseCtx(), { askedNow: () => calls, pending: () => false });
     check("a hand-off is held while its call is unknown", ho2.got.length === 0 || ho2.rel.trip);
     {
       const got = [];
       const rel = new desk.Releaser(() => baseCtx(), (t) => got.push(t));
       const info = { askedNow: () => calls, pending: () => false };
-      rel.update("Let me pass that to MONI AI. ", false, info);
+      rel.update("Let me pass that to MINT AI. ", false, info);
       const heldWhileUnknown = got.length === 0;
       calls = true; // the response's function call arrives
-      rel.update("Let me pass that to MONI AI.", true, info);
+      rel.update("Let me pass that to MINT AI.", true, info);
       check("and released once the response's ask_moni call is known", heldWhileUnknown && got.length === 1 && !rel.trip);
     }
-    check("needsNext: fragments, colons and action sentences wait; plain statements do not", desk.needsNext("Odoo.") && desk.needsNext("About the disk:") && desk.needsNext("I've asked MONI AI to restart Odoo.") && !desk.needsNext("The disk is 61% full.") && !desk.needsNext("How can I help you today?"));
+    check("needsNext: fragments, colons and action sentences wait; plain statements do not", desk.needsNext("Odoo.") && desk.needsNext("About the disk:") && desk.needsNext("I've asked MINT AI to restart Odoo.") && !desk.needsNext("The disk is 61% full.") && !desk.needsNext("How can I help you today?"));
     check("sentencesOf keeps a figure whole while it streams (61. may be 61.5)", desk.sentencesOf("The disk is 61.", false).length === 0 && desk.sentencesOf("The disk is 61. It", false).join() === "The disk is 61.");
 
     // The property, over every pair and a sample of triples of these sentences:
@@ -676,7 +676,7 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     // released first, and what was released passes the guard on its own.
     const pool = [
       "The disk is 61% full.", "Memory is 62 percent used.", "Restarting Odoo now.", "Done.", "It's running.", "Odoo?", "I restarted Odoo.",
-      "I've asked MONI AI to restart Odoo.", "I'll read you its answer when it arrives.", "Okay.", "All set!", "The disk is 73% full.",
+      "I've asked MINT AI to restart Odoo.", "I'll read you its answer when it arrives.", "Okay.", "All set!", "The disk is 73% full.",
       "Everything is fine.", "moni-agent@admin has failed.", "Odoo restart is under way.", "It worked.", "Nothing was restarted.",
       "Hello!", "I can't restart anything myself.", "It is down.",
     ];
@@ -732,9 +732,9 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     d.close();
   }
 
-  section("summaries: held to MONI AI's reply");
+  section("summaries: held to MINT AI's reply");
   {
-    // Real replies from MONI AI's ledger (2026-09-28/29), lightly trimmed.
+    // Real replies from MINT AI's ledger (2026-09-28/29), lightly trimmed.
     const R_DENIED =
       'The approval gate worked, and the delete was denied. The card showed in the dashboard and e2e-tester denied it with the note "e2e: deny the first one."\n\n' +
       "Nothing was deleted: `victim1.txt` is still in place. I won't retry it or pass it to another session. If you want it removed, ask again and approve the new card.";
@@ -752,10 +752,10 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
       [R_STATUS, "moni-whisper is running.", "negation-flipped", "not running -> running"],
       [R_DENIED, "The file was deleted.", "negation-flipped", "nothing was deleted -> deleted"],
       [R_ODOO, "Odoo is not running.", "negation-flipped", "running -> not running"],
-      [R_STATUS, "MONI AI suggests upgrading the kernel tonight.", "added-recommendation", "a recommendation MONI AI did not make"],
-      [R_ODOO, "MONI AI recommends deleting the Odoo log.", "added-recommendation", "a recommendation about something else"],
+      [R_STATUS, "MINT AI suggests upgrading the kernel tonight.", "added-recommendation", "a recommendation MINT AI did not make"],
+      [R_ODOO, "MINT AI recommends deleting the Odoo log.", "added-recommendation", "a recommendation about something else"],
       [R_STATUS, "The server was restarted.", "pending-as-done", "\"I'll ask you before restarting\" -> done"],
-      [R_ODOO, "MONI AI fixed the scheduler.", "pending-as-done", "a fix waiting for approval -> fixed"],
+      [R_ODOO, "MINT AI fixed the scheduler.", "pending-as-done", "a fix waiting for approval -> fixed"],
       [R_STATUS, "It's done.", "added-claim", "\"done\" out of nowhere"],
       [R_ODOO, "The fix touches PMO9045 too.", "added-name", "a name the reply never gave"],
       [R_STATUS, "Details are in /var/log/syslog.", "unspeakable", "a path read aloud"],
@@ -766,17 +766,17 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
       check(`summary cut (${rule}): ${why}`, !g.ok && g.rule === rule, JSON.stringify(g));
     }
     const passes = [
-      [R_DENIED, "The delete was denied, so nothing was deleted. MONI AI won't retry it; to remove the file, ask again and approve the new card."],
+      [R_DENIED, "The delete was denied, so nothing was deleted. MINT AI won't retry it; to remove the file, ask again and approve the new card."],
       [R_ODOO, "Odoo is running, but the stock scheduler keeps failing because a precision record is missing. The fix is waiting for your decision in the Decisions inbox."],
       [R_ODOO, "The Odoo log has grown to 4 GB."],
       [R_STATUS, "The server is healthy. moni-whisper is stopped, as intended, and 42 GB of memory is free."],
       [R_STATUS, "About 3 GB of swap is used, and the reboot needs your go-ahead."],
-      [R_STATUS, "MONI AI will ask you before restarting anything."],
+      [R_STATUS, "MINT AI will ask you before restarting anything."],
       // found on the real model's summaries (eval, 2026-09-29):
-      ["Nothing was sent, so victim-ui2.txt wasn't touched. If you still want the file deleted, ask again and approve the new card.", "MONI AI says the file wasn't deleted, and you can ask again and approve a new card."],
-      ["It will make a mockup of the key pages first and wait for your approval.", "MONI AI will create mockups first and wait for your approval."],
-      [R_ODOO, "Once it's fixed, MONI AI suggests setting up rotation for the Odoo log."],
-      ["My recommendation is one maintenance window: install the 23 updates, then reboot. Both steps go through approval cards.", "MONI AI recommends installing the 23 updates and rebooting, both through approval cards."],
+      ["Nothing was sent, so victim-ui2.txt wasn't touched. If you still want the file deleted, ask again and approve the new card.", "MINT AI says the file wasn't deleted, and you can ask again and approve a new card."],
+      ["It will make a mockup of the key pages first and wait for your approval.", "MINT AI will create mockups first and wait for your approval."],
+      [R_ODOO, "Once it's fixed, MINT AI suggests setting up rotation for the Odoo log."],
+      ["My recommendation is one maintenance window: install the 23 updates, then reboot. Both steps go through approval cards.", "MINT AI recommends installing the 23 updates and rebooting, both through approval cards."],
       [R_STATUS, "The **server** is healthy."],
       ["The approval gate stopped this one. Nothing was sent to moni-ui-test, so the file wasn't touched. If you still want the file deleted, ask again and approve the new card.", "The approval gate stopped it, and nothing was sent to delete the file."],
       ["The server needs a reboot to finish the ones already installed.\n\n- **Not installed yet:** 23 more package updates. Both steps go through approval cards.", "A reboot is needed, and 23 updates are not installed yet."],
@@ -791,7 +791,7 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
   }
   {
     const d = newDesk("text");
-    const r0 = await withBrain(goodBrain, () => d.turn("Ask MONI AI about Odoo"));
+    const r0 = await withBrain(goodBrain, () => d.turn("Ask MINT AI about Odoo"));
     const id = r0.asked[0].id;
     const R_ODOO2 =
       "Odoo is running, but the stock scheduler fails about four times a second because a precision record is missing. The fix is waiting for you as decision #1 in the Decisions inbox. " +
@@ -804,57 +804,57 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     const s = lastSession();
     const oob = s.oob[s.oob.length - 1];
     check("the summary is an out-of-band response: no conversation, no tools, the summary instructions", oob && oob.conversation === "none" && oob.tool_choice === "none" && Array.isArray(oob.tools) && oob.tools.length === 0 && oob.instructions === desk.SUMMARY_INSTRUCTIONS);
-    check("it is given MONI AI's reply, quoted", replyIn(oob.input) === R_ODOO2);
+    check("it is given MINT AI's reply, quoted", replyIn(oob.input) === R_ODOO2);
     check("the summary is spoken, and the pending approval it left out is said anyway", heard.join("|") === mock.summaryText + "|" + desk.APPROVAL_LINE && r.trip && r.trip.rule === "approval-dropped", JSON.stringify({ heard, trip: r.trip }));
     check("the summary never enters the conversation as the model's own words", !s.items.some((i) => i.role === "assistant" && JSON.stringify(i.content).includes("keeps failing")));
-    check("the conversation is told the reply and what was heard", s.items.some((i) => i.role === "system" && /MONI AI replied to request/.test(i.content[0].text) && /heard this summary/.test(i.content[0].text)));
+    check("the conversation is told the reply and what was heard", s.items.some((i) => i.role === "system" && /MINT AI replied to request/.test(i.content[0].text) && /heard this summary/.test(i.content[0].text)));
     check("its tokens are counted", r.tokens.text_in > 0 && r.tokens.text_out > 0 && r.cost_usd > 0, JSON.stringify(r.tokens));
 
-    const r1 = await withBrain(goodBrain, () => d.turn("Ask MONI AI to restart Odoo"));
+    const r1 = await withBrain(goodBrain, () => d.turn("Ask MINT AI to restart Odoo"));
     sup.replies.set(r1.asked[0].id, "Odoo restarted cleanly in 12 seconds.");
     const nOob = s.oob.length;
     const v = await d.summarise(r1.asked[0].id, {});
     check("a short, plain reply is read word for word: no summary is made", v.fallback === "verbatim" && s.oob.length === nOob && v.lines.length === 0);
 
-    const r2 = await withBrain(goodBrain, () => d.turn("Ask MONI AI to delete victim1"));
+    const r2 = await withBrain(goodBrain, () => d.turn("Ask MINT AI to delete victim1"));
     const R_DENIED2 =
       "The approval gate worked, and the delete was denied. Nothing was deleted: `victim1.txt` is still in place. I won't retry it or pass it to another session. If you want it removed, ask again and approve the new card.";
     sup.replies.set(r2.asked[0].id, R_DENIED2);
-    mock.summaryText = "The file was deleted. MONI AI won't retry it.";
+    mock.summaryText = "The file was deleted. MINT AI won't retry it.";
     const heard2 = [];
     const f = await d.summarise(r2.asked[0].id, { onLine: (l) => heard2.push(l.text) });
     check("a summary that flips a negation is cut before a word of it is heard", f.trip && f.trip.rule === "negation-flipped" && !heard2.some((h) => /deleted/.test(h)), JSON.stringify({ heard2, trip: f.trip }));
     check("and the administrator is told the answer is on screen (an offer to ask again is not a pending approval)", heard2.join("|") === desk.SUMMARY_NONE_LINE, JSON.stringify(heard2));
 
-    const r3 = await withBrain(goodBrain, () => d.turn("Ask MONI AI how the server is"));
+    const r3 = await withBrain(goodBrain, () => d.turn("Ask MINT AI how the server is"));
     const R_LIST = "The server is healthy and lightly loaded.\n\n- **Load:** very light.\n- **Disk:** 6% used.\n- **Services:** everything that should be running is running.\n\nNothing needs doing right now.";
     sup.replies.set(r3.asked[0].id, R_LIST);
-    mock.summaryText = "The server is healthy and lightly loaded. MONI AI suggests a reboot tonight.";
+    mock.summaryText = "The server is healthy and lightly loaded. MINT AI suggests a reboot tonight.";
     const heard3 = [];
     const c = await d.summarise(r3.asked[0].id, { onLine: (l) => heard3.push(l.text) });
     check("a first sentence heard, a later one adding a recommendation cut: the rest is on screen", heard3.join("|") === "The server is healthy and lightly loaded.|" + desk.SUMMARY_CUT_LINE && c.trip.rule === "added-recommendation", JSON.stringify(heard3));
     mock.summaryText = "The server is healthy and lightly loaded, and nothing needs doing right now.";
-    const r4 = await withBrain(goodBrain, () => d.turn("Ask MONI AI how the server is again"));
+    const r4 = await withBrain(goodBrain, () => d.turn("Ask MINT AI how the server is again"));
     sup.replies.set(r4.asked[0].id, R_LIST);
     const heard4 = [];
     await d.summarise(r4.asked[0].id, { onLine: (l) => heard4.push(l.text) });
     check("a reply with a list gets \"the full answer is on screen\" when the summary did not say so", heard4.join("|") === mock.summaryText + "|" + desk.DETAILS_LINE, JSON.stringify(heard4));
 
-    const r6 = await withBrain(goodBrain, () => d.turn("Ask MONI AI about the updates"));
+    const r6 = await withBrain(goodBrain, () => d.turn("Ask MINT AI about the updates"));
     sup.replies.set(r6.asked[0].id, "The server has 23 updates waiting, and it needs a reboot to finish the ones already installed. My recommendation is one maintenance window. Both steps go through approval cards. Tell me when, and I'll set it up.");
     mock.summaryText = "The server has 23 updates waiting and needs a reboot.";
     const heard6 = [];
     await d.summarise(r6.asked[0].id, { onLine: (l) => heard6.push(l.text) });
     check("\"approval cards\" / \"tell me when\" is a pending decision: the summary gets the approval line", heard6[heard6.length - 1] === desk.APPROVAL_LINE, JSON.stringify(heard6));
-    const r7 = await withBrain(goodBrain, () => d.turn("Ask MONI AI about the Odoo job"));
+    const r7 = await withBrain(goodBrain, () => d.turn("Ask MINT AI about the Odoo job"));
     sup.replies.set(r7.asked[0].id, "Odoo is up, but one scheduled job has been failing for five days. Do you want me to send the details to the Odoo team? I can also check the planning engine work first.");
-    mock.summaryText = "Odoo is up, but a scheduled job has been failing for five days. MONI AI asks if you want the details sent to the Odoo team.";
+    mock.summaryText = "Odoo is up, but a scheduled job has been failing for five days. MINT AI asks if you want the details sent to the Odoo team.";
     const heard7 = [];
     const s7 = await d.summarise(r7.asked[0].id, { onLine: (l) => heard7.push(l.text) });
     check("a summary that keeps the question in its own words needs no extra line", heard7.join(" ") === mock.summaryText + " " + desk.DETAILS_LINE || heard7.join(" ") === mock.summaryText, JSON.stringify({ heard7, trip: s7.trip }));
-    const r5 = await withBrain(goodBrain, () => d.turn("Ask MONI AI something slow"));
+    const r5 = await withBrain(goodBrain, () => d.turn("Ask MINT AI something slow"));
     const p = await d.summarise(r5.asked[0].id, {});
-    check("a request MONI AI has not answered yet: pending, nothing said", p.pending === true && p.lines.length === 0);
+    check("a request MINT AI has not answered yet: pending, nothing said", p.pending === true && p.lines.length === 0);
     let err = null;
     await d.summarise("abc", {}).catch((e) => (err = e));
     check("a bad request id is refused", err && err.code === "invalid");
@@ -1015,7 +1015,7 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     const cfg = { key: GOOD, voice: "marin", wsBase: WS_BASE };
     desk.closeAll();
     const a = desk.deskFor("trimmer", cfg, sup.call);
-    const r = await withBrain(goodBrain, () => a.turn("Ask MONI AI something slow"));
+    const r = await withBrain(goodBrain, () => a.turn("Ask MINT AI something slow"));
     a.stats.turns = desk.MAX_TURNS_PER_SESSION;
     check("a desk that has held MAX_TURNS_PER_SESSION turns is full", a.full());
     a.inflight = 1;
@@ -1048,7 +1048,7 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     const admin = rbac.actor({ permissions: ["*"] });
     const off = views.page({ csrf: "t", user: { name: "a", perm: admin }, voice: { configured: true, voice: "marin", manage: true, desk: false } });
     const on = views.page({ csrf: "t", user: { name: "a", perm: admin }, voice: { configured: true, voice: "marin", manage: true, desk: true } });
-    check("the page says Direct when the desk is off", /data-voice-desk=""/.test(off) && />Direct · MONI AI</.test(off) && !/cc-tag desk/.test(off));
+    check("the page says Direct when the desk is off", /data-voice-desk=""/.test(off) && />Direct · MINT AI</.test(off) && !/cc-tag desk/.test(off));
     check("and Front desk when it is on", /data-voice-desk="1"/.test(on) && />Front desk · GPT</.test(on) && /cc-tag desk/.test(on));
     const over = views.page({ csrf: "t", user: { name: "a", perm: admin }, voice: { configured: true, voice: "marin", manage: true, desk: false, deskOver: true } });
     check("no \"desk budget used\" state any more", !/desk budget used|data-voice-desk-over|cc-tag over/.test(over + on + off));
@@ -1066,7 +1066,7 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     check("Settings: no budget field or form, just today's and this month's spend", !/desk-budget|budget_usd|Daily budget/.test(pUsage + pOff) && /\$0\.4213<\/b>/.test(pUsage) && /\$3\.2100<\/b>/.test(pUsage) && /No cap/.test(pUsage));
     check("the usage note has no inline style (CSP)", !/style="/.test(pUsage.slice(pUsage.indexOf('id="v-desk"'), pUsage.indexOf('id="v-desk"') + 6000)));
     const js = fs.readFileSync(path.join(ROOT, "public", "moni-ai.js"), "utf8");
-    check("the page reads MONI AI's answer to a desk request as a summary, and falls back to reading it as written", /deskTurns\.has\(row\.id\)\) \{ deskTurns\.delete\(row\.id\); Voice\.summary\(/.test(js) && /apiStream\("desk\/summary"/.test(js) && /d\.fallback === "verbatim" \|\| d\.pending \|\| !dl\.count\) return api_\.flush\(/.test(js) && /if \(!DESK\) return api_\.flush\(id, text\)/.test(js));
+    check("the page reads MINT AI's answer to a desk request as a summary, and falls back to reading it as written", /deskTurns\.has\(row\.id\)\) \{ deskTurns\.delete\(row\.id\); Voice\.summary\(/.test(js) && /apiStream\("desk\/summary"/.test(js) && /d\.fallback === "verbatim" \|\| d\.pending \|\| !dl\.count\) return api_\.flush\(/.test(js) && /if \(!DESK\) return api_\.flush\(id, text\)/.test(js));
     check("no budget fallback left in the page; switched off (desk-off) it still goes direct", !/desk-budget|budgetReached|DESK_OVER/.test(js) && /e\.code === "desk-off"/.test(js) && /return transcribeAndSend\(blob, wasPtt\)/.test(js));
     check("with the desk off the page never calls it (DESK gates every path)", /var DESK = READY && root\.getAttribute\("data-voice-desk"\) === "1"/.test(js) && /if \(DESK\) return deskSend\(/.test(js) && (js.match(/desk\/turn/g) || []).length === 1);
   }

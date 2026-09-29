@@ -214,8 +214,8 @@ const OS_SERVICES = [
     detail: "Holds the Odoo database and the memory service's claude_memory. Managed outside the panel." },
   { unit: "claude-memory", name: "Memory service", icon: "memory", critical: false, readonly: true,
     detail: "Embeddings and search for Claude Code's long-term memory. Restart it from Claude Code › Memory." },
-  { unit: "moni-ai", name: "MONI AI", icon: "core", critical: false, readonly: true,
-    detail: "The supervisor of MONI AI's Claude Code session. Restart it from the Command Center." },
+  { unit: "moni-ai", name: "MINT AI", icon: "core", critical: false, readonly: true,
+    detail: "The supervisor of MINT AI's Claude Code session. Restart it from the Command Center." },
 ];
 
 function byScope(scope) {

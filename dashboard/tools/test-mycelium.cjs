@@ -269,7 +269,7 @@ console.log("graph: failure propagation");
 const fail = (id, state) => graph.nodes.map((n) => ({ id: n.id, channel: n.channel, state: n.id === id ? state || "failed" : "ok" }));
 const eff = (id, state) => G.effects(fail(id, state), graph.edges);
 const kinds = (e) => Object.fromEntries(Object.entries(e).map(([k, v]) => [k, v.k]));
-check("PostgreSQL fails: Odoo and the memory service stop, MONI AI and the panel partly down", JSON.stringify(kinds(eff("postgresql@16-main"))) === JSON.stringify({
+check("PostgreSQL fails: Odoo and the memory service stop, MINT AI and the panel partly down", JSON.stringify(kinds(eff("postgresql@16-main"))) === JSON.stringify({
   "postgresql@16-main": "failed", odoo: "down", "claude-memory": "down", "moni-ai": "degraded", "moni-dashboard": "degraded" }), kinds(eff("postgresql@16-main")));
 check("nginx fails: the panel and Odoo are unreachable, not stopped", kinds(eff("nginx"))["moni-dashboard"] === "unreach" && kinds(eff("nginx")).odoo === "unreach" && !kinds(eff("nginx"))["postgresql@16-main"]);
 check("the firewall fails: nginx and SSH run unprotected, fail2ban partly down", JSON.stringify(kinds(eff("ufw"))) === JSON.stringify({ ufw: "failed", nginx: "unguarded", ssh: "unguarded", fail2ban: "degraded" }), kinds(eff("ufw")));
@@ -277,7 +277,7 @@ check("SSH stops: the remote desktop is unreachable", kinds(eff("ssh", "inactive
 check("fail2ban fails: SSH and the panel run unprotected", kinds(eff("fail2ban")).ssh === "unguarded" && kinds(eff("fail2ban"))["moni-dashboard"] === "unguarded");
 check("xrdp and its session manager take each other down", kinds(eff("xrdp"))["xrdp-sesman"] === "down" && kinds(eff("xrdp-sesman")).xrdp === "down");
 check("an agent fails: its channel stops with it", kinds(eff("moni-agent@admin"))["ch:admin-telegram"] === "down");
-check("the memory service fails: MONI AI and the panel partly down, PostgreSQL untouched", JSON.stringify(kinds(eff("claude-memory"))) === JSON.stringify({ "claude-memory": "failed", "moni-ai": "degraded", "moni-dashboard": "degraded" }));
+check("the memory service fails: MINT AI and the panel partly down, PostgreSQL untouched", JSON.stringify(kinds(eff("claude-memory"))) === JSON.stringify({ "claude-memory": "failed", "moni-ai": "degraded", "moni-dashboard": "degraded" }));
 check("the worst effect wins", (() => { const n = fail("nginx"); n.find((x) => x.id === "fail2ban").state = "failed"; const e = G.effects(n, graph.edges); return e["moni-dashboard"].k === "unreach"; })());
 const nm = (id) => (graph.nodes.find((n) => n.id === id) || {}).name;
 check("effect sentences name the cause", G.effText(eff("postgresql@16-main"), "odoo", nm) === "Will stop: it requires PostgreSQL 16." &&
@@ -301,7 +301,7 @@ const routes = EVTS.map((e) => G.route(e, ids, chOf));
 check("every event type has a route on this map", routes.every(Boolean), routes);
 check("every hop of every route is a real edge", routes.every((r) => r.every((id, i) => i === 0 || edgeSet.has(G.edgeKey(r[i - 1], id)))), routes);
 check("a reply goes channel -> agent -> channel", JSON.stringify(G.route({ type: "reply", agent: "admin" }, ids, chOf)) === JSON.stringify(["ch:admin-telegram", "moni-agent@admin", "ch:admin-telegram"]));
-check("a panel turn goes panel -> MONI AI", JSON.stringify(G.route({ type: "turn", source: "dashboard" }, ids, chOf)) === JSON.stringify(["moni-dashboard", "moni-ai"]));
+check("a panel turn goes panel -> MINT AI", JSON.stringify(G.route({ type: "turn", source: "dashboard" }, ids, chOf)) === JSON.stringify(["moni-dashboard", "moni-ai"]));
 check("an event for a unit not on the map has no route", G.route({ type: "start", unit: "moni-whisper" }, ids, chOf) === null && G.route({ type: "reply", agent: "ghost" }, ids, chOf) === null && G.route({ type: "nope" }, ids, chOf) === null);
 const tt = G.threadTraffic({ web_panel: 1000, web_odoo: 10, "ssh-login": 5, reply_by_agent: { admin: 7 }, turn_dashboard: 3 }, ids, chOf);
 check("thread traffic sums the 24 h counts of every route that crosses it", tt[G.edgeKey("ufw", "nginx")] === 1010 && tt[G.edgeKey("nginx", "moni-dashboard")] === 1000 &&
@@ -338,7 +338,7 @@ async function feedTests() {
   let moniOnline = false;
   const moniai = {
     call: async (op, p) => {
-      if (!moniOnline) throw new Error("MONI AI is offline");
+      if (!moniOnline) throw new Error("MINT AI is offline");
       if (p.table === "turns") return { rows: [{ id: 5, source: "dashboard", created_at: "2026-09-28T10:00:05Z", text: SECRET_TEXT }, { id: 4, source: "peer", created_at: "2026-09-28T09:00:00Z", text: "x" }] };
       return { rows: [{ id: 9, created_at: "2026-09-28T10:00:06Z", text: SECRET_TEXT, target_name: "secret-session" }] };
     },
@@ -348,7 +348,7 @@ async function feedTests() {
   let evs = feed.since(0);
   check("first poll: the helper's events and recent sign-ins", evs.map((e) => e.type).join() === "panel-login,ssh-login", evs);
   check("an old failed sign-in outside the look-back is not replayed", !evs.some((e) => e.type === "panel-fail"));
-  check("MONI AI's own sign-in rows are left to its ledger", !evs.some((e) => e.type === "panel-action"));
+  check("MINT AI's own sign-in rows are left to its ledger", !evs.some((e) => e.type === "panel-action"));
   check("events carry no address or name", !JSON.stringify(evs).includes(SECRET_IP) && !JSON.stringify(evs).includes(SECRET_USER));
   check("an unavailable source is logged once", logs.filter((m) => /moni-ai/.test(m)).length === 1 && logs.filter((m) => /replies:ghost/.test(m)).length === 1, logs);
   await feed.poll();
@@ -366,12 +366,12 @@ async function feedTests() {
   check("audit lines keep the action only; a malformed action is dropped", evs.filter((e) => e.type === "audit").length === 1 && evs.find((e) => e.type === "audit").action === "service-restart" && !("detail" in evs.find((e) => e.type === "audit")));
   check("a panel action keeps its category", evs.find((e) => e.type === "panel-action").action === "firewall");
   check("web requests arrive as a count", evs.find((e) => e.type === "web_panel").n === 3);
-  check("MONI AI: only turns and delegations new within the look-back, no text", evs.filter((e) => e.type === "turn").length === 1 && evs.find((e) => e.type === "turn").source === "dashboard" &&
+  check("MINT AI: only turns and delegations new within the look-back, no text", evs.filter((e) => e.type === "turn").length === 1 && evs.find((e) => e.type === "turn").source === "dashboard" &&
     !JSON.stringify(evs).includes("swordfish") && !JSON.stringify(evs).includes("secret-session"));
   check("sequence numbers increase", evs.every((e, i) => i === 0 || e.seq > evs[i - 1].seq));
   check("since() filters by the viewer's rules", feed.since(0, (e) => e.type !== "audit").every((e) => e.type !== "audit"));
   const totals = await feed.getTotals({ wait: true });
-  check("24 h totals merge the helper's with sign-ins, audit and MONI AI's", totals["ssh-login"] === 3 && totals.reply_by_agent.admin === 2 && totals.starts.odoo === 1 && !("reply" in totals) &&
+  check("24 h totals merge the helper's with sign-ins, audit and MINT AI's", totals["ssh-login"] === 3 && totals.reply_by_agent.admin === 2 && totals.starts.odoo === 1 && !("reply" in totals) &&
     totals["panel-login"] === 1 && totals["panel-fail"] === 2 && totals.audit === 2 && totals.turn_dashboard === 1 && totals.turn === 1 && totals.delegation === 1, totals);
 }
 
@@ -408,7 +408,7 @@ function viewTests() {
   const sp = serviceViews.system({ csrf: "c", user, services: svc, flash: null, err: null });
   check("/services lists every tracked unit", svc.every((s) => sp.includes(`>${s.unit}<`)) && /11 of 12 active/.test(sp));
   check("managed units keep restart and logs", /name="target" value="nginx"/.test(sp) && /\/services\/logs\?unit=nginx/.test(sp) && /name="target" value="fail2ban"/.test(sp));
-  check("Odoo, PostgreSQL, the memory service, MONI AI and agents are read-only here", ["odoo", "postgresql@16-main", "claude-memory", "moni-ai", "moni-agent@admin"].every((u) =>
+  check("Odoo, PostgreSQL, the memory service, MINT AI and agents are read-only here", ["odoo", "postgresql@16-main", "claude-memory", "moni-ai", "moni-agent@admin"].every((u) =>
     !sp.includes(`name="target" value="${u}"`) && !sp.includes("/services/logs?unit=" + encodeURIComponent(u))) && (sp.match(/read-only<\/span>/g) || []).length === 5);
   check("read-only rows point to where they are managed", /href="\/services\/agents"/.test(sp) && /href="\/claude\/memory"/.test(sp) && /href="\/moni-ai"/.test(sp));
 

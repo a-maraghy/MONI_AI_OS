@@ -11,9 +11,9 @@
  *
  *   small_talk   the front desk's small talk
  *   snapshot     the front desk answering from the read-only snapshot
- *   handoff      the front desk passing a request to MONI AI, and later the
- *                spoken summary of MONI AI's answer
- *   direct       the direct path (front desk off): MONI AI's reply read aloud
+ *   handoff      the front desk passing a request to MINT AI, and later the
+ *                spoken summary of MINT AI's answer
+ *   direct       the direct path (front desk off): MINT AI's reply read aloud
  *                word for word
  *
  * and transcription (what the administrator said, turned into text) is its own

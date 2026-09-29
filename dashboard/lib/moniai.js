@@ -1,8 +1,8 @@
 "use strict";
 /**
- * Client for the MONI AI supervisor's unix socket.
+ * Client for the MINT AI supervisor's unix socket.
  *
- * The supervisor (moni-ai.service, root) owns MONI AI's Claude Code process.
+ * The supervisor (moni-ai.service, root) owns MINT AI's Claude Code process.
  * This panel talks to it over /run/moni-ai/moni-ai.sock, which only root and
  * the moniai group can open -- moniadmin is in that group, nobody else is. No
  * sudo, no helper: the socket is the privilege boundary, and the supervisor
@@ -57,12 +57,12 @@ function call(op, params, actor, { timeout = 20000, socket = SOCKET } = {}) {
       if (err) reject(err);
       else resolve(data);
     };
-    const timer = setTimeout(() => finish(new MoniAiError("MONI AI did not answer in time", "timeout")), timeout);
+    const timer = setTimeout(() => finish(new MoniAiError("MINT AI did not answer in time", "timeout")), timeout);
     s.setEncoding("utf8");
     s.on("error", (e) =>
       finish(
         new MoniAiError(
-          e.code === "ENOENT" || e.code === "ECONNREFUSED" ? "MONI AI's supervisor is not running" : e.code === "EACCES" ? "The panel is not allowed to reach MONI AI (group moniai)" : e.message,
+          e.code === "ENOENT" || e.code === "ECONNREFUSED" ? "MINT AI's supervisor is not running" : e.code === "EACCES" ? "The panel is not allowed to reach MINT AI (group moniai)" : e.message,
           e.code === "ENOENT" || e.code === "ECONNREFUSED" ? "offline" : "error"
         )
       )
@@ -77,12 +77,12 @@ function call(op, params, actor, { timeout = 20000, socket = SOCKET } = {}) {
       try {
         msg = JSON.parse(buf.slice(0, nl));
       } catch (_) {
-        return finish(new MoniAiError("unreadable reply from MONI AI"));
+        return finish(new MoniAiError("unreadable reply from MINT AI"));
       }
       if (msg.ok) finish(null, redactDeep(msg.data));
-      else finish(new MoniAiError(msg.error || "MONI AI refused", "refused"));
+      else finish(new MoniAiError(msg.error || "MINT AI refused", "refused"));
     });
-    s.on("close", () => finish(new MoniAiError("MONI AI closed the connection", "offline")));
+    s.on("close", () => finish(new MoniAiError("MINT AI closed the connection", "offline")));
   });
 }
 
@@ -101,7 +101,7 @@ function subscribe(since, actor, onEvent, onEnd, { socket = SOCKET } = {}) {
     onEnd && onEnd(err || null);
   };
   s.setEncoding("utf8");
-  s.on("error", (e) => end(new MoniAiError(e.code === "ENOENT" || e.code === "ECONNREFUSED" ? "MONI AI's supervisor is not running" : e.message, "offline")));
+  s.on("error", (e) => end(new MoniAiError(e.code === "ENOENT" || e.code === "ECONNREFUSED" ? "MINT AI's supervisor is not running" : e.message, "offline")));
   s.on("close", () => end(null));
   s.on("connect", () => {
     const req = { id: "sub" + ++counter, op: "events", actor: actorOf(actor) };

@@ -1,5 +1,5 @@
 /**
- * Tests for the MONI AI Command Center page: the server-rendered frame
+ * Tests for the MINT AI Command Center page: the server-rendered frame
  * (lib/views-moniai.js), the shell changes it relies on (lib/ui.js), the tab's
  * permission, and the pure helpers inside public/moni-ai.js.
  *
@@ -74,7 +74,7 @@ check("every icon reference has a symbol", (() => {
   const missing = [...used].filter((n) => !views.SPRITE[n]);
   return missing.length === 0 || (console.log("   missing:", missing.join(", ")), false);
 })());
-check("the MONI AI tab is active and points at the Command Center", /<a href="\/moni-ai" class="top-tab on">/.test(html));
+check("the MINT AI tab is active and points at the Command Center", /<a href="\/moni-ai" class="top-tab on">/.test(html));
 check("no sidebar on this page", !html.includes('class="sidebar"'));
 check("every id is unique", (() => {
   const ids = [...html.matchAll(/\sid="([^"]+)"/g)].map((m) => m[1]);
@@ -99,7 +99,7 @@ check("a page class with markup is refused", !ui.page("x", "", { pageClass: 'a" 
 
 /* ----------------------------------------------------------- the tab --- */
 
-check("moniai.use alone reveals the MONI AI tab", rbac.actor({ permissions: ["moniai.use"] }).canDash("console"));
+check("moniai.use alone reveals the MINT AI tab", rbac.actor({ permissions: ["moniai.use"] }).canDash("console"));
 check("console.use alone still reveals it (it redirects to /console)", rbac.actor({ permissions: ["console.use"] }).canDash("console"));
 check("a viewer without either does not see it", !rbac.actor({ permissions: ["os.view"] }).canDash("console"));
 check("the tab's href is /moni-ai", ui.NAV[0].key === "console" && ui.NAV[0].href === "/moni-ai");

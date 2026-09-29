@@ -1,5 +1,5 @@
 /**
- * Tests for the panel's side of MONI AI: lib/moniai.js and the permission.
+ * Tests for the panel's side of MINT AI: lib/moniai.js and the permission.
  *
  *     node dashboard/tools/test-moniai.cjs
  *

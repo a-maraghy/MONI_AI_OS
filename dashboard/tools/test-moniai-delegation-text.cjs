@@ -3,7 +3,7 @@
  * (administrator request, 2026-09-28): the session deep view (v3; it replaced
  * the v2 card's message popover) and the Timeline's delegation rows must carry the whole `text` field from
  * the ledger, not a clipped summary or first line -- while still escaping it
- * (it is arbitrary content MONI AI sent, not trusted markup) and staying
+ * (it is arbitrary content MINT AI sent, not trusted markup) and staying
  * inside its own scrolling box rather than growing the page.
  *
  *     node dashboard/tools/test-moniai-delegation-text.cjs
@@ -52,7 +52,7 @@ check("a message icon exists for the sprite", !!views.SPRITE.message);
 check("the page references the message icon", /ic\("message"\)/.test(client + fs.readFileSync(path.join(ROOT, "public", "cc-panels.js"), "utf8")));
 
 /* ------------------------------------------------------- deep view --- */
-/* v3: clicking a session card opens its read-only deep view, whose "What MONI
+/* v3: clicking a session card opens its read-only deep view, whose "What MINT
    AI told it · full text" box replaced v2's message popover. */
 
 const panels = fs.readFileSync(path.join(ROOT, "public", "cc-panels.js"), "utf8");
@@ -82,7 +82,7 @@ check("the session card opens the deep view (wired in the sessions click handler
   const out = box.deepToldHTML([{ text: long, status: "done", created_at: "2026-09-28T10:00:00Z" }], { self: false });
   check("the whole long message is there", out.includes("x".repeat(5000)) && out.includes("Line three."));
   check("markup in the message is escaped", !out.includes("<img") && out.includes("&lt;img"));
-  check("MONI AI's own deep view says it is the one delegating", /one delegating/.test(box.deepToldHTML([], { self: true })));
+  check("MINT AI's own deep view says it is the one delegating", /one delegating/.test(box.deepToldHTML([], { self: true })));
 }
 check("the deep view reads the full delegation rows from the mirror", /d\.delegations \|\|/.test(panels));
 

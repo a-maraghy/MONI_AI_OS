@@ -36,7 +36,7 @@ exports.login = ({ csrf, error }) =>
   shell(
     "Sign in",
     `<div class="card">
-      <h2 class="mb-14">Sign in to MONI AI OS</h2>
+      <h2 class="mb-14">Sign in to Mint OS</h2>
       ${error ? `<div class="alert bad">${icon("alert")}<div>${esc(error)}</div></div>` : ""}
       <form method="post" action="/login" autocomplete="off">
         <input type="hidden" name="_csrf" value="${esc(csrf)}">

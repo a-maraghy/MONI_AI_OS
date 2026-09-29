@@ -89,7 +89,7 @@ const PERMISSION_GROUPS = [
   },
   {
     key: "console",
-    label: "MONI AI console",
+    label: "MINT AI console",
     blurb: "Chatting with Claude Code from inside the panel.",
     perms: [
       {
@@ -106,14 +106,14 @@ const PERMISSION_GROUPS = [
   },
   {
     key: "moniai",
-    label: "MONI AI",
+    label: "MINT AI",
     blurb:
       "The CEO session: one root Claude Code session that delegates commands to every other " +
       "session on this machine. Destructive steps still wait for an approval.",
     perms: [
       {
         key: "moniai.use",
-        label: "Command MONI AI",
+        label: "Command MINT AI",
         hint: "Talk to it, see every session, approve or deny its destructive steps. Root reach over all sessions.",
       },
     ],

@@ -1,9 +1,9 @@
 "use strict";
 /**
- * The MONI AI Command Center (v3).
+ * The MINT AI Command Center (v3).
  *
- * One screen, no page scroll. Left rail: this machine, MONI AI's core, today's
- * cost and the standing orders. Centre: the orbit map (MONI AI's seed core with
+ * One screen, no page scroll. Left rail: this machine, MINT AI's core, today's
+ * cost and the standing orders. Centre: the orbit map (MINT AI's seed core with
  * the live sessions around it) or the missions board, the sessions strip and
  * the composer with voice. Right drawer: Conversation, Decisions (approvals,
  * watcher findings and the event log), Timeline and Rules.
@@ -91,7 +91,7 @@ function sprite() {
   );
 }
 
-/** One cell of the rail's MONI AI Core grid. Values arrive from the page script. */
+/** One cell of the rail's MINT AI Core grid. Values arrive from the page script. */
 function coreCell(key, label) {
   return `<div data-core="${key}"><span>${esc(label)}</span><b data-st>—</b></div>`;
 }
@@ -140,7 +140,7 @@ function page(o) {
     </section>
 
     <section class="cc-card" aria-labelledby="cc-core-h">
-      <div class="cc-card-h"><h2 id="cc-core-h">MONI AI Core</h2><span class="cc-aside cc-mono" id="cc-core-aside">—</span></div>
+      <div class="cc-card-h"><h2 id="cc-core-h">MINT AI Core</h2><span class="cc-aside cc-mono" id="cc-core-aside">—</span></div>
       <div class="cc-core-grid" id="cc-core-grid">
         ${coreCell("core", "Core")}${coreCell("sessions", "Sessions")}
         ${coreCell("agents", "Agents")}${coreCell("memory", "Memory")}
@@ -179,7 +179,7 @@ function page(o) {
 
     <section class="cc-stage" id="cc-stage">
       <div class="cc-view" id="cc-view-map">
-        <canvas id="cc-map" role="img" aria-label="Orbit map: MONI AI at the centre, the live sessions on the inner ring, their sub-agents as moons"></canvas>
+        <canvas id="cc-map" role="img" aria-label="Orbit map: MINT AI at the centre, the live sessions on the inner ring, their sub-agents as moons"></canvas>
         <div class="cc-map-say" id="cc-map-say" hidden></div>
         <div class="cc-map-legend" aria-hidden="true">
           <span><span class="lg-ring"></span>inner: live sessions</span>
@@ -201,7 +201,7 @@ function page(o) {
           <div class="cc-lanes" id="cc-lanes"></div>
         </div>
       </div>
-      <div class="cc-offline" id="cc-offline" hidden><b>MONI AI is not reachable</b><span id="cc-offline-msg"></span></div>
+      <div class="cc-offline" id="cc-offline" hidden><b>MINT AI is not reachable</b><span id="cc-offline-msg"></span></div>
     </section>
 
     <section class="cc-sess-sec" aria-labelledby="cc-sess-h">
@@ -211,22 +211,22 @@ function page(o) {
 
     <div class="cc-dock" id="cc-dock">
       <form class="cc-composer" id="cc-compose" autocomplete="off">
-        <button type="button" class="cc-c-mic" id="cc-c-mic" title="${voice.configured ? "Talk to MONI (voice mode)" : "Add an OpenAI key in Settings to use voice"}" aria-label="Talk to MONI"${voice.configured ? "" : " disabled"}>${ic("voice")}</button>
+        <button type="button" class="cc-c-mic" id="cc-c-mic" title="${voice.configured ? "Talk to MINT (voice mode)" : "Add an OpenAI key in Settings to use voice"}" aria-label="Talk to MINT"${voice.configured ? "" : " disabled"}>${ic("voice")}</button>
         <button type="button" class="cc-mic-mode" id="cc-mic-mode" data-mode="ptt" title="Voice mode: push to talk — hold the mic or Space to talk. Click to switch to hands-free." aria-label="Voice mode: push to talk. Click to switch to hands-free."${voice.configured ? "" : " hidden"}>Push to talk</button>
-        <input id="cc-input" name="text" placeholder="Tell MONI AI what to do…" aria-label="Message MONI AI" maxlength="20000" autocomplete="off">
+        <input id="cc-input" name="text" placeholder="Tell MINT AI what to do…" aria-label="Message MINT AI" maxlength="20000" autocomplete="off">
         <button type="button" class="cc-target" id="cc-target" aria-haspopup="menu" aria-expanded="false">${ic("route")}<span id="cc-target-label">Auto-route</span>${ic("chev")}</button>
         <button type="button" class="cc-c-stop" id="cc-stop" title="Interrupt the current turn" aria-label="Interrupt" hidden>${ic("stop")}</button>
         <button type="submit" class="cc-c-send" id="cc-send" title="Send" aria-label="Send">${ic("send")}</button>
       </form>
       <div class="cc-voicebar" id="cc-voicebar">
         <button type="button" class="cc-c-mic live" id="cc-vb-stop" title="Stop talking" aria-label="Stop voice mode">${ic("voice")}</button>
-        <div class="cc-vb-text"><b>TALK TO MONI</b><span id="cc-vb-text">Listening…</span></div>
+        <div class="cc-vb-text"><b>TALK TO MINT</b><span id="cc-vb-text">Listening…</span></div>
         <div class="cc-vb-wave" id="cc-vb-wave" aria-hidden="true"></div>
         <span class="cc-vb-tags"><span class="cc-tag cc-tag-mode" id="cc-vb-mode">Push to talk</span><span class="cc-tag${voice.configured && voice.desk ? " desk" : ""}" id="cc-voice-mode" title="${
           voice.configured && voice.desk
-            ? "Voice front desk (GPT, trial): quick answers from a read-only snapshot, and short summaries of MONI AI's answers; everything else goes to MONI AI. Switch it off in Settings › OpenAI voice."
-            : "Voice goes straight to MONI AI: OpenAI only hears and reads aloud."
-        }">${voice.configured && voice.desk ? "Front desk · GPT" : "Direct · MONI AI"}</span><span class="cc-tag">OpenAI</span><span class="cc-tag" id="cc-voice-tag">${esc(voice.configured ? String(voice.voice || "voice") : "no key")}</span></span>
+            ? "Voice front desk (GPT, trial): quick answers from a read-only snapshot, and short summaries of MINT AI's answers; everything else goes to MINT AI. Switch it off in Settings › OpenAI voice."
+            : "Voice goes straight to MINT AI: OpenAI only hears and reads aloud."
+        }">${voice.configured && voice.desk ? "Front desk · GPT" : "Direct · MINT AI"}</span><span class="cc-tag">OpenAI</span><span class="cc-tag" id="cc-voice-tag">${esc(voice.configured ? String(voice.voice || "voice") : "no key")}</span></span>
         <span class="cc-target cc-static">${ic("route")}<span id="cc-vb-target">Auto-route</span></span>
         <button type="button" class="cc-c-kbd" id="cc-vb-close" title="Back to typing" aria-label="Back to typing">${ic("close")}</button>
       </div>
@@ -234,12 +234,12 @@ function page(o) {
     </div>
   </main>
 
-  <aside class="cc-drawer" id="cc-drawer" aria-label="MONI AI conversation and inbox">
+  <aside class="cc-drawer" id="cc-drawer" aria-label="MINT AI conversation and inbox">
     <div class="cc-dr-head">
       <span class="cc-av cc-av-lg"></span>
-      <div class="cc-min0 cc-dr-title"><h2>MONI AI</h2><small id="cc-dr-sub">CEO session · /root/moni-ai</small></div>
+      <div class="cc-min0 cc-dr-title"><h2>MINT AI</h2><small id="cc-dr-sub">CEO session · /root/moni-ai</small></div>
       <div class="cc-sp">
-        <button type="button" class="cc-iconbtn" id="cc-speak-toggle" aria-pressed="false" title="Replies are silent — click to read MONI AI's replies aloud" aria-label="Read replies aloud"${voice.configured ? "" : " hidden"}>${ic("mute")}</button>
+        <button type="button" class="cc-iconbtn" id="cc-speak-toggle" aria-pressed="false" title="Replies are silent — click to read MINT AI's replies aloud" aria-label="Read replies aloud"${voice.configured ? "" : " hidden"}>${ic("mute")}</button>
         <button type="button" class="cc-iconbtn" id="cc-rc-open" title="Open in Claude Desktop (Remote Control)" aria-label="Open in Claude Desktop">${ic("open")}</button>
         <button type="button" class="cc-iconbtn" id="cc-expand" title="Widen the drawer" aria-label="Widen the drawer">${ic("expand")}</button>
         <button type="button" class="cc-iconbtn" id="cc-collapse" title="Collapse or open the drawer" aria-label="Collapse the drawer">${ic("panel")}</button>
@@ -269,13 +269,13 @@ function page(o) {
     </div>
     <div class="cc-pane" id="cc-pane-tl" role="tabpanel" hidden><div class="cc-pane-scroll"><ul class="cc-timeline" id="cc-timeline"></ul></div></div>
     <div class="cc-pane" id="cc-pane-rules" role="tabpanel" hidden><div class="cc-pane-scroll" id="cc-rules-pane"></div></div>
-    <div class="cc-dr-foot"><span class="cc-dot" id="cc-rc-dot"></span><span id="cc-rc-text">Mirrors the MONI AI session — the same conversation in Claude Desktop (Remote Control) and here.</span></div>
+    <div class="cc-dr-foot"><span class="cc-dot" id="cc-rc-dot"></span><span id="cc-rc-text">Mirrors the MINT AI session — the same conversation in Claude Desktop (Remote Control) and here.</span></div>
   </aside>
 </div>
 <div id="cc-overlay"></div>
 <noscript><div class="cc-noscript">The Command Center needs JavaScript. The older chat is at <a href="/console">/console</a>.</div></noscript>`;
 
-  return shell("MONI AI", body, {
+  return shell("MINT AI", body, {
     user: o.user,
     csrf: o.csrf,
     active: "moni-ai",

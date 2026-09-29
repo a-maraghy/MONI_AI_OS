@@ -2,13 +2,13 @@
 /*
  * The Command Center's orbit map: one canvas, one requestAnimationFrame loop.
  *
- * MONI AI's seed core sits in the middle (golden-angle florets and HUD rings,
+ * MINT AI's seed core sits in the middle (golden-angle florets and HUD rings,
  * smaller than v2's hero). The live sessions sit on the inner ring, each with a
  * root back to the core; their running sub-agents circle them as moons. A
  * delegation sends a sap bead OUT along the root and the session blooms when
  * it lands; a reply comes BACK as a blue bead and the core flashes. Sessions
  * working on a step of an active mission are tinted. The outer ring is drawn
- * for the sessions MONI AI will hire later, and is empty for now.
+ * for the sessions MINT AI will hire later, and is empty for now.
  *
  * The core keeps the work states the page already had -- idle, listening,
  * thinking, delegating, speaking -- blended through weights, with the real
@@ -217,7 +217,7 @@
       ctx.globalAlpha = 0.9; ctx.fillStyle = PAL.core;
       ctx.beginPath(); ctx.arc(CX, CY, R * 0.08 * (1 + 0.5 * wt + coreFlash + 0.6 * amp * ws + 0.4 * mic * wl), 0, TAU); ctx.fill();
       ctx.globalAlpha = 1; ctx.textAlign = "center";
-      ctx.font = FONT_H; ctx.fillStyle = PAL.ink; ctx.fillText("MONI AI", CX, CY + R * 1.34 + 22);
+      ctx.font = FONT_H; ctx.fillStyle = PAL.ink; ctx.fillText("MINT AI", CX, CY + R * 1.34 + 22);
       ctx.font = FONT_S; ctx.fillStyle = PAL.sub; ctx.fillText("CEO · ALL SESSIONS", CX, CY + R * 1.34 + 34);
     }
     function drawRoots(time) {

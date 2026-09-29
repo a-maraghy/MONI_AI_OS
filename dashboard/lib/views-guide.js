@@ -246,7 +246,7 @@ exports.guide = ({ csrf, user, publicHost, publicPort, sshHost }) => {
 
     <div class="card" id="channels">
       <h2>Telegram broadcast channels</h2>
-      <p class="muted">Not to be confused with a MONI <em>channel</em>, which is any way of
+      <p class="muted">Not to be confused with a Mint OS <em>channel</em>, which is any way of
         reaching an agent. This is Telegram's own broadcast feature.</p>
       <p>Telegram channels are broadcast, not conversation, and that difference matters
         here:</p>

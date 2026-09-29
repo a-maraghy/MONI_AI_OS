@@ -59,7 +59,7 @@ function voiceSummary(v) {
       <tr><td>Speaks with</td><td class="mono small">${esc(v.model)} · ${esc(v.voice)}</td></tr>
       <tr><td>Hears with</td><td class="mono small">${esc(v.transcribe_model)}</td></tr>
     </table>
-    <p class="muted small mt-12">Voice only: OpenAI hears you and reads MONI AI's replies aloud.
+    <p class="muted small mt-12">Voice only: OpenAI hears you and reads MINT AI's replies aloud.
       Claude does all the thinking. The key stays on the server.</p>
     <div class="btn-row">
       <a class="btn primary small" href="/credentials/openai-voice">
@@ -272,10 +272,10 @@ function deskCard(csrf, v, desk) {
     <p class="muted small mt-12">A trial. When on, the Command Center's microphone talks to a GPT realtime model
       (${esc(d.model || "gpt-realtime-mini")}) that answers at once from a read-only snapshot of this VPS — services,
       disk, memory, sessions, missions, open decisions and pending approvals, counted and titled, never a command —
-      makes brief small talk, and passes everything else to MONI AI as your request. It cannot run anything, message a
+      makes brief small talk, and passes everything else to MINT AI as your request. It cannot run anything, message a
       session, or approve or deny anything; a guard checks every sentence before it is spoken and cuts it off if it
-      claims an action or quotes a figure it was not given. MONI AI's answers are summarised aloud, held to what MONI AI
-      wrote — the full text stays on screen. When off, voice goes straight to MONI AI.</p>
+      claims an action or quotes a figure it was not given. MINT AI's answers are summarised aloud, held to what MINT AI
+      wrote — the full text stays on screen. When off, voice goes straight to MINT AI.</p>
     <form method="post" action="/credentials/openai-voice/desk" class="btn-row">
       <input type="hidden" name="_csrf" value="${esc(csrf)}">
       <input type="hidden" name="enabled" value="${d.on ? "0" : "1"}">

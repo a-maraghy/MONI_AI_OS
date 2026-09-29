@@ -61,9 +61,9 @@ check("no live Odoo anywhere in the frame", !/live odoo|gizaseeds\.cloud|test\.g
 check("no live Odoo anywhere in the page scripts", ![main, panels, map].some((s) => /live odoo|gizaseeds\.cloud/i.test(s.replace(/^\s*\*.*$/gm, "").replace(/\/\/.*$/gm, ""))));
 check("no machine filter (Trial / Live) and no second machine card", !/data-m="live"|data-m="trial"|mach-filter/.test(html) && (html.match(/class="cc-mach-this"/g) || []).length === 1);
 check("'Add a machine' is there, disabled, and says it comes later", /class="cc-mach-add" aria-disabled="true"[^>]*>[\s\S]{0,200}Add a machine[\s\S]{0,40}coming later/.test(html));
-check("the rail has Machines, MONI AI Core, Cost today, Standing orders", ["Machines", "MONI AI Core", "Cost today", "Standing orders"].every((h) => html.includes(">" + h + "</h2>")));
+check("the rail has Machines, MINT AI Core, Cost today, Standing orders", ["Machines", "MINT AI Core", "Cost today", "Standing orders"].every((h) => html.includes(">" + h + "</h2>")));
 check("the core grid has its eight cells", ["core", "sessions", "agents", "memory", "watchers", "rules", "voice", "guard"].every((k) => html.includes(`data-core="${k}"`)));
-check("the Vitals rings card and the big Talk to MONI card are gone", !/cc-rings|cc-mic-big|cc-voice-card|Talk to MONI<\/h2>/.test(html));
+check("the Vitals rings card and the big Talk to MINT card are gone", !/cc-rings|cc-mic-big|cc-voice-card|Talk to MINT<\/h2>/.test(html));
 check("the centre switches Map | Missions", /data-view="map"/.test(html) && /data-view="missions"/.test(html) && /id="cc-map"/.test(html) && /id="cc-lanes"/.test(html));
 check("the missions view starts hidden", /id="cc-view-missions" hidden/.test(html));
 check("the drawer has Conversation | Decisions | Timeline | Rules", ["conv", "dec", "tl", "rules"].every((p) => html.includes(`data-pane="${p}"`)) && !/data-pane="feed"/.test(html));
@@ -173,7 +173,7 @@ check("delegation beads go out, reply beads come back", /send: function \(id\)/.
 check("the page follows the new event types", ["mission", "decision", "watcher", "order", "order_run", "rule", "machine"].every((t) => new RegExp(`"${t}"`).test(main.slice(main.indexOf("var EVENTS"), main.indexOf("var EVENTS") + 600))));
 check("the panels handle mission, decision, watcher, order, order_run, rule", ["mission", "decision", "watcher", "order", "order_run", "rule"].every((t) => panels.includes(`case "${t}":`)));
 check("the deep view refreshes every 5 s and stops when closed", /setInterval\(function \(\) \{ if \(!document\.hidden\) fetchDeep\(\); \}, 5000\)/.test(panels) && /clearInterval\(OV\.timer\)/.test(panels));
-check("Interrupt and Open in Claude Desktop only in MONI AI's own deep view", /s\.self \? \(st === "working" \? '<button[^']*data-deep="interrupt"/.test(panels) && /data-deep="rc"/.test(panels));
+check("Interrupt and Open in Claude Desktop only in MINT AI's own deep view", /s\.self \? \(st === "working" \? '<button[^']*data-deep="interrupt"/.test(panels) && /data-deep="rc"/.test(panels));
 check("'Always allow this' shows the rule before it saves", /rule-suggestion/.test(panels) && /approvals\/" \+ id \+ "\/approve", \{ body: \{ rule: \{ pattern: pattern, tool: tool \} \} \}/.test(panels));
 check("Telegram delivery is offered disabled, with the server's reason", /Telegram<\/button>/.test(panels) && /tg\.why/.test(panels));
 

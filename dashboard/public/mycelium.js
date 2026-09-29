@@ -436,8 +436,8 @@
       case "panel-fail": return "failed panel sign-in";
       case "panel-action": return "panel · " + (ev.action || "");
       case "audit": return "audit · " + (ev.action || "");
-      case "turn": return "MONI AI turn";
-      case "delegation": return "MONI AI delegation";
+      case "turn": return "MINT AI turn";
+      case "delegation": return "MINT AI delegation";
       case "ingest": return "memory ingest";
       case "start": return "started · " + (ev.unit || "");
       case "reply": return "agent reply · " + (ev.agent || "");

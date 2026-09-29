@@ -213,7 +213,7 @@
 
     function whoChip(target) {
       if (!target) return "";
-      if (target === "moni-ai") return '<span class="sess me">' + ic("core") + "<span>MONI AI</span></span>";
+      if (target === "moni-ai") return '<span class="sess me">' + ic("core") + "<span>MINT AI</span></span>";
       var live = CC.sessionNamed(target);
       return '<span class="sess"' + (live ? "" : ' title="not running now"') + ">" + (live ? ic(CC.sessIcon(live)) : "") + "<span>" + esc(target) + "</span></span>";
     }
@@ -237,7 +237,7 @@
       if (!m) {
         $("cc-mis-head").innerHTML = "";
         $("cc-mis-head").hidden = true;
-        $("cc-lanes").innerHTML = '<div class="cc-mis-empty"><b>No missions yet</b><span>' + esc(P.err.missions ? "Missions are not available: " + P.err.missions : "A mission is a goal MONI AI plans into steps and hands to the sessions that own the work. You see each step move across this board.") +
+        $("cc-lanes").innerHTML = '<div class="cc-mis-empty"><b>No missions yet</b><span>' + esc(P.err.missions ? "Missions are not available: " + P.err.missions : "A mission is a goal MINT AI plans into steps and hands to the sessions that own the work. You see each step move across this board.") +
           '</span><button type="button" class="cc-btn pri" data-open="mission-new">' + ic("plus") + "New mission</button></div>";
         return;
       }
@@ -291,10 +291,10 @@
 
     function openNewMission(goal) {
       var ov = overlay("mission",
-        '<div class="cc-mh">' + ic("flag") + '<div class="cc-min0"><h2>New mission</h2><small>MONI AI plans the steps, delegates each to the session that owns the work, and reports back.</small></div><div class="cc-sp"><button type="button" class="cc-iconbtn" data-close title="Close (Esc)" aria-label="Close">' + ic("close") + "</button></div></div>" +
+        '<div class="cc-mh">' + ic("flag") + '<div class="cc-min0"><h2>New mission</h2><small>MINT AI plans the steps, delegates each to the session that owns the work, and reports back.</small></div><div class="cc-sp"><button type="button" class="cc-iconbtn" data-close title="Close (Esc)" aria-label="Close">' + ic("close") + "</button></div></div>" +
         '<div class="cc-mb-body"><div class="cc-form"><label class="top" for="cc-mis-goal">Goal</label><textarea class="cc-in" id="cc-mis-goal" rows="4" maxlength="4000" data-autofocus placeholder="What should be true when it is done?">' + esc(goal || "") + "</textarea>" +
         '<span></span><span class="hint">Destructive steps still wait for your approval in Decisions. You can follow every step on the Missions board.</span></div></div>' +
-        '<div class="cc-mf"><span class="cc-err" id="cc-mis-err"></span><div class="cc-sp"><button type="button" class="cc-btn" data-close>Cancel</button><button type="button" class="cc-btn pri" id="cc-mis-go">' + ic("send") + "Send to MONI AI</button></div></div>",
+        '<div class="cc-mf"><span class="cc-err" id="cc-mis-err"></span><div class="cc-sp"><button type="button" class="cc-btn" data-close>Cancel</button><button type="button" class="cc-btn pri" id="cc-mis-go">' + ic("send") + "Send to MINT AI</button></div></div>",
         "cc-modal narrow", "New mission");
       function go() {
         var g = $("cc-mis-goal").value.trim();
@@ -303,7 +303,7 @@
         api("missions/request", { body: { goal: g } }).then(function (r) {
           if (r && r.turn) CC.upsertTurn(r.turn);
           closeOverlay();
-          toast("Sent to MONI AI. It plans the mission and it appears on the board.");
+          toast("Sent to MINT AI. It plans the mission and it appears on the board.");
           CC.showPane("conv");
         }).catch(function (e) {
           btnBusy($("cc-mis-go"), false);
@@ -353,20 +353,20 @@
       if (d.proposal || d.fix_command) b += '<div class="cc-fix"><b>Proposed fix</b>' + esc(d.proposal || "") + (d.fix_command ? "<code>$ " + esc(d.fix_command) + "</code>" : "") + "</div>";
       if (st === "proposed") {
         b += '<div class="cc-dact"><button type="button" class="cc-btn pri sm" data-dact="approve">' + ic("check") + 'Approve fix</button><button type="button" class="cc-btn sm" data-dact="dismiss">Dismiss</button><button type="button" class="cc-btn sm" data-dact="ask">' + ic("message") + "Ask more</button></div>";
-        if (d.fix_command) b += '<div class="cc-rule-hint">Approving asks MONI AI to run the fix through the gate; a destructive command still raises its own approval card.</div>';
+        if (d.fix_command) b += '<div class="cc-rule-hint">Approving asks MINT AI to run the fix through the gate; a destructive command still raises its own approval card.</div>';
       } else if (st === "investigating") {
-        b += '<div class="cc-dact"><span class="cc-dres work"><span class="cc-spin"></span>MONI AI is investigating…</span><button type="button" class="cc-btn sm" data-dact="dismiss">Dismiss</button></div>';
+        b += '<div class="cc-dact"><span class="cc-dres work"><span class="cc-spin"></span>MINT AI is investigating…</span><button type="button" class="cc-btn sm" data-dact="dismiss">Dismiss</button></div>';
       } else if (st === "open") {
-        if (d.rate_limited) b += '<div class="cc-rule-hint">Not investigated yet: MONI AI is holding back so a noisy watcher cannot flood it. Investigate to ask it now.</div>';
+        if (d.rate_limited) b += '<div class="cc-rule-hint">Not investigated yet: MINT AI is holding back so a noisy watcher cannot flood it. Investigate to ask it now.</div>';
         b += '<div class="cc-dact"><button type="button" class="cc-btn pri sm" data-dact="investigate">' + ic("search") + 'Investigate</button><button type="button" class="cc-btn sm" data-dact="dismiss">Dismiss</button><button type="button" class="cc-btn sm" data-dact="ask">' + ic("message") + "Ask more</button></div>";
       } else if (PROGRESS[st]) {
-        b += '<div class="cc-dres work"><span class="cc-spin"></span>' + (st === "approved" ? "Fix approved" + (d.decided_by ? " by " + esc(d.decided_by) : "") + " — queued for MONI AI" : "MONI AI is running the fix") + "</div>";
+        b += '<div class="cc-dres work"><span class="cc-spin"></span>' + (st === "approved" ? "Fix approved" + (d.decided_by ? " by " + esc(CC.aiLabel(d.decided_by)) : "") + " — queued for MINT AI" : "MINT AI is running the fix") + "</div>";
       } else {
-        var txt = st === "done" ? "Done" + (d.result ? " · " + d.result : "") : st === "dismissed" ? "Dismissed" + (d.decided_by ? " by " + d.decided_by : "") : st === "failed" ? "Failed" + (d.result ? " · " + d.result : "") : st;
+        var txt = st === "done" ? "Done" + (d.result ? " · " + d.result : "") : st === "dismissed" ? "Dismissed" + (d.decided_by ? " by " + CC.aiLabel(d.decided_by) : "") : st === "failed" ? "Failed" + (d.result ? " · " + d.result : "") : st;
         b += '<div class="cc-dres' + (st === "dismissed" ? " no" : st === "failed" ? " bad" : "") + '">' + ic(st === "done" ? "check" : "close") + "<span>" + esc(clip(txt, 300)) + (d.decided_at ? " · " + esc(hm(d.decided_at)) : "") + "</span></div>";
       }
       if (P.ask[d.id] != null && !done) {
-        b += '<div class="cc-ask"><textarea class="cc-in" data-ask-text rows="2" maxlength="4000" placeholder="What do you want MONI AI to find out?">' + esc(P.ask[d.id]) + '</textarea><div class="cc-dact"><button type="button" class="cc-btn sm" data-dact="ask-cancel">Cancel</button><button type="button" class="cc-btn pri sm" data-dact="ask-send">' + ic("send") + "Ask</button></div></div>";
+        b += '<div class="cc-ask"><textarea class="cc-in" data-ask-text rows="2" maxlength="4000" placeholder="What do you want MINT AI to find out?">' + esc(P.ask[d.id]) + '</textarea><div class="cc-dact"><button type="button" class="cc-btn sm" data-dact="ask-cancel">Cancel</button><button type="button" class="cc-btn pri sm" data-dact="ask-send">' + ic("send") + "Ask</button></div></div>";
       }
       b += '<div class="cc-ap-err" data-err hidden></div>';
       return '<div class="cc-dec-card ' + esc(d.kind || "") + (done ? " done" : "") + (d._fresh ? " fresh" : "") + '" data-dec="' + esc(d.id) + '"><div class="cc-dec-h">' + head + '</div><div class="cc-dec-b">' + b + "</div></div>";
@@ -424,7 +424,7 @@
           delete P.ask[d.id];
           if (r && r.turn) CC.upsertTurn(r.turn);
           if (r && r.decision) upsertDecision(r.decision, true); else renderDecisions();
-          toast(act === "investigate" ? "MONI AI is looking into it." : "Asked MONI AI. The answer lands in the conversation.");
+          toast(act === "investigate" ? "MINT AI is looking into it." : "Asked MINT AI. The answer lands in the conversation.");
         }).catch(fail);
         return;
       }
@@ -432,7 +432,7 @@
         lock();
         api("decisions/" + encodeURIComponent(d.id) + "/" + act, { body: {} }).then(function (r) {
           if (r && r.decision) upsertDecision(r.decision, true);
-          toast(act === "approve" ? "Fix approved. MONI AI runs it through the gate." : "Dismissed.");
+          toast(act === "approve" ? "Fix approved. MINT AI runs it through the gate." : "Dismissed.");
         }).catch(fail);
       }
     }
@@ -458,8 +458,8 @@
       if (!a) return;
       var cmd = CC.approvalCmd(a);
       var ov = overlay("always",
-        '<div class="cc-mh">' + ic("scale") + '<div class="cc-min0"><h2>Always allow this</h2><small>Adds an allow rule to MONI AI\'s approval gate, then approves this request.</small></div><div class="cc-sp"><button type="button" class="cc-iconbtn" data-close title="Close (Esc)" aria-label="Close">' + ic("close") + "</button></div></div>" +
-        '<div class="cc-mb-body" id="cc-al-body"><div class="cc-empty-s">Asking MONI AI\'s gate for the rule it would add…</div></div>' +
+        '<div class="cc-mh">' + ic("scale") + '<div class="cc-min0"><h2>Always allow this</h2><small>Adds an allow rule to MINT AI\'s approval gate, then approves this request.</small></div><div class="cc-sp"><button type="button" class="cc-iconbtn" data-close title="Close (Esc)" aria-label="Close">' + ic("close") + "</button></div></div>" +
+        '<div class="cc-mb-body" id="cc-al-body"><div class="cc-empty-s">Asking MINT AI\'s gate for the rule it would add…</div></div>' +
         '<div class="cc-mf"><span class="cc-err" id="cc-al-err"></span><div class="cc-sp"><button type="button" class="cc-btn" data-close>Cancel</button><button type="button" class="cc-btn pri" id="cc-al-save" disabled>' + ic("check") + "Save rule and approve</button></div></div>",
         "cc-modal narrow", "Always allow this");
       var tool = a.tool === "SendMessage" ? "SendMessage" : "Bash";
@@ -474,7 +474,7 @@
           '<span></span><span class="hint">Glob over the whole ' + (tool === "SendMessage" ? "“session: message”" : "command") + ": <code>*</code> is any text, <code>\\*</code> a literal star.</span>" +
           '<label>Effect</label><div class="cc-chips-sel sm"><button type="button" class="on" disabled>always allow</button></div>' +
           '<label>Tool</label><div class="cc-chips-sel sm"><button type="button" class="on" disabled>' + esc(tool) + "</button></div>" +
-          '<label>Scope</label><div class="cc-chips-sel sm"><button type="button" class="on" disabled>' + ic("core") + 'MONI AI</button><button type="button" class="on" disabled>' + ic("server") + "this VPS</button></div>" +
+          '<label>Scope</label><div class="cc-chips-sel sm"><button type="button" class="on" disabled>' + ic("core") + 'MINT AI</button><button type="button" class="on" disabled>' + ic("server") + "this VPS</button></div>" +
           (rule.note ? '<label>Note</label><span class="cc-muted">' + esc(rule.note) + "</span>" : "") +
           '<span></span><span class="hint" id="cc-al-match"></span></div>' +
           '<p class="cc-rule-hint">Deny rules still win, and built-in asks cannot be overridden. You can edit or delete the rule later in Rules.</p>';
@@ -536,10 +536,10 @@
     }
     function ruleRow(r) {
       if (P.editRule === r.id) return '<li class="cc-rule edit">' + ruleForm(r) + "</li>";
-      var scope = '<span class="cc-badge b-mute">' + esc(r.scope_session === "moni-ai" || !r.scope_session ? "MONI AI" : r.scope_session) + '</span><span class="cc-badge b-mute">' + esc(r.scope_machine === "this" || !r.scope_machine ? "this VPS" : r.scope_machine) + "</span>";
+      var scope = '<span class="cc-badge b-mute">' + esc(r.scope_session === "moni-ai" || !r.scope_session ? "MINT AI" : r.scope_session) + '</span><span class="cc-badge b-mute">' + esc(r.scope_machine === "this" || !r.scope_machine ? "this VPS" : r.scope_machine) + "</span>";
       var meta = [];
       if (r.builtin) meta.push(r.hard ? "built in · cannot be overridden" : "built in");
-      else if (r.created_by) meta.push("by " + r.created_by + (r.source_approval_id ? " (from an approval card)" : ""));
+      else if (r.created_by) meta.push("by " + CC.aiLabel(r.created_by) + (r.source_approval_id ? " (from an approval card)" : ""));
       if (r.created_at && !r.builtin) meta.push(CC.fmtDay.format(new Date(r.created_at)));
       if (r.uses) meta.push("used " + r.uses + "×" + (r.last_used_at ? ", last " + hm(r.last_used_at) : ""));
       var btns = r.builtin || r.locked || r.hard ? '<span class="cc-lock" title="Built in: cannot be edited or deleted">' + ic("lock") + "</span>"
@@ -580,15 +580,15 @@
         h += '<div class="cc-sec-t">Test a command</div><div class="cc-try"><input class="cc-in cc-mono" id="cc-try-in" maxlength="2000" placeholder="systemctl restart odoo" aria-label="Test a command against the rules" value="' + esc(P.tryText) + '">' +
           '<div class="cc-chips-sel sm" data-try-tool><button type="button" data-v="Bash" aria-pressed="' + (P.tryTool === "Bash") + '">Bash</button><button type="button" data-v="SendMessage" aria-pressed="' + (P.tryTool === "SendMessage") + '">Send</button></div>' +
           '<button type="button" class="cc-btn sm" id="cc-try-btn">Test</button></div><div class="cc-try-res" id="cc-try-res">' + tryResHTML() + "</div>";
-        h += '<div class="cc-sec-t">Rules<span class="cc-muted">scope: MONI AI · this VPS</span></div>';
+        h += '<div class="cc-sec-t">Rules<span class="cc-muted">scope: MINT AI · this VPS</span></div>';
         if (P.err.rules) h += '<div class="cc-dec-empty">Rules are not available: ' + esc(P.err.rules) + "</div>";
         h += '<ul class="cc-rules">' + P.rules.map(ruleRow).join("") + "</ul>";
         h += P.addRule ? '<div class="cc-rule edit cc-add-rule">' + ruleForm(null) + "</div>" : '<div class="cc-add-rule"><button type="button" class="cc-btn sm" data-ract="add">' + ic("plus") + "Add a rule</button></div>";
-        h += '<p class="cc-rule-hint"><b>Order:</b> Deny wins; built-in asks can\'t be overridden; then the most specific of your rules; with no match the classifier asks for anything destructive. Rules apply to MONI AI\'s own gate on this VPS. “Always allow this” on an approval card adds one here.</p>';
+        h += '<p class="cc-rule-hint"><b>Order:</b> Deny wins; built-in asks can\'t be overridden; then the most specific of your rules; with no match the classifier asks for anything destructive. Rules apply to MINT AI\'s own gate on this VPS. “Always allow this” on an approval card adds one here.</p>';
       } else {
         if (P.err.watchers) h += '<div class="cc-dec-empty">Watchers are not available: ' + esc(P.err.watchers) + "</div>";
         h += P.watchers.map(watcherRow).join("") || (P.err.watchers ? "" : '<div class="cc-dec-empty">No watchers yet.</div>');
-        h += '<p class="cc-rule-hint">A watcher listens to this VPS\'s events. When one fires, MONI AI investigates and puts a decision card in Decisions; it acts only after you approve. Switching one off is saved on the server.</p>';
+        h += '<p class="cc-rule-hint">A watcher listens to this VPS\'s events. When one fires, MINT AI investigates and puts a decision card in Decisions; it acts only after you approve. Switching one off is saved on the server.</p>';
       }
       pane.innerHTML = h;
     }
@@ -690,7 +690,7 @@
       var day = CC.fmtDay.format(d);
       return day === today ? CC.fmtHM.format(d) : day + " " + CC.fmtHM.format(d);
     }
-    function targetLabel(t) { return !t || t === "moni-ai" ? "MONI AI" : t; }
+    function targetLabel(t) { return !t || t === "moni-ai" ? "MINT AI" : t; }
     function renderOrders() {
       var el = $("cc-orders");
       if (!P.orders.length) {
@@ -762,7 +762,7 @@
       if (!ed) return;
       var sch = { kind: ed.kind, at: ed.at, dow: ed.dow, every_h: ed.every_h, cron: ed.cron };
       var live = CC.sortSessions(CC.liveSessions()).filter(function (s) { return s.name; });
-      var targets = [["moni-ai", "MONI AI itself"]].concat(live.map(function (s) { return [s.name, s.name]; }));
+      var targets = [["moni-ai", "MINT AI itself"]].concat(live.map(function (s) { return [s.name, s.name]; }));
       if (ed.target !== "moni-ai" && !targets.some(function (x) { return x[0] === ed.target; })) targets.push([ed.target, ed.target + " (not running)"]);
       var tg = P.telegram || { available: false, why: "Telegram delivery comes later." };
       var h = '<div class="cc-form">' +
@@ -778,7 +778,7 @@
       }
       h += '<span></span><div class="cc-words" id="cc-ord-words">' + esc(scheduleLabel(sch)) + "</div>" +
         '<label>Runs as</label><div class="cc-chips-sel" data-ord="target">' + targets.map(function (x) { return '<button type="button" data-v="' + esc(x[0]) + '" aria-pressed="' + (ed.target === x[0]) + '">' + (x[0] === "moni-ai" ? ic("core") : "") + esc(clip(x[1], 36)) + "</button>"; }).join("") + "</div>" +
-        (ed.target !== "moni-ai" ? '<span></span><span class="hint">MONI AI delegates the prompt to that session and relays its answer.</span>' : "") +
+        (ed.target !== "moni-ai" ? '<span></span><span class="hint">MINT AI delegates the prompt to that session and relays its answer.</span>' : "") +
         '<label class="top" for="cc-ord-prompt">What to do</label><textarea class="cc-in" id="cc-ord-prompt" rows="8" maxlength="8000" placeholder="Check the services, disk and memory on this box and failed sign-ins overnight. Five lines at most; lead with anything that needs me.">' + esc(ed.prompt) + "</textarea>" +
         '<label>Deliver to</label><div class="cc-chips-sel"><button type="button" aria-pressed="true" disabled title="Always delivered here">' + ic("check") + "Command Center</button>" +
         '<button type="button" aria-pressed="false" disabled title="' + esc(tg.available ? "Telegram" : tg.why || "Not available yet") + '">Telegram</button></div>' +
@@ -927,7 +927,7 @@
         h += '<div class="cc-budget"><div class="cc-budget-bar"><i class="' + (p >= 100 ? "x" : p >= bi.warn ? "w" : "") + '" data-w="' + p + '"></i><em data-l="' + bi.warn + '" title="warning at ' + esc(bi.warn) + '%"></em></div>' +
           '<div class="cc-budget-l"><span>' + Math.round(p) + "% of " + esc(money(bi.daily)) + " daily budget</span><span>warn " + esc(bi.warn) + "%</span></div></div>";
       } else {
-        h += '<div class="cc-budget-l"><span>MONI AI ' + esc(money(today.moni_ai_usd)) + " · others ~" + esc(money(today.others_usd_est)) + " est</span></div>" +
+        h += '<div class="cc-budget-l"><span>MINT AI ' + esc(money(today.moni_ai_usd)) + " · others ~" + esc(money(today.others_usd_est)) + " est</span></div>" +
           '<div class="cc-budget-l"><span>No daily budget · set one in Details</span></div>';
       }
       var rows = P.cost && P.cost.sessions ? P.cost.sessions.slice().sort(function (a, b) { return (b.today_usd || 0) - (a.today_usd || 0); }).slice(0, 3) : [];
@@ -946,8 +946,8 @@
     var VU_ROWS = [
       ["small_talk", "Small talk", "The front desk's small talk"],
       ["snapshot", "Snapshot", "The front desk's answers from the read-only snapshot"],
-      ["handoff", "Hand-offs", "Requests the front desk passed to MONI AI, and the spoken summaries of its answers"],
-      ["direct", "Direct", "The direct path (front desk off): MONI AI's replies read aloud word for word"],
+      ["handoff", "Hand-offs", "Requests the front desk passed to MINT AI, and the spoken summaries of its answers"],
+      ["direct", "Direct", "The direct path (front desk off): MINT AI's replies read aloud word for word"],
     ];
     var VU_CAT = { small_talk: "small talk", snapshot: "snapshot answer", handoff: "hand-off", direct: "direct" };
     function vmoney(n) {
@@ -991,7 +991,7 @@
     }
     function openCost() {
       overlay("cost",
-        '<div class="cc-mh">' + ic("coin") + '<div class="cc-min0"><h2>Cost and usage</h2><small>Per day, per session and per mission. MONI AI\'s own figures come from its ledger; other sessions are estimated API-equivalent from their transcripts.</small></div><div class="cc-sp"><button type="button" class="cc-iconbtn" data-close title="Close (Esc)" aria-label="Close">' + ic("close") + "</button></div></div>" +
+        '<div class="cc-mh">' + ic("coin") + '<div class="cc-min0"><h2>Cost and usage</h2><small>Per day, per session and per mission. MINT AI\'s own figures come from its ledger; other sessions are estimated API-equivalent from their transcripts.</small></div><div class="cc-sp"><button type="button" class="cc-iconbtn" data-close title="Close (Esc)" aria-label="Close">' + ic("close") + "</button></div></div>" +
         '<div class="cc-mb-body" id="cc-cost-body"><div class="cc-empty-s">Loading…</div></div>',
         "cc-modal wide", "Cost and usage");
       if (P.cost) renderCostBody();
@@ -1008,23 +1008,23 @@
       var last7 = days.slice(-7).reduce(function (s, d) { return s + dayTotal(d); }, 0);
       var used = bi.daily ? (today.total_usd || 0) / bi.daily * 100 : null;
       var h = '<div class="cc-kpis">' +
-        '<div class="cc-kpi"><span>Today</span><b>' + esc(money(today.total_usd)) + "</b><small>MONI AI " + esc(money(today.moni_ai_usd)) + " · others ~" + esc(money(today.others_usd_est)) + " est</small></div>" +
+        '<div class="cc-kpi"><span>Today</span><b>' + esc(money(today.total_usd)) + "</b><small>MINT AI " + esc(money(today.moni_ai_usd)) + " · others ~" + esc(money(today.others_usd_est)) + " est</small></div>" +
         '<div class="cc-kpi"><span>Last 7 days</span><b>' + esc(money(last7)) + "</b><small>avg " + esc(money(last7 / Math.max(1, Math.min(7, days.length)))) + " a day</small></div>" +
         '<div class="cc-kpi' + (used != null && used >= 100 ? " x" : used != null && used >= bi.warn ? " w" : "") + '"><span>Daily budget</span><b>' + esc(bi.daily ? money(bi.daily) : "none") + "</b><small>" + esc(used != null ? Math.round(used) + "% used today" : "set one below") + "</small></div>" +
         '<div class="cc-kpi"><span>Warn at</span><b>' + esc(bi.warn) + "%</b><small>" + esc(bi.daily ? money(bi.daily * bi.warn / 100) + " a day" : "of the daily budget") + "</small></div></div>";
-      // Per-day bars: MONI AI's own spend, with the other sessions' estimate stacked on top.
+      // Per-day bars: MINT AI's own spend, with the other sessions' estimate stacked on top.
       var w = 640, hh = 150, n = Math.max(1, days.length), bw = w / n;
       var mx = Math.max.apply(null, days.map(dayTotal).concat([bi.daily ? bi.daily * bi.warn / 100 : 0, 0.01]));
       var sc = (hh - 30) / (mx * 1.08);
       var bars = days.map(function (d, i) {
         var a = (Number(d.moni_ai_usd) || 0) * sc, b = (Number(d.others_usd_est) || 0) * sc, x = (i * bw + 5).toFixed(1), bwid = Math.max(2, bw - 10).toFixed(1);
         var dt = new Date(d.day + "T12:00:00Z");
-        return '<rect class="cc-bar' + (i === days.length - 1 ? " today" : "") + '" x="' + x + '" y="' + (hh - 18 - a).toFixed(1) + '" width="' + bwid + '" height="' + a.toFixed(1) + '" rx="2"><title>' + esc(d.day + ": MONI AI " + money(d.moni_ai_usd)) + "</title></rect>" +
+        return '<rect class="cc-bar' + (i === days.length - 1 ? " today" : "") + '" x="' + x + '" y="' + (hh - 18 - a).toFixed(1) + '" width="' + bwid + '" height="' + a.toFixed(1) + '" rx="2"><title>' + esc(d.day + ": MINT AI " + money(d.moni_ai_usd)) + "</title></rect>" +
           '<rect class="cc-bar est" x="' + x + '" y="' + (hh - 18 - a - b).toFixed(1) + '" width="' + bwid + '" height="' + b.toFixed(1) + '" rx="2"><title>' + esc(d.day + ": others ~" + money(d.others_usd_est) + " est") + "</title></rect>" +
           '<text x="' + (i * bw + bw / 2).toFixed(1) + '" y="' + (hh - 4) + '" text-anchor="middle">' + esc(isFinite(dt) ? String(dt.getUTCDate()) : "") + "</text>";
       }).join("");
       var wl = bi.daily ? '<line class="warn-line" x1="0" x2="' + w + '" y1="' + (hh - 18 - bi.daily * bi.warn / 100 * sc).toFixed(1) + '" y2="' + (hh - 18 - bi.daily * bi.warn / 100 * sc).toFixed(1) + '" vector-effect="non-scaling-stroke"/>' : "";
-      h += '<div class="cc-twocol"><div><div class="cc-sec-t">Per day · last ' + days.length + ' days<span class="cc-muted">green MONI AI · grey others (est)</span></div><div class="cc-bars"><svg viewBox="0 0 ' + w + " " + hh + '" preserveAspectRatio="none" aria-label="Cost per day">' + bars + wl + "</svg></div>" +
+      h += '<div class="cc-twocol"><div><div class="cc-sec-t">Per day · last ' + days.length + ' days<span class="cc-muted">green MINT AI · grey others (est)</span></div><div class="cc-bars"><svg viewBox="0 0 ' + w + " " + hh + '" preserveAspectRatio="none" aria-label="Cost per day">' + bars + wl + "</svg></div>" +
         '<p class="cc-rule-hint">' + (bi.daily ? "Dashed line: the " + esc(bi.warn) + "% warning (" + esc(money(bi.daily * bi.warn / 100)) + " a day). " : "") + esc(c.note || "") + "</p>" +
         '<div class="cc-sec-t gap">Per mission</div><table class="cc-tbl"><tr><th>Mission</th><th>State</th><th class="n">Cost</th></tr>' +
         ((c.missions || []).length ? c.missions.map(function (m) {
@@ -1063,9 +1063,9 @@
     /* ======================================================== deep view */
 
     function deepToldHTML(dels, s) {
-      if (s && s.self) return '<div class="cc-told">This is MONI AI itself: it is the one delegating. Its own conversation is in the drawer.</div>';
-      if (!dels || !dels.length) return '<div class="cc-told">MONI AI has not delegated anything to this session.</div>';
-      // The whole text of every message MONI AI sent, newest first: never clipped, escaped, scrolling in its own box.
+      if (s && s.self) return '<div class="cc-told">This is MINT AI itself: it is the one delegating. Its own conversation is in the drawer.</div>';
+      if (!dels || !dels.length) return '<div class="cc-told">MINT AI has not delegated anything to this session.</div>';
+      // The whole text of every message MINT AI sent, newest first: never clipped, escaped, scrolling in its own box.
       return '<div class="cc-told">' + dels.slice().sort(function (a, b) { return String(b.created_at).localeCompare(String(a.created_at)); }).map(function (d) {
         return '<span class="h">' + esc(hm(d.created_at)) + " · " + esc(CC.TL_LAB[d.status] || d.status || "") + "</span>" + esc(d.text || d.summary || "");
       }).join("\n") + "</div>";
@@ -1074,13 +1074,13 @@
       var tm = esc(hm(e.t));
       if (e.role === "tool") return '<div class="cc-msg sys"><div class="cc-bubble">' + ic("terminal") + " " + esc(e.tool ? e.tool + " · " : "") + esc(clip(e.text, 300)) + " · " + tm + "</div></div>";
       if (e.role === "user") return '<div class="cc-msg me"><div class="who"><b>User</b> · ' + tm + '</div><div class="cc-bubble">' + esc(clip(e.text, 4000)) + "</div></div>";
-      if (e.role === "peer") return '<div class="cc-msg me"><div class="who"><span class="cc-av"></span><b>MONI AI</b> (delegation) · ' + tm + '</div><div class="cc-bubble">' + esc(clip(e.text, 4000)) + "</div></div>";
-      return '<div class="cc-msg ai"><div class="who"><b>' + esc(s.self ? "MONI AI" : s.name || "Session") + "</b> · " + tm + '</div><div class="cc-bubble">' + CC.md(clip(e.text, 6000)) + "</div></div>";
+      if (e.role === "peer") return '<div class="cc-msg me"><div class="who"><span class="cc-av"></span><b>MINT AI</b> (delegation) · ' + tm + '</div><div class="cc-bubble">' + esc(clip(e.text, 4000)) + "</div></div>";
+      return '<div class="cc-msg ai"><div class="who"><b>' + esc(s.self ? "MINT AI" : s.name || "Session") + "</b> · " + tm + '</div><div class="cc-bubble">' + CC.md(clip(e.text, 6000)) + "</div></div>";
     }
     function openDeep(key) {
       var s = CC.findSess(key);
       if (!s) return;
-      overlay("deep", '<div id="cc-deep-in"></div>', "cc-deep", "Session " + (s.self ? "MONI AI" : s.name || ""));
+      overlay("deep", '<div id="cc-deep-in"></div>', "cc-deep", "Session " + (s.self ? "MINT AI" : s.name || ""));
       OV.deep = { key: key, data: null, err: null, at: null };
       renderDeep();
       fetchDeep();
@@ -1109,7 +1109,7 @@
       var s0 = CC.findSess(dv.key);
       var d = dv.data || {};
       var s = s0 || d.session || {};
-      var name = s.self ? "MONI AI" : s.name || "unnamed session";
+      var name = s.self ? "MINT AI" : s.name || "unnamed session";
       var st = s.self ? CC.selfState() : s0 ? CC.sessState(s) : "offline";
       var list = box.querySelector(".cc-mirror-list");
       var keepBottom = !list || list.scrollHeight - list.scrollTop - list.clientHeight < 40, keepTop = list ? list.scrollTop : 0;
@@ -1132,14 +1132,14 @@
         '<div class="cc-mirror-list cc-scroll">' + (entries || '<div class="cc-empty-s">' + (dv.data ? "Nothing in its transcript yet." : dv.err ? "No mirror to show." : "Reading its transcript…") + "</div>") + "</div></div></div>";
       h += '<div class="cc-deep-col">' +
         '<div class="cc-box"><div class="cc-sec-t">Sub-agents · ' + subs.length + '<span class="cc-muted">moons on the map</span></div>' + (subs.length ? '<ul class="cc-subs">' + subs.map(function (a) { return '<li><span class="cc-dot work"></span><span>' + esc(CC.subagentLabel(a)) + "</span><time>" + esc(a.modified ? "active " + CC.ago(a.modified) : "") + "</time></li>"; }).join("") + "</ul>" : '<span class="cc-empty-s">none running</span>') + "</div>" +
-        '<div class="cc-box"><div class="cc-sec-t">What MONI AI told it · full text</div>' + deepToldHTML(d.delegations || (s.last_delegation ? [s.last_delegation] : []), s) + "</div>" +
+        '<div class="cc-box"><div class="cc-sec-t">What MINT AI told it · full text</div>' + deepToldHTML(d.delegations || (s.last_delegation ? [s.last_delegation] : []), s) + "</div>" +
         '<div class="cc-box grow"><div class="cc-sec-t">Tool calls today · ' + toolList.length + '</div><ul class="cc-tools cc-scroll">' +
         (toolList.length ? toolList.slice().reverse().map(function (x) { return '<li class="' + (x.ok === false ? "bad" : "") + '"><time>' + esc(hm(x.t)) + "</time>" + ic(x.ok === false ? "alert" : "terminal") + "<code title=\"" + esc(x.summary || "") + '">' + esc(x.name + (x.summary ? " · " + x.summary : "")) + "</code><em>" + esc(x.ok == null ? "running" : x.ok ? "ok" : "failed") + "</em></li>"; }).join("") : '<li class="empty">' + (dv.data ? "No tool calls today." : "…") + "</li>") + "</ul></div>" +
         '<div class="cc-box"><div class="cc-sec-t">Cost today' + (cost && cost.estimated ? '<span class="cc-muted">estimated API-equivalent</span>' : "") + '</div><div class="cc-deep-cost"><div><b>' + esc(cost ? money(cost.today_usd) : "—") + "</b><span>today</span></div><div><b>" + esc(cost ? tokens(cost.today_in) : "—") + "</b><span>tokens in</span></div><div><b>" + esc(cost ? tokens(cost.today_out) : "—") + "</b><span>out</span></div>" + (cost && cost.week ? spark(cost.week, 160, 30, cost.estimated) : "<span></span>") + "</div></div>" +
         "</div></div>";
       h += '<div class="cc-deep-foot"><span class="cc-muted">' + ic("eye") + " Read-only view · refreshes every 5 s</span><div class=\"cc-sp\">" +
         (s.self ? (st === "working" ? '<button type="button" class="cc-btn" data-deep="interrupt">' + ic("stop") + "Interrupt</button>" : "") + '<button type="button" class="cc-btn pri" data-deep="rc">' + ic("open") + "Open in Claude Desktop</button>"
-          : s0 && s.name ? '<button type="button" class="cc-btn pri" data-deep="send">' + ic("send") + "Send via MONI AI…</button>" : "") +
+          : s0 && s.name ? '<button type="button" class="cc-btn pri" data-deep="send">' + ic("send") + "Send via MINT AI…</button>" : "") +
         "</div></div>";
       box.innerHTML = h;
       var nl = box.querySelector(".cc-mirror-list");
@@ -1149,7 +1149,7 @@
       var b = e.target.closest("[data-deep]");
       if (!b || !OV.deep) return;
       var s = CC.findSess(OV.deep.key), act = b.getAttribute("data-deep");
-      if (act === "send" && s) { closeOverlay(true); CC.setTarget(s.name); CC.focusInput(); toast("Your next message goes to " + clip(s.name, 40) + " through MONI AI."); }
+      if (act === "send" && s) { closeOverlay(true); CC.setTarget(s.name); CC.focusInput(); toast("Your next message goes to " + clip(s.name, 40) + " through MINT AI."); }
       if (act === "interrupt") CC.interrupt(b);
       if (act === "rc") CC.openRemoteControl();
     }
@@ -1169,7 +1169,7 @@
       add("Views", "Open approval rules", "Rules", "scale", "", function () { P.rulesSub = "rules"; CC.showPane("rules"); });
       add("Views", "Open watchers", "Rules", "eye", "", function () { P.rulesSub = "watch"; CC.showPane("rules"); });
       add("Actions", "Cost and usage", "overlay", "coin", "", openCost);
-      add("Actions", "New mission…", "MONI AI plans it", "plus", "m", function () { openNewMission(); });
+      add("Actions", "New mission…", "MINT AI plans it", "plus", "m", function () { openNewMission(); });
       add("Actions", "New standing order…", "scheduled prompt", "clock", "", function () { openOrder(null); });
       add("Actions", "Test a command in Rules…", "what would the gate do", "scale", "", function () {
         P.rulesSub = "rules"; CC.showPane("rules");
@@ -1177,14 +1177,14 @@
         var inp = $("cc-try-in");
         if (inp) { if (q && !/^test/i.test(q)) inp.value = P.tryText = ""; inp.focus(); }
       });
-      if (S.status && S.status.busy) add("Actions", "Interrupt MONI AI's current turn", "stops it", "stop", "", function () { CC.interrupt(); });
+      if (S.status && S.status.busy) add("Actions", "Interrupt MINT AI's current turn", "stops it", "stop", "", function () { CC.interrupt(); });
       missionList().forEach(function (m) {
         add("Missions", (m.ref || "M") + " · " + (m.title || m.goal || ""), m.status, "flag", "m", function () { P.activeMis = m.id; setView("missions"); renderMisChip(); });
       });
       CC.sortSessions(S.sessions).forEach(function (s) {
-        var nm = s.self ? "MONI AI" : s.name || "unnamed session";
+        var nm = s.self ? "MINT AI" : s.name || "unnamed session";
         add("Sessions", "Deep view · " + nm, s.self ? "CEO" : CC.sessWhere(s), "eye", "", function () { openDeep(CC.sessKey(s)); });
-        if (!s.self && s.name) add("Sessions", "Send to " + nm + " via MONI AI…", "sets the composer", "send", "", function () { CC.setTarget(s.name); CC.focusInput(); });
+        if (!s.self && s.name) add("Sessions", "Send to " + nm + " via MINT AI…", "sets the composer", "send", "", function () { CC.setTarget(s.name); CC.focusInput(); });
       });
       P.orders.forEach(function (o) {
         add("Standing orders", "Edit " + o.name, o.label || "", "clock", "", function () { openOrder(o.id); });
@@ -1206,7 +1206,7 @@
     function palQuery() { var q = $("cc-pal-q"); return q ? q.value.trim() : ""; }
     function openPalette(q) {
       overlay("palette", '<div class="cc-pal-in">' + ic("search") + '<input id="cc-pal-q" placeholder="Search missions, sessions, orders, views, commands…" aria-label="Command palette" autocomplete="off" data-autofocus value="' + esc(q || "") + '"><kbd>Esc</kbd></div>' +
-        '<ul class="cc-pal-list" id="cc-pal-list" role="listbox"></ul><div class="cc-pal-foot"><span><kbd>↑</kbd> <kbd>↓</kbd> move</span><span><kbd>Enter</kbd> run</span><span><kbd>Esc</kbd> close</span><span class="r">no match: Enter sends it to MONI AI</span></div>',
+        '<ul class="cc-pal-list" id="cc-pal-list" role="listbox"></ul><div class="cc-pal-foot"><span><kbd>↑</kbd> <kbd>↓</kbd> move</span><span><kbd>Enter</kbd> run</span><span><kbd>Esc</kbd> close</span><span class="r">no match: Enter sends it to MINT AI</span></div>',
         "cc-modal cc-pal", "Command palette");
       OV.pal = { list: [], sel: 0 };
       var inp = $("cc-pal-q");
@@ -1239,7 +1239,7 @@
         if (o.it.g !== g) { g = o.it.g; h += '<li class="cc-pal-g" role="presentation">' + esc(g) + "</li>"; }
         h += '<li class="cc-pal-it' + (i === 0 ? " on" : "") + '" role="option" data-i="' + i + '" aria-selected="' + (i === 0) + '"><span class="pi ' + o.it.cls + '">' + ic(o.it.icon) + '</span><span class="pt">' + hl(o.it.t, o.idx) + (o.it.sub ? "<small>" + esc(o.it.sub) + "</small>" : "") + '</span><span class="pk"></span></li>';
       });
-      $("cc-pal-list").innerHTML = h || '<li class="cc-pal-g">No match. Enter sends “' + esc(clip(q, 60)) + "” to MONI AI.</li>";
+      $("cc-pal-list").innerHTML = h || '<li class="cc-pal-g">No match. Enter sends “' + esc(clip(q, 60)) + "” to MINT AI.</li>";
     }
     function palSel(i) {
       if (!OV.pal) return;

@@ -106,7 +106,7 @@ exports.users = ({ csrf, user, users, roles, missingEmail = 0, flash, err }) =>
       active: "users",
       pattern: "b",
       heading: "Users",
-      subtitle: "Who can sign in to MONI AI OS, and what they are allowed to do once they are in.",
+      subtitle: "Who can sign in to Mint OS, and what they are allowed to do once they are in.",
     }
   );
 

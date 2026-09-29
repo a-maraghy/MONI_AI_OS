@@ -241,7 +241,7 @@ app.use(loadActor);
 chrome.configure({ priv, db, catalog });
 
 // The Machine core's live feed: one poller for every viewer, reading the
-// helper's pulse-feed, this panel's own sign-ins and audit log, and MONI AI's
+// helper's pulse-feed, this panel's own sign-ins and audit log, and MINT AI's
 // ledger. It only runs while someone has the overview open.
 const pulseFeed = pulse.createFeed({ priv, db, moniai, auditLog: path.join(LOG_DIR, "audit.log") });
 app.use((req, res, next) => {
@@ -360,7 +360,7 @@ function setupTokenValid(supplied) {
 /** True until the very first account exists. */
 const noUsersYet = () => db.userCount() === 0;
 
-const TOTP_ISSUER = "MONI AI OS";
+const TOTP_ISSUER = "Mint OS";
 
 /**
  * The enrolment URI an authenticator app scans.
@@ -1813,7 +1813,7 @@ function voiceForget() {
 
 /**
  * The voice front desk (TRIAL): a GPT realtime model answers from a read-only
- * snapshot or hands the request to MONI AI (lib/voice-desk.js). Off unless an
+ * snapshot or hands the request to MINT AI (lib/voice-desk.js). Off unless an
  * administrator switches it on in Settings; while off, nothing about the voice
  * changes. A panel setting, not a secret, so it lives in the panel's database.
  */
@@ -2173,7 +2173,7 @@ app.post("/credentials/openai-voice/desk", requireAuth, requirePerm("voice.manag
   db.logLogin(req.ip, req.me.username, "voice", `voice front desk (GPT, trial) ${want === "1" ? "on" : "off"}${was === (want === "1") ? " (unchanged)" : ""}`);
   res.redirect(
     "/credentials/openai-voice?msg=" +
-      encodeURIComponent(want === "1" ? "Voice front desk is on. Reload the Command Center to use it." : "Voice front desk is off. The Command Center's voice talks to MONI AI directly again.") +
+      encodeURIComponent(want === "1" ? "Voice front desk is on. Reload the Command Center to use it." : "Voice front desk is off. The Command Center's voice talks to MINT AI directly again.") +
       "#v-desk"
   );
 });
@@ -3041,9 +3041,9 @@ const PHONE_RE = /^\+?\d{6,20}$/;
 /* --------------------------------------------------------------- moni ai --- */
 
 /**
- * MONI AI: the JSON / SSE API the Command Center page consumes.
+ * MINT AI: the JSON / SSE API the Command Center page consumes.
  *
- * Everything proxies to the MONI AI supervisor's unix socket (lib/moniai.js),
+ * Everything proxies to the MINT AI supervisor's unix socket (lib/moniai.js),
  * which owns the one long-lived root Claude Code session that delegates to the
  * others. One permission, moniai.use, in no stock role: it reaches a root
  * session that can message every other session on the machine, so it is the
@@ -3059,7 +3059,7 @@ const PHONE_RE = /^\+?\d{6,20}$/;
 function requireApiPerm(perm) {
   return (req, res, next) => {
     if (!req.me) return res.status(401).json({ error: "Sign in first." });
-    if (!req.perm.can(perm)) return res.status(403).json({ error: "Your role does not include MONI AI." });
+    if (!req.perm.can(perm)) return res.status(403).json({ error: "Your role does not include MINT AI." });
     next();
   };
 }
@@ -3150,7 +3150,7 @@ function moniAiVoice(req) {
 
 app.get("/moni-ai", requireAuth, async (req, res) => {
   // The tab is shared with the older console: someone who may use that but not
-  // MONI AI lands where they are allowed to be rather than on a refusal.
+  // MINT AI lands where they are allowed to be rather than on a refusal.
   if (!req.perm.can("moniai.use")) {
     if (req.perm.can("console.use")) return res.redirect("/console");
     return requirePerm("moniai.use")(req, res, () => {});
@@ -3337,8 +3337,8 @@ app.post("/moni-ai/api/speak", ...moniAiWrite, voiceSpeakRoute);
  * {type:"heard"}; per released sentence {type:"line", i, text} and then its
  * audio as it is read -- {type:"start"|"audio"|"cut"|"end", i, ...}, strictly
  * in sentence order (voiceDesk.createSpeaker); {type:"asked", turn} for a
- * request passed to MONI AI; and {type:"done"} with what the turn cost and the
- * voice usage figures. The page reads MONI AI's answer later through
+ * request passed to MINT AI; and {type:"done"} with what the turn cost and the
+ * voice usage figures. The page reads MINT AI's answer later through
  * /desk/summary. Refused with 409 while the Settings switch is off
  * ("desk-off"), so the page falls back to the direct path. There is no budget.
  */
@@ -3427,11 +3427,11 @@ app.post("/moni-ai/api/desk/turn", requireApiPerm("moniai.use"), moniAiAudioBody
 });
 
 /**
- * MONI AI's answer to a request the desk passed on, as a short spoken summary
+ * MINT AI's answer to a request the desk passed on, as a short spoken summary
  * (streamed like /desk/turn, a hand-off's cost). The full text is on screen
  * already. {type:"done", fallback:"verbatim"} tells the page to read the
  * reply as written instead (it was short and plain, or the guard cut the
- * summary before a word was said); {pending:true} that MONI AI has not
+ * summary before a word was said); {pending:true} that MINT AI has not
  * answered yet. Refused like /desk/turn. Body: {turn, vt?}.
  */
 app.post("/moni-ai/api/desk/summary", ...moniAiWrite, async (req, res) => {
@@ -3502,14 +3502,14 @@ app.get("/moni-ai/api/voice/usage", ...moniAiGuard, (req, res) => {
 
 app.post("/moni-ai/api/restart", ...moniAiWrite, async (req, res) => {
   try {
-    db.logLogin(req.ip, req.me.username, "moni-ai", "restarted MONI AI");
+    db.logLogin(req.ip, req.me.username, "moni-ai", "restarted MINT AI");
     res.json(await moniai.call("restart", {}, req.me.username, { timeout: 90000 }));
   } catch (e) {
     moniAiFail(res, e);
   }
 });
 
-/* ------------------------------- MONI AI: Command Center v3, phase 1 --- */
+/* ------------------------------- MINT AI: Command Center v3, phase 1 --- */
 /*
  * Missions, decisions and watchers, standing orders, approval rules, cost, the
  * machine card and the read-only session mirror. Each route is a thin, checked

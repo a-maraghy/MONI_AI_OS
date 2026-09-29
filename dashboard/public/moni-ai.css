@@ -1,4 +1,4 @@
-/* MONI AI Command Center (v3).
+/* MINT AI Command Center (v3).
  *
  * One screen, no page scroll: only the panels scroll, inside themselves.
  * Themes: System (the default, following prefers-color-scheme live), Dark and
@@ -652,7 +652,7 @@ html.cc-page .cc-msg.me .cc-bubble code { color: inherit; }
 .cc-brief-f .cc-i { width: 13px; height: 13px; }
 .cc-brief-f .cc-link { margin-left: auto; }
 
-/* An approval card: MONI AI asks before anything destructive. */
+/* An approval card: MINT AI asks before anything destructive. */
 .cc-approval { margin-top: 2px; border-radius: 10px; border: 1px solid color-mix(in srgb, var(--bad) 55%, transparent);
   background: linear-gradient(180deg, color-mix(in srgb, var(--bad) 11%, var(--panel)), color-mix(in srgb, var(--bad) 4%, var(--panel)));
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--bad) 10%, transparent); overflow: hidden; }

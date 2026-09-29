@@ -2,7 +2,7 @@
 /**
  * The voice front desk (TRIAL, off by default): a GPT realtime model that
  * holds the spoken conversation, so a simple question gets a quick answer
- * instead of a full MONI AI turn.
+ * instead of a full MINT AI turn.
  *
  * The administrator's standing choice is "voice only, Claude thinks", and this
  * does not change who thinks. The desk may do exactly two things:
@@ -11,11 +11,11 @@
  *                   `snapshot` op: services, disk, memory, sessions, active
  *                   missions and steps, open decisions and pending approvals as
  *                   counts and titles -- never a command; no live Odoo)
- *   ask_moni(text)  hand the request to MONI AI as an ordinary `send` turn,
+ *   ask_moni(text)  hand the request to MINT AI as an ordinary `send` turn,
  *                   attributed to the panel user and marked via "voice-desk"
  *
  * and it talks: a short acknowledgement, a brief bit of small talk, an answer
- * from the snapshot -- and, when MONI AI's answer arrives, a short spoken
+ * from the snapshot -- and, when MINT AI's answer arrives, a short spoken
  * SUMMARY of it (the administrator's decision of 2026-09-29; the full text
  * stays on screen in the Command Center exactly as before). A reply that is
  * already one or two plain sentences is read word for word instead: there is
@@ -33,11 +33,11 @@
  *      once the guard has passed it, so what is heard is exactly what was
  *      checked. It cuts a claim that something was done, deleted, restarted,
  *      pushed or approved (or is being); a promise of one; a figure found
- *      neither in the snapshot, nor in MONI AI's replies, nor in what the
- *      administrator said; a status claim with no snapshot behind it; "MONI AI
- *      said ..." before MONI AI has replied; "I've passed that on" with no
- *      ask_moni call behind it. A summary is held to MONI AI's reply: a figure
- *      changed or rounded wrongly, a negation flipped, a recommendation MONI AI
+ *      neither in the snapshot, nor in MINT AI's replies, nor in what the
+ *      administrator said; a status claim with no snapshot behind it; "MINT AI
+ *      said ..." before MINT AI has replied; "I've passed that on" with no
+ *      ask_moni call behind it. A summary is held to MINT AI's reply: a figure
+ *      changed or rounded wrongly, a negation flipped, a recommendation MINT AI
  *      did not make, "I'll ask the administrator" turned into "done", a name or
  *      a path it did not give -- each is cut, and a pending approval that the
  *      summary left out is said anyway.
@@ -91,14 +91,14 @@ const REPLY_IN_CONTEXT_CHARS = 1500;
 const SUMMARY_MAX_TOKENS = 220;
 const VERBATIM_MAX_CHARS = 220; // a reply this short, in plain prose, is read as it is
 
-const SAFE_LINE = "Let me pass that to MONI AI.";
-const SAFE_LINE_ASKED = "I've passed that to MONI AI. I'll read you its answer when it arrives.";
+const SAFE_LINE = "Let me pass that to MINT AI.";
+const SAFE_LINE_ASKED = "I've passed that to MINT AI. I'll read you its answer when it arrives.";
 const SAFE_LINE_TAIL = "I'll read you its answer when it arrives."; // when "I've passed that on" was already heard
 const APPROVAL_LINE = "It needs your approval or your answer. The details are on screen.";
 const APPROVAL_LINE_SHORT = "It needs your approval or your answer.";
 const DETAILS_LINE = "The full answer is on screen.";
-const SUMMARY_CUT_LINE = "The rest of MONI AI's answer is on screen.";
-const SUMMARY_NONE_LINE = "MONI AI has replied. Its answer is on screen.";
+const SUMMARY_CUT_LINE = "The rest of MINT AI's answer is on screen.";
+const SUMMARY_NONE_LINE = "MINT AI has replied. Its answer is on screen.";
 
 /* ------------------------------------------------------------- prices -- */
 
@@ -119,7 +119,7 @@ const TOOLS = Object.freeze([
     name: "read_status",
     description:
       "Read a fresh, read-only snapshot of this VPS: services and their state, disk, memory, CPU and load, the live Claude sessions, " +
-      "MONI AI's own state, active missions with their steps, open decisions and pending approvals (counts and titles only). " +
+      "MINT AI's own state, active missions with their steps, open decisions and pending approvals (counts and titles only). " +
       "Call it before answering any question about the machine. It knows nothing else: not Odoo's data, not backups, not logs, not files.",
     parameters: { type: "object", properties: {}, additionalProperties: false },
   },
@@ -127,9 +127,9 @@ const TOOLS = Object.freeze([
     type: "function",
     name: "ask_moni",
     description:
-      "Pass the administrator's request to MONI AI, the Claude agent that runs this VPS, which will answer or act. " +
+      "Pass the administrator's request to MINT AI, the Claude agent that runs this VPS, which will answer or act. " +
       "Use it for anything that is not answered by the snapshot, for every action or change of any kind (delete, restart, push, deploy, " +
-      "approve, deny, fix, run, send), and whenever you are unsure. A short summary of MONI AI's answer is read aloud when it arrives.",
+      "approve, deny, fix, run, send), and whenever you are unsure. A short summary of MINT AI's answer is read aloud when it arrives.",
     parameters: {
       type: "object",
       properties: { text: { type: "string", description: "The request, in the administrator's own words as closely as possible." } },
@@ -141,34 +141,34 @@ const TOOLS = Object.freeze([
 const TOOL_NAMES = new Set(TOOLS.map((t) => t.name));
 
 const INSTRUCTIONS = [
-  "You are the voice front desk of MONI AI, the assistant that runs this VPS. The administrator is speaking to you; your words are read aloud.",
-  "You never think for MONI AI and you never act. You do exactly three things:",
+  "You are the voice front desk of MINT AI, the assistant that runs this VPS. The administrator is speaking to you; your words are read aloud.",
+  "You never think for MINT AI and you never act. You do exactly three things:",
   "1. Answer questions about the machine's current state, but ONLY from the read_status tool. Call read_status first, then answer from it and nothing else. Quote figures exactly as the snapshot gives them.",
-  "2. Hand everything else to MONI AI by CALLING the ask_moni tool, then say a short acknowledgement such as \"I've passed that to MONI AI. I'll read you its answer when it arrives.\"",
+  "2. Hand everything else to MINT AI by CALLING the ask_moni tool, then say a short acknowledgement such as \"I've passed that to MINT AI. I'll read you its answer when it arrives.\"",
   "3. Small talk: a greeting, thanks, \"how are you\", \"can you hear me\" get one short, friendly, honest sentence. Small talk never includes the state of the machine, a service, a task or a request: for those, use read_status or ask_moni first.",
   "Saying that you passed something on does not pass it on: only an ask_moni call does. Never say you passed, sent or will pass a request unless you called ask_moni for it in this same turn.",
   "Hard rules:",
   "- If the answer is not in the snapshot, do not guess and do not answer from general knowledge: call ask_moni right away, in the same response. Do not merely say you will ask.",
   "- Every request to do or change something (delete, restart, stop, start, push, deploy, approve, deny, fix, run, install, send a message) goes to ask_moni. You cannot do these yourself.",
   "- Never say that anything was done, deleted, restarted, pushed, approved or fixed, or that it is being done, and never promise that it will be. You only know that you passed the request on.",
-  "- Never invent MONI AI's answer. MONI AI's replies reach you as system messages beginning \"MONI AI replied\". If there is none yet, say MONI AI has not replied yet.",
-  "- Never quote a number that is not in the snapshot or in MONI AI's reply.",
+  "- Never invent MINT AI's answer. MINT AI's replies reach you as system messages beginning \"MINT AI replied\". If there is none yet, say MINT AI has not replied yet.",
+  "- Never quote a number that is not in the snapshot or in MINT AI's reply.",
   "- Approvals and decisions are for the administrator to decide in the Command Center; you cannot approve or deny anything.",
   "Style: one or two short spoken sentences, plain English, no lists, no markdown.",
 ].join("\n");
 
 const SUMMARY_INSTRUCTIONS = [
-  "You turn MONI AI's written reply into a short spoken summary for the administrator, who can see the full text on screen.",
+  "You turn MINT AI's written reply into a short spoken summary for the administrator, who can see the full text on screen.",
   "Rules:",
   "- One to three short sentences, at most 45 words. Plain English. No lists, no markdown.",
   "- Say only what the reply says. Add no fact, figure, name, reason, recommendation or action of your own.",
   "- Keep every negation: if the reply says something did NOT happen, is NOT running, or is not known yet, say so.",
   "- Keep figures exactly as written, or leave them out. Never round them differently or convert them.",
-  "- If MONI AI says it will do something, is waiting, needs the administrator's approval, decision or answer, or does not know yet, say exactly that. Never say it is done.",
+  "- If MINT AI says it will do something, is waiting, needs the administrator's approval, decision or answer, or does not know yet, say exactly that. Never say it is done.",
   "- If the reply needs the administrator's approval, decision or answer, the summary MUST say so.",
-  "- Only repeat a recommendation MONI AI itself made, as MONI AI's.",
+  "- Only repeat a recommendation MINT AI itself made, as MINT AI's.",
   "- Do not read lists, code, commands, links or file paths aloud: say the details are on screen.",
-  "- Speak about MONI AI in the third person (\"MONI AI says...\", \"MONI AI restarted...\"). Never say \"I\" did anything.",
+  "- Speak about MINT AI in the third person (\"MINT AI says...\", \"MINT AI restarted...\"). Never say \"I\" did anything.",
 ].join("\n");
 
 /* ------------------------------------------------ the supervisor door -- */
@@ -227,8 +227,13 @@ function forModel(snap) {
   const s = { ...(snap || {}) };
   const reqs = Array.isArray(s.requests_to_moni_ai) ? s.requests_to_moni_ai : [];
   delete s.requests_to_moni_ai;
+  // The supervisor's key keeps the internal spelling; the desk speaks of MINT AI.
+  if (s.moni_ai !== undefined) {
+    s.mint_ai = s.moni_ai;
+    delete s.moni_ai;
+  }
   const out = strip(redactDeep(s));
-  out.your_requests_to_moni_ai = reqs.map((r) => ({ request: r.id, answered: !!r.answered }));
+  out.your_requests_to_mint_ai = reqs.map((r) => ({ request: r.id, answered: !!r.answered }));
   return out;
 }
 
@@ -251,13 +256,13 @@ const DO_ING =
   "clearing|resetting|rolling back|reverting|creating|executing|shutting down|disabling|enabling|changing|applying|backing up|cleaning|freeing|" +
   "moving|renaming|cancell?ing|pausing|resuming|messaging|scheduling";
 const NEGATION = /\b(not|never|no|nothing|none|cannot|unable|without|n't|cant|can't|wont|won't|haven't|hasn't|hadn't|didn't|isn't|aren't|wasn't|weren't|don't|doesn't|nobody|neither|nor|no longer)\b|n't\b/;
-// "I've passed that to MONI AI", "I asked MONI AI to ..." -- the one thing the
+// "I've passed that to MINT AI", "I asked MINT AI to ..." -- the one thing the
 // desk may say it did. Removed before any claim is looked for.
 const HANDOFF = new RegExp(
   [
-    "\\b(?:pass(?:ed|ing)?|hand(?:ed|ing)?|sen[dt]|sending|forward(?:ed|ing)?|relay(?:ed|ing)?|put(?:ting)?|flag(?:ged|ging)?|rais(?:e|ed|ing)|giv(?:e|en|ing)|gave|refer(?:red|ring)?)\\b[^.,;!?]{0,50}?\\b(?:to|with|on to|onto|over to)\\s+moni(?:\\s+ai)?\\b(?!\\s+agent)",
-    "\\b(?:ask(?:ed|ing)?|tell(?:ing)?|told|check(?:ed|ing)? with)\\s+moni(?:\\s+ai)?\\b(?!\\s+agent)",
-    "\\blet(?:ting)?\\s+moni(?:\\s+ai)?\\s+know\\b",
+    "\\b(?:pass(?:ed|ing)?|hand(?:ed|ing)?|sen[dt]|sending|forward(?:ed|ing)?|relay(?:ed|ing)?|put(?:ting)?|flag(?:ged|ging)?|rais(?:e|ed|ing)|giv(?:e|en|ing)|gave|refer(?:red|ring)?)\\b[^.,;!?]{0,50}?\\b(?:to|with|on to|onto|over to)\\s+(?:mint|moni)(?:\\s+ai)?\\b(?!\\s+agent)",
+    "\\b(?:ask(?:ed|ing)?|tell(?:ing)?|told|check(?:ed|ing)? with)\\s+(?:mint|moni)(?:\\s+ai)?\\b(?!\\s+agent)",
+    "\\blet(?:ting)?\\s+(?:mint|moni)(?:\\s+ai)?\\s+know\\b",
   ].join("|"),
   "g"
 );
@@ -273,8 +278,8 @@ const SHOULD_BE = new RegExp("\\bshould\\s+(?:now\\s+)?be\\s+(" + DONE_WORDS + "
 // that sentence into a claim: "Restarting Odoo." ... "Done."
 const CONFIRM = /^\s*(?:yes|yep|yeah|ok|okay|done|all good|all set|success|successful|complete|completed|finished|there you go|it worked|that worked|worked|it's back|its back|back up|good to go|and done|sorted)\b/;
 const ACTION_ANY = new RegExp("\\b(" + DONE_WORDS + "|" + DO_WORDS + "|" + DO_ING + ")\\b");
-const ATTRIBUTION = /\bmoni(?:\s+ai)?\b(?:\s+\w+){0,3}?\s+(said|says|replied|replies|answered|answers|reported|reports|confirmed|confirms|told|found|responded|thinks|wrote|mentioned|suggests|suggested|recommends|recommended|explained|explains)\b/;
-const ANSWER_IS = /\b(its|the|moni ai's|monis|moni's)\s+(answer|reply|response)\s+(is|was|says|said)\b/;
+const ATTRIBUTION = /\b(?:mint|moni)(?:\s+ai)?\b(?:\s+\w+){0,3}?\s+(said|says|replied|replies|answered|answers|reported|reports|confirmed|confirms|told|found|responded|thinks|wrote|mentioned|suggests|suggested|recommends|recommended|explained|explains)\b/;
+const ANSWER_IS = /\b(its|the|mint ai's|mints|mint's|moni ai's|monis|moni's)\s+(answer|reply|response)\s+(is|was|says|said)\b/;
 const STATUS_TERM =
   /\b(disk|disks|storage|memory|ram|cpu|load|uptime|service|services|odoo|nginx|postgres|postgresql|fail2ban|ssh|firewall|ufw|dashboard|session|sessions|mission|missions|step|steps|decision|decisions|approval|approvals|backup|backups|server|machine|vps|database|logs?|certificate|website|site|email|cron|agents?|telegram|github|repo|repository|commit|branch|system|systems)\b/g;
 const STATE_WORD =
@@ -409,7 +414,7 @@ function needsNext(sentence) {
   return ACTION_ANY.test(s);
 }
 
-/** Does this sentence mention passing something to MONI AI? */
+/** Does this sentence mention passing something to MINT AI? */
 function mentionsHandoff(sentence) {
   return HANDOFF_ANY.test(norm(sentence));
 }
@@ -475,7 +480,7 @@ function polarClaims(clause) {
 }
 
 const STOP = new Set(
-  "the a an and or but so to of in on at for with from by is are was were be been being it its it's this that these those there here have has had do does did not no yes you your yours i i'm i've me my we our they them their he she his her moni ai says said about also just only still now then than more most some any all each every which what when where who whom how why will would could should can may might must shall into onto over under again once very really".split(" ")
+  "the a an and or but so to of in on at for with from by is are was were be been being it its it's this that these those there here have has had do does did not no yes you your yours i i'm i've me my we our they them their he she his her mint moni ai says said about also just only still now then than more most some any all each every which what when where who whom how why will would could should can may might must shall into onto over under again once very really".split(" ")
 );
 function contentWords(text) {
   return (norm(text).match(/[a-z][a-z0-9'@._-]{2,}/g) || [])
@@ -488,9 +493,9 @@ const RECOMMEND = /\b(should|recommends?|recommended|recommendation|suggests?|su
 const REPLY_RECOMMEND = /\b(should|recommend\w*|suggest\w*|advis\w*|best|better|consider|ought|propos\w*|need to|needs your|have to|must|if you (?:still )?want|want me to|say yes|reply|tell me|ask again|i'd|i would)\b|^\W*(?:\d+\W+)?(?:connect|check|open|run|get|use|ask|reply|say|tell|install|reboot|restart|approve|type|go|click|enter|switch|pick|choose|add|remove|delete|update)\b/;
 const REPLY_NEEDS_APPROVAL =
   /\b(needs?|waiting (?:for|on)|requires?|awaiting|wants?)\b[^.\n]{0,40}\b(approval|go-ahead|go ahead|decision|confirmation|answer|choice)\b|\bapproval cards?\b|\bdecisions? inbox\b|\bif you approve\b|\bsay yes\b|\bplease (?:confirm|approve|decide|choose|pick|reply)\b|\breply "|\btell me (?:which|when|whether|if)\b|\bdo you want\b|\bshould i\b/;
-const SUMMARY_MENTIONS_APPROVAL = /\b(approv\w*|go-ahead|go ahead|your ok|your okay|your yes|confirm\w*|decid\w*|decision|your answer|your choice|choose|pick|asks? (?:if|whether|you|the administrator)|wants? to know|would like|your call|let (?:it|moni ai) know)\b/;
+const SUMMARY_MENTIONS_APPROVAL = /\b(approv\w*|go-ahead|go ahead|your ok|your okay|your yes|confirm\w*|decid\w*|decision|your answer|your choice|choose|pick|asks? (?:if|whether|you|the administrator)|wants? to know|would like|your call|let (?:it|mint ai|moni ai) know)\b/;
 const UNSPEAKABLE = /(?:^|\s)\/[\w.-]+\/[\w./-]*|https?:\/\/|`|\b(?:sudo|systemctl|rm -\w+|git push)\b|\s--[a-z]/i;
-const NAME_ALLOW = new Set(["moni", "ai", "i", "i'm", "i've", "command", "center", "centre", "claude", "gpt", "ok", "okay", "the", "it"]);
+const NAME_ALLOW = new Set(["mint", "moni", "ai", "i", "i'm", "i've", "command", "center", "centre", "claude", "gpt", "ok", "okay", "the", "it"]);
 
 /** Names and identifiers in a summary that the reply (or snapshot, or the request) never gave. */
 function unknownName(sentence, known) {
@@ -559,7 +564,7 @@ function summaryClause(cl, rawClause, reply) {
   return null;
 }
 
-/** "MONI AI suggests ..." -- only if MONI AI suggested it. */
+/** "MINT AI suggests ..." -- only if MINT AI suggested it. */
 function recommendationAdded(cl, rawClause, reply) {
   const r = RECOMMEND.exec(cl);
   if (!r || negatedBefore(cl, r.index)) return null;
@@ -661,7 +666,7 @@ function judge(sentences, ctx) {
         // "everything" borrow their subject from the clause before.
         let terms = [...cl.matchAll(STATUS_TERM)].map((x) => x[1]);
         if (!terms.length && PRONOUN_SUBJECT.test(cl) && STATE_STRONG.test(cl)) terms = prevTerms.length ? prevTerms : ["(unnamed)"];
-        if (terms.length && STATE_WORD.test(cl) && !HEDGE.test(cl) && !/moni/.test(cl)) {
+        if (terms.length && STATE_WORD.test(cl) && !HEDGE.test(cl) && !/mint|moni/.test(cl)) {
           if (!c.grounded) return fail("ungrounded", raw, si);
           const knownTerm = terms.some((t) => t === "(unnamed)" || snapText.includes(t.replace(/s$/, "")));
           if (!knownTerm && !(replyText && terms.some((t) => replyText.includes(t.replace(/s$/, ""))))) return fail("not-in-snapshot", raw, si);
@@ -692,16 +697,16 @@ function guard(text, ctx) {
 }
 
 /**
- * Does this say the request was (or is being) passed to MONI AI when no
+ * Does this say the request was (or is being) passed to MINT AI when no
  * ask_moni call backs it? `askedNow`: ask_moni ran this turn (or is in this
  * very response). `pending`: an earlier request is still unanswered, which
  * backs a past-tense mention ("I've passed that on") but not a new promise.
  */
-const ANSWER_PROMISE = /\b(?:read|tell|give|pass|let) you\b[^.]{0,40}\b(?:answer|reply|response)\b|\b(?:its|moni ai's|the) (?:answer|reply|response)\b[^.]{0,20}\bwhen it (?:arrives|comes)\b/;
+const ANSWER_PROMISE = /\b(?:read|tell|give|pass|let) you\b[^.]{0,40}\b(?:answer|reply|response)\b|\b(?:its|mint ai's|moni ai's|the) (?:answer|reply|response)\b[^.]{0,20}\bwhen it (?:arrives|comes)\b/;
 function unbackedHandoff(text, { askedNow, pending } = {}) {
   if (askedNow) return null;
   for (const cl of clauses(text)) {
-    // "I'll read you MONI AI's reply when it arrives" -- with nothing asked, there is no reply coming.
+    // "I'll read you MINT AI's reply when it arrives" -- with nothing asked, there is no reply coming.
     if (!pending && ANSWER_PROMISE.test(cl) && !negatedBefore(cl, cl.search(ANSWER_PROMISE))) return { ok: false, rule: "unbacked-handoff", match: cl };
     const m = HANDOFF_ANY.exec(cl);
     if (!m) continue;
@@ -810,7 +815,7 @@ class DeskSession {
     this.handler = null;
     this.queue = Promise.resolve();
     this.requests = new Map(); // turn id -> { text, answered, reply }
-    this.replies = []; // MONI AI's replies the desk has been given
+    this.replies = []; // MINT AI's replies the desk has been given
     this.heard = []; // what the administrator said
     this.snapshotText = "";
     this.groundedAt = 0;
@@ -914,7 +919,7 @@ class DeskSession {
     const how = spoken ? `the administrator heard this summary of it: "${spoken}", and has the full text on screen` : "the administrator has it on screen";
     this.send({
       type: "conversation.item.create",
-      item: { type: "message", role: "system", content: [{ type: "input_text", text: `MONI AI replied to request ${id} (${how}):\n${clipped}` }] },
+      item: { type: "message", role: "system", content: [{ type: "input_text", text: `MINT AI replied to request ${id} (${how}):\n${clipped}` }] },
     });
   }
 
@@ -1071,17 +1076,17 @@ class DeskSession {
     const text = typeof args.text === "string" ? args.text.trim() : "";
     const extra = Object.keys(args).filter((k) => k !== "text");
     if (!text || text.length > MAX_ASK_CHARS || extra.length) return JSON.stringify({ error: "ask_moni takes one field, text, of 1 to " + MAX_ASK_CHARS + " characters" });
-    if (turn.asked.length >= MAX_ASKS_PER_TURN) return JSON.stringify({ error: "already passed to MONI AI; do not ask again" });
+    if (turn.asked.length >= MAX_ASKS_PER_TURN) return JSON.stringify({ error: "already passed to MINT AI; do not ask again" });
     const r = await this.ops.ask(withWords(text, turn.heard));
     const t = r && r.turn;
     if (t && t.id) this.requests.set(t.id, { text, answered: false, reply: null });
     turn.asked.push(t || null);
     turn.tools.push("ask_moni");
     return JSON.stringify({
-      status: "passed to MONI AI",
+      status: "passed to MINT AI",
       request: t ? t.id : null,
       queued_behind_other_work: !!(r && r.queued_behind),
-      note: "MONI AI has NOT replied yet. Say only that you passed it on. A summary of its answer will be read aloud when it arrives.",
+      note: "MINT AI has NOT replied yet. Say only that you passed it on. A summary of its answer will be read aloud when it arrives.",
     });
   }
 
@@ -1166,7 +1171,7 @@ class DeskSession {
           turn.autoAsked = true;
         } catch (e) {
           this.log("desk: could not pass the request on after the guard: " + e.message);
-          emit({ text: "Sorry, I could not reach MONI AI.", safe: true });
+          emit({ text: "Sorry, I could not reach MINT AI.", safe: true });
           timings.done = Date.now() - t0;
           return this.result(turn, timings);
         }
@@ -1182,11 +1187,11 @@ class DeskSession {
   }
 
   /**
-   * A short spoken summary of MONI AI's reply to one of this user's desk
+   * A short spoken summary of MINT AI's reply to one of this user's desk
    * requests. `opts.onLine` as for turn(). Resolves with
    * { fallback: "verbatim" } when the reply should simply be read as written
    * (short and plain, or the summary was cut before a word was said), or
-   * { pending: true } when MONI AI has not answered yet.
+   * { pending: true } when MINT AI has not answered yet.
    */
   summarise(turnId, opts) {
     return this.serial(() => this._summarise(turnId, opts || {}));
@@ -1214,7 +1219,7 @@ class DeskSession {
     turn.shape = shape;
     const finish = (spoken, fallback) => {
       // Tell the conversation (if one is open; otherwise the next turn's
-      // refreshReplies will), so "what did MONI AI say?" has its answer.
+      // refreshReplies will), so "what did MINT AI say?" has its answer.
       if (!mine.answered && this.ready && !this.dead) {
         mine.answered = true;
         mine.reply = reply;
@@ -1265,7 +1270,7 @@ class DeskSession {
                 type: "input_text",
                 text:
                   (mine.text ? `The administrator asked: "${mine.text.slice(0, 500)}"\n\n` : "") +
-                  `MONI AI's reply, between the triple quotes:\n"""\n${quoted}\n"""\n` +
+                  `MINT AI's reply, between the triple quotes:\n"""\n${quoted}\n"""\n` +
                   (shape.list || shape.code || shape.paths ? "It has lists, code or paths: do not read them, say the details are on screen.\n" : ""),
               },
             ],
@@ -1342,7 +1347,7 @@ function scrub(text) {
 /* ------------------------------------------------ speaking, streamed -- */
 
 /**
- * What kind of turn this was, for the usage figures: a request passed to MONI
+ * What kind of turn this was, for the usage figures: a request passed to MINT
  * AI (and, later, its summary) is a hand-off; an answer that read the snapshot
  * is a snapshot answer; anything else is small talk.
  */

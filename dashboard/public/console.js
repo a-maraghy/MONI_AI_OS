@@ -1,6 +1,6 @@
 "use strict";
 /*
- * The MONI AI chat.
+ * The MINT AI chat.
  *
  * Talks to /console/:id/send, which answers with newline-delimited JSON straight
  * from the Claude CLI and holds the connection open for the length of the turn.

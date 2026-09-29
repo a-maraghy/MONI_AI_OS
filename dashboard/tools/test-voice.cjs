@@ -586,7 +586,7 @@ async function main() {
   check("posts the configured model and the recording with its type",
     t.model === "gpt-4o-mini-transcribe" && t.type === "audio/webm" && t.filename === "speech.webm", JSON.stringify(t));
   check("with the key as a bearer token", t.auth === "Bearer " + GOOD);
-  check("with a vocabulary prompt (MONI, Odoo)", /MONI/.test(t.prompt || "") && /Odoo/.test(t.prompt || ""), t.prompt);
+  check("with a vocabulary prompt (Mint, MINT AI, Odoo), and no MONI", !/MONI/.test(t.prompt || "") && /Mint/.test(t.prompt || "") && /MINT AI/.test(t.prompt || "") && /Odoo/.test(t.prompt || ""), t.prompt);
   await voice.transcribe(Buffer.from("x"), cfg({ transcribe_model: "gpt-4o-transcribe" }), "audio/ogg;codecs=opus");
   const t2 = mock.transcriptions[mock.transcriptions.length - 1];
   check("the listening model is a setting; an odd mime falls back to webm", t2.model === "gpt-4o-transcribe" && t2.type === "audio/webm", JSON.stringify(t2));
@@ -721,7 +721,7 @@ function viewTests() {
   const user = { name: "Tester", username: "tester", perm: rbac.actor({ permissions: ["*"] }) };
   const off = views.page({ csrf: "c", user, voice: { configured: false, manage: true, voice: "marin" } });
   check("Command Center without a key: 'Add an OpenAI key in Settings', linked", /Add an OpenAI key in Settings/.test(off) && /href="\/credentials\/openai-voice"/.test(off));
-  // v3: the big "Talk to MONI" card left the rail; the composer mic is the one control.
+  // v3: the big "Talk to MINT" card left the rail; the composer mic is the one control.
   check("  the composer mic disabled, voice-ready flag off, no big mic card",
     /id="cc-c-mic"[^>]*disabled/.test(off) && /data-voice-ready=""/.test(off) && !/id="cc-mic-big"/.test(off));
   const offNoManage = views.page({ csrf: "c", user, voice: { configured: false, manage: false } });

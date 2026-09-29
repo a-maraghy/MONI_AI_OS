@@ -1,6 +1,6 @@
 "use strict";
 /*
- * The MONI AI Command Center (v3), live.
+ * The MINT AI Command Center (v3), live.
  *
  * Reads the JSON API under /moni-ai/api/ once on load (overview, the turns,
  * approvals, delegations and inbound ledgers, then missions, decisions,
@@ -12,7 +12,7 @@
  * after the markup is in place (applyBars), never as a style attribute: the
  * CSP would refuse it.
  *
- * The orbit map in the middle is cc-map.js: MONI AI's seed core with the live
+ * The orbit map in the middle is cc-map.js: MINT AI's seed core with the live
  * sessions around it. Its states come from real events -- thinking while a
  * turn runs, delegating when a SendMessage lands (a bead runs out to that
  * session), a reply bead back when the session answers, listening while the
@@ -249,8 +249,19 @@
 
   function nowServer() { return Date.now() + S.skew; }
 
-  function liveSessions() { return S.sessions.filter(function (s) { return !s.self; }); }
-  /** Take a sessions list from the server. MONI AI itself is always shown,
+  /* The assistant's names. It is MINT AI now (MONI AI until 2026-09-29, MONI
+     Bot before that); "moni-ai" is its internal id. Anything that asks "is this
+     name us?" accepts all of them, so a session or a note still using the old
+     name is never taken for another session. */
+  var AI_NAME = "MINT AI";
+  function isAiName(n) {
+    var k = String(n == null ? "" : n).replace(/\s*\[[0-9a-f]{4,12}\]\s*$/i, "").trim().toLowerCase().replace(/[\s_-]+/g, " ");
+    return k === "mint ai" || k === "moni ai" || k === "moni bot";
+  }
+  /** How an actor / sender is shown: the assistant by its current name, anyone else as they are. */
+  function aiLabel(n) { return isAiName(n) ? AI_NAME : n; }
+  function liveSessions() { return S.sessions.filter(function (s) { return !s.self && !isAiName(s.name); }); }
+  /** Take a sessions list from the server. MINT AI itself is always shown,
       even when the list does not carry it (then it is made from the status),
       and a session the event did not tag with its mission gets it from the
       missions board. */
@@ -258,7 +269,7 @@
     list = (list || []).slice();
     var st = S.status || {};
     if (!list.some(function (s) { return s.self; }) && (st.session_id || (st.process && st.process.pid))) {
-      list.push({ self: true, synthetic: true, name: "MONI AI", pid: st.process && st.process.pid, session_id: st.session_id || null,
+      list.push({ self: true, synthetic: true, name: "MINT AI", pid: st.process && st.process.pid, session_id: st.session_id || null,
         cwd: "/root/moni-ai", where: "headless · supervisor", kind: "supervisor", status: st.busy ? "busy" : "idle", subagents: [],
         started_at: st.process && st.process.started_at, cost_today_usd_est: st.cost_today ? st.cost_today.moni_ai_usd : null });
     }
@@ -348,16 +359,16 @@
     var proc = S.status && S.status.process;
     var failed = failedServices().length;
     if (!S.online) {
-      chip.classList.add("bad"); cdot.className = "cc-dot bad"; lab("MONI AI offline", "Offline");
+      chip.classList.add("bad"); cdot.className = "cc-dot bad"; lab("MINT AI offline", "Offline");
     } else if (proc && proc.state !== "ready") {
       chip.classList.add(proc.state === "starting" || proc.state === "stopping" ? "warn" : "bad");
-      cdot.className = "cc-dot warn"; lab("MONI AI " + proc.state, proc.state);
+      cdot.className = "cc-dot warn"; lab("MINT AI " + proc.state, proc.state);
     } else if (pending) {
       chip.classList.add("warn"); cdot.className = "cc-dot warn"; lab("Awaiting approval", "Approval");
     } else if (failed) {
       chip.classList.add("warn"); cdot.className = "cc-dot warn"; lab(failed + " failed service" + (failed === 1 ? "" : "s"), failed + " issue" + (failed === 1 ? "" : "s"));
     } else if (S.status && S.status.busy) {
-      cdot.className = "cc-dot work"; lab("MONI AI working", "Working");
+      cdot.className = "cc-dot work"; lab("MINT AI working", "Working");
     } else {
       cdot.className = "cc-dot"; lab("All systems nominal", "Nominal");
     }
@@ -434,7 +445,7 @@
     var c = st.counts || {};
     $("cc-core-aside").textContent = proc.model ? modelLabel(proc.model) + (proc.effort ? " · " + proc.effort : "") : "—";
     if (!S.online) setCore("core", "offline", "bad", S.offlineMsg || "supervisor unreachable");
-    else setCore("core", proc.state === "ready" ? "online" : proc.state || "—", proc.state === "ready" ? "ok" : "warn", "MONI AI's own Claude session");
+    else setCore("core", proc.state === "ready" ? "online" : proc.state || "—", proc.state === "ready" ? "ok" : "warn", "MINT AI's own Claude session");
 
     var live = liveSessions();
     var cnt = { working: 0, waiting: 0, idle: 0 };
@@ -519,13 +530,13 @@
 
     var el = $("cc-sessions");
     if (!list.length) {
-      el.innerHTML = '<div class="cc-sessions-empty">' + (S.online ? "No Claude Code sessions are registered on this machine right now." : "Sessions appear here when MONI AI's supervisor is reachable.") + "</div>";
+      el.innerHTML = '<div class="cc-sessions-empty">' + (S.online ? "No Claude Code sessions are registered on this machine right now." : "Sessions appear here when MINT AI's supervisor is reachable.") + "</div>";
       return;
     }
     el.innerHTML = list.map(function (s) {
       var st = s.self ? selfState() : sessState(s);
       var key = sessKey(s);
-      var name = s.self ? "MONI AI" : s.name || "unnamed session";
+      var name = s.self ? "MINT AI" : s.name || "unnamed session";
       var tags = s.self ? '<span class="cc-badge b-self">' + ic("core") + "CEO · you talk to it</span>" : "";
       if (s.mission) tags += '<span class="cc-badge b-mis">' + ic("flag") + esc(s.mission.ref || "mission") + (s.mission.step_n ? " · step " + esc(s.mission.step_n) : "") + "</span>";
       if (!s.self && !s.mission) tags += '<span class="cc-badge b-mute">' + esc(sessWhere(s)) + "</span>";
@@ -559,7 +570,7 @@
       var url = rc && rc.url;
       if (!rc.enabled || !url || !/^https:\/\/claude\.ai\//.test(url)) {
         if (w) w.close();
-        toast(rc && rc.enabled ? "Remote Control has no session link yet." : "Remote Control is off for MONI AI.", true);
+        toast(rc && rc.enabled ? "Remote Control has no session link yet." : "Remote Control is off for MINT AI.", true);
         return;
       }
       if (w) { w.opener = null; w.location.replace(url); }
@@ -571,7 +582,7 @@
   }
   $("cc-rc-open").addEventListener("click", openRemoteControl);
 
-  /** Interrupt MONI AI's current turn. */
+  /** Interrupt MINT AI's current turn. */
   function interrupt(btn) {
     if (btn) btn.disabled = true;
     return api("interrupt", { body: {} }).then(function () { toast("Interrupting the current turn…"); })
@@ -588,8 +599,8 @@
     $("cc-target-label").textContent = set ? "→ " + clip(S.target, 26) : "Auto-route";
     $("cc-vb-target").textContent = set ? "→ " + clip(S.target, 22) : "Auto-route";
     $("cc-target").classList.toggle("set", set);
-    $("cc-target").title = set ? "Addressed to " + S.target + " (MONI AI delegates it there)" : "MONI AI picks the session";
-    input.placeholder = set ? "Tell " + clip(S.target, 30) + " what to do (through MONI AI)…" : "Tell MONI AI what to do…";
+    $("cc-target").title = set ? "Addressed to " + S.target + " (MINT AI delegates it there)" : "MINT AI picks the session";
+    input.placeholder = set ? "Tell " + clip(S.target, 30) + " what to do (through MINT AI)…" : "Tell MINT AI what to do…";
     renderSessions(true);
   }
 
@@ -602,7 +613,7 @@
     menu = document.createElement("div");
     menu.className = "cc-target-menu";
     menu.setAttribute("role", "menu");
-    var h = '<button type="button" role="menuitemradio" aria-checked="' + (S.target === "auto") + '" data-t="auto" class="' + (S.target === "auto" ? "on" : "") + '">' + ic("route") + '<span class="nm">Auto-route</span><small>MONI AI decides</small></button><hr>';
+    var h = '<button type="button" role="menuitemradio" aria-checked="' + (S.target === "auto") + '" data-t="auto" class="' + (S.target === "auto" ? "on" : "") + '">' + ic("route") + '<span class="nm">Auto-route</span><small>MINT AI decides</small></button><hr>';
     var live = sortSessions(liveSessions());
     if (!live.length) h += '<button type="button" disabled><span class="nm">No other sessions are live</span></button>';
     live.forEach(function (s) {
@@ -721,7 +732,7 @@
 
   /* ---------------------------------------------------------- conversation
      One block per turn: what came in (you, Remote Control, a peer session, a
-     standing order, a watcher), then MONI AI's bubble -- its text as it
+     standing order, a watcher), then MINT AI's bubble -- its text as it
      streams, the delegations the turn made and any approval it is waiting on.
      A standing order's turn is a briefing card instead. */
 
@@ -793,10 +804,10 @@
       return '<div class="cc-msg me"><div class="who"><b>' + name + "</b> · " + esc(when) + tag + (tr.target ? " · → " + esc(clip(tr.target, 30)) : "") + '</div><div class="cc-bubble">' + esc(text) + "</div></div>";
     }
     if (tr.source === "peer") {
-      return '<div class="cc-msg ai"><div class="who"><span class="cc-av"></span><b>' + esc(tr.actor || "A session") + "</b> · " + esc(when) + ' · peer message</div><div class="cc-bubble"><div class="cc-relay"><div class="src">' + esc(tr.actor || "session") + " → MONI AI</div>" + md(clip(text, 4000)) + "</div></div></div>";
+      return '<div class="cc-msg ai"><div class="who"><span class="cc-av"></span><b>' + esc(tr.actor || "A session") + "</b> · " + esc(when) + ' · peer message</div><div class="cc-bubble"><div class="cc-relay"><div class="src">' + esc(tr.actor || "session") + " → MINT AI</div>" + md(clip(text, 4000)) + "</div></div></div>";
     }
     var line = clip(firstLine(text.replace(/\[Cross-session [a-z ]+\]/i, "")) || who, 160);
-    return '<div class="cc-msg sys"><div class="cc-bubble">' + esc(who) + (tr.actor && tr.actor.toLowerCase() !== String(tr.source).toLowerCase() ? " · " + esc(tr.actor) : "") + " · " + esc(when) + (line && line !== who ? " — " + esc(line) : "") + "</div></div>";
+    return '<div class="cc-msg sys"><div class="cc-bubble">' + esc(who) + (tr.actor && tr.actor.toLowerCase() !== String(tr.source).toLowerCase() ? " · " + esc(aiLabel(tr.actor)) : "") + " · " + esc(when) + (line && line !== who ? " — " + esc(line) : "") + "</div></div>";
   }
 
   /** A standing order's run, as a briefing card. */
@@ -826,7 +837,7 @@
   function approvalTarget(a) {
     var inp = a.input || {};
     if (a.tool === "SendMessage") return String(inp.to || "").replace(/\s*\[[0-9a-f]+\]$/, "") + " · peer message";
-    return "this machine · MONI AI runs it as root";
+    return "this machine · MINT AI runs it as root";
   }
   function approvalCmd(a) {
     var inp = a.input || {};
@@ -859,7 +870,7 @@
       '<div class="cc-ap-h">' + ic("shield") + "<span>" + head + '</span><span class="risk">destructive</span>' +
       (a.mission_ref ? '<span class="cc-badge b-mis">' + esc(a.mission_ref) + (a.step_n ? " · step " + esc(a.step_n) : "") + "</span>" : "") +
       (a.status === "pending" ? '<span class="timer" data-timer title="Nobody answering means denied">—</span><span class="cc-ap-bar" data-bar></span>' : "") + "</div>" +
-      '<div class="cc-ap-body"><p>' + (a.status === "pending" ? "MONI AI wants to " + what + ". Nothing runs until you choose." : "MONI AI asked to " + what + ".") + "</p>" +
+      '<div class="cc-ap-body"><p>' + (a.status === "pending" ? "MINT AI wants to " + what + ". Nothing runs until you choose." : "MINT AI asked to " + what + ".") + "</p>" +
       '<div class="cc-ap-cmd' + (cmd.shell ? " shell" : "") + '">' + esc(clip(cmd.text, 2000)) + "</div>" +
       '<dl class="cc-ap-dl"><dt>target</dt><dd>' + esc(approvalTarget(a)) + "</dd>" +
       "<dt>effect</dt><dd>" + esc(a.category ? a.category.replace(/_/g, " ") + (a.label && a.label !== a.category ? " — " + a.label : "") : a.label || "a step the gate treats as destructive") + "</dd>" +
@@ -906,15 +917,15 @@
     var h = inboundHTML(tr);
     var body = "";
     if (txt) body += "<div>" + md(txt) + "</div>";
-    else if (tr.status === "running") body += '<span class="cc-typing" aria-label="MONI AI is working"><i></i><i></i><i></i></span>';
-    else if (tr.status === "queued") body += '<span class="cc-muted">Queued — MONI AI will take this next.</span>';
+    else if (tr.status === "running") body += '<span class="cc-typing" aria-label="MINT AI is working"><i></i><i></i><i></i></span>';
+    else if (tr.status === "queued") body += '<span class="cc-muted">Queued — MINT AI will take this next.</span>';
     if (tr.status === "interrupted") body += '<p class="cc-muted">Interrupted.</p>';
     if (tr.status === "error" && tr.error) body += '<p class="cc-muted">Stopped with an error: ' + esc(clip(tr.error, 300)) + "</p>";
     body += dels.map(delegCardHTML).join("");
     body += aps.map(approvalHTML).join("");
     if (isOrderTurn(tr)) h += briefHTML(tr, body || '<span class="cc-muted">Nothing reported.</span>');
     else if (body) {
-      h += '<div class="cc-msg ai' + (aps.length ? " wide" : "") + '"><div class="who"><span class="cc-av"></span><b>MONI AI</b> · ' + esc(hm(tr.ended_at || tr.started_at || tr.created_at)) +
+      h += '<div class="cc-msg ai' + (aps.length ? " wide" : "") + '"><div class="who"><span class="cc-av"></span><b>MINT AI</b> · ' + esc(hm(tr.ended_at || tr.started_at || tr.created_at)) +
         (tr.duration_ms ? " · " + dur(tr.duration_ms) : "") + '</div><div class="cc-bubble' + (tr.status === "error" ? " err" : "") + '">' + body + "</div></div>";
     }
     el.innerHTML = h;
@@ -929,13 +940,13 @@
     if (!list.length) { if (box) box.remove(); return; }
     if (!box) { box = document.createElement("div"); box.className = "cc-orphans"; chat.appendChild(box); }
     box.innerHTML = list.map(function (a) {
-      return '<div class="cc-msg ai wide"><div class="who"><span class="cc-av"></span><b>MONI AI</b> · ' + esc(hm(a.created_at)) + '</div><div class="cc-bubble">' + approvalHTML(a) + "</div></div>";
+      return '<div class="cc-msg ai wide"><div class="who"><span class="cc-av"></span><b>MINT AI</b> · ' + esc(hm(a.created_at)) + '</div><div class="cc-bubble">' + approvalHTML(a) + "</div></div>";
     }).join("");
   }
 
   function renderChatEmpty() {
     if (!S.turnOrder.length && !chat.querySelector(".cc-chat-empty")) {
-      chat.innerHTML = '<div class="cc-chat-empty">No conversation yet. Tell MONI AI what to do — it finds the session that owns the work and hands it over.</div>';
+      chat.innerHTML = '<div class="cc-chat-empty">No conversation yet. Tell MINT AI what to do — it finds the session that owns the work and hands it over.</div>';
     }
   }
 
@@ -962,7 +973,7 @@
   }
   function visibleTurn(row) { return row && row.source !== "system"; }
 
-  /** MONI AI's latest words, in the map's corner. */
+  /** MINT AI's latest words, in the map's corner. */
   var saySig = "";
   function renderSay() {
     var box = $("cc-map-say");
@@ -977,7 +988,7 @@
     if (sig === saySig) return;
     saySig = sig;
     box.hidden = false;
-    box.innerHTML = '<div class="who"><span class="cc-av"></span>MONI AI<time>' + esc(hm(last.ended_at || last.started_at || last.created_at)) + "</time></div><p>" + esc(text) + "</p>";
+    box.innerHTML = '<div class="who"><span class="cc-av"></span>MINT AI<time>' + esc(hm(last.ended_at || last.started_at || last.created_at)) + "</time></div><p>" + esc(text) + "</p>";
     box.title = "Open the conversation";
   }
   $("cc-map-say").addEventListener("click", function () { showPane("conv"); });
@@ -1099,7 +1110,7 @@
       rows.sort(function (x, y) { return Date.parse(y.ts) - Date.parse(x.ts); });
       rows = rows.slice(0, 120);
       $("cc-tl-count").textContent = rows.length;
-      if (!rows.length) { $("cc-timeline").innerHTML = '<li class="empty">No delegations yet. They appear here as MONI AI hands work to other sessions.</li>'; return; }
+      if (!rows.length) { $("cc-timeline").innerHTML = '<li class="empty">No delegations yet. They appear here as MINT AI hands work to other sessions.</li>'; return; }
       $("cc-timeline").innerHTML = rows.map(function (x) {
         var r = x.r;
         if (x.kind === "d") {
@@ -1110,7 +1121,7 @@
           return '<li><span class="cc-tl-node ' + esc(r.status) + '"></span><span class="cc-tl-time">' + esc(hm(r.created_at)) + '</span><div class="cc-tl-cmd"><div class="t full">' + esc(r.text || r.summary || "") + "</div><small>→ <b>" + esc(r.target_name) + "</b>" + (bits.length ? " · " + esc(clip(bits.join(" · "), 90)) : "") + '</small></div><span class="cc-badge b-' + esc(r.status) + '">' + esc(TL_LAB[r.status] || r.status) + "</span></li>";
         }
         var who = r.decided_by && r.decided_by !== "timeout" ? (r.status === "approved" ? "approved" : "decided") + " by " + decidedBy(r) : r.status === "expired" ? "nobody answered" : "";
-        return '<li><span class="cc-tl-node ' + esc(r.status) + '"></span><span class="cc-tl-time">' + esc(hm(r.created_at)) + '</span><div class="cc-tl-cmd"><div class="t">' + esc(clip(approvalCmd(r).text, 160)) + "</div><small>→ <b>" + esc(r.tool === "SendMessage" ? approvalTarget(r).replace(" · peer message", "") : "MONI AI") + "</b> · approval" + (r.category ? " · " + esc(r.category.replace(/_/g, " ")) : "") + (who ? " · " + esc(who) : "") + '</small></div><span class="cc-badge b-' + esc(r.status) + '">' + esc(TL_LAB[r.status] || r.status) + "</span></li>";
+        return '<li><span class="cc-tl-node ' + esc(r.status) + '"></span><span class="cc-tl-time">' + esc(hm(r.created_at)) + '</span><div class="cc-tl-cmd"><div class="t">' + esc(clip(approvalCmd(r).text, 160)) + "</div><small>→ <b>" + esc(r.tool === "SendMessage" ? approvalTarget(r).replace(" · peer message", "") : "MINT AI") + "</b> · approval" + (r.category ? " · " + esc(r.category.replace(/_/g, " ")) : "") + (who ? " · " + esc(who) : "") + '</small></div><span class="cc-badge b-' + esc(r.status) + '">' + esc(TL_LAB[r.status] || r.status) + "</span></li>";
       }).join("");
     });
   }
@@ -1172,7 +1183,7 @@
       key: "in" + row.id, ts: row.received_at, kind: kind, label: kind,
       html: "<b>" + esc(row.from_name || "a session") + "</b> → " + (row.kind === "message" ? "" : esc(row.kind) + " ") + '<span class="q">' + esc(clip(text, 300)) + "</span>",
     }, quiet);
-    // A session writing back to MONI AI: a reply bead comes home.
+    // A session writing back to MINT AI: a reply bead comes home.
     if (!quiet) {
       var s = sessionNamed(row.from_name);
       if (s) Orb.reply(sessKey(s));
@@ -1202,8 +1213,8 @@
     var rc = (S.status && S.status.remote_control) || {};
     var on = rc.enabled && (rc.state === "connected" || !rc.state);
     $("cc-rc-dot").className = "cc-dot" + (on ? "" : rc.enabled ? " warn" : " off");
-    $("cc-rc-text").textContent = !S.online ? "Remote Control state unknown while MONI AI is unreachable." : on
-      ? "Mirrors the MONI AI session — the same conversation in Claude Desktop (Remote Control) and here."
+    $("cc-rc-text").textContent = !S.online ? "Remote Control state unknown while MINT AI is unreachable." : on
+      ? "Mirrors the MINT AI session — the same conversation in Claude Desktop (Remote Control) and here."
       : rc.enabled ? "Remote Control is " + (rc.state || "starting") + " — Claude Desktop may not see this conversation yet."
       : "Remote Control is off — this conversation is only here.";
     $("cc-rc-open").disabled = !rc.enabled;
@@ -1266,7 +1277,7 @@
       connect(0);
     }).catch(function (e) {
       S.online = false;
-      S.offlineMsg = e.status === 403 ? "Your role does not include MONI AI." : e.message;
+      S.offlineMsg = e.status === 403 ? "Your role does not include MINT AI." : e.message;
       renderAll();
       renderChatEmpty();
       setTimeout(load, 5000);
@@ -1317,7 +1328,7 @@
     if (!replay && ev.ts) S.skew = Date.parse(ev.ts) - Date.now();
     if (type === "offline") {
       S.online = false;
-      S.offlineMsg = ev.error || "MONI AI's supervisor is not running";
+      S.offlineMsg = ev.error || "MINT AI's supervisor is not running";
       renderAll();
       return;
     }
@@ -1428,7 +1439,7 @@
         if (ev.state) st.process.state = ev.state;
         if (ev.pid) st.process.pid = ev.pid;
         feedPush({ key: "p" + ev.seq, ts: ev.ts, kind: ev.state === "ready" ? "info" : ev.state === "error" || ev.state === "blocked" ? "error" : "warn", label: "service",
-          html: "<b>MONI AI process</b> · " + esc(ev.state || "") + (ev.error ? " — " + esc(clip(ev.error, 120)) : "") + (ev.retry_in_s ? " · retry in " + ev.retry_in_s + "s" : "") }, replay);
+          html: "<b>MINT AI process</b> · " + esc(ev.state || "") + (ev.error ? " — " + esc(clip(ev.error, 120)) : "") + (ev.retry_in_s ? " · retry in " + ev.retry_in_s + "s" : "") }, replay);
         renderRail();
         paintState();
         return;
@@ -1780,7 +1791,7 @@
       console.warn("[voice] the browser is holding sound back (AudioContext " + c.state + ")");
       if (unblockArmed) return;
       unblockArmed = true;
-      toast("Your browser is holding MONI's voice back. Click anywhere on the page to hear it.", true);
+      toast("Your browser is holding MINT's voice back. Click anywhere on the page to hear it.", true);
       var go = function () {
         unblockArmed = false;
         document.removeEventListener("pointerdown", go, true);
@@ -1940,7 +1951,7 @@
       if (api_.speaking) {
         // The first moments of a clip are when echo cancelling has not caught
         // up yet, and the speaker leaks into the microphone: do not count them,
-        // or MONI cuts itself off and the rest of the reply is dropped.
+        // or MINT cuts itself off and the rest of the reply is dropped.
         if (!source || Date.now() - clipAt < BARGE_GRACE_MS) { loudFor = 0; return; }
         loudFor = rms > floor * 6 + 0.01 ? loudFor + SAMPLE_MS : 0;
         if (loudFor >= BARGE_MS) bargeIn();
@@ -1993,10 +2004,10 @@
     }
 
     /* Front desk mode: the recording goes to the desk, which answers from the
-       snapshot, makes small talk, or passes the request to MONI AI. Its
+       snapshot, makes small talk, or passes the request to MINT AI. Its
        sentences arrive one by one, each already checked, and their audio is
        streamed in the same response as it is read on the server -- each
-       sentence starts playing with its first chunk. MONI AI's answer is later
+       sentence starts playing with its first chunk. MINT AI's answer is later
        summarised aloud (deskSummary); its full text is on screen as always. */
     function deskLines(my) {
       var lines = {};
@@ -2044,7 +2055,7 @@
         setUi();
       });
     }
-    /* MONI AI's answer to a request the desk passed on: a short summary,
+    /* MINT AI's answer to a request the desk passed on: a short summary,
        spoken sentence by sentence as it streams. Read word for word instead
        when the desk says so (a short, plain reply), and whenever the desk
        cannot: switched off, or failing -- the direct path, as before. */
@@ -2065,7 +2076,7 @@
     function paintMode() {
       var tag = $("cc-voice-mode");
       if (!tag) return;
-      tag.textContent = DESK ? "Front desk · GPT" : "Direct · MONI AI";
+      tag.textContent = DESK ? "Front desk · GPT" : "Direct · MINT AI";
       tag.classList.toggle("desk", DESK);
       renderRail();
     }
@@ -2149,7 +2160,7 @@
       openStream().then(function () {
         api_.on = true;
         listen(true);
-      }).catch(function () { toast("Talking to MONI needs the microphone, and it was refused.", true); });
+      }).catch(function () { toast("Talking to MINT needs the microphone, and it was refused.", true); });
     }
     function stop() {
       api_.on = false;
@@ -2205,7 +2216,7 @@
         if (!poll) poll = setInterval(tick, SAMPLE_MS);
         vbText.textContent = pttLabel;
         setUi();
-      }).catch(function () { ptt = false; setUi(); toast("Talking to MONI needs the microphone, and it was refused.", true); });
+      }).catch(function () { ptt = false; setUi(); toast("Talking to MINT needs the microphone, and it was refused.", true); });
       return true;
     }
     /** Release: send what was said. */
@@ -2270,7 +2281,7 @@
       if (api_.speakAll) outContext();
       speakBtn.setAttribute("aria-pressed", api_.speakAll ? "true" : "false");
       speakBtn.innerHTML = ic(api_.speakAll ? "speaker" : "mute");
-      speakBtn.title = api_.speakAll ? "Replies are read aloud — click to keep them silent" : "Replies are silent — click to read MONI AI's replies aloud";
+      speakBtn.title = api_.speakAll ? "Replies are read aloud — click to keep them silent" : "Replies are silent — click to read MINT AI's replies aloud";
       if (!api_.speakAll && !api_.on) { silence(); setUi(); }
     });
 
@@ -2314,6 +2325,7 @@
     S: S, root: root, api: api, esc: esc, ic: ic, md: md, num: num, clip: clip, firstLine: firstLine, plain: plain, money: money,
     hm: hm, hms: hms, when: when, ago: ago, dur: dur, modelLabel: modelLabel, applyBars: applyBars, toast: toast,
     fmtDay: fmtDay, fmtHM: fmtHM, fmtDate: fmtDate, TZ: TZ,
+    AI_NAME: AI_NAME, isAiName: isAiName, aiLabel: aiLabel,
     liveSessions: liveSessions, selfSession: selfSession, sessKey: sessKey, sessState: sessState, sessIcon: sessIcon, sessWhere: sessWhere,
     selfState: selfState, findSess: findSess, sessionNamed: sessionNamed, sortSessions: sortSessions, subagentLabel: subagentLabel,
     setTarget: setTarget, showPane: showPane, send: send, focusInput: function () { input.focus(); },
