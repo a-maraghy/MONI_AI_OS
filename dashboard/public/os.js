@@ -172,6 +172,11 @@
     // Florets fill the ring between the hole and the rim whatever the count:
     // five notes and five hundred both read as a seed head, not a speck.
     var big = n < 40 ? 2.2 : n < 150 ? 1.2 : 0.4;
+    // spokes from the leaf to the newest notes: what was written last
+    for (var j = Math.max(1, n - 7); j <= n; j++) {
+      var rj = 50 + 96 * Math.sqrt(j / n), tj = j * GOLDEN;
+      el("line", { x1: (44 * Math.cos(tj)).toFixed(1), y1: (44 * Math.sin(tj)).toFixed(1), x2: (rj * Math.cos(tj)).toFixed(1), y2: (rj * Math.sin(tj)).toFixed(1), class: "v-spoke" });
+    }
     for (var k = 1; k <= n; k++) {
       var rr = 50 + 96 * Math.sqrt(k / n), th = k * GOLDEN, age = k / n, sz = 1.6 + big + rnd() * 2.6, fresh = k > n - 8;
       el("circle", {

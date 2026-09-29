@@ -1851,3 +1851,9 @@ h2 { font-weight: 700; }
 .seed.new .seedling .sd-vein { stroke: var(--panel); stroke-width: 6; fill: none; }
 .seed.new .seedling .sd-stem { stroke: var(--leaf-b); stroke-width: 3; stroke-linecap: round; fill: none; }
 .seed.new .seedling .sd-soil { fill: var(--leaf-b); opacity: .4; }
+/* Phones: the top bar keeps just the leaf of the lockup. */
+@media (max-width: 900px) {
+  .brand .lockup { display: inline-flex; }
+  .brand .lk-wm { display: none; }
+  .topbar { gap: 8px; padding: 0 10px; }
+}

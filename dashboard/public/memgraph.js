@@ -186,7 +186,7 @@
     TYPES.forEach(function (t) { pal[t[2]] = cs.getPropertyValue(t[2]).trim() || pal["--accent"]; });
     this.pal = pal;
     this.sprites = {};
-    this.font = (cs.getPropertyValue("--ui") || "system-ui, sans-serif").trim();
+    this.font = (cs.getPropertyValue("--brand-font") || cs.getPropertyValue("--ui") || "system-ui, sans-serif").trim();
   };
 
   Graph.prototype.color = function (n) { return this.pal[typeOf(n.t).token] || this.pal["--accent"]; };

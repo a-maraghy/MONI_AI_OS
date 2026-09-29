@@ -497,7 +497,7 @@ exports.detail = ({ csrf, user, agent, notes = [], journal = null, journalErr = 
           }</div></div>
         <div class="vault-art">
           <svg data-vault="${esc(agent.notes || 0)}" viewBox="-160 -160 320 320" aria-hidden="true"></svg>
-          <div class="v-center"><b>${esc(agent.notes || 0)}</b><span>notes</span></div>
+          <div class="v-center">${brand.osMark({ cls: "mark v-leaf" })}<b>${esc(agent.notes || 0)}</b><span>notes</span></div>
         </div>
         <div>
           <div class="vault-stats">

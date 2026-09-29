@@ -438,3 +438,8 @@ pre.logs .t { color: var(--muted); }
 .mc-lbl { border-radius: 5px; background: var(--panel-2); border-color: var(--line-strong); font-family: var(--brand-font); box-shadow: none; }
 .mc-lbl .dot { border-radius: 1px; width: 6px; height: 6px; background: var(--brand); box-shadow: none; }
 .mc-lbl small { font-family: var(--mono); }
+/* The vault: the OS leaf at the heart of the seed head, spokes to the newest notes. */
+.v-spoke { stroke: var(--hypha); stroke-width: 1.2; }
+.vault-art .v-leaf { display: block; height: 34px; width: auto; margin: 0 auto 6px; }
+.vault-art .v-center b { font: 700 24px/1 var(--brand-font); }
+.vault-art .v-center span { font: 700 10px var(--brand-font); }
