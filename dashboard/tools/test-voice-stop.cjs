@@ -116,6 +116,35 @@ check("the 9-word cap still holds with a request", !VoiceStop.heard("okay so min
 check("the request list is the one asked for", ["can you", "could you", "would you", "will you", "can you please", "could you please", "i want you to", "i need you to", "ممكن", "ممكن ت", "عايزك", "عاوزك", "محتاجك", "يا ريت"].every((w) => VoiceStop.requests().indexOf(w) >= 0));
 check("  and every request and second-person phrase is already normalised", VoiceStop.requests().concat(VoiceStop.asked()).every((p) => VoiceStop.norm(p) === p));
 
+/* ---- ending the call (2026-09-29: "Now end the conversation, please." became a turn) ---- */
+const END_EN = [
+  "Perfect, thank you so much. Now end the conversation, please.", // said in live mode, 2026-09-29, and missed
+  "perfect thank you so much now end the conversation please", "End the conversation.", "end the call", "End the call, please.",
+  "Close the call.", "Stop the conversation.", "Finish the conversation.", "Hang up.", "Hang up, please.", "hang up now",
+  "Close the live conversation.", "End the voice chat.", "Stop the voice chat.", "OK thanks, end the call.",
+  "Great, thanks, hang up now.", "Thank you very much, end the call please.", "Can you end the conversation, please?",
+  "Could you hang up the call?", "Thanks a lot. Now end this call.",
+];
+check("English: ending the call (conversation / call / live conversation / voice chat, and hang up), with pleasantries in front", misses(END_EN).length === 0, misses(END_EN).join(" | "));
+const END_AR = [
+  "اقفل المكالمة", "اقفل المكالمة لو سمحت", "انهي المحادثة", "وقف المكالمة", "سكر الكول", "اقفل الكلام ده",
+  "ممكن تقفل المكالمة", "ممكن تقفلي المكالمة", "ممكن تنهي المحادثة", "عايزك تقفلي الكول", "يا ريت توقفي المكالمة",
+  "اقفلي المكالمة", "وقفي الكلام ده", "بطلي الكلام ده", "سكري المكالمة", "انهي المحادثة من فضلك",
+  "كفاية كده", "خلاص كده شكرا", "طيب، كفاية كده", "تمام شكرا، اقفل المكالمة", "شكراً جداً، كفاية كده", "ممكن تبطلي الكلام ده",
+];
+check("Egyptian Arabic: ending the call, masculine and feminine imperatives, «كفاية كده», «خلاص كده شكرا»", misses(END_AR).length === 0, misses(END_AR).join(" | "));
+const NOT_END = [
+  "end the conversation with the supplier in Odoo", "close the call log", "end the call with the supplier",
+  "stop the call recording", "close the conversation window", "can you end the conversation with the supplier",
+  "اقفل المكالمة مع العميل", "انهي المحادثة مع المورد", "اقفل الكول بتاع العميل", "ليه المكالمة وقفت",
+  "that's all", "that is all", "we're done for now", "we are done for now", "I think we're done", "thank you", "perfect",
+  "thank you so much", "perfect, thank you", "كده", "شكرا", "تمام", "خلاص", "the call", "the conversation", "hang",
+  "why did the call end", "did you end the conversation", "hang up the logs", "كفاية", "كفاية كده من التقرير ده",
+];
+check("not ending the call: a qualifier, a question, pleasantries alone, \"that's all\"", hits(NOT_END).length === 0, hits(NOT_END).join(" | "));
+check("pleasantries do not count toward the cap, the rest still does", VoiceStop.heard("Perfect, thank you so much. Now end the conversation, please.") && !VoiceStop.heard("okay so mint can you please stop listening for now thanks") && !VoiceStop.heard("perfect thank you so much now please end the conversation with the supplier in odoo today"));
+check("  and every pleasantry is already normalised", VoiceStop.pleasantries().every((p) => VoiceStop.norm(p) === p));
+
 /* ---- the wiring ---- */
 const views = require(path.join(ROOT, "lib", "views-moniai.js"));
 const rbac = require(path.join(ROOT, "lib", "rbac.js"));

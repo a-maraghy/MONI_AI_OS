@@ -7,6 +7,14 @@
  * live session", "وقف الاستماع", "اقفل ال live session" and the like closes it
  * too -- exactly as the mic button would -- and the words are not sent.
  *
+ * Ending the call works the same way (2026-09-29, the administrator in live
+ * mode: "Perfect, thank you so much. Now end the conversation, please."):
+ * "end the conversation", "hang up", «اقفل المكالمة», «ممكن تقفلي المكالمة»,
+ * «كفاية كده» -- with pleasantries in front ("perfect", "thank you so
+ * much", «تمام», «شكرا») that do not count toward the word cap. Never with a
+ * qualifier ("end the conversation with the supplier", «اقفل المكالمة مع
+ * العميل») and never "that's all" / "we're done for now".
+ *
  * Only when the whole utterance is the command. "Why did the service stop
  * listening on port 80" is a question, and is sent as one: the text is
  * normalised (case, punctuation, Arabic letter forms), a few polite words
@@ -20,25 +28,34 @@
 var VoiceStop = (function () {
   // Verbs x objects, English then Egyptian Arabic, all already normalised
   // (lowercase; alef, ya and ta marbuta in one form each -- see norm()).
-  var EN_VERBS = ["stop", "close", "end", "quit", "exit", "pause", "turn off", "switch off", "shut off"];
+  var EN_VERBS = ["stop", "close", "end", "quit", "exit", "pause", "turn off", "switch off", "shut off", "finish", "hang up", "wrap up"];
   var EN_OBJECTS = [
     "listening", "listen", "the listening",
     "live", "the live", "live session", "the live session", "live mode", "the live mode",
     "hands free", "the hands free", "hands free mode",
     "the mic", "mic", "the microphone", "microphone",
+    // the call itself
+    "conversation", "the conversation", "this conversation", "our conversation",
+    "call", "the call", "this call",
+    "live conversation", "the live conversation", "voice chat", "the voice chat",
   ];
-  var AR_VERBS = ["وقف", "اوقف", "قفل", "اقفل", "سكر", "بطل", "انهي", "اطفي"];
+  // (the feminine imperatives too: the voice can be addressed as a woman)
+  var AR_VERBS = ["وقف", "اوقف", "قفل", "اقفل", "سكر", "بطل", "انهي", "اطفي", "اقفلي", "قفلي", "وقفي", "بطلي", "سكري", "اطفي"];
   var AR_OBJECTS = [
     "الاستماع", "استماع", "السماع",
     "اللايف", "ال لايف", "لايف", "اللايف سيشن", "ال لايف سيشن", "لايف سيشن",
     "ال live", "ال live session", "live", "live session", "الجلسه المباشره",
     "المايك", "الميك", "المايكروفون", "الميكروفون",
+    // the call itself
+    "المكالمه", "الكول", "ال كول", "المحادثه", "الكلام ده", "الكلام",
   ];
   // Whole commands that are not verb + object.
   var EXTRA = [
     "stop listening now", "you can stop listening", "stop listening to me",
     "mic off", "microphone off", "listening off", "live off", "hands free off",
     "بطل تسمع", "كفايه استماع", "خلاص كده اقفل",
+    "hang up", "hang up now", "you can hang up", "hang up the phone",
+    "كفايه كده", "خلاص كده شكرا", "كده شكرا", "كفايه كده شكرا", "خلاص كفايه كده",
   ];
   // Allowed around the command, never on their own.
   var LEAD = ["ok", "okay", "alright", "all right", "please", "hey mint", "mint ai", "mint", "moni", "so", "now",
@@ -53,8 +70,14 @@ var VoiceStop = (function () {
     "can you", "could you", "would you", "will you", "i want you to", "i need you to",
     "ممكن ت", "ممكن", "عايزك", "عاوزك", "محتاجك", "يا ريت", "ياريت"];
   // After a request, Arabic uses the verb's second-person form: تقفل, توقف...
-  var AR_ASKED_VERBS = ["توقف", "تقفل", "تسكر", "تبطل", "تنهي", "تطفي"];
-  // Longer than this after normalising, it is a sentence, not a command.
+  var AR_ASKED_VERBS = ["توقف", "تقفل", "تسكر", "تبطل", "تنهي", "تطفي", "توقفي", "تقفلي", "تسكري", "تبطلي", "تطفي"];
+  // Pleasantries before a command ("perfect, thank you so much, now end the
+  // conversation"): stripped first, and not counted toward the word cap.
+  var PLEASANT = ["thank you so much", "thank you very much", "thanks so much", "thanks a lot", "thank you", "thanks",
+    "perfect", "great", "awesome", "excellent", "wonderful", "cool", "nice", "good", "ok", "okay",
+    "تمام", "حلو", "جميل", "ممتاز", "شكرا جدا", "شكرا", "متشكر", "متشكره", "الف شكر", "مرسي"]
+    .sort(function (a, b) { return b.length - a.length; });
+  // Longer than this after normalising (pleasantries aside), it is a sentence, not a command.
   var MAX_WORDS = 9;
 
   var PHRASES = {};
@@ -106,9 +129,14 @@ var VoiceStop = (function () {
   /** True when what was said is the stop command and nothing more. */
   function heard(text) {
     var s = norm(text);
+    if (!s) return false;
+    if (PHRASES[s]) return true;
+    s = strip(s, PLEASANT, false);
     if (!s || s.split(" ").length > MAX_WORDS) return false;
     if (PHRASES[s]) return true;
-    s = strip(strip(s, LEAD, false), TAIL, true);
+    var lead = strip(s, LEAD, false);
+    if (PHRASES[lead]) return true;
+    s = strip(lead, TAIL, true);
     if (PHRASES[s]) return true;
     // "Can you stop listening": one request, then the whole command.
     for (var i = 0; i < ASK.length; i++) {
@@ -122,6 +150,7 @@ var VoiceStop = (function () {
 
   return {
     heard: heard, norm: norm,
+    pleasantries: function () { return PLEASANT.slice(); },
     phrases: function () { return Object.keys(PHRASES); },
     asked: function () { return Object.keys(ASKED); },
     requests: function () { return ASK.slice(); },

@@ -802,7 +802,7 @@ let WS_BASE;
   }
 
   section("the spoken stop command ends the live call (English and Arabic, polite forms)");
-  for (const said of ["Stop listening.", "Okay, so, can you stop listening now?", "وقف الاستماع", "ممكن تقفل الاستماع", "could you please stop listening"]) {
+  for (const said of ["Stop listening.", "Okay, so, can you stop listening now?", "وقف الاستماع", "ممكن تقفل الاستماع", "could you please stop listening", "Perfect, thank you so much. Now end the conversation, please.", "ممكن تقفلي المكالمة", "كفاية كده"]) {
     const { c, client, sup } = makeCall({ turnText: said });
     await c.open();
     const s = lastSession();
