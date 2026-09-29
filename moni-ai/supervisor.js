@@ -423,16 +423,21 @@ function checkCli() {
 }
 
 /**
- * MINT AI's own tools (missions, decisions) as a stdio MCP server, bin/moni-ai-mcp.
- * It talks to this supervisor's control socket as actor "moni-ai". Its tools
- * are allowed outright: they only record MINT AI's own plans and proposals.
+ * MINT AI's own tools (missions, decisions, status_snapshot, ui_action) as a
+ * stdio MCP server, bin/moni-ai-mcp, registered as "mint-ai" (its tools are
+ * mcp__mint-ai__*; "moni-ai" until 2026-09-30 -- renamed so a resumed session
+ * discovers the tools fresh instead of reusing a schema it recorded earlier).
+ * It talks to this supervisor's control socket as actor "moni-ai" (unchanged).
+ * Its tools are allowed outright: they record MINT AI's own plans and
+ * proposals, read the snapshot, or ask for a checked screen action.
  */
+const MCP_NAME = "mint-ai";
 function mcpArgs() {
   if (!cfg.mcp) return [];
   const server = path.join(__dirname, "bin", "moni-ai-mcp");
   if (!fs.existsSync(server)) return [];
-  const conf = { mcpServers: { "moni-ai": { type: "stdio", command: process.execPath, args: [server], env: { MONI_AI_SOCKET: CONTROL_SOCKET } } } };
-  return ["--mcp-config", JSON.stringify(conf), "--allowedTools", "mcp__moni-ai"];
+  const conf = { mcpServers: { [MCP_NAME]: { type: "stdio", command: process.execPath, args: [server], env: { MONI_AI_SOCKET: CONTROL_SOCKET } } } };
+  return ["--mcp-config", JSON.stringify(conf), "--allowedTools", "mcp__" + MCP_NAME];
 }
 
 function setState(state, extra = {}) {

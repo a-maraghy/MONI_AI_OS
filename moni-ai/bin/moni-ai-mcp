@@ -267,7 +267,7 @@ async function onMessage(msg) {
       result: {
         protocolVersion: (params && params.protocolVersion) || "2025-06-18",
         capabilities: { tools: {} },
-        serverInfo: { name: "moni-ai", version: "1.0.0" },
+        serverInfo: { name: "mint-ai", version: "1.0.0" }, // registered as "mint-ai" (supervisor.js MCP_NAME)
         instructions:
           "MINT AI's missions and decision proposals, recorded by the supervisor and shown in the Command Center; status_snapshot: this VPS at a glance, read-only; " +
           "ui_action: change what the administrator sees in the tab they asked from, during their own request only.",

@@ -263,7 +263,7 @@ function mcpClient() {
     // --- 4. MINT AI's MCP server: status_snapshot against this supervisor
     const m = mcpClient();
     const init = await m.req("initialize", { protocolVersion: "2025-06-18" });
-    check("MCP server initialises", init && init.result && init.result.serverInfo.name === "moni-ai");
+    check("MCP server initialises", init && init.result && init.result.serverInfo.name === "mint-ai");
     const list = await m.req("tools/list", {});
     check("MCP lists status_snapshot", list && list.result.tools.some((t) => t.name === "status_snapshot"));
     const snap = await m.req("tools/call", { name: "status_snapshot", arguments: {} });

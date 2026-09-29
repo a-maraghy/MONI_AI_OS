@@ -186,7 +186,7 @@ const ready = () => until(async () => (await call("status")).data.process.state 
     check("supervisor comes up", !!(await ready()), sup.logs);
     const argv0 = JSON.parse(fs.readFileSync(path.join(home, "fake-argv.log"), "utf8").trim().split("\n")[0]);
     const mcpAt = argv0.indexOf("--mcp-config");
-    check("MINT AI is started with its own MCP server", mcpAt !== -1 && /moni-ai-mcp/.test(argv0[mcpAt + 1]) && argv0.includes("mcp__moni-ai"), argv0.join(" "));
+    check("MINT AI is started with its own MCP server", mcpAt !== -1 && /moni-ai-mcp/.test(argv0[mcpAt + 1]) && argv0.includes("mcp__mint-ai") && !argv0.includes("mcp__moni-ai") && JSON.parse(argv0[mcpAt + 1]).mcpServers["mint-ai"] && !JSON.parse(argv0[mcpAt + 1]).mcpServers["moni-ai"], argv0.join(" "));
     const sub = subscribe();
 
     /* ------------------------------------------------------ missions --- */

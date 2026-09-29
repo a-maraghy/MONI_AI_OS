@@ -8,8 +8,12 @@ the command over through Claude Code's own peer messaging (`ListAgents` /
 
 **The name.** It was MONI AI until 2026-09-29 (and MONI Bot before that); the
 dashboard is now Mint OS. Only what people see and hear changed: the service,
-socket, paths, MCP server (`moni-ai`, `mcp__moni-ai__*`), actor id `moni-ai`,
+socket, paths, actor id `moni-ai`,
 `moni-ai-ctl`, the `moniai` group and the `MONI_*` variables keep their names.
+MINT AI's own MCP server is registered as `mint-ai` (tools `mcp__mint-ai__*`)
+since 2026-09-30; it was `moni-ai`. The rename makes a resumed session discover
+the tools fresh (a resumed CLI reuses the schema it recorded for a tool it
+already loaded). The server file is still `bin/moni-ai-mcp`.
 `lib/names.js` holds the names: anything that asks "is this name us?" (a send
 or order target, a mission step, the session list's self fallback) accepts
 MINT AI, MONI AI, MONI Bot and `moni-ai`, so sessions still using the old name
@@ -276,7 +280,7 @@ event). All of its state is in the ledger, so a restart loses nothing.
 
 - **Missions** (`lib/missions.js`, tables `missions`, `steps`, `mission_turns`).
   MINT AI plans a multi-step goal with its own MCP tools (`bin/moni-ai-mcp`,
-  passed with `--mcp-config` and allowed with `--allowedTools mcp__moni-ai`):
+  passed with `--mcp-config` and allowed with `--allowedTools mcp__mint-ai`):
   `mission_create`, `mission_step_add`, `mission_step_update`,
   `mission_update`, `mission_list`, `mission_get`. A delegation whose first line
   carries `M-<id> step <n>` is linked to that step (or, untagged, to the one

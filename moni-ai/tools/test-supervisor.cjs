@@ -367,7 +367,7 @@ async function until(fn, ms = 10000) {
     const h = (st.session_history || []).slice(-1)[0];
     check("the old id is in the session history with who, when and why", h && h.session_id === oldId && h.retired_by === "amaraghy" && h.reason === "context too large" && h.next_session_id === newId && Date.parse(h.retired_at) > 0, JSON.stringify(h));
     check("the old transcript stays on disk", fs.existsSync(path.join(home, ".claude", "projects", "-fake", oldId + ".jsonl")));
-    check("status shows the new id and its init tools", frReady && frReady.data.session_id === newId && frReady.data.previous_session_id === oldId && frReady.data.init.mcp_tools.includes("mcp__moni-ai__status_snapshot"), JSON.stringify(frReady && frReady.data.init));
+    check("status shows the new id and its init tools", frReady && frReady.data.session_id === newId && frReady.data.previous_session_id === oldId && frReady.data.init.mcp_tools.includes("mcp__mint-ai__status_snapshot"), JSON.stringify(frReady && frReady.data.init));
     const auditFr = (await call("ledger", { table: "audit", limit: 50 })).data.rows;
     check("fresh is audited with the panel user", auditFr.some((r) => r.op === "fresh" && r.actor === "amaraghy" && r.ok === 1));
     check("and the rotation records both ids", auditFr.some((r) => r.op === "session-rotate" && r.actor === "amaraghy" && String(r.detail).includes(oldId) && String(r.detail).includes(newId)), JSON.stringify(auditFr.filter((r) => r.op === "session-rotate")));
