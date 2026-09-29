@@ -40,6 +40,7 @@ const peers = require("./lib/peers");
 const { redact, redactDeep, clip } = require("./lib/redact");
 const { createFeatures } = require("./lib/features");
 const { buildSnapshot } = require("./lib/snapshot");
+const turnQueue = require("./lib/turnqueue");
 
 /* ----------------------------------------------------------------- config --- */
 
@@ -77,6 +78,10 @@ const DEFAULTS = {
   orders_tick_s: 15,
   cost_scan_s: 60,
   mcp: true,
+  // The turn queue (lib/turnqueue.js): user turns first, background after.
+  queue_background_max_wait_s: 600, // a background turn waiting this long ranks with user turns
+  queue_requeue_max_age_s: 21600, // after a supervisor restart, re-queue unsent turns younger than this
+  queue_start_timeout_s: 120, // a handed-over turn that has not started by then, with nothing running, frees the queue
   cli_extra_args: [], // tests only, e.g. ["--setting-sources", "project"]
 };
 
@@ -229,7 +234,8 @@ const proc = {
 };
 
 const turns = {
-  pending: [], // turns waiting for the process to come up: { row, message }
+  pending: [], // turns waiting their go: { row, message }. Handed to the CLI one at a time by pump().
+  inflight: null, // { id, uuid, at }: handed to the CLI, not started yet
   byUuid: new Map(), // uuid -> turn row id
   running: null, // { id, uuid, source, text, started_at, steps: [] }
   toolSteps: new Map(), // tool_use_id -> step
@@ -466,10 +472,11 @@ function onExit(gen, code, signal) {
   }
   // Turns written to the old process but not yet started would be lost with
   // it; they were never answered, so re-queue them for the next process.
+  clearInflight();
   for (const [uuid, tid] of turns.byUuid) {
     const row = ledger.get("turns", tid);
     if (row && row.status === "queued" && OUR_SOURCES.has(row.source)) {
-      turns.pending.push({ row, message: userMessage(row) });
+      turns.pending.push({ row: ledger.updateTurn(row.id, { sent_at: null }), message: userMessage(row) });
     }
     turns.byUuid.delete(uuid);
   }
@@ -553,8 +560,9 @@ function userMessage(row) {
 const OUR_SOURCES = new Set(["dashboard", "voice-desk", "order", "watcher", "mission-request", "decision"]);
 
 /**
- * Queue a turn for MONI AI. The CLI queues it behind a running turn rather
- * than interrupting; nothing here ever interrupts.
+ * Queue a turn for MONI AI. The supervisor holds the queue and hands the CLI
+ * one turn at a time, user turns before background ones (lib/turnqueue.js).
+ * Nothing here ever interrupts a running turn.
  */
 function queueTurn({ source, actor, text, target, order_id, mission_id, decision_id }) {
   const row = ledger.addTurn({ uuid: crypto.randomUUID(), source, actor, text, target: target || null, status: "queued", order_id, mission_id, decision_id });
@@ -564,13 +572,48 @@ function queueTurn({ source, actor, text, target, order_id, mission_id, decision
   return publicTurn(row);
 }
 
+/**
+ * Hand the CLI the next turn, if it is free: nothing running and nothing
+ * handed over that has not started. The CLI would queue a second message
+ * behind the first in arrival order, so holding the rest here is what lets a
+ * user turn overtake a waiting background one.
+ */
 function pump() {
-  if (proc.state !== "ready") return;
-  while (turns.pending.length) {
-    const { row, message } = turns.pending.shift();
-    turns.byUuid.set(row.uuid, row.id);
-    writeChild(message);
+  if (proc.state !== "ready" || turns.running || turns.inflight || !turns.pending.length) return;
+  const i = turnQueue.pickNext(turns.pending, Date.now(), cfg.queue_background_max_wait_s * 1000);
+  if (i < 0) return;
+  const { row, message } = turns.pending[i];
+  if (!writeChild(message)) return;
+  turns.pending.splice(i, 1);
+  turns.byUuid.set(row.uuid, row.id);
+  ledger.updateTurn(row.id, { sent_at: now() });
+  turns.inflight = { id: row.id, uuid: row.uuid, at: Date.now() };
+  clearTimeout(turns.inflightTimer);
+  turns.inflightTimer = setTimeout(inflightWatchdog, cfg.queue_start_timeout_s * 1000);
+  if (turns.inflightTimer.unref) turns.inflightTimer.unref();
+}
+
+function clearInflight() {
+  turns.inflight = null;
+  clearTimeout(turns.inflightTimer);
+  turns.inflightTimer = null;
+}
+
+/**
+ * A turn handed over and never started. If another turn is running (a peer
+ * message the CLI took first) it is simply waiting behind it; otherwise the
+ * CLI has lost track of it, so stop holding the queue for it.
+ */
+function inflightWatchdog() {
+  if (!turns.inflight) return;
+  if (turns.running) {
+    turns.inflightTimer = setTimeout(inflightWatchdog, cfg.queue_start_timeout_s * 1000);
+    if (turns.inflightTimer.unref) turns.inflightTimer.unref();
+    return;
   }
+  warn(`turn #${turns.inflight.id} was handed to the CLI ${Math.round((Date.now() - turns.inflight.at) / 1000)}s ago and never started; freeing the queue`);
+  clearInflight();
+  pump();
 }
 
 /* --------------------------------------------------------- stream events --- */
@@ -700,6 +743,7 @@ function onLifecycle(ev) {
       turns.byUuid.set(uuid, row.id);
     }
     row = ledger.updateTurn(row.id, { status: "running", started_at: now() });
+    if (turns.inflight && turns.inflight.uuid === uuid) clearInflight();
     turns.running = { id: row.id, uuid, source: row.source, text: row.text, started_at: row.started_at, steps: [] };
     turns.toolSteps.clear();
     emit("turn", { phase: "start", turn: publicTurn(row) });
@@ -716,7 +760,9 @@ function onLifecycle(ev) {
       features.hooks.onTurnEnd(row);
     }
     if (turns.running && turns.running.uuid === uuid) turns.running = null;
+    if (turns.inflight && turns.inflight.uuid === uuid) clearInflight();
     turns.byUuid.delete(uuid);
+    pump();
   }
 }
 
@@ -1511,7 +1557,7 @@ function status() {
     session_id: readState().session_id || null,
     busy: !!turns.running,
     current_turn: turns.running ? { ...publicTurn(ledger.get("turns", turns.running.id)), steps: turns.running.steps } : null,
-    queued: turns.pending.map((p) => publicTurn(p.row)),
+    queued: turnQueue.order(turns.pending, Date.now(), cfg.queue_background_max_wait_s * 1000).map((p) => ({ ...publicTurn(p.row), priority: turnQueue.classOf(p.row) })),
     remote_control: { enabled: rc.enabled, state: rc.state, url: rc.enabled ? rc.url : null, error: rc.error },
     approvals: ledger.pendingApprovals().map(publicApproval),
     counts: { ...ledger.counts(), ...features.counts() },
@@ -1591,9 +1637,12 @@ async function handle(req, sock) {
         const live = (sessionsCache.list || []).some((s) => s.name === p.target && !s.self);
         if (!live) throw new Error(`no live session is named "${p.target}"`);
       }
-      const busy = !!turns.running;
       const turn = queueTurn({ source: p.via === "voice-desk" ? "voice-desk" : "dashboard", actor: req.actor, text: p.text, target: p.target && p.target !== "auto" ? p.target : null });
-      return { turn, process: proc.state, queued_behind: busy ? 1 : 0 };
+      // How many turns go before this one: whatever is running or handed
+      // over, plus the user turns queued ahead of it (background ones wait).
+      const ahead = turnQueue.order(turns.pending, Date.now(), cfg.queue_background_max_wait_s * 1000).findIndex((q) => q.row.id === turn.id);
+      const current = turns.inflight && turns.inflight.id !== turn.id ? 1 : turns.running ? 1 : 0;
+      return { turn, process: proc.state, queued_behind: (ahead > 0 ? ahead : 0) + current };
     }
     case "interrupt": {
       if (!proc.child) throw new Error("MONI AI is not running");
@@ -1758,6 +1807,31 @@ function drainSpool() {
 
 /* -------------------------------------------------------------------- main --- */
 
+/**
+ * The queue survives a supervisor restart: a turn of ours that was still
+ * queued and never handed to the CLI (no sent_at) cannot have been answered,
+ * so it goes back in the queue, in its old place. One that was handed over,
+ * or was running, may or may not be in the resumed transcript -- replaying it
+ * could run it twice -- so it is marked lost, as before. So is anything older
+ * than queue_requeue_max_age_s.
+ */
+function requeueAfterRestart() {
+  const t = now();
+  const cutoff = Date.now() - cfg.queue_requeue_max_age_s * 1000;
+  const rows = ledger.db.prepare("SELECT * FROM turns WHERE status IN ('queued','running') ORDER BY id").all();
+  let kept = 0;
+  for (const row of rows) {
+    const fresh = Date.parse(row.created_at) >= cutoff;
+    if (row.status === "queued" && !row.sent_at && OUR_SOURCES.has(row.source) && row.uuid && fresh) {
+      turns.pending.push({ row, message: userMessage(row) });
+      kept++;
+    } else {
+      ledger.updateTurn(row.id, { status: "lost", ended_at: t, error: row.status === "queued" && !fresh ? "too old to replay after a supervisor restart" : "supervisor restarted" });
+    }
+  }
+  if (kept) log(`re-queued ${kept} turn(s) the previous supervisor had not handed over`);
+}
+
 async function main() {
   if (process.getuid && process.getuid() !== 0 && !process.env.MONI_AI_ALLOW_NONROOT) {
     throw new Error("moni-ai must run as root: MONI AI shares root's Claude session registry");
@@ -1776,7 +1850,7 @@ async function main() {
 
   // Anything the previous supervisor left pending can no longer be answered.
   for (const a of ledger.pendingApprovals()) ledger.updateApproval(a.id, { status: "cancelled", decided_at: now(), note: "supervisor restarted" });
-  ledger.db.prepare("UPDATE turns SET status = 'lost', ended_at = ? WHERE status IN ('queued','running')").run(now());
+  requeueAfterRestart();
 
   const control = serveControl();
   const hooks = serveHooks();

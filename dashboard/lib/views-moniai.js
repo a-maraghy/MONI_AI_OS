@@ -212,6 +212,7 @@ function page(o) {
     <div class="cc-dock" id="cc-dock">
       <form class="cc-composer" id="cc-compose" autocomplete="off">
         <button type="button" class="cc-c-mic" id="cc-c-mic" title="${voice.configured ? "Talk to MONI (voice mode)" : "Add an OpenAI key in Settings to use voice"}" aria-label="Talk to MONI"${voice.configured ? "" : " disabled"}>${ic("voice")}</button>
+        <button type="button" class="cc-mic-mode" id="cc-mic-mode" data-mode="ptt" title="Voice mode: push to talk — hold the mic or Space to talk. Click to switch to hands-free." aria-label="Voice mode: push to talk. Click to switch to hands-free."${voice.configured ? "" : " hidden"}>Push to talk</button>
         <input id="cc-input" name="text" placeholder="Tell MONI AI what to do…" aria-label="Message MONI AI" maxlength="20000" autocomplete="off">
         <button type="button" class="cc-target" id="cc-target" aria-haspopup="menu" aria-expanded="false">${ic("route")}<span id="cc-target-label">Auto-route</span>${ic("chev")}</button>
         <button type="button" class="cc-c-stop" id="cc-stop" title="Interrupt the current turn" aria-label="Interrupt" hidden>${ic("stop")}</button>
@@ -221,7 +222,7 @@ function page(o) {
         <button type="button" class="cc-c-mic live" id="cc-vb-stop" title="Stop talking" aria-label="Stop voice mode">${ic("voice")}</button>
         <div class="cc-vb-text"><b>TALK TO MONI</b><span id="cc-vb-text">Listening…</span></div>
         <div class="cc-vb-wave" id="cc-vb-wave" aria-hidden="true"></div>
-        <span class="cc-vb-tags"><span class="cc-tag${voice.configured && voice.desk ? " desk" : ""}" id="cc-voice-mode" title="${
+        <span class="cc-vb-tags"><span class="cc-tag cc-tag-mode" id="cc-vb-mode">Push to talk</span><span class="cc-tag${voice.configured && voice.desk ? " desk" : ""}" id="cc-voice-mode" title="${
           voice.configured && voice.desk
             ? "Voice front desk (GPT, trial): quick answers from a read-only snapshot, and short summaries of MONI AI's answers; everything else goes to MONI AI. Switch it off in Settings › OpenAI voice."
             : "Voice goes straight to MONI AI: OpenAI only hears and reads aloud."

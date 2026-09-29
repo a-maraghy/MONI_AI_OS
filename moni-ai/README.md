@@ -41,8 +41,9 @@ all of the above. Do not edit the installed copies.
 ## How a command travels
 
 1. The administrator types in the Command Center (`POST /moni-ai/api/send`).
-   The panel checks it, then the supervisor checks it again and writes it to
-   MONI AI's stdin as a stream-json user message with its own uuid.
+   The panel checks it, then the supervisor checks it again, queues it, and
+   when MONI AI is free writes it to MONI AI's stdin as a stream-json user
+   message with its own uuid (see *the turn queue* below).
 2. MONI AI calls `ListAgents`, picks the session by name and working
    directory, and calls `SendMessage` with `notify_when_idle: true`.
 3. The PreToolUse hook (`hooks/gate.js`) reads the message. Harmless: it goes.
@@ -57,6 +58,34 @@ all of the above. Do not edit the installed copies.
    holds messages for its user: **held**. Denied at the gate: **denied**.
 6. The reply also wakes MONI AI (a peer message starts a turn on its own), and
    it relays the answer. Every event goes out on the stream.
+
+## The turn queue
+
+The supervisor holds the queue and hands the CLI **one turn at a time** (the
+CLI itself would run whatever it was given strictly in arrival order).
+`lib/turnqueue.js` picks the next one:
+
+- **user turns first** -- typed or spoken in the Command Center, the voice
+  desk's hand-offs, mission requests, decision approvals and questions, a
+  standing order run by hand;
+- **background turns** -- watcher investigations and scheduled standing orders
+  -- only when no user turn is waiting;
+- first in, first out within each class; nothing is dropped. A background turn
+  that has waited `queue_background_max_wait_s` (600) ranks with user turns by
+  arrival, so it cannot starve.
+
+A running turn is never interrupted for a waiting one (it may hold an approval
+card, and an interrupted investigation starts over); the user turn goes next.
+Turns the CLI starts on its own (peer messages, idle notices, Remote Control)
+are not ours to hold; the queue waits for them to end. A turn handed over that
+has not started within `queue_start_timeout_s` (120) while nothing is running
+frees the queue. `status.queued` lists the queue in run order with each turn's
+`priority`; `send` returns `queued_behind`, the turns ahead of it.
+
+The queue survives a supervisor restart: a turn still queued and never handed
+over (`turns.sent_at` empty) is re-queued in its old place if younger than
+`queue_requeue_max_age_s` (6 h); one that was handed over or running is marked
+lost, as before, since replaying it could run it twice.
 
 ## The approval gate
 
@@ -220,6 +249,13 @@ event). All of its state is in the ledger, so a restart loses nothing.
   every step is done or skipped. Chosen over a CLI because typed tools need no
   shell quoting and do not go through the Bash gate; `moni-ai-ctl` speaks the
   same ops for a human.
+- **Status snapshot for MONI AI.** The same server has `status_snapshot`: the
+  supervisor's read-only `snapshot` op (the voice desk's view, `lib/snapshot.js`)
+  asked for as actor `moni-ai`, with no arguments. It answers from the caches the
+  supervisor keeps anyway -- no helper call, no subprocess, no model round spent on
+  Bash -- and holds counts, titles and figures, never a command, fix or evidence;
+  the server drops the forbidden keys again and the desk's own request list. The
+  charter tells MONI AI to use it first for status questions.
 - **Decisions and watchers** (`lib/watchers.js`, tables `decisions`,
   `watchers`). Every 30 s: the helper's `service-list` (a unit failed) and
   `pulse-feed` (fail2ban bans > 20 in 10 min; an agent started 3 times in 10
@@ -284,6 +320,9 @@ node moni-ai/tools/test-watchers.cjs          # thresholds, dedup, cooldown, rat
 node moni-ai/tools/test-missions-cost.cjs     # missions store, cost deltas, transcript scan
 sudo node moni-ai/tools/test-features.cjs     # all of phase 1 through a real supervisor
 node moni-ai/tools/test-protocol.cjs          # socket validation, peer-text parsing
+node moni-ai/tools/test-mcp.cjs               # the MCP server's status_snapshot tool
+node moni-ai/tools/test-turnqueue.cjs         # queue order: users first, FIFO, no starvation
+sudo node moni-ai/tools/test-queue.cjs        # the queue + status_snapshot through a real supervisor
 sudo node moni-ai/tools/test-supervisor.cjs   # the whole supervisor against a fake CLI
 node dashboard/tools/test-moniai.cjs          # the panel's client and permission
 ```
