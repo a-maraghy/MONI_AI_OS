@@ -262,6 +262,7 @@ html.cc-page .cc-shell code, html.cc-page #cc-overlay code { background: none; b
 .cc-count { font-size: 10px; padding: 0 5px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); line-height: 16px; font-weight: 700; }
 .cc-count.warn { background: color-mix(in srgb, var(--bad) 14%, transparent); color: var(--bad); }
 .cc-tag { font-size: 10.5px; padding: 1px 7px; border-radius: 999px; border: 1px solid var(--line); color: var(--body); background: var(--accent-soft); white-space: nowrap; line-height: 1.5; }
+.cc-tag.desk { color: var(--warn, var(--accent)); border-color: currentColor; background: transparent; font-weight: 600; }
 
 .cc-badge { font-size: 9.5px; font-weight: 800; letter-spacing: .07em; padding: 1px 6px; border-radius: 5px; text-transform: uppercase; white-space: nowrap;
   border: 1px solid; line-height: 1.5; display: inline-flex; align-items: center; gap: 4px; }

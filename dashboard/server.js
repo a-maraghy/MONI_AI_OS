@@ -39,6 +39,7 @@ const moniai = require("./lib/moniai");
 const rbac = require("./lib/rbac");
 const totp = require("./lib/totp");
 const voice = require("./lib/voice");
+const voiceDesk = require("./lib/voice-desk");
 const chrome = require("./lib/chrome");
 const memgraph = require("./lib/memgraph");
 const pulse = require("./lib/pulse");
@@ -1806,6 +1807,22 @@ const VOICE_TTL_MS = 5 * 60 * 1000;
 function voiceForget() {
   voiceCache = { at: 0, cfg: null, pending: null };
   voice.clearCache();
+  voiceDesk.closeAll(); // a changed key or voice must not keep a front desk open on the old one
+}
+
+/**
+ * The voice front desk (TRIAL): a GPT realtime model answers from a read-only
+ * snapshot or hands the request to MONI AI (lib/voice-desk.js). Off unless an
+ * administrator switches it on in Settings; while off, nothing about the voice
+ * changes. A panel setting, not a secret, so it lives in the panel's database.
+ */
+const VOICE_DESK_SETTING = "voice_desk";
+function voiceDeskOn() {
+  try {
+    return db.getSetting(VOICE_DESK_SETTING, "0") === "1";
+  } catch (_) {
+    return false;
+  }
 }
 
 async function voiceConfig() {
@@ -1840,6 +1857,7 @@ async function voicePublic(req) {
     voice: cfg.voice,
     provider: "OpenAI",
     manage: !!(req && req.perm && req.perm.can("voice.manage")),
+    desk: !!cfg.key && voiceDeskOn(),
   };
 }
 
@@ -1943,6 +1961,7 @@ app.get("/credentials/openai-voice", requireAuth, requirePerm("voice.manage"), a
       user: ctx(req),
       credentials: list,
       voice: v,
+      desk: { on: voiceDeskOn(), row: db.settingRow(VOICE_DESK_SETTING), model: voiceDesk.DESK_MODEL },
       models: voice.MODELS,
       voices: voice.VOICES,
       transcribeModels: voice.TRANSCRIBE_MODELS,
@@ -1991,6 +2010,20 @@ app.post("/credentials/openai-voice/options", requireAuth, requirePerm("voice.ma
   } catch (e) {
     res.redirect("/credentials/openai-voice?err=" + encodeURIComponent(e.message));
   }
+});
+
+app.post("/credentials/openai-voice/desk", requireAuth, requirePerm("voice.manage"), requireCsrf, (req, res) => {
+  const want = field(req.body, "enabled");
+  if (want !== "1" && want !== "0") return res.redirect("/credentials/openai-voice?err=" + encodeURIComponent("Choose on or off."));
+  const was = voiceDeskOn();
+  db.setSetting(VOICE_DESK_SETTING, want, req.me.username);
+  if (want === "0") voiceDesk.closeAll();
+  db.logLogin(req.ip, req.me.username, "voice", `voice front desk (GPT, trial) ${want === "1" ? "on" : "off"}${was === (want === "1") ? " (unchanged)" : ""}`);
+  res.redirect(
+    "/credentials/openai-voice?msg=" +
+      encodeURIComponent(want === "1" ? "Voice front desk is on. Reload the Command Center to use it." : "Voice front desk is off. The Command Center's voice talks to MONI AI directly again.") +
+      "#v-desk"
+  );
 });
 
 app.post("/credentials/openai-voice/test", requireAuth, requirePerm("voice.manage"), requireCsrf, async (req, res) => {
@@ -3145,6 +3178,79 @@ const moniAiAudioBody = express.json({ limit: "44mb" });
 app.post("/moni-ai/api/transcribe", requireApiPerm("moniai.use"), moniAiAudioBody, requireApiCsrf, voiceTranscribeRoute);
 
 app.post("/moni-ai/api/speak", ...moniAiWrite, voiceSpeakRoute);
+
+/**
+ * The voice front desk (TRIAL, off by default): one utterance in -- a recording,
+ * or text -- and what the desk says back, as WAVs, plus any request it passed
+ * to MONI AI (the page then reads MONI AI's answer with the ordinary verbatim
+ * reader). Refused with 409 while the Settings switch is off, so the page falls
+ * back to the direct path.
+ */
+app.post("/moni-ai/api/desk/turn", requireApiPerm("moniai.use"), moniAiAudioBody, requireApiCsrf, async (req, res) => {
+  if (!voiceDeskOn()) return res.status(409).json({ error: "The voice front desk is off.", code: "desk-off" });
+  const t0 = Date.now();
+  const body = req.body || {};
+  let cfg = null;
+  let heard = "";
+  let tTranscribe = null;
+  try {
+    cfg = await voiceConfig();
+    if (!cfg.key) throw new voice.VoiceError("Add an OpenAI key in Settings to use voice.", "no-key");
+    if (typeof body.text === "string" && body.text.trim()) {
+      if (body.text.length > 4000 || body.text.includes("\u0000")) return res.status(400).json({ error: "That is too long.", code: "invalid" });
+      heard = body.text.trim();
+    } else {
+      const data = typeof body.data === "string" ? body.data : "";
+      if (!data || !/^[A-Za-z0-9+/=]+$/.test(data)) return res.status(400).json({ error: "No audio arrived.", code: "invalid" });
+      const mime = String(body.mime || "").split(";")[0].trim().toLowerCase();
+      const desk = voiceDesk.deskFor(req.me.username, cfg, moniai.call, { log: (m) => console.log(m) });
+      desk.open(); // the socket opens while the words are transcribed
+      heard = await voice.transcribe(Buffer.from(data, "base64"), cfg, AUDIO_MIME_RE.test(mime) ? mime : "audio/webm");
+      tTranscribe = Date.now() - t0;
+    }
+    if (!heard || /^[\[(]/.test(heard)) return res.json({ heard: "", lines: [], asked: [] });
+    const desk = voiceDesk.deskFor(req.me.username, cfg, moniai.call, { log: (m) => console.log(m) });
+    const out = await desk.turn(heard);
+    // Lines the guard put in (and any the model gave no audio for) are read by
+    // the ordinary verbatim voice.
+    const lines = [];
+    for (const l of out.lines) {
+      let wav = l.pcm && l.pcm.length ? voice.wav(l.pcm, voiceDesk.RATE) : null;
+      if (!wav) {
+        try {
+          wav = (await voice.speak(l.text, cfg)).wav;
+        } catch (e) {
+          wav = null;
+        }
+      }
+      lines.push({ text: l.text, audio: wav ? wav.toString("base64") : null, safe: !!l.safe });
+    }
+    if (out.asked.length) db.logLogin(req.ip, req.me.username, "moni-ai", "turn via the voice front desk");
+    voiceLog("desk", 200, {
+      ms: Date.now() - t0,
+      transcribe_ms: tTranscribe,
+      first_text_ms: out.timings.firstText,
+      first_audio_ms: out.timings.firstAudio,
+      desk_ms: out.timings.done,
+      tools: out.tools.join("+") || undefined,
+      asked: out.asked.length || undefined,
+      guard: out.trip ? out.trip.rule : undefined,
+      refused_tools: out.rejected.length || undefined,
+    });
+    res.json({
+      heard,
+      lines,
+      asked: out.asked,
+      guard: out.trip ? { rule: out.trip.rule } : null,
+      ms: { total: Date.now() - t0, transcribe: tTranscribe, desk: out.timings.done, first_audio: out.timings.firstAudio },
+    });
+  } catch (e) {
+    voiceLog("desk", e.code || "error", { ms: Date.now() - t0, why: e.message });
+    if (e instanceof voiceDesk.DeskError && e.code === "invalid") return res.status(400).json({ error: e.message, code: "invalid" });
+    if (e.code === "no-key" || e.code === "invalid" || e.code === "timeout") return voiceFail(res, e);
+    res.status(502).json({ error: voice.scrub(e.message), code: e.code || "error" });
+  }
+});
 
 app.post("/moni-ai/api/restart", ...moniAiWrite, async (req, res) => {
   try {

@@ -39,6 +39,9 @@
   var VIEWER = root.getAttribute("data-viewer") || "you";
   var READY = root.getAttribute("data-voice-ready") === "1";   // an OpenAI key is set
   var VOICE = root.getAttribute("data-voice") || "";
+  // The voice front desk (GPT, trial): switched on by an administrator in
+  // Settings. When off -- the default -- nothing below changes behaviour.
+  var DESK = READY && root.getAttribute("data-voice-desk") === "1";
 
   /* ================================================================ helpers */
 
@@ -405,7 +408,7 @@
     if (c.rules_user != null || c.rules_builtin != null) setCore("rules", String((c.rules_user || 0) + (c.rules_builtin || 0)), "", (c.rules_user || 0) + " of yours · " + (c.rules_builtin || 0) + " built in");
     else setCore("rules", "—", "off", "");
 
-    setCore("voice", Voice.listening ? "live" : READY ? "ready" : "no key", Voice.listening ? "warn" : READY ? "ok" : "off", READY ? "OpenAI · " + (VOICE || "voice") : "Add an OpenAI key in Settings to use voice");
+    setCore("voice", Voice.listening ? "live" : READY ? "ready" : "no key", Voice.listening ? "warn" : READY ? "ok" : "off", READY ? "OpenAI · " + (VOICE || "voice") + (DESK ? " · front desk (GPT, trial)" : "") : "Add an OpenAI key in Settings to use voice");
 
     var pend = pendingApprovals().length;
     var mins = Math.round((st.approval_timeout_s || 300) / 60);
@@ -674,7 +677,7 @@
 
   var chat = $("cc-chat");
   var TURN_SRC = {
-    dashboard: "You", remote: "You · Remote Control", peer: "Message from a session",
+    dashboard: "You", "voice-desk": "You · via the voice front desk", remote: "You · Remote Control", peer: "Message from a session",
     idle: "Idle notice", delivery: "Delivery notice", system: "System", unknown: "Turn",
     watcher: "Watcher", order: "Standing order", "mission-request": "New mission", decision: "Decision",
   };
@@ -734,8 +737,8 @@
     var when = hm(tr.created_at);
     var text = tr.text || "";
     if (isOrderTurn(tr)) return "";
-    if (tr.source === "dashboard" || tr.source === "remote" || tr.source === "mission-request") {
-      var name = tr.source === "remote" ? "You · via Remote Control" : tr.actor && tr.actor !== VIEWER ? esc(tr.actor) : "You";
+    if (tr.source === "dashboard" || tr.source === "voice-desk" || tr.source === "remote" || tr.source === "mission-request") {
+      var name = tr.source === "remote" ? "You · via Remote Control" : tr.source === "voice-desk" ? (tr.actor && tr.actor !== VIEWER ? esc(tr.actor) : "You") + " · via the voice front desk" : tr.actor && tr.actor !== VIEWER ? esc(tr.actor) : "You";
       var tag = tr.source === "mission-request" ? ' · <span class="cc-badge b-mis">' + ic("flag") + "new mission</span>" : "";
       return '<div class="cc-msg me"><div class="who"><b>' + name + "</b> · " + esc(when) + tag + (tr.target ? " · → " + esc(clip(tr.target, 30)) : "") + '</div><div class="cc-bubble">' + esc(text) + "</div></div>";
     }
@@ -1135,7 +1138,7 @@
     S.delegations.forEach(function (d) { if (d.status === "done" && Date.parse(d.created_at) >= since) done++; });
     $("cc-stat-done").textContent = done;
     var ds = [];
-    S.turns.forEach(function (tr) { if (tr.duration_ms && (tr.source === "dashboard" || tr.source === "remote")) ds.push(tr.duration_ms); });
+    S.turns.forEach(function (tr) { if (tr.duration_ms && (tr.source === "dashboard" || tr.source === "voice-desk" || tr.source === "remote")) ds.push(tr.duration_ms); });
     ds.sort(function (a, b) { return a - b; });
     $("cc-stat-median").textContent = ds.length ? dur(ds[Math.floor((ds.length - 1) / 2)]) : "—";
   }
@@ -1615,6 +1618,25 @@
         if (!queue[i].clip) { var f = fetchClip(queue[i].text); queue[i].clip = f.clip; queue[i].ctrl = f.ctrl; }
       }
     }
+    /* A line the front desk already spoke on the server: its WAV arrives with
+       the answer, so it joins the queue ready to play. */
+    function enqueueAudio(text, b64) {
+      if (!READY) return;
+      var clip = null;
+      if (b64) {
+        try {
+          var bin = atob(b64), bytes = new Uint8Array(bin.length);
+          for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+          clip = Promise.resolve(bytes.buffer);
+        } catch (e) { clip = null; }
+      }
+      if (!clip) return enqueue(text);
+      diag.said.push(String(text || "").slice(0, 780));
+      diag.engines.push("desk");
+      queue.push({ text: String(text || ""), clip: clip });
+      prefetch();
+      pump();
+    }
     function enqueue(piece) {
       if (!READY) return;
       var say = speakable(piece);
@@ -1771,14 +1793,55 @@
       setUi();
     }
 
-    function transcribeAndSend(blob) {
-      var wasPtt = ptt;
+    /* Front desk mode: the recording goes to the desk, which answers from the
+       snapshot or passes the request to MONI AI; MONI AI's answer is then read
+       by the same verbatim reader as always. */
+    function deskSend(blob, data, wasPtt) {
+      api("desk/turn", { body: { data: data, mime: blob.type } }).then(function (d) {
+        var said = String(d.heard || "").trim();
+        if (!said) throw new Error("nothing said");
+        vbText.textContent = "“" + clip(said, 80) + "”";
+        (d.lines || []).forEach(function (l) { enqueueAudio(l.text, l.audio); });
+        (d.asked || []).forEach(function (t) {
+          var tr = upsertTurn(t);
+          if (tr && tr.ended_at && aiText(tr)) api_.flush(tr.id, aiText(tr));
+          else voiceTurns.add(t.id);
+        });
+        if ((d.asked || []).length) showPane("conv");
+        if (d.guard) console.info("[voice] the front desk's guard replaced a reply (" + d.guard.rule + ")");
+        if (!(d.lines || []).length && api_.on && !busy) listen(true);
+      }).catch(function (e) {
+        if (e.code === "desk-off") {
+          // Switched off in Settings since this page loaded: go direct.
+          DESK = false;
+          paintMode();
+          return transcribeAndSend(blob, wasPtt);
+        }
+        if (e.message !== "nothing said") toast("The front desk could not answer: " + e.message, true);
+        enqueue("Sorry, I didn't catch that.");
+        if (api_.on) listen(true);
+      }).then(function () {
+        if (!api_.on && wasPtt) keepStream();
+        setUi();
+      });
+    }
+    function paintMode() {
+      var tag = $("cc-voice-mode");
+      if (!tag) return;
+      tag.textContent = DESK ? "Front desk · GPT" : "Direct · MONI AI";
+      tag.classList.toggle("desk", DESK);
+      renderRail();
+    }
+
+    function transcribeAndSend(blob, wasPttAgain) {
+      var wasPtt = wasPttAgain === undefined ? ptt : wasPttAgain;
       ptt = false;
       listen(false);
       vbText.textContent = "Transcribing…";
       setUi();
       var reader = new FileReader();
       reader.onload = function () {
+        if (DESK) return deskSend(blob, String(reader.result).split(",")[1] || "", wasPtt);
         api("transcribe", { body: { data: String(reader.result).split(",")[1] || "", mime: blob.type } }).then(function (d) {
           var said = String(d.text || "").trim();
           if (!said || /^[\[(]/.test(said)) throw new Error("nothing said");
@@ -1833,6 +1896,7 @@
        plays while the words are still being transcribed. */
     function ack() {
       outContext();
+      if (DESK) return; // the front desk answers for itself, in well under a second
       enqueue("On it.");
     }
 

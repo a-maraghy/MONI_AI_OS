@@ -126,6 +126,13 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS console_messages_session
     ON console_messages(session_id, id);
 
+  CREATE TABLE IF NOT EXISTS settings (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    updated_by TEXT
+  );
+
   CREATE TABLE IF NOT EXISTS login_log (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     ts         TEXT NOT NULL,
@@ -250,6 +257,21 @@ module.exports = {
   /* --- bootstrap ------------------------------------------------------- */
 
   userCount: () => db.prepare("SELECT COUNT(*) AS n FROM users").get().n,
+
+  /* --- panel settings (small switches; secrets never go here) ------------ */
+
+  getSetting: (key, fallback = null) => {
+    const r = db.prepare("SELECT value FROM settings WHERE key = ?").get(String(key));
+    return r ? r.value : fallback;
+  },
+  setSetting: (key, value, by) =>
+    db
+      .prepare(
+        `INSERT INTO settings (key, value, updated_at, updated_by) VALUES (?, ?, ?, ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, updated_by = excluded.updated_by`
+      )
+      .run(String(key), String(value), nowIso(), by || null),
+  settingRow: (key) => db.prepare("SELECT * FROM settings WHERE key = ?").get(String(key)) || null,
 
   /* --- users ----------------------------------------------------------- */
 

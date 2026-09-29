@@ -250,7 +250,36 @@ function option(value, label, current) {
   return `<option value="${esc(value)}"${value === current ? " selected" : ""}>${esc(label)}</option>`;
 }
 
-exports.voice = ({ csrf, user, credentials, voice: v, models, voices, transcribeModels, test, flash, err }) => {
+/**
+ * The voice front desk switch (trial). Off by default; while off the voice is
+ * exactly the direct path. Rendered only on the voice page, which is already
+ * administrators-only (voice.manage).
+ */
+function deskCard(csrf, v, desk) {
+  const d = desk || { on: false };
+  const row = d.row;
+  return card(
+    "Voice front desk (GPT)",
+    `<p class="small"><span class="pill ${d.on ? "warn" : "neutral"}" id="voice-desk-state">${d.on ? "on — trial" : "off"}</span>
+      <span class="muted">${row ? "Last changed " + esc(stamp(row.updated_at)) + (row.updated_by ? " by " + esc(row.updated_by) : "") : "Never switched on."}</span></p>
+    <p class="muted small mt-12">A trial. When on, the Command Center's microphone talks to a GPT realtime model
+      (${esc(d.model || "gpt-realtime-mini")}) that answers at once from a read-only snapshot of this VPS — services,
+      disk, memory, sessions, missions, open decisions and pending approvals, counted and titled, never a command —
+      and passes everything else to MONI AI as your request. It cannot run anything, message a session, or approve or
+      deny anything; a guard cuts it off if it claims an action or quotes a figure it was not given. MONI AI's answers
+      are read aloud word for word, as now. When off, voice goes straight to MONI AI.</p>
+    <form method="post" action="/credentials/openai-voice/desk" class="btn-row">
+      <input type="hidden" name="_csrf" value="${esc(csrf)}">
+      <input type="hidden" name="enabled" value="${d.on ? "0" : "1"}">
+      <button class="btn ${d.on ? "" : "primary "}small" type="submit" id="voice-desk-toggle"${v.configured || d.on ? "" : " disabled"}>
+        ${icon(d.on ? "close" : "play")} ${d.on ? "Switch the front desk off" : "Switch the front desk on"}</button>
+      ${v.configured ? "" : `<span class="muted small">Needs the OpenAI key above.</span>`}
+    </form>`,
+    { icon: "voice", id: "v-desk" }
+  );
+}
+
+exports.voice = ({ csrf, user, credentials, voice: v, desk, models, voices, transcribeModels, test, flash, err }) => {
   const known = (list, id) => list.some((m) => (m.id || m) === id);
   const modelList = known(models, v.model) ? models : [{ id: v.model, label: v.model }, ...models];
   const tModels = known(transcribeModels, v.transcribe_model)
@@ -258,7 +287,7 @@ exports.voice = ({ csrf, user, credentials, voice: v, models, voices, transcribe
     : [{ id: v.transcribe_model, label: v.transcribe_model }, ...transcribeModels];
   const voiceList = voices.includes(v.voice) ? voices : [v.voice, ...voices];
 
-  const toc = [["v-state", "Current state"], ["v-key", v.configured ? "Replace the key" : "Add the key"], ["v-voice", "Voice"]];
+  const toc = [["v-state", "Current state"], ["v-key", v.configured ? "Replace the key" : "Add the key"], ["v-voice", "Voice"], ["v-desk", "Voice front desk"]];
   if (v.configured) toc.push(["v-remove", "Remove"]);
   return shell(
     "OpenAI voice",
@@ -321,6 +350,8 @@ exports.voice = ({ csrf, user, credentials, voice: v, models, voices, transcribe
       </form>`,
       { icon: "voice", id: "v-voice" }
     )}
+
+    ${deskCard(csrf, v, desk)}
 
     ${
       v.configured

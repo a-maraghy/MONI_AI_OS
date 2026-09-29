@@ -206,6 +206,40 @@ Tests: `node dashboard/tools/test-voice.cjs` (mock OpenAI for both protocols
 and transcription, the verbatim guard, the helper's key storage, the no-key
 views). Needs `ws` on `NODE_PATH`.
 
+### Voice front desk (GPT) -- trial, off by default
+
+`lib/voice-desk.js`. Switched on by an administrator at Settings > Credentials >
+OpenAI voice > *Voice front desk (GPT)* (`POST /credentials/openai-voice/desk`,
+`voice.manage`, audited in the sign-in log; stored in the panel's `settings`
+table, not with the key). While it is off nothing about the voice changes.
+While on, the Command Center's mic posts each utterance to
+`POST /moni-ai/api/desk/turn` (`moniai.use` + CSRF; 409 `desk-off` when
+switched off, and the page falls back to the direct path). The voice bar shows
+**Front desk · GPT** or **Direct · MONI AI**.
+
+gpt-realtime-mini holds the conversation, server-side, with exactly two tools:
+`read_status()` (the supervisor's read-only `snapshot` op: services, disk,
+memory, sessions, active missions and steps, open decisions and pending
+approvals as counts and titles, never a command; no live Odoo) and
+`ask_moni(text)` (a normal `send`, `via: "voice-desk"`, as the panel user; the
+administrator's own words go along when the desk paraphrases). MONI AI's answer
+is read by the ordinary verbatim reader, word for word, never paraphrased.
+Enforcement: only those two tools in the session; any other function call is
+refused; `deskOps()` opens for `snapshot` and `send` only; and an output guard
+over the desk's own words, holding back all of its audio until they pass. It
+cuts a claim that something was done/deleted/restarted/pushed/approved, a
+promise of one, a figure not in the snapshot / MONI AI's reply / what was said,
+a status claim with no snapshot or about something the snapshot does not hold,
+"MONI AI said ..." before a reply, and "I've passed that on" with no ask_moni
+call behind it. A cut reply is replaced by "Let me pass that to MONI AI." and
+the request really is passed on.
+
+Tests: `node dashboard/tools/test-voice-desk.cjs` (mock realtime server with the
+real event shapes; tools, the supervisor door, the snapshot payload, the guard,
+scripted conversations). `sudo node dashboard/tools/eval-voice-desk.cjs
+[--audio]` runs ~20 prompts against the real model with a stubbed supervisor
+(nothing reaches MONI AI; the key is read through the helper and never printed).
+
 ### Themes
 
 System (the default), Dark and Light, from a switch in the top bar of every
