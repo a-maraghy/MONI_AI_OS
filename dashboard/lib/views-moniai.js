@@ -26,6 +26,7 @@
 const { esc, shell, card, asset } = require("./ui");
 const marks = require("./marks");
 const logic = require("../public/cc-logic");
+const UiActions = require("../public/ui-actions");
 
 /* Icons for the page, as one sprite referenced by <use>. */
 const SPRITE = {
@@ -191,6 +192,7 @@ function page(o) {
   const body = `${sprite()}
 <div class="cc-shell" id="cc"
      data-core="${core}" data-state="idle" data-sessview="${sessview}"
+     data-pages="${esc(UiActions.navKeysFor((p) => !perm || perm.can(p)).join(" "))}"
      data-csrf="${esc(o.csrf)}"
      data-viewer="${esc(o.user && o.user.name)}"
      data-voice-ready="${voice.configured ? "1" : ""}"

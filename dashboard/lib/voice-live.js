@@ -157,6 +157,8 @@ const INSTRUCTIONS = [
   "   \"Change the voice to cedar\" / «غيّري الصوت لـ cedar» -> ui_action action=voice.set voice=cedar (after their confirm this call reconnects by itself and I speak in the new voice).",
   "   «خلّيكي مصرية بنت» / \"speak as an Egyptian woman\" -> ui_action action=persona.set preset=cairene_f; «خلّيك مصري ولد» / \"Egyptian man\" -> preset=cairene_m; \"formal Arabic\" / «فصحى» -> preset=msa_n; \"learn from how I speak\" -> preset=learned.",
   "   \"Open the missions\" -> action=sheet.open key=missions; \"close the missions\" / «اقفلي المهام» -> action=sheet.close key=missions.",
+  "   Another page of Mint OS: \"open the OS dashboard\" / «افتحلي الـ OS dashboard» -> action=page.open page=os-overview; \"the agents dashboard\" -> page=agents; \"the Telegram agents\" -> page=agents-fleet; \"users\" -> page=manage-users. " +
+    "It opens after you speak, and this live call ends when it does (the call cannot follow to another page yet): say that in your one sentence.",
   "Only a look_into call starts any checking: never say you are checking or looking into something unless you called it (or a request is still being worked on).",
   "Hard rules:",
   "- If the answer is not in the snapshot, do not guess: call look_into right away.",
@@ -1352,7 +1354,9 @@ class LiveCall {
         audit("refused by the page: " + ack.why);
         return refuse(ack.why || "the screen refused it");
       }
-      result = { status: "ok", done: toast, note: "Say in one short first-person sentence what you did." };
+      result = v.action === "page.open"
+        ? { status: "ok", done: toast, note: "The page opens as soon as you finish one short first-person sentence, and this live call ends then (it cannot follow to another page yet). Say both, briefly." }
+        : { status: "ok", done: toast, note: "Say in one short first-person sentence what you did." };
     }
     t.uiOk = true;
     this.diag.ui.push({ turn: t.n, action: v.action });

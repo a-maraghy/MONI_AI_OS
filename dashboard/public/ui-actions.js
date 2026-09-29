@@ -61,6 +61,34 @@
     "voice-eval": { url: "/mint-ai/voice-eval", label: "the voice evaluation" },
   };
 
+  // page.open (M-5): the pages MINT AI may take the administrator to -- a fixed
+  // map, GET pages only (none has a real side effect), no parameters, no query
+  // strings. perm: what the page needs (checked on the page before it moves;
+  // null = anyone signed in). Nothing on a page is ever clicked for them.
+  var NAV_PAGES = {
+    "os-overview": { url: "/os", label: "the OS dashboard", perm: "os.view" },
+    agents: { url: "/agents/dashboard", label: "the agents dashboard", perm: "agents.view" },
+    "agents-fleet": { url: "/agents", label: "the Telegram agents", perm: "agents.view" },
+    "agents-channels": { url: "/channels", label: "the channels", perm: "channels.view" },
+    "agents-addons": { url: "/addons", label: "the add-ons", perm: "addons.view" },
+    "agents-services": { url: "/services/agents", label: "the agent services", perm: "agents.view" },
+    "os-services": { url: "/services", label: "the services", perm: "services.view" },
+    "os-audit": { url: "/audit", label: "the audit log", perm: "audit.view" },
+    "os-firewall": { url: "/firewall", label: "the firewall", perm: "firewall.view" },
+    "manage-credentials": { url: "/credentials", label: "the credentials", perm: "credentials.view" },
+    "manage-ssh-keys": { url: "/keys", label: "the SSH keys", perm: "keys.view" },
+    "manage-devices": { url: "/devices", label: "the paired devices", perm: "devices.view" },
+    "manage-users": { url: "/users", label: "the users", perm: "users.view" },
+    "manage-roles": { url: "/roles", label: "the roles", perm: "roles.view" },
+    "claude-memory": { url: "/claude/memory", label: "Claude's memory", perm: "claude.memory.read" },
+    "claude-sessions": { url: "/claude/sessions", label: "the Claude sessions", perm: "claude.sessions.view" },
+    "claude-running": { url: "/claude/running", label: "the running sessions", perm: "claude.running.view" },
+    guide: { url: "/guide", label: "the guide", perm: null },
+    account: { url: "/account", label: "your account", perm: null },
+    "voice-settings": { url: "/credentials/openai-voice", label: "the voice settings", perm: "voice.manage" },
+    "command-center": { url: "/mint-ai", label: "the Command Center", perm: "moniai.use" },
+  };
+
   function oneOf(map, key) {
     return function (a) {
       var v = a && a[key];
@@ -99,6 +127,8 @@
     "reply.read": { tier: 1, where: "page", args: none, toast: function () { return "Mint is reading the last reply"; } },
     "decision.show": { tier: 1, where: "page", args: none, toast: function () { return "Mint showed the waiting card -- approving it is yours"; } },
     "settings.open": { tier: 1, where: "page", once: true, args: oneOf(PAGES, "page"), toast: function (a) { return "Mint suggests " + PAGES[a.page].label; } },
+    // Takes the administrator to one page of the fixed map (M-5). Once a turn.
+    "page.open": { tier: 1, where: "page", once: true, args: oneOf(NAV_PAGES, "page"), toast: function (a) { return "Mint opened " + NAV_PAGES[a.page].label; } },
     // Tier 2: the toast is the question; done() is what is shown once confirmed and applied.
     "theme.set": { tier: 2, where: "page", args: oneOf(THEMES, "theme"), toast: function (a) { return "Switch to " + THEMES[a.theme] + "?"; }, done: function (a) { return "Switched to " + THEMES[a.theme]; } },
     "persona.set": { tier: 2, where: "page", args: oneOf(PERSONAS, "preset"), toast: function (a) { return "Set the voice persona to " + PERSONAS[a.preset] + "?"; }, done: function (a) { return "Voice persona: " + PERSONAS[a.preset]; } },
@@ -130,6 +160,14 @@
   function pageUrl(page) {
     return PAGES[page] ? PAGES[page].url : null;
   }
+  /** page.open: { url, label, perm } for a key of the fixed map, or null. */
+  function navPage(key) {
+    return Object.prototype.hasOwnProperty.call(NAV_PAGES, key) ? NAV_PAGES[key] : null;
+  }
+  /** The page.open keys a viewer may use, given can(perm). */
+  function navKeysFor(can) {
+    return Object.keys(NAV_PAGES).filter(function (k) { var p = NAV_PAGES[k].perm; return !p || !!can(p); });
+  }
 
   /**
    * The realtime tool. Flat, optional arguments so the model can fill them
@@ -144,6 +182,9 @@
         "Change what the administrator sees on this Command Center screen, at once: end or mute this call (never unmute), stop reading, " +
         "switch the voice mode, open or close a panel (" + Object.keys(SHEETS).join(", ") + "), show the map or missions, switch the core (A/B/C), " +
         "show or read the last reply, show the waiting decision card, or suggest a settings page (voice, account, voice-eval). " +
+        "page.open takes the administrator to another page of Mint OS (page = one of: " + Object.keys(NAV_PAGES).join(", ") + "): " +
+        "\"open the OS dashboard\" / «افتحلي الـ OS dashboard» -> os-overview; \"the agents dashboard\" -> agents; \"the Telegram agents\" -> agents-fleet; \"users\" -> manage-users; " +
+        "\"back to the Command Center\" -> command-center. It only opens the page (nothing on it is clicked), is refused when their role cannot see that page, and is once a turn. " +
         "Panel names as the administrator may say them: " + PANEL_WORDS + ". " +
         "\"Close the missions\", \"hide the decisions\", «اقفلي المهام», «اقفل الميشنز», «شيل القرارات» close that PANEL (sheet.close), never the call: " +
         "call.end only when they name the call or the conversation (\"end the call\", «اقفل المكالمة»). " +
@@ -161,7 +202,7 @@
           mode: { type: "string", enum: Object.keys(MODES), description: "voice.mode" },
           name: { type: "string", enum: Object.keys(VIEWS), description: "view" },
           core: { type: "string", enum: Object.keys(CORES), description: "core.set" },
-          page: { type: "string", enum: Object.keys(PAGES), description: "settings.open" },
+          page: { type: "string", enum: Object.keys(PAGES).concat(Object.keys(NAV_PAGES).filter(function (k) { return !PAGES[k]; })), description: "settings.open: voice, account or voice-eval; page.open: a page key from the list" },
           theme: { type: "string", enum: Object.keys(THEMES), description: "theme.set (needs confirm)" },
           preset: { type: "string", enum: Object.keys(PERSONAS), description: "persona.set (needs confirm)" },
           voice: { type: "string", enum: Object.keys(VOICE_NAMES), description: "voice.set (needs confirm; an open call reconnects with it)" },
@@ -222,6 +263,6 @@
 
   return {
     ACTIONS: ACTIONS, SHEETS: SHEETS, CORES: CORES, MODES: MODES, VIEWS: VIEWS, PAGES: PAGES, THEMES: THEMES, PERSONAS: PERSONAS, VOICE_NAMES: VOICE_NAMES, ARG_KEYS: ARG_KEYS,
-    names: names, validate: validate, toast: toast, doneText: doneText, pageUrl: pageUrl, tool: tool, fromTool: fromTool, limiter: limiter, claims: claims,
+    names: names, validate: validate, toast: toast, doneText: doneText, navPage: navPage, navKeysFor: navKeysFor, NAV_PAGES: NAV_PAGES, pageUrl: pageUrl, tool: tool, fromTool: fromTool, limiter: limiter, claims: claims,
   };
 });

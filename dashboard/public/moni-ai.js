@@ -3049,6 +3049,14 @@
         case "reply.read": if (!lastReplyTurn()) return { ok: false, why: "there is no reply yet" }; $("cc-reply-read").click(); break;
         case "decision.show": if (!needQueue().length) return { ok: false, why: "no card is waiting" }; openNeed(); break;
         case "settings.open": link = UA.pageUrl(a.page); break; // a link to click: never navigates by itself (a call would end)
+        case "page.open": {
+          // Another page of Mint OS (M-5): only one this viewer's role may see (the server listed them in data-pages).
+          var np = UA.navPage(a.page);
+          if (a.page === "command-center") { uiToast("You are on the Command Center", null, null); return { ok: true }; }
+          if ((" " + (root.getAttribute("data-pages") || "") + " ").indexOf(" " + a.page + " ") < 0) return { ok: false, why: "their role cannot open " + np.label + " (it needs " + np.perm + ")" };
+          pageOpenSoon(a.page, np);
+          break;
+        }
         default: return { ok: false, why: "not on this page" };
       }
     } catch (e) {
@@ -3073,6 +3081,25 @@
     uiUndoSignal(0);
     if (how === "voice") toast("Undone.");
     return true;
+  }
+  /* page.open: the voice first says its one sentence, then the page opens. The
+     destination's dock shows "Mint opened ..." with Undo (back here). A live
+     call cannot follow to another page yet (the dock's part 2 will keep it). */
+  var pageOpening = null;
+  function pageOpenSoon(key, np) {
+    if (pageOpening) return;
+    pageOpening = { key: key, at: Date.now() };
+    try { window.sessionStorage.setItem("mint-opened", JSON.stringify({ key: key, label: np.label, from: location.pathname, at: Date.now() })); } catch (e) { /* no undo there */ }
+    var talking = function () { return !!((liveActive() && window.VoiceLive && window.VoiceLive.speaking()) || (typeof Voice !== "undefined" && Voice.speaking)); };
+    var started = false, t0 = Date.now();
+    (function wait() {
+      var dt = Date.now() - t0;
+      if (talking()) started = true;
+      var done = started ? !talking() : dt > 2500;
+      if (!done && dt < 9000) return setTimeout(wait, 150);
+      if (liveActive() && window.VoiceLive) window.VoiceLive.stop();
+      window.location.assign(np.url);
+    })();
   }
   function uiToast(text, undo, link) {
     var old = document.querySelector(".cc-toast");

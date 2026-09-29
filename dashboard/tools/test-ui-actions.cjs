@@ -25,7 +25,7 @@ function check(name, cond, detail) {
 }
 
 console.log("the allowlist");
-check("exactly the Phase 1 actions plus the three Tier-2 preferences", UA.names().sort().join() === ["call.end", "call.mute", "call.interrupt", "voice.mode", "sheet.open", "sheet.close", "view", "core.set", "reply.show", "reply.read", "decision.show", "settings.open", "theme.set", "persona.set", "voice.set"].sort().join(), UA.names().join());
+check("exactly the Phase 1 actions plus the three Tier-2 preferences", UA.names().sort().join() === ["call.end", "call.mute", "call.interrupt", "voice.mode", "sheet.open", "sheet.close", "view", "core.set", "reply.show", "reply.read", "decision.show", "settings.open", "page.open", "theme.set", "persona.set", "voice.set"].sort().join(), UA.names().join());
 const TIER3 = ["approve", "deny", "approval.approve", "decision.approve", "decision.deny", "credentials.set", "key.set", "users.add", "rules.add", "gate.off", "restart", "deploy", "voice.set", "theme.set", "persona.set", "settings.set", "call.unmute", "eval", "navigate"];
 check("no Tier-2 or Tier-3 name exists (approve, deny, keys, users, rules, gate, restart, deploy, settings values, unmute...)", TIER3.every((n) => !UA.validate(n, {}).ok), TIER3.filter((n) => UA.validate(n, {}).ok).join());
 check("nothing named like an approval at all", !UA.names().some((n) => /approv|deny|confirm|key|user|rule|gate|restart|deploy|unmute/.test(n)));
@@ -78,6 +78,27 @@ console.log("\nTier 2 (Phase 3): preferences, only after a confirm");
   const proto = fs.readFileSync(path.join(ROOT, "..", "moni-ai", "lib", "protocol.js"), "utf8");
   check("the supervisor's protocol takes exactly the same argument keys", proto.includes("const KEYS = " + JSON.stringify(UA.ARG_KEYS).replace(/,/g, ", ") + ";"));
 }
+console.log("\npage.open (M-5): another page of Mint OS, by a fixed key");
+{
+  const KEYS = ["os-overview", "agents", "agents-fleet", "agents-channels", "agents-addons", "agents-services", "os-services", "os-audit", "os-firewall", "manage-credentials", "manage-ssh-keys", "manage-devices", "manage-users", "manage-roles", "claude-memory", "claude-sessions", "claude-running", "guide", "account", "voice-settings", "command-center"];
+  check("exactly the 21 allowlisted pages", Object.keys(UA.NAV_PAGES).sort().join() === KEYS.slice().sort().join(), Object.keys(UA.NAV_PAGES).join());
+  check("tier 1, on the page, once per turn", UA.ACTIONS["page.open"].tier === 1 && UA.ACTIONS["page.open"].where === "page" && UA.ACTIONS["page.open"].once === true);
+  check("a key only, never a URL or a path (stray fields are not carried)", UA.validate("page.open", { page: "os-audit" }).ok && !UA.validate("page.open", { page: "/audit" }).ok && !UA.validate("page.open", { page: "https://evil.example" }).ok && !UA.validate("page.open", {}).ok && JSON.stringify(UA.validate("page.open", { page: "os-audit", key: "x" }).args) === '{"page":"os-audit"}');
+  check("every target is a same-site path with its permission (guide and account need none)", Object.entries(UA.NAV_PAGES).every(([k, v]) => /^\/[a-z/-]*$/.test(v.url) && v.label && (v.perm === null ? ["guide", "account"].includes(k) : /^[a-z.]+$/.test(v.perm))));
+  check("navPage / navKeysFor follow the role", UA.navPage("os-audit").url === "/audit" && UA.navPage("nope") === null && UA.navKeysFor((p) => p === "os.view").join() === "os-overview,guide,account");
+  check("the toast names the page", UA.toast("page.open", { page: "os-audit" }) === "Mint opened the audit log");
+  const L = UA.limiter();
+  check("once per turn", L.take("p1", "page.open", 1) === null && /already done/.test(L.take("p1", "page.open", 2)));
+  const t = UA.tool();
+  check("the tool's page enum is settings.open's pages plus these keys", t.parameters.properties.page.enum.slice().sort().join() === [...new Set([...Object.keys(UA.PAGES), ...KEYS])].sort().join());
+  check("  and the description says what page.open is for", /page\.open/.test(t.description));
+  const page = fs.readFileSync(path.join(ROOT, "public", "moni-ai.js"), "utf8");
+  check("the Command Center checks the role (data-pages) before moving", /case "page\.open"/.test(page) && /data-pages|dataset\.pages/.test(page));
+  check("the Command Center page carries data-pages", /data-pages=/.test(fs.readFileSync(path.join(ROOT, "lib", "views-moniai.js"), "utf8")));
+  for (const f of ["voice-live.js", "voice-desk.js"]) check(`lib/${f} tells the voice about page.open`, /page\.open/.test(fs.readFileSync(path.join(ROOT, "lib", f), "utf8")));
+  check("the supervisor's copy is byte-identical", fs.readFileSync(path.join(ROOT, "public", "ui-actions.js"), "utf8") === fs.readFileSync(path.join(ROOT, "..", "moni-ai", "lib", "ui-actions.js"), "utf8"));
+}
+
 console.log("\nTier 3: never by voice or AI -- no action names at all");
 check("nothing about keys, users, roles, 2FA, rules, watchers, voice mode, budget, orders, restart, deploy, approve", !UA.names().some((n) => /key|user|role|totp|2fa|password|rule|watcher|desk|budget|order|restart|deploy|approve|deny|fresh|gate|credential|service|firewall/.test(n)), UA.names().join());
 

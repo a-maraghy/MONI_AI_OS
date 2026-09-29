@@ -45,7 +45,9 @@ function uiTool() {
     name: "ui_action",
     op: "ui-action",
     description:
-      "Change what the administrator sees in the Command Center tab they asked from, at once: open or close a panel, show the map or missions, " +
+      "Change what the administrator sees in the tab they asked from (the Command Center, or MINT AI's dock on another Mint OS page), at once: " +
+      "open another page of Mint OS (page.open, by its page key; once per request, and only a page their role may see -- the screen checks), " +
+      "open or close a panel, show the map or missions, " +
       "switch the core (A/B/C), switch the voice mode, show or read your last reply, show the waiting decision card, suggest a settings page, " +
       "or end / mute / interrupt their voice call (never unmute). It works only while you answer a request the administrator sent from the " +
       "Command Center, and only when they asked for it in that request. It cannot approve, deny or confirm anything, change keys, users, rules or " +
