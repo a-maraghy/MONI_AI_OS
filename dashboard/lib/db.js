@@ -181,6 +181,12 @@ function addColumn(table, column, definition) {
 // people who were enrolled before the column existed.
 addColumn("users", "email", "TEXT NOT NULL DEFAULT ''");
 
+// The MINT AI core each person chose for the Command Center: "A" (dotted
+// sphere), "B" (Siri fluid) or "C" (hybrid). Empty means never chosen, which
+// reads as the default, C (public/cc-logic.js normCore) -- so every existing
+// account gets the default without a value being written for it.
+addColumn("users", "mint_core", "TEXT NOT NULL DEFAULT ''");
+
 addColumn("console_sessions", "permission_mode", "TEXT NOT NULL DEFAULT 'auto'");
 addColumn("console_sessions", "archived", "INTEGER NOT NULL DEFAULT 0");
 // New chats start without root. The value is written explicitly by
@@ -353,6 +359,10 @@ module.exports = {
     db
       .prepare("UPDATE users SET totp_secret = ?, totp_confirmed = ? WHERE id = ?")
       .run(secret, confirmed ? 1 : 0, id),
+
+  /** The MINT AI core this person chose (A / B / C). The caller validates it. */
+  setUserMintCore: (id, core) =>
+    db.prepare("UPDATE users SET mint_core = ? WHERE id = ?").run(String(core), id),
 
   confirmUserTotp: (id) =>
     db.prepare("UPDATE users SET totp_confirmed = 1 WHERE id = ?").run(id),

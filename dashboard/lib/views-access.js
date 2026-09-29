@@ -572,7 +572,7 @@ exports.roleEdit = ({ csrf, user, role, agents, channels, isNew, readOnly, error
 
 /* -------------------------------------------------------------- account --- */
 
-exports.account = ({ csrf, user, me, flash, err }) =>
+exports.account = ({ csrf, user, me, flash, err, appearance }) =>
   shell(
     "Your account",
     `${flashes({ msg: flash, err })}
@@ -597,6 +597,8 @@ exports.account = ({ csrf, user, me, flash, err }) =>
       </table>`,
       { icon: "user" }
     )}
+
+    ${appearance ? appearance.html : ""}
 
     ${card(
       "Change password",
@@ -661,6 +663,7 @@ exports.account = ({ csrf, user, me, flash, err }) =>
       active: null,
       heading: me.display_name || me.username,
       subtitle: "Your own credentials and what your role permits.",
+      assets: appearance ? appearance.assets : undefined,
     }
   );
 

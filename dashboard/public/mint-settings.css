@@ -1,0 +1,22 @@
+/* Account > Appearance: the MINT AI core picker with live previews
+   (lib/views-moniai.js appearance(), public/mint-settings.js). Tokens only. */
+.mint-core-opts { border: 0; margin: 12px 0; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.mint-core-opt { position: relative; display: flex; flex-direction: column; gap: 6px; padding: 10px; border-radius: 14px; border: 1px solid var(--line); background: var(--panel); cursor: pointer; transition: border-color .2s, box-shadow .2s; }
+.mint-core-opt:hover { border-color: var(--line-strong); }
+.mint-core-opt input { position: absolute; opacity: 0; pointer-events: none; }
+.mint-core-opt:has(input:checked) { border-color: var(--accent-2); box-shadow: 0 0 0 3px var(--accent-soft); }
+.mint-core-opt:has(input:focus-visible) { outline: 2px solid var(--accent-2); outline-offset: 2px; }
+.mint-prev { position: relative; display: block; height: 128px; border-radius: 10px; overflow: hidden;
+  background: radial-gradient(closest-side, var(--hero-a), transparent 100%), var(--obsidian); }
+:root[data-theme="light"] .mint-prev { background: radial-gradient(closest-side, var(--hero-a), transparent 100%), var(--panel-2); }
+@media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) .mint-prev { background: radial-gradient(closest-side, var(--hero-a), transparent 100%), var(--panel-2); } }
+.mint-prev canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.mint-prev-spark { position: absolute; left: 50%; top: 50%; width: 18px; height: 18px; transform: translate(-50%, -50%); pointer-events: none; }
+.mint-prev-spark svg { width: 100%; height: 100%; overflow: visible; filter: drop-shadow(0 0 6px var(--glow)); }
+.mint-prev-spark .sp-l { display: none; }
+.mint-core-name { font: 600 14px var(--brand-font); color: var(--ink); }
+.mint-core-name b { display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 6px; background: var(--grad-ai); color: var(--on-brand); font-size: 12px; margin-right: 2px; }
+.mint-core-desc { font-size: 12.5px; color: var(--muted); line-height: 1.45; }
+.mint-appearance.js .mint-core-save { display: none; }
+#mint-appearance-note.err { color: var(--bad); }
+@media (max-width: 720px) { .mint-core-opts { grid-template-columns: 1fr; } .mint-prev { height: 110px; } }
