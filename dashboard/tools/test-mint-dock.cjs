@@ -87,5 +87,40 @@ console.log("\npublic/mint-dock.css");
   check("every rule is its own (md- prefix): it cannot restyle the Command Center", css.replace(/\/\*[\s\S]*?\*\//g, "").split("}").map((r) => r.split("{")[0].trim()).filter((sel) => sel && !/^@|^:root|^from|^to|^\d+%|^50%/.test(sel)).every((sel) => sel.split(",").every((x) => /\.md-/.test(x))));
 }
 
+console.log("\nthe Command Center as a shell (M-5 part 2)");
+{
+  const views = require(path.join(ROOT, "lib", "views-moniai.js"));
+  const server = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
+  check("CSP: frame-ancestors 'self' (a same-origin frame only), never 'none' or a host", /frameAncestors: \["'self'"\]/.test(server) && !/frameAncestors: \["'none'"\]/.test(server));
+  check("  X-Frame-Options stays helmet's SAMEORIGIN (frameguard not switched off)", !/frameguard:\s*false/.test(server) && !/xFrameOptions:\s*false/.test(server));
+  const shellDock = ui.dockMarkup("demo-csrf-token", permOf("*"), { shell: true });
+  check("the shell's dock: data-shell, a frame named mint-frame (hidden), the flight canvas, an end-call button; hidden until a page is up", /data-shell="1"/.test(shellDock) && /<iframe class="md-frame" id="md-frame" name="mint-frame" title="Mint OS page" hidden><\/iframe>/.test(shellDock) && /id="md-hero"/.test(shellDock) && /id="md-end"/.test(shellDock) && /class="md-dock off"/.test(shellDock));
+  check("  the frame has no sandbox and no src until a page opens", !/sandbox|md-frame"[^>]*src=/.test(shellDock));
+  const pageDock = ui.dockMarkup("demo-csrf-token", permOf("*"));
+  check("  an ordinary page's dock has none of that", !/md-frame|md-hero|md-end|data-shell/.test(pageDock));
+  const vsrc = fs.readFileSync(path.join(ROOT, "lib", "views-moniai.js"), "utf8");
+  check("the Command Center page renders the shell's dock and loads mint-dock.css/js and mint-shell.js after moni-ai.js", /dockMarkup\(o\.csrf, perm, \{ shell: true, noVoice: !voice\.configured \}\)/.test(vsrc) && /"moni-ai\.js", "mint-dock\.js", "mint-shell\.js"\]/.test(vsrc) && /"mint-dock\.css"/.test(vsrc));
+  const sh = fs.readFileSync(path.join(ROOT, "public", "mint-shell.js"), "utf8").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+  check("mint-shell.js: only paths of this site open in the frame (not /mint-ai, /login, /logout, the API, //host)", /x\.origin !== ORIGIN/.test(sh) && /\/\^\\\/\(\?!\\\/\)\//.test(sh) && /logout\|login\|mint-ai\\\/api/.test(sh) && /isCC\(x\.pathname\)/.test(sh));
+  check("  messages only from this origin and from the frame's own window; posts only to this origin", /e\.origin !== ORIGIN \|\| e\.source !== frame\.contentWindow/.test(sh) && /postMessage\(\{ mint: "theme", theme: [^}]*\}, ORIGIN\)/.test(sh) && !/postMessage\([^)]*"\*"\)/.test(sh));
+  check("  history: an entry per switch (/mint-ai?at=... and /mint-ai), popstate follows, the address follows moves inside the frame", /history\.pushState\(\{ mint: "frame"/.test(sh) && /history\.pushState\(\{ mint: "cc" \}, "", "\/mint-ai"\)/.test(sh) && /addEventListener\("popstate"/.test(sh) && /history\.replaceState\(\{ mint: "frame", url: p \}/.test(sh));
+  check("  a deep link (?at=) opens straight onto the page, back lands on the Command Center", /get\("at"\)/.test(sh) && /open\(deep, \{ instant: true \}\)/.test(sh));
+  check("  the Command Center under a page is inert and its core stopped; restored on the way back", /setAttribute\("inert", ""\)/.test(sh) && /removeAttribute\("inert"\)/.test(sh) && /coreStop\(\)/.test(sh) && /coreStart\(\)/.test(sh));
+  check("  every flight style is cleared on landing (the Command Center looks as before)", /setOp\(cc, ""\); setOp\(frame, ""\); setOp\(dockEl, ""\);/.test(sh) && /html\.classList\.remove\("md-flying"\)/.test(sh));
+  check("  reduced motion: no flight", /if \(reduced \|\| o\.instant\)/.test(sh));
+  check("  no live call is stopped by opening a page", !/VoiceLive\.stop|liveStop/.test(sh));
+  const cc = fs.readFileSync(path.join(ROOT, "public", "moni-ai.js"), "utf8");
+  check("moni-ai.js: page.open opens in the shell (Undo = back) and falls back to the old whole-tab move only without it", /window\.MintShell && window\.MintShell\.open\(np\.url\)\) \{ undo = function \(\) \{ window\.MintShell\.back\(\); \}/.test(cc) && /pageOpenSoon\(a\.page, np\);/.test(cc));
+  check("  anything but the call and page.open brings the Command Center back first", /shellUp\(\) && \["call\.end", "call\.mute", "call\.interrupt", "page\.open"\]\.indexOf\(v\.action\) < 0\) window\.MintShell\.expand\(\)/.test(cc));
+  check("  its notes go to the dock while a page is up, and it feeds the dock its state", /if \(shellUp\(\)\) return window\.MintShell\.toast/.test(cc) && /window\.MintShell\.feed\(\{ state: st/.test(cc));
+  const app = fs.readFileSync(path.join(ROOT, "public", "app.js"), "utf8");
+  const br = app.slice(app.indexOf("The bridge to the Command Center's shell"));
+  check("app.js bridge: only when framed by the shell (same origin, parent is top)", /window\.top !== window && window\.parent === window\.top && window\.top\.location\.origin === location\.origin && window\.top\.MintShell/.test(br) && /if \(!parent\) return;/.test(br));
+  check("  breaks out when signed out, on logout, and for the Command Center itself", /\.auth-wrap/.test(br) && /parent\.location\.replace/.test(br) && /form\[action="\/logout"\]/.test(br) && /\.target = "_top"/.test(br) && /send\(\{ mint: "expand" \}\)/.test(br));
+  check("  sends where it is, Space held (not while typing) and theme changes; takes the theme only from its parent", /send\(\{ mint: "nav" \}\)/.test(br) && /send\(\{ mint: "space", down: true \}\)/.test(br) && /typing\(document\.activeElement\)/.test(br) && /e\.origin !== ORIGIN \|\| e\.source !== parent/.test(br) && /parent\.postMessage\(m, ORIGIN\)/.test(br));
+  const dj = fs.readFileSync(path.join(ROOT, "public", "mint-dock.js"), "utf8");
+  check("mint-dock.js: none of its own inside the frame; in the shell no stream or recorder of its own", /if \(framed\) \{ root\.remove\(\); return; \}/.test(dj) && /if \(!SHELL\) \{\s*var drv = pageDriver\(\);/.test(dj));
+}
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

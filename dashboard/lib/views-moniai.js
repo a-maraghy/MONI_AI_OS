@@ -23,7 +23,7 @@
  * Only this VPS is shown. The live Odoo server appears nowhere on this page.
  */
 
-const { esc, shell, card, asset } = require("./ui");
+const { esc, shell, card, asset, dockMarkup } = require("./ui");
 const marks = require("./marks");
 const logic = require("../public/cc-logic");
 const UiActions = require("../public/ui-actions");
@@ -346,6 +346,7 @@ function page(o) {
   )}
 </aside>
 <div id="cc-overlay"></div>
+${perm ? dockMarkup(o.csrf, perm, { shell: true, noVoice: !voice.configured }) : ""}
 <noscript><div class="cc-noscript">The Command Center needs JavaScript. The older chat is at <a href="/console">/console</a>.</div></noscript>`;
 
   return shell("MINT AI", body, {
@@ -356,7 +357,7 @@ function page(o) {
     brand: "ai",
     heading: null,
     pageClass: "cc-page",
-    assets: ["moni-ai.css", "voice-live.css", "cc-logic.js", "mint-core.js", "cc-family.js", "cc-map.js", "cc-panels.js", "voice-live-detect.js", "voice-live.js", "ui-actions.js", "moni-ai.js"],
+    assets: ["moni-ai.css", "voice-live.css", "mint-dock.css", "cc-logic.js", "mint-core.js", "cc-family.js", "cc-map.js", "cc-panels.js", "voice-live-detect.js", "voice-live.js", "ui-actions.js", "moni-ai.js", "mint-dock.js", "mint-shell.js"],
     topExtra: topExtra(),
     topEnd: TOP_CLOCK,
   });

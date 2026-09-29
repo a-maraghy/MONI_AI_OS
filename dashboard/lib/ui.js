@@ -501,21 +501,29 @@ function shell(title, body, opts = {}) {
  * data-pages: the page.open keys this viewer's role may use (checked there
  * before moving).
  */
-function dockMarkup(csrf, perm) {
+function dockMarkup(csrf, perm, opts = {}) {
   const UiActions = require("../public/ui-actions");
   const keys = UiActions.navKeysFor((p) => perm.can(p)).join(" ");
+  // The Command Center's shell (M-5 part 2): the same dock, driven by the Command Center, over a
+  // same-origin frame that holds the other pages, and the canvas the core flies on between them.
+  const shellParts = opts.shell
+    ? `
+  <iframe class="md-frame" id="md-frame" name="mint-frame" title="Mint OS page" hidden></iframe>
+  <canvas class="md-hero" id="md-hero" aria-hidden="true"></canvas>`
+    : "";
   const svg = (d) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
   return `
-<div class="md-root" id="mint-dock-root" data-csrf="${esc(csrf)}" data-pages="${esc(keys)}" hidden>
+<div class="md-root${opts.shell ? " md-shell" : ""}" id="mint-dock-root" data-csrf="${esc(csrf)}" data-pages="${esc(keys)}"${opts.shell ? ' data-shell="1"' : ""} hidden>${shellParts}
   <div class="md-bubble" id="md-bubble" aria-hidden="true" data-s="idle"><div class="b-top">MINT AI · <b id="md-b-state">READY</b><span id="md-b-at">now</span></div><div class="b-you" id="md-b-you"></div><div class="b-cap" id="md-b-cap">Ready when you are.</div><div class="b-ask" id="md-b-ask" hidden></div>
-    <div class="b-hint"><span>Click to open the Command Center</span><span><kbd>Space</kbd> hold to talk</span></div></div>
+    <div class="b-hint"><span>Click to open the Command Center</span>${opts.noVoice ? "" : `<span><kbd>Space</kbd> hold to talk</span>`}</div></div>
   <div class="md-toast" id="md-toast" role="status"><span class="t-ic" aria-hidden="true"></span><span id="md-t-txt"></span><button type="button" id="md-t-act" hidden>Undo</button></div>
-  <div class="md-dock" id="md-dock" data-s="idle" role="region" aria-label="MINT AI">
+  <div class="md-dock${opts.shell ? " off" : ""}" id="md-dock" data-s="idle" role="region" aria-label="MINT AI">
     <a class="md-orb" id="md-orb" href="/mint-ai" aria-label="Open the Command Center"><canvas id="md-orb-c" aria-hidden="true"></canvas></a>
-    <a class="md-txt" id="md-txt" href="/mint-ai"><span class="md-name">MINT AI <span class="md-need-n" id="md-need-n" hidden>1 needs you</span></span>
+    <a class="md-txt" id="md-txt" href="/mint-ai"><span class="md-name">MINT AI <span class="md-live-tag" id="md-live-t">LIVE</span><span class="md-need-n" id="md-need-n" hidden>1 needs you</span></span>
       <span class="md-state"><i></i><span id="md-state-t">Ready</span></span></a>
     <div class="md-btns">
       <button type="button" class="md-btn md-mic" id="md-mic" aria-label="Hold to talk to MINT AI" title="Hold to talk (or hold Space)">${svg('<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/>')}</button>
+      ${opts.shell ? `<button type="button" class="md-btn md-end" id="md-end" aria-label="End the live call" title="End the live call">${svg('<path d="M3.5 14.5c4.7-4 12.3-4 17 0l-1.8 2.6-3.4-1.2-.4-2.4a11 11 0 0 0-5.8 0l-.4 2.4-3.4 1.2z"/>')}</button>` : ""}
       <a class="md-btn md-exp" id="md-exp" href="/mint-ai" aria-label="Open the Command Center" title="Open the Command Center">${svg('<path d="M14 4h6v6M10 20H4v-6M20 4l-7 7M4 20l7-7"/>')}</a>
     </div>
   </div>
@@ -719,6 +727,7 @@ function empty(iconName, title, body) {
 }
 
 module.exports = {
+  dockMarkup,
   asset,
   docLayout,
   tocCard,

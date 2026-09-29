@@ -250,3 +250,75 @@ document.addEventListener("submit", function (ev) {
     else if (mq.addListener) mq.addListener(onChange);
   }
 })();
+
+/*
+ * The bridge to the Command Center's shell (M-5 part 2) -- only when this page
+ * is inside its frame (same origin, a parent that is the shell). It tells the
+ * shell where it is and its title, forwards Space held to talk (outside text
+ * fields), and keeps the theme in step both ways. A signed-out page (login,
+ * an expired session), a logout and the Command Center itself leave the frame.
+ * Messages go to this origin only, and are taken only from the parent.
+ */
+(function () {
+  var parent = null;
+  try {
+    if (window.top !== window && window.parent === window.top && window.top.location.origin === location.origin && window.top.MintShell) parent = window.top;
+  } catch (e) {
+    parent = null;
+  }
+  if (!parent) return;
+  var ORIGIN = location.origin;
+  var send = function (m) { try { parent.postMessage(m, ORIGIN); } catch (e) { /* the shell is gone */ } };
+  // Signed out (the sign-in page, a session that expired): the whole tab goes there.
+  if (document.querySelector(".auth-wrap")) {
+    parent.location.replace(location.pathname + location.search);
+    return;
+  }
+  var cc = function (path) { return path === "/mint-ai" || path === "/mint-ai/"; };
+  if (cc(location.pathname)) return send({ mint: "expand" });
+  // Logout leaves the frame with the whole tab.
+  var forms = document.querySelectorAll('form[action="/logout"]');
+  for (var i = 0; i < forms.length; i++) forms[i].target = "_top";
+  // A link to the Command Center brings it back rather than nesting it.
+  document.addEventListener("click", function (e) {
+    var a = e.target && e.target.closest && e.target.closest("a[href]");
+    if (!a || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || a.target === "_blank") return;
+    var u;
+    try { u = new URL(a.href); } catch (x) { return; }
+    if (u.origin === ORIGIN && cc(u.pathname) && !u.search) { e.preventDefault(); send({ mint: "expand" }); }
+  }, true);
+  var nav = function () { send({ mint: "nav" }); };
+  window.addEventListener("hashchange", nav);
+  window.addEventListener("popstate", nav);
+  // Space held outside a text field talks to MINT AI, as in the Command Center.
+  var typing = function (el) { return !!(el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT|BUTTON)$/.test(el.tagName || "") || el.getAttribute("role") === "radio")); };
+  var down = false;
+  document.addEventListener("keydown", function (e) {
+    if (e.code !== "Space" || e.ctrlKey || e.metaKey || e.altKey || typing(document.activeElement)) return;
+    e.preventDefault();
+    if (e.repeat || down) return;
+    down = true;
+    send({ mint: "space", down: true });
+  }, true);
+  document.addEventListener("keyup", function (e) {
+    if (e.code !== "Space" || !down) return;
+    e.preventDefault();
+    down = false;
+    send({ mint: "space", down: false });
+  }, true);
+  window.addEventListener("blur", function () { if (down) { down = false; send({ mint: "space", down: false }); } });
+  // The theme, both ways (the switch here, or the shell's).
+  document.addEventListener("moni-theme", function (e) { send({ mint: "theme", theme: (e.detail && e.detail.theme) || "system" }); });
+  window.addEventListener("message", function (e) {
+    if (e.origin !== ORIGIN || e.source !== parent) return;
+    var m = e.data && typeof e.data === "object" ? e.data : {};
+    if (m.mint !== "theme" || ["system", "dark", "light"].indexOf(m.theme) < 0) return;
+    var root = document.documentElement, now = root.getAttribute("data-theme") || "system";
+    if (now === m.theme) return;
+    var b = document.querySelector('[data-theme-switch] button[data-theme-opt="' + m.theme + '"]');
+    if (b) return b.click();
+    if (m.theme === "system") root.removeAttribute("data-theme");
+    else root.setAttribute("data-theme", m.theme);
+  });
+  nav();
+})();

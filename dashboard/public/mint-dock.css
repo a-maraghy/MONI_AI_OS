@@ -76,9 +76,33 @@
 .md-toast button, .md-toast a { height: 28px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--md-line-2); background: transparent; color: var(--md-ink); font: 500 12px var(--ui, "Inter", sans-serif); cursor: pointer; display: inline-flex; align-items: center; text-decoration: none; }
 .md-toast button[hidden] { display: none; }
 
+/* The live call's line (the Command Center's shell only: a call lives there) */
+.md-live-tag { display: none; font: 600 9.5px/1 var(--mono, monospace); letter-spacing: .06em; color: var(--md-mint); padding: 3px 5px; border-radius: 5px; background: var(--md-mint-soft); }
+.md-dock.live .md-live-tag { display: inline-flex; }
+.md-dock.live .md-orb::after { border-color: var(--md-mint); }
+.md-dock[data-s="speaking"] .md-state i { background: var(--md-mint); animation: md-blink .6s infinite; }
+.md-end { display: none; border: 0; color: #fff; background: #D64545; }
+.md-dock.live .md-end { display: grid; }
+.md-mic.muted { background: var(--md-line-2); color: var(--md-muted); box-shadow: none; }
+
+/* The shell (M-5 part 2): the Command Center hosts the other pages in a same-origin frame, so its
+   live call goes on; the core flies down into the dock and back. Nothing here applies until the
+   shell adds its classes, so the Command Center itself looks exactly as before. */
+.md-shell .md-dock { z-index: 1002; }
+.md-shell .md-bubble { z-index: 1003; }
+.md-shell .md-toast { z-index: 1004; }
+.md-dock.off { opacity: 0; visibility: hidden; pointer-events: none; }
+.md-frame { position: fixed; left: 0; top: 0; width: 100vw; height: 100vh; height: 100dvh; border: 0; z-index: 1000; background: transparent; color-scheme: normal; }
+.md-frame[hidden] { display: none; }
+.md-hero { position: fixed; left: 0; top: 0; width: 100vw; height: 100vh; pointer-events: none; z-index: 1001; display: none; }
+.md-hero.on { display: block; }
+html.md-flying #cc-core, html.md-flying #cc-spark, html.md-flying #cc-halo { visibility: hidden; }
+
 @media (max-width: 600px) {
   .md-dock { right: 12px; bottom: calc(12px + env(safe-area-inset-bottom)); height: 60px; gap: 6px; padding: 5px; }
   .md-dock .md-txt, .md-dock .md-exp { display: none; }
+  .md-dock.live .md-txt { display: flex; min-width: 0; }
+  .md-dock.live .md-name { display: none; }
   .md-orb { width: 48px; height: 48px; }
   .md-bubble, .md-toast { left: 12px; right: 12px; width: auto; bottom: 84px; }
 }

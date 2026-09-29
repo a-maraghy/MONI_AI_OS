@@ -25,6 +25,12 @@
 (function () {
   var root = document.getElementById("mint-dock-root");
   if (!root || !window.fetch) return;
+  // Inside the Command Center's frame (M-5 part 2) the shell's dock is the one: this page shows none.
+  var framed = false;
+  try { framed = window.top !== window && !!window.top.MintShell; } catch (e) { framed = false; }
+  if (framed) { root.remove(); return; }
+  // In the Command Center itself the dock is the shell's (mint-shell.js feeds it; no stream, no recorder of its own).
+  var SHELL = root.getAttribute("data-shell") === "1";
   root.hidden = false;
   var $ = function (id) { return document.getElementById(id); };
   var dock = $("md-dock"), CSRF = root.getAttribute("data-csrf") || "";
@@ -55,15 +61,22 @@
   }
 
   /* ---------------------------------------------------------- state and caption */
-  var LABEL = { idle: "Ready", listening: "Listening", thinking: "Thinking", needs: "Needs you" };
+  var LABEL = { idle: "Ready", listening: "Listening", thinking: "Thinking", speaking: "Speaking", needs: "Needs you" };
   var st = { busy: false, needs: {}, listening: false, cap: "Ready when you are.", you: "", at: Date.now() };
+  // The shell's feed: { state, pending, cap, live, liveSince, muted }.
+  var ext = { state: "idle", pending: 0, live: false, liveSince: 0, muted: false };
   var quietT = 0;
-  function needN() { return Object.keys(st.needs).length; }
-  function stateNow() { return st.listening ? "listening" : needN() ? "needs" : st.busy ? "thinking" : "idle"; }
+  function needN() { return SHELL ? ext.pending : Object.keys(st.needs).length; }
+  function stateNow() {
+    if (SHELL) return ext.pending && ext.state !== "listening" && ext.state !== "speaking" ? "needs" : LABEL[ext.state] ? ext.state : "thinking";
+    return st.listening ? "listening" : needN() ? "needs" : st.busy ? "thinking" : "idle";
+  }
   function paint() {
     var s = stateNow(), n = needN();
     dock.setAttribute("data-s", s);
-    $("md-state-t").textContent = LABEL[s];
+    $("md-state-t").textContent = SHELL && ext.live && s === "idle" ? "On the call" : LABEL[s];
+    dock.classList.toggle("live", SHELL && !!ext.live);
+    paintLive();
     $("md-bubble").setAttribute("data-s", s);
     $("md-b-state").textContent = LABEL[s].toUpperCase();
     var nn = $("md-need-n");
@@ -79,7 +92,7 @@
   function wake() {
     dock.classList.remove("quiet");
     clearTimeout(quietT);
-    quietT = setTimeout(function () { if (stateNow() === "idle" && !dock.matches(":hover")) dock.classList.add("quiet"); }, 6000);
+    quietT = setTimeout(function () { if (stateNow() === "idle" && !(SHELL && ext.live) && !dock.matches(":hover")) dock.classList.add("quiet"); }, 6000);
   }
   function ago(ms) { var s = Math.round((Date.now() - ms) / 1000); return s < 5 ? "now" : s < 60 ? s + "s ago" : Math.round(s / 60) + "m ago"; }
   dock.addEventListener("mouseenter", function () { wake(); $("md-b-at").textContent = ago(st.at); $("md-bubble").classList.add("on"); });
@@ -99,170 +112,176 @@
     toastT = setTimeout(function () { el.classList.remove("on"); }, opts.action ? 9000 : 4200);
   }
 
-  /* ---------------------------------------------------------- the events */
-  // The stream replays its recent past on connect: that fills the caption, but
-  // "busy" and "needs you" come from the status read just before (baseSeq).
-  var baseSeq = 0;
-  function replayed(ev) { return !!(ev && ev.seq && ev.seq <= baseSeq); }
-  function onTurn(ev) {
-    var t = ev.turn;
-    if (!t || replayed(ev)) return;
-    if (ev.phase === "start") st.busy = true;
-    if (ev.phase === "end") st.busy = false;
-    paint();
-  }
-  function onResult(ev) {
-    var t = ev.turn;
-    var txt = (t && t.result_text) || ev.text;
-    if (txt) { st.cap = firstSentences(txt); st.at = ev.ts ? Date.parse(ev.ts) || Date.now() : Date.now(); }
-    if (!replayed(ev)) st.busy = false;
-    paint();
-  }
-  function onApproval(ev) {
-    var a = ev.approval;
-    if (!a || !a.id || replayed(ev)) return;
-    if (a.status === "pending") st.needs[a.id] = true; else delete st.needs[a.id];
-    paint();
-  }
-  function onUi(ev) {
-    if (!ev || !ev.nonce || !UA) return;
-    var v = UA.validate(ev.action, ev.args || {});
-    if (ev.confirm) {
-      // A Tier-2 change (theme, persona, voice) is confirmed in the Command
-      // Center only; here it is withdrawn at once so nothing waits on it.
-      api("ui/confirm", { id: ev.confirm, decision: "cancel" }).catch(function () {});
-      toast("That change needs the Command Center — ask me there.", { bad: true, action: { label: "Open", fn: function () { location.assign("/mint-ai"); } } });
-      return;
-    }
-    var ack = function (ok, why) { api("ui/ack", { nonce: ev.nonce, ok: !!ok, why: ok ? undefined : String(why || "").slice(0, 200) }).catch(function () {}); };
-    if (!v.ok) return ack(false, v.why);
-    if (v.action === "page.open") {
-      var np = UA.navPage(v.args.page);
-      if (PAGES_OK.indexOf(" " + v.args.page + " ") < 0) { toast("Not opened: " + np.label + " — your role cannot see it.", { bad: true }); return ack(false, "their role cannot open " + np.label + " (it needs " + np.perm + ")"); }
-      if (location.pathname === np.url) { toast("You are on " + np.label); return ack(true); }
-      ack(true);
-      openPage(v.args.page, np, 900);
-      return;
-    }
-    if (v.action === "settings.open") {
-      ack(true);
-      toast(ev.toast || UA.toast(v.action, v.args), { action: { label: "Open", fn: function () { location.assign(UA.pageUrl(v.args.page)); } } });
-      return;
-    }
-    toast("That needs the Command Center open.", { bad: true, action: { label: "Open", fn: function () { location.assign("/mint-ai"); } } });
-    ack(false, "that screen action needs the Command Center open; this tab is on another page (" + location.pathname + ")");
-  }
-  function openPage(key, np, delay) {
-    try { window.sessionStorage.setItem("mint-opened", JSON.stringify({ key: key, label: np.label, from: location.pathname, at: Date.now() })); } catch (e) { /* no undo there */ }
-    toast("Mint opened " + np.label);
-    setTimeout(function () { location.assign(np.url); }, delay || 0);
-  }
-  var es = null;
-  function connect() {
-    if (es) es.close();
-    es = new EventSource("/mint-ai/api/events?tab=" + encodeURIComponent(TAB_ID));
-    var on = function (type, fn) { es.addEventListener(type, function (m) { var ev; try { ev = JSON.parse(m.data); } catch (e) { return; } fn(ev); }); };
-    on("turn", onTurn);
-    on("result", onResult);
-    on("approval", onApproval);
-    on("ui", onUi);
-    es.onerror = function () { if (es.readyState === EventSource.CLOSED) setTimeout(connect, 5000); };
-  }
-  api("status").then(function (s) {
-    st.busy = !!s.busy;
-    baseSeq = Number(s.seq) || 0;
-    (s.approvals || []).forEach(function (a) { if (a && a.id) st.needs[a.id] = true; });
-    paint();
-  }).catch(function () { st.cap = "MINT AI is not reachable right now."; paint(); }).then(connect);
-
-  var cameBack = null; // "undo" / "go back" said soon after a page.open
-  /* A page.open brought us here: say so, with Undo (back where we came from). */
-  (function () {
-    var o = null;
-    try { o = JSON.parse(window.sessionStorage.getItem("mint-opened") || "null"); window.sessionStorage.removeItem("mint-opened"); } catch (e) { o = null; }
-    if (!o || Date.now() - o.at > 20000 || !o.from) return;
-    var from = String(o.from);
-    if (!/^\/[A-Za-z0-9/_-]*$/.test(from)) return; // a path of this site, nothing else
-    var back = function () { if (window.history.length > 1) window.history.back(); else location.assign(from); };
-    cameBack = back;
-    setTimeout(function () { cameBack = null; }, 60000);
-    toast("Mint opened " + o.label, { action: { label: "Undo", fn: back } });
-  })();
-
-  /* ---------------------------------------------------------- push to talk */
-  var rec = null, chunks = [], stream = null, t0 = 0, holding = false, sending = false;
-  function newVt() { return "v" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
-  function startTalk() {
-    if (holding || sending) return;
-    if (!navigator.mediaDevices || !window.MediaRecorder) { toast("This browser cannot record here.", { bad: true }); return; }
-    holding = true;
-    st.listening = true; st.you = ""; paint();
-    $("md-mic").classList.add("rec");
-    var go = stream ? Promise.resolve(stream) : navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }).then(function (s) { stream = s; return s; });
-    go.then(function (s) {
-      if (!holding) return;
-      chunks = [];
-      rec = new MediaRecorder(s);
-      rec.ondataavailable = function (e) { if (e.data && e.data.size) chunks.push(e.data); };
-      rec.start();
-      t0 = Date.now();
-    }).catch(function (e) {
-      holding = false; st.listening = false; $("md-mic").classList.remove("rec"); paint();
-      toast("The microphone is not available: " + ((e && e.message) || e), { bad: true });
-    });
-  }
-  function stopTalk() {
-    if (!holding) return;
-    holding = false;
-    $("md-mic").classList.remove("rec");
-    st.listening = false; paint();
-    var r = rec;
-    rec = null;
-    if (!r || r.state === "inactive") return;
-    var long = Date.now() - t0 >= 350, stopAt = Date.now();
-    r.onstop = function () {
-      if (!long || !chunks.length) { toast("Hold to talk — keep holding while you speak."); return; }
-      var blob = new Blob(chunks, { type: r.mimeType || "audio/webm" });
-      var fr = new FileReader();
-      var ms = stopAt - t0;
-      fr.onload = function () { hear(String(fr.result).split(",")[1] || "", blob.type, { ms: ms }); };
-      fr.readAsDataURL(blob);
-    };
-    r.stop();
-  }
-  function hear(data, mime, level) {
-    var vt = newVt();
-    sending = true;
-    st.cap = "…"; paint();
-    api("transcribe", { data: data, mime: mime, vt: vt, level: level }).then(function (d) {
-      var said = String(d.text || "").trim();
-      if (!said || /^[\[(]/.test(said)) throw new Error("nothing said");
-      st.you = clip(said, 120);
-      if (window.VoiceStop && window.VoiceStop.heard(said)) { st.cap = "Okay."; paint(); return null; }
-      if (window.VoiceStop && window.VoiceStop.undo && window.VoiceStop.undo(said) && cameBack) { st.cap = "Going back."; paint(); cameBack(); return null; }
-      return api("send", { text: said, vt: vt, tab: TAB_ID }).then(function (r) {
-        if (r && r.confirm) { st.cap = r.confirm.ok ? "Confirmed." : "Cancelled."; paint(); return; }
-        st.busy = true; st.cap = "On it."; st.at = Date.now(); paint();
-      });
-    }).catch(function (e) {
-      st.cap = e.message === "nothing said" ? "I didn't hear anything." : "That did not go through: " + e.message;
+  /* The page's own driver: status, the event stream, MINT AI's screen actions,
+   * push to talk. Not in the Command Center's shell, which drives the dock itself. */
+  function pageDriver() {
+    /* ---------------------------------------------------------- the events */
+    // The stream replays its recent past on connect: that fills the caption, but
+    // "busy" and "needs you" come from the status read just before (baseSeq).
+    var baseSeq = 0;
+    function replayed(ev) { return !!(ev && ev.seq && ev.seq <= baseSeq); }
+    function onTurn(ev) {
+      var t = ev.turn;
+      if (!t || replayed(ev)) return;
+      if (ev.phase === "start") st.busy = true;
+      if (ev.phase === "end") st.busy = false;
       paint();
-    }).then(function () { sending = false; });
+    }
+    function onResult(ev) {
+      var t = ev.turn;
+      var txt = (t && t.result_text) || ev.text;
+      if (txt) { st.cap = firstSentences(txt); st.at = ev.ts ? Date.parse(ev.ts) || Date.now() : Date.now(); }
+      if (!replayed(ev)) st.busy = false;
+      paint();
+    }
+    function onApproval(ev) {
+      var a = ev.approval;
+      if (!a || !a.id || replayed(ev)) return;
+      if (a.status === "pending") st.needs[a.id] = true; else delete st.needs[a.id];
+      paint();
+    }
+    function onUi(ev) {
+      if (!ev || !ev.nonce || !UA) return;
+      var v = UA.validate(ev.action, ev.args || {});
+      if (ev.confirm) {
+        // A Tier-2 change (theme, persona, voice) is confirmed in the Command
+        // Center only; here it is withdrawn at once so nothing waits on it.
+        api("ui/confirm", { id: ev.confirm, decision: "cancel" }).catch(function () {});
+        toast("That change needs the Command Center — ask me there.", { bad: true, action: { label: "Open", fn: function () { location.assign("/mint-ai"); } } });
+        return;
+      }
+      var ack = function (ok, why) { api("ui/ack", { nonce: ev.nonce, ok: !!ok, why: ok ? undefined : String(why || "").slice(0, 200) }).catch(function () {}); };
+      if (!v.ok) return ack(false, v.why);
+      if (v.action === "page.open") {
+        var np = UA.navPage(v.args.page);
+        if (PAGES_OK.indexOf(" " + v.args.page + " ") < 0) { toast("Not opened: " + np.label + " — your role cannot see it.", { bad: true }); return ack(false, "their role cannot open " + np.label + " (it needs " + np.perm + ")"); }
+        if (location.pathname === np.url) { toast("You are on " + np.label); return ack(true); }
+        ack(true);
+        openPage(v.args.page, np, 900);
+        return;
+      }
+      if (v.action === "settings.open") {
+        ack(true);
+        toast(ev.toast || UA.toast(v.action, v.args), { action: { label: "Open", fn: function () { location.assign(UA.pageUrl(v.args.page)); } } });
+        return;
+      }
+      toast("That needs the Command Center open.", { bad: true, action: { label: "Open", fn: function () { location.assign("/mint-ai"); } } });
+      ack(false, "that screen action needs the Command Center open; this tab is on another page (" + location.pathname + ")");
+    }
+    function openPage(key, np, delay) {
+      try { window.sessionStorage.setItem("mint-opened", JSON.stringify({ key: key, label: np.label, from: location.pathname, at: Date.now() })); } catch (e) { /* no undo there */ }
+      toast("Mint opened " + np.label);
+      setTimeout(function () { location.assign(np.url); }, delay || 0);
+    }
+    var es = null;
+    function connect() {
+      if (es) es.close();
+      es = new EventSource("/mint-ai/api/events?tab=" + encodeURIComponent(TAB_ID));
+      var on = function (type, fn) { es.addEventListener(type, function (m) { var ev; try { ev = JSON.parse(m.data); } catch (e) { return; } fn(ev); }); };
+      on("turn", onTurn);
+      on("result", onResult);
+      on("approval", onApproval);
+      on("ui", onUi);
+      es.onerror = function () { if (es.readyState === EventSource.CLOSED) setTimeout(connect, 5000); };
+    }
+    api("status").then(function (s) {
+      st.busy = !!s.busy;
+      baseSeq = Number(s.seq) || 0;
+      (s.approvals || []).forEach(function (a) { if (a && a.id) st.needs[a.id] = true; });
+      paint();
+    }).catch(function () { st.cap = "MINT AI is not reachable right now."; paint(); }).then(connect);
+
+    var cameBack = null; // "undo" / "go back" said soon after a page.open
+    /* A page.open brought us here: say so, with Undo (back where we came from). */
+    (function () {
+      var o = null;
+      try { o = JSON.parse(window.sessionStorage.getItem("mint-opened") || "null"); window.sessionStorage.removeItem("mint-opened"); } catch (e) { o = null; }
+      if (!o || Date.now() - o.at > 20000 || !o.from) return;
+      var from = String(o.from);
+      if (!/^\/[A-Za-z0-9/_-]*$/.test(from)) return; // a path of this site, nothing else
+      var back = function () { if (window.history.length > 1) window.history.back(); else location.assign(from); };
+      cameBack = back;
+      setTimeout(function () { cameBack = null; }, 60000);
+      toast("Mint opened " + o.label, { action: { label: "Undo", fn: back } });
+    })();
+
+    /* ---------------------------------------------------------- push to talk */
+    var rec = null, chunks = [], stream = null, t0 = 0, holding = false, sending = false;
+    function newVt() { return "v" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
+    function startTalk() {
+      if (holding || sending) return;
+      if (!navigator.mediaDevices || !window.MediaRecorder) { toast("This browser cannot record here.", { bad: true }); return; }
+      holding = true;
+      st.listening = true; st.you = ""; paint();
+      $("md-mic").classList.add("rec");
+      var go = stream ? Promise.resolve(stream) : navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }).then(function (s) { stream = s; return s; });
+      go.then(function (s) {
+        if (!holding) return;
+        chunks = [];
+        rec = new MediaRecorder(s);
+        rec.ondataavailable = function (e) { if (e.data && e.data.size) chunks.push(e.data); };
+        rec.start();
+        t0 = Date.now();
+      }).catch(function (e) {
+        holding = false; st.listening = false; $("md-mic").classList.remove("rec"); paint();
+        toast("The microphone is not available: " + ((e && e.message) || e), { bad: true });
+      });
+    }
+    function stopTalk() {
+      if (!holding) return;
+      holding = false;
+      $("md-mic").classList.remove("rec");
+      st.listening = false; paint();
+      var r = rec;
+      rec = null;
+      if (!r || r.state === "inactive") return;
+      var long = Date.now() - t0 >= 350, stopAt = Date.now();
+      r.onstop = function () {
+        if (!long || !chunks.length) { toast("Hold to talk — keep holding while you speak."); return; }
+        var blob = new Blob(chunks, { type: r.mimeType || "audio/webm" });
+        var fr = new FileReader();
+        var ms = stopAt - t0;
+        fr.onload = function () { hear(String(fr.result).split(",")[1] || "", blob.type, { ms: ms }); };
+        fr.readAsDataURL(blob);
+      };
+      r.stop();
+    }
+    function hear(data, mime, level) {
+      var vt = newVt();
+      sending = true;
+      st.cap = "…"; paint();
+      api("transcribe", { data: data, mime: mime, vt: vt, level: level }).then(function (d) {
+        var said = String(d.text || "").trim();
+        if (!said || /^[\[(]/.test(said)) throw new Error("nothing said");
+        st.you = clip(said, 120);
+        if (window.VoiceStop && window.VoiceStop.heard(said)) { st.cap = "Okay."; paint(); return null; }
+        if (window.VoiceStop && window.VoiceStop.undo && window.VoiceStop.undo(said) && cameBack) { st.cap = "Going back."; paint(); cameBack(); return null; }
+        return api("send", { text: said, vt: vt, tab: TAB_ID }).then(function (r) {
+          if (r && r.confirm) { st.cap = r.confirm.ok ? "Confirmed." : "Cancelled."; paint(); return; }
+          st.busy = true; st.cap = "On it."; st.at = Date.now(); paint();
+        });
+      }).catch(function (e) {
+        st.cap = e.message === "nothing said" ? "I didn't hear anything." : "That did not go through: " + e.message;
+        paint();
+      }).then(function () { sending = false; });
+    }
+    var mic = $("md-mic");
+    mic.addEventListener("pointerdown", function (e) { e.preventDefault(); try { mic.setPointerCapture(e.pointerId); } catch (x) { /* fine */ } startTalk(); });
+    mic.addEventListener("pointerup", stopTalk);
+    mic.addEventListener("pointercancel", stopTalk);
+    mic.addEventListener("keydown", function (e) { if ((e.key === "Enter" || e.key === " ") && !e.repeat) { e.preventDefault(); startTalk(); } });
+    mic.addEventListener("keyup", function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); stopTalk(); } });
+    function typing(el) { return !!(el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT|BUTTON)$/.test(el.tagName || ""))); }
+    document.addEventListener("keydown", function (e) {
+      if (e.code !== "Space" || e.repeat || e.ctrlKey || e.metaKey || e.altKey || typing(e.target)) return;
+      e.preventDefault();
+      startTalk();
+    });
+    document.addEventListener("keyup", function (e) { if (e.code === "Space" && holding) { e.preventDefault(); stopTalk(); } });
+    window.addEventListener("blur", stopTalk);
+
+    return { openPage: openPage };
   }
-  var mic = $("md-mic");
-  mic.addEventListener("pointerdown", function (e) { e.preventDefault(); try { mic.setPointerCapture(e.pointerId); } catch (x) { /* fine */ } startTalk(); });
-  mic.addEventListener("pointerup", stopTalk);
-  mic.addEventListener("pointercancel", stopTalk);
-  mic.addEventListener("keydown", function (e) { if ((e.key === "Enter" || e.key === " ") && !e.repeat) { e.preventDefault(); startTalk(); } });
-  mic.addEventListener("keyup", function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); stopTalk(); } });
-  function typing(el) { return !!(el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT|BUTTON)$/.test(el.tagName || ""))); }
-  document.addEventListener("keydown", function (e) {
-    if (e.code !== "Space" || e.repeat || e.ctrlKey || e.metaKey || e.altKey || typing(e.target)) return;
-    e.preventDefault();
-    startTalk();
-  });
-  document.addEventListener("keyup", function (e) { if (e.code === "Space" && holding) { e.preventDefault(); stopTalk(); } });
-  window.addEventListener("blur", stopTalk);
 
   /* ---------------------------------------------------------- the small core (concept C, 2D) */
   var cv = $("md-orb-c"), g = cv.getContext("2d"), PI = Math.PI;
@@ -308,19 +327,75 @@
     last = now;
     t += dt;
     var s = stateNow(), k = 1 - Math.exp(-dt * 2.6);
-    W.rip += ((s === "listening" ? 1 : 0) - W.rip) * k;
+    W.rip += ((s === "listening" || s === "speaking" ? 1 : 0) - W.rip) * k;
     W.gal += ((s === "thinking" ? 1 : 0) - W.gal) * k;
     W.need += ((s === "needs" ? 1 : 0) - W.need) * k;
     rot += dt * (0.13 + 0.25 * W.gal);
     drawOrb();
-    if (!document.hidden) raf = requestAnimationFrame(frame);
+    if (!document.hidden && !(SHELL && dock.classList.contains("off"))) raf = requestAnimationFrame(frame);
     else raf = 0;
   }
   var raf = 0;
-  if (reduced) { t = 2.4; drawOrb(); } else raf = requestAnimationFrame(frame);
-  document.addEventListener("visibilitychange", function () { if (!document.hidden && !raf && !reduced) { last = 0; raf = requestAnimationFrame(frame); } });
+  if (reduced) { t = 2.4; drawOrb(); } else if (!(SHELL && dock.classList.contains("off"))) raf = requestAnimationFrame(frame);
+  document.addEventListener("visibilitychange", function () { if (!document.hidden && !raf && !reduced && !(SHELL && dock.classList.contains("off"))) { last = 0; raf = requestAnimationFrame(frame); } });
   document.addEventListener("moni-theme", function () { if (reduced) drawOrb(); });
 
+  /* ---------------------------------------------------------- the live call's line (shell only) */
+  var liveT = 0;
+  function paintLive() {
+    var tag = $("md-live-t");
+    if (!tag) return;
+    clearInterval(liveT);
+    if (!(SHELL && ext.live)) return;
+    var tick = function () {
+      var s = Math.max(0, Math.floor((Date.now() - (ext.liveSince || Date.now())) / 1000));
+      tag.textContent = "LIVE " + String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0");
+    };
+    tick();
+    liveT = setInterval(tick, 1000);
+    $("md-mic").classList.toggle("muted", !!ext.muted);
+  }
+
+  var api_ = { tab: TAB_ID, state: stateNow, toast: toast };
+  if (!SHELL) {
+    var drv = pageDriver();
+    api_.openPage = function (k) { var np = UA && UA.navPage(k); if (np) drv.openPage(k, np, 0); };
+  } else {
+    // The shell's dock: the mic and Space are the Command Center's own (its push to talk, or,
+    // on a live call, mute); the orb, the name and expand bring the Command Center back.
+    var space = function (type) { document.dispatchEvent(new KeyboardEvent(type, { code: "Space", key: " ", bubbles: true, cancelable: true })); };
+    var down = false;
+    var mic = $("md-mic");
+    mic.addEventListener("pointerdown", function (e) { e.preventDefault(); try { mic.setPointerCapture(e.pointerId); } catch (x) { /* fine */ } if (!down) { down = true; space("keydown"); } });
+    var up = function () { if (down) { down = false; space("keyup"); } };
+    mic.addEventListener("pointerup", up);
+    mic.addEventListener("pointercancel", up);
+    mic.addEventListener("keydown", function (e) { if ((e.key === "Enter" || e.key === " ") && !e.repeat) { e.preventDefault(); e.stopPropagation(); if (!down) { down = true; space("keydown"); } } });
+    mic.addEventListener("keyup", function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); up(); } });
+    ["md-orb", "md-txt", "md-exp"].forEach(function (id) {
+      $(id).addEventListener("click", function (e) { if (window.MintShell && window.MintShell.active()) { e.preventDefault(); window.MintShell.expand(); } });
+    });
+    var end = $("md-end");
+    if (end) end.addEventListener("click", function () { var b = document.getElementById("cc-live-end"); if (b) b.click(); });
+    /** mint-shell.js: what the Command Center is doing now. */
+    api_.feed = function (f) {
+      var was = ext.state + "|" + ext.pending + "|" + ext.cap + "|" + ext.live + "|" + ext.muted;
+      ext.state = f.state || "idle"; ext.pending = f.pending || 0; ext.live = !!f.live; ext.muted = !!f.muted;
+      if (f.live && !ext.liveSince) ext.liveSince = f.liveSince || Date.now();
+      if (!f.live) ext.liveSince = 0;
+      if (f.cap && f.cap !== st.cap) { st.cap = f.cap; st.at = Date.now(); }
+      ext.cap = st.cap;
+      if (was !== ext.state + "|" + ext.pending + "|" + ext.cap + "|" + ext.live + "|" + ext.muted) paint();
+    };
+    /** Shown (a page is up) or hidden (the Command Center is). The core only draws while shown. */
+    api_.show = function (on) {
+      dock.classList.toggle("off", !on);
+      if (!on) { $("md-bubble").classList.remove("on"); $("md-toast").classList.remove("on"); }
+      if (on && !raf && !reduced) { last = 0; raf = requestAnimationFrame(frame); }
+      if (on && reduced) drawOrb();
+    };
+    api_.orbRect = function () { var r = $("md-orb").getBoundingClientRect(); return { cx: r.left + r.width / 2, cy: r.top + r.height / 2, R: r.width * 0.36 }; };
+  }
   paint();
-  window.__mintDock = { tab: TAB_ID, state: stateNow, openPage: function (k) { var np = UA && UA.navPage(k); if (np) openPage(k, np, 0); } };
+  window.__mintDock = api_;
 })();

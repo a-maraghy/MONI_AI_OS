@@ -167,7 +167,10 @@
   }
 
   var toastTimer = 0;
+  // While another page is up in the shell (M-5 part 2), the Command Center is under it: its notes go to the dock.
+  function shellUp() { return !!(window.MintShell && window.MintShell.active()); }
   function toast(text, bad) {
+    if (shellUp()) return window.MintShell.toast(text, null, null, bad);
     var old = document.querySelector(".cc-toast");
     if (old) old.remove();
     var el = document.createElement("div");
@@ -477,7 +480,8 @@
     var snap = snapshot();
     var st = ML.coreState(snap);
     Orb.setState(st);
-    paintCaption(snap);
+    var capNow = paintCaption(snap);
+    if (window.MintShell) window.MintShell.feed({ state: st, pending: snap.pending, cap: capNow && capNow.text, live: liveActive(), muted: !!(liveActive() && window.VoiceLive && window.VoiceLive.muted && window.VoiceLive.muted()) });
     renderNeed();
     var pending = snap.pending;
     var chip = $("cc-sys"), cdot = $("cc-sys-dot");
@@ -3025,6 +3029,8 @@
     }
     var v = UA.validate(ev.action, ev.args);
     if (!v.ok) return v;
+    // Another page is up in the shell: anything but the call and page.open is done here, so come back first.
+    if (shellUp() && ["call.end", "call.mute", "call.interrupt", "page.open"].indexOf(v.action) < 0) window.MintShell.expand();
     if (v.tier === 2) return uiConfirmAsk(ev, v);
     var a = v.args, undo = null, link = null;
     try {
@@ -3052,8 +3058,15 @@
         case "page.open": {
           // Another page of Mint OS (M-5): only one this viewer's role may see (the server listed them in data-pages).
           var np = UA.navPage(a.page);
-          if (a.page === "command-center") { uiToast("You are on the Command Center", null, null); return { ok: true }; }
+          if (a.page === "command-center") {
+            if (!shellUp()) { uiToast("You are on the Command Center", null, null); return { ok: true }; }
+            window.MintShell.expand();
+            break;
+          }
           if ((" " + (root.getAttribute("data-pages") || "") + " ").indexOf(" " + a.page + " ") < 0) return { ok: false, why: "their role cannot open " + np.label + " (it needs " + np.perm + ")" };
+          // The shell (M-5 part 2): the page opens in its frame at once and a live call goes on;
+          // Undo is the browser's back. Without it, the old way: the whole tab moves after the sentence.
+          if (window.MintShell && window.MintShell.open(np.url)) { undo = function () { window.MintShell.back(); }; break; }
           pageOpenSoon(a.page, np);
           break;
         }
@@ -3083,8 +3096,8 @@
     return true;
   }
   /* page.open: the voice first says its one sentence, then the page opens. The
-     destination's dock shows "Mint opened ..." with Undo (back here). A live
-     call cannot follow to another page yet (the dock's part 2 will keep it). */
+     destination's dock shows "Mint opened ..." with Undo (back here). Only when
+     the shell (mint-shell.js) is missing: with it the page opens in its frame. */
   var pageOpening = null;
   function pageOpenSoon(key, np) {
     if (pageOpening) return;
@@ -3102,6 +3115,12 @@
     })();
   }
   function uiToast(text, undo, link) {
+    if (shellUp()) {
+      window.MintShell.toast(text, undo ? function () { uiUndoNow("click"); } : null, link);
+      uiUndoState = undo ? { fn: undo, el: null, until: Date.now() + UI_UNDO_MS } : null;
+      uiUndoSignal(undo ? UI_UNDO_MS : 0);
+      return;
+    }
     var old = document.querySelector(".cc-toast");
     if (old) old.remove();
     var el = document.createElement("div");

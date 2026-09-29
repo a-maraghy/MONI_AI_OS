@@ -157,7 +157,9 @@ app.use(
         mediaSrc: ["'self'", "blob:"],
         connectSrc: ["'self'"],
         objectSrc: ["'none'"],
-        frameAncestors: ["'none'"],
+        // 'self': the Command Center hosts Mint OS pages in a same-origin iframe (M-5), so a live call survives moving between them.
+        // X-Frame-Options stays SAMEORIGIN (helmet's frameguard default) for older browsers.
+        frameAncestors: ["'self'"],
         baseUri: ["'self'"],
         formAction: ["'self'"],
       },
