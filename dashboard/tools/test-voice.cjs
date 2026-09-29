@@ -754,8 +754,8 @@ function viewTests() {
   check("Settings: masked to the last four, with Replace, Remove and Test",
     /••••good/.test(page) && /Replace key/.test(page) && /Remove key/.test(page) && /id="voice-test"/.test(page));
   check("Settings: the key field is a write-only password input, empty", /<input name="value" type="password"[^>]*required/.test(page) && !/value="sk-/.test(page));
-  check("Settings: model, voice and listening model selectors, current ones selected",
-    /<option value="gpt-realtime-mini" selected>/.test(page) && /<option value="marin" selected>/.test(page) && /<option value="gpt-4o-mini-transcribe" selected>/.test(page) && /gpt-live-1/.test(page));
+  check("Settings: model and listening model selectors and voice cards, current ones selected",
+    /<option value="gpt-realtime-mini" selected>/.test(page) && /<input type="radio" name="voice" value="marin" checked>/.test(page) && (page.match(/name="voice" value=/g) || []).length === voice.VOICES.length && /<option value="gpt-4o-mini-transcribe" selected>/.test(page) && /gpt-live-1/.test(page));
   const pageOff = credViews.voice({ csrf: "c", user, voice: { ...status, configured: false, last4: null, length: 0 }, models: voice.MODELS, voices: voice.VOICES, transcribeModels: voice.TRANSCRIBE_MODELS });
   check("Settings without a key: no Test or Remove, 'Save key'", !/id="voice-test"/.test(pageOff) && !/Remove key/.test(pageOff) && /Save key/.test(pageOff));
   const failed = credViews.voice({ csrf: "c", user, voice: status, models: voice.MODELS, voices: voice.VOICES, transcribeModels: voice.TRANSCRIBE_MODELS, test: { ok: false, text: "OpenAI refused the key <x>" } });
