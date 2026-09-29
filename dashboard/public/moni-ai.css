@@ -160,7 +160,9 @@ html.cc-page .cc-sheet code, html.cc-page #cc-overlay code { background: none; b
 
 /* ------------------------------------------------------------ the column --- */
 
-.cc-main { position: fixed; left: 0; right: 0; top: var(--topbar-h); bottom: 0; z-index: 5; display: grid; grid-template-rows: minmax(0, 1fr) auto auto; pointer-events: none; }
+.cc-main { position: fixed; left: 0; right: 0; top: var(--topbar-h); bottom: 0; z-index: 5; display: grid; grid-template-rows: minmax(0, 1fr) auto auto;
+  /* One column no wider than the screen: an auto column grew to the voice bar's content on a phone and pushed it off the edge. */
+  grid-template-columns: minmax(0, 1fr); pointer-events: none; }
 .cc-main > * { pointer-events: auto; }
 .cc-stage { position: relative; min-height: 0; pointer-events: none; }
 .cc-offline { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); padding: 12px 16px; border-radius: 12px; pointer-events: auto;
@@ -238,10 +240,12 @@ html.cc-page .cc-composer input:focus-visible { outline: none; }
   border: 1px solid var(--accent-2); box-shadow: var(--cc-shadow), 0 0 36px -10px var(--glow); backdrop-filter: blur(18px); }
 .cc-dock.voice-on .cc-composer { display: none; }
 .cc-dock.voice-on .cc-voicebar { display: flex; }
-.cc-vb-text { flex: 0 1 280px; min-width: 120px; line-height: 1.25; overflow: hidden; }
+.cc-voicebar { box-sizing: border-box; max-width: 100%; min-width: 0; }
+.cc-voicebar > * { min-width: 0; }
+.cc-vb-text { flex: 1 1 280px; min-width: 0; line-height: 1.25; overflow: hidden; } /* it takes the room there is, and truncates with an ellipsis */
 .cc-vb-text b { display: block; color: var(--accent); font: 600 10px var(--mono); letter-spacing: .16em; }
 .cc-vb-text span { color: var(--ink); font-size: 14px; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.cc-vb-wave { flex: 1; min-width: 60px; height: 28px; display: flex; align-items: center; gap: 3px; }
+.cc-vb-wave { flex: 1 1 60px; min-width: 40px; height: 28px; display: flex; align-items: center; gap: 3px; }
 .cc-vb-wave i { flex: 1; max-width: 4px; height: 12%; border-radius: 3px; background: var(--accent-2); transition: height 80ms linear; }
 .cc-vb-tags { display: flex; gap: 4px; flex: none; }
 .cc-static { cursor: default; }

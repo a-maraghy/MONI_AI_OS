@@ -2758,6 +2758,7 @@
     try { window.localStorage.setItem(LIVE_KEY, LiveUI.selected ? "1" : "0"); } catch (e) { /* not remembered */ }
     if (!LiveUI.selected && LiveUI.active) liveStop();
     paintLiveMode();
+    paintLiveKeys();
   }
   function paintLiveMode() {
     var mb = $("cc-mic-mode");
@@ -2773,15 +2774,15 @@
     dock.classList.toggle("voice-on", on || Voice.on);
     dock.setAttribute("data-live", on ? st : "");
     $("cc-c-mic").classList.toggle("live", on);
-    $("cc-live-mute").hidden = !on;
-    $("cc-live-end").hidden = !on;
+    $("cc-live-acts").hidden = !on;
+    $("cc-live-tag").hidden = !on;
     var muted = on && st === "muted";
     $("cc-live-mute").setAttribute("aria-pressed", muted ? "true" : "false");
     $("cc-live-mute").title = muted ? "Unmute the microphone" : "Mute the microphone (the conversation stays open)";
+    // One tag says it all; the model and voice are in its tooltip.
+    $("cc-live-tag").title = "Live conversation (trial)" + (LiveUI.model ? " · " + LiveUI.model : "") + (LiveUI.voice ? " · voice " + LiveUI.voice : "") + ". Headphones are advised.";
+    paintLiveKeys();
     if (on) {
-      $("cc-vb-mode").textContent = "Live · trial";
-      $("cc-voice-mode").textContent = "Live · GPT";
-      $("cc-voice-mode").title = LIVE_TIP;
       if (!(LiveUI.who === "you" && st === "thinking")) $("cc-vb-text").textContent = LIVE_TEXT[st] || st;
     }
     paintState();
@@ -2804,6 +2805,7 @@
       },
       onLevel: function (l) { LiveUI.mic = l.mic || 0; LiveUI.out = l.out || 0; },
       onEvent: function (m) {
+        if (m.type === "ready") { LiveUI.model = m.model || ""; LiveUI.voice = m.voice || ""; paintLive(LiveUI.state); }
         if (m.type === "stop") toast("Stopped listening. The live conversation has ended.");
         else if (m.type === "error" && m.code === "busy") toast(m.error, true);
         if (m.type === "ended" || m.type === "error") liveEnded(m);
@@ -2846,10 +2848,33 @@
     if (LiveUI.active && (e.target.closest("#cc-vb-close") || e.target.closest("#cc-live-end"))) { e.stopPropagation(); return liveStop(); }
     if (LiveUI.active && e.target.closest("#cc-live-mute")) { e.stopPropagation(); return window.VoiceLive.mute(!window.VoiceLive.muted()); }
   }, true);
-  window.addEventListener("keydown", function (e) { if (LiveUI.active && e.code === "Space" && !liveTyping(document.activeElement)) e.stopPropagation(); }, true);
+  // Keys while live is the mode: Space starts a call, then mutes and unmutes it; Esc ends it
+  // (when nothing else is open for Esc to close). Push to talk's Space is never reached.
+  window.addEventListener("keydown", function (e) {
+    if (!LiveUI.selected || e.repeat || liveTyping(document.activeElement)) return;
+    if (e.code === "Space") {
+      e.stopPropagation();
+      e.preventDefault();
+      if (!LiveUI.active) liveStart();
+      else window.VoiceLive.mute(!window.VoiceLive.muted());
+    } else if (e.key === "Escape" && LiveUI.active && $("cc-pop").hidden && $("cc-reply").hidden && !document.querySelector(".cc-sheet.open") && !document.querySelector(".cc-need:not([hidden])")) {
+      e.stopPropagation();
+      liveStop();
+    }
+  }, true);
+  window.addEventListener("keyup", function (e) { if (LiveUI.selected && e.code === "Space" && !liveTyping(document.activeElement)) e.stopPropagation(); }, true);
+  /** The hint under the pill: what Space and Esc do while live is the mode. */
+  function paintLiveKeys() {
+    var sp = $("cc-kb-space"), lk = $("cc-kb-live");
+    if (!sp || !lk) return;
+    sp.hidden = !!LiveUI.selected;
+    lk.hidden = !LiveUI.selected;
+    lk.innerHTML = LiveUI.active ? "<kbd>Space</kbd> mute · <kbd>Esc</kbd> end" : "<kbd>Space</kbd> start a conversation";
+  }
   function liveTyping(el) { return el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable || el.tagName === "BUTTON"); }
   window.addEventListener("beforeunload", function () { if (LiveUI.active) window.VoiceLive.stop(); });
   if (LiveUI.selected) paintLiveMode();
+  paintLiveKeys();
   /* ============================================================ end of the live integration block */
 
   /* ================================================================ panels

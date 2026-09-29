@@ -481,8 +481,17 @@ VoiceLive.mute(true);      // hard mute; VoiceLive.muted(), .active(), .state()
 Map `listening`/`talking`/`interrupted` to the core's *listening*, `thinking`
 to *thinking*, `speaking` to *speaking* (the caption: `onCaption` text of
 `who !== "you"`, word by word), `waiting` to *delegating* (to MINT AI); flash
-the voice bar on `interrupted`; feed `onLevel` to the core's amplitude. While a
-call is on, the mic button and Space belong to it. The Command Center's own
+the voice bar on `interrupted`; feed `onLevel` to the core's amplitude. While
+live is the mode, Space starts a call, then mutes and unmutes it, and Esc ends it.
+During a call the voice bar is one row inside the pill (2026-09-29, after the
+administrator's report of chips overflowing it and two X buttons): the status
+text (it takes the room, with an ellipsis), the wave, one `#cc-live-tag` "Live ·
+trial" (model and voice in its tooltip, from the `ready` message), then
+`#cc-live-acts` -- mute and End -- at the right. The push-to-talk mic, the
+route, the other tags and the bar's own X are hidden (End ends the call);
+narrower screens drop the wave (≤1000 px), End's label (≤720 px) and the tag
+(≤420 px). The page's grid column is `minmax(0, 1fr)`, so no bar can widen the
+page on a phone. The Command Center's own
 wiring is the block marked `LIVE CONVERSATION (trial)` in `public/moni-ai.js`.
 
 **The Egyptian evaluation** (`lib/voice-live-eval.js`). Administrators open

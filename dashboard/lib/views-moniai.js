@@ -230,12 +230,12 @@ function page(o) {
             : "Voice goes straight to MINT AI: OpenAI only hears and reads aloud."
         }">${deskOn ? "Front desk · GPT" : "Direct · MINT AI"}</span><span class="cc-tag">OpenAI</span><span class="cc-tag" id="cc-voice-tag">${esc(voice.configured ? String(voice.voice || "voice") : "no key")}</span></span>
         <span class="cc-target cc-static">${ic("route")}<span id="cc-vb-target">Auto-route</span></span>
-        <button type="button" class="cc-ibtn cc-live-only" id="cc-live-mute" title="Mute the microphone (the conversation stays open)" aria-label="Mute" aria-pressed="false" hidden>${ic("mute")}</button>
-        <button type="button" class="cc-btn sm cc-live-only cc-live-end" id="cc-live-end" title="End the live conversation" hidden>${ic("close")}End conversation</button>
+        <span class="cc-tag cc-live-tag cc-live-only" id="cc-live-tag" title="Live conversation (trial)" hidden>Live · trial</span>
+        <span class="cc-live-acts cc-live-only" id="cc-live-acts" hidden><button type="button" class="cc-ibtn" id="cc-live-mute" title="Mute the microphone (the conversation stays open)" aria-label="Mute" aria-pressed="false">${ic("mute")}</button><button type="button" class="cc-btn sm cc-live-end" id="cc-live-end" title="End the live conversation" aria-label="End conversation">${ic("close")}<span class="lbl">End conversation</span></button></span>
         <button type="button" class="cc-ibtn" id="cc-vb-close" title="Back to typing" aria-label="Back to typing">${ic("close")}</button>
       </div>
       <div class="cc-hint" id="cc-hint"><button type="button" class="cc-vm" id="cc-vm" aria-haspopup="menu" aria-expanded="false" title="Voice and core settings">${ic("voice")}<span id="cc-mic-mode" data-mode="ptt">Push to talk</span>${ic("chevd")}</button>${
-        voice.configured ? `<span class="kb"><kbd>Space</kbd> hold to talk</span>` : ""
+        voice.configured ? `<span class="kb" id="cc-kb-space"><kbd>Space</kbd> hold to talk</span><span class="kb cc-live-only" id="cc-kb-live" hidden></span>` : ""
       }<span class="kb"><kbd>@</kbd> a session</span><span class="kb"><kbd>Ctrl K</kbd> everything</span><span class="kb cc-guard">destructive steps wait for your approval</span>${voiceOff}</div>
     </div>
   </main>
