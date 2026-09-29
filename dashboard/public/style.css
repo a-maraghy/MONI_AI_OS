@@ -1,9 +1,13 @@
-/* Mint OS — the Command Center's language, site-wide.
-   Giza Seeds greens (#47723E primary, #306935 deep, #273F22 forest) on warm
-   paper in light, and on a deep forest ground in dark. Every colour below the
-   palette blocks is a token, so the three themes (System / Dark / Light) are
-   nothing more than three sets of values. A system font stack stands in for a
-   typeface because the CSP allows no external font host.
+/* Mint OS — the Mint brand ("Concept 1: The Bio-Digital Leaf"), site-wide.
+   Obsidian #0D1117, Mint #00E6A5, Deep Teal #0A3A35, AI Violet #8A2BE2 and the
+   off-white #F8FAFC. Mint is a fill and a dark-theme text colour only: on a
+   light ground it fails contrast, so light text uses the darker mint tokens
+   (--accent #00785A, 5.6:1 on white). Every colour below the palette blocks is
+   a token, so the three themes (System / Dark / Light) are three sets of
+   values. Three self-hosted OFL faces (public/fonts, latin subset):
+     Space Grotesk  brand, headings, labels        --brand-font
+     Inter          body, tables, forms, chat      --ui
+     JetBrains Mono ids, logs, the clock           --mono
 
    Three page patterns share one frame (the top bar and sidebar never move):
      A  one screen   -- nothing scrolls but small inner lists       (.content.pat-a)
@@ -11,105 +15,139 @@
      C  document     -- the content column scrolls under the frame   (.content.pat-c)
    os.css holds the page-level pieces built on top of these primitives. */
 
+@font-face { font-family: "Space Grotesk"; font-style: normal; font-weight: 400; font-display: swap; src: url("fonts/space-grotesk-latin-400-normal.woff2?v=5.3.0") format("woff2"); }
+@font-face { font-family: "Space Grotesk"; font-style: normal; font-weight: 500; font-display: swap; src: url("fonts/space-grotesk-latin-500-normal.woff2?v=5.3.0") format("woff2"); }
+@font-face { font-family: "Space Grotesk"; font-style: normal; font-weight: 600; font-display: swap; src: url("fonts/space-grotesk-latin-600-normal.woff2?v=5.3.0") format("woff2"); }
+@font-face { font-family: "Space Grotesk"; font-style: normal; font-weight: 700; font-display: swap; src: url("fonts/space-grotesk-latin-700-normal.woff2?v=5.3.0") format("woff2"); }
+@font-face { font-family: "Inter"; font-style: normal; font-weight: 400; font-display: swap; src: url("fonts/inter-latin-400-normal.woff2?v=5.3.0") format("woff2"); }
+@font-face { font-family: "Inter"; font-style: normal; font-weight: 500; font-display: swap; src: url("fonts/inter-latin-500-normal.woff2?v=5.3.0") format("woff2"); }
+@font-face { font-family: "Inter"; font-style: normal; font-weight: 600; font-display: swap; src: url("fonts/inter-latin-600-normal.woff2?v=5.3.0") format("woff2"); }
+@font-face { font-family: "Inter"; font-style: normal; font-weight: 700; font-display: swap; src: url("fonts/inter-latin-700-normal.woff2?v=5.3.0") format("woff2"); }
+@font-face { font-family: "JetBrains Mono"; font-style: normal; font-weight: 400; font-display: swap; src: url("fonts/jetbrains-mono-latin-400-normal.woff2?v=5.3.0") format("woff2"); }
+@font-face { font-family: "JetBrains Mono"; font-style: normal; font-weight: 500; font-display: swap; src: url("fonts/jetbrains-mono-latin-500-normal.woff2?v=5.3.0") format("woff2"); }
+@font-face { font-family: "JetBrains Mono"; font-style: normal; font-weight: 600; font-display: swap; src: url("fonts/jetbrains-mono-latin-600-normal.woff2?v=5.3.0") format("woff2"); }
+
+/* LIGHT is the base block; dark overrides it (explicitly, or from the system). */
 :root {
-  --brand: #47723e;
-  --brand-deep: #306935;
-  --brand-dark: #273f22;
+  /* brand constants, the same in both themes */
+  --obsidian: #0D1117;
+  --mint: #00E6A5;
+  --deep-teal: #0A3A35;
+  --ai-violet: #8A2BE2;
+  --offwhite: #F8FAFC;
+  --grad-ai: linear-gradient(120deg, #00E6A5 0%, #3FC7C4 45%, #8A2BE2 100%);
+  --grad-ai-soft: linear-gradient(120deg, rgba(0, 230, 165, .18), rgba(138, 43, 226, .18));
+  --grad-ai-line: linear-gradient(120deg, rgba(0, 230, 165, .55), rgba(138, 43, 226, .55));
 
-  --bg: #f3f0e6;
-  --bg-glow: #e9efdc;
-  --topbar-bg: rgba(252, 250, 244, .96);
-  --panel: #fffdf7;
-  --panel-2: #f8f5ec;
-  --panel-3: #ebe8dc;
-  --card-a: rgba(255, 253, 247, .97);
-  --card-b: rgba(250, 247, 238, .97);
-  --rail-a: rgba(233, 239, 220, .75);
-  --rail-b: rgba(243, 240, 230, .45);
-  --hero-a: rgba(143, 191, 110, .24);
-  --hero-b: rgba(255, 253, 247, .7);
-  --label-bg: rgba(255, 253, 247, .9);
-  --line: rgba(48, 105, 53, .16);
-  --line-strong: rgba(48, 105, 53, .34);
+  --brand: #00E6A5;          /* a fill: always with --on-brand (dark) text */
+  --brand-deep: #00785A;     /* mint as text */
+  --brand-dark: #0A3A35;
 
-  --ink: #1b2618;
-  --body: #33402f;
-  --muted: #56634f;
-  --dim: #5f6b58;
+  --bg: #F8FAFC;
+  --bg-glow: #EEF6F3;
+  --topbar-bg: rgba(255, 255, 255, .96);
+  --panel: #FFFFFF;
+  --panel-2: #F3F7F6;
+  --panel-3: #E9F0EE;
+  --card-a: rgba(255, 255, 255, .98);
+  --card-b: rgba(250, 252, 252, .98);
+  --rail-a: rgba(227, 248, 241, .55);
+  --rail-b: rgba(248, 250, 252, .4);
+  --hero-a: rgba(0, 230, 165, .12);
+  --hero-b: rgba(255, 255, 255, .7);
+  --label-bg: rgba(255, 255, 255, .92);
+  --line: #E1E8E6;
+  --line-strong: #C9D6D2;
+
+  --ink: #0D1117;
+  --body: #1F2A33;
+  --muted: #46535E;
+  --dim: #5F6B76;
   --navy: #253858;
 
-  --accent: #306935;
-  --accent-2: #47723e;
-  --accent-soft: rgba(71, 114, 62, .10);
-  --glow: rgba(95, 191, 63, .28);
-  --on-accent: #ffffff;
-  --btn-a: #3a7a3f;
-  --btn-b: #306935;
+  --accent: #00785A;         /* mint ink: links, active labels, 5.6:1 on white */
+  --accent-2: #00A57A;       /* mint stroke: borders, focus, small fills */
+  --accent-soft: rgba(0, 165, 122, .10);
+  --glow: rgba(0, 230, 165, .18);   /* the softened light-mode glow */
+  --on-accent: #0D1117;
+  --btn-a: #00E6A5;
+  --btn-b: #00D69A;
 
-  --work: #7a5d00;
-  --warn: #8f5a00;
-  --bad: #b3261e;
-  --off: #7c857a;
-  --code-bg: rgba(39, 63, 34, .06);
-  --input-bg: #ffffff;
-  --row-hover: rgba(71, 114, 62, .06);
+  --violet-ink: #7420C4;
+  --violet-tint: #F1E8FC;
+  --teal-tint: #E1F1ED;
+  --teal-line: #9CCFC2;
+  --leaf-a: #3FDDA0;
+  --leaf-b: #0F7A64;
+  --wordmark: #008A63;
+  --pill-os: #00C98F;
 
-  --orb-floret: #6fa653;
-  --orb-floret-mid: #3d6b34;
-  --orb-floret-hi: #1f4a22;
-  --orb-core: #273f22;
-  --orb-root: #a9b58f;
-  --orb-root-hi: #306935;
-  --orb-sap: #2f7d22;
-  /* the Machine core's mycelium (public/mycelium.js) */
-  --dry: #b7ab93; --dry-crack: #7d705a;
-  --sub-a: rgba(111, 166, 83, .09); --hypha: rgba(71, 114, 62, .55); --hypha-faint: rgba(71, 114, 62, .16);
-  --pulse: #2f7d22; --pulse-glow: rgba(95, 191, 63, .45); --spore: #b3261e;
-  --dark-thread: rgba(80, 70, 55, .28);
-  --orb-glow: rgba(139, 212, 106, .45);
-  --orb-hud: #47723e;
-  --orb-node-bg: #fffdf7;
-  --orb-wood-a: #e4e9d4;
-  --orb-wood-b: #f1efe2;
+  --work: #7A5D00;
+  --warn: #9A5B00;
+  --bad: #C62828;
+  --off: #7F8C98;
+  --code-bg: rgba(10, 58, 53, .05);
+  --input-bg: #FFFFFF;
+  --row-hover: rgba(0, 165, 122, .06);
 
-  /* The memory graph's categories. Picked to stay apart from each other and
-     from the greens around them, and re-set for dark so each keeps its
-     contrast against the ground. */
-  --g-people: #c2410c;
-  --g-topic: #7c3aed;
-  --g-conv: #0e7490;
-  --g-doc: #a16207;
-  --g-decision: #15803d;
-  --g-figure: #1d4ed8;
-  --g-trap: #be123c;
-  --g-pref: #c026d3;
-  --g-issue: #b45309;
-  --g-fact: #4d7c0f;
-  --g-session: #0369a1;
-  --g-project: #306935;
-  --g-file: #6d28d9;
-  --g-run: #0f766e;
-  --g-edge: rgba(51, 64, 47, .22);
-  --g-edge-sem: rgba(124, 58, 237, .45);
+  --orb-floret: #3FDDA0;
+  --orb-floret-mid: #0F7A64;
+  --orb-floret-hi: #0A3A35;
+  --orb-core: #0A3A35;
+  --orb-root: #9CCFC2;
+  --orb-root-hi: #00A57A;
+  --orb-sap: #00A57A;
+  /* the Machine core's mycelium (public/mycelium.js): flat and structural */
+  --dry: #B9C4C1; --dry-crack: #7F8C98;
+  --sub-a: rgba(10, 58, 53, .06); --hypha: rgba(15, 122, 100, .55); --hypha-faint: rgba(15, 122, 100, .18);
+  --pulse: #00A57A; --pulse-glow: rgba(0, 230, 165, .30); --spore: #C62828;
+  --dark-thread: rgba(95, 107, 118, .28);
+  --orb-glow: rgba(0, 230, 165, .25);
+  --orb-hud: #00785A;
+  --orb-node-bg: #FFFFFF;
+  --orb-wood-a: #E9F0EE;
+  --orb-wood-b: #F3F7F6;
+  --grid-dot: rgba(10, 58, 53, .07);
 
-  --on-brand: #ffffff;
-  --on-bad: #ffffff;
-  --brand-hover: #306935;
-  --good-ink: #1f4a22;
-  --bad-tint: rgba(179, 38, 30, .08);
-  --bad-line: rgba(179, 38, 30, .32);
-  --bad-ink: #7d1a15;
-  --warn-tint: rgba(143, 90, 0, .10);
-  --warn-tint-2: rgba(143, 90, 0, .07);
-  --warn-line: rgba(143, 90, 0, .34);
-  --warn-ink: #6b4400;
-  --info-tint: rgba(71, 114, 62, .08);
-  --info-line: rgba(48, 105, 53, .28);
-  --neutral-tint: rgba(31, 42, 36, .06);
-  --scrim: rgba(27, 38, 24, .38);
-  --code-ink: #1b2618;
-  --shadow-sm: 0 1px 2px rgba(39, 63, 34, .06);
-  --shadow-md: 0 14px 36px -14px rgba(39, 63, 34, .35);
+  /* The memory graph's categories, in the brand hues: mint, violet and their
+     neighbours, each re-set for dark so it keeps its contrast. */
+  --g-people: #B4501A;
+  --g-topic: #7420C4;
+  --g-conv: #0E7C75;
+  --g-doc: #9A5B00;
+  --g-decision: #2E7D32;
+  --g-figure: #2F5FC8;
+  --g-trap: #C62828;
+  --g-pref: #B0368F;
+  --g-issue: #B45A00;
+  --g-fact: #6B7F00;
+  --g-session: #0B6BA8;
+  --g-project: #00805C;
+  --g-file: #8A5AD6;
+  --g-run: #0F766E;
+  --g-edge: rgba(70, 83, 94, .20);
+  --g-edge-sem: rgba(116, 32, 196, .40);
+
+  --on-brand: #0D1117;
+  --on-bad: #FFFFFF;
+  --brand-hover: #00D69A;
+  --good-ink: #00604A;
+  --bad-tint: #FDECEC;
+  --bad-line: rgba(198, 40, 40, .32);
+  --bad-ink: #8E1B1B;
+  --warn-tint: #FFF3DC;
+  --warn-tint-2: rgba(154, 91, 0, .06);
+  --warn-line: rgba(154, 91, 0, .34);
+  --warn-ink: #6B4000;
+  --info-tint: #E3F8F1;
+  --info-line: rgba(0, 165, 122, .30);
+  --neutral-tint: rgba(13, 17, 23, .05);
+  --scrim: rgba(13, 17, 23, .40);
+  --code-ink: #0D1117;
+  --shadow-sm: 0 1px 2px rgba(13, 17, 23, .05);
+  --shadow-md: 0 6px 18px rgba(13, 17, 23, .06), 0 1px 2px rgba(13, 17, 23, .05);
+  --glow-mint: 0 0 0 1px #00A57A, 0 0 0 4px rgba(0, 230, 165, .18);
+  --glow-ai: 0 0 0 1px #9B5CE6, 0 0 0 4px rgba(138, 43, 226, .14);
 
   /* Names the older rules still use, pointed at the new palette. */
   --ground: var(--bg);
@@ -122,96 +160,108 @@
   --focus-ring: var(--accent-soft);
   --shadow: var(--shadow-md);
 
-  --radius: 9px;
-  --r: 12px;
+  --radius: 8px;
+  --r: 14px;
   --gap: 12px;
   --side-w: 244px;
   --sidebar-w: var(--side-w);
   --topbar-h: 56px;
 
-  --ui: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text", "Segoe UI",
-        Inter, Roboto, "Helvetica Neue", Arial, "Noto Sans", "Noto Sans Arabic", sans-serif;
-  --reading: ui-serif, "Iowan Old Style", "Palatino Linotype", Palatino, Charter, Georgia, serif;
-  --mono: ui-monospace, SFMono-Regular, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+  --brand-font: "Space Grotesk", "Avenir Next", "Segoe UI", system-ui, sans-serif;
+  --ui: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial,
+        "Noto Sans", "Noto Sans Arabic", sans-serif;
+  --reading: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 
   --fast: 140ms;
   --ease: cubic-bezier(0.2, 0, 0.2, 1);
   color-scheme: light;
 }
 
-/* Dark: the Command Center's own ground. Chosen with the theme switch in the
-   top bar, or followed from the system when that is left on System (the
-   default). theme-init.js sets data-theme before first paint. */
+/* Dark: Obsidian. Chosen with the theme switch in the top bar, or followed
+   from the system when that is left on System (the default). theme-init.js
+   sets data-theme before first paint. The same block twice, because a
+   custom property cannot be shared between a selector and a media query. */
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --brand: #47723e; --brand-deep: #8bd46a; --brand-dark: #273f22;
-  --bg: #0b0e0b; --bg-glow: #122012; --topbar-bg: rgba(10, 14, 10, .92);
-  --panel: #111811; --panel-2: #152015; --panel-3: #1a281a;
-  --card-a: rgba(21, 32, 21, .85); --card-b: rgba(15, 21, 15, .85);
-  --rail-a: rgba(39, 63, 34, .28); --rail-b: rgba(11, 14, 11, .2);
-  --hero-a: rgba(71, 114, 62, .26); --hero-b: rgba(17, 24, 17, .6);
-  --label-bg: rgba(11, 14, 11, .78);
-  --line: rgba(139, 212, 106, .13); --line-strong: rgba(139, 212, 106, .28);
-  --ink: #f2f6f0; --body: #c5cfc2; --muted: #95a293; --dim: #7d897f; --navy: #a9bfe3;
-  --accent: #8bd46a; --accent-2: #5fbf3f; --accent-soft: rgba(139, 212, 106, .12); --glow: rgba(139, 212, 106, .35);
-  --on-accent: #0b0e0b; --btn-a: #6fcb4d; --btn-b: #56b236;
-  --work: #d9e86a; --warn: #e3b34f; --bad: #ef7a6a; --off: #6b776d;
-  --code-bg: rgba(0, 0, 0, .35); --input-bg: rgba(0, 0, 0, .28); --row-hover: rgba(139, 212, 106, .06);
-  --orb-floret: #5fbf3f; --orb-floret-mid: #8bd46a; --orb-floret-hi: #d8f7bd; --orb-core: #f4ffe8;
-  --orb-root: #3f6b35; --orb-root-hi: #a6e37f; --orb-sap: #eaffd2; --orb-glow: rgba(95, 191, 63, .55);
-  --dry: #7a6f5c; --dry-crack: #b0a288;
-  --sub-a: rgba(95, 191, 63, .12); --hypha: rgba(166, 227, 127, .55); --hypha-faint: rgba(139, 212, 106, .13);
-  --pulse: #eaffd2; --pulse-glow: rgba(139, 212, 106, .6); --spore: #ef7a6a;
-  --dark-thread: rgba(120, 120, 110, .16);
-  --orb-hud: #8bd46a; --orb-node-bg: #0f140f; --orb-wood-a: #1d2f1a; --orb-wood-b: #142214;
-  --g-people: #fb923c; --g-topic: #a78bfa; --g-conv: #22d3ee; --g-doc: #facc15; --g-decision: #4ade80;
-  --g-figure: #60a5fa; --g-trap: #fb7185; --g-pref: #e879f9; --g-issue: #fbbf24; --g-fact: #a3e635;
-  --g-session: #38bdf8; --g-project: #8bd46a; --g-file: #c4b5fd; --g-run: #2dd4bf;
-  --g-edge: rgba(197, 207, 194, .16); --g-edge-sem: rgba(167, 139, 250, .5);
-  --on-brand: #ffffff; --on-bad: #1a0d0b; --brand-hover: #56b236; --good-ink: #c6ebb6;
-  --bad-tint: rgba(239, 122, 106, .1); --bad-line: rgba(239, 122, 106, .4); --bad-ink: #ffb9ae;
-  --warn-tint: rgba(227, 179, 79, .12); --warn-tint-2: rgba(227, 179, 79, .08); --warn-line: rgba(227, 179, 79, .45); --warn-ink: #f0d08e;
-  --info-tint: rgba(139, 212, 106, .1); --info-line: rgba(139, 212, 106, .28);
+  --brand: #00E6A5; --brand-deep: #00E6A5; --brand-dark: #0A3A35;
+  --bg: #0D1117; --bg-glow: #0E1A1B; --topbar-bg: rgba(10, 14, 19, .94);
+  --panel: #121A22; --panel-2: #17212B; --panel-3: #1D2934;
+  --card-a: rgba(18, 26, 34, .96); --card-b: rgba(15, 22, 29, .96);
+  --rail-a: rgba(10, 58, 53, .30); --rail-b: rgba(13, 17, 23, .2);
+  --hero-a: rgba(0, 230, 165, .10); --hero-b: rgba(18, 26, 34, .6);
+  --label-bg: rgba(13, 17, 23, .82);
+  --line: #1F2B35; --line-strong: #2A3945;
+  --ink: #E6EDF3; --body: #C3CDD6; --muted: #9DAAB6; --dim: #7F8C98; --navy: #A9BFE3;
+  --accent: #00E6A5; --accent-2: #00C98F; --accent-soft: rgba(0, 230, 165, .10); --glow: rgba(0, 230, 165, .30);
+  --on-accent: #0D1117; --btn-a: #00E6A5; --btn-b: #00CC93;
+  --violet-ink: #B98CFF; --violet-tint: rgba(138, 43, 226, .16); --teal-tint: #0A3A35; --teal-line: #145A50;
+  --leaf-a: #6DEBA8; --leaf-b: #248273; --wordmark: #6DEBA8; --pill-os: #6DEBA8;
+  --work: #E8D86A; --warn: #F5B84A; --bad: #FF7A7A; --off: #6B7785;
+  --code-bg: rgba(0, 0, 0, .32); --input-bg: #0F161D; --row-hover: rgba(0, 230, 165, .05);
+  --orb-floret: #00E6A5; --orb-floret-mid: #6DEBA8; --orb-floret-hi: #C9FFEC; --orb-core: #E9FFF6;
+  --orb-root: #145A50; --orb-root-hi: #6DEBA8; --orb-sap: #C9FFEC; --orb-glow: rgba(0, 230, 165, .45);
+  --dry: #3A4652; --dry-crack: #5F6B76;
+  --sub-a: rgba(0, 230, 165, .06); --hypha: rgba(30, 140, 119, .75); --hypha-faint: rgba(30, 140, 119, .25);
+  --pulse: #00E6A5; --pulse-glow: rgba(0, 230, 165, .5); --spore: #FF7A7A;
+  --dark-thread: rgba(127, 140, 152, .18);
+  --orb-hud: #00E6A5; --orb-node-bg: #121A22; --orb-wood-a: #17212B; --orb-wood-b: #121A22;
+  --grid-dot: rgba(0, 230, 165, .06);
+  --g-people: #FF9E6B; --g-topic: #B98CFF; --g-conv: #3FD2C8; --g-doc: #F5B84A; --g-decision: #7CE38B;
+  --g-figure: #5C9DFF; --g-trap: #FF7A7A; --g-pref: #F28CD8; --g-issue: #FFB36B; --g-fact: #D6F36B;
+  --g-session: #6CC6FF; --g-project: #00E6A5; --g-file: #D7C2FF; --g-run: #7FE0D4;
+  --g-edge: rgba(185, 140, 255, .16); --g-edge-sem: rgba(245, 184, 74, .5);
+  --on-brand: #0D1117; --on-bad: #1A0D0D; --brand-hover: #00CC93; --good-ink: #9FF5D6;
+  --bad-tint: rgba(255, 122, 122, .12); --bad-line: rgba(255, 122, 122, .4); --bad-ink: #FFB9B9;
+  --warn-tint: rgba(245, 184, 74, .13); --warn-tint-2: rgba(245, 184, 74, .08); --warn-line: rgba(245, 184, 74, .45); --warn-ink: #F8D694;
+  --info-tint: rgba(0, 230, 165, .10); --info-line: rgba(0, 230, 165, .30);
   --neutral-tint: rgba(255, 255, 255, .06);
-  --scrim: rgba(0, 0, 0, .55); --code-ink: #e8eee7;
+  --scrim: rgba(0, 0, 0, .55); --code-ink: #E6EDF3;
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, .4);
-  --shadow-md: 0 14px 40px -12px rgba(0, 0, 0, .8);
+  --shadow-md: 0 1px 0 rgba(255, 255, 255, .02) inset, 0 8px 24px rgba(0, 0, 0, .28);
+  --glow-mint: 0 0 0 1px rgba(0, 230, 165, .35), 0 0 18px rgba(0, 230, 165, .25);
+  --glow-ai: 0 0 0 1px rgba(160, 120, 255, .35), 0 0 22px rgba(138, 43, 226, .28);
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     color-scheme: dark;
-    --brand: #47723e; --brand-deep: #8bd46a; --brand-dark: #273f22;
-    --bg: #0b0e0b; --bg-glow: #122012; --topbar-bg: rgba(10, 14, 10, .92);
-    --panel: #111811; --panel-2: #152015; --panel-3: #1a281a;
-    --card-a: rgba(21, 32, 21, .85); --card-b: rgba(15, 21, 15, .85);
-    --rail-a: rgba(39, 63, 34, .28); --rail-b: rgba(11, 14, 11, .2);
-    --hero-a: rgba(71, 114, 62, .26); --hero-b: rgba(17, 24, 17, .6);
-    --label-bg: rgba(11, 14, 11, .78);
-    --line: rgba(139, 212, 106, .13); --line-strong: rgba(139, 212, 106, .28);
-    --ink: #f2f6f0; --body: #c5cfc2; --muted: #95a293; --dim: #7d897f; --navy: #a9bfe3;
-    --accent: #8bd46a; --accent-2: #5fbf3f; --accent-soft: rgba(139, 212, 106, .12); --glow: rgba(139, 212, 106, .35);
-    --on-accent: #0b0e0b; --btn-a: #6fcb4d; --btn-b: #56b236;
-    --work: #d9e86a; --warn: #e3b34f; --bad: #ef7a6a; --off: #6b776d;
-    --code-bg: rgba(0, 0, 0, .35); --input-bg: rgba(0, 0, 0, .28); --row-hover: rgba(139, 212, 106, .06);
-    --orb-floret: #5fbf3f; --orb-floret-mid: #8bd46a; --orb-floret-hi: #d8f7bd; --orb-core: #f4ffe8;
-    --orb-root: #3f6b35; --orb-root-hi: #a6e37f; --orb-sap: #eaffd2; --orb-glow: rgba(95, 191, 63, .55);
-    --dry: #7a6f5c; --dry-crack: #b0a288;
-    --sub-a: rgba(95, 191, 63, .12); --hypha: rgba(166, 227, 127, .55); --hypha-faint: rgba(139, 212, 106, .13);
-    --pulse: #eaffd2; --pulse-glow: rgba(139, 212, 106, .6); --spore: #ef7a6a;
-    --dark-thread: rgba(120, 120, 110, .16);
-    --orb-hud: #8bd46a; --orb-node-bg: #0f140f; --orb-wood-a: #1d2f1a; --orb-wood-b: #142214;
-    --g-people: #fb923c; --g-topic: #a78bfa; --g-conv: #22d3ee; --g-doc: #facc15; --g-decision: #4ade80;
-    --g-figure: #60a5fa; --g-trap: #fb7185; --g-pref: #e879f9; --g-issue: #fbbf24; --g-fact: #a3e635;
-    --g-session: #38bdf8; --g-project: #8bd46a; --g-file: #c4b5fd; --g-run: #2dd4bf;
-    --g-edge: rgba(197, 207, 194, .16); --g-edge-sem: rgba(167, 139, 250, .5);
-    --on-brand: #ffffff; --on-bad: #1a0d0b; --brand-hover: #56b236; --good-ink: #c6ebb6;
-    --bad-tint: rgba(239, 122, 106, .1); --bad-line: rgba(239, 122, 106, .4); --bad-ink: #ffb9ae;
-    --warn-tint: rgba(227, 179, 79, .12); --warn-tint-2: rgba(227, 179, 79, .08); --warn-line: rgba(227, 179, 79, .45); --warn-ink: #f0d08e;
-    --info-tint: rgba(139, 212, 106, .1); --info-line: rgba(139, 212, 106, .28);
+    --brand: #00E6A5; --brand-deep: #00E6A5; --brand-dark: #0A3A35;
+    --bg: #0D1117; --bg-glow: #0E1A1B; --topbar-bg: rgba(10, 14, 19, .94);
+    --panel: #121A22; --panel-2: #17212B; --panel-3: #1D2934;
+    --card-a: rgba(18, 26, 34, .96); --card-b: rgba(15, 22, 29, .96);
+    --rail-a: rgba(10, 58, 53, .30); --rail-b: rgba(13, 17, 23, .2);
+    --hero-a: rgba(0, 230, 165, .10); --hero-b: rgba(18, 26, 34, .6);
+    --label-bg: rgba(13, 17, 23, .82);
+    --line: #1F2B35; --line-strong: #2A3945;
+    --ink: #E6EDF3; --body: #C3CDD6; --muted: #9DAAB6; --dim: #7F8C98; --navy: #A9BFE3;
+    --accent: #00E6A5; --accent-2: #00C98F; --accent-soft: rgba(0, 230, 165, .10); --glow: rgba(0, 230, 165, .30);
+    --on-accent: #0D1117; --btn-a: #00E6A5; --btn-b: #00CC93;
+    --violet-ink: #B98CFF; --violet-tint: rgba(138, 43, 226, .16); --teal-tint: #0A3A35; --teal-line: #145A50;
+    --leaf-a: #6DEBA8; --leaf-b: #248273; --wordmark: #6DEBA8; --pill-os: #6DEBA8;
+    --work: #E8D86A; --warn: #F5B84A; --bad: #FF7A7A; --off: #6B7785;
+    --code-bg: rgba(0, 0, 0, .32); --input-bg: #0F161D; --row-hover: rgba(0, 230, 165, .05);
+    --orb-floret: #00E6A5; --orb-floret-mid: #6DEBA8; --orb-floret-hi: #C9FFEC; --orb-core: #E9FFF6;
+    --orb-root: #145A50; --orb-root-hi: #6DEBA8; --orb-sap: #C9FFEC; --orb-glow: rgba(0, 230, 165, .45);
+    --dry: #3A4652; --dry-crack: #5F6B76;
+    --sub-a: rgba(0, 230, 165, .06); --hypha: rgba(30, 140, 119, .75); --hypha-faint: rgba(30, 140, 119, .25);
+    --pulse: #00E6A5; --pulse-glow: rgba(0, 230, 165, .5); --spore: #FF7A7A;
+    --dark-thread: rgba(127, 140, 152, .18);
+    --orb-hud: #00E6A5; --orb-node-bg: #121A22; --orb-wood-a: #17212B; --orb-wood-b: #121A22;
+    --grid-dot: rgba(0, 230, 165, .06);
+    --g-people: #FF9E6B; --g-topic: #B98CFF; --g-conv: #3FD2C8; --g-doc: #F5B84A; --g-decision: #7CE38B;
+    --g-figure: #5C9DFF; --g-trap: #FF7A7A; --g-pref: #F28CD8; --g-issue: #FFB36B; --g-fact: #D6F36B;
+    --g-session: #6CC6FF; --g-project: #00E6A5; --g-file: #D7C2FF; --g-run: #7FE0D4;
+    --g-edge: rgba(185, 140, 255, .16); --g-edge-sem: rgba(245, 184, 74, .5);
+    --on-brand: #0D1117; --on-bad: #1A0D0D; --brand-hover: #00CC93; --good-ink: #9FF5D6;
+    --bad-tint: rgba(255, 122, 122, .12); --bad-line: rgba(255, 122, 122, .4); --bad-ink: #FFB9B9;
+    --warn-tint: rgba(245, 184, 74, .13); --warn-tint-2: rgba(245, 184, 74, .08); --warn-line: rgba(245, 184, 74, .45); --warn-ink: #F8D694;
+    --info-tint: rgba(0, 230, 165, .10); --info-line: rgba(0, 230, 165, .30);
     --neutral-tint: rgba(255, 255, 255, .06);
-    --scrim: rgba(0, 0, 0, .55); --code-ink: #e8eee7;
+    --scrim: rgba(0, 0, 0, .55); --code-ink: #E6EDF3;
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, .4);
-    --shadow-md: 0 14px 40px -12px rgba(0, 0, 0, .8);
+    --shadow-md: 0 1px 0 rgba(255, 255, 255, .02) inset, 0 8px 24px rgba(0, 0, 0, .28);
+    --glow-mint: 0 0 0 1px rgba(0, 230, 165, .35), 0 0 18px rgba(0, 230, 165, .25);
+    --glow-ai: 0 0 0 1px rgba(160, 120, 255, .35), 0 0 22px rgba(138, 43, 226, .28);
   }
 }
 
@@ -1663,3 +1713,133 @@ tr.cc-on td { background: var(--brand-tint); }
 .theme-seg button[aria-checked="true"] { background: var(--panel); color: var(--accent); box-shadow: var(--shadow-sm), inset 0 0 0 1px var(--line-strong); }
 @media (max-width: 1360px) { .theme-seg button span { display: none; } .theme-seg button { padding: 4px 7px; } }
 @media (max-width: 900px) { .theme-seg { display: none; } }
+
+/* ======================================================================
+   Mint brand layer. The rules above are the structure; these give it the
+   Mint voice: Space Grotesk for the brand, headings and labels, the leaf
+   lockups, the mint "vein" on cards, and solid mint for primary actions.
+   ====================================================================== */
+
+body { background: var(--bg); font-family: var(--ui); font-size: 13.5px; }
+:root[data-theme="dark"] body { background: radial-gradient(1200px 700px at 55% 30%, var(--bg-glow) 0%, var(--bg) 62%), var(--bg); background-attachment: fixed; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) body { background: radial-gradient(1200px 700px at 55% 30%, var(--bg-glow) 0%, var(--bg) 62%), var(--bg); background-attachment: fixed; } }
+h1, h2, h3, h4 { font-family: var(--brand-font); letter-spacing: -.005em; }
+h1 { font-size: 23px; font-weight: 700; letter-spacing: -.01em; }
+h2 { font-weight: 700; }
+.mono, code, kbd, samp { font-family: var(--mono); }
+::selection { background: rgba(0, 230, 165, .28); }
+:focus-visible { outline-color: var(--accent-2); }
+
+/* ---- lockups: MINT [OS] / MINT [AI] ---- */
+.lockup { display: inline-flex; align-items: center; gap: .55em; font-family: var(--brand-font); line-height: 1; color: var(--ink); }
+.lockup .lk-mk { display: inline-flex; }
+.lockup .lk-mk svg { height: 1.9em; width: auto; display: block; }
+.lockup.ai .lk-mk svg { height: 2.35em; margin: -.3em -.15em -.1em; }
+.lockup .lk-wm { display: flex; flex-direction: column; gap: .32em; }
+.lockup .lk-row { display: flex; align-items: center; gap: .3em; }
+.lockup .lk-mint { font-weight: 700; font-size: 1.28em; letter-spacing: .05em; color: var(--wordmark); }
+.lockup .lk-sub { font-weight: 600; font-size: .5em; letter-spacing: .06em; color: var(--ink); text-transform: uppercase; }
+.lockup.full { gap: .5em; }
+.lockup.full .lk-wm { gap: .2em; }
+.lockup.full .lk-mk svg { height: 3.3em; }
+.lockup.ai.full .lk-mk svg { height: 5.1em; margin: -1.05em -.25em -.6em; }
+.pill-brand { display: inline-flex; align-items: center; font-weight: 700; font-size: .74em; letter-spacing: .04em; padding: .16em .34em .18em; border-radius: .3em; line-height: 1; white-space: nowrap; color: var(--obsidian); }
+.pill-brand b { font-weight: 700; margin: 0 .07em; }
+.pill-os { background: var(--pill-os); }
+.pill-ai { background: var(--grad-ai); box-shadow: 0 0 .9em rgba(138, 43, 226, .45), 0 0 .5em rgba(0, 230, 165, .25); }
+:root[data-theme="light"] .pill-ai { box-shadow: 0 0 .6em rgba(138, 43, 226, .22); }
+@media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) .pill-ai { box-shadow: 0 0 .6em rgba(138, 43, 226, .22); } }
+.mark-ai .ai-halo { opacity: .75; }
+:root[data-theme="light"] .mark-ai .ai-halo { opacity: .35; }
+@media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) .mark-ai .ai-halo { opacity: .35; } }
+
+/* ---- top bar ---- */
+.topbar { gap: 14px; }
+.topbar::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 1px; background: linear-gradient(90deg, transparent, rgba(0, 230, 165, .35) 20%, transparent 55%); pointer-events: none; }
+.cc-page .topbar::after { background: linear-gradient(90deg, transparent, rgba(0, 230, 165, .4) 15%, rgba(138, 43, 226, .45) 45%, transparent 75%); }
+.brand { font-size: 15px; padding-right: 6px; gap: 0; }
+.brand .brand-text em { display: none; }
+.top-tab { font: 600 14px/1 var(--brand-font); color: var(--muted); border-bottom: 0; position: relative; }
+.top-tab .spark { width: 16px; height: 16px; }
+.top-tab.on { color: var(--ink); background: linear-gradient(180deg, transparent, var(--accent-soft)); }
+.top-tab.on::after { content: ""; position: absolute; left: 12px; right: 12px; bottom: 0; height: 2px; border-radius: 2px 2px 0 0; background: var(--brand); }
+.top-tab.ai.on { background: linear-gradient(180deg, transparent, var(--violet-tint)); }
+.top-tab.ai.on::after { background: var(--grad-ai); box-shadow: 0 0 10px rgba(138, 43, 226, .6); }
+.sys-chip { font-family: var(--brand-font); letter-spacing: .09em; }
+.sys-chip, .sys-chip:hover { border-color: color-mix(in srgb, var(--accent-2) 45%, transparent); }
+.whoami-name { font: 600 13.5px var(--brand-font); }
+.theme-seg button { font-family: var(--brand-font); }
+
+/* ---- sidebar ---- */
+.sidebar { background: var(--topbar-bg); }
+.side-id-mark { border-radius: 10px; width: 38px; height: 38px; background: var(--teal-tint); border: 1px solid var(--teal-line); }
+.side-id-mark::after { display: none; }
+.side-id-mark svg.mark { height: 26px; width: auto; }
+.side-id-mark svg.seedling { height: 34px; width: auto; }
+.side-id { grid-template-columns: 38px minmax(0, 1fr); border-bottom-style: solid; }
+.side-id b { font: 700 14px var(--brand-font); }
+.side-label { font: 700 11px/1 var(--brand-font); letter-spacing: .14em; color: var(--muted); opacity: 1; padding: 14px 10px 6px; }
+.side-label::after { background: var(--line); }
+.side-sublabel { font: 500 11px var(--brand-font); color: var(--dim); letter-spacing: .03em; }
+.side-item { font: 500 14px var(--brand-font); color: var(--ink); border: 0; border-radius: 8px; }
+.side-item .ico { color: var(--muted); }
+.side-item:hover { background: var(--panel-2); }
+.side-item.on { background: var(--teal-tint); font-weight: 700; }
+.side-item.on::before { background: var(--brand); box-shadow: none; }
+.side-item.on .ico { color: var(--accent); }
+.badge { border-radius: 5px; background: var(--panel-2); line-height: 18px; }
+.badge.ok { color: var(--accent); background: var(--accent-soft); border-color: transparent; }
+.badge.warn { background: var(--warn-tint); border-color: transparent; }
+.badge.bad { background: var(--bad-tint); border-color: transparent; }
+.side-collapse { font: 500 12.5px var(--ui); }
+
+/* ---- page head ---- */
+.crumbs { font: 400 11.5px var(--mono); letter-spacing: 0; }
+.page-head .sub { font-size: 13.5px; }
+
+/* ---- cards: surface, a soft shadow and the OS "vein" -- a structural
+   accent drawn from the leaf's divide ---- */
+.card, .statbox { background: var(--panel); border-radius: var(--r); box-shadow: var(--shadow-md); }
+.card > .card-head::before { content: ""; position: absolute; left: -1px; top: 14px; width: 2px; height: 18px; border-radius: 0 2px 2px 0; background: var(--brand); opacity: .85; }
+.card-head h2 { font: 700 12px/1.2 var(--brand-font); letter-spacing: .13em; }
+.statbox-value { font: 700 21px/1.15 var(--brand-font); }
+.statbox-label { font: 700 10.5px var(--brand-font); letter-spacing: .1em; }
+.statbox-ico { background: var(--teal-tint); border-color: var(--teal-line); color: var(--accent); }
+.rows th { font: 700 10.5px var(--brand-font); letter-spacing: .1em; }
+.pill { font-family: var(--brand-font); letter-spacing: .08em; border-radius: 6px; }
+.pill::before { box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 22%, transparent); }
+.pill.brand, .pill.solid { color: var(--on-brand); background: var(--brand); border-color: transparent; }
+.pill.ai { color: var(--obsidian); background: var(--grad-ai); border-color: transparent; }
+.pill.ai::before { background: var(--obsidian); box-shadow: none; }
+
+/* ---- buttons ---- */
+.btn { font: 600 13px/1.3 var(--brand-font); border-color: var(--line-strong); background: var(--panel); color: var(--ink); }
+.btn:hover { border-color: var(--accent-2); }
+.btn.primary { background: var(--brand); color: var(--on-brand); border-color: var(--accent-2); box-shadow: none; }
+.btn.primary:hover { color: var(--on-brand); filter: brightness(1.06); }
+.btn.ai { background: var(--grad-ai); color: var(--obsidian); border: 0; box-shadow: 0 0 16px rgba(138, 43, 226, .3); }
+
+/* ---- the sign-in pages: the full lockup, and a large faint leaf ---- */
+.auth-wrap { position: relative; overflow: hidden; }
+.auth-leaf { position: fixed; right: -6vw; bottom: -12vh; width: min(58vw, 760px); opacity: .07; pointer-events: none; z-index: 0; transform: rotate(-14deg); }
+.auth-leaf svg { width: 100%; height: auto; display: block; }
+:root[data-theme="light"] .auth-leaf { opacity: .09; }
+.auth-wrap > .card { position: relative; z-index: 1; }
+.auth-wrap > .auth-leaf { position: fixed; }
+.auth-wrap .card.auth-card::before, .auth-wrap .card.auth-card::after { display: none; }
+.auth-brand { display: flex; justify-content: center; margin: 4px 0 18px; font-size: 22px; }
+.auth-wrap .card { box-shadow: var(--shadow-md); }
+
+/* ---- seedlings (the Agents nursery), coloured by theme ---- */
+.seedling .sd-a { fill: var(--leaf-a); }
+.seedling .sd-b { fill: var(--leaf-b); }
+.seedling .sd-vein { stroke: var(--panel-2); stroke-width: 6; fill: none; }
+.seedling .sd-stem { stroke: var(--leaf-b); stroke-width: 3; stroke-linecap: round; fill: none; }
+.seedling .sd-soil { fill: var(--leaf-b); opacity: .4; }
+.seedling.off .sd-a, .seedling.off .sd-b, .seedling.off .sd-stem { fill: var(--dim); stroke: var(--dim); opacity: .55; }
+.seedling.off .sd-stem { fill: none; }
+.auth-wrap .card.auth-card { max-width: 420px; padding: 30px 30px 22px; border-radius: 16px; }
+.auth-lockup { font-size: 19px; margin: 0 0 22px; }
+.auth-card h2 { font-size: 18px; letter-spacing: 0; text-transform: none; }
+.auth-foot { display: flex; align-items: center; gap: 8px; margin: 14px 0 0; color: var(--muted); font-size: 12.5px; }
+.auth-leaf { right: -8vw; bottom: -30vh; width: min(52vw, 700px); transform: none; opacity: .06; }

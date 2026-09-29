@@ -74,7 +74,7 @@ check("every icon reference has a symbol", (() => {
   const missing = [...used].filter((n) => !views.SPRITE[n]);
   return missing.length === 0 || (console.log("   missing:", missing.join(", ")), false);
 })());
-check("the MINT AI tab is active and points at the Command Center", /<a href="\/mint-ai" class="top-tab on">/.test(html));
+check("the MINT AI tab is active and points at the Command Center", /<a href="\/mint-ai" class="top-tab ai on" aria-current="page">/.test(html));
 check("no sidebar on this page", !html.includes('class="sidebar"'));
 check("every id is unique", (() => {
   const ids = [...html.matchAll(/\sid="([^"]+)"/g)].map((m) => m[1]);
@@ -244,7 +244,10 @@ check("the dark palette sets every token the light one declares for colour", (()
   const light = /:root\s*\{([\s\S]*?)\n\}/.exec(css)[1];
   const dark = /:root\[data-theme="dark"\]\s*\{([\s\S]*?)\n\}/.exec(css)[1];
   const colourTokens = [...light.matchAll(/(--[a-z0-9-]+):\s*(#[0-9a-f]{3,8}|rgba?\()/gi)].map((m) => m[1]);
-  const missing = colourTokens.filter((t) => !dark.includes(t + ":"));
+  // The brand constants (Obsidian, Mint, Deep Teal, AI Violet, off-white) are
+  // the same in both themes on purpose, and are declared once.
+  const constants = ["--obsidian", "--mint", "--deep-teal", "--ai-violet", "--offwhite"];
+  const missing = colourTokens.filter((t) => !constants.includes(t) && !dark.includes(t + ":"));
   return missing.length === 0 || (console.log("   not in dark:", missing.join(" ")), false);
 })());
 const ccCss = fs.readFileSync(path.join(ROOT, "public", "moni-ai.css"), "utf8");
