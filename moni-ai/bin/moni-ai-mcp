@@ -21,10 +21,11 @@
  *   status_snapshot       this VPS at a glance (read-only): services, disk,
  *                         memory, live sessions, missions, open decisions and
  *                         pending approvals -- counts and titles, never a command
- *   ui_action             change what the administrator sees in the Command
- *                         Center tab they asked from (open a panel, switch the
- *                         view, end the call...), during their own turn only;
- *                         never approves, denies or changes a setting
+ *   ui_actions_list       the screen actions that exist right now (read-only)
+ *   ui_do                 do one: change what the administrator sees in the tab
+ *                         they asked from (open a page or a panel, end the
+ *                         call...), during their own turn only; never approves,
+ *                         denies or changes a setting. Its schema never changes.
  *
  * Plain JSON-RPC 2.0 over newline-delimited stdio (MCP's stdio transport).
  */
@@ -38,30 +39,49 @@ const SOCKET = process.env.MONI_AI_SOCKET || "/run/moni-ai/moni-ai.sock";
 const STEP_STATUSES = ["planned", "delegated", "working", "waiting_approval", "done", "failed", "skipped"];
 const missionId = { type: "string", description: 'The mission, e.g. "M-12".' };
 
-/** ui_action: the shared allowlist's schema, the tool's flat args mapped to {action, args}. */
-function uiTool() {
-  const def = UiActions.tool();
-  return {
-    name: "ui_action",
-    op: "ui-action",
-    description:
-      "Change what the administrator sees in the tab they asked from (the Command Center, or MINT AI's dock on another Mint OS page), at once: " +
-      "open another page of Mint OS (page.open, by its page key; once per request, and only a page their role may see -- the screen checks), " +
-      "open or close a panel, show the map or missions, " +
-      "switch the core (A/B/C), switch the voice mode, show or read your last reply, show the waiting decision card, suggest a settings page, " +
-      "or end / mute / interrupt their voice call (never unmute). It works only while you answer a request the administrator sent from the " +
-      "Command Center, and only when they asked for it in that request. It cannot approve, deny or confirm anything, change keys, users, rules or " +
-      "settings, restart or deploy: approving stays the administrator's click. " +
-      "Three preferences -- theme.set, persona.set, voice.set -- only ASK: their result is confirm, nothing has changed yet, and the administrator confirms " +
-      "by a click or by saying yes; never say it is done and never confirm for them. The result says ok, refused (with why), confirm or no-screen; say what really happened.",
-    inputSchema: def.parameters,
-    map(given) {
-      const f = UiActions.fromTool(given);
-      if (f.extra.length) throw new Error("ui_action does not take: " + f.extra.join(", "));
-      return { action: String(f.action || ""), args: f.args };
+/*
+ * Screen actions. A resumed claude CLI keeps the schema it first loaded for an
+ * MCP tool (a deferred_tools_record in its transcript) even after this server
+ * changes it -- so the tool that acts has a schema that never changes (ui_do:
+ * `action` a plain string, the arguments a fixed superset; validation stays on
+ * the supervisor and the page), and what exists right now is read at run time
+ * from ui_actions_list. Adding an action or a page never touches either schema.
+ * (The first tool, ui_action, carried an enum of the actions; a CLI that loaded
+ * it before page.open existed would never see page.open, whatever it was
+ * served later. It is gone, and ui_do is a new name, so it is discovered fresh.)
+ */
+function uiTools() {
+  return [
+    {
+      name: "ui_actions_list",
+      description:
+        "Read-only: the screen actions ui_do can do right now -- each action's name, what it does, its tier, whether it needs the administrator's " +
+        "confirmation, whether it works once a request, and its arguments with their allowed values (for page.open: the page keys and what each needs). " +
+        "Call it before ui_do whenever you are not sure an action or a value exists; it changes as Mint OS grows.",
+      inputSchema: { type: "object", properties: {}, additionalProperties: false },
+      noArgs: true,
+      local: () => UiActions.catalog(),
     },
-    shape: (d) => d,
-  };
+    {
+      name: "ui_do",
+      op: "ui-action",
+      description:
+        "Change what the administrator sees in the tab they asked from (the Command Center, or the MINT AI dock on another Mint OS page), at once -- " +
+        "for example open another page of Mint OS, open or close a panel, or end their voice call. The actions, their arguments and allowed values " +
+        "are listed by ui_actions_list: call it first; pass the action and its arguments as plain fields. " +
+        "Use it only while you answer a request the administrator sent from the Command Center, and only when they asked for it in that request. " +
+        "It cannot approve, deny or confirm anything, change keys, users, rules or settings, restart or deploy: approving stays the administrator's click. " +
+        "Actions marked needs_confirm only ASK: their result is confirm, nothing has changed yet, and the administrator confirms by a click or by saying yes; " +
+        "never say it is done and never confirm for them. The result says ok, refused (with why), confirm or no-screen; say what really happened.",
+      inputSchema: UiActions.stableSchema(),
+      map(given) {
+        const f = UiActions.fromTool(given);
+        if (f.extra.length) throw new Error("ui_do does not take: " + f.extra.join(", ") + " (see ui_actions_list)");
+        return { action: String(f.action || ""), args: f.args };
+      },
+      shape: (d) => d,
+    },
+  ];
 }
 
 const TOOLS = [
@@ -189,7 +209,7 @@ const TOOLS = [
     noArgs: true,
     shape: snapshotView,
   },
-  uiTool(),
+  ...uiTools(),
 ];
 
 /**
@@ -272,7 +292,7 @@ async function onMessage(msg) {
         serverInfo: { name: "mint-ai", version: "1.0.0" }, // registered as "mint-ai" (supervisor.js MCP_NAME)
         instructions:
           "MINT AI's missions and decision proposals, recorded by the supervisor and shown in the Command Center; status_snapshot: this VPS at a glance, read-only; " +
-          "ui_action: change what the administrator sees in the tab they asked from, during their own request only.",
+          "ui_actions_list / ui_do: change what the administrator sees in the tab they asked from, during their own request only (list first, then do).",
       },
     });
   }
@@ -288,7 +308,7 @@ async function onMessage(msg) {
         throw new Error(tool.name + " takes no arguments");
       let args = tool.noArgs ? {} : { ...(tool.defaults || {}), ...given };
       if (tool.map) args = tool.map(args);
-      const data = await call(tool.op, args);
+      const data = tool.local ? tool.local(args) : await call(tool.op, args);
       const view = tool.shape ? tool.shape(data) : brief(data);
       return out({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(view) }] } });
     } catch (e) {

@@ -214,6 +214,71 @@
   }
 
   var ARG_KEYS = ["key", "mode", "name", "core", "page", "on", "theme", "preset", "voice"];
+
+  /*
+   * MINT AI's MCP tools (bin/moni-ai-mcp). A resumed claude CLI keeps the
+   * schema it first loaded for a tool (its deferred_tools_record), so the MCP
+   * tool's schema must never change when an action or a page is added: `ui_do`
+   * takes `action` as a plain string and every argument as a plain field
+   * (ARG_KEYS, a fixed superset), and validation stays where it is (validate(),
+   * on the supervisor and again on the page). What exists right now is read at
+   * run time from `ui_actions_list` (catalog() below).
+   */
+  var WHAT = {
+    "call.end": "end the administrator's live voice call",
+    "call.mute": "mute their microphone in the live call (never unmute)",
+    "call.interrupt": "stop reading aloud",
+    "voice.mode": "switch the voice mode",
+    "sheet.open": "open a Command Center panel",
+    "sheet.close": "close the open panel (or the panel named, if it is the one open)",
+    view: "show the map or the missions",
+    "core.set": "switch the Command Center core",
+    "reply.show": "open your last reply in full",
+    "reply.read": "read your last reply aloud",
+    "decision.show": "show the waiting decision card (approving it stays theirs)",
+    "settings.open": "suggest a settings page (a toast with a link; nothing opens by itself)",
+    "page.open": "take the administrator to another page of Mint OS (only the page opens; refused when their role cannot see it)",
+    "theme.set": "ask to switch the theme (they confirm)",
+    "persona.set": "ask to set the Arabic voice persona (they confirm)",
+    "voice.set": "ask to switch the voice's sound, for everyone (they confirm; an open call reconnects in it)",
+  };
+  function labels(map, f) { var o = {}; Object.keys(map).forEach(function (k) { o[k] = f ? f(map[k], k) : map[k]; }); return o; }
+  var ARG_SPEC = {
+    "call.mute": { on: { required: false, values: { "true": "mute (the only value)" } } },
+    "voice.mode": { mode: { required: true, values: MODES } },
+    "sheet.open": { key: { required: true, values: SHEETS } },
+    "sheet.close": { key: { required: false, values: SHEETS } },
+    view: { name: { required: true, values: VIEWS } },
+    "core.set": { core: { required: true, values: CORES } },
+    "settings.open": { page: { required: true, values: labels(PAGES, function (p) { return p.label; }) } },
+    "page.open": { page: { required: true, values: labels(NAV_PAGES, function (p) { return p.label + (p.perm ? " (needs " + p.perm + ")" : ""); }) } },
+    "theme.set": { theme: { required: true, values: THEMES } },
+    "persona.set": { preset: { required: true, values: PERSONAS } },
+    "voice.set": { voice: { required: true, values: VOICE_NAMES } },
+  };
+  /** ui_actions_list: the live allowlist -- actions, tiers, arguments and values, which need a confirm. */
+  function catalog() {
+    return {
+      call_with: "ui_do, with action and its arguments as plain fields, e.g. {\"action\": \"page.open\", \"page\": \"os-audit\"}",
+      rules: [
+        "Only while you answer a request the administrator sent from the Command Center or the MINT AI dock, and only when they asked for it in that request.",
+        "It acts on the tab they asked from. It never approves, denies or confirms anything, and never changes keys, users, rules or other settings.",
+        "Tier 2 (needs_confirm): the result is status confirm -- nothing has changed yet; say so and ask them to say yes or click Confirm; never confirm for them.",
+        "The result is ok, refused (with why), confirm or no-screen; say what really happened.",
+        "At most 6 a request and 20 a minute; an action marked once works once a request.",
+      ],
+      actions: names().map(function (n) {
+        var a = ACTIONS[n];
+        return { action: n, what: WHAT[n] || "", tier: a.tier, needs_confirm: a.tier === 2, once_per_request: !!a.once, args: ARG_SPEC[n] || {} };
+      }),
+    };
+  }
+  /** ui_do's input schema: fixed forever (a snapshot test holds it). */
+  function stableSchema() {
+    var p = { action: { type: "string", description: "An action name from ui_actions_list." } };
+    ARG_KEYS.forEach(function (k) { p[k] = k === "on" ? { type: "boolean", description: "call.mute only: true (muting; never unmuting)" } : { type: "string", description: "As ui_actions_list gives for the action." }; });
+    return { type: "object", properties: p, required: ["action"], additionalProperties: false };
+  }
   /** The tool's flat arguments split into action and args. */
   function fromTool(args) {
     var a = args && typeof args === "object" ? args : {};
@@ -263,6 +328,6 @@
 
   return {
     ACTIONS: ACTIONS, SHEETS: SHEETS, CORES: CORES, MODES: MODES, VIEWS: VIEWS, PAGES: PAGES, THEMES: THEMES, PERSONAS: PERSONAS, VOICE_NAMES: VOICE_NAMES, ARG_KEYS: ARG_KEYS,
-    names: names, validate: validate, toast: toast, doneText: doneText, navPage: navPage, navKeysFor: navKeysFor, NAV_PAGES: NAV_PAGES, pageUrl: pageUrl, tool: tool, fromTool: fromTool, limiter: limiter, claims: claims,
+    names: names, validate: validate, toast: toast, doneText: doneText, navPage: navPage, navKeysFor: navKeysFor, NAV_PAGES: NAV_PAGES, pageUrl: pageUrl, tool: tool, fromTool: fromTool, catalog: catalog, stableSchema: stableSchema, limiter: limiter, claims: claims,
   };
 });

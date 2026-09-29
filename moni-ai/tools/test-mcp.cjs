@@ -10,6 +10,7 @@
  * the real buildSnapshot is fed secrets and commands to prove none come out.
  */
 "use strict";
+const UiActions = require("../lib/ui-actions.js");
 const fs = require("fs");
 const net = require("net");
 const os = require("os");
@@ -111,21 +112,56 @@ function hasKeyDeep(v, keys) {
     const bare = await rpc({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { name: "status_snapshot" } });
     check("a call with no arguments object works", bare && !bare.result.isError);
 
-    // ui_action (UI control Phase 2): the shared allowlist's schema, flat args mapped to {action, args}.
+    // ui_actions_list + ui_do (UI control; stable since M-5): a resumed CLI keeps the schema it first loaded, so
+    // ui_do's schema must never change -- no enums; what exists is read at run time from ui_actions_list.
     {
-      const ui = list.result.tools.find((t) => t.name === "ui_action");
-      check("ui_action is listed, with the allowlist's action enum and no extras", ui && ui.inputSchema.properties.action.enum.includes("sheet.open") && !ui.inputSchema.properties.action.enum.some((a) => /approve|deny|settings\.set|key|user|rule|restart|deploy/.test(a)) && ["theme.set", "persona.set", "voice.set"].every((a) => ui.inputSchema.properties.action.enum.includes(a)) && ui.inputSchema.additionalProperties === false, ui && JSON.stringify(ui.inputSchema.properties.action.enum));
-      check("  its description says it cannot approve and works only in the administrator's own request", ui && /cannot approve, deny or confirm/.test(ui.description) && /only while you answer a request the administrator sent/.test(ui.description));
-      check("  and that the three preferences only ask (confirm; never confirm for them)", ui && /only ASK: their result is confirm/.test(ui.description) && /never confirm for them/.test(ui.description));
+      const names = list.result.tools.map((t) => t.name);
+      const ui = list.result.tools.find((t) => t.name === "ui_do");
+      const ls = list.result.tools.find((t) => t.name === "ui_actions_list");
+      check("ui_do and ui_actions_list are listed; the old ui_action is gone", ui && ls && !names.includes("ui_action"), names.join());
+      const FROZEN = {
+        type: "object",
+        properties: {
+          action: { type: "string", description: "An action name from ui_actions_list." },
+          key: { type: "string", description: "As ui_actions_list gives for the action." },
+          mode: { type: "string", description: "As ui_actions_list gives for the action." },
+          name: { type: "string", description: "As ui_actions_list gives for the action." },
+          core: { type: "string", description: "As ui_actions_list gives for the action." },
+          page: { type: "string", description: "As ui_actions_list gives for the action." },
+          on: { type: "boolean", description: "call.mute only: true (muting; never unmuting)" },
+          theme: { type: "string", description: "As ui_actions_list gives for the action." },
+          preset: { type: "string", description: "As ui_actions_list gives for the action." },
+          voice: { type: "string", description: "As ui_actions_list gives for the action." },
+        },
+        required: ["action"],
+        additionalProperties: false,
+      };
+      check("ui_do's input schema is exactly the frozen one (no enum anywhere): adding an action never changes it", ui && JSON.stringify(ui.inputSchema) === JSON.stringify(FROZEN) && !/enum/.test(JSON.stringify(ui.inputSchema)), ui && JSON.stringify(ui.inputSchema));
+      check("  its description names no action list: it says to call ui_actions_list", ui && /ui_actions_list: call it first/.test(ui.description) && !/sheet\.open|theme\.set|os-audit/.test(ui.description));
+      check("  it says it cannot approve and works only in the administrator's own request", ui && /cannot approve, deny or confirm/.test(ui.description) && /only while you answer a request the administrator sent/.test(ui.description));
+      check("  and that needs_confirm actions only ask (confirm; never confirm for them)", ui && /only ASK: their result is confirm/.test(ui.description) && /never confirm for them/.test(ui.description));
+      check("ui_actions_list takes nothing", ls && JSON.stringify(ls.inputSchema) === JSON.stringify({ type: "object", properties: {}, additionalProperties: false }));
       seen.length = 0;
-      reply = { status: "ok", done: "Mint opened Missions" };
-      const r = await rpc({ jsonrpc: "2.0", id: 6, method: "tools/call", params: { name: "ui_action", arguments: { action: "sheet.open", key: "missions" } } });
+      const cat = await rpc({ jsonrpc: "2.0", id: 8, method: "tools/call", params: { name: "ui_actions_list", arguments: {} } });
+      const c = cat && !cat.result.isError && JSON.parse(cat.result.content[0].text);
+      check("  it answers from the live allowlist, without the supervisor", c && seen.length === 0 && c.actions.map((a) => a.action).join() === UiActions.names().join(), cat && cat.result.content[0].text.slice(0, 200));
+      const po = c && c.actions.find((a) => a.action === "page.open");
+      check("  with tiers, confirms, once, arguments and values (page.open's 21 page keys, each with its permission)", po && po.tier === 1 && po.needs_confirm === false && po.once_per_request === true && Object.keys(po.args.page.values).length === 21 && /needs audit\.view/.test(po.args.page.values["os-audit"]) && c.actions.filter((a) => a.needs_confirm).map((a) => a.action).sort().join() === "persona.set,theme.set,voice.set");
+      check("  and the rules (own request only, never approve, confirm means nothing changed yet)", c && c.rules.some((r) => /never approves/.test(r)) && c.rules.some((r) => /nothing has changed yet/.test(r)));
+      seen.length = 0;
+      reply = { status: "ok", done: "Mint opened the audit log" };
+      const r = await rpc({ jsonrpc: "2.0", id: 6, method: "tools/call", params: { name: "ui_do", arguments: { action: "page.open", page: "os-audit" } } });
       const q = seen[0] || {};
-      check("  a call is the ui-action op as moni-ai, with {action, args} only", q.op === "ui-action" && q.actor === "moni-ai" && q.action === "sheet.open" && JSON.stringify(q.args) === '{"key":"missions"}' && Object.keys(q).sort().join() === "action,actor,args,id,op", JSON.stringify(q));
+      check("ui_do is the ui-action op as moni-ai, with {action, args} only", q.op === "ui-action" && q.actor === "moni-ai" && q.action === "page.open" && JSON.stringify(q.args) === '{"page":"os-audit"}' && Object.keys(q).sort().join() === "action,actor,args,id,op", JSON.stringify(q));
       check("  and returns the supervisor's answer as is", r && !r.result.isError && JSON.parse(r.result.content[0].text).status === "ok");
       seen.length = 0;
-      const bad = await rpc({ jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "ui_action", arguments: { action: "sheet.open", key: "missions", url: "https://x" } } });
+      const bad = await rpc({ jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "ui_do", arguments: { action: "sheet.open", key: "missions", url: "https://x" } } });
       check("  an unknown argument is refused before the socket", bad.result.isError && /does not take: url/.test(bad.result.content[0].text) && seen.length === 0);
+      seen.length = 0;
+      await rpc({ jsonrpc: "2.0", id: 9, method: "tools/call", params: { name: "ui_do", arguments: { action: "approve.everything" } } });
+      check("  an unknown action still goes to the supervisor, which validates it (validation stays server-side)", seen[0] && seen[0].action === "approve.everything");
+      const old = await rpc({ jsonrpc: "2.0", id: 10, method: "tools/call", params: { name: "ui_action", arguments: { action: "sheet.open", key: "missions" } } });
+      check("  a stale call to ui_action is an unknown tool", old && old.error && /unknown tool/.test(old.error.message));
     }
 
     // The supervisor down: a clean tool error, not a crash.

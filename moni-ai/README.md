@@ -297,10 +297,21 @@ event). All of its state is in the ledger, so a restart loses nothing.
   Bash -- and holds counts, titles and figures, never a command, fix or evidence;
   the server drops the forbidden keys again and the desk's own request list. The
   charter tells MINT AI to use it first for status questions.
-- **Screen actions for MINT AI (UI control Phase 2).** `ui_action` (args:
-  `action` plus, as the action needs, `key` / `mode` / `name` / `core` / `page`,
-  flat, from the shared allowlist `lib/ui-actions.js` -- a byte-identical copy of
-  `dashboard/public/ui-actions.js`, tested) → op `ui-action`. The supervisor
+- **Screen actions for MINT AI (UI control Phase 2; stable since M-5).** Two
+  tools: `ui_actions_list` (read-only, answered here from `UiActions.catalog()`:
+  every action, what it does, its tier, `needs_confirm`, `once_per_request`, its
+  arguments and allowed values -- page.open's page keys with the permission each
+  needs) and `ui_do` (args: `action` plus, as the action needs, `key` / `mode` /
+  `name` / `core` / `page` / `on` / `theme` / `preset` / `voice`, flat, from the
+  shared allowlist `lib/ui-actions.js` -- a byte-identical copy of
+  `dashboard/public/ui-actions.js`, tested) → op `ui-action`. `ui_do`'s schema
+  is fixed (`UiActions.stableSchema()`, held by a snapshot test): `action` is a
+  plain string, no enums, because a resumed claude CLI keeps the schema it first
+  loaded for a tool (its deferred_tools_record) -- the earlier `ui_action`
+  carried an enum, so a CLI that loaded it before page.open existed never saw
+  page.open. `ui_action` is gone from this server; the new name is discovered
+  fresh. Validation is unchanged: the supervisor and the page both run
+  `validate()`. The supervisor
   accepts it only from actor `moni-ai`, only while a turn runs that the
   administrator sent from the Command Center with a one-time ui token (`send.ut`,
   minted by the dashboard; kept in memory with the turn, never in the ledger,
@@ -377,7 +388,7 @@ node moni-ai/tools/test-watchers.cjs          # thresholds, dedup, cooldown, rat
 node moni-ai/tools/test-missions-cost.cjs     # missions store, cost deltas, transcript scan
 sudo node moni-ai/tools/test-features.cjs     # all of phase 1 through a real supervisor
 node moni-ai/tools/test-protocol.cjs          # socket validation, peer-text parsing
-node moni-ai/tools/test-mcp.cjs               # the MCP server's status_snapshot and ui_action tools
+node moni-ai/tools/test-mcp.cjs               # the MCP server's status_snapshot, ui_actions_list and ui_do tools
 sudo node moni-ai/tools/test-ui-action.cjs    # ui-action / ui-ack through a real supervisor
 node moni-ai/tools/test-turnqueue.cjs         # queue order: users first, FIFO, no starvation
 sudo node moni-ai/tools/test-queue.cjs        # the queue + status_snapshot through a real supervisor

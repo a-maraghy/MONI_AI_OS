@@ -423,7 +423,7 @@ function checkCli() {
 }
 
 /**
- * MINT AI's own tools (missions, decisions, status_snapshot, ui_action) as a
+ * MINT AI's own tools (missions, decisions, status_snapshot, ui_actions_list, ui_do) as a
  * stdio MCP server, bin/moni-ai-mcp, registered as "mint-ai" (its tools are
  * mcp__mint-ai__*; "moni-ai" until 2026-09-30 -- renamed so a resumed session
  * discovers the tools fresh instead of reusing a schema it recorded earlier).
@@ -1829,7 +1829,7 @@ async function handle(req, sock) {
 /* ---------------------------------------------------------- UI control --- */
 
 /*
- * MINT AI's ui_action (UI control, Phase 2). The Command Center mints a
+ * MINT AI's ui_do (its MCP tool; ui_action until M-5) (UI control, Phase 2). The Command Center mints a
  * one-time ui token for each send the administrator makes and the supervisor
  * keeps it with that turn, in memory. MINT AI's MCP tool asks for a screen
  * action; the supervisor accepts it only

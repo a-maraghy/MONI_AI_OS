@@ -99,6 +99,21 @@ console.log("\npage.open (M-5): another page of Mint OS, by a fixed key");
   check("the supervisor's copy is byte-identical", fs.readFileSync(path.join(ROOT, "public", "ui-actions.js"), "utf8") === fs.readFileSync(path.join(ROOT, "..", "moni-ai", "lib", "ui-actions.js"), "utf8"));
 }
 
+console.log("\nthe MCP catalog (ui_actions_list) and ui_do's stable schema");
+{
+  const c = UA.catalog();
+  check("the catalog lists every action, with what it does", c.actions.map((a) => a.action).join() === UA.names().join() && c.actions.every((a) => a.what));
+  check("  needs_confirm is exactly tier 2", c.actions.every((a) => a.needs_confirm === (UA.ACTIONS[a.action].tier === 2)));
+  const bad = [];
+  c.actions.forEach((a) => Object.entries(a.args).forEach(([k, spec]) => Object.keys(spec.values).forEach((v) => { const o = {}; o[k] = k === "on" ? true : v; if (!UA.validate(a.action, o).ok) bad.push(a.action + " " + k + "=" + v); })));
+  check("  every value it lists is accepted by validate()", bad.length === 0, bad.join(", "));
+  const noArgs = c.actions.filter((a) => !Object.keys(a.args).length).map((a) => a.action);
+  check("  an action it lists without arguments validates with none", noArgs.every((n) => UA.validate(n, {}).ok), noArgs.join());
+  check("  a required argument it lists is really required", c.actions.every((a) => Object.entries(a.args).every(([k, spec]) => !spec.required || !UA.validate(a.action, {}).ok)));
+  const sch = UA.stableSchema();
+  check("ui_do's schema: action a plain string, every argument key, no enum", sch.properties.action.type === "string" && !/enum/.test(JSON.stringify(sch)) && Object.keys(sch.properties).join() === ["action"].concat(UA.ARG_KEYS).join() && sch.additionalProperties === false);
+}
+
 console.log("\nTier 3: never by voice or AI -- no action names at all");
 check("nothing about keys, users, roles, 2FA, rules, watchers, voice mode, budget, orders, restart, deploy, approve", !UA.names().some((n) => /key|user|role|totp|2fa|password|rule|watcher|desk|budget|order|restart|deploy|approve|deny|fresh|gate|credential|service|firewall/.test(n)), UA.names().join());
 
