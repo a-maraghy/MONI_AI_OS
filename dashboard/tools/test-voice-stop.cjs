@@ -88,6 +88,34 @@ const NOT = [
 check("sentences that merely contain the words are not the command", hits(NOT).length === 0, hits(NOT).join(" | "));
 check("null and non-strings are not the command", !VoiceStop.heard(null) && !VoiceStop.heard(undefined) && !VoiceStop.heard(80));
 
+/* ---- asked politely: "can you stop listening", "ممكن تقفل الاستماع" ---- */
+const ASKED_EN = [
+  "Okay, so, can you stop listening now?", // said to the live page, 2026-09-29, and missed
+  "okay so can you stop listening now", "Can you stop listening?", "Could you stop listening, please?",
+  "Would you close the live session?", "Will you stop live?", "Can you please stop listening.",
+  "Could you please close the live session?", "I want you to stop listening.", "I need you to turn off the mic.",
+  "Mint, can you stop listening, please?", "Hey Mint, could you stop listening for now, thanks.", "Can you mic off?",
+];
+check("English requests before the command match, with the usual polite words around them", misses(ASKED_EN).length === 0, misses(ASKED_EN).join(" | "));
+const ASKED_AR = [
+  "ممكن تقفل الاستماع دلوقتي", "ممكن تقفل الاستماع؟", "ممكن توقف الاستماع", "ممكن تـقفل الاستماع", "ممكن تـ قفل الاستماع",
+  "ممكن اقفل الاستماع", "عايزك تقفل اللايف", "عاوزك تقفل المايك", "محتاجك تبطل تسمع", "يا ريت توقف الاستماع",
+  "ياريت تقفل ال live session", "خلاص، ممكن تقفل الاستماع يا مينت", "طيب عايزك توقف اللايف سيشن دلوقتي",
+];
+check("Egyptian Arabic requests (ممكن / عايزك / يا ريت, the second-person verb) match", misses(ASKED_AR).length === 0, misses(ASKED_AR).join(" | "));
+const NOT_ASKED = [
+  "can you tell me why nginx stopped listening", "can you stop the dashboard", "can you close the session",
+  "can you not stop listening", "can you", "could you please", "i want you to", "ممكن", "عايزك", "يا ريت",
+  "can you can you stop listening", "can you stop listening on port 80", "could you check whether nginx will stop listening",
+  "ممكن تقفل البورت", "عايزك تقولي ليه nginx وقف الاستماع", "ممكن تقفل الجلسه",
+  "can you please please please stop listening to port 80 on the old box now",
+];
+check("a request for anything else, or with more in it, is not the command", hits(NOT_ASKED).length === 0, hits(NOT_ASKED).join(" | "));
+check("the second-person verbs need a request in front of them", !VoiceStop.heard("تقفل الاستماع") && !VoiceStop.heard("توقف الاستماع") && VoiceStop.heard("ممكن تقفل الاستماع"));
+check("the 9-word cap still holds with a request", !VoiceStop.heard("okay so mint can you please stop listening for now thanks") && VoiceStop.heard("okay so can you please stop listening now"));
+check("the request list is the one asked for", ["can you", "could you", "would you", "will you", "can you please", "could you please", "i want you to", "i need you to", "ممكن", "ممكن ت", "عايزك", "عاوزك", "محتاجك", "يا ريت"].every((w) => VoiceStop.requests().indexOf(w) >= 0));
+check("  and every request and second-person phrase is already normalised", VoiceStop.requests().concat(VoiceStop.asked()).every((p) => VoiceStop.norm(p) === p));
+
 /* ---- the wiring ---- */
 const views = require(path.join(ROOT, "lib", "views-moniai.js"));
 const rbac = require(path.join(ROOT, "lib", "rbac.js"));
