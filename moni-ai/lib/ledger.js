@@ -11,7 +11,7 @@
  *                or held / failed / denied
  *   inbound      every cross-session message, idle notice and delivery notice
  *   approvals    every Approve / Deny card, with who answered and when
- *   turns        every turn MONI AI ran, and where it came from
+ *   turns        every turn MINT AI ran, and where it came from
  *   audit        every action taken through the socket, with the panel user
  */
 

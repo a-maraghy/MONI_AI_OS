@@ -1,9 +1,9 @@
 "use strict";
 /**
- * Missions: a multi-step goal MONI AI is carrying out, and its steps.
+ * Missions: a multi-step goal MINT AI is carrying out, and its steps.
  *
- * MONI AI creates a mission, records its steps, and delegates each step to the
- * session that owns the work. The delegation carries the step: MONI AI puts
+ * MINT AI creates a mission, records its steps, and delegates each step to the
+ * session that owns the work. The delegation carries the step: MINT AI puts
  * "M-<id> step <n>" in the first line of the message, or marks the step
  * "delegated" to a target just before sending. From then on the delegation's
  * own lifecycle moves the step along:
@@ -12,12 +12,16 @@
  *               done -> done        failed / denied -> failed
  *   approval    a pending card for that SendMessage -> waiting_approval
  *
- * MONI AI can always set a step's status itself (it knows when a step it did
+ * MINT AI can always set a step's status itself (it knows when a step it did
  * alone is finished). A mission is active once any step has moved, and done
- * when every step is done or skipped -- unless MONI AI closed it otherwise.
+ * when every step is done or skipped -- unless MINT AI closed it otherwise.
  */
 
 const { now } = require("./ledger");
+const names = require("./names");
+
+/** A step the assistant does itself is stored as "moni-ai", whichever of its names it was given. */
+const stepTarget = (t) => (t && names.isSelfName(t) ? "moni-ai" : t);
 
 const STEP_STATUSES = ["planned", "delegated", "working", "waiting_approval", "done", "failed", "skipped"];
 const MISSION_STATUSES = ["planned", "active", "done", "failed", "cancelled"];
@@ -93,7 +97,7 @@ class Missions {
     };
   }
 
-  /** Sum of MONI AI's per-turn cost over the turns that worked on this mission. */
+  /** Sum of MINT AI's per-turn cost over the turns that worked on this mission. */
   cost(missionId) {
     const r = this.db
       .prepare("SELECT SUM(t.cost_delta_usd) AS usd, COUNT(t.cost_delta_usd) AS n FROM turns t JOIN mission_turns mt ON mt.turn_id = t.id WHERE mt.mission_id = ?")
@@ -131,7 +135,7 @@ class Missions {
   insertStep(missionId, n, s, t) {
     this.db
       .prepare("INSERT INTO steps (mission_id, n, title, detail, target, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'planned', ?, ?)")
-      .run(missionId, n, s.title, s.detail || null, s.target || null, t, t);
+      .run(missionId, n, s.title, s.detail || null, stepTarget(s.target) || null, t, t);
   }
 
   addStep(missionId, s, turnId) {
@@ -153,7 +157,7 @@ class Missions {
     return s;
   }
 
-  /** MONI AI (or the delegation lifecycle) moves a step. */
+  /** MINT AI (or the delegation lifecycle) moves a step. */
   updateStep(missionId, n, fields, turnId) {
     const s = this.step(missionId, n);
     const t = now();
@@ -166,6 +170,7 @@ class Missions {
       else upd.done_at = null;
     }
     for (const k of ["title", "detail", "target", "result", "note", "delegation_id", "approval_id"]) if (fields[k] !== undefined) upd[k] = fields[k];
+    if (upd.target) upd.target = stepTarget(upd.target);
     this.ledger.update("steps", s.id, upd);
     this.touch(s.mission_id);
     this.linkTurn(s.mission_id, turnId);
@@ -251,7 +256,7 @@ class Missions {
       fields.delegation_id = d.id;
       if (!s.target) fields.target = d.target_name;
     }
-    // A step MONI AI marked done or skipped is not walked back by the lifecycle.
+    // A step MINT AI marked done or skipped is not walked back by the lifecycle.
     if (want && want !== s.status && s.status !== "skipped" && !(s.status === "done" && want !== "done")) fields.status = want;
     if (d.status === "ack" && d.reply_text && !s.result) fields.result = String(d.reply_text).slice(0, 2000);
     if (!Object.keys(fields).length) return null;

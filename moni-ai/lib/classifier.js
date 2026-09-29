@@ -1,6 +1,6 @@
 "use strict";
 /**
- * The destructive-action classifier behind MONI AI's approval gate.
+ * The destructive-action classifier behind MINT AI's approval gate.
  *
  * Two entry points:
  *
@@ -14,7 +14,7 @@
  * restarted database. So wherever the gate cannot tell -- SQL fed on stdin, an
  * inline script, a heredoc -- it asks. It is a tripwire, not a sandbox: a model
  * determined to hide a deletion inside a script file it wrote first will get
- * past it, which is why the charter tells MONI AI to ask as well, and why the
+ * past it, which is why the charter tells MINT AI to ask as well, and why the
  * gate exists at all rather than trusting the charter alone.
  *
  * No dependencies and no I/O: it is required by the PreToolUse hook, which runs

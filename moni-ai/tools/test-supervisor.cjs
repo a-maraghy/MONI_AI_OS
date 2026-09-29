@@ -29,6 +29,9 @@ const cfgFile = path.join(tmp, "config.json");
 fs.writeFileSync(
   cfgFile,
   JSON.stringify({
+    // The live config still carries the old name until it is edited: the
+    // supervisor must show the session as MINT AI anyway.
+    name: "MONI AI",
     cli: fake,
     cli_version: "2.1.283",
     cwd: tmp,
@@ -179,6 +182,8 @@ async function until(fn, ms = 10000) {
     check("the pinned CLI version is checked", ready.data.process.cli_version === "2.1.283");
     check("socket is 0660", (fs.statSync(SOCK).mode & 0o777) === 0o660);
     const argv0 = JSON.parse(fs.readFileSync(path.join(home, "fake-argv.log"), "utf8").trim().split("\n")[0]);
+    const nAt = argv0.indexOf("-n");
+    check("the session is named MINT AI, though the config says MONI AI", nAt !== -1 && argv0[nAt + 1] === "MINT AI", argv0.join(" "));
     check("first start uses --session-id, not --resume", argv0.includes("--session-id") && !argv0.includes("--resume"));
     check("runs with --permission-prompt-tool stdio", argv0.join(" ").includes("--permission-prompt-tool stdio"));
     check("runs in auto mode with the configured model", argv0.join(" ").includes("--permission-mode auto") && argv0.join(" ").includes("--model claude-opus-5-5"));
@@ -208,11 +213,18 @@ async function until(fn, ms = 10000) {
     const ended = await sub.waitFor((e) => e.type === "turn" && e.phase === "end" && e.turn.id === sent.data.turn.id);
     check("the turn ends done", ended && ended.turn.status === "done", JSON.stringify(ended));
 
+    // --- the rename: addressed by either of its names, it is a plain turn, not a delegation
+    for (const nm of ["MINT AI", "MONI AI"]) {
+      const self = await call("send", { text: "self " + nm, target: nm });
+      check(`a send addressed to "${nm}" is accepted as a plain turn (no target)`, self.ok && self.data.turn.target === null, JSON.stringify(self));
+      if (self.ok) await sub.waitFor((e) => e.type === "turn" && e.phase === "end" && e.turn.id === self.data.turn.id);
+    }
+
     // --- the voice front desk: a send marked as coming from it, and its snapshot
     const desk = await call("send", { text: "how is the disk", via: "voice-desk" }, "amaraghy");
     check("a voice-desk send is queued with its own source", desk.ok && desk.data.turn.source === "voice-desk" && desk.data.turn.actor === "amaraghy", JSON.stringify(desk));
     const deskEcho = await sub.waitFor((e) => e.type === "assistant" && /^echo: how is the disk/.test(e.text));
-    check("MONI AI is told the reply will be read aloud", !!deskEcho && /voice front desk passed it on/.test(deskEcho.text), deskEcho && deskEcho.text);
+    check("MINT AI is told the reply will be read aloud", !!deskEcho && /voice front desk passed it on/.test(deskEcho.text), deskEcho && deskEcho.text);
     await sub.waitFor((e) => e.type === "turn" && e.phase === "end" && e.turn.id === desk.data.turn.id);
     const snap = await call("snapshot", { turns: [desk.data.turn.id, sent.data.turn.id] }, "amaraghy");
     check("snapshot answers", snap.ok && snap.data.machine && snap.data.services && snap.data.sessions && snap.data.approvals, JSON.stringify(snap).slice(0, 300));

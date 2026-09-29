@@ -93,7 +93,7 @@ r = M.updateStep(m.id, 3, { status: "skipped", note: "not needed" });
 check("every step done or skipped: the mission is done", r.status === "done" && r.done_at);
 check("a done step is not walked back by a late lifecycle event", M.onDelegation(ledger.updateDelegation(retry.id, { status: "working" })) === null || M.get(m.id).steps[1].status === "done");
 r = M.update(m.id, { status: "cancelled" });
-check("MONI AI can close a mission explicitly", r.status === "cancelled");
+check("MINT AI can close a mission explicitly", r.status === "cancelled");
 check("steps cannot be added to a closed mission", throws(() => M.addStep(m.id, { title: "late" }), /cancelled/));
 const m2 = M.create({ title: "Two", goal: "", steps: [], actor: "moni-ai" });
 check("steps can be added later", M.addStep(m2.id, { title: "a", target: "fake-target" }).steps.length === 1);
@@ -163,7 +163,7 @@ check("at most 50 steps", throws(() => M.create({ title: "big", steps: Array.fro
     let rows = await scan();
     const mine = rows.find((x) => x.session_id === sid);
     check("the scanner totals a session and its sub-agents together", mine && mine.o === 157, JSON.stringify(rows));
-    check("MONI AI's own transcript is excluded (its cost comes from the ledger)", !rows.some((x) => x.session_id === self));
+    check("MINT AI's own transcript is excluded (its cost comes from the ledger)", !rows.some((x) => x.session_id === self));
     rows = await scan();
     check("a rescan with nothing new adds nothing (a restart too: offsets are in the ledger)", rows.find((x) => x.session_id === sid).o === 157);
     fs.appendFileSync(file, rec("m2", iso, 50) + "\n" + rec("m3", iso, 1) + "\n");

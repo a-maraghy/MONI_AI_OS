@@ -1,5 +1,5 @@
 /**
- * MONI AI's MCP server (bin/moni-ai-mcp): the status_snapshot tool.
+ * MINT AI's MCP server (bin/moni-ai-mcp): the status_snapshot tool.
  *
  *     node moni-ai/tools/test-mcp.cjs
  *
@@ -123,7 +123,7 @@ function hasKeyDeep(v, keys) {
       host: "vmi3567127",
       vitals: { cpu_pct: 12, cpus: 8, load: [0.5, 0.4, 0.3], mem: { pct: 40, total: 16 * 2 ** 30, available: 9 * 2 ** 30 }, disk: { pct: 6, total: 400 * 2 ** 30, free: 370 * 2 ** 30 } },
       services: [{ unit: "odoo.service", active: "active" }, { unit: "bad.service", active: "failed" }],
-      sessions: [{ name: "Odoo 19 VPS setup", status: "idle" }, { name: "MONI AI", self: true }],
+      sessions: [{ name: "Odoo 19 VPS setup", status: "idle" }, { name: "MINT AI", self: true }],
       process: { state: "ready", busy: true, queued: 2 },
       missions: [],
       decisions: [{ title: "Disk filling", status: "open", evidence: "df says 95%", fix_command: "rm -rf /var/log/big" }],

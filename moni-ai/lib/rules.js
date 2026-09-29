@@ -29,7 +29,7 @@
  * one part of a compound command); deny and ask rules also match any single
  * command inside it. A SendMessage rule matches "<target>: <message>".
  *
- * Phase 1 scope: every rule applies to MONI AI's own gate on this machine
+ * Phase 1 scope: every rule applies to MINT AI's own gate on this machine
  * (scope_session "moni-ai", scope_machine "this"). Rules for other sessions
  * are a phase 2 question.
  */
@@ -235,7 +235,7 @@ function suggestion(tool, input) {
     pattern: exactPattern(subject.text),
     scope_session: "moni-ai",
     scope_machine: "this",
-    note: subject.kind === "Bash" ? "Always allow exactly this command for MONI AI on this VPS." : "Always allow exactly this message to this session.",
+    note: subject.kind === "Bash" ? "Always allow exactly this command for MINT AI on this VPS." : "Always allow exactly this message to this session.",
   };
 }
 

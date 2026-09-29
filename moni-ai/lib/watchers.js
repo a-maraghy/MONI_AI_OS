@@ -1,9 +1,9 @@
 "use strict";
 /**
- * Watchers: things on THIS machine worth MONI AI's attention without being
+ * Watchers: things on THIS machine worth MINT AI's attention without being
  * asked. Each one reads an event source the box already has, decides whether
  * what it sees crosses its line, and if so raises a decision card and asks
- * MONI AI to investigate and propose a fix. MONI AI acts only after the
+ * MINT AI to investigate and propose a fix. MINT AI acts only after the
  * administrator approves -- and even then through the approval gate.
  *
  *   service_failed  a tracked unit enters the failed state (helper service-list)
@@ -13,14 +13,14 @@
  *   odoo_errors     N or more ERROR lines in the TRIAL box's Odoo log within a window
  *                   (read-only tail of /var/log/odoo/odoo.log; live Odoo is never watched)
  *
- * Flood control, so a flapping service cannot swamp MONI AI:
+ * Flood control, so a flapping service cannot swamp MINT AI:
  *   - de-duplication: one open card per (watcher, subject); a repeat only bumps
  *     its count and last-seen time;
  *   - cooldown: after a card is closed (done, failed) the same (watcher,
  *     subject) stays quiet for cooldown_s; after a Dismiss, for
  *     dismiss_quiet_s (a day), so a condition that persists does not return
  *     every half hour;
- *   - rate limit: at most max_investigations_per_hour MONI AI turns; past that
+ *   - rate limit: at most max_investigations_per_hour MINT AI turns; past that
  *     the card is still raised, marked rate-limited, with an Investigate button.
  *
  * All of that state is in the ledger, so a restart neither forgets an open card

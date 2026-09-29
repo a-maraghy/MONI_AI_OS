@@ -1,5 +1,5 @@
 /**
- * Tests for MONI AI's destructive-action classifier (lib/classifier.js).
+ * Tests for MINT AI's destructive-action classifier (lib/classifier.js).
  *
  *     node moni-ai/tools/test-classifier.cjs
  *
@@ -7,7 +7,7 @@
  * first list is the one that matters -- a miss there is a deleted file or a
  * pushed branch nobody approved -- so it is long and deliberately sneaky:
  * sudo, env, bash -c, ssh, $( ), find -exec, heredocs, inline Python. The
- * second list keeps the gate usable: if MONI AI had to ask before `git status`
+ * second list keeps the gate usable: if MINT AI had to ask before `git status`
  * the administrator would learn to click Approve without reading.
  *
  * .cjs because it uses require, and some directories it may be run from declare

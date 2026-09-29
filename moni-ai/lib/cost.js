@@ -2,7 +2,7 @@
 /**
  * What the Claude sessions on this box cost.
  *
- * MONI AI's own cost comes from its ledger. The CLI's `total_cost_usd` on each
+ * MINT AI's own cost comes from its ledger. The CLI's `total_cost_usd` on each
  * result is the running total of the PROCESS, not the cost of that turn: summing
  * it overstates badly (fact: 9.12 at 08:52 on 28 Sep after 6.08 the evening
  * before). A turn's cost is the difference from the previous turn of the same
@@ -20,7 +20,7 @@
 const fs = require("fs");
 const path = require("path");
 
-/* ----------------------------------------------------- MONI AI's own turns --- */
+/* ----------------------------------------------------- MINT AI's own turns --- */
 
 /**
  * Per-turn cost from running totals.

@@ -2,7 +2,7 @@
 /**
  * Command Center v3, phase 1: missions, decisions and watchers, standing
  * orders, approval rules, cost, the machine card and the read-only session
- * mirror -- everything the supervisor does beyond running MONI AI's process.
+ * mirror -- everything the supervisor does beyond running MINT AI's process.
  *
  * supervisor.js owns the process, the turns and the sockets; it hands this
  * module what it needs (deps) and calls back into it at a few points (a turn's
@@ -20,6 +20,7 @@ const schedule = require("./schedule");
 const cost = require("./cost");
 const { Watchers, OPEN: OPEN_DECISION } = require("./watchers");
 const { Missions } = require("./missions");
+const names = require("./names");
 const { redact, redactDeep, clip } = require("./redact");
 
 const MORNING_BRIEFING = {
@@ -35,13 +36,13 @@ const MORNING_BRIEFING = {
     "4. Your own activity since the last briefing: `moni-ai-ctl ledger '{\"table\":\"turns\",\"limit\":50}'` and the delegations and approvals ledgers the same way.",
     "5. Missions: mission_list (or `moni-ai-ctl missions`).",
     "Stay on this VPS: do not reach any other server and do not use any live credential.",
-    "Answer in at most six short lines, each starting with a bold label: **Services**, **Disk**, **Sign-ins**, **MONI AI**, **Missions**, **Needs you**. Lead with anything that needs the administrator.",
+    "Answer in at most six short lines, each starting with a bold label: **Services**, **Disk**, **Sign-ins**, **MINT AI**, **Missions**, **Needs you**. Lead with anything that needs the administrator.",
   ].join("\n"),
 };
 
 const TELEGRAM = {
   available: false,
-  why: "Phase 1 delivers to the Command Center only: the Telegram agents keep their bot tokens to themselves and have no supported way to post on MONI AI's behalf yet.",
+  why: "Phase 1 delivers to the Command Center only: the Telegram agents keep their bot tokens to themselves and have no supported way to post on MINT AI's behalf yet.",
 };
 
 function createFeatures(deps) {
@@ -238,9 +239,9 @@ function createFeatures(deps) {
   }
 
   function checkTarget(target) {
-    if (target === "moni-ai") return target;
+    if (target === "moni-ai" || names.isSelfName(target)) return "moni-ai"; // MINT AI, or its old name
     const live = (deps.sessions() || []).some((s) => s.name === target && !s.self);
-    if (!live) throw new Error(`no live session is named "${target}" (use moni-ai to run it as MONI AI itself)`);
+    if (!live) throw new Error(`no live session is named "${target}" (use moni-ai, or MINT AI, to run it as MINT AI itself)`);
     return target;
   }
 
@@ -497,7 +498,7 @@ function createFeatures(deps) {
     const sessionsOut = [...bySess.values()].map((s) => ({ ...s, name: sessionName(s.session_id) }));
     sessionsOut.push({
       session_id: deps.selfSessionId(),
-      name: (cfg.name || "MONI AI") + " (CEO)",
+      name: (cfg.name && !names.OLD_NAMES.includes(cfg.name) ? cfg.name : names.DISPLAY_NAME) + " (CEO)",
       today_usd: round(mine.get(today)),
       today_in: null,
       today_out: null,
@@ -513,7 +514,7 @@ function createFeatures(deps) {
       missions: missions.list({ limit: 20 }).map((m) => ({ id: m.id, ref: m.ref, title: m.title, status: m.status, cost_usd: m.metrics.cost_usd })),
       budget: budget(),
       updated_at: scanner.lastScan,
-      note: "MONI AI: from its ledger (per-turn difference of the CLI's running total). Other sessions: estimated API-equivalent from transcript token usage at list prices.",
+      note: "MINT AI: from its ledger (per-turn difference of the CLI's running total). Other sessions: estimated API-equivalent from transcript token usage at list prices.",
     };
   }
 
@@ -921,7 +922,7 @@ function createFeatures(deps) {
         if (d.status === "investigating" && d.turn_id === turn.id) {
           const row = ledger.update("decisions", d.id, {
             status: "proposed",
-            proposal: d.proposal || (turn.result_text ? clip(turn.result_text, 4000) : "MONI AI finished investigating without a proposal."),
+            proposal: d.proposal || (turn.result_text ? clip(turn.result_text, 4000) : "MINT AI finished investigating without a proposal."),
             updated_at: now(),
           });
           emitDecision(row);

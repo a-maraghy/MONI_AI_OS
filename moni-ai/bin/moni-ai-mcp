@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 "use strict";
 /**
- * moni-ai-mcp: MONI AI's own tools, as a stdio MCP server.
+ * moni-ai-mcp: MINT AI's own tools, as a stdio MCP server.
  *
- * The supervisor starts MONI AI with this server in --mcp-config. Each tool is
+ * The supervisor starts MINT AI with this server in --mcp-config. Each tool is
  * one call to the supervisor's control socket as actor "moni-ai", so the
  * supervisor validates it, records it in the ledger, audits it and pushes it
  * to the Command Center. Nothing here touches the machine: missions and
- * decisions are MONI AI's record of what it plans and proposes.
+ * decisions are MINT AI's record of what it plans and proposes.
  *
  * Tools
  *   mission_create        a multi-step goal with its steps
@@ -39,7 +39,7 @@ const TOOLS = [
     op: "mission-create",
     description:
       "Create a mission for a multi-step goal and record its steps. Use it whenever a goal needs more than one delegation or more than one session. " +
-      'Each step names who does it: a live session\'s name, or "moni-ai" for a step you do yourself. Returns the mission with its id (M-<n>). ' +
+      'Each step names who does it: a live session\'s name, or "moni-ai" (you, MINT AI; "MINT AI" is accepted too) for a step you do yourself. Returns the mission with its id (M-<n>). ' +
       'Then delegate each step with "M-<n> step <k>" in the first line of the message, so the Command Center links the delegation to the step.',
     inputSchema: {
       type: "object",
@@ -50,7 +50,7 @@ const TOOLS = [
           type: "array",
           items: {
             type: "object",
-            properties: { title: { type: "string" }, detail: { type: "string" }, target: { type: "string", description: 'Session name, or "moni-ai".' } },
+            properties: { title: { type: "string" }, detail: { type: "string" }, target: { type: "string", description: 'Session name, or "moni-ai" for yourself (MINT AI).' } },
             required: ["title"],
             additionalProperties: false,
           },
@@ -165,7 +165,7 @@ const TOOLS = [
  * anything that is not status. The supervisor already redacts and clips it
  * and never puts a command in it; this drops the forbidden keys again at any
  * depth (belt and braces) and the voice desk's own request list, which is not
- * MONI AI's to read.
+ * MINT AI's to read.
  */
 function snapshotView(data) {
   const strip = (v) => {
@@ -185,12 +185,12 @@ function call(op, params) {
     let buf = "";
     const timer = setTimeout(() => {
       s.destroy();
-      reject(new Error("the MONI AI supervisor did not answer"));
+      reject(new Error("the MINT AI supervisor did not answer"));
     }, 20000);
     s.setEncoding("utf8");
     s.on("error", (e) => {
       clearTimeout(timer);
-      reject(new Error("cannot reach the MONI AI supervisor: " + e.message));
+      reject(new Error("cannot reach the MINT AI supervisor: " + e.message));
     });
     s.on("connect", () => s.write(JSON.stringify({ id: "mcp" + ++n, op, actor: "moni-ai", ...params }) + "\n"));
     s.on("data", (c) => {
@@ -239,7 +239,7 @@ async function onMessage(msg) {
         capabilities: { tools: {} },
         serverInfo: { name: "moni-ai", version: "1.0.0" },
         instructions:
-          "MONI AI's missions and decision proposals, recorded by the supervisor and shown in the Command Center, and status_snapshot: this VPS at a glance, read-only.",
+          "MINT AI's missions and decision proposals, recorded by the supervisor and shown in the Command Center, and status_snapshot: this VPS at a glance, read-only.",
       },
     });
   }

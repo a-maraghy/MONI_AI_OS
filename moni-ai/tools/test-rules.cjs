@@ -5,9 +5,9 @@
  *
  * Matching (globs, whole command vs a part of a compound one, SendMessage
  * subjects), precedence (built-in deny > config deny > rule deny > built-in ask
- * > most specific rule, ask on a tie > classifier), scope (MONI AI on this VPS
+ * > most specific rule, ask on a tie > classifier), scope (MINT AI on this VPS
  * only in phase 1), the built-ins holding with no rules store at all, and the
- * real hook script run as MONI AI's CLI runs it, against a scratch ledger.
+ * real hook script run as MINT AI's CLI runs it, against a scratch ledger.
  */
 const fs = require("fs");
 const os = require("os");
@@ -97,7 +97,7 @@ check("the classifier still asks for destructive commands", bash("rm -rf /tmp/x"
 /* ---------------------------------------------------------------- scope --- */
 {
   const other = rule("allow", "rm -rf /tmp/x", { scope_session: "Odoo 19 VPS" });
-  check("a rule scoped to another session does not apply to MONI AI (phase 1)", bash("rm -rf /tmp/x", [other]).decision === "ask");
+  check("a rule scoped to another session does not apply to MINT AI (phase 1)", bash("rm -rf /tmp/x", [other]).decision === "ask");
   const otherBox = rule("allow", "rm -rf /tmp/x", { scope_machine: "another-box" });
   check("a rule for another machine does not apply here", bash("rm -rf /tmp/x", [otherBox]).decision === "ask");
   const builtinRow = rule("allow", "rm -rf /tmp/x", { builtin: 1 });
@@ -107,7 +107,7 @@ check("the classifier still asks for destructive commands", bash("rm -rf /tmp/x"
 /* ----------------------------------------------------------- suggestion --- */
 {
   const sg = r.suggestion("Bash", { command: "  systemctl restart odoo  " });
-  check("the suggestion is the exact command, scoped to MONI AI on this VPS", sg.pattern === "systemctl restart odoo" && sg.scope_session === "moni-ai" && sg.scope_machine === "this" && sg.effect === "allow");
+  check("the suggestion is the exact command, scoped to MINT AI on this VPS", sg.pattern === "systemctl restart odoo" && sg.scope_session === "moni-ai" && sg.scope_machine === "this" && sg.effect === "allow");
   check("the suggestion escapes stars", r.suggestion("Bash", { command: "rm /tmp/*.x" }).pattern === "rm /tmp/\\*.x");
   check("a suggested rule matches exactly the command it came from", bash("rm /tmp/*.x", [rule("allow", r.suggestion("Bash", { command: "rm /tmp/*.x" }).pattern)]).decision === "allow");
   check("no suggestion for tools rules do not cover", r.suggestion("Read", { file_path: "/x" }) === null);

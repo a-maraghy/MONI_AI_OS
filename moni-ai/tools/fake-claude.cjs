@@ -76,7 +76,7 @@ function hookPost(msg) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let runningCost = 0;
 
-/** One call to the supervisor's control socket, as MONI AI's MCP server makes it. */
+/** One call to the supervisor's control socket, as MINT AI's MCP server makes it. */
 function ctl(op, params) {
   return new Promise((resolve) => {
     const s = net.createConnection(process.env.MONI_AI_SOCKET);
@@ -164,7 +164,7 @@ async function turn(msg) {
     out({ type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: toolUseId, name: "Bash", input }] }, session_id: sessionId });
     const rid = crypto.randomUUID();
     const answer = new Promise((resolve) => waiting.set(rid, resolve));
-    out({ type: "control_request", request_id: rid, request: { subtype: "can_use_tool", tool_name: "Bash", input, decision_reason: "MONI AI gate · Deletes files or records: rm /tmp/moni-fake-victim", decision_reason_type: "hook", tool_use_id: toolUseId } });
+    out({ type: "control_request", request_id: rid, request: { subtype: "can_use_tool", tool_name: "Bash", input, decision_reason: "MINT AI gate · Deletes files or records: rm /tmp/moni-fake-victim", decision_reason_type: "hook", tool_use_id: toolUseId } });
     const resp = await answer;
     const allowed = resp.behavior === "allow";
     out({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: toolUseId, content: allowed ? "removed" : resp.message, is_error: !allowed }] }, session_id: sessionId });

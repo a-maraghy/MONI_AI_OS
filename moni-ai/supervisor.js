@@ -1,8 +1,8 @@
 "use strict";
 /**
- * moni-ai: the supervisor that owns MONI AI's Claude Code process.
+ * moni-ai: the supervisor that owns MINT AI's Claude Code process.
  *
- * MONI AI is one long-lived headless `claude -p` in stream-json mode, run as
+ * MINT AI is one long-lived headless `claude -p` in stream-json mode, run as
  * root with HOME=/root so it shares root's session registry and can reach every
  * other Claude Code session on the box through peer messaging (ListAgents /
  * SendMessage). This process:
@@ -41,13 +41,14 @@ const { redact, redactDeep, clip } = require("./lib/redact");
 const { createFeatures } = require("./lib/features");
 const { buildSnapshot } = require("./lib/snapshot");
 const turnQueue = require("./lib/turnqueue");
+const names = require("./lib/names");
 
 /* ----------------------------------------------------------------- config --- */
 
 const CONFIG_FILE = process.env.MONI_AI_CONFIG || "/etc/moni-ai/config.json";
 
 const DEFAULTS = {
-  name: "MONI AI",
+  name: names.DISPLAY_NAME,
   cli: "/opt/moni-ai/cli/claude",
   cli_version: "2.1.283",
   model: "claude-opus-5-5",
@@ -92,7 +93,12 @@ function loadConfig() {
   } catch (e) {
     if (e.code !== "ENOENT") throw new Error(`cannot read ${CONFIG_FILE}: ${e.message}`);
   }
-  return { ...DEFAULTS, ...file };
+  const merged = { ...DEFAULTS, ...file };
+  // The rename (MONI AI -> MINT AI, 2026-09-29): a config that still carries
+  // an old name gets the new one, so the session is shown as MINT AI even
+  // before /etc/moni-ai/config.json is edited. Any other name is kept.
+  if (names.OLD_NAMES.includes(merged.name)) merged.name = names.DISPLAY_NAME;
+  return merged;
 }
 
 const cfg = loadConfig();
@@ -337,9 +343,9 @@ function checkCli() {
 }
 
 /**
- * MONI AI's own tools (missions, decisions) as a stdio MCP server, bin/moni-ai-mcp.
+ * MINT AI's own tools (missions, decisions) as a stdio MCP server, bin/moni-ai-mcp.
  * It talks to this supervisor's control socket as actor "moni-ai". Its tools
- * are allowed outright: they only record MONI AI's own plans and proposals.
+ * are allowed outright: they only record MINT AI's own plans and proposals.
  */
 function mcpArgs() {
   if (!cfg.mcp) return [];
@@ -459,7 +465,7 @@ function onExit(gen, code, signal) {
   // Whatever was waiting on this process is over.
   for (const [aid, a] of approvals) {
     clearTimeout(a.timer);
-    const row = ledger.updateApproval(aid, { status: "cancelled", decided_at: now(), note: "MONI AI's process ended before an answer" });
+    const row = ledger.updateApproval(aid, { status: "cancelled", decided_at: now(), note: "MINT AI's process ended before an answer" });
     approvals.delete(aid);
     emit("approval", { approval: publicApproval(row) });
   }
@@ -560,7 +566,7 @@ function userMessage(row) {
 const OUR_SOURCES = new Set(["dashboard", "voice-desk", "order", "watcher", "mission-request", "decision"]);
 
 /**
- * Queue a turn for MONI AI. The supervisor holds the queue and hands the CLI
+ * Queue a turn for MINT AI. The supervisor holds the queue and hands the CLI
  * one turn at a time, user turns before background ones (lib/turnqueue.js).
  * Nothing here ever interrupts a running turn.
  */
@@ -648,7 +654,7 @@ const pendingControl = new Map(); // request_id -> callback
 function sendControl(request, timeoutMs = 30000) {
   const id = "sup-" + crypto.randomUUID();
   return new Promise((resolve, reject) => {
-    if (!writeChild({ type: "control_request", request_id: id, request })) return reject(new Error("MONI AI is not running"));
+    if (!writeChild({ type: "control_request", request_id: id, request })) return reject(new Error("MINT AI is not running"));
     const t = setTimeout(() => {
       pendingControl.delete(id);
       reject(new Error("no answer from the CLI"));
@@ -923,7 +929,7 @@ function onControlRequest(ev) {
   if (req.subtype !== "can_use_tool") {
     // Nothing else is registered, so nothing else should arrive; answering
     // stops the CLI waiting on a reply that would never come.
-    writeChild({ type: "control_response", response: { subtype: "error", request_id: ev.request_id, error: "not supported by the MONI AI supervisor" } });
+    writeChild({ type: "control_response", response: { subtype: "error", request_id: ev.request_id, error: "not supported by the MINT AI supervisor" } });
     return;
   }
   const tool = req.tool_name || "unknown";
@@ -987,7 +993,7 @@ function autoAnswer(ev, req, tool, input, auto) {
   const who = auto.rule ? "rule:" + auto.rule.id : "rule";
   const response = auto.allow
     ? { behavior: "allow", updatedInput: input }
-    : { behavior: "deny", message: `MONI AI rules: ${auto.explain} Do not retry it or route it through another session; tell the user it is not allowed.` };
+    : { behavior: "deny", message: `MINT AI rules: ${auto.explain} Do not retry it or route it through another session; tell the user it is not allowed.` };
   writeChild({ type: "control_response", response: { subtype: "success", request_id: ev.request_id, response } });
   const upd = ledger.updateApproval(row.id, { status: auto.allow ? "approved" : "denied", decided_at: t, decided_by: who, rule_id: auto.rule ? auto.rule.id : null, note: auto.explain });
   log(`approval #${row.id} ${auto.allow ? "allowed" : "denied"} by ${who}: ${tool} ${clip(summary, 120)}`);
@@ -1045,7 +1051,7 @@ function decide(approvalId, allow, actor, note, alwaysRule) {
   }
   const msg = allow
     ? null
-    : `Denied by ${actor} in the MONI AI dashboard${note ? ": " + note : ""}. Do not retry it, do not route it through another session, and tell the user it was denied.`;
+    : `Denied by ${actor} in the MINT AI dashboard${note ? ": " + note : ""}. Do not retry it, do not route it through another session, and tell the user it was denied.`;
   answer(approvalId, allow, msg);
   const updated = ledger.updateApproval(approvalId, {
     status: allow ? "approved" : "denied",
@@ -1387,6 +1393,13 @@ function refreshSessions() {
         self: a.sessionId === ours || a.pid === proc.pid,
       };
     });
+    // Our own session is found by id / pid. Failing that (a state file not yet
+    // written after a fresh start), the session in our home directory carrying
+    // one of our names -- MINT AI, or MONI AI before the rename -- is us.
+    if (!merged.some((s) => s.self)) {
+      const byName = merged.find((s) => names.isSelfName(s.name) && s.cwd === cfg.cwd);
+      if (byName) byName.self = true;
+    }
     sessionsCache = { at: now(), list: merged, error: null };
     features.hooks.onSessions(merged);
     advanceDelegations(merged);
@@ -1633,11 +1646,14 @@ async function handle(req, sock) {
       return undefined; // reply already written
     }
     case "send": {
-      if (p.target && p.target !== "auto") {
-        const live = (sessionsCache.list || []).some((s) => s.name === p.target && !s.self);
-        if (!live) throw new Error(`no live session is named "${p.target}"`);
+      // Addressed to the assistant itself by any of its names (MINT AI, or the
+      // old MONI AI during the transition): that is no delegation, just a turn.
+      const target = p.target && !names.isSelfName(p.target) ? p.target : "auto";
+      if (target !== "auto") {
+        const live = (sessionsCache.list || []).some((s) => s.name === target && !s.self);
+        if (!live) throw new Error(`no live session is named "${target}"`);
       }
-      const turn = queueTurn({ source: p.via === "voice-desk" ? "voice-desk" : "dashboard", actor: req.actor, text: p.text, target: p.target && p.target !== "auto" ? p.target : null });
+      const turn = queueTurn({ source: p.via === "voice-desk" ? "voice-desk" : "dashboard", actor: req.actor, text: p.text, target: target !== "auto" ? target : null });
       // How many turns go before this one: whatever is running or handed
       // over, plus the user turns queued ahead of it (background ones wait).
       const ahead = turnQueue.order(turns.pending, Date.now(), cfg.queue_background_max_wait_s * 1000).findIndex((q) => q.row.id === turn.id);
@@ -1645,7 +1661,7 @@ async function handle(req, sock) {
       return { turn, process: proc.state, queued_behind: (ahead > 0 ? ahead : 0) + current };
     }
     case "interrupt": {
-      if (!proc.child) throw new Error("MONI AI is not running");
+      if (!proc.child) throw new Error("MINT AI is not running");
       await sendControl({ subtype: "interrupt" }, 15000);
       emit("notice", { level: "info", text: `Interrupted by ${req.actor}` });
       return { interrupted: true };
@@ -1660,7 +1676,7 @@ async function handle(req, sock) {
     case "deny":
       return { approval: decide(p.approval_id, false, req.actor, p.note) };
     case "rc":
-      if (!proc.child || proc.state !== "ready") throw new Error("MONI AI is not running");
+      if (!proc.child || proc.state !== "ready") throw new Error("MINT AI is not running");
       return await enableRemoteControl(p.enabled, req.actor);
     case "restart": {
       emit("notice", { level: "warn", text: `Restart requested by ${req.actor}` });
@@ -1834,7 +1850,7 @@ function requeueAfterRestart() {
 
 async function main() {
   if (process.getuid && process.getuid() !== 0 && !process.env.MONI_AI_ALLOW_NONROOT) {
-    throw new Error("moni-ai must run as root: MONI AI shares root's Claude session registry");
+    throw new Error("moni-ai must run as root: MINT AI shares root's Claude session registry");
   }
   takeLock();
   fs.mkdirSync(cfg.run_dir, { recursive: true });

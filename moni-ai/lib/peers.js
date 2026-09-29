@@ -1,6 +1,6 @@
 "use strict";
 /**
- * Reading what other sessions send MONI AI.
+ * Reading what other sessions send MINT AI.
  *
  * Peer traffic reaches the model as ordinary prompt text, and the
  * UserPromptSubmit hook sees exactly that text. Three shapes, as emitted by

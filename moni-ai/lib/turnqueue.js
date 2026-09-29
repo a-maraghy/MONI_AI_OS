@@ -1,6 +1,6 @@
 "use strict";
 /**
- * Which queued turn MONI AI takes next.
+ * Which queued turn MINT AI takes next.
  *
  * The supervisor used to write every queued turn straight into the CLI, which
  * runs them strictly in arrival order -- so a question the administrator

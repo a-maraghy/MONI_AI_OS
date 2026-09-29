@@ -1,10 +1,19 @@
-# MONI AI
+# MINT AI
 
-MONI AI is the CEO of every Claude Code session on this machine. It takes a
+MINT AI is the CEO of every Claude Code session on this machine. It takes a
 command from the administrator, finds the session that owns the work and hands
 the command over through Claude Code's own peer messaging (`ListAgents` /
 `SendMessage`), so the command shows up in that session's chat. Replies and
-"finished" notices come back to MONI AI, which relays them.
+"finished" notices come back to MINT AI, which relays them.
+
+**The name.** It was MONI AI until 2026-09-29 (and MONI Bot before that); the
+dashboard is now Mint OS. Only what people see and hear changed: the service,
+socket, paths, MCP server (`moni-ai`, `mcp__moni-ai__*`), actor id `moni-ai`,
+`moni-ai-ctl`, the `moniai` group and the `MONI_*` variables keep their names.
+`lib/names.js` holds the names: anything that asks "is this name us?" (a send
+or order target, a mission step, the session list's self fallback) accepts
+MINT AI, MONI AI, MONI Bot and `moni-ai`, so sessions still using the old name
+keep working. A config whose `name` is still an old name is shown as MINT AI.
 
 It is one long-lived headless Claude Code session, run by a supervisor:
 
@@ -14,7 +23,7 @@ It is one long-lived headless Claude Code session, run by a supervisor:
         │                                │
         │ unix socket, group moniai      │
         ▼                                ▼
-  moni-ai.service  (root)  ──stdin/stdout stream-json──▶  claude -p … -n "MONI AI"
+  moni-ai.service  (root)  ──stdin/stdout stream-json──▶  claude -p … -n "MINT AI"
    supervisor.js                                          cwd /root/moni-ai, HOME=/root
    ├─ ledger.db  (turns, delegations, inbound,             │ ListAgents / SendMessage
    │              approvals, audit)                        ▼
@@ -27,7 +36,7 @@ It is one long-lived headless Claude Code session, run by a supervisor:
 |---|---|
 | `/opt/moni-ai/` | supervisor, `lib/`, `hooks/`, `bin/moni-ai-ctl`, pinned CLI in `cli/` |
 | `/etc/moni-ai/config.json` | model, effort, CLI pin, approval timeout, delegation allow-list |
-| `/root/moni-ai/CLAUDE.md` | the CEO charter MONI AI reads |
+| `/root/moni-ai/CLAUDE.md` | the CEO charter MINT AI reads |
 | `/root/moni-ai/.claude/settings.json` | the gate and ledger hooks |
 | `/var/lib/moni-ai/ledger.db` | the ledger (SQLite, 0600) |
 | `/var/lib/moni-ai/state.json` | fixed session id, Remote Control session (0600) |
@@ -42,9 +51,9 @@ all of the above. Do not edit the installed copies.
 
 1. The administrator types in the Command Center (`POST /moni-ai/api/send`).
    The panel checks it, then the supervisor checks it again, queues it, and
-   when MONI AI is free writes it to MONI AI's stdin as a stream-json user
+   when MINT AI is free writes it to MINT AI's stdin as a stream-json user
    message with its own uuid (see *the turn queue* below).
-2. MONI AI calls `ListAgents`, picks the session by name and working
+2. MINT AI calls `ListAgents`, picks the session by name and working
    directory, and calls `SendMessage` with `notify_when_idle: true`.
 3. The PreToolUse hook (`hooks/gate.js`) reads the message. Harmless: it goes.
    Destructive: see *the approval gate* below.
@@ -56,7 +65,7 @@ all of the above. Do not edit the installed copies.
    reply stored. The `[Cross-session idle notice]`, or the target idle again:
    **done**. The target gone: **failed**. A delivery notice saying the target
    holds messages for its user: **held**. Denied at the gate: **denied**.
-6. The reply also wakes MONI AI (a peer message starts a turn on its own), and
+6. The reply also wakes MINT AI (a peer message starts a turn on its own), and
    it relays the answer. Every event goes out on the stream.
 
 ## The turn queue
@@ -100,12 +109,12 @@ It is enforced, not only asked for in the charter:
   `memory_forget`, `CronCreate` and `RemoteTrigger` call and classifies it with
   `lib/classifier.js` (conservative: it asks when it cannot tell — SQL on stdin,
   inline scripts, heredocs, `ssh host cmd`, `bash -c`, `claude -p`).
-- Destructive → the hook answers `permissionDecision: "ask"`. MONI AI runs with
+- Destructive → the hook answers `permissionDecision: "ask"`. MINT AI runs with
   `--permission-prompt-tool stdio`, so the CLI sends the supervisor a
   `can_use_tool` control request and waits.
 - The supervisor records it and pushes an `approval` event: the dashboard shows
   an Approve / Deny card. Approve → `allow`; Deny → `deny` with a message telling
-  MONI AI who denied it and not to retry or route around it.
+  MINT AI who denied it and not to retry or route around it.
 - **Nobody answers within `approval_timeout_s` (300 s) → denied.** A restart of
   the process cancels whatever was pending.
 - The `ask` rules in root's own `settings.json` (`rm -rf`, `git push`,
@@ -113,7 +122,7 @@ It is enforced, not only asked for in the charter:
   decides to ask about. Every `can_use_tool` becomes a card.
 - `delegation_allow` in the config, when non-empty, is a list of regexes a
   `SendMessage` target must match, else it is denied outright. Empty in
-  production; used by the end-to-end test so MONI AI cannot reach a real session.
+  production; used by the end-to-end test so MINT AI cannot reach a real session.
 
 It is a tripwire, not a sandbox. A model that writes a script file and then
 runs `python3 script.py` gets past a classifier that never sees the script.
@@ -142,11 +151,11 @@ administrator uses Remote Control, and record what happened here.
 
 ## Traps
 
-- **Never `--resume` MONI AI's session id from a second process.** Claude Code
+- **Never `--resume` MINT AI's session id from a second process.** Claude Code
   does not stop it: the second process silently forks the transcript. The
   supervisor holds a lock, resumes only after the old process has exited, and
   refuses to start (state `blocked`) while any live registry entry or process
-  command line holds the id. Desktop reaches MONI AI through Remote Control only.
+  command line holds the id. Desktop reaches MINT AI through Remote Control only.
 - **It must run as root, `HOME=/root`, default config dir.** Peer discovery goes
   through `/root/.claude/sessions/<pid>.json`. The old console's account
   (`moniconsole`, `CLAUDE_CONFIG_DIR=/var/lib/moni-console`) is a separate
@@ -156,7 +165,7 @@ administrator uses Remote Control, and record what happened here.
   silently runs as `default`; with Opus 5.5 it is `auto`. The gate works in both.
 - **The CLI is pinned.** `/opt/moni-ai/cli/claude-<version>` is a copy, not a
   link, because `claude update` or a desktop update would change the binary
-  under a running MONI AI. The supervisor refuses to start on a version that
+  under a running MINT AI. The supervisor refuses to start on a version that
   does not match `cli_version`. **After any Claude Code update, re-verify before
   moving the pin:** peer registration and `SendMessage` from a headless session,
   replayed peer turns (`origin.kind = "peer"`), `remote_control` returning a
@@ -183,7 +192,7 @@ moni-ai-ctl restart                     # graceful: stdin closed, transcript kep
 sudo bash /root/moni/MONI_AI_OS/deploy/deploy-moni-ai.sh
 ```
 
-`systemctl stop moni-ai` closes MONI AI's stdin and waits for it to write its
+`systemctl stop moni-ai` closes MINT AI's stdin and waits for it to write its
 transcript before killing anything. Starting again resumes the same session.
 
 ### Socket protocol
@@ -218,9 +227,9 @@ Command Center v3, phase 1 (all re-validated in `lib/protocol.js`, writes audite
 | `order-runs` | `order_id` | read |
 | `rule-test`, `rule-suggest` | `command, tool?` / `approval_id` | read |
 | `session-mirror` | `session_id` (uuid) | read: the transcript's last turns, tools today, delegations, cost |
-| `mission-create`, `mission-step-add`, `mission-step-update`, `mission-update` | see the protocol | MONI AI's MCP tools call these as actor `moni-ai` |
-| `mission-request` | `goal` | "New mission": a queued turn asking MONI AI to plan it |
-| `decision-propose`, `decision-update` | `decision_id, summary, evidence?, fix_command?` / `status, result?` | MONI AI |
+| `mission-create`, `mission-step-add`, `mission-step-update`, `mission-update` | see the protocol | MINT AI's MCP tools call these as actor `moni-ai` |
+| `mission-request` | `goal` | "New mission": a queued turn asking MINT AI to plan it |
+| `decision-propose`, `decision-update` | `decision_id, summary, evidence?, fix_command?` / `status, result?` | MINT AI |
 | `decision-approve`, `decision-dismiss`, `decision-ask` | `decision_id, note?` / `text` | administrator |
 | `watcher-set` | `key, enabled` | persisted |
 | `watcher-inject` | `watcher, subject, detail?, evidence?` | fault injection; refused unless `watcher_inject` is true in the config (tests only) |
@@ -238,7 +247,7 @@ a few points (a turn's result and end, a delegation, an approval, a hook
 event). All of its state is in the ledger, so a restart loses nothing.
 
 - **Missions** (`lib/missions.js`, tables `missions`, `steps`, `mission_turns`).
-  MONI AI plans a multi-step goal with its own MCP tools (`bin/moni-ai-mcp`,
+  MINT AI plans a multi-step goal with its own MCP tools (`bin/moni-ai-mcp`,
   passed with `--mcp-config` and allowed with `--allowedTools mcp__moni-ai`):
   `mission_create`, `mission_step_add`, `mission_step_update`,
   `mission_update`, `mission_list`, `mission_get`. A delegation whose first line
@@ -249,20 +258,20 @@ event). All of its state is in the ledger, so a restart loses nothing.
   every step is done or skipped. Chosen over a CLI because typed tools need no
   shell quoting and do not go through the Bash gate; `moni-ai-ctl` speaks the
   same ops for a human.
-- **Status snapshot for MONI AI.** The same server has `status_snapshot`: the
+- **Status snapshot for MINT AI.** The same server has `status_snapshot`: the
   supervisor's read-only `snapshot` op (the voice desk's view, `lib/snapshot.js`)
   asked for as actor `moni-ai`, with no arguments. It answers from the caches the
   supervisor keeps anyway -- no helper call, no subprocess, no model round spent on
   Bash -- and holds counts, titles and figures, never a command, fix or evidence;
   the server drops the forbidden keys again and the desk's own request list. The
-  charter tells MONI AI to use it first for status questions.
+  charter tells MINT AI to use it first for status questions.
 - **Decisions and watchers** (`lib/watchers.js`, tables `decisions`,
   `watchers`). Every 30 s: the helper's `service-list` (a unit failed) and
   `pulse-feed` (fail2ban bans > 20 in 10 min; an agent started 3 times in 10
   min), statfs (root filesystem ≥ 85 %), and a read-only tail of the TRIAL
   box's `/var/log/odoo/odoo.log` (≥ 5 ERROR lines in 5 min). Live Odoo is not
   watched. A firing raises a decision card and queues (never interrupts) a
-  MONI AI turn to investigate read-only and call `decision_propose`. Approve
+  MINT AI turn to investigate read-only and call `decision_propose`. Approve
   queues a turn to run exactly the proposed fix, which still goes through the
   gate (a destructive fix raises its own card; that is deliberate, not a
   bypass); Ask more queues a follow-up; Dismiss closes it. One open card per
@@ -277,14 +286,14 @@ event). All of its state is in the ledger, so a restart loses nothing.
   tick moves `next_run_at` on BEFORE starting a run, so a crash or a supervisor
   that was down across several runs runs a missed order once, never a burst; a
   run still going is not stacked. Seeded: **Morning briefing, 07:30 daily**,
-  THIS VPS only (services, disk, sign-ins and bans, MONI AI's activity,
+  THIS VPS only (services, disk, sign-ins and bans, MINT AI's activity,
   missions), no live Odoo, no live credential. The result is the turn's reply,
   shown as a card in the Conversation. **Delivery is the Command Center only**:
   the Telegram agents keep their bot tokens to themselves and offer no
-  supported way to post on MONI AI's behalf.
+  supported way to post on MINT AI's behalf.
 - **Approval rules** (`lib/rules.js`, table `rules`). allow / ask / deny, a glob
   pattern over the whole Bash command (deny and ask also match one command of a
-  compound) or `"<target>: <message>"` for SendMessage, scope MONI AI on this
+  compound) or `"<target>: <message>"` for SendMessage, scope MINT AI on this
   VPS. Order: built-in deny (force push; pushing `a-maraghy/gizaseeds-Odoo19` or
   from `/opt/odoo/custom`) > config deny (the delegation allow-list) > a deny
   rule > built-in ask (anything touching live Odoo — no allow overrides it) >
@@ -330,24 +339,24 @@ node dashboard/tools/test-moniai.cjs          # the panel's client and permissio
 ### End-to-end against the real CLI (2026-09-27, CLI 2.1.283)
 
 Run with `delegation_allow` set to `^moni-e2e-target( \[[0-9a-f]+\])?$` so
-MONI AI could not reach any real session, and reset to `[]` afterwards. The
+MINT AI could not reach any real session, and reset to `[]` afterwards. The
 target was a throwaway headless Haiku session named `moni-e2e-target` in a
 scratch directory, stopped at the end.
 
-- `claude agents --json` lists `MONI AI`, cwd `/root/moni-ai`, idle.
-- A harmless turn through the socket answered ("MONI AI online, running on
+- `claude agents --json` lists `MINT AI`, cwd `/root/moni-ai`, idle.
+- A harmless turn through the socket answered ("MINT AI online, running on
   Claude Opus 5.5"); the init event reported `permissionMode: auto`.
-- Delegation: MONI AI called `ListAgents`, then `SendMessage` with
+- Delegation: MINT AI called `ListAgents`, then `SendMessage` with
   `notify_when_idle`. Ledger: **sent → working → ack** (reply `PONG-E2E`, sender
   pid from its socket path) **→ done** (idle notice). The reply started a
-  `peer` turn on its own and MONI AI relayed it.
+  `peer` turn on its own and MINT AI relayed it.
 - Gate: `rm` of a scratch file raised card #1 (category *delete*); **denied** —
-  the file stayed and MONI AI said it would not retry. A delegation telling the
+  the file stayed and MINT AI said it would not retry. A delegation telling the
   target to delete a file raised card #2 (*delegation*); **approved** and sent.
   A second direct `rm` raised card #3; **approved** — the file was deleted.
 - Remote Control returned a `session_url` at start and after every restart.
 - `systemctl restart moni-ai` resumed the same session id (one transcript
-  file); asked what came before, MONI AI named the previous request.
+  file); asked what came before, MINT AI named the previous request.
 - Through the panel (a scratch instance of the dashboard as `moniadmin`, with a
   throwaway admin): login, `/overview`, `/rc`, ledger, CSRF refusals, SSE with
   `X-Accel-Buffering: no`, and a send whose reply streamed back over SSE,

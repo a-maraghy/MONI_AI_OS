@@ -1,5 +1,5 @@
 /**
- * The turn queue through a real supervisor, against the fake CLI, plus MONI
+ * The turn queue through a real supervisor, against the fake CLI, plus MINT
  * AI's MCP status_snapshot tool against that supervisor.
  *
  *     sudo node moni-ai/tools/test-queue.cjs
@@ -260,7 +260,7 @@ function mcpClient() {
     check("the turn that was running at the restart finished before it (not replayed)", slowRow.status === "done", JSON.stringify(slowRow));
     sub2.close();
 
-    // --- 4. MONI AI's MCP server: status_snapshot against this supervisor
+    // --- 4. MINT AI's MCP server: status_snapshot against this supervisor
     const m = mcpClient();
     const init = await m.req("initialize", { protocolVersion: "2025-06-18" });
     check("MCP server initialises", init && init.result && init.result.serverInfo.name === "moni-ai");

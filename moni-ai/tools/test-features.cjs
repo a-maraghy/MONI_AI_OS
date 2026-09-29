@@ -8,7 +8,7 @@
  * sockets and Claude home: nothing of the live service is touched, no model is
  * called, no real service is stopped. Covers:
  *
- *   - missions: a two-step mission created over the socket (as MONI AI's MCP
+ *   - missions: a two-step mission created over the socket (as MINT AI's MCP
  *     server does), both steps delegated with the step tag, and the delegation
  *     lifecycle driving the steps to done and the mission to done;
  *   - watchers: a synthetic event through the fault-injection op and a real
@@ -186,7 +186,7 @@ const ready = () => until(async () => (await call("status")).data.process.state 
     check("supervisor comes up", !!(await ready()), sup.logs);
     const argv0 = JSON.parse(fs.readFileSync(path.join(home, "fake-argv.log"), "utf8").trim().split("\n")[0]);
     const mcpAt = argv0.indexOf("--mcp-config");
-    check("MONI AI is started with its own MCP server", mcpAt !== -1 && /moni-ai-mcp/.test(argv0[mcpAt + 1]) && argv0.includes("mcp__moni-ai"), argv0.join(" "));
+    check("MINT AI is started with its own MCP server", mcpAt !== -1 && /moni-ai-mcp/.test(argv0[mcpAt + 1]) && argv0.includes("mcp__moni-ai"), argv0.join(" "));
     const sub = subscribe();
 
     /* ------------------------------------------------------ missions --- */
@@ -197,7 +197,7 @@ const ready = () => until(async () => (await call("status")).data.process.state 
       const m = done.mission;
       check("both steps are done and linked to their delegations", m.steps.length === 2 && m.steps.every((s) => s.status === "done" && s.delegation_id), JSON.stringify(m.steps));
       check("the steps carry the replies as results", m.steps[0].result && /step 1 done/.test(m.steps[0].result));
-      check("the mission was created by MONI AI (actor moni-ai)", m.created_by === "moni-ai");
+      check("the mission was created by MINT AI (actor moni-ai)", m.created_by === "moni-ai");
       const states = sub.events.filter((e) => e.type === "mission").map((e) => e.mission.steps[0].status);
       check("step 1 walked planned -> delegated -> working -> done", ["delegated", "working", "done"].every((s) => states.includes(s)), states.join(","));
       const dl = await call("ledger", { table: "delegations" });
@@ -213,11 +213,11 @@ const ready = () => until(async () => (await call("status")).data.process.state 
     check("an unknown step status is refused by the protocol", !badStatus.ok);
     const created = await call("mission-create", { title: "Manual", goal: "g", steps: [{ title: "a", target: "moni-ai" }] }, "moni-ai");
     const upd = await call("mission-step-update", { mission_id: created.data.mission.ref, step: 1, status: "working" }, "moni-ai");
-    check("a step MONI AI sets by hand moves the mission to active", upd.ok && upd.data.mission.status === "active" && upd.data.mission.steps[0].status === "working");
+    check("a step MINT AI sets by hand moves the mission to active", upd.ok && upd.data.mission.status === "active" && upd.data.mission.steps[0].status === "working");
     const req = await call("mission-request", { goal: "Check every session is healthy" }, "amaraghy");
-    check("New mission queues a mission-request turn for MONI AI", req.ok && req.data.turn.source === "mission-request");
+    check("New mission queues a mission-request turn for MINT AI", req.ok && req.data.turn.source === "mission-request");
     const echoed = await sub.waitFor((e) => e.type === "assistant" && /Mission request from amaraghy/.test(e.text || ""), 8000);
-    check("the mission request reached MONI AI with the goal", !!echoed && /Check every session is healthy/.test(echoed.text));
+    check("the mission request reached MINT AI with the goal", !!echoed && /Check every session is healthy/.test(echoed.text));
 
     /* ------------------------------------------------------ watchers --- */
     const w0 = await call("watchers");
@@ -226,15 +226,15 @@ const ready = () => until(async () => (await call("status")).data.process.state 
     check("a synthetic event raises a decision card and an investigation", inj.ok && inj.data.created && inj.data.investigate, JSON.stringify(inj));
     const did = inj.data.decision.id;
     const proposed = await sub.waitFor((e) => e.type === "decision" && e.decision.id === did && e.decision.status === "proposed", 10000);
-    check("MONI AI's proposal arrives on the card with the fix command", !!proposed && /systemctl restart moni-e2e-fake/.test(proposed.decision.fix_command), JSON.stringify(proposed));
+    check("MINT AI's proposal arrives on the card with the fix command", !!proposed && /systemctl restart moni-e2e-fake/.test(proposed.decision.fix_command), JSON.stringify(proposed));
     const dup = await call("watcher-inject", { watcher: "service_failed", subject: "moni-e2e-fake" });
     check("the same event again only bumps the open card (de-duplicated)", dup.ok && !dup.data.created && dup.data.skipped === "duplicate" && dup.data.decision.count === 2);
     const ask = await call("decision-ask", { decision_id: did, text: "Why did it fail?" }, "amaraghy");
     check("Ask more queues a follow-up turn", ask.ok && ask.data.turn && ask.data.turn.source === "decision");
     const askSeen = await sub.waitFor((e) => e.type === "assistant" && /question from amaraghy/.test(e.text || ""), 8000);
-    check("the follow-up reached MONI AI", !!askSeen);
+    check("the follow-up reached MINT AI", !!askSeen);
     await sub.waitFor((e) => e.type === "turn" && e.phase === "end" && e.turn.id === ask.data.turn.id, 8000);
-    // Approve: the fix runs as a MONI AI action, through the gate.
+    // Approve: the fix runs as a MINT AI action, through the gate.
     const ap = await call("decision-approve", { decision_id: did }, "amaraghy");
     check("Approve queues the fix and marks the card running", ap.ok && ap.data.decision.status === "running" && ap.data.turn.source === "decision");
     const card = await sub.waitFor((e) => e.type === "approval" && e.approval.status === "pending" && /restart moni-e2e-fake/.test(e.approval.summary), 10000);
@@ -309,7 +309,7 @@ const ready = () => until(async () => (await call("status")).data.process.state 
     check("the command raises a card first", !!c1);
     check("the card carries an exact rule suggestion", c1 && c1.approval.rule_suggestion && c1.approval.rule_suggestion.pattern === CMD);
     const sug = await call("rule-suggest", { approval_id: c1.approval.id });
-    check("rule-suggest returns the narrow rule scoped to MONI AI on this VPS", sug.ok && sug.data.rule.pattern === CMD && sug.data.rule.scope_session === "moni-ai" && sug.data.rule.scope_machine === "this");
+    check("rule-suggest returns the narrow rule scoped to MINT AI on this VPS", sug.ok && sug.data.rule.pattern === CMD && sug.data.rule.scope_session === "moni-ai" && sug.data.rule.scope_machine === "this");
     const wrong = await call("approve", { approval_id: c1.approval.id, rule_pattern: "rm /tmp/something-else", rule_tool: "Bash" });
     check("an always-allow rule that does not match this command is refused", !wrong.ok && /would not match/.test(wrong.error));
     const always = await call("approve", { approval_id: c1.approval.id, rule_pattern: sug.data.rule.pattern, rule_tool: "Bash" }, "amaraghy");
@@ -332,7 +332,7 @@ const ready = () => until(async () => (await call("status")).data.process.state 
     /* ------------------------------------------------------ orders --- */
     const o0 = await call("orders");
     const brief = o0.data.orders.find((o) => o.seed_key === "morning-briefing");
-    check("the Morning briefing is seeded: 07:30 Africa/Cairo daily, MONI AI, Command Center", brief && brief.cron === "30 7 * * *" && brief.tz === "Africa/Cairo" && brief.target === "moni-ai" && brief.delivery.join() === "cc" && !brief.paused);
+    check("the Morning briefing is seeded: 07:30 Africa/Cairo daily, MINT AI, Command Center", brief && brief.cron === "30 7 * * *" && brief.tz === "Africa/Cairo" && brief.target === "moni-ai" && brief.delivery.join() === "cc" && !brief.paused);
     check("its next run is in the future at 07:30 Cairo", brief && Date.parse(brief.next_run_at) > Date.now() && new Intl.DateTimeFormat("en-GB", { timeZone: "Africa/Cairo", hour: "2-digit", minute: "2-digit" }).format(new Date(brief.next_run_at)) === "07:30");
     check("the brief stays on this VPS and names no live server", brief && !/rpc\.py|gizaseeds\.cloud|live Odoo/i.test(brief.prompt) && /Stay on this VPS/.test(brief.prompt));
     check("Telegram delivery is reported unavailable, with a reason", o0.data.telegram && o0.data.telegram.available === false && o0.data.telegram.why);
@@ -368,7 +368,7 @@ const ready = () => until(async () => (await call("status")).data.process.state 
     check("every result records a per-turn delta, not the running total", turnsNow.length > 3 && turnsNow.every((r) => Math.abs(r.cost_delta_usd - 0.01) < 1e-6), JSON.stringify(turnsNow.map((r) => [r.cost_usd, r.cost_delta_usd]).slice(0, 8)));
     const c0 = await call("cost");
     const expect = Math.round(turnsNow.length * 0.01 * 100) / 100;
-    check("today's MONI AI cost is the sum of the deltas", c0.ok && Math.abs(c0.data.today.moni_ai_usd - expect) < 0.011, `${c0.data && c0.data.today.moni_ai_usd} vs ${expect}`);
+    check("today's MINT AI cost is the sum of the deltas", c0.ok && Math.abs(c0.data.today.moni_ai_usd - expect) < 0.011, `${c0.data && c0.data.today.moni_ai_usd} vs ${expect}`);
     check("cost has 14 days", c0.data.days.length === 14);
     const bud = await call("cost-budget", { daily_usd: 40, warn_pct: 80 }, "amaraghy");
     check("a daily budget can be set", bud.ok && bud.data.budget.daily_usd === 40);

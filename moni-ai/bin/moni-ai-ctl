@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 "use strict";
 /**
- * moni-ai-ctl: talk to the MONI AI supervisor from a shell.
+ * moni-ai-ctl: talk to the MINT AI supervisor from a shell.
  *
  *   moni-ai-ctl status
  *   moni-ai-ctl sessions

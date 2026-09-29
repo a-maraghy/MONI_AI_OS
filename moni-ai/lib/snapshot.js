@@ -3,7 +3,7 @@
  * The voice front desk's view of this VPS: a read-only, speakable snapshot.
  *
  * The front desk (a GPT realtime model in the dashboard, trial, off by
- * default) may answer only from this, or hand the question to MONI AI. So it
+ * default) may answer only from this, or hand the question to MINT AI. So it
  * holds what a person would ask about at a glance -- services, disk, memory,
  * the live sessions, active missions and their steps, open decisions and
  * pending approvals -- and nothing it could act on:

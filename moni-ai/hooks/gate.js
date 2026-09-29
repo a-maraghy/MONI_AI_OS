@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 "use strict";
 /**
- * PreToolUse hook: MONI AI's destructive-action gate.
+ * PreToolUse hook: MINT AI's destructive-action gate.
  *
  * Reads the tool call on stdin and decides it with lib/rules.js: the built-in
  * safety rules, the administrator's approval rules from the ledger (read-only)
@@ -9,7 +9,7 @@
  * the most specific of the administrator's rules; then the classifier asks
  * about anything destructive.
  *
- *   ask   Claude Code sends the supervisor a can_use_tool request (MONI AI runs
+ *   ask   Claude Code sends the supervisor a can_use_tool request (MINT AI runs
  *         with --permission-prompt-tool stdio): an Approve / Deny card, and
  *         nobody answering means deny.
  *   allow an "Always allow this" rule matched: no card.
@@ -93,17 +93,17 @@ process.stdin.on("end", async () => {
     let reason;
     if (stored.error && decision !== "deny" && decision !== "ask") {
       decision = "ask";
-      reason = `MONI AI gate: the approval rules could not be read (${String(stored.error.message).slice(0, 100)}); asking to be safe.`;
-    } else if (decision === "deny") reason = `MONI AI gate: ${r.explain} Do not retry it or route it through another session.`;
+      reason = `MINT AI gate: the approval rules could not be read (${String(stored.error.message).slice(0, 100)}); asking to be safe.`;
+    } else if (decision === "deny") reason = `MINT AI gate: ${r.explain} Do not retry it or route it through another session.`;
     else if (decision === "ask")
-      reason = r.source === "classifier" && r.classifier ? `MONI AI gate · ${r.classifier.label}: ${r.classifier.reason}. Waiting for the administrator's approval.` : `MONI AI gate: ${r.explain} Waiting for the administrator's approval.`;
-    else if (decision === "allow") reason = `MONI AI gate: ${r.explain}`;
+      reason = r.source === "classifier" && r.classifier ? `MINT AI gate · ${r.classifier.label}: ${r.classifier.reason}. Waiting for the administrator's approval.` : `MINT AI gate: ${r.explain} Waiting for the administrator's approval.`;
+    else if (decision === "allow") reason = `MINT AI gate: ${r.explain}`;
     await report(ev.session_id, r);
     if (decision === "none") return process.exit(0);
     out(decision, reason);
     process.exit(0);
   } catch (e) {
-    out("ask", "MONI AI gate could not classify this call (" + String(e.message).slice(0, 120) + "); asking to be safe.");
+    out("ask", "MINT AI gate could not classify this call (" + String(e.message).slice(0, 120) + "); asking to be safe.");
     process.exit(0);
   }
 });
