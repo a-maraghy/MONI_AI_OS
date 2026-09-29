@@ -326,6 +326,16 @@ voice turn, once; the desk's `ask_moni` and its supervisor door refuse
 prompt-like text. Why: on 2026-09-29 a silent push-to-talk press came back from
 gpt-4o-mini-transcribe as its own prompt and reached MONI AI as a turn (ledger
 turn 92); prompted transcription models echo the prompt on silence.
+`node dashboard/tools/test-voice-arabic.cjs` covers the same guards in Arabic
+(`lib/voice-arabic.js`): Arabic-Indic and Eastern digits and Arabic number
+words compared with the snapshot's figures, the Arabic and mixed claim,
+promise, approval, negation (incl. ما…ش) and hedge rules with clitics and
+spelling normalised, the fail-closed rules (a script other than Latin or
+Arabic, an unknown past-tense result verb), the summary rules across the two
+languages, the Arabic fixed lines, and the Arabic silence phrases and
+subtitle credits on the transcript side. `ask_moni` sends the server's own
+transcript of the turn, never the desk model's paraphrase (the paraphrase
+cases are in test-voice-desk.cjs).
 `sudo node dashboard/tools/eval-voice-desk.cjs --replies <copy.json> [--speak]
 [--session]` runs ~25 prompts and summaries of MINT AI's real replies (from a
 read-only copy of the ledger) against the real model with a stubbed supervisor

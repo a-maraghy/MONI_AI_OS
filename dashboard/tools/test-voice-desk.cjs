@@ -614,7 +614,7 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     check("one desk per panel user, reused", desk.deskFor("amaraghy", cfg, sup.call) === a && desk.deskFor("someone", cfg, sup.call) !== a);
     check("a changed key opens a new desk", desk.deskFor("amaraghy", { ...cfg, key: GOOD.replace("good", "gooe") }, sup.call) !== a);
     desk.closeAll();
-    check("withWords keeps the administrator's words when the desk paraphrases", /own words: "rm the report"/.test(desk.withWords("Delete the report file", "rm the report")) && desk.withWords("Restart Odoo.", "restart odoo") === "Restart Odoo.");
+    check("the desk's paraphrase helper is gone: MINT AI gets the transcript itself (see test-voice-arabic.cjs)", desk.withWords === undefined);
   }
 
 
@@ -1081,6 +1081,158 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     check("a real request naming MONI AI and Odoo is still passed on", r4.asked.length === 1 && sends().length === before + 1 && /restart Odoo/.test(sends()[sends().length - 1][1].text));
     check("guard sources include the desk's instructions and both tool descriptions", ["desk instructions", "desk tool read_status", "desk tool ask_moni"].every((n) => guard.promptSources().some((x) => x.name === n)));
     d.close();
+  }
+
+  section("the hand-off carries the administrator's words, never the desk's paraphrase (M-3 Phase 0)");
+  {
+    // Speech to speech, the model's ask_moni text can change the meaning. MINT
+    // AI must get exactly what the server heard.
+    const paraphrases = (text) => (items) => (afterTool(items) ? [{ say: "I've passed that to MINT AI. I'll read you its answer when it arrives." }] : [{ call: "ask_moni", args: { text } }]);
+    const cases = [
+      ["عايزك تعمل restart للـ dashboard", "Restore the dashboard."],
+      ["عايزك تعمل restart للـ dashboard", "Proceed safely with the maintenance on the dashboard."],
+      ["restart the dashboard", "restore the dashboard from the last backup"],
+      ["ما تمسحش الباك اب", "Delete the backup."], // "don't delete the backup" → "delete the backup"
+    ];
+    for (const [heard, para] of cases) {
+      const d = newDesk("text");
+      const n0 = sends().length;
+      const r = await withBrain(paraphrases(para), () => d.turn(heard));
+      const sent = sends()[n0];
+      check(`«${heard}» paraphrased as "${para}": MINT AI receives exactly the administrator's words`, sends().length === n0 + 1 && sent[1].text === heard && sent[1].via === "voice-desk", JSON.stringify(sent && sent[1]));
+      check("  the paraphrase is nowhere in what was sent (not even as a note)", !JSON.stringify(sent[1]).includes(para.slice(0, 12)));
+      check("  and the turn records that the desk paraphrased", r.paraphrased === true && r.asked.length === 1);
+      d.close();
+    }
+    {
+      const d = newDesk("text");
+      const n0 = sends().length;
+      const r = await withBrain((items) => (afterTool(items) ? [{ say: "I've passed that to MINT AI." }] : [{ call: "ask_moni", args: { text: lastUser(items) } }]), () => d.turn("Restart Odoo please"));
+      check("the desk's text equal to the transcript: sent once, not marked as a paraphrase", sends().length === n0 + 1 && sends()[n0][1].text === "Restart Odoo please" && r.paraphrased === false);
+      d.close();
+    }
+    {
+      const d = newDesk("text");
+      const n0 = sends().length;
+      const twice = (items) => (afterTool(items) ? [{ say: "I've passed that to MINT AI." }] : [{ call: "ask_moni", args: { text: "restart odoo" } }, { call: "ask_moni", args: { text: "and also restart nginx" } }]);
+      const r = await withBrain(twice, () => d.turn("restart odoo"));
+      check("two ask_moni calls in one utterance: the administrator's words go once", sends().length === n0 + 1 && r.asked.length === 1, JSON.stringify(sends().slice(n0)));
+      d.close();
+    }
+    {
+      // No grounded transcript: runTool refuses, nothing is sent.
+      const d = newDesk("text");
+      await d.open();
+      const n0 = sends().length;
+      const turn = { kind: "turn", heard: "", grounded: true, asked: [], tools: [], rejected: [], lines: [] };
+      const out = JSON.parse(await d.runTool({ name: "ask_moni", call_id: "c1", arguments: JSON.stringify({ text: "restart odoo" }) }, turn));
+      check("ask_moni with no transcript for the turn is refused, and nothing reaches MINT AI", /refused/.test(out.error) && sends().length === n0 && turn.rejected.includes("ask_moni:ungrounded"));
+      const turn2 = { kind: "turn", heard: "restart odoo", grounded: false, asked: [], tools: [], rejected: [], lines: [] };
+      const out2 = JSON.parse(await d.runTool({ name: "ask_moni", call_id: "c2", arguments: JSON.stringify({ text: "restart odoo" }) }, turn2));
+      check("  and so is one on a turn that is not grounded", /refused/.test(out2.error) && sends().length === n0);
+      d.close();
+    }
+    {
+      // The summary is told what the administrator asked in their own words too.
+      const d = newDesk("text");
+      const r0 = await withBrain(paraphrases("Restore the dashboard."), () => d.turn("عايزك تعمل restart للـ dashboard"));
+      sup.replies.set(r0.asked[0].id, "The dashboard was restarted and is answering again. It took 4 seconds, and the logs show no errors since. Nothing else was changed, and no approval was needed for this one because it is on the allow list. " + "x".repeat(200));
+      mock.summaryText = "MINT AI restarted the dashboard and it is answering again.";
+      await d.summarise(r0.asked[0].id, {});
+      const s = lastSession();
+      const oob = s.oob[s.oob.length - 1];
+      const txt = oob.input[0].content[0].text;
+      check("the summary's prompt quotes the administrator's words, not the paraphrase", txt.includes('The administrator asked: "عايزك تعمل restart للـ dashboard"') && !txt.includes("Restore the dashboard"), txt.slice(0, 200));
+      d.close();
+    }
+  }
+
+  section("Arabic in conversation: cut, and the fixed lines in Arabic");
+  {
+    const arClaims = (say) => () => [{ say }];
+    for (const [heard, say, rule] of [
+      ["اعمل restart لأودو", "تم إعادة تشغيل أودو.", "action-claim"],
+      ["وافق على الطلب", "وافقت على الطلب.", "action-claim"],
+      ["امسح الباك اب القديم", "أنا deleted the old backups خلاص.", "action-claim"],
+      ["الديسك عامل ايه", "الديسك وصل ٩٣ في المية.", "figure"],
+      ["اعمل restart لأودو", "هعمل restart دلوقتي حالاً.", "promise"],
+    ]) {
+      const d = newDesk("text");
+      const n0 = sends().length;
+      const r = await withBrain(arClaims(say), () => d.turn(heard));
+      check(`«${say}» is cut (${rule}), nothing of it heard`, r.trip && r.trip.rule === rule && !r.lines.some((l) => !l.safe), JSON.stringify(r.trip));
+      check("  the safe line is the Arabic one", r.lines.length === 1 && r.lines[0].text === desk.LINES_AR.safe && r.lines[0].safe, JSON.stringify(r.lines));
+      check("  and made true: MINT AI got the administrator's words", r.autoAsked && sends().length === n0 + 1 && sends()[n0][1].text === heard);
+      d.close();
+    }
+    {
+      const d = newDesk("text");
+      const r = await withBrain(() => [{ say: "Готово, я перезапустил Odoo." }], () => d.turn("اعمل restart لأودو"));
+      check("a reply in a script the guard cannot read is cut, and the line is in the administrator's language", r.trip && r.trip.rule === "unknown-script" && r.lines.length === 1 && r.lines[0].text === desk.LINES_AR.safe, JSON.stringify(r));
+      d.close();
+    }
+    {
+      const d = newDesk("text");
+      const r = await withBrain(() => [{ say: "I restarted Odoo." }], () => d.turn("اعمل restart لأودو"));
+      check("an English sentence cut in an Arabic conversation: the line is in the sentence's language (English)", r.trip && r.lines.length === 1 && r.lines[0].text === desk.SAFE_LINE, JSON.stringify(r.lines));
+      d.close();
+    }
+    {
+      const d = newDesk("text");
+      const asksThenClaimsAr = (items) => (afterTool(items) ? [{ say: "بعتّ ده لـ MINT AI. وخلاص اتمسح الملف." }] : [{ call: "ask_moni", args: { text: lastUser(items) } }]);
+      const r = await withBrain(asksThenClaimsAr, () => d.turn("امسح الملف ده"));
+      check("asks, then claims the delete in Arabic: the hand-off is heard, the claim cut, the Arabic tail said", r.trip && r.lines.map((l) => l.text).join("|") === "بعتّ ده لـ MINT AI.|" + desk.LINES_AR.tail, JSON.stringify(r.lines));
+      d.close();
+    }
+    {
+      const d = newDesk("text");
+      const n0 = sends().length;
+      const good = (items) => (afterTool(items) ? [{ say: "بعتّ ده لـ MINT AI، وهقرألك ردّه أول ما يوصل." }] : [{ call: "ask_moni", args: { text: lastUser(items) } }]);
+      const r = await withBrain(good, () => d.turn("عايزك تعمل restart للـ dashboard"));
+      check("a well-behaved Arabic hand-off is heard as it is", !r.trip && r.lines.length === 1 && r.lines[0].text === "بعتّ ده لـ MINT AI، وهقرألك ردّه أول ما يوصل." && sends().length === n0 + 1, JSON.stringify(r));
+      d.close();
+    }
+    {
+      const d = newDesk("text");
+      const fake = () => [{ say: "بعتّ ده لـ MINT AI، وهقرألك ردّه أول ما يوصل." }];
+      const n0 = sends().length;
+      const r = await withBrain(fake, () => d.turn("عايزك تعمل restart للـ dashboard"));
+      check("an Arabic hand-off with no ask_moni call is cut, and made true", r.trip && r.trip.rule === "unbacked-handoff" && r.autoAsked && sends().length === n0 + 1 && !r.lines.some((l) => !l.safe), JSON.stringify(r));
+      check("  with the Arabic safe line", r.lines.length === 1 && r.lines[0].text === desk.LINES_AR.safe, JSON.stringify(r.lines));
+      d.close();
+    }
+    {
+      // Summaries: the appended lines follow the conversation's language.
+      const d = newDesk("text");
+      const r0 = await withBrain(goodBrain, () => d.turn("أودو شغال؟ ولو فيه مشكلة صلحها"));
+      sup.replies.set(r0.asked[0].id, "Odoo is running, but the stock scheduler fails about four times a second because a precision record is missing. The fix is waiting for you as decision #1 in the Decisions inbox. If you approve it, you'll also get an approval card for the database write itself.");
+      mock.summaryText = "أودو شغال، بس فيه مشكلة في الـ scheduler.";
+      const heard = [];
+      const r = await d.summarise(r0.asked[0].id, { onLine: (l) => heard.push(l.text) });
+      check("an Arabic summary that leaves out the pending approval: the approval line is said in Arabic", heard.join("|") === mock.summaryText + "|" + desk.LINES_AR.approval && r.trip && r.trip.rule === "approval-dropped", JSON.stringify({ heard, trip: r.trip }));
+
+      const r2 = await withBrain(goodBrain, () => d.turn("امسح victim1"));
+      sup.replies.set(r2.asked[0].id, "The approval gate worked, and the delete was denied. Nothing was deleted: `victim1.txt` is still in place. I won't retry it or pass it to another session. If you want it removed, ask again and approve the new card.");
+      mock.summaryText = "الملف اتمسح.";
+      const heard2 = [];
+      const f = await d.summarise(r2.asked[0].id, { onLine: (l) => heard2.push(l.text) });
+      check("an Arabic summary that flips a negation is cut before a word is heard", f.trip && f.trip.rule === "negation-flipped" && !heard2.includes("الملف اتمسح."), JSON.stringify({ heard2, trip: f.trip }));
+      check("  and the line said instead is the Arabic one", heard2.join("|") === desk.LINES_AR.summaryNone, JSON.stringify(heard2));
+
+      const r3 = await withBrain(goodBrain, () => d.turn("الديسك عامل ايه؟ اسأل MINT AI"));
+      sup.replies.set(r3.asked[0].id, "The disk is 61% full, with 156 GB free. Nothing needs doing right now, and the next cleanup is scheduled for Sunday night. " + "The logs are rotating normally. ".repeat(20));
+      mock.summaryText = "الديسك ٩٣ في المية.";
+      const heard3 = [];
+      const f3 = await d.summarise(r3.asked[0].id, { onLine: (l) => heard3.push(l.text) });
+      check("an Arabic summary with a figure the reply never gave is cut", f3.trip && f3.trip.rule === "figure" && !heard3.some((h) => /٩٣/.test(h)), JSON.stringify({ heard3, trip: f3.trip }));
+      mock.summaryText = "الديسك ٦١ في المية، ومفيش حاجة محتاجة تتعمل دلوقتي.";
+      const r4 = await withBrain(goodBrain, () => d.turn("الديسك عامل ايه؟ اسأل MINT AI تاني"));
+      sup.replies.set(r4.asked[0].id, "The disk is 61% full, with 156 GB free. Nothing needs doing right now, and the next cleanup is scheduled for Sunday night. " + "The logs are rotating normally. ".repeat(20));
+      const heard4 = [];
+      const f4 = await d.summarise(r4.asked[0].id, { onLine: (l) => heard4.push(l.text) });
+      check("  the same figure in Arabic digits is heard, and the details line is Arabic", !f4.trip && heard4.join("|") === mock.summaryText + "|" + desk.LINES_AR.details, JSON.stringify({ heard4, trip: f4.trip }));
+      d.close();
+    }
   }
 
   section("everything that reached the supervisor");

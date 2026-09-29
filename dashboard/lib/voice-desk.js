@@ -30,7 +30,9 @@
  *      deny, interrupt, rules or decisions; and `send` refuses text that is an
  *      echo of a prompt (the transcription prompt, these instructions, a tool
  *      description -- lib/voice-guard.js), as does ask_moni, which also needs
- *      a real transcript for this turn that passed the transcript guard;
+ *      a real transcript for this turn that passed the transcript guard --
+ *      and what ask_moni sends is that transcript, the administrator's own
+ *      words, never the model's `text` (a paraphrase can change the meaning);
  *   4. the output guard reads the desk's words. The desk answers in TEXT; a
  *      sentence is spoken (by the ordinary verbatim reader, lib/voice.js) only
  *      once the guard has passed it, so what is heard is exactly what was
@@ -44,6 +46,14 @@
  *      did not make, "I'll ask the administrator" turned into "done", a name or
  *      a path it did not give -- each is cut, and a pending approval that the
  *      summary left out is said anyway.
+ *
+ * Arabic (M-3 Phase 0, 2026-09-29). Every rule above holds in Egyptian and
+ * Modern Standard Arabic and in mixed sentences (lib/voice-arabic.js): figures
+ * in Arabic-Indic or Eastern digits or in Arabic words, the Arabic claim,
+ * promise, approval, negation and hedge words with their clitics, and \b / \w
+ * that see Arabic letters. It fails closed: a sentence in a script it cannot
+ * read, or an Arabic past-tense result verb it does not know, is not spoken.
+ * The fixed lines are said in the cut sentence's language.
  *
  * Sentence by sentence. A sentence is released as soon as the guard has
  * checked it, instead of holding the whole reply. That must not let a later
@@ -74,13 +84,18 @@ const WebSocket = require("ws");
 const { redactDeep } = require("./priv");
 const usageLib = require("./voice-usage");
 const voiceGuard = require("./voice-guard");
+const arabic = require("./voice-arabic");
+
+const uni = arabic.uni; // \b and \w that see Arabic letters as letters (lib/voice-arabic.js)
 
 const WS_BASE = process.env.MONI_OPENAI_WS || "wss://api.openai.com/v1";
 const DESK_MODEL = "gpt-realtime-mini";
 const RATE = 24000;
 const RESPONSE_TIMEOUT_MS = 20000;
 const MAX_ROUNDS = 4; // tool call -> answer, at most a few times per utterance
-const MAX_ASKS_PER_TURN = 2;
+// One hand-off per utterance: what reaches MINT AI is the administrator's own
+// words (see runTool), and the same words twice would be the same request twice.
+const MAX_ASKS_PER_TURN = 1;
 const MAX_ASK_CHARS = 2000;
 const IDLE_MS = 10 * 60 * 1000;
 const MAX_AGE_MS = 25 * 60 * 1000;
@@ -103,6 +118,45 @@ const APPROVAL_LINE_SHORT = "It needs your approval or your answer.";
 const DETAILS_LINE = "The full answer is on screen.";
 const SUMMARY_CUT_LINE = "The rest of MINT AI's answer is on screen.";
 const SUMMARY_NONE_LINE = "MINT AI has replied. Its answer is on screen.";
+const UNREACHABLE_LINE = "Sorry, I could not reach MINT AI.";
+
+// The same fixed lines, in Egyptian Arabic, for a conversation (or a cut
+// sentence) in Arabic. They are said as they are: the guard does not read them.
+const LINES_AR = Object.freeze({
+  safe: "هسأل MINT AI عن ده.",
+  asked: "بعتّ ده لـ MINT AI، وهقرألك ردّه أول ما يوصل.",
+  tail: "هقرألك ردّه أول ما يوصل.",
+  approval: "محتاج موافقتك أو ردك. التفاصيل على الشاشة.",
+  approvalShort: "محتاج موافقتك أو ردك.",
+  details: "الرد كامل على الشاشة.",
+  summaryCut: "باقي رد MINT AI على الشاشة.",
+  summaryNone: "MINT AI ردّ، والتفاصيل على الشاشة.",
+  unreachable: "آسف، مقدرتش أوصل لـ MINT AI.",
+});
+const LINES_EN = Object.freeze({
+  safe: SAFE_LINE,
+  asked: SAFE_LINE_ASKED,
+  tail: SAFE_LINE_TAIL,
+  approval: APPROVAL_LINE,
+  approvalShort: APPROVAL_LINE_SHORT,
+  details: DETAILS_LINE,
+  summaryCut: SUMMARY_CUT_LINE,
+  summaryNone: SUMMARY_NONE_LINE,
+  unreachable: UNREACHABLE_LINE,
+});
+function linesFor(lang) {
+  return lang === "ar" ? LINES_AR : LINES_EN;
+}
+/**
+ * The language of a fixed line: the sentence's own, when it is one we read
+ * (Latin or Arabic), else the fallback text's (what the administrator said).
+ */
+function langOf(sentence, fallback) {
+  const s = String(sentence || "");
+  const sc = arabic.scriptOf(s);
+  if (!sc.other && sc.arWords + sc.laWords > 0) return arabic.isArabic(s) ? "ar" : "en";
+  return arabic.isArabic(fallback || "") ? "ar" : "en";
+}
 
 /* ------------------------------------------------------------- prices -- */
 
@@ -261,10 +315,12 @@ const DO_ING =
   "deploying|releasing|approving|denying|rejecting|granting|installing|uninstalling|upgrading|updating|patching|fixing|resolving|repairing|" +
   "clearing|resetting|rolling back|reverting|creating|executing|shutting down|disabling|enabling|changing|applying|backing up|cleaning|freeing|" +
   "moving|renaming|cancell?ing|pausing|resuming|messaging|scheduling";
-const NEGATION = /\b(not|never|no|nothing|none|cannot|unable|without|n't|cant|can't|wont|won't|haven't|hasn't|hadn't|didn't|isn't|aren't|wasn't|weren't|don't|doesn't|nobody|neither|nor|no longer)\b|n't\b/;
+// (Arabic: the unambiguous particles here; ما and لا, which also mean "what" and
+// "no", negate only the words right after them -- lib/voice-arabic.js.)
+const NEGATION = uni(/\b(not|never|no|nothing|none|cannot|unable|without|n't|cant|can't|wont|won't|haven't|hasn't|hadn't|didn't|isn't|aren't|wasn't|weren't|don't|doesn't|nobody|neither|nor|no longer|مش|لم|لن|ليس|ليست|مفيش|مافيش|محدش|ماحدش|بدون)\b|n't\b/);
 // "I've passed that to MINT AI", "I asked MINT AI to ..." -- the one thing the
 // desk may say it did. Removed before any claim is looked for.
-const HANDOFF = new RegExp(
+const HANDOFF_EN = new RegExp(
   [
     "\\b(?:pass(?:ed|ing)?|hand(?:ed|ing)?|sen[dt]|sending|forward(?:ed|ing)?|relay(?:ed|ing)?|put(?:ting)?|flag(?:ged|ging)?|rais(?:e|ed|ing)|giv(?:e|en|ing)|gave|refer(?:red|ring)?)\\b[^.,;!?]{0,50}?\\b(?:to|with|on to|onto|over to)\\s+(?:mint|moni)(?:\\s+ai)?\\b(?!\\s+agent)",
     "\\b(?:ask(?:ed|ing)?|tell(?:ing)?|told|check(?:ed|ing)? with)\\s+(?:mint|moni)(?:\\s+ai)?\\b(?!\\s+agent)",
@@ -272,28 +328,39 @@ const HANDOFF = new RegExp(
   ].join("|"),
   "g"
 );
-const CLAIM_FIRST = new RegExp("\\b(i|i've|ive|i have|i had|i just|we|we've|weve|we have)\\b(?:\\s+\\w+){0,4}?\\s+(" + DONE_WORDS + ")\\b");
-const CLAIM_THIRD = new RegExp("\\b(has|have|had|was|were|is|are|it's|its|that's|thats|got|been|now|already|successfully)\\b(?:\\s+\\w+){0,3}?\\s+(" + DONE_WORDS + ")\\b");
-const CLAIM_BARE = /^\s*(?:all\s+|it's\s+|its\s+|that's\s+|thats\s+)?(done|finished|completed|complete|sorted|handled|taken care of|all set|success|successful)\b/;
-const PROGRESSIVE_FIRST = new RegExp("\\b(i'm|im|i am|we're|were|we are)\\s+(?:now\\s+|just\\s+|already\\s+|currently\\s+)?(" + DO_ING + ")\\b");
-const PROGRESSIVE_BARE = new RegExp("^\\s*(?:ok(?:ay)?\\s+|sure\\s+|alright\\s+|right\\s+)?(" + DO_ING + ")\\b");
+// ...and in Arabic: "هسأل MINT AI", "هبعت لـ MINT AI", "بعتّ ده لـ MINT AI".
+const HANDOFF = new RegExp(uni(HANDOFF_EN).source + "|" + arabic.HANDOFF_AR.source, "gu");
+// ("أنا deleted the old backups": an Arabic "I" before an English verb is a claim too.)
+const CLAIM_FIRST = uni(new RegExp("\\b(i|i've|ive|i have|i had|i just|we|we've|weve|we have|انا|احنا|نحن)\\b(?:\\s+\\w+){0,4}?\\s+(" + DONE_WORDS + ")\\b"));
+const CLAIM_THIRD = uni(new RegExp("\\b(has|have|had|was|were|is|are|it's|its|that's|thats|got|been|now|already|successfully)\\b(?:\\s+\\w+){0,3}?\\s+(" + DONE_WORDS + ")\\b"));
+const CLAIM_BARE = uni(/^\s*(?:all\s+|it's\s+|its\s+|that's\s+|thats\s+)?(done|finished|completed|complete|sorted|handled|taken care of|all set|success|successful)\b/);
+const PROGRESSIVE_FIRST = uni(new RegExp("\\b(i'm|im|i am|we're|were|we are|انا|احنا)\\s+(?:now\\s+|just\\s+|already\\s+|currently\\s+)?(" + DO_ING + ")\\b"));
+const PROGRESSIVE_BARE = uni(new RegExp("^\\s*(?:ok(?:ay)?\\s+|sure\\s+|alright\\s+|right\\s+)?(" + DO_ING + ")\\b"));
 // ("I'll update you when it replies" is a promise to talk, not to act.)
-const PROMISE = new RegExp("\\b(will|'ll|ll|shall|going to|gonna)\\s+(?:\\w+\\s+){0,2}?(" + DO_WORDS + ")\\b(?!\\s+(?:you|the administrator)\\b)");
-const SHOULD_BE = new RegExp("\\bshould\\s+(?:now\\s+)?be\\s+(" + DONE_WORDS + "|back up|back online|working)\\b");
+const PROMISE = uni(new RegExp("\\b(will|'ll|ll|shall|going to|gonna)\\s+(?:\\w+\\s+){0,2}?(" + DO_WORDS + ")\\b(?!\\s+(?:you|the administrator)\\b)"));
+const SHOULD_BE = uni(new RegExp("\\bshould\\s+(?:now\\s+)?be\\s+(" + DONE_WORDS + "|back up|back online|working)\\b"));
 // A short confirmation right after a sentence that mentions an action turns
 // that sentence into a claim: "Restarting Odoo." ... "Done."
-const CONFIRM = /^\s*(?:yes|yep|yeah|ok|okay|done|all good|all set|success|successful|complete|completed|finished|there you go|it worked|that worked|worked|it's back|its back|back up|good to go|and done|sorted)\b/;
-const ACTION_ANY = new RegExp("\\b(" + DONE_WORDS + "|" + DO_WORDS + "|" + DO_ING + ")\\b");
-const ATTRIBUTION = /\b(?:mint|moni)(?:\s+ai)?\b(?:\s+\w+){0,3}?\s+(said|says|replied|replies|answered|answers|reported|reports|confirmed|confirms|told|found|responded|thinks|wrote|mentioned|suggests|suggested|recommends|recommended|explained|explains)\b/;
-const ANSWER_IS = /\b(its|the|mint ai's|mints|mint's|moni ai's|monis|moni's)\s+(answer|reply|response)\s+(is|was|says|said)\b/;
-const STATUS_TERM =
-  /\b(disk|disks|storage|memory|ram|cpu|load|uptime|service|services|odoo|nginx|postgres|postgresql|fail2ban|ssh|firewall|ufw|dashboard|session|sessions|mission|missions|step|steps|decision|decisions|approval|approvals|backup|backups|server|machine|vps|database|logs?|certificate|website|site|email|cron|agents?|telegram|github|repo|repository|commit|branch|system|systems)\b/g;
-const STATE_WORD =
-  /\b(running|up|down|healthy|fine|ok|okay|good|bad|failed|failing|active|inactive|full|empty|busy|idle|stopped|working|broken|stable|pending|open|online|offline|clean|dirty|expired|valid|current|behind|ahead|synced|succeeded|successful)\b/;
+const CONFIRM_EN = /^\s*(?:yes|yep|yeah|ok|okay|done|all good|all set|success|successful|complete|completed|finished|there you go|it worked|that worked|worked|it's back|its back|back up|good to go|and done|sorted)\b/;
+const CONFIRM = uni(CONFIRM_EN);
+const ACTION_ANY = uni(new RegExp("\\b(" + DONE_WORDS + "|" + DO_WORDS + "|" + DO_ING + ")\\b"));
+const ATTRIBUTION_EN = /\b(?:mint|moni)(?:\s+ai)?\b(?:\s+\w+){0,3}?\s+(said|says|replied|replies|answered|answers|reported|reports|confirmed|confirms|told|found|responded|thinks|wrote|mentioned|suggests|suggested|recommends|recommended|explained|explains)\b/;
+const ATTRIBUTION = uni(ATTRIBUTION_EN);
+const ANSWER_IS = uni(/\b(its|the|mint ai's|mints|mint's|moni ai's|monis|moni's)\s+(answer|reply|response)\s+(is|was|says|said)\b/);
+const STATUS_TERM = uni(
+  /\b(disk|disks|storage|memory|ram|cpu|load|uptime|service|services|odoo|nginx|postgres|postgresql|fail2ban|ssh|firewall|ufw|dashboard|session|sessions|mission|missions|step|steps|decision|decisions|approval|approvals|backup|backups|server|machine|vps|database|logs?|certificate|website|site|email|cron|agents?|telegram|github|repo|repository|commit|branch|system|systems)\b/g
+);
+const STATE_WORD = uni(
+  /\b(running|up|down|healthy|fine|ok|okay|good|bad|failed|failing|active|inactive|full|empty|busy|idle|stopped|working|broken|stable|pending|open|online|offline|clean|dirty|expired|valid|current|behind|ahead|synced|succeeded|successful)\b/
+);
 // Strong enough to be a status claim even when the subject is only "it" or "everything".
-const STATE_STRONG = /\b(running|up|down|healthy|failed|failing|active|inactive|full|busy|idle|stopped|working|broken|stable|pending|online|offline|expired)\b/;
-const PRONOUN_SUBJECT = /^(?:and |but |so |also )?(it|it's|its|that|that's|thats|they|they're|theyre|this|these|those|everything|everything's|all|both|all of them)\b/;
-const HEDGE = /\b(whether|if|ask|asked|asking|check|checking|find out|look into|looking into|wants? to know|want me to)\b|\?\s*$/;
+const STATE_STRONG = uni(/\b(running|up|down|healthy|failed|failing|active|inactive|full|busy|idle|stopped|working|broken|stable|pending|online|offline|expired)\b/);
+const PRONOUN_SUBJECT = uni(/^(?:and |but |so |also )?(it|it's|its|that|that's|thats|they|they're|theyre|this|these|those|everything|everything's|all|both|all of them)\b/);
+const HEDGE = uni(/\b(whether|if|ask|asked|asking|check|checking|find out|look into|looking into|wants? to know|want me to)\b|[?؟]\s*$/);
+const MINT_NAME = /mint|moni|مينت|منت|موني/;
+const STEP_TALK = uni(/\b(step|steps|mission|missions|خطوه|الخطوه|خطوات|الخطوات|مهمه|المهمه|المهام|مشن|المشن)\b/);
+const QUESTION_END = /[?؟]\s*$/;
+const SCREEN = uni(/\bscreen\b|الشاشه/);
 
 const NUMBER_WORDS = {
   two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12,
@@ -303,16 +370,22 @@ const NUMBER_WORDS = {
 const UNITS = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9 };
 
 function norm(text) {
-  return String(text || "")
+  // Arabic in one spelling, its digits in ASCII (lib/voice-arabic.js).
+  return arabic
+    .normalize(String(text || ""))
     .toLowerCase()
     .replace(/[’‘`]/g, "'")
     .replace(/[“”]/g, '"')
     .replace(/\s+/g, " ");
 }
 
-/** Numbers said in a text: digits (1,234.5 → 1234.5) and number words from two up. */
+/**
+ * Numbers said in a text: digits (1,234.5 → 1234.5; Arabic-Indic ٤١ and Eastern
+ * ۴۱ digits, ٫ and ٬ too), English number words from two up, and Arabic number
+ * words («واحد وأربعين» → 41, «تلاتة ونص» → 3.5).
+ */
 function numbersIn(text) {
-  const t = norm(text);
+  const t = arabic.joinDigits(norm(text));
   const out = [];
   for (const m of t.matchAll(/(?<![a-z0-9])\d[\d,]*(?:\.\d+)?/g)) {
     const n = Number(m[0].replace(/,(?=\d{3}\b)/g, "").replace(/,/g, ""));
@@ -327,6 +400,7 @@ function numbersIn(text) {
       i++;
     } else out.push(v);
   }
+  if (arabic.hasArabic(t)) out.push(...arabic.numberWords(t));
   return out;
 }
 
@@ -362,19 +436,19 @@ function strictNumberSet(texts) {
 
 function clauses(text) {
   return norm(text)
-    .split(/[.!?;:\n]+|,\s|\s[—–-]\s|\s(?:but|and|so|then|because|while|although)\s/)
+    .split(/[.!?;:\n؟؛]+|,\s|،\s?|\s[—–-]\s|\s(?:but|and|so|then|because|while|although|لكن|ثم|وبعدين)\s/)
     .map((c) => c.trim())
     .filter(Boolean);
 }
 
-/** Is there a negation before `idx` in this clause? */
+/** Is there a negation before `idx` in this clause? (English: anywhere before; Arabic: just before.) */
 function negatedBefore(clause, idx) {
-  return NEGATION.test(clause.slice(0, idx));
+  return NEGATION.test(clause.slice(0, idx)) || (arabic.hasArabic(clause) && arabic.negatedAt(clause, idx));
 }
 
 /* ------------------------------------------------ sentences, in order -- */
 
-const SENTENCE_END = /[.!?]+["'”’)\]]*(?=\s|$)/g;
+const SENTENCE_END = /[.!?؟]+["'”’)\]»]*(?=\s|$)/g;
 
 /**
  * The complete sentences of `text`. While a response is still streaming the
@@ -400,8 +474,8 @@ function sentencesOf(text, final) {
   return out;
 }
 
-const HANDOFF_ANY = new RegExp(HANDOFF.source); // not global: no lastIndex to trip over
-const HANDOFF_FUTURE = /\b(let me|i'll|i will|ill|i'm going to|im going to|going to|i'd|i would)\b/;
+const HANDOFF_ANY = new RegExp(HANDOFF.source, "u"); // not global: no lastIndex to trip over
+const HANDOFF_FUTURE = uni(/\b(let me|i'll|i will|ill|i'm going to|im going to|going to|i'd|i would)\b/);
 
 function withoutHandoff(text) {
   return norm(text).replace(HANDOFF, " «handoff» ");
@@ -414,10 +488,25 @@ function withoutHandoff(text) {
  */
 function needsNext(sentence) {
   const s = withoutHandoff(sentence);
-  const words = norm(sentence).match(/[a-z0-9']+/g) || [];
+  const words = norm(sentence).match(/[\p{L}\p{N}']+/gu) || [];
   if (words.length < 3) return true;
-  if (/[:,;]\s*$/.test(String(sentence).trim())) return true;
-  return ACTION_ANY.test(s);
+  if (/[:,;،؛]\s*$/.test(String(sentence).trim())) return true;
+  return ACTION_ANY.test(s) || arabicAction(s);
+}
+
+/** Does this (normalized) text mention an action in Arabic, not negated? */
+function arabicAction(s) {
+  if (!arabic.hasArabic(s)) return false;
+  return clauses(s).some((c) => arabic.claimsIn(c).some((x) => !x.negated) || !!arabic.nounFirst(c));
+}
+
+// A hand-off verb, Arabic or English, that MINT AI's name has not followed yet.
+const HANDOFF_VERB_AR = new RegExp("(?<![\\p{L}])[وف]?(?:[هحب]|سا|س)?ا?(?:" + arabic.HANDOFF_STEMS + ")\\p{L}*", "u");
+const HANDOFF_VERB_EN = uni(/\b(?:pass(?:ed|ing)?|hand(?:ed|ing)?|sen[dt]|sending|forward(?:ed|ing)?|relay(?:ed|ing)?|ask(?:ed|ing)?|told|tell(?:ing)?)\b/);
+function mayBecomeHandoff(sentence) {
+  const s = norm(sentence);
+  const m = HANDOFF_VERB_AR.exec(s) || HANDOFF_VERB_EN.exec(s);
+  return !!m && !MINT_NAME.test(s.slice(m.index));
 }
 
 /** Does this sentence mention passing something to MINT AI? */
@@ -444,9 +533,9 @@ function stem(word) {
 
 // "up"/"down" are states only after a verb of being: "Odoo is up", not "pick them up".
 const ALIVE = { running: 1, active: 1, online: 1, working: 1, healthy: 1, answering: 1, live: 1, stopped: -1, inactive: -1, offline: -1, failed: -1, failing: -1, fails: -1, fail: -1, broken: -1, dead: -1, crashed: -1 };
-const ALIVE_RE = /\b(running|active|online|working|healthy|answering|live|stopped|inactive|offline|failed|failing|fails|fail|broken|dead|crashed)\b|\b(?:is|are|was|were|'s|s|be|been|stays?|still|back|go|goes|going|went)\s+(up|down)\b/g;
-const ACTION_RE = new RegExp("\\b(" + DONE_WORDS + ")\\b|\\b(" + DO_WORDS + "|" + DO_ING + ")\\b", "g");
-const FUTURE_RE = /\b(will|'ll|ll|going to|gonna|shall|would|could|can|may|might|once|if|when|after|before|until|unless|should|wants? to|asked (?:it|them|me|you) to|ask(?:ed)? to|needs? (?:your|you)|to be|ready to|about to|plan(?:s|ned)? to|try(?:ing)? to|still to|yet to)\b/;
+const ALIVE_RE = uni(/\b(running|active|online|working|healthy|answering|live|stopped|inactive|offline|failed|failing|fails|fail|broken|dead|crashed)\b|\b(?:is|are|was|were|'s|s|be|been|stays?|still|back|go|goes|going|went)\s+(up|down)\b/g);
+const ACTION_RE = uni(new RegExp("\\b(" + DONE_WORDS + ")\\b|\\b(" + DO_WORDS + "|" + DO_ING + ")\\b", "g"));
+const FUTURE_RE = uni(/\b(will|'ll|ll|going to|gonna|shall|would|could|can|may|might|once|if|when|after|before|until|unless|should|wants? to|asked (?:it|them|me|you) to|ask(?:ed)? to|needs? (?:your|you)|to be|ready to|about to|plan(?:s|ned)? to|try(?:ing)? to|still to|yet to|لو|اذا|لما|لحد|لازم|محتاج|يحتاج|ممكن|يمكن|عايز|عاوز|طلب|سوف|هل)\b/);
 
 /**
  * The polar statements in one clause: a state ("running", "is down") or an
@@ -472,11 +561,16 @@ function polarClaims(clause) {
     const before = clause.slice(0, idx);
     out.push({ concept: "act:" + stem(w), word: w, sign: 1, future: !past || FUTURE_RE.test(before), idx });
   }
+  if (arabic.hasArabic(clause)) out.push(...arabicPolar(clause));
   // A negation reaches the next polar word after it, not every one after it:
   // "nothing was SENT to delete the file" negates the sending, not the delete.
   out.sort((a, b) => a.idx - b.idx);
   let from = 0;
   for (const p of out) {
+    if (p.ar) {
+      from = p.idx + p.word.length; // its sign was read by the Arabic rules
+      continue;
+    }
     const neg = NEGATION.test(clause.slice(from, p.idx));
     const base = p.concept === "alive" ? Math.abs(p.sign) * (p.word === "up" ? 1 : p.word === "down" ? -1 : ALIVE[p.word]) : 1;
     p.sign = neg ? -base : base;
@@ -485,22 +579,60 @@ function polarClaims(clause) {
   return out;
 }
 
+/**
+ * The Arabic polar statements of a clause: actions (by the English concept, so
+ * an Arabic summary is held to an English reply and back) and states. The
+ * sign comes from the Arabic negation rules (a particle just before, or ما…ش).
+ */
+const AR_PAST = new Set(["did1", "amb", "did3", "pass", "done"]);
+const ACTION_WORD = new RegExp("^(?:" + DONE_WORDS + "|" + DO_WORDS + "|" + DO_ING + ")$");
+function arabicPolar(clause) {
+  const out = [];
+  const words = arabic.wordsOf(clause);
+  for (const c of arabic.claimsIn(clause)) {
+    let en = c.generic ? null : c.en;
+    if (!en) {
+      // "عمل restart", "هيعمل deploy": an Arabic light verb with an English action.
+      const i = words.findIndex((w) => w.idx === c.idx);
+      const obj = words.slice(i + 1, i + 3).find((w) => ACTION_WORD.test(w.w));
+      if (obj) en = obj.w;
+    }
+    if (!en) continue; // "done" / "I did" with no action named: a bare claim, judged in judge()
+    const future = !AR_PAST.has(c.role) || FUTURE_RE.test(clause.slice(0, c.idx));
+    out.push({ concept: "act:" + stem(en), word: c.word, sign: c.negated ? -1 : 1, future, idx: c.idx, ar: true });
+  }
+  for (const s of arabic.statesIn(clause)) {
+    if (!s.alive) continue;
+    out.push({ concept: "alive", word: s.word, sign: s.sign, future: FUTURE_RE.test(clause.slice(0, s.idx)), idx: s.idx, ar: true });
+  }
+  return out;
+}
+
 const STOP = new Set(
   "the a an and or but so to of in on at for with from by is are was were be been being it its it's this that these those there here have has had do does did not no yes you your yours i i'm i've me my we our they them their he she his her mint moni ai says said about also just only still now then than more most some any all each every which what when where who whom how why will would could should can may might must shall into onto over under again once very really".split(" ")
 );
 function contentWords(text) {
-  return (norm(text).match(/[a-z][a-z0-9'@._-]{2,}/g) || [])
+  const en = (norm(text).match(/[a-z][a-z0-9'@._-]{2,}/g) || [])
     .map((w) => w.replace(/['._-]+$/, "").replace(/'s$/, ""))
     .filter((w) => !STOP.has(w) && w.length >= 4)
     .map(stem);
+  if (!arabic.hasArabic(text)) return en;
+  // Arabic: an action word as its concept's stem, a status term as the English name.
+  return en.concat(arabic.contentWords(text).map((x) => (x.concept ? stem(x.concept) : x.word)));
 }
 
-const RECOMMEND = /\b(should|recommends?|recommended|recommendation|suggests?|suggested|advises?|advised|(?:best|better) to|you (?:may|might) want|consider|ought to|proposes?|proposed|you need to|you'll need to|you will need to|you have to|you must)\b/;
-const REPLY_RECOMMEND = /\b(should|recommend\w*|suggest\w*|advis\w*|best|better|consider|ought|propos\w*|need to|needs your|have to|must|if you (?:still )?want|want me to|say yes|reply|tell me|ask again|i'd|i would)\b|^\W*(?:\d+\W+)?(?:connect|check|open|run|get|use|ask|reply|say|tell|install|reboot|restart|approve|type|go|click|enter|switch|pick|choose|add|remove|delete|update)\b/;
-const REPLY_NEEDS_APPROVAL =
+const RECOMMEND_EN = /\b(should|recommends?|recommended|recommendation|suggests?|suggested|advises?|advised|(?:best|better) to|you (?:may|might) want|consider|ought to|proposes?|proposed|you need to|you'll need to|you will need to|you have to|you must)\b/;
+const RECOMMEND = uni(RECOMMEND_EN);
+const REPLY_RECOMMEND_EN = /\b(should|recommend\w*|suggest\w*|advis\w*|best|better|consider|ought|propos\w*|need to|needs your|have to|must|if you (?:still )?want|want me to|say yes|reply|tell me|ask again|i'd|i would)\b|^\W*(?:\d+\W+)?(?:connect|check|open|run|get|use|ask|reply|say|tell|install|reboot|restart|approve|type|go|click|enter|switch|pick|choose|add|remove|delete|update)\b/;
+const REPLY_RECOMMEND = uni(REPLY_RECOMMEND_EN);
+const REPLY_NEEDS_APPROVAL_EN =
   /\b(needs?|waiting (?:for|on)|requires?|awaiting|wants?)\b[^.\n]{0,40}\b(approval|go-ahead|go ahead|decision|confirmation|answer|choice)\b|\bapproval cards?\b|\bdecisions? inbox\b|\bif you approve\b|\bsay yes\b|\bplease (?:confirm|approve|decide|choose|pick|reply)\b|\breply "|\btell me (?:which|when|whether|if)\b|\bdo you want\b|\bshould i\b/;
-const SUMMARY_MENTIONS_APPROVAL = /\b(approv\w*|go-ahead|go ahead|your ok|your okay|your yes|confirm\w*|decid\w*|decision|your answer|your choice|choose|pick|asks? (?:if|whether|you|the administrator)|wants? to know|would like|your call|let (?:it|mint ai|moni ai) know)\b/;
-const UNSPEAKABLE = /(?:^|\s)\/[\w.-]+\/[\w./-]*|https?:\/\/|`|\b(?:sudo|systemctl|rm -\w+|git push)\b|\s--[a-z]/i;
+const REPLY_NEEDS_APPROVAL_U = uni(REPLY_NEEDS_APPROVAL_EN);
+const REPLY_NEEDS_APPROVAL = { test: (t) => REPLY_NEEDS_APPROVAL_U.test(t) || arabic.NEEDS_APPROVAL_AR.test(t) };
+const SUMMARY_MENTIONS_APPROVAL_EN = /\b(approv\w*|go-ahead|go ahead|your ok|your okay|your yes|confirm\w*|decid\w*|decision|your answer|your choice|choose|pick|asks? (?:if|whether|you|the administrator)|wants? to know|would like|your call|let (?:it|mint ai|moni ai) know)\b/;
+const SUMMARY_MENTIONS_APPROVAL_U = uni(SUMMARY_MENTIONS_APPROVAL_EN);
+const SUMMARY_MENTIONS_APPROVAL = { test: (t) => SUMMARY_MENTIONS_APPROVAL_U.test(t) || arabic.MENTIONS_APPROVAL_AR.test(t) };
+const UNSPEAKABLE = uni(/(?:^|\s)\/[\w.-]+\/[\w./-]*|https?:\/\/|`|\b(?:sudo|systemctl|rm -\w+|git push)\b|\s--[a-z]/i);
 const NAME_ALLOW = new Set(["mint", "moni", "ai", "i", "i'm", "i've", "command", "center", "centre", "claude", "gpt", "ok", "okay", "the", "it"]);
 
 /** Names and identifiers in a summary that the reply (or snapshot, or the request) never gave. */
@@ -521,14 +653,15 @@ function unknownName(sentence, known) {
 /**
  * The summary rules for one clause. `reply` is { clauses: [{text, claims}], text }.
  */
-const ADMIN_DECIDES = /\b(administrator|you|your)\b/;
+const ADMIN_DECIDES = uni(/\b(administrator|you|your|انت|انتي|حضرتك|موافقتك|ردك|قرارك)\b|\p{L}+(?:ك|كم)(?![\p{L}])/);
 const DECIDE_STEMS = new Set(["approv", "confirm", "decid", "choos", "pick", "answer", "reply", "enabl", "disabl"]);
+const ASKS_ADMIN = uni(/\b(needs?|waiting|wait|required?|asks?|asking|asked|wants?|up to|محتاج|يحتاج|منتظر|مستني|عايز|عاوز|بيسال|يسال|بانتظار)\b/);
 function summaryClause(cl, rawClause, reply) {
   const rec = recommendationAdded(cl, rawClause, reply);
   if (rec) return rec;
   // "The administrator needs to approve the push" restates a pending approval,
   // which the reply has: it is not a claim about an action.
-  const aboutApproval = reply.needsApproval && ADMIN_DECIDES.test(cl) && /\b(needs?|waiting|wait|required?|asks?|asking|asked|wants?|up to)\b/.test(cl);
+  const aboutApproval = reply.needsApproval && ADMIN_DECIDES.test(cl) && ASKS_ADMIN.test(cl);
   for (const p of polarClaims(cl)) {
     if (aboutApproval && DECIDE_STEMS.has(p.concept.slice(4))) continue;
     let cands = reply.clauses.flatMap((rc) => rc.claims.filter((q) => q.concept === p.concept).map((q) => ({ ...q, anchors: rc.anchors })));
@@ -572,12 +705,15 @@ function summaryClause(cl, rawClause, reply) {
 
 /** "MINT AI suggests ..." -- only if MINT AI suggested it. */
 function recommendationAdded(cl, rawClause, reply) {
-  const r = RECOMMEND.exec(cl);
+  const r = RECOMMEND.exec(cl) || arabic.RECOMMEND_AR.exec(cl);
   if (!r || negatedBefore(cl, r.index)) return null;
   const words = contentWords(cl).filter((w) => !/^(recommend|suggest|advis|consider|propos|should|need)/.test(w));
   const replyWords = contentWords(reply.text);
   const shared = words.filter((w) => replyWords.includes(w));
-  const backed = reply.sentences.some((s) => REPLY_RECOMMEND.test(norm(s).replace(/^[\s*#>-]+/, "")) && contentWords(s).some((w) => words.includes(w)));
+  const backed = reply.sentences.some((s) => {
+    const n = norm(s).replace(/^[\s*#>-]+/, "");
+    return (REPLY_RECOMMEND.test(n) || arabic.REPLY_RECOMMEND_AR.test(n)) && contentWords(s).some((w) => words.includes(w));
+  });
   // Every action it recommends must be one the reply names ("rotate the log" is not "delete the log").
   const acts = polarClaims(cl).filter((p) => p.concept.startsWith("act:")).map((p) => p.concept.slice(4));
   const replyActs = new Set(reply.clauses.flatMap((c) => c.claims.filter((p) => p.concept.startsWith("act:")).map((p) => p.concept.slice(4))));
@@ -608,7 +744,7 @@ function withAnchors(list) {
     return { text: c, claims: polarClaims(c), anchors };
   });
   // A short label ("Not installed yet:") is about what follows it.
-  for (let i = 0; i < out.length - 1; i++) if ((out[i].text.match(/[a-z0-9']+/g) || []).length <= 4) out[i].anchors = [...out[i].anchors, ...contentWords(out[i + 1].text)];
+  for (let i = 0; i < out.length - 1; i++) if ((out[i].text.match(/[\p{L}\p{N}']+/gu) || []).length <= 4) out[i].anchors = [...out[i].anchors, ...contentWords(out[i + 1].text)];
   return out;
 }
 
@@ -632,16 +768,26 @@ function judge(sentences, ctx) {
   // Talking about missions and their steps, from a snapshot that has step
   // statuses: "done" is a status there, not a claim. (Judged over the whole
   // text, since commas split "the first step, Design, is done".)
-  const stepTalk = !summary && !!c.grounded && /\b(step|steps|mission|missions)\b/.test(whole) && /"status":"(done|skipped)"/.test(snapText);
+  const stepTalk = !summary && !!c.grounded && STEP_TALK.test(whole) && /"status":"(done|skipped)"/.test(snapText);
   const numbers = c.numbers || new Set();
   let prevTerms = [];
   let prevAction = false;
+  let replyDone = null; // the actions the reply says were done, read once when needed
+  const replyDid = (concept) => {
+    if (!replyDone) {
+      replyDone = new Set();
+      for (const rc of clauses(c.replyText || "")) for (const p of polarClaims(rc)) if (p.concept !== "alive" && p.sign > 0 && !p.future) replyDone.add(p.concept);
+    }
+    return replyDone.has(concept);
+  };
   const fail = (rule, match, at) => ({ ok: false, rule, match: String(match), at });
   for (let si = 0; si < sentences.length; si++) {
     const sentence = sentences[si];
     const sClauses = clauses(sentence);
+    // Fail closed: letters in a script the guard cannot read (neither Latin nor Arabic).
+    if (arabic.scriptOf(sentence).other) return fail("unknown-script", sentence, si);
     // A confirmation right after an action sentence: the pair is the claim.
-    if (si > 0 && prevAction && sClauses.length && CONFIRM.test(sClauses[0])) return fail("action-claim", sentences[si - 1] + " " + sentence, si - 1);
+    if (si > 0 && prevAction && sClauses.length && (CONFIRM.test(sClauses[0]) || arabic.confirmFirst(sClauses[0]))) return fail("action-claim", sentences[si - 1] + " " + sentence, si - 1);
     for (const raw of sClauses) {
       const cl = summary ? raw : raw.replace(HANDOFF, " «handoff» ");
       let m;
@@ -649,6 +795,8 @@ function judge(sentences, ctx) {
       if ((m = PROGRESSIVE_FIRST.exec(cl)) && !negatedBefore(cl, m.index + m[0].length - m[2].length)) return fail("action-claim", raw, si);
       if (!summary && (m = PROGRESSIVE_BARE.exec(cl))) return fail("action-claim", raw, si); // in a summary a gerund is a noun ("recommends rebooting"), judged below
       if (summary) {
+        const ar = arabicSummaryRule(cl);
+        if (ar) return fail(ar, raw, si);
         const s = summaryClause(cl, raw, reply);
         if (s) return fail(s.rule, s.match, si);
         if ((m = CLAIM_BARE.exec(cl)) && !polarClaims(cl).length) return fail("added-claim", raw, si);
@@ -656,7 +804,7 @@ function judge(sentences, ctx) {
         if ((m = CLAIM_BARE.exec(cl)) && !(stepTalk && /^(done|finished|completed)$/.test(m[1]))) return fail("action-claim", raw, si);
         if ((m = CLAIM_THIRD.exec(cl)) && !negatedBefore(cl, m.index + m[0].length - m[2].length)) {
           const word = m[2];
-          const fromReply = replyText && new RegExp("\\b" + word.replace(/ /g, "\\s+") + "\\b").test(replyText);
+          const fromReply = replyText && uni(new RegExp("\\b" + word.replace(/ /g, "\\s+") + "\\b")).test(replyText);
           // "1 of 4 steps done", "the mission has completed 1 out of 4 steps": a status, from the snapshot.
           const stepStatus = /^(done|completed|finished)$/.test(word) && stepTalk;
           if (!fromReply && !stepStatus) return fail("action-claim", raw, si);
@@ -670,9 +818,19 @@ function judge(sentences, ctx) {
         // A status claim needs the snapshot behind it, and must be about something
         // the snapshot covers ("the backups are fine" never is). "It" and
         // "everything" borrow their subject from the clause before.
-        let terms = [...cl.matchAll(STATUS_TERM)].map((x) => x[1]);
-        if (!terms.length && PRONOUN_SUBJECT.test(cl) && STATE_STRONG.test(cl)) terms = prevTerms.length ? prevTerms : ["(unnamed)"];
-        if (terms.length && STATE_WORD.test(cl) && !HEDGE.test(cl) && !/mint|moni/.test(cl)) {
+        const ar = arabic.hasArabic(cl);
+        if (ar) {
+          const rule = arabicDeskRule(cl, { stepTalk, replyDid, replied: !!c.replied });
+          if (rule) return fail(rule, raw, si);
+        }
+        // (Arabic status words and terms count the same, named by the snapshot's English terms.)
+        const arStates = ar ? arabic.statesIn(cl) : [];
+        let terms = [...cl.matchAll(STATUS_TERM)].map((x) => x[1]).concat(ar ? arabic.termsIn(cl) : []);
+        const strong = STATE_STRONG.test(cl) || arStates.some((x) => x.strong);
+        if (!terms.length && (PRONOUN_SUBJECT.test(cl) || (ar && arabic.pronounSubject(cl))) && strong) terms = prevTerms.length ? prevTerms : ["(unnamed)"];
+        const stateWord = STATE_WORD.test(cl) || arStates.length > 0;
+        const hedge = HEDGE.test(cl) || (ar && arabic.hedged(cl));
+        if (terms.length && stateWord && !hedge && !MINT_NAME.test(cl)) {
           if (!c.grounded) return fail("ungrounded", raw, si);
           const knownTerm = terms.some((t) => t === "(unnamed)" || snapText.includes(t.replace(/s$/, "")));
           if (!knownTerm && !(replyText && terms.some((t) => replyText.includes(t.replace(/s$/, ""))))) return fail("not-in-snapshot", raw, si);
@@ -689,9 +847,69 @@ function judge(sentences, ctx) {
       if (!numbers.has(n)) return fail("figure", String(n), si);
     }
     const s = withoutHandoff(sentence);
-    prevAction = !/\?\s*$/.test(sentence.trim()) && ACTION_ANY.test(s) && !NEGATION.test(s);
+    prevAction = !QUESTION_END.test(sentence.trim()) && ((ACTION_ANY.test(s) && !NEGATION.test(s)) || arabicAction(s));
   }
   return { ok: true };
+}
+
+/**
+ * The Arabic rules at the desk, for one clause (normalized, hand-off removed):
+ * the same claims the English rules cut, read with the Arabic lexicon.
+ *   I did / we did / I am doing it        → action-claim   (CLAIM_FIRST, PROGRESSIVE_FIRST)
+ *   done / it was done / it is being done → action-claim, unless MINT AI's
+ *                                           reply says it was (CLAIM_THIRD) or
+ *                                           it is a step's status (CLAIM_BARE)
+ *   I will / it will                      → promise        (PROMISE; "I'll send
+ *                                           you" is a promise to talk)
+ *   an action noun first ("إعادة تشغيل")  → action-claim   (PROGRESSIVE_BARE)
+ *   "right now" with an action            → promise
+ *   "MINT AI said ..." before a reply     → invented-reply (ATTRIBUTION)
+ *   a past-tense result it cannot read    → unparsed-claim (fail closed)
+ */
+function arabicDeskRule(cl, { stepTalk, replyDid, replied }) {
+  const claims = arabic.claimsIn(cl);
+  for (const x of claims) {
+    if (x.negated) continue;
+    if (x.role === "did1" || x.role === "amb" || x.role === "prog1") return "action-claim";
+    if (x.role === "done" || x.role === "pass" || x.role === "prog3") {
+      if (stepTalk && x.role === "done" && x.generic) continue;
+      if (!x.generic && replyDid("act:" + stem(x.en))) continue;
+      return "action-claim";
+    }
+    if (x.role === "fut1") {
+      // "I'll send you / update you" is a promise to talk; "I'll delete it for you" is not.
+      if (x.addressee && (x.en === "send" || x.en === "update")) continue;
+      return "promise";
+    }
+    if (x.role === "fut3") return "promise";
+  }
+  if (arabic.nounFirst(cl)) return "action-claim";
+  if (arabic.nowMarker(cl)) {
+    const action = claims.some((x) => !x.negated) || ACTION_ANY.test(cl);
+    const status = arabic.statesIn(cl).length || arabic.termsIn(cl).length || STATUS_TERM.test(cl);
+    STATUS_TERM.lastIndex = 0;
+    if (action || !status) return "promise";
+  }
+  if (!replied && arabic.attribution(cl)) return "invented-reply";
+  if (arabic.unparsed(cl)) return "unparsed-claim";
+  return null;
+}
+
+/**
+ * The Arabic rules in a summary, beyond what summaryClause checks against the
+ * reply: never "I did" (the desk speaks of MINT AI in the third person); a
+ * bare "done" (تم، خلاص) that names nothing the reply did; a result it cannot read.
+ */
+function arabicSummaryRule(cl) {
+  if (!arabic.hasArabic(cl)) return null;
+  const claims = arabic.claimsIn(cl);
+  for (const x of claims) {
+    if (x.negated) continue;
+    if (x.role === "did1" || x.role === "prog1") return "action-claim";
+    if (x.generic && (x.role === "done" || x.role === "pass") && !polarClaims(cl).length) return "added-claim";
+  }
+  if (arabic.unparsed(cl)) return "unparsed-claim";
+  return null;
 }
 
 /**
@@ -708,17 +926,20 @@ function guard(text, ctx) {
  * very response). `pending`: an earlier request is still unanswered, which
  * backs a past-tense mention ("I've passed that on") but not a new promise.
  */
-const ANSWER_PROMISE = /\b(?:read|tell|give|pass|let) you\b[^.]{0,40}\b(?:answer|reply|response)\b|\b(?:its|mint ai's|moni ai's|the) (?:answer|reply|response)\b[^.]{0,20}\bwhen it (?:arrives|comes)\b/;
+const ANSWER_PROMISE_EN = uni(/\b(?:read|tell|give|pass|let) you\b[^.]{0,40}\b(?:answer|reply|response)\b|\b(?:its|mint ai's|moni ai's|the) (?:answer|reply|response)\b[^.]{0,20}\bwhen it (?:arrives|comes)\b/);
+const ANSWER_PROMISE = { test: (t) => ANSWER_PROMISE_EN.test(t) || arabic.ANSWER_PROMISE_AR.test(t), search: (t) => Math.max(t.search(ANSWER_PROMISE_EN), t.search(arabic.ANSWER_PROMISE_AR)) };
+const OFFER_EN = uni(/\b(want me to|shall i|should i|do you want|i can|i could|can i|could i)\b/);
 function unbackedHandoff(text, { askedNow, pending } = {}) {
   if (askedNow) return null;
   for (const cl of clauses(text)) {
     // "I'll read you MINT AI's reply when it arrives" -- with nothing asked, there is no reply coming.
-    if (!pending && ANSWER_PROMISE.test(cl) && !negatedBefore(cl, cl.search(ANSWER_PROMISE))) return { ok: false, rule: "unbacked-handoff", match: cl };
+    if (!pending && ANSWER_PROMISE.test(cl) && !negatedBefore(cl, ANSWER_PROMISE.search(cl))) return { ok: false, rule: "unbacked-handoff", match: cl };
     const m = HANDOFF_ANY.exec(cl);
     if (!m) continue;
-    if (/\?\s*$/.test(cl) || /\b(want me to|shall i|should i|do you want|i can|i could|can i|could i)\b/.test(cl)) continue; // an offer, not a claim
+    if (QUESTION_END.test(cl) || OFFER_EN.test(cl) || arabic.OFFER_AR.test(cl)) continue; // an offer, not a claim
     if (negatedBefore(cl, m.index)) continue;
-    const future = HANDOFF_FUTURE.test(cl.slice(0, m.index + m[0].length));
+    const upTo = cl.slice(0, m.index + m[0].length);
+    const future = HANDOFF_FUTURE.test(upTo) || arabic.HANDOFF_AR_FUTURE.test(upTo);
     if (future || !pending) return { ok: false, rule: "unbacked-handoff", match: cl };
   }
   return null;
@@ -759,7 +980,7 @@ class Releaser {
     this.sentences = list;
     const g = judge(list, this.ctxFn());
     if (!g.ok) {
-      this.trip = g;
+      this.trip = { ...g, sentence: list[g.at] || "" };
       return;
     }
     // While streaming, also judge the unfinished tail (settled words only), so
@@ -768,9 +989,13 @@ class Releaser {
     // not yet a recommendation of anything.)
     if (!final && !this.summary) {
       const partial = settled(text);
-      const g2 = judge(sentencesOf(partial, true), this.ctxFn());
-      if (!g2.ok) {
-        this.trip = g2;
+      const plist = sentencesOf(partial, true);
+      const g2 = judge(plist, this.ctxFn());
+      // (Not while the unfinished sentence may still become a hand-off:
+      // «بعتّ ده ...» is a claim until «... لـ MINT AI» arrives. The whole
+      // sentence is judged before it is released either way.)
+      if (!g2.ok && !(g2.at === plist.length - 1 && mayBecomeHandoff(plist[g2.at]))) {
+        this.trip = { ...g2, sentence: plist[g2.at] || "" };
         return;
       }
     }
@@ -1083,17 +1308,24 @@ class DeskSession {
     const extra = Object.keys(args).filter((k) => k !== "text");
     if (!text || text.length > MAX_ASK_CHARS || extra.length) return JSON.stringify({ error: "ask_moni takes one field, text, of 1 to " + MAX_ASK_CHARS + " characters" });
     if (turn.asked.length >= MAX_ASKS_PER_TURN) return JSON.stringify({ error: "already passed to MINT AI; do not ask again" });
-    // Only on the administrator's words from this turn, and never a prompt.
-    const why = !turn.grounded ? "ungrounded" : voiceGuard.refuseAtDoor(text) ? "echo" : null;
+    // What MINT AI receives is this server's own transcript of the turn -- the
+    // administrator's words, grounded by the intake -- never the model's `text`,
+    // which can be a paraphrase that changes the meaning ("restart" heard,
+    // "restore" asked). The model's text is not sent at all, not even as a
+    // note; it is only checked, so a prompt echoed into it still refuses the
+    // call. No grounded transcript, no hand-off.
+    const request = String(turn.heard || "").trim();
+    const why = !turn.grounded || !request ? "ungrounded" : voiceGuard.refuseAtDoor(text) || voiceGuard.refuseAtDoor(request) ? "echo" : null;
     if (why) {
       this.stats.refusedAsks = (this.stats.refusedAsks || 0) + 1;
       turn.rejected.push("ask_moni:" + why);
       this.log(`desk: refused an ask_moni (${why})`);
       return JSON.stringify({ error: "refused: ask_moni passes on only what the administrator said in this turn. Say you did not catch that." });
     }
-    const r = await this.ops.ask(withWords(text, turn.heard));
+    if (norm(text).replace(/[^\p{L}\p{N}]/gu, "") !== norm(request).replace(/[^\p{L}\p{N}]/gu, "")) turn.paraphrased = true; // counted, never logged in words
+    const r = await this.ops.ask(request);
     const t = r && r.turn;
-    if (t && t.id) this.requests.set(t.id, { text, answered: false, reply: null });
+    if (t && t.id) this.requests.set(t.id, { text: request, answered: false, reply: null });
     turn.asked.push(t || null);
     turn.tools.push("ask_moni");
     return JSON.stringify({
@@ -1164,7 +1396,7 @@ class DeskSession {
       if (!timings.firstText && rtim.firstText) timings.firstText = rt0 - t0 + rtim.firstText;
       if (turn.asked.length && !timings.ackFirst && rtim.firstLine) timings.ackFirst = rtim.firstLine;
       if (rel.trip) {
-        turn.trip = { ...rel.trip, said: st.text.slice(0, 400), released: rel.released };
+        turn.trip = { ...rel.trip, said: st.text.slice(0, 400), released: rel.released, sentence: rel.trip.sentence || rel.sentences[rel.trip.at] || "" };
         heardThisResponse = rel.heardText();
         this.stats.trips++;
         this.log(`desk: guard cut a reply (${rel.trip.rule}): ${JSON.stringify(rel.trip.match).slice(0, 160)}`);
@@ -1187,6 +1419,9 @@ class DeskSession {
       // Say the safe line, and make it true: pass the request on if the desk
       // had not. The words the guard stopped are out of the conversation; what
       // was heard and the safe line go in, so the model's memory matches.
+      // The line is in the cut sentence's language (Arabic or English), or in
+      // the administrator's when that sentence is in a script we cannot read.
+      const L = linesFor(langOf(turn.trip.sentence, said));
       if (!turn.asked.length) {
         try {
           const r = await this.ops.ask(said);
@@ -1196,13 +1431,13 @@ class DeskSession {
           turn.autoAsked = true;
         } catch (e) {
           this.log("desk: could not pass the request on after the guard: " + e.message);
-          emit({ text: "Sorry, I could not reach MINT AI.", safe: true });
+          emit({ text: L.unreachable, safe: true });
           timings.done = Date.now() - t0;
           return this.result(turn, timings);
         }
       }
       const saidHandoff = turn.lines.some((l) => !l.safe && mentionsHandoff(l.text));
-      const line = turn.autoAsked ? SAFE_LINE : saidHandoff ? SAFE_LINE_TAIL : SAFE_LINE_ASKED;
+      const line = turn.autoAsked ? L.safe : saidHandoff ? L.tail : L.asked;
       const text = (heardThisResponse ? heardThisResponse + " " : "") + line;
       this.send({ type: "conversation.item.create", item: { type: "message", role: "assistant", content: [{ type: "output_text", text }] } });
       emit({ text: line, safe: true });
@@ -1306,21 +1541,26 @@ class DeskSession {
     const { st, rel } = await this.respondOnce(t0, timings, () => new Releaser(() => ctx, (text) => emit({ text, safe: false }), { summary: true }), { askedNow: () => true, pending: () => false }, create);
     turn.responses++;
     this.account(st, turn);
+    // The conversation's language: the administrator's request, else what was
+    // said of the summary, else the reply.
+    const convLang = arabic.isArabic(mine.text || turn.lines.map((l) => l.text).join(" ") || reply) ? "ar" : "en";
     if (rel.trip) {
       turn.trip = { ...rel.trip, said: st.text.slice(0, 400), released: rel.released };
       this.stats.trips++;
       this.log(`desk: guard cut a summary (${rel.trip.rule}): ${JSON.stringify(rel.trip.match).slice(0, 160)}`);
       if (!rel.released && reply.length <= VERBATIM_MAX_CHARS * 2 && shape.plain) return finish("", "verbatim");
-      emit({ text: rel.released ? SUMMARY_CUT_LINE : SUMMARY_NONE_LINE, safe: true });
+      const L = linesFor(langOf(rel.trip.sentence || rel.sentences[rel.trip.at], mine.text || reply));
+      emit({ text: rel.released ? L.summaryCut : L.summaryNone, safe: true });
     }
     const spoken = turn.lines.map((l) => l.text).join(" ");
+    const C = linesFor(convLang);
     // A pending approval or question must survive the summary.
     if (REPLY_NEEDS_APPROVAL.test(norm(reply)) && !SUMMARY_MENTIONS_APPROVAL.test(norm(spoken))) {
       turn.approvalAdded = true;
       if (!turn.trip) turn.trip = { rule: "approval-dropped", match: "", said: st.text.slice(0, 400), released: rel.released, appended: true };
-      emit({ text: /\bscreen\b/.test(norm(spoken)) ? APPROVAL_LINE_SHORT : APPROVAL_LINE, safe: true });
-    } else if (!turn.trip && (shape.list || shape.code || shape.paths || reply.length > 600) && !/\bscreen\b/.test(norm(spoken))) {
-      emit({ text: DETAILS_LINE, safe: true });
+      emit({ text: SCREEN.test(norm(spoken)) ? C.approvalShort : C.approval, safe: true });
+    } else if (!turn.trip && (shape.list || shape.code || shape.paths || reply.length > 600) && !SCREEN.test(norm(spoken))) {
+      emit({ text: C.details, safe: true });
     }
     return finish(turn.lines.map((l) => l.text).join(" "));
   }
@@ -1335,6 +1575,7 @@ class DeskSession {
       tools: turn.tools,
       rejected: turn.rejected,
       trip: turn.trip ? { rule: turn.trip.rule, match: String(turn.trip.match || "").slice(0, 200), said: turn.trip.said, released: turn.trip.released || 0 } : null,
+      paraphrased: !!turn.paraphrased,
       tokens: turn.tokens,
       cost_usd: costOf(turn.tokens, this.model),
       responses: turn.responses,
@@ -1353,14 +1594,6 @@ function replyShape(reply) {
   const paths = /(?:^|\s)\/[\w.-]+\/|https?:\/\//.test(t);
   const markup = /\*\*|^#+\s/m.test(t);
   return { chars: t.length, sentences: sentencesOf(t, true).length, list, code, paths, plain: !list && !code && !paths && !markup };
-}
-
-/** The administrator's own words go with the desk's phrasing, so nothing is lost in paraphrase. */
-function withWords(text, heard) {
-  const a = String(text || "").trim();
-  const h = String(heard || "").trim();
-  if (!h || norm(a).replace(/[^a-z0-9]/g, "") === norm(h).replace(/[^a-z0-9]/g, "")) return a;
-  return `${a}\n\n(The administrator's own words: "${h.slice(0, 1500)}")`;
 }
 
 function scrub(text) {
@@ -1560,7 +1793,11 @@ module.exports = {
   numbersIn,
   numberSet,
   settled,
-  withWords,
+  linesFor,
+  langOf,
+  LINES_AR,
+  LINES_EN,
+  UNREACHABLE_LINE,
   tokensOf,
   addTokens,
   costOf,
