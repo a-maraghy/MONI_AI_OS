@@ -101,7 +101,7 @@ console.log("\nthe desk and the live call hand the token on");
   console.log("\nthe page");
   const pg = fs.readFileSync(path.join(ROOT, "public", "moni-ai.js"), "utf8");
   check("a per-tab id in sessionStorage, sent with every send, desk turn, live call and on the event stream", /sessionStorage\.getItem\("mint-tab"\)/.test(pg) && /var body = \{ text: text, tab: TAB_ID \};/.test(pg) && /tab: TAB_ID, undoable:/.test(pg) && /csrf: CSRF,\s*tab: TAB_ID,/.test(pg) && /\/mint-ai\/api\/events\?tab=" \+ encodeURIComponent\(TAB_ID\)/.test(pg));
-  check("\"ui\" is listened for, run through runUiAction and answered through ui/ack", /"machine", "ui"\]/.test(pg) && /if \(type === "ui"\) \{[\s\S]*?runUiAction\(ev\)[\s\S]*?api\("ui\/ack"/.test(pg));
+  check("\"ui\" is listened for, run through runUiAction and answered through ui/ack", /"machine", "ui", "ui-confirm"\]/.test(pg) && /if \(type === "ui"\) \{[\s\S]*?runUiAction\(ev\)[\s\S]*?api\("ui\/ack"/.test(pg));
   const vl = fs.readFileSync(path.join(ROOT, "public", "voice-live.js"), "utf8");
   check("the live socket carries the tab", /\(o\.tab \? "&tab=" \+ encodeURIComponent\(o\.tab\) : ""\)/.test(vl));
 

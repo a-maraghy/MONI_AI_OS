@@ -49,7 +49,26 @@ const UiActions = require("./public/ui-actions.js");
 const uiRelay = require("./lib/ui-relay").createRelay();
 const uiTab = require("./lib/ui-relay").TAB_RE;
 // UI control Phase 3: Tier-2 preferences wait for the administrator's confirm (lib/ui-confirm.js).
-const uiConfirms = require("./lib/ui-confirm").createConfirms();
+// An unanswered confirm is not silent: audited, the chip told, the voice says so once (uiConfirmExpired).
+const uiConfirms = require("./lib/ui-confirm").createConfirms({ onExpire: (actor, e) => uiConfirmExpired(actor, e) });
+// The event streams open per user and tab, so the server can reach a chip (a confirm that expired).
+const uiStreams = new Set(); // { actor, tab, res }
+function uiConfirmExpired(actor, e) {
+  db.logLogin(e.ip || null, actor, "mint-ui", `${e.action} ${JSON.stringify(e.args)} expired, nothing changed`);
+  const line = voicePersona.expiredLine(personaOfActor(actor));
+  const data = JSON.stringify({ type: "ui-confirm", state: "expired", id: e.id, action: e.action, line });
+  for (const st of uiStreams) if (st.actor === actor) st.res.write(`event: ui-confirm\ndata: ${data}\n\n`);
+  const call = voiceLive.callFor(actor);
+  if (call && call.confirmExpired) call.confirmExpired(e);
+}
+function personaOfActor(actor) {
+  try {
+    const u = db.getUserByName(actor);
+    return u ? personaOf(u.id) : null;
+  } catch (_) {
+    return null;
+  }
+}
 /**
  * Open a Tier-2 confirm for `who` ({username, ip, canVoice}): the page shows
  * the question; nothing changes until a click or a heard "yes". persona.set
@@ -59,7 +78,7 @@ const uiConfirms = require("./lib/ui-confirm").createConfirms();
 function uiConfirmOpen(who, v, tab, by) {
   if ((v.action === "persona.set" || v.action === "voice.set") && !who.canVoice) return { error: "this account cannot change voice settings" };
   if (v.action === "voice.set" && uiConfirms.anyPending("voice.set")) return { error: "another voice change is already waiting for a confirm" };
-  const o = uiConfirms.open({ actor: who.username, action: v.action, args: v.args, tab });
+  const o = uiConfirms.open({ actor: who.username, action: v.action, args: v.args, tab, ip: who.ip });
   if (o.error) return o;
   db.logLogin(who.ip, who.username, "mint-ui", `${v.action} ${JSON.stringify(v.args)} asked by ${by}: waiting for the administrator's confirm`);
   return { id: o.id, question: UiActions.toast(v.action, v.args) };
@@ -3572,6 +3591,8 @@ app.get("/mint-ai/api/events", ...moniAiGuard, (req, res) => {
   res.flushHeaders();
   res.write("retry: 3000\n\n");
   const beat = setInterval(() => res.write(": keep-alive\n\n"), 20000);
+  const stream = { actor: req.me.username, tab, res };
+  uiStreams.add(stream);
   const close = moniai.subscribe(
     since,
     req.me.username,
@@ -3588,6 +3609,7 @@ app.get("/mint-ai/api/events", ...moniAiGuard, (req, res) => {
   );
   req.on("close", () => {
     clearInterval(beat);
+    uiStreams.delete(stream);
     close();
   });
 });
@@ -5421,6 +5443,10 @@ function liveConnected(ws, { me, cfg, ip, duplex, noise, route, tab, canVoice })
     openConfirm: (v) => uiConfirmOpen({ username: actor, ip, canVoice }, v, tab, "the live voice"),
     confirmHeard: (text) => uiConfirmHeard({ username: actor, ip }, text, "live call"),
     confirmPending: () => !!uiConfirms.pending(actor),
+    // A whole yes / no (either language): checked against a pending confirm even just after the voice.
+    isYesNo: (text) => voiceStop.yes(text) || voiceStop.no(text),
+    // The confirm's 30 s start when the voice has finished asking.
+    armConfirm: (id) => uiConfirms.arm(actor, id),
     log: (m) => console.log(m),
     opts: { duplex },
   });

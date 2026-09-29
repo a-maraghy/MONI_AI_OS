@@ -75,6 +75,8 @@
 .md-toast.bad .t-ic { background: var(--md-amber); }
 .md-toast button, .md-toast a { height: 28px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--md-line-2); background: transparent; color: var(--md-ink); font: 500 12px var(--ui, "Inter", sans-serif); cursor: pointer; display: inline-flex; align-items: center; text-decoration: none; }
 .md-toast button[hidden] { display: none; }
+.md-toast.ask .t-ic { background: var(--md-amber); }
+.md-toast.ask #md-t-act { background: var(--md-mint); border-color: var(--md-mint); color: #fff; }
 
 /* The live call's line (the Command Center's shell only: a call lives there) */
 .md-live-tag { display: none; font: 600 9.5px/1 var(--mono, monospace); letter-spacing: .06em; color: var(--md-mint); padding: 3px 5px; border-radius: 5px; background: var(--md-mint-soft); }

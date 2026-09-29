@@ -71,7 +71,7 @@ function uiTools() {
         "are listed by ui_actions_list: call it first; pass the action and its arguments as plain fields. " +
         "Use it only while you answer a request the administrator sent from the Command Center, and only when they asked for it in that request. " +
         "It cannot approve, deny or confirm anything, change keys, users, rules or settings, restart or deploy: approving stays the administrator's click. " +
-        "Actions marked needs_confirm only ASK: their result is confirm, nothing has changed yet, and the administrator confirms by a click or by saying yes; " +
+        "Actions marked needs_confirm only ASK: their result is confirm, nothing has changed yet, and the administrator confirms on screen or by voice; say only that you are waiting for their confirmation (never tell them to say yes); " +
         "never say it is done and never confirm for them. The result says ok, refused (with why), confirm or no-screen; say what really happened.",
       inputSchema: UiActions.stableSchema(),
       map(given) {

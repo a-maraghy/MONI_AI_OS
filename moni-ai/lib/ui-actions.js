@@ -190,7 +190,7 @@
         "call.end only when they name the call or the conversation (\"end the call\", «اقفل المكالمة»). " +
         "Three preferences need the administrator's own confirmation: theme.set (system/dark/light -- \"dark mode\", «دارك», «الوضع الليلي»), " +
         "persona.set (the Arabic voice persona: cairene_f = Egyptian woman «مصرية بنت», cairene_m = Egyptian man «مصري ولد», msa_n = formal Arabic «فصحى», learned = learn from how I speak) and voice.set " +
-        "(the voice's sound, for everyone; after the confirm any open live call reconnects in the new voice by itself). For those the result is status \"confirm\": nothing has changed yet -- say so, and ask them to say yes or click Confirm. " +
+        "(the voice's sound, for everyone; after the confirm any open live call reconnects in the new voice by itself). For those the result is status \"confirm\": nothing has changed yet -- say only that you are waiting for their confirmation (\"Waiting for your confirmation.\"); never tell them to say yes. " +
         "Never say it is done until they have confirmed, and never confirm for them. " +
         "It cannot approve, deny or confirm anything, change keys, users, rules, other settings, restart or deploy: approving stays the administrator's click. " +
         "Use it only when the administrator asks for it in this turn.",
@@ -263,7 +263,7 @@
       rules: [
         "Only while you answer a request the administrator sent from the Command Center or the MINT AI dock, and only when they asked for it in that request.",
         "It acts on the tab they asked from. It never approves, denies or confirms anything, and never changes keys, users, rules or other settings.",
-        "Tier 2 (needs_confirm): the result is status confirm -- nothing has changed yet; say so and ask them to say yes or click Confirm; never confirm for them.",
+        "Tier 2 (needs_confirm): the result is status confirm -- nothing has changed yet; say only that you are waiting for their confirmation (never tell them to say yes); never confirm for them.",
         "The result is ok, refused (with why), confirm or no-screen; say what really happened.",
         "At most 6 a request and 20 a minute; an action marked once works once a request.",
       ],

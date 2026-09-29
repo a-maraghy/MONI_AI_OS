@@ -837,7 +837,7 @@ let WS_BASE;
     await sleep(20);
     check("the asking turn's own late transcript does not answer or drop the confirm", !!C.pending("admin"));
     const ask = client.json.find((m) => m.type === "ui" && m.action === "theme.set");
-    check("theme.set: status confirm, nothing done; the page gets the question and the confirm id", out.status === "confirm" && /Never say it is done/.test(out.note) && ask && ask.confirm && /\?$/.test(ask.toast) && !r.turn.uiOk);
+    check("theme.set: status confirm, nothing done; the page gets the question and the confirm id", out.status === "confirm" && /never say it is done/i.test(out.note) && ask && ask.confirm && /\?$/.test(ask.toast) && !r.turn.uiOk);
     check("  a second one while it waits: refused", /already waiting/.test(JSON.parse(await c.uiAction({ action: "persona.set", preset: "cairene_f" }, r)).error || ""));
     const nCreate = s.of("response.create").length;
     await userTurn(s, c, "Yes, please.");
@@ -846,6 +846,78 @@ let WS_BASE;
     const d = makeCall();
     check("without openConfirm (no server hook): a preference is refused", /refused/.test(JSON.parse(await d.c.uiAction({ action: "theme.set", theme: "dark" }, { turn: { n: 1 } })).error || ""));
     c.close("test");
+  }
+
+  section("a quick yes just after the voice's own ask (fact #1322): it answers the confirm; a leaked yes never does");
+  {
+    const mk = () => {
+      const k = makeCall();
+      const C = require(path.join(ROOT, "lib", "ui-confirm.js")).createConfirms();
+      const U = require(path.join(ROOT, "public", "ui-actions.js"));
+      const armed = [];
+      k.c.d.openConfirm = (v) => { const o = C.open({ actor: "admin", action: v.action, args: v.args }); return o.error ? o : { id: o.id, question: U.toast(v.action, v.args) }; };
+      k.c.d.confirmHeard = (text) => C.heard("admin", text, VoiceStop);
+      k.c.d.confirmPending = () => !!C.pending("admin");
+      k.c.d.isYesNo = (t) => VoiceStop.yes(t) || VoiceStop.no(t);
+      k.c.d.armConfirm = (id) => { armed.push(id); return C.arm("admin", id); };
+      return Object.assign(k, { C, armed });
+    };
+    const persona = require(path.join(ROOT, "lib", "voice-persona.js"));
+    {
+      const { c, client, C, armed } = mk();
+      await c.open();
+      const s = lastSession();
+      await userTurn(s, c, null, { noTranscript: true });
+      const out = JSON.parse(await c.uiAction({ action: "theme.set", theme: "dark" }, { turn: c.lastTurn }));
+      check("the confirm note: say the waiting line only, never 'or say yes'", /Waiting for your confirmation\./.test(out.note) && !/or say yes|أو قول أيوه/.test(out.note) && /never tell them to say yes/i.test(out.note));
+      check("  the instructions carry the waiting line in the persona's gender, and no 'or say yes'", !/or say yes|أو قول أيوه/.test(live.instructionsFor(persona.PRESETS.cairene_f)) && /مستنية تأكيدك/.test(live.instructionsFor(persona.PRESETS.cairene_f)) && /مستني تأكيدك/.test(live.instructionsFor(persona.PRESETS.cairene_m)) && /في انتظار تأكيدك/.test(live.instructionsFor(persona.PRESETS.msa_n)));
+      check("  and page.open no longer says the call ends", !/call ends|cannot follow to another page/.test(live.instructionsFor({})));
+      await until(() => armed.length > 0, 2000);
+      check("the 30 s start once the voice is quiet (armed after the ask)", armed.length === 1);
+      const id = C.pending("admin").id;
+      // The voice just said its waiting line; the administrator's "Yes." starts 300 ms after it (suspect: over/after the voice).
+      c.spoken.push({ text: "Waiting for your confirmation.", at: c.now() });
+      c.lastAudibleAt = c.now() - 300;
+      await userTurn(s, c, "Yes.", { ms: 450 });
+      await sleep(40);
+      check("a whole «Yes.» heard 300 ms after the voice: confirmed, not dropped as an echo-leak", client.json.some((m) => m.type === "ui-confirmed" && m.id === id), JSON.stringify(client.json.map((m) => m.type).slice(-6)));
+      c.close("test");
+    }
+    {
+      const { c, client, C } = mk();
+      await c.open();
+      const s = lastSession();
+      await userTurn(s, c, null, { noTranscript: true });
+      await c.uiAction({ action: "theme.set", theme: "dark" }, { turn: c.lastTurn });
+      // The voice itself said a yes lately: a "yes" heard just after it may be its own leak.
+      c.spoken.push({ text: "Yes, I asked for the dark theme.", at: c.now() });
+      c.lastAudibleAt = c.now() - 200;
+      await userTurn(s, c, "Yes.", { ms: 400 });
+      await sleep(40);
+      check("a leaked «yes» (the voice said yes just before): never confirms, the confirm still waits", !client.json.some((m) => m.type === "ui-confirmed") && !!C.pending("admin") && !C.pending("admin").heardYes);
+      c.close("test");
+    }
+    {
+      const { c, client, C } = mk();
+      await c.open();
+      const s = lastSession();
+      await userTurn(s, c, null, { noTranscript: true });
+      await c.uiAction({ action: "theme.set", theme: "dark" }, { turn: c.lastTurn });
+      c.spoken.push({ text: "Waiting for your confirmation.", at: c.now() });
+      c.lastAudibleAt = c.now() - 200;
+      await userTurn(s, c, "confirmation", { ms: 400 });
+      await sleep(40);
+      check("a suspect fragment that is not a yes/no (an echo): dropped, and the confirm is left waiting", !client.json.some((m) => m.type === "ui-confirmed" || m.type === "ui-confirm-cancelled") && !!C.pending("admin"));
+      c.close("test");
+    }
+    {
+      const { c, client, spoke } = makeCall();
+      await c.open();
+      c.confirmExpired({ id: "abc", action: "theme.set" });
+      await until(() => spoke.length > 0, 1000);
+      check("expiry: the page is told, the voice says so once, briefly (a guarded line)", client.json.some((m) => m.type === "ui-confirm-expired" && m.id === "abc") && spoke.some((x) => /timed out; nothing changed/.test(x)), JSON.stringify(spoke));
+      c.close("test");
+    }
   }
 
   section("a new voice while the call is open: the upstream reconnects, the call goes on");

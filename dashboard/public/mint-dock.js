@@ -105,6 +105,9 @@
     var el = $("md-toast"), act = $("md-t-act");
     $("md-t-txt").textContent = text;
     el.classList.toggle("bad", !!opts.bad);
+    var no = $("md-t-no");
+    if (no) no.hidden = true;
+    el.classList.remove("ask");
     act.hidden = !opts.action;
     if (opts.action) { act.textContent = opts.action.label; act.onclick = function () { el.classList.remove("on"); opts.action.fn(); }; }
     el.classList.add("on");
@@ -393,6 +396,32 @@
       if (!on) { $("md-bubble").classList.remove("on"); $("md-toast").classList.remove("on"); }
       if (on && !raf && !reduced) { last = 0; raf = requestAnimationFrame(frame); }
       if (on && reduced) drawOrb();
+    };
+    /**
+     * A Tier-2 confirm while a page is up (theme, persona, voice): Confirm / Cancel on the dock, so the
+     * administrator stays on the page. It stays until answered, or until the server says it expired.
+     */
+    api_.confirm = function (text, onYes, onNo) {
+      var el = $("md-toast"), act = $("md-t-act"), no = $("md-t-no");
+      clearTimeout(toastT);
+      var open = true;
+      var done = function () { if (!open) return; open = false; el.classList.remove("on", "ask"); act.hidden = true; no.hidden = true; };
+      $("md-t-txt").textContent = text;
+      el.classList.remove("bad");
+      el.classList.add("on", "ask");
+      act.hidden = false; act.textContent = "Confirm"; act.onclick = function () { done(); onYes(); };
+      no.hidden = false; no.textContent = "Cancel"; no.onclick = function () { done(); onNo(); };
+      wake();
+      return {
+        remove: done,
+        expired: function (msg) {
+          if (!open) return;
+          act.hidden = true; no.hidden = true;
+          $("md-t-txt").textContent = msg;
+          el.classList.add("bad");
+          toastT = setTimeout(done, 4000);
+        },
+      };
     };
     api_.orbRect = function () { var r = $("md-orb").getBoundingClientRect(); return { cx: r.left + r.width / 2, cy: r.top + r.height / 2, R: r.width * 0.36 }; };
   }

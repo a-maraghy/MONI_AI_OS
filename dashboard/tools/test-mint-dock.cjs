@@ -111,7 +111,7 @@ console.log("\nthe Command Center as a shell (M-5 part 2)");
   check("  no live call is stopped by opening a page", !/VoiceLive\.stop|liveStop/.test(sh));
   const cc = fs.readFileSync(path.join(ROOT, "public", "moni-ai.js"), "utf8");
   check("moni-ai.js: page.open opens in the shell (Undo = back) and falls back to the old whole-tab move only without it", /window\.MintShell && window\.MintShell\.open\(np\.url\)\) \{ undo = function \(\) \{ window\.MintShell\.back\(\); \}/.test(cc) && /pageOpenSoon\(a\.page, np\);/.test(cc));
-  check("  anything but the call and page.open brings the Command Center back first", /shellUp\(\) && \["call\.end", "call\.mute", "call\.interrupt", "page\.open"\]\.indexOf\(v\.action\) < 0\) window\.MintShell\.expand\(\)/.test(cc));
+  check("  anything but the call, page.open and a Tier-2 ask brings the Command Center back first", /shellUp\(\) && v\.tier !== 2 && \["call\.end", "call\.mute", "call\.interrupt", "page\.open"\]\.indexOf\(v\.action\) < 0\) window\.MintShell\.expand\(\)/.test(cc));
   check("  its notes go to the dock while a page is up, and it feeds the dock its state", /if \(shellUp\(\)\) return window\.MintShell\.toast/.test(cc) && /window\.MintShell\.feed\(\{ state: st/.test(cc));
   const app = fs.readFileSync(path.join(ROOT, "public", "app.js"), "utf8");
   const br = app.slice(app.indexOf("The bridge to the Command Center's shell"));

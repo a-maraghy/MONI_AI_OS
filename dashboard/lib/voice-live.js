@@ -158,7 +158,7 @@ const INSTRUCTIONS = [
   "   «خلّيكي مصرية بنت» / \"speak as an Egyptian woman\" -> ui_action action=persona.set preset=cairene_f; «خلّيك مصري ولد» / \"Egyptian man\" -> preset=cairene_m; \"formal Arabic\" / «فصحى» -> preset=msa_n; \"learn from how I speak\" -> preset=learned.",
   "   \"Open the missions\" -> action=sheet.open key=missions; \"close the missions\" / «اقفلي المهام» -> action=sheet.close key=missions.",
   "   Another page of Mint OS: \"open the OS dashboard\" / «افتحلي الـ OS dashboard» -> action=page.open page=os-overview; \"the agents dashboard\" -> page=agents; \"the Telegram agents\" -> page=agents-fleet; \"users\" -> page=manage-users. " +
-    "It opens after you speak, and this live call ends when it does (the call cannot follow to another page yet): say that in your one sentence.",
+    "It opens in the Command Center's frame at once and this live call carries on there: say in one short sentence that it is open.",
   "Only a look_into call starts any checking: never say you are checking or looking into something unless you called it (or a request is still being worked on).",
   "Hard rules:",
   "- If the answer is not in the snapshot, do not guess: call look_into right away.",
@@ -173,13 +173,14 @@ const INSTRUCTIONS = [
     "Say what you did only after it returns ok (\"I opened Missions.\"). You cannot approve, deny or change other settings with it, and you can mute but never unmute. " +
     "Closing a panel (\"close the missions\", «اقفلي المهام», «اقفل الميشنز») is sheet.close, never ending the call; the panel names in Arabic are in the tool's description. " +
     "Changing the theme (theme.set), the Arabic voice persona (persona.set) or the voice's sound (voice.set) also goes through ui_action, but it only ASKS: the result is status confirm and nothing has changed. " +
-    "Then say only: \"Please confirm on screen, or say yes.\" (only if they speak Arabic: «أكّد على الشاشة، أو قول أيوه.»). Never say you set, changed or switched it.",
+    "Then say only the waiting line (below): \"Waiting for your confirmation.\" Never tell them to say yes, never say you set, changed or switched it, and never say yes or no yourself while it waits.",
   "While a request is being worked on you may keep talking naturally: acknowledge, say in general terms what you are looking at, ask a clarifying question, make small talk, or help the administrator draft or structure a report from what they tell you -- without inventing progress or results.",
   "Style: one or two short spoken sentences. If the administrator starts talking, stop and listen.",
 ].join("\n");
 
 function instructionsFor(persona) {
-  return INSTRUCTIONS + "\n" + personaLib.liveNote(persona);
+  const w = personaLib.waitingLine(persona);
+  return INSTRUCTIONS + "\nThe waiting line, after a confirm is asked: \"" + w.en + "\" (only if they speak Arabic: «" + w.ar + "»)." + "\n" + personaLib.liveNote(persona);
 }
 
 /* ------------------------------------------------------------ helpers -- */
@@ -770,7 +771,7 @@ class LiveCall {
       if (t.dropped || t.answered || this.closed) return;
       if (this.suspect(t)) return this.drop(t, "echo-leak");
       this.answer(t);
-    }, this.opts.transcriptWaitMs || TRANSCRIPT_WAIT_MS);
+    }, (this.opts.transcriptWaitMs || TRANSCRIPT_WAIT_MS) + (awaiting && this.suspect(t) ? 2000 : 0));
   }
 
   /** Heard over (or just after) the voice, and not a confirmed barge-in: maybe the speaker's leak. */
@@ -833,7 +834,17 @@ class LiveCall {
       return this.stopByVoice(t, text);
     }
     // A pending Tier-2 confirm: a whole "yes" / "no" answers it (and is not a turn); anything else drops it.
-    const conf = !suspect && this.d.confirmHeard && t.n > (this.confirmAfter || 0) ? this.d.confirmHeard(text) : null;
+    // Heard just after the voice (suspect), a whole yes / no still answers it -- the administrator's quick
+    // "yes" lands there -- unless the voice itself said a yes/no word lately, which could be its own leak.
+    // A suspect turn that is anything else never touches the confirm (it may be the voice's echo).
+    let conf = null;
+    if (this.d.confirmHeard && t.n > (this.confirmAfter || 0) && (!this.d.confirmPending || this.d.confirmPending())) {
+      if (!suspect) conf = this.d.confirmHeard(text);
+      else if (this.d.isYesNo && this.d.isYesNo(text) && !this.voiceSaidYesNo()) {
+        conf = this.d.confirmHeard(text);
+        if (conf && (conf.confirmed || conf.cancelled)) this.log(`live: a ${conf.confirmed ? "yes" : "no"} heard just after the voice answered the pending confirm (turn ${t.n})`);
+      }
+    }
     if (conf && (conf.confirmed || conf.cancelled)) {
       const e = conf.confirmed || conf.cancelled;
       t.resolveSession(null);
@@ -893,6 +904,47 @@ class LiveCall {
     t.createdAt = this.now();
     this.setState("thinking");
     this.send({ type: "response.create" });
+  }
+
+  /** Did the voice say a yes / no word (either language) lately? Then a "yes" heard just after it may be its own. */
+  voiceSaidYesNo() {
+    if (!this.d.isYesNo) return true;
+    const cut = this.now() - LEAK_AFTER_MS - 10000;
+    const words = this.spoken.filter((s) => s.at >= cut).map((s) => s.text).join(" ").split(/[\s,.!?؟،;:«»"“”()]+/).filter(Boolean);
+    return words.some((w) => this.d.isYesNo(w));
+  }
+
+  /**
+   * A Tier-2 confirm's 30 s start when the voice has finished asking for it, not when it was asked
+   * (a long reply would eat the window). Polled until the voice is quiet; the server re-arms the entry.
+   */
+  armConfirmWhenQuiet(id) {
+    if (!this.d.armConfirm) return;
+    const t0 = this.now();
+    const tick = () => {
+      if (this.closed) return;
+      const quiet = !this.resp_active() && !this.anythingAudible() && this.now() - t0 >= 400;
+      if (quiet || this.now() - t0 > 25000) {
+        this.d.armConfirm(id);
+        this.log(`live: the confirm's window starts now (${this.now() - t0} ms after the ask)`);
+        return;
+      }
+      this.timer(tick, 200);
+    };
+    this.timer(tick, 200);
+  }
+
+  /** The server: a pending confirm ran out. The page shows it; the voice says so once, briefly. */
+  confirmExpired(e) {
+    if (this.closed) return;
+    this.toClient({ type: "ui-confirm-expired", id: e && e.id });
+    const line = personaLib.expiredLine(this.persona);
+    const text = desk.langOf(this.heard.length ? this.heard[this.heard.length - 1] : "", "") === "ar" ? line.ar : line.en;
+    const g = desk.judge(desk.sentencesOf(text, true), { uiOk: true });
+    if (!g.ok) return this.log("live: the expiry line did not pass the guard (" + g.rule + "); not said");
+    this.send({ type: "conversation.item.create", item: { type: "message", role: "user", content: [{ type: "input_text", text: "(System note, not the administrator speaking: the " + ((e && e.action) || "change") + " confirm expired; nothing changed.)" }] } });
+    this.send({ type: "conversation.item.create", item: { type: "message", role: "assistant", content: [{ type: "output_text", text }] } });
+    this.say([{ text, safe: true }], "safe", null);
   }
 
   /** Was this "heard" text what the voice itself just said, coming back through the mic? */
@@ -1313,7 +1365,9 @@ class LiveCall {
       this.toClient({ type: "ui", action: v.action, args: v.args, toast: o.question, confirm: o.id });
       this.diag.ui.push({ turn: t.n, action: v.action + ":confirm" });
       this.log(`live: ui_action ${v.action} waits for the administrator's confirm (turn ${t.n})`);
-      return JSON.stringify({ status: "confirm", asked: o.question, note: "Nothing has changed yet: the screen asks the administrator to confirm. Say only: \"Please confirm on screen, or say yes.\" (only if they speak Arabic: «أكّد على الشاشة، أو قول أيوه.»). Never say it is done, set or switched." });
+      this.armConfirmWhenQuiet(o.id);
+      const w = personaLib.waitingLine(this.persona);
+      return JSON.stringify({ status: "confirm", asked: o.question, note: "Nothing has changed yet: the screen asks the administrator to confirm. Say only: \"" + w.en + "\" (only if they speak Arabic: «" + w.ar + "»). Never tell them to say yes, never say yes or no yourself, and never say it is done, set or switched." });
     }
     const audit = (how) => {
       try {
@@ -1355,7 +1409,7 @@ class LiveCall {
         return refuse(ack.why || "the screen refused it");
       }
       result = v.action === "page.open"
-        ? { status: "ok", done: toast, note: "The page opens as soon as you finish one short first-person sentence, and this live call ends then (it cannot follow to another page yet). Say both, briefly." }
+        ? { status: "ok", done: toast, note: "The page is open in the Command Center's frame and this live call carries on. Say in one short first-person sentence that it is open." }
         : { status: "ok", done: toast, note: "Say in one short first-person sentence what you did." };
     }
     t.uiOk = true;

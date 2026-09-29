@@ -268,9 +268,9 @@ const INSTRUCTIONS = [
   "- The screen: when the administrator asks you to change what they see on this Command Center (open or close a panel, show the missions, the last reply or the waiting card, switch the core or the voice mode), call ui_action. " +
     "Say what you did only after it returns ok (\"I opened Missions.\"). It cannot approve, deny or change settings. " +
     "Closing a panel (\"close the missions\", «اقفلي المهام», «اقفل الميشنز») is sheet.close, never ending the call; the panel names in Arabic are in the tool's description. " +
-    "Opening another page of Mint OS (\"open the OS dashboard\", \"the agents dashboard\", \"users\") is ui_action page.open with its page key; it opens after you speak. " +
+    "Opening another page of Mint OS (\"open the OS dashboard\", \"the agents dashboard\", \"users\") is ui_action page.open with its page key; it opens in the Command Center's frame. " +
     "Changing the theme (theme.set), the Arabic voice persona (persona.set) or the voice's sound (voice.set) also goes through ui_action, but it only ASKS: the result is status confirm and nothing has changed. " +
-    "Then say only: \"Please confirm on screen, or say yes.\" (only if they speak Arabic: «أكّد على الشاشة، أو قول أيوه.»). Never say you set, changed or switched it.",
+    "Then say only the waiting line (below): \"Waiting for your confirmation.\" Never tell them to say yes, never say you set, changed or switched it.",
   "While a request is being worked on you may keep talking naturally: acknowledge, say in general terms what you are looking at, ask a clarifying question, make small talk, or help the administrator draft or structure a report from what they tell you -- without inventing progress or results.",
   "Language: reply in the language of the administrator's LAST utterance: English gets English; Arabic, or Arabic mixed with English, gets Arabic in the register the administrator used " +
     "(Egyptian colloquial if they speak Egyptian, Modern Standard Arabic if they speak MSA), with technical terms kept in English in Latin script (Odoo, disk, restart, dashboard). " +
@@ -295,7 +295,8 @@ function replyLanguage(utterance) {
  * `persona` the saved one (already merged with this utterance).
  */
 function instructionsFor(utterance, persona) {
-  return INSTRUCTIONS + "\n" + personaLib.noteFor(personaLib.detect(utterance), persona);
+  const w = personaLib.waitingLine(persona);
+  return INSTRUCTIONS + "\nThe waiting line, after a confirm is asked: \"" + w.en + "\" (only if they speak Arabic: «" + w.ar + "»)." + "\n" + personaLib.noteFor(personaLib.detect(utterance), persona);
 }
 
 const SUMMARY_INSTRUCTIONS = [
@@ -422,18 +423,21 @@ const DO_ING =
 // (Arabic: the unambiguous particles here; ما and لا, which also mean "what" and
 // "no", negate only the words right after them -- lib/voice-arabic.js.)
 const NEGATION = uni(/\b(not|never|no|nothing|none|cannot|unable|without|n't|cant|can't|wont|won't|haven't|hasn't|hadn't|didn't|isn't|aren't|wasn't|weren't|don't|doesn't|nobody|neither|nor|no longer|مش|لم|لن|ليس|ليست|مفيش|مافيش|محدش|ماحدش|بدون)\b|n't\b/);
+// "MINT AI OS" is a separate session (the one that builds this OS), not the voice's own self:
+// passing work to it, or naming it, is not speaking of MINT AI in the third person.
+const NOT_OS = "(?!\\s+(?:ai\\s+|اي\\s*اي\\s+)?(?:os|او\\s*اس)(?![\\p{L}\\p{N}]))";
 // "I've passed that to MINT AI", "I asked MINT AI to ..." -- the one thing the
 // desk may say it did. Removed before any claim is looked for.
 const HANDOFF_EN = new RegExp(
   [
-    "\\b(?:pass(?:ed|ing)?|hand(?:ed|ing)?|sen[dt]|sending|forward(?:ed|ing)?|relay(?:ed|ing)?|put(?:ting)?|flag(?:ged|ging)?|rais(?:e|ed|ing)|giv(?:e|en|ing)|gave|refer(?:red|ring)?)\\b[^.,;!?]{0,50}?\\b(?:to|with|on to|onto|over to)\\s+(?:mint|moni)(?:\\s+ai)?\\b(?!\\s+agent)",
-    "\\b(?:ask(?:ed|ing)?|tell(?:ing)?|told|check(?:ed|ing)? with)\\s+(?:mint|moni)(?:\\s+ai)?\\b(?!\\s+agent)",
+    "\\b(?:pass(?:ed|ing)?|hand(?:ed|ing)?|sen[dt]|sending|forward(?:ed|ing)?|relay(?:ed|ing)?|put(?:ting)?|flag(?:ged|ging)?|rais(?:e|ed|ing)|giv(?:e|en|ing)|gave|refer(?:red|ring)?)\\b[^.,;!?]{0,50}?\\b(?:to|with|on to|onto|over to)\\s+(?:mint|moni)(?:\\s+ai)?\\b(?!\\s+agent)" + NOT_OS,
+    "\\b(?:ask(?:ed|ing)?|tell(?:ing)?|told|check(?:ed|ing)? with)\\s+(?:mint|moni)(?:\\s+ai)?\\b(?!\\s+agent)" + NOT_OS,
     "\\blet(?:ting)?\\s+(?:mint|moni)(?:\\s+ai)?\\s+know\\b",
   ].join("|"),
   "g"
 );
 // ...and in Arabic: "هسأل MINT AI", "هبعت لـ MINT AI", "بعتّ ده لـ MINT AI".
-const HANDOFF = new RegExp(uni(HANDOFF_EN).source + "|" + arabic.HANDOFF_AR.source, "gu");
+const HANDOFF = new RegExp(uni(HANDOFF_EN).source + "|" + arabic.HANDOFF_AR.source.replace(/\(\?!\[\\p\{L\}\]\)$/, "(?![\\p{L}])" + NOT_OS), "gu");
 // ("أنا deleted the old backups": an Arabic "I" before an English verb is a claim too.)
 const CLAIM_FIRST = uni(new RegExp("\\b(i|i've|ive|i have|i had|i just|we|we've|weve|we have|انا|احنا|نحن)\\b(?:\\s+\\w+){0,4}?\\s+(" + DONE_WORDS + ")\\b"));
 const CLAIM_THIRD = uni(new RegExp("\\b(has|have|had|was|were|is|are|it's|its|that's|thats|got|been|now|already|successfully)\\b(?:\\s+\\w+){0,3}?\\s+(" + DONE_WORDS + ")\\b"));
@@ -593,7 +597,7 @@ const HANDOFF_ANY = new RegExp(HANDOFF.source, "u"); // not global: no lastIndex
  */
 const HANDOFF_PASSIVE_AR = new RegExp(
   "(?<![\\p{L}])[وف]?(?:(?:تم|اتم|اتعمل|جري)\\s+(?:تمرير|ارسال|تحويل|توصيل|رفع|نقل|تسليم|بعت)\\p{L}*|(?:اتبعت|اتحول|اتنقل|اترفع|اتسلم|اتوصل|اترسل|تم)\\p{L}*)" +
-    "(?:\\s+[^\\s.,;!?،؛؟]+){0,3}?\\s*(?:ل|لل|الي|علي|مع)?\\s*" + arabic.MINT + "(?![\\p{L}])",
+    "(?:\\s+[^\\s.,;!?،؛؟]+){0,3}?\\s*(?:ل|لل|الي|علي|مع)?\\s*" + arabic.MINT + "(?![\\p{L}])" + NOT_OS,
   "gu"
 );
 const HANDOFF_FUTURE = uni(/\b(let me|i'll|i will|ill|i'm going to|im going to|going to|i'd|i would)\b/);
@@ -1198,6 +1202,15 @@ function mentionsChecking(sentence) {
   return CHECKING.test(s) || ANSWER_PROMISE.test(s);
 }
 
+/**
+ * Does the settled text end on a MINT mention ("... into mint", "\"mint", "MINT AI")? Then the next
+ * word decides what it is -- "MINT AI OS", a separate session, is not the voice speaking of itself
+ * in the third person -- so the tail waits for it (the whole sentence is judged before release anyway).
+ */
+function endsOnMint(partial) {
+  return /(?:^|[^\p{L}\p{N}])["'“‘«(]?(?:mint|moni|مينت|منت|موني)(?:\s+(?:ai|اي\s*اي))?["'”’»)]?\s*$/iu.test(String(partial || ""));
+}
+
 /** The part of a streaming text whose last word is complete. */
 function settled(text) {
   const t = String(text || "");
@@ -1242,7 +1255,7 @@ class Releaser {
     // a response going wrong is cancelled early. It releases nothing.
     // (Not for a summary: its rules need whole clauses -- "It recommends" is
     // not yet a recommendation of anything.)
-    if (!final && !this.summary) {
+    if (!final && !this.summary && !endsOnMint(settled(text))) {
       const partial = settled(text);
       const plist = sentencesOf(partial, true);
       const g2 = judge(plist, ctxNow());
@@ -1569,7 +1582,7 @@ class DeskSession {
       }
       turn.ui.push(v.action + ":confirm");
       turn.tools.push("ui_action");
-      return JSON.stringify({ status: "confirm", asked: o.question, note: "Nothing has changed yet: the screen asks the administrator to confirm. Say only: \"Please confirm on screen, or say yes.\" (only if they speak Arabic: «أكّد على الشاشة، أو قول أيوه.»). Never say it is done, set or switched." });
+      return JSON.stringify({ status: "confirm", asked: o.question, note: "Nothing has changed yet: the screen asks the administrator to confirm. Say only the waiting line from your instructions (\"Waiting for your confirmation.\", or its Arabic there). Never tell them to say yes, and never say it is done, set or switched." });
     }
     try {
       turn.onUi({ type: "ui", nonce: Math.random().toString(36).slice(2, 12), action: v.action, args: v.args, toast });
@@ -2132,6 +2145,7 @@ module.exports = {
   numbersIn,
   numberSet,
   settled,
+  endsOnMint,
   linesFor,
   langOf,
   LINES_AR,

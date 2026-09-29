@@ -1691,7 +1691,7 @@
 
   var es = null, reconnectTimer = 0;
   var EVENTS = ["proc", "init", "rc", "status", "turn", "text", "assistant", "tool", "tool_result", "steps", "result", "approval", "delegation", "inbound", "sessions", "vitals", "notice", "offline",
-    "mission", "decision", "watcher", "order", "order_run", "rule", "machine", "ui"];
+    "mission", "decision", "watcher", "order", "order_run", "rule", "machine", "ui", "ui-confirm"];
 
   function connect(since) {
     if (es) es.close();
@@ -1726,6 +1726,12 @@
   }
 
   function onEvent(type, ev) {
+    if (type === "ui-confirm") {
+      // A confirm this user was asked ran out on the server (nothing changed): the chip says so,
+      // and the relay desk's voice says it once (a live call says it itself).
+      if (ev && ev.state === "expired") uiConfirmExpired(ev.id, ev.line);
+      return;
+    }
     if (type === "ui") {
       // MINT AI's own screen action (its ui_action), sent to this tab only by the
       // server; done like the voice's, and answered so MINT AI knows.
@@ -2904,6 +2910,7 @@
           if (!m.greet) toast("The voice was changed" + (m.voice ? " to " + m.voice : "") + ".");
         }
         if (m.type === "ui-confirmed" || m.type === "ui-confirm-cancelled") uiConfirmAnswer(m.id, m.type === "ui-confirmed");
+        if (m.type === "ui-confirm-expired") uiConfirmExpired(m.id, null);
         if (m.type === "stop") toast("Stopped listening. The live conversation has ended.");
         else if (m.type === "error" && m.code === "busy") toast(m.error, true);
         if (m.type === "ended" || m.type === "error") liveEnded(m);
@@ -3029,8 +3036,9 @@
     }
     var v = UA.validate(ev.action, ev.args);
     if (!v.ok) return v;
-    // Another page is up in the shell: anything but the call and page.open is done here, so come back first.
-    if (shellUp() && ["call.end", "call.mute", "call.interrupt", "page.open"].indexOf(v.action) < 0) window.MintShell.expand();
+    // Another page is up in the shell: anything but the call, page.open and a Tier-2 ask (its Confirm /
+    // Cancel show in the dock) is done here, so come back first.
+    if (shellUp() && v.tier !== 2 && ["call.end", "call.mute", "call.interrupt", "page.open"].indexOf(v.action) < 0) window.MintShell.expand();
     if (v.tier === 2) return uiConfirmAsk(ev, v);
     var a = v.args, undo = null, link = null;
     try {
@@ -3159,6 +3167,13 @@
   var uiConfirmState = null;
   function uiConfirmAsk(ev, v) {
     if (!ev.confirm || !/^[0-9a-f]{18}$/.test(ev.confirm)) return { ok: false, why: "a preference needs the server's confirm" };
+    var question = "Mint asks: " + (ev.toast || window.UiActions.toast(v.action, v.args));
+    if (shellUp() && window.MintShell.confirm) {
+      // A page is up in the shell: the dock asks, and the administrator stays on the page.
+      var h = window.MintShell.confirm(question, function () { uiConfirmDecide(ev.confirm, "confirm"); }, function () { uiConfirmDecide(ev.confirm, "cancel"); });
+      uiConfirmState = { id: ev.confirm, action: v.action, args: v.args, el: h };
+      return { ok: true, pending: true };
+    }
     var old = document.querySelector(".cc-toast");
     if (old) old.remove();
     var el = document.createElement("div");
@@ -3166,7 +3181,7 @@
     el.setAttribute("role", "alertdialog");
     el.setAttribute("aria-label", "Confirm a change Mint asked for");
     var t = document.createElement("span");
-    t.textContent = "Mint asks: " + (ev.toast || window.UiActions.toast(v.action, v.args));
+    t.textContent = question;
     el.appendChild(t);
     var yes = document.createElement("button");
     yes.type = "button"; yes.className = "cc-btn sm pri"; yes.setAttribute("data-ui-confirm", "yes"); yes.textContent = "Confirm";
@@ -3182,8 +3197,25 @@
     yes.addEventListener("click", function () { uiConfirmDecide(ev.confirm, "confirm"); });
     no.addEventListener("click", function () { uiConfirmDecide(ev.confirm, "cancel"); });
     clearTimeout(uiToast.t);
-    uiToast.t = setTimeout(function () { if (uiConfirmState && uiConfirmState.id === ev.confirm) uiConfirmState = null; el.remove(); }, 30000);
+    // The server says when it runs out (its 30 s start when the voice has finished asking); this is only a backstop.
+    uiToast.t = setTimeout(function () { if (uiConfirmState && uiConfirmState.id === ev.confirm) uiConfirmExpired(ev.confirm, null); }, 90000);
     return { ok: true, pending: true };
+  }
+  /** The server: this confirm ran out unanswered. Nothing changed; the chip says so, then goes. */
+  function uiConfirmExpired(id, line) {
+    var st = uiConfirmState;
+    if (!st || st.id !== id) return;
+    uiConfirmState = null;
+    if (st.el && st.el.expired) st.el.expired("Expired: nothing was changed.");
+    else if (st.el) {
+      [].forEach.call(st.el.querySelectorAll("button, small"), function (b) { b.remove(); });
+      var sp = st.el.querySelector("span");
+      if (sp) sp.textContent = "Expired: nothing was changed.";
+      st.el.classList.add("expired");
+      setTimeout(function () { st.el.remove(); }, 4000);
+    }
+    // The relay desk's voice says it once; a live call says it itself.
+    if (line && !liveActive() && typeof Voice !== "undefined" && Voice.on && Voice.say) Voice.say(line.en);
   }
   /** The server heard a "yes" / "no" for this confirm. */
   function uiConfirmAnswer(id, ok) {

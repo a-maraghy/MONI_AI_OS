@@ -249,4 +249,22 @@ function liveNote(saved) {
   );
 }
 
-module.exports = { PRESETS, LEARNED_LABEL, choose, liveNote, detect, clean, merge, describe, noteFor, feminineVerb, EGYPTIAN, MSA, DIALECT_LABEL, GENDER_LABEL };
+/**
+ * What the voice says after it asks for a Tier-2 confirm (theme, persona,
+ * voice): that it waits -- never "or say yes", which its own speaker would
+ * then play back into the microphone as a "yes". The Arabic follows the
+ * voice's own gender (مستنية / مستني), neutral in formal Arabic or when unknown.
+ */
+function waitingLine(persona) {
+  const p = persona || {};
+  const ar = p.dialect === "msa" || !p.gender ? "في انتظار تأكيدك." : p.gender === "f" ? "مستنية تأكيدك." : "مستني تأكيدك.";
+  return { en: "Waiting for your confirmation.", ar };
+}
+/** The same, when a confirm ran out: said once, briefly. */
+function expiredLine(persona) {
+  const p = persona || {};
+  const ar = p.dialect === "msa" ? "انتهت مهلة التأكيد، ولم يتغيّر شيء." : "التأكيد خلص وقته، ومفيش حاجة اتغيّرت.";
+  return { en: "The confirmation timed out; nothing changed.", ar };
+}
+
+module.exports = { waitingLine, expiredLine, PRESETS, LEARNED_LABEL, choose, liveNote, detect, clean, merge, describe, noteFor, feminineVerb, EGYPTIAN, MSA, DIALECT_LABEL, GENDER_LABEL };

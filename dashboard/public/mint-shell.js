@@ -331,6 +331,8 @@
     mode: function () { return mode; },
     feed: function (f) { lastFeed = f; if (D() && D().feed) D().feed(f); },
     toast: toast,
+    /** A Tier-2 confirm while a page is up: Confirm / Cancel on the dock (returns {remove, expired}). */
+    confirm: function (text, onYes, onNo) { return D().confirm(text, onYes, onNo); },
     finish: finish,
   };
 

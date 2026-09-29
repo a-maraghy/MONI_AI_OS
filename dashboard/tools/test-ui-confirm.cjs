@@ -28,6 +28,39 @@ function check(name, ok, detail) {
   console.log("  FAIL " + name + (detail !== undefined ? "  (" + String(detail).slice(0, 300) + ")" : ""));
 }
 
+console.log("expiry is not silent, and the window starts when the voice has finished asking");
+{
+  let t = 0;
+  const timers = [];
+  const expired = [];
+  const C = createConfirms({ now: () => t, setTimer: (fn, ms) => timers.push({ at: t + ms, fn }), onExpire: (actor, e) => expired.push({ actor, e }) });
+  const run = () => { for (const x of timers.splice(0)) if (x.at <= t) x.fn(); else timers.push(x); };
+  const a = C.open({ actor: "admin", action: "theme.set", args: { theme: "dark" }, tab: "tabAAAAAAAA1", ip: "203.0.113.7" });
+  t = 20000;
+  check("arm(): the voice finished asking at 20 s -- the 30 s start now", C.arm("admin", a.id) === true && !C.arm("admin", "000000000000000000"));
+  t = 31000; run();
+  check("  so at 31 s it still waits (30 s from the ask would have expired it)", !!C.pending("admin") && expired.length === 0);
+  t = 50100; run();
+  check("  at 50 s it expires, once, and onExpire is told who, what and the ip for the audit", !C.pending("admin") && expired.length === 1 && expired[0].actor === "admin" && expired[0].e.id === a.id && expired[0].e.action === "theme.set" && expired[0].e.ip === "203.0.113.7");
+  run();
+  check("  never twice", expired.length === 1);
+  const b = C.open({ actor: "admin", action: "theme.set", args: { theme: "light" } });
+  C.take("admin", b.id, "cancel");
+  t = 90000; run();
+  check("an answered confirm does not 'expire'", expired.length === 1);
+  const d = C.open({ actor: "bob", action: "theme.set", args: { theme: "light" } });
+  t = 130000;
+  check("a lazy read after the time also reports the expiry", C.pending("bob") === null && expired.length === 2 && expired[1].e.id === d.id);
+}
+{
+  const src = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
+  check("server: an expiry is audited \"expired, nothing changed\", the chip is told on the event stream, and the live call too", /createConfirms\(\{ onExpire: \(actor, e\) => uiConfirmExpired\(actor, e\) \}\)/.test(src) && /expired, nothing changed/.test(src) && /event: ui-confirm/.test(src) && /call\.confirmExpired\(e\)/.test(src));
+  check("  the live call arms the window and may answer a whole yes/no just after the voice", /armConfirm: \(id\) => uiConfirms\.arm\(actor, id\)/.test(src) && /isYesNo: \(text\) => voiceStop\.yes\(text\) \|\| voiceStop\.no\(text\)/.test(src));
+  const page = fs.readFileSync(path.join(ROOT, "public", "moni-ai.js"), "utf8");
+  check("page: the chip shows 'Expired: nothing was changed.' (event stream or live call); the desk voice says it", /function uiConfirmExpired\(id, line\)/.test(page) && /Expired: nothing was changed\./.test(page) && /"ui-confirm-expired"/.test(page) && /Voice\.say\(line\.en\)/.test(page));
+  check("  a Tier-2 ask while a page is up in the shell: Confirm / Cancel on the dock, no pulling back", /v\.tier !== 2 && \["call\.end"/.test(page) && /window\.MintShell\.confirm\(question/.test(page));
+}
+
 console.log("the pending confirm");
 {
   let t = 0;

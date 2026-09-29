@@ -516,7 +516,7 @@ function dockMarkup(csrf, perm, opts = {}) {
 <div class="md-root${opts.shell ? " md-shell" : ""}" id="mint-dock-root" data-csrf="${esc(csrf)}" data-pages="${esc(keys)}"${opts.shell ? ' data-shell="1"' : ""} hidden>${shellParts}
   <div class="md-bubble" id="md-bubble" aria-hidden="true" data-s="idle"><div class="b-top">MINT AI · <b id="md-b-state">READY</b><span id="md-b-at">now</span></div><div class="b-you" id="md-b-you"></div><div class="b-cap" id="md-b-cap">Ready when you are.</div><div class="b-ask" id="md-b-ask" hidden></div>
     <div class="b-hint"><span>Click to open the Command Center</span>${opts.noVoice ? "" : `<span><kbd>Space</kbd> hold to talk</span>`}</div></div>
-  <div class="md-toast" id="md-toast" role="status"><span class="t-ic" aria-hidden="true"></span><span id="md-t-txt"></span><button type="button" id="md-t-act" hidden>Undo</button></div>
+  <div class="md-toast" id="md-toast" role="status"><span class="t-ic" aria-hidden="true"></span><span id="md-t-txt"></span><button type="button" id="md-t-act" hidden>Undo</button><button type="button" id="md-t-no" hidden>Cancel</button></div>
   <div class="md-dock${opts.shell ? " off" : ""}" id="md-dock" data-s="idle" role="region" aria-label="MINT AI">
     <a class="md-orb" id="md-orb" href="/mint-ai" aria-label="Open the Command Center"><canvas id="md-orb-c" aria-hidden="true"></canvas></a>
     <a class="md-txt" id="md-txt" href="/mint-ai"><span class="md-name">MINT AI <span class="md-live-tag" id="md-live-t">LIVE</span><span class="md-need-n" id="md-need-n" hidden>1 needs you</span></span>

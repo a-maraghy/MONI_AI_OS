@@ -658,6 +658,20 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     check('"I\'m checking the restart for you." is held, and "Done." after it cuts it too', asked.got.length === 0 && asked.rel.trip && asked.rel.trip.at === 0, JSON.stringify(asked));
     const okAsk = stream("I'm checking the restart for you. I'll tell you what I find.", baseCtx(), YES);
     check("the same sentence followed by an honest one is released, both", okAsk.said.length === 2 && okAsk.got[0].at > "I'm checking the restart for you.".length, JSON.stringify(okAsk.got));
+    // Guard false positives seen live (fact #1322): the tail was judged on a last word "mint" / "\"mint" that was
+    // really the start of "Mint AI OS" (a separate session), and summaries naming MINT AI OS were cut.
+    const mo = stream("Let me look into Mint AI OS for you.", baseCtx(), YES);
+    check("streaming: \"let me look into mint\" is not judged until the next word; \"Let me look into Mint AI OS for you.\" is released whole", !mo.rel.trip && mo.said.join(" ") === "Let me look into Mint AI OS for you.", JSON.stringify(mo.rel.trip));
+    const mq = stream('That is a question for "Mint AI OS", the session that builds this dashboard.', baseCtx(), NO);
+    check('streaming: a tail ending on \'"mint\' waits; the sentence naming "Mint AI OS" is released', !mq.rel.trip && mq.said.length === 1, JSON.stringify(mq.rel.trip));
+    check("  endsOnMint: \"mint, \"mint, MINT AI (waits); not mint. or minty", desk.endsOnMint("let me look into mint") && desk.endsOnMint('the session "mint') && desk.endsOnMint("ok. MINT AI") && !desk.endsOnMint("mint.") && !desk.endsOnMint("minty fresh"));
+    const mself = stream("Let me look into Mint AI for you.", baseCtx(), YES);
+    check("  but the voice naming itself as someone else is still cut once the next word shows it (\"into Mint AI for you\")", !!mself.rel.trip && mself.rel.trip.rule === "third-person", JSON.stringify(mself.rel.trip));
+    for (const line of ["I've passed this to MINT AI OS.", "I asked MINT AI OS to rebuild the dock.", "MINT AI OS is working on the dock now."]) {
+      const sm = stream(line, baseCtx(), NO, { summary: true });
+      check(`summary naming MINT AI OS (a separate session) is not third-person: ${line}`, !(sm.rel.trip && sm.rel.trip.rule === "third-person"), JSON.stringify(sm.rel.trip));
+    }
+    check("  the voice passing work to MINT AI (itself) is still third-person", desk.judge(desk.sentencesOf("I've passed this to MINT AI.", true), {}).rule === "third-person" && desk.judge(desk.sentencesOf("هبعت ده لـ MINT AI", true), {}).rule === "third-person");
     const alone = stream("I'm checking the restart for you.", baseCtx(), YES);
     check("an action sentence with nothing after it is released only at the end", alone.got.length === 1 && alone.got[0].at === alone.len);
     const pron = stream("Odoo? It's running.", baseCtx({ grounded: false }), NO);

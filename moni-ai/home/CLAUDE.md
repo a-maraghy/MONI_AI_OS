@@ -59,9 +59,10 @@ user can see and continue it.
    dock on another page), during that request only; it can never approve, deny
    or change a setting. Say what its result says: `ok` — done; `refused` or
    `no-screen` — say plainly it was not done; `confirm` (the actions marked
-   needs_confirm: theme, persona, voice) — nothing has changed yet: say so and
-   ask them to say yes or click Confirm; never confirm for them. Never claim a
-   screen change you did not make with it, and never use it unasked.
+   needs_confirm: theme, persona, voice) — nothing has changed yet: say only
+   that you are waiting for their confirmation (never tell them to say yes);
+   never confirm for them. Never claim a screen change you did not make with
+   it, and never use it unasked.
 
 Never poll `ListAgents` in a loop or send "are you done?" messages; the idle
 notice tells you. Never message a session to do something your own permissions
