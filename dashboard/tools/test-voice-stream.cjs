@@ -365,7 +365,7 @@ function micRig(t, transcript) {
     await settle(10);
   };
   rig.handsFree = async () => {
-    sb.$("cc-mic-mode").listeners.click[0](); // the switch: push to talk -> hands-free
+    t.Voice.setMode("handsfree"); // the voice menu's switch: push to talk -> hands-free
     sb.$("cc-c-mic").listeners.click[0](); // the mic button: start listening
     await settle();
   };
@@ -656,6 +656,24 @@ function micRig(t, transcript) {
     await settle(10);
     check("it was transcribed and not sent", rig.asked.indexOf("transcribe") >= 0 && rig.sent.length === 0, rig.asked.join() + " / " + rig.sent.join());
     check("  the microphone is released at once, not kept for a minute", rig.tracks[0].stopped === true && t.Voice.on === false && t.toasts.indexOf("Stopped listening.") >= 0);
+  }
+
+  section("Arabic on the direct path (the simple Command Center): a sentence is sent, the command stops");
+  {
+    const t = boot();
+    const rig = micRig(t, "ما هي حالة الخدمات على هذا الخادم؟");
+    await rig.handsFree();
+    await rig.speak();
+    await rig.pause();
+    check("an Arabic sentence is sent to MINT AI word for word", rig.sent.length === 1 && rig.sent[0] === "ما هي حالة الخدمات على هذا الخادم؟", rig.sent.join(" | "));
+    check("  and hands-free stays on", t.Voice.on === true && t.toasts.indexOf("Stopped listening.") < 0);
+
+    const t2 = boot();
+    const rig2 = micRig(t2, "ممكن توقف الاستماع");
+    await rig2.handsFree();
+    await rig2.speak();
+    await rig2.pause();
+    check("the Arabic stop command, asked politely, closes the mic and sends nothing", rig2.sent.length === 0 && t2.Voice.on === false && rig2.tracks[0].stopped === true && t2.toasts.indexOf("Stopped listening.") >= 0, rig2.sent.join(" | "));
   }
 
   console.log(`\n${passed} passed, ${failed} failed`);

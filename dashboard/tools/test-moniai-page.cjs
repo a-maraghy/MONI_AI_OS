@@ -251,7 +251,8 @@ check("the dark palette sets every token the light one declares for colour", (()
   return missing.length === 0 || (console.log("   not in dark:", missing.join(" ")), false);
 })());
 const ccCss = fs.readFileSync(path.join(ROOT, "public", "moni-ai.css"), "utf8");
-check("the Command Center palette ties on specificity and so wins on order", /^:root\.cc-page \{/m.test(ccCss) && ccCss.includes(':root.cc-page[data-theme="light"]'));
+check("the Command Center's own tokens tie on specificity and so win on order (light, then dark)", /^:root\.cc-page \{/m.test(ccCss) && ccCss.includes(':root.cc-page[data-theme="dark"]') && /@media \(prefers-color-scheme: dark\) \{\s*:root\.cc-page:not\(\[data-theme="light"\]\)/.test(ccCss));
+check("the Command Center no longer carries its own green palette: the Mint tokens come from style.css", !/--brand:\s*#47723e|--accent:\s*#8bd46a|--bg:\s*#0b0e0b/i.test(ccCss));
 
 console.log(`\n${passes} passed, ${failures} failed`);
 process.exit(failures ? 1 : 0);

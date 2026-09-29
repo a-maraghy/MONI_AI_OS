@@ -34,6 +34,7 @@ const guideViews = require("./lib/views-guide");
 const accessViews = require("./lib/views-access");
 const consoleViews = require("./lib/views-console");
 const moniAiViews = require("./lib/views-moniai");
+const mintLogic = require("./public/cc-logic");
 const claudeViews = require("./lib/views-claude");
 const moniai = require("./lib/moniai");
 const rbac = require("./lib/rbac");
@@ -3230,8 +3231,31 @@ app.get("/mint-ai", requireAuth, async (req, res) => {
       csrf: res.locals.csrf,
       user: ctx(req, "console"),
       voice: await moniAiVoice(req),
+      core: req.me.mint_core,
     })
   );
+});
+
+/**
+ * The MINT AI core, per person: A (dotted sphere), B (Siri fluid) or C
+ * (hybrid, the default). Saved on the user row (users.mint_core) and written
+ * into the Command Center as data-core, so the page paints the right core from
+ * its first frame. Two ways to change it, one rule: the Command Center's quick
+ * switch (JSON, below) and Account > Appearance (a form, further down; its page
+ * script uses the JSON route too). Both need moniai.use -- someone who cannot
+ * open the Command Center has no core to choose -- and both leave an audit
+ * line ("account": "MINT AI core ...").
+ */
+function setMintCore(req, core) {
+  const was = mintLogic.normCore(req.me.mint_core);
+  db.setUserMintCore(req.me.id, core);
+  db.logLogin(req.ip, req.me.username, "account", `MINT AI core ${was} -> ${core} (${mintLogic.CORES[core]})${was === core ? " (unchanged)" : ""}`);
+}
+app.post("/mint-ai/api/prefs/core", ...moniAiWrite, (req, res) => {
+  const core = req.body && req.body.core;
+  if (!mintLogic.isCore(core)) return res.status(400).json({ error: "The core must be A, B or C.", code: "invalid" });
+  setMintCore(req, core);
+  res.json({ core, name: mintLogic.CORES[core] });
 });
 
 app.get("/mint-ai/api/status", ...moniAiGuard, async (req, res) => {
@@ -4187,8 +4211,18 @@ app.get("/account", requireAuth, (req, res) => {
       me: req.me,
       flash: req.query.msg || null,
       err: req.query.err || null,
+      // The Appearance card only for those who can open the Command Center.
+      appearance: req.perm.can("moniai.use") ? moniAiViews.appearance({ csrf: res.locals.csrf, core: req.me.mint_core }) : null,
     })
   );
+});
+
+/* Account > Appearance without JavaScript: a plain form post (see setMintCore). */
+app.post("/account/appearance", requireAuth, requirePerm("moniai.use"), requireCsrf, (req, res) => {
+  const core = String((req.body && req.body.core) || "");
+  if (!mintLogic.isCore(core)) return res.redirect("/account?err=" + encodeURIComponent("Choose core A, B or C.") + "#appearance");
+  setMintCore(req, core);
+  res.redirect("/account?msg=" + encodeURIComponent(`MINT AI core: ${core} · ${mintLogic.CORES[core]}.`) + "#appearance");
 });
 
 app.post("/account/password", requireAuth, requireCsrf, async (req, res) => {

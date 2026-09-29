@@ -45,6 +45,15 @@ var VoiceStop = (function () {
     "خلاص", "طيب", "يا مينت", "مينت", "من فضلك", "لو سمحت"];
   var TAIL = ["please", "for now", "now", "thanks", "thank you", "mint", "mint ai",
     "خلاص", "من فضلك", "لو سمحت", "دلوقتي", "شكرا", "يا مينت"];
+  // A request: one of these, once, right before a whole command ("can you
+  // stop listening", "عايزك تقفل اللايف"). Longest first. "ممكن ت" is the
+  // prefix written apart ("ممكن تـ قفل" once normalised); written onto the
+  // verb it is the second-person form below.
+  var ASK = ["can you please", "could you please", "would you please", "will you please",
+    "can you", "could you", "would you", "will you", "i want you to", "i need you to",
+    "ممكن ت", "ممكن", "عايزك", "عاوزك", "محتاجك", "يا ريت", "ياريت"];
+  // After a request, Arabic uses the verb's second-person form: تقفل, توقف...
+  var AR_ASKED_VERBS = ["توقف", "تقفل", "تسكر", "تبطل", "تنهي", "تطفي"];
   // Longer than this after normalising, it is a sentence, not a command.
   var MAX_WORDS = 9;
 
@@ -53,6 +62,10 @@ var VoiceStop = (function () {
   EN_VERBS.forEach(function (v) { EN_OBJECTS.forEach(function (o) { add(v + " " + o); }); });
   AR_VERBS.forEach(function (v) { AR_OBJECTS.forEach(function (o) { add(v + " " + o); }); });
   EXTRA.forEach(add);
+  // Only after a request (ASK): "ممكن تقفل الاستماع", "عايزك تبطل تسمع".
+  var ASKED = {};
+  AR_ASKED_VERBS.forEach(function (v) { AR_OBJECTS.forEach(function (o) { ASKED[v + " " + o] = true; }); });
+  ASKED["تبطل تسمع"] = true;
 
   /**
    * Lowercase; Arabic diacritics and tatweel out; alef forms to ا, ى to ي,
@@ -96,9 +109,22 @@ var VoiceStop = (function () {
     if (!s || s.split(" ").length > MAX_WORDS) return false;
     if (PHRASES[s]) return true;
     s = strip(strip(s, LEAD, false), TAIL, true);
-    return !!PHRASES[s];
+    if (PHRASES[s]) return true;
+    // "Can you stop listening": one request, then the whole command.
+    for (var i = 0; i < ASK.length; i++) {
+      if (s.slice(0, ASK[i].length + 1) === ASK[i] + " ") {
+        var rest = s.slice(ASK[i].length + 1);
+        return !!(PHRASES[rest] || ASKED[rest]);
+      }
+    }
+    return false;
   }
 
-  return { heard: heard, norm: norm, phrases: function () { return Object.keys(PHRASES); } };
+  return {
+    heard: heard, norm: norm,
+    phrases: function () { return Object.keys(PHRASES); },
+    asked: function () { return Object.keys(ASKED); },
+    requests: function () { return ASK.slice(); },
+  };
 })();
 if (typeof module === "object" && module.exports) module.exports = VoiceStop;

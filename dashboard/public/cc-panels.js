@@ -135,19 +135,12 @@
 
     /* ======================================================== centre views */
 
+    /* The v3 centre switched Map | Missions; now the core is always in the
+       centre and the missions board is a sheet. */
     function setView(v) {
-      S.view = v === "missions" ? "missions" : "map";
-      var bs = document.querySelectorAll(".cc-seg [data-view]");
-      for (var i = 0; i < bs.length; i++) bs[i].setAttribute("aria-selected", String(bs[i].getAttribute("data-view") === S.view));
-      $("cc-view-map").hidden = S.view !== "map";
-      $("cc-view-missions").hidden = S.view !== "missions";
-      if (S.view === "map") { CC.map.resize(); CC.map.start(); }
-      else renderMissions();
+      if (v === "missions") CC.openSheet("missions");
+      else CC.closeSheet();
     }
-    document.querySelector(".cc-seg").addEventListener("click", function (e) {
-      var b = e.target.closest("[data-view]");
-      if (b) setView(b.getAttribute("data-view"));
-    });
 
     /* ======================================================== missions */
 
@@ -187,7 +180,7 @@
         CC.feedPush({ key: "mis" + m.id + m.status, ts: m.done_at || m.updated_at, kind: m.status === "done" ? "done" : "failed", label: "mission", html: "Mission <b>" + esc(m.ref || "") + "</b> " + esc(m.status) });
       }
       renderMisChip();
-      if (S.view === "missions") renderMissions();
+      if (S.pane === "missions") renderMissions();
       CC.resyncSessions();
     }
     function renderMisChip() {
@@ -209,6 +202,7 @@
       var id = $("cc-mis-chip").getAttribute("data-mis");
       if (id != null) P.activeMis = P.missions.has(id) ? id : Number(id);
       setView("missions");
+      renderMissions();
     });
 
     function whoChip(target) {
@@ -376,6 +370,8 @@
       var n = decCount();
       $("cc-dec-count").textContent = n;
       $("cc-dec-count").hidden = !n;
+      $("cc-dec-sub").textContent = n ? n + " need you" : "nothing waiting · approvals and watcher findings";
+      if (CC.renderNeed) CC.renderNeed();
       if (S.pane !== "dec") { P.decPending = true; return; }
       var list = $("cc-dec-list"), ae = document.activeElement;
       // Never re-draw under someone typing an "Ask more" question.
@@ -1063,7 +1059,7 @@
     /* ======================================================== deep view */
 
     function deepToldHTML(dels, s) {
-      if (s && s.self) return '<div class="cc-told">This is MINT AI itself: it is the one delegating. Its own conversation is in the drawer.</div>';
+      if (s && s.self) return '<div class="cc-told">This is MINT AI itself: it is the one delegating. Its own conversation is in the Conversation sheet.</div>';
       if (!dels || !dels.length) return '<div class="cc-told">MINT AI has not delegated anything to this session.</div>';
       // The whole text of every message MINT AI sent, newest first: never clipped, escaped, scrolling in its own box.
       return '<div class="cc-told">' + dels.slice().sort(function (a, b) { return String(b.created_at).localeCompare(String(a.created_at)); }).map(function (d) {
@@ -1156,19 +1152,24 @@
 
     /* ======================================================== palette */
 
-    function themeTo(t) { var b = document.querySelector('[data-theme-opt="' + t + '"]'); if (b) b.click(); }
+    function themeTo(t) { var b = document.querySelector('.topbar [data-theme-opt="' + t + '"]'); if (b) b.click(); }
     function palItems() {
       var it = [];
       function add(g, t, sub, icon, cls, run) { it.push({ g: g, t: t, sub: sub || "", icon: icon, cls: cls || "", run: run }); }
-      add("Views", "Show the orbit map", "centre", "orbit", "", function () { setView("map"); });
-      add("Views", "Show the missions board", "centre", "flag", "m", function () { setView("missions"); });
-      add("Views", "Open the conversation", "drawer", "message", "", function () { CC.showPane("conv"); });
-      add("Views", "Open Decisions", decCount() + " need you", "shield", "", function () { CC.showPane("dec"); });
-      add("Views", "Open the event log", "Decisions", "bolt", "", function () { CC.showPane("dec"); var d = $("cc-evlog"); d.open = true; d.scrollIntoView({ block: "start" }); });
-      add("Views", "Open the timeline", "drawer", "list", "", function () { CC.showPane("tl"); });
-      add("Views", "Open approval rules", "Rules", "scale", "", function () { P.rulesSub = "rules"; CC.showPane("rules"); });
-      add("Views", "Open watchers", "Rules", "eye", "", function () { P.rulesSub = "watch"; CC.showPane("rules"); });
-      add("Actions", "Cost and usage", "overlay", "coin", "", openCost);
+      add("Open", "Back to the core", "close the sheets", "orbit", "", function () { setView("map"); });
+      add("Open", "Conversation", "the MINT AI session", "message", "", function () { CC.openSheet("conv"); });
+      add("Open", "Sessions", CC.liveSessions().length + " live · sub-agents · deep view", "orbit", "", function () { CC.openSheet("sessions"); });
+      add("Open", "Missions board", "sheet", "flag", "m", function () { setView("missions"); });
+      add("Open", "Decisions", decCount() + " need you", "inbox", "", function () { CC.openSheet("dec"); });
+      add("Open", "The next decision card", decCount() + " need you", "shield", "", function () { CC.openNeed(); });
+      add("Open", "Event log", "Decisions", "bolt", "", function () { CC.openSheet("dec"); var d = $("cc-evlog"); d.open = true; d.scrollIntoView({ block: "start" }); });
+      add("Open", "Timeline", "delegations and approvals", "clock", "", function () { CC.openSheet("tl"); });
+      add("Open", "Approval rules", "Rules & watchers", "scale", "", function () { P.rulesSub = "rules"; CC.openSheet("rules"); });
+      add("Open", "Watchers", "Rules & watchers", "eye", "", function () { P.rulesSub = "watch"; CC.openSheet("rules"); });
+      add("Open", "Standing orders", P.orders.length + " scheduled", "repeat", "", function () { CC.openSheet("orders"); });
+      add("Open", "Cost & voice usage", "sheet", "coin", "", function () { CC.openSheet("cost"); });
+      add("Open", "Machine", "this VPS · the core grid", "server", "", function () { CC.openSheet("machine"); });
+      add("Actions", "Cost details and budget", "overlay", "coin", "", openCost);
       add("Actions", "New mission…", "MINT AI plans it", "plus", "m", function () { openNewMission(); });
       add("Actions", "New standing order…", "scheduled prompt", "clock", "", function () { openOrder(null); });
       add("Actions", "Test a command in Rules…", "what would the gate do", "scale", "", function () {
@@ -1191,6 +1192,9 @@
         add("Standing orders", "Run " + o.name + " now", "result lands in the conversation", "play", "", function () {
           api("orders/" + encodeURIComponent(o.id) + "/run", { body: {} }).then(function (r) { if (r && r.order) upsertOrder(r.order); toast("Running " + o.name + " now."); }).catch(function (e) { toast("Not run: " + errText(e), true); });
         });
+      });
+      Object.keys(window.MintLogic.CORES).forEach(function (k) {
+        add("Core", "MINT AI core: " + k + " · " + window.MintLogic.CORES[k], k === CC.coreNow() ? "in use" : "switch now, saved for you", "spark", "", function () { CC.setCore(k); });
       });
       add("Theme", "Theme: follow the system", "", "monitor", "", function () { themeTo("system"); });
       add("Theme", "Theme: dark", "", "moon", "", function () { themeTo("dark"); });
@@ -1219,7 +1223,7 @@
     function palRender() {
       if (!OV.pal) return;
       var q = palQuery(), items = palItems(), out = [];
-      if (!q) out = items.filter(function (x) { return x.g !== "Theme" && x.g !== "Standing orders"; }).slice(0, 18).map(function (x) { return { it: x, idx: [] }; });
+      if (!q) out = items.filter(function (x) { return x.g !== "Theme" && x.g !== "Standing orders" && x.g !== "Core"; }).slice(0, 18).map(function (x) { return { it: x, idx: [] }; });
       else {
         items.forEach(function (x) {
           var m = fuzzy(q, x.t), m2 = m || fuzzy(q, x.t + " " + x.sub + " " + x.g);
@@ -1298,7 +1302,7 @@
         renderAll();
       }
       api("missions?status=all").then(function (r) { P.missions.clear(); (r.missions || []).forEach(function (m) { P.missions.set(m.id, m); }); delete P.err.missions; })
-        .catch(function (e) { P.err.missions = errText(e); }).then(function () { renderMisChip(); if (S.view === "missions") renderMissions(); CC.resyncSessions(); });
+        .catch(function (e) { P.err.missions = errText(e); }).then(function () { renderMisChip(); if (S.pane === "missions") renderMissions(); CC.resyncSessions(); });
       api("decisions?status=all").then(function (r) { P.decisions.clear(); (r.decisions || []).forEach(function (d) { P.decisions.set(d.id, d); }); delete P.err.decisions; })
         .catch(function (e) { P.err.decisions = errText(e); }).then(function () { renderDecisions(); });
       api("watchers").then(function (r) { P.watchers = r.watchers || []; delete P.err.watchers; }).catch(function (e) { P.err.watchers = errText(e); }).then(function () { renderRules(); });
@@ -1345,7 +1349,7 @@
       renderOrders();
       renderDecisions();
       if (S.pane === "rules") renderRules();
-      if (S.view === "missions") renderMissions();
+      if (S.pane === "missions") renderMissions();
     }
 
     return {
@@ -1355,10 +1359,14 @@
       renderDecisions: renderDecisions,
       renderRules: function () { P.rulesPending = "now"; renderRules(); },
       sessionsChanged: function () {
-        if (S.view === "missions") renderMissions();
+        if (S.pane === "missions") renderMissions();
         if (OV.kind === "deep") renderDeep();
       },
       openDeep: openDeep,
+      renderMissions: renderMissions,
+      upsertDecision: upsertDecision,
+      decisionsList: function () { var out = []; P.decisions.forEach(function (d) { out.push(d); }); return out; },
+      voiceToday: function () { var u = P.voiceUsage; return u && u.today ? vmoney(u.today.total) + " today" : ""; },
       openAlways: openAlways,
       openOrder: openOrder,
       openCost: openCost,
