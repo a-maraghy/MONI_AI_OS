@@ -175,7 +175,7 @@ function words(text) {
   return String(text || "")
     .toLowerCase()
     .replace(/['’]/g, "")
-    .split(/[^a-z0-9]+/)
+    .split(/[^\p{L}\p{N}]+/u)
     .filter(Boolean);
 }
 
