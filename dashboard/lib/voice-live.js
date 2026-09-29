@@ -163,7 +163,9 @@ const INSTRUCTIONS = [
   "- Before a tool call say nothing, or at most a two-word acknowledgement.",
   "- The screen: when the administrator asks you to change what they see on this Command Center (open or close a panel, show the missions, the last reply or the waiting card, switch the core or the voice mode, end or mute this call, stop reading), call ui_action. " +
     "Say what you did only after it returns ok (\"I opened Missions.\"). You cannot approve, deny or change settings with it, and you can mute but never unmute. " +
-    "Closing a panel (\"close the missions\", «اقفلي المهام», «اقفل الميشنز») is sheet.close, never ending the call; the panel names in Arabic are in the tool's description.",
+    "Closing a panel (\"close the missions\", «اقفلي المهام», «اقفل الميشنز») is sheet.close, never ending the call; the panel names in Arabic are in the tool's description." +
+    "Changing the theme (theme.set), the Arabic voice persona (persona.set) or the voice's sound (voice.set) also goes through ui_action, but it only ASKS: the result is status confirm and nothing has changed. " +
+    "Then say only: \"Please confirm on screen, or say yes.\" (only if they speak Arabic: «أكّد على الشاشة، أو قول أيوه.»). Never say you set, changed or switched it.",
   "While a request is being worked on you may keep talking naturally: acknowledge, say in general terms what you are looking at, ask a clarifying question, make small talk, or help the administrator draft or structure a report from what they tell you -- without inventing progress or results.",
   "Style: one or two short spoken sentences. If the administrator starts talking, stop and listen.",
 ].join("\n");
@@ -693,7 +695,9 @@ class LiveCall {
     // Fast path: a real-length turn that did not overlap the voice cannot be its leak, so it is
     // answered now (as create_response did) instead of after its transcript (~0.7 s later).
     // Anything heard over the voice, or too short to be sure of, waits for the transcript guard.
-    if (!this.suspect(t) && this.opts.fastAnswer !== false && t.endMs - t.startMs >= FAST_MIN_MS) this.answer(t);
+    // Not while an undo or a confirm is waiting: that turn may be its answer ("undo", "yes"), which the model must not hear.
+    const awaiting = this.undoUntil > this.now() || !!(this.d.confirmPending && this.d.confirmPending());
+    if (!this.suspect(t) && !awaiting && this.opts.fastAnswer !== false && t.endMs - t.startMs >= FAST_MIN_MS) this.answer(t);
     // No transcript in time: a real turn is answered anyway (the model hears the audio); a suspect one is dropped.
     this.timer(() => {
       if (t.dropped || t.answered || this.closed) return;
@@ -760,6 +764,17 @@ class LiveCall {
       this.diag.stops++;
       t.resolveSession(null);
       return this.stopByVoice(t, text);
+    }
+    // A pending Tier-2 confirm: a whole "yes" / "no" answers it (and is not a turn); anything else drops it.
+    const conf = !suspect && this.d.confirmHeard && t.n > (this.confirmAfter || 0) ? this.d.confirmHeard(text) : null;
+    if (conf && (conf.confirmed || conf.cancelled)) {
+      const e = conf.confirmed || conf.cancelled;
+      t.resolveSession(null);
+      this.toClient({ type: "flush", at: this.now() });
+      this.drop(t, "confirm-answer");
+      this.toClient({ type: conf.confirmed ? "ui-confirmed" : "ui-confirm-cancelled", id: e.id });
+      this.toClient({ type: "caption", who: "you", text, final: true });
+      return;
     }
     if (this.undoUntil > this.now() && this.d.isUndo && this.d.isUndo(text) && !suspect) {
       this.diag.undos = (this.diag.undos || 0) + 1;
@@ -1223,6 +1238,16 @@ class LiveCall {
     const lim = this.uiLimit.take(t.n, v.action, this.now());
     if (lim) return refuse(lim);
     const toast = UiActions.toast(v.action, v.args);
+    if (v.tier === 2) {
+      // A preference (theme / persona / voice): the page asks; the answer is a click or the next "yes" this server hears.
+      const o = this.d.openConfirm ? this.d.openConfirm(v) : { error: "a preference cannot be changed from here" };
+      if (!o || o.error) return refuse((o && o.error) || "not now");
+      this.confirmAfter = t.n; // only a LATER utterance answers it (this turn's own transcript may still arrive)
+      this.toClient({ type: "ui", action: v.action, args: v.args, toast: o.question, confirm: o.id });
+      this.diag.ui.push({ turn: t.n, action: v.action + ":confirm" });
+      this.log(`live: ui_action ${v.action} waits for the administrator's confirm (turn ${t.n})`);
+      return JSON.stringify({ status: "confirm", asked: o.question, note: "Nothing has changed yet: the screen asks the administrator to confirm. Say only: \"Please confirm on screen, or say yes.\" (only if they speak Arabic: «أكّد على الشاشة، أو قول أيوه.»). Never say it is done, set or switched." });
+    }
     const audit = (how) => {
       try {
         if (this.d.audit) this.d.audit(`${v.action}${Object.keys(v.args).length ? " " + JSON.stringify(v.args) : ""} by the live voice, turn ${t.n} (${how})`);

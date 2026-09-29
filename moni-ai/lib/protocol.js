@@ -73,7 +73,8 @@ const OPS = {
   // the administrator started (dashboard / voice-desk) with a ui token runs.
   "ui-action": { mutating: true, params: { action: str(40, /^[a-z]+(\.[a-z_]+)?$/), args: uiArgs() } },
   // The Command Center's answer to one ui event (the page did it, or refused).
-  "ui-ack": { mutating: true, params: { nonce: str(40, /^[A-Za-z0-9]{8,40}$/), ok: bool(), why: optText(200) } },
+  // pending: a Tier-2 preference shown for the administrator's confirm (nothing changed yet).
+  "ui-ack": { mutating: true, params: { nonce: str(40, /^[A-Za-z0-9]{8,40}$/), ok: bool(), why: optText(200), pending: optBool() } },
   interrupt: { mutating: true, params: {} },
   approve: {
     mutating: true,
@@ -145,7 +146,7 @@ const OPS = {
 
 /** A screen action's flat arguments: at most six known keys, short strings or booleans. */
 function uiArgs() {
-  const KEYS = ["key", "mode", "name", "core", "page", "on"];
+  const KEYS = ["key", "mode", "name", "core", "page", "on", "theme", "preset", "voice"]; // = UiActions.ARG_KEYS (tested)
   const f = (v, name) => {
     if (!v || typeof v !== "object" || Array.isArray(v)) throw new Error(`${name} must be an object`);
     const out = {};

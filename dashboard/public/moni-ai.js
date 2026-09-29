@@ -828,6 +828,8 @@
     return api("send", { body: body }).then(function (r) {
       hint("");
       if (!opts.voice) input.value = "";
+      // "yes" / "no" to a pending Tier-2 confirm: answered on the server, sent nowhere.
+      if (r && r.confirm && typeof uiConfirmAnswer === "function") uiConfirmAnswer(r.confirm.id, r.confirm.ok);
       if (r && r.turn) {
         var tr = upsertTurn(r.turn);
         if (opts.voice || Voice.speakAll) {
@@ -1698,6 +1700,7 @@
       // server; done like the voice's, and answered so MINT AI knows.
       if (!ev || !ev.nonce || typeof runUiAction !== "function") return;
       var res = runUiAction(ev);
+      if (ev.confirm) return; // a Tier-2 question: the server already told MINT AI it waits for a confirm
       api("ui/ack", { body: { nonce: ev.nonce, ok: !!res.ok, why: res.ok ? undefined : String(res.why || "").slice(0, 200) } }).catch(function () { /* the supervisor times out */ });
       return;
     }
@@ -2465,6 +2468,7 @@
           // predates it would, so the page checks the words as well.
           if (ev.stop || (ev.text && isStopCommand(ev.text))) return stoppedByVoice(ev.text || "");
           if (ev.undo) return undoneByVoice(ev.text || "");
+          if (ev.confirm && typeof uiConfirmAnswer === "function") { uiConfirmAnswer(ev.confirm.id, ev.confirm.ok); if (api_.on) listen(true); return; }
           if (ev.text) vbText.textContent = "“" + clip(ev.text, 80) + "”";
         } else if (ev.type === "ui") {
           if (typeof runUiAction === "function") runUiAction(ev);
@@ -2863,6 +2867,7 @@
           if (m.nonce) window.VoiceLive.ack(m.nonce, res.ok, res.why);
         }
         if (m.type === "ui-undo") uiUndoNow("voice"); // "undo" said in the call, caught by the server
+        if (m.type === "ui-confirmed" || m.type === "ui-confirm-cancelled") uiConfirmAnswer(m.id, m.type === "ui-confirmed");
         if (m.type === "stop") toast("Stopped listening. The live conversation has ended.");
         else if (m.type === "error" && m.code === "busy") toast(m.error, true);
         if (m.type === "ended" || m.type === "error") liveEnded(m);
@@ -2988,6 +2993,7 @@
     }
     var v = UA.validate(ev.action, ev.args);
     if (!v.ok) return v;
+    if (v.tier === 2) return uiConfirmAsk(ev, v);
     var a = v.args, undo = null, link = null;
     try {
       switch (v.action) {
@@ -3067,7 +3073,81 @@
     clearTimeout(uiToast.t);
     uiToast.t = setTimeout(function () { el.remove(); }, undo ? UI_UNDO_MS : link ? 8000 : 3500);
   }
-  window.__mintUi = { run: runUiAction, undoable: uiUndoable, undo: uiUndoNow };
+  /* Tier 2 (UI control Phase 3): theme, voice persona and voice. The page only
+     ASKS ("Switch the voice to cedar? Confirm / Cancel"); the change is made
+     after a click on Confirm, or after the server heard the administrator's
+     own "yes" (never the model's words) -- and then through the existing
+     CSRF'd routes, under this session's own permissions. One at a time, 30 s. */
+  var uiConfirmState = null;
+  function uiConfirmAsk(ev, v) {
+    if (!ev.confirm || !/^[0-9a-f]{18}$/.test(ev.confirm)) return { ok: false, why: "a preference needs the server's confirm" };
+    if (v.action === "voice.set" && liveActive()) return { ok: false, why: "a live call is open" };
+    var old = document.querySelector(".cc-toast");
+    if (old) old.remove();
+    var el = document.createElement("div");
+    el.className = "cc-toast cc-ui-toast cc-ui-confirm";
+    el.setAttribute("role", "alertdialog");
+    el.setAttribute("aria-label", "Confirm a change Mint asked for");
+    var t = document.createElement("span");
+    t.textContent = "Mint asks: " + (ev.toast || window.UiActions.toast(v.action, v.args));
+    el.appendChild(t);
+    var yes = document.createElement("button");
+    yes.type = "button"; yes.className = "cc-btn sm pri"; yes.setAttribute("data-ui-confirm", "yes"); yes.textContent = "Confirm";
+    var no = document.createElement("button");
+    no.type = "button"; no.className = "cc-btn sm"; no.setAttribute("data-ui-confirm", "no"); no.textContent = "Cancel";
+    el.appendChild(yes); el.appendChild(no);
+    var hint = document.createElement("small");
+    hint.className = "cc-ui-confirm-hint";
+    hint.textContent = "or say “yes” / «أيوه»";
+    el.appendChild(hint);
+    document.body.appendChild(el);
+    uiConfirmState = { id: ev.confirm, action: v.action, args: v.args, el: el };
+    yes.addEventListener("click", function () { uiConfirmDecide(ev.confirm, "confirm"); });
+    no.addEventListener("click", function () { uiConfirmDecide(ev.confirm, "cancel"); });
+    clearTimeout(uiToast.t);
+    uiToast.t = setTimeout(function () { if (uiConfirmState && uiConfirmState.id === ev.confirm) uiConfirmState = null; el.remove(); }, 30000);
+    return { ok: true, pending: true };
+  }
+  /** The server heard a "yes" / "no" for this confirm. */
+  function uiConfirmAnswer(id, ok) {
+    if (!uiConfirmState || uiConfirmState.id !== id) return;
+    if (ok) return uiConfirmDecide(id, "confirm");
+    // A heard "no": the server has already cancelled it.
+    uiConfirmState.el.remove();
+    uiConfirmState = null;
+    toast("Cancelled: nothing was changed.");
+  }
+  function uiConfirmDecide(id, decision) {
+    var st = uiConfirmState;
+    if (!st || st.id !== id) return;
+    uiConfirmState = null;
+    st.el.remove();
+    api("ui/confirm", { body: { id: id, decision: decision } }).then(function (r) {
+      if (!r || r.cancelled) return toast("Cancelled: nothing was changed.");
+      return uiApply(r).then(function () { toast(r.done || "Done."); });
+    }).catch(function (e) { toast("Not changed: " + ((e && e.message) || e), true); });
+  }
+  /** Apply a confirmed preference through the route its Settings control uses. */
+  function uiApply(r) {
+    if (r.action === "theme.set") {
+      var b = document.querySelector('.topbar [data-theme-opt="' + r.args.theme + '"]');
+      if (!b) return Promise.reject(new Error("the theme switch is not on this page"));
+      b.click();
+      return Promise.resolve();
+    }
+    var url = r.action === "persona.set" ? "/credentials/openai-voice/persona" : r.action === "voice.set" ? "/credentials/openai-voice/options" : null;
+    if (!url || !r.form) return Promise.reject(new Error("not a preference this page can change"));
+    var body = new URLSearchParams();
+    body.set("_csrf", CSRF);
+    Object.keys(r.form).forEach(function (k) { body.set(k, r.form[k]); });
+    // The same form route as Settings, asked for JSON instead of its redirect.
+    return fetch(url, { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" }, body: body.toString() }).then(function (res) {
+      return res.json().catch(function () { return { ok: false, error: "the setting was refused (" + res.status + ")" }; });
+    }).then(function (j) {
+      if (!j || !j.ok) throw new Error((j && j.error) || "the setting was refused");
+    });
+  }
+  window.__mintUi = { run: runUiAction, undoable: uiUndoable, undo: uiUndoNow, confirming: function () { return uiConfirmState ? uiConfirmState.id : null; } };
 
   /* ============================================================ end of the live integration block */
 

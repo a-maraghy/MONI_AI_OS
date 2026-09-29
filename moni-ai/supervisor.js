@@ -1812,7 +1812,7 @@ async function handle(req, sock) {
       if (!w) throw new Error("no such screen action is waiting (or it was answered already)");
       if (w.actor !== req.actor) throw new Error("that screen action is not yours to answer");
       uiWaiting.delete(p.nonce);
-      w.resolve({ ok: p.ok, why: p.why || "" });
+      w.resolve({ ok: p.ok, why: p.why || "", pending: !!p.pending });
       return { acked: true };
     }
     default:
@@ -1862,6 +1862,7 @@ async function uiAction(actor, p) {
   const a = await answer;
   if (!a) return { status: "no-screen", note: "No Command Center answered: the administrator's screen is not open. Tell them plainly; do not say it was done." };
   if (!a.ok) return { status: "refused", why: a.why || "the screen refused it", note: "Tell the administrator plainly that it was not done, and why." };
+  if (a.pending) return { status: "confirm", note: "Nothing has changed yet: their screen asks them to confirm. Say so, and ask them to say yes or click Confirm; never say it is done." };
   return { status: "ok", done: toast };
 }
 

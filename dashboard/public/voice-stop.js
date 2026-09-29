@@ -111,6 +111,18 @@ var VoiceStop = (function () {
     "رجعها": 1, "رجعيها": 1, "الغيها": 1, "الغي ده": 1,
   };
 
+  // A confirm for a Tier-2 screen action ("Switch the voice to cedar?"):
+  // yes() and no(), whole utterances only, read on the server's transcript.
+  var YES = ["yes", "yes please", "yes do it", "yes go ahead", "yeah", "yeah do it", "yep", "yup", "sure", "sure go ahead", "confirm", "confirmed",
+    "i confirm", "do it", "go ahead", "please do", "yes confirm", "ok do it", "okay do it", "ok go ahead", "okay go ahead", "yes switch it", "switch it",
+    "ايوه", "ايوا", "ايوه اعمل كده", "ايوه اعملي كده", "ايوه اعملها", "ايوه اعمليها", "اه", "اه اعملها", "اه اعمليها", "اعملها", "اعمليها",
+    "اعمل كده", "اعملي كده", "ماشي", "ماشي اعملها", "موافق", "موافقه", "اكيد", "طبعا", "يلا", "يلا اعملها", "نعم", "اكد", "اكدي", "غيرها", "غيريها", "ايوه غيرها", "ايوه غيريها"];
+  var NO = ["no", "no thanks", "no thank you", "nope", "cancel", "cancel it", "cancel that", "don't", "dont", "don't do it", "dont do it", "never mind", "nevermind", "leave it",
+    "لا", "لأ", "لا شكرا", "لا خلاص", "لا متعملش", "لا متعمليش", "متعملش", "متعمليش", "بلاش", "خليها", "خليه", "سيبها", "سيبيها", "مش عايز", "مش عايزه", "الغي", "الغيها", "كانسل"];
+  var YES_SET = {}, NO_SET = {};
+  YES.forEach(function (p) { YES_SET[norm(p)] = true; });
+  NO.forEach(function (p) { NO_SET[norm(p)] = true; });
+
   var PHRASES = {};
   function add(p) { PHRASES[p] = true; }
   EN_VERBS.forEach(function (v) { EN_OBJECTS.forEach(function (o) { add(v + " " + o); }); });
@@ -179,6 +191,20 @@ var VoiceStop = (function () {
     return false;
   }
 
+  function confirmWord(set, text) {
+    var s = norm(text);
+    if (!s) return false;
+    if (set[s]) return true;
+    s = strip(s, PLEASANT.filter(function (p) { return !set[p]; }), false);
+    if (!s || s.split(" ").length > MAX_WORDS) return false;
+    s = strip(strip(s, LEAD.filter(function (p) { return !set[p]; }), false), TAIL, true);
+    return !!set[s];
+  }
+  /** "Yes" (or «أيوه»...) and nothing more: the confirm of a pending Tier-2 screen action. */
+  function yes(text) { return confirmWord(YES_SET, text); }
+  /** "No" (or «لأ»...) and nothing more: the pending confirm is cancelled. */
+  function no(text) { return confirmWord(NO_SET, text); }
+
   /** True when what was said is "undo" (or the like) and nothing more. */
   function undo(text) {
     var s = norm(text);
@@ -198,7 +224,7 @@ var VoiceStop = (function () {
   }
 
   return {
-    heard: heard, norm: norm, undo: undo,
+    heard: heard, norm: norm, undo: undo, yes: yes, no: no,
     undoPhrases: function () { return UNDO.slice(); },
     pleasantries: function () { return PLEASANT.slice(); },
     phrases: function () { return Object.keys(PHRASES); },

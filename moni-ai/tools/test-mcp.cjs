@@ -114,8 +114,9 @@ function hasKeyDeep(v, keys) {
     // ui_action (UI control Phase 2): the shared allowlist's schema, flat args mapped to {action, args}.
     {
       const ui = list.result.tools.find((t) => t.name === "ui_action");
-      check("ui_action is listed, with the allowlist's action enum and no extras", ui && ui.inputSchema.properties.action.enum.includes("sheet.open") && !ui.inputSchema.properties.action.enum.some((a) => /approve|deny|settings\.set|theme|persona/.test(a)) && ui.inputSchema.additionalProperties === false, ui && JSON.stringify(ui.inputSchema.properties.action.enum));
+      check("ui_action is listed, with the allowlist's action enum and no extras", ui && ui.inputSchema.properties.action.enum.includes("sheet.open") && !ui.inputSchema.properties.action.enum.some((a) => /approve|deny|settings\.set|key|user|rule|restart|deploy/.test(a)) && ["theme.set", "persona.set", "voice.set"].every((a) => ui.inputSchema.properties.action.enum.includes(a)) && ui.inputSchema.additionalProperties === false, ui && JSON.stringify(ui.inputSchema.properties.action.enum));
       check("  its description says it cannot approve and works only in the administrator's own request", ui && /cannot approve, deny or confirm/.test(ui.description) && /only while you answer a request the administrator sent/.test(ui.description));
+      check("  and that the three preferences only ask (confirm; never confirm for them)", ui && /only ASK: their result is confirm/.test(ui.description) && /never confirm for them/.test(ui.description));
       seen.length = 0;
       reply = { status: "ok", done: "Mint opened Missions" };
       const r = await rpc({ jsonrpc: "2.0", id: 6, method: "tools/call", params: { name: "ui_action", arguments: { action: "sheet.open", key: "missions" } } });

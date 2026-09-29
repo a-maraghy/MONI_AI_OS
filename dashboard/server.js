@@ -48,6 +48,31 @@ const UiActions = require("./public/ui-actions.js");
 // UI control Phase 2: the ui tokens this server minted, in memory only (lib/ui-relay.js).
 const uiRelay = require("./lib/ui-relay").createRelay();
 const uiTab = require("./lib/ui-relay").TAB_RE;
+// UI control Phase 3: Tier-2 preferences wait for the administrator's confirm (lib/ui-confirm.js).
+const uiConfirms = require("./lib/ui-confirm").createConfirms();
+/**
+ * Open a Tier-2 confirm for `who` ({username, ip, canVoice}): the page shows
+ * the question; nothing changes until a click or a heard "yes". persona.set
+ * and voice.set need voice.manage (their routes check it again); voice.set
+ * never while a live call is open (changing it ends every call).
+ */
+function uiConfirmOpen(who, v, tab, by) {
+  if ((v.action === "persona.set" || v.action === "voice.set") && !who.canVoice) return { error: "this account cannot change voice settings" };
+  if (v.action === "voice.set" && voiceLive.activeCount() > 0) return { error: "a live call is open: changing the voice would end it, so it is only done with no call open" };
+  const o = uiConfirms.open({ actor: who.username, action: v.action, args: v.args, tab });
+  if (o.error) return o;
+  db.logLogin(who.ip, who.username, "mint-ui", `${v.action} ${JSON.stringify(v.args)} asked by ${by}: waiting for the administrator's confirm`);
+  return { id: o.id, question: UiActions.toast(v.action, v.args) };
+}
+/** The administrator's next utterance against a pending confirm (null when none is pending). */
+function uiConfirmHeard(who, text, where) {
+  const r = uiConfirms.heard(who.username, text, voiceStop);
+  if (r && (r.confirmed || r.cancelled)) {
+    const e = r.confirmed || r.cancelled;
+    db.logLogin(who.ip, who.username, "mint-ui", `${e.action} ${JSON.stringify(e.args)} ${r.confirmed ? "confirmed by a spoken yes" : "cancelled by a spoken no"} (${where})`);
+  }
+  return r;
+}
 /** moniai.call for the voice desk and the live call: a send carrying a ui token binds it to the turn it started. */
 function moniCall(op, params, actor, opts) {
   return moniai.call(op, params, actor, opts).then((r) => {
@@ -2304,20 +2329,32 @@ app.post("/credentials/openai-voice/clear", requireAuth, requirePerm("voice.mana
   }
 });
 
+/**
+ * A settings form's answer: the redirect it always was, or -- when the Command
+ * Center applies a confirmed Tier-2 preference (UI control Phase 3) and asks
+ * for JSON -- {ok, message}, read from the same redirect URL.
+ */
+function formReply(req, res, url) {
+  if (!/application\/json/.test(req.get("accept") || "")) return res.redirect(url);
+  const q = new URL(url, "http://x").searchParams;
+  const err = q.get("err");
+  return res.status(err ? 400 : 200).json(err ? { ok: false, error: err } : { ok: true, message: q.get("msg") || "" });
+}
+
 app.post("/credentials/openai-voice/options", requireAuth, requirePerm("voice.manage"), requireCsrf, async (req, res) => {
   const model = field(req.body, "model");
   const name = field(req.body, "voice");
   const tmodel = field(req.body, "transcribe_model");
   if (!voice.MODELS.some((m) => m.id === model) || !voice.VOICES.includes(name) || !voice.TRANSCRIBE_MODELS.some((m) => m.id === tmodel)) {
-    return res.redirect("/credentials/openai-voice?err=" + encodeURIComponent("Pick a model, voice and listening model from the lists."));
+    return formReply(req, res, "/credentials/openai-voice?err=" + encodeURIComponent("Pick a model, voice and listening model from the lists."));
   }
   try {
     await priv.voiceOptionsSet(model, name, tmodel);
     voiceForget();
     db.logLogin(req.ip, req.me.username, "voice", `voice settings ${model} / ${name} / ${tmodel}`);
-    res.redirect("/credentials/openai-voice?msg=" + encodeURIComponent("Voice settings saved."));
+    formReply(req, res, "/credentials/openai-voice?msg=" + encodeURIComponent("Voice settings saved."));
   } catch (e) {
-    res.redirect("/credentials/openai-voice?err=" + encodeURIComponent(e.message));
+    formReply(req, res, "/credentials/openai-voice?err=" + encodeURIComponent(e.message));
   }
 });
 
@@ -2330,12 +2367,12 @@ app.post("/credentials/openai-voice/options", requireAuth, requirePerm("voice.ma
 app.post("/credentials/openai-voice/persona", requireAuth, requirePerm("voice.manage"), requireCsrf, (req, res) => {
   const preset = field(req.body, "preset");
   const p = voicePersona.choose(preset);
-  if (!p) return res.redirect("/credentials/openai-voice?err=" + encodeURIComponent("Choose one of the voice personas.") + "#v-persona");
+  if (!p) return formReply(req, res, "/credentials/openai-voice?err=" + encodeURIComponent("Choose one of the voice personas.") + "#v-persona");
   const was = voicePersona.describe(personaOf(req.me.id));
   db.setVoicePersona(req.me.id, p.mode === "explicit" ? JSON.stringify(p) : "");
   const now = voicePersona.describe(p);
   db.logLogin(req.ip, req.me.username, "voice", `voice persona set to "${now.choice}" (was "${was.choice}")`);
-  res.redirect("/credentials/openai-voice?msg=" + encodeURIComponent(p.mode === "explicit" ? `Voice persona: ${now.choice}. Arabic replies use it from the next utterance; English stays English.` : "Voice persona: learned from how you speak again.") + "#v-persona");
+  formReply(req, res, "/credentials/openai-voice?msg=" + encodeURIComponent(p.mode === "explicit" ? `Voice persona: ${now.choice}. Arabic replies use it from the next utterance; English stays English.` : "Voice persona: learned from how you speak again.") + "#v-persona");
 });
 
 app.post("/credentials/openai-voice/persona/reset", requireAuth, requirePerm("voice.manage"), requireCsrf, (req, res) => {
@@ -3517,6 +3554,12 @@ function uiDeliver(ev, req, tab, res) {
   if (!r.deliver) return;
   const v = UiActions.validate(ev.action, ev.args || {});
   if (!v.ok) return void ack(false, v.why);
+  if (v.tier === 2) {
+    const o = uiConfirmOpen({ username: actor, ip: req.ip, canVoice: req.perm.can("voice.manage") }, v, tab, `MINT AI (turn ${ev.turn_id})`);
+    if (o.error) return void ack(false, o.error);
+    res.write(`event: ui\ndata: ${JSON.stringify({ type: "ui", nonce: ev.nonce, action: v.action, args: v.args, toast: o.question, confirm: o.id, deep: true })}\n\n`);
+    return void moniai.call("ui-ack", { nonce: ev.nonce, ok: true, pending: true }, actor).catch(() => {});
+  }
   db.logLogin(req.ip, actor, "mint-ui", `${what} by MINT AI (turn ${ev.turn_id}), to the tab that asked`);
   if (v.where === "server") {
     const call = voiceLive.callFor(actor);
@@ -3526,6 +3569,35 @@ function uiDeliver(ev, req, tab, res) {
   }
   res.write(`event: ui\ndata: ${JSON.stringify({ type: "ui", nonce: ev.nonce, action: v.action, args: v.args, toast: UiActions.toast(v.action, v.args), deep: true })}\n\n`);
 }
+
+/**
+ * The page's decision on a Tier-2 confirm: {id, decision: "confirm"|"cancel"}.
+ * Hands the pending action over once (a click, or after a heard yes); the page
+ * then applies it through the existing CSRF'd route, under this session's
+ * permissions. For voice.set it also gets the current model and listening
+ * model, so the existing form route keeps them.
+ */
+app.post("/mint-ai/api/ui/confirm", ...moniAiWrite, async (req, res) => {
+  const b = req.body || {};
+  if (typeof b.id !== "string" || !/^[0-9a-f]{18}$/.test(b.id) || (b.decision !== "confirm" && b.decision !== "cancel")) return res.status(400).json({ error: "Bad confirm." });
+  const t = uiConfirms.take(req.me.username, b.id, b.decision);
+  if (!t) return res.status(404).json({ error: "That confirm has expired.", code: "expired" });
+  const what = `${t.action} ${JSON.stringify(t.args)}`;
+  if (t.cancelled) {
+    db.logLogin(req.ip, req.me.username, "mint-ui", `${what} cancelled`);
+    return res.json({ ok: true, cancelled: true });
+  }
+  if ((t.action === "persona.set" || t.action === "voice.set") && !req.perm.can("voice.manage")) return res.status(403).json({ error: "This account cannot change voice settings." });
+  if (t.action === "voice.set" && voiceLive.activeCount() > 0) return res.status(409).json({ error: "A live call is open: the voice is only changed with no call open.", code: "call-open" });
+  let form = null;
+  if (t.action === "persona.set") form = { preset: t.args.preset };
+  if (t.action === "voice.set") {
+    const cfg = await voiceConfig();
+    form = { model: cfg.model, voice: t.args.voice, transcribe_model: cfg.transcribe_model };
+  }
+  db.logLogin(req.ip, req.me.username, "mint-ui", `${what} confirmed (${t.spoken ? "spoken yes" : "click"}); the page applies it`);
+  res.json({ ok: true, action: t.action, args: t.args, form, done: UiActions.doneText(t.action, t.args) });
+});
 
 /** The tab's answer to one of MINT AI's screen actions: done, or refused and why. */
 app.post("/mint-ai/api/ui/ack", ...moniAiWrite, async (req, res) => {
@@ -3552,6 +3624,9 @@ app.post("/mint-ai/api/send", ...moniAiWrite, async (req, res) => {
       voiceLog("send", "refused", { rule: refusal.rule, source: refusal.source ? JSON.stringify(refusal.source) : undefined });
       return res.status(422).json({ error: "That voice turn was not sent: it does not match what was heard.", code: "ungrounded" });
     }
+    // A pending Tier-2 confirm: this "yes" / "no" answers it and goes no further.
+    const conf = uiConfirmHeard({ username: req.me.username, ip: req.ip }, params.text, "typed or direct voice");
+    if (conf && (conf.confirmed || conf.cancelled)) return res.json({ confirm: { id: (conf.confirmed || conf.cancelled).id, ok: !!conf.confirmed } });
     db.logLogin(req.ip, req.me.username, "moni-ai", `turn${params.target ? " for " + params.target : ""}`);
     // A one-time ui token for this send, from this tab (lib/ui-relay.js).
     const ut = uiRelay.mint({ actor: req.me.username, tab: (req.body || {}).tab, via: "page" });
@@ -3672,6 +3747,14 @@ app.post("/mint-ai/api/desk/turn", requireApiPerm("moniai.use"), moniAiAudioBody
     const stop = !!heard && voiceStop.heard(heard);
     // "Undo" said while the tab can still undo its last screen action: the
     // page undoes it, and the desk neither answers it nor passes it on.
+    // A pending Tier-2 confirm is answered by this utterance, or dropped by it.
+    const conf = !stop && heard && !/^[\[(]/.test(heard) ? uiConfirmHeard({ username: actor, ip: req.ip }, heard, "relay desk") : null;
+    const answered = conf && (conf.confirmed || conf.cancelled);
+    if (answered) {
+      out.write({ type: "heard", text: heard, confirm: { id: answered.id, ok: !!conf.confirmed } });
+      out.write({ type: "done", asked: [], lines: 0, confirm: true, cost_usd: transcribeUsd, usage: voiceUsageSummary() });
+      return out.end();
+    }
     const undo = !stop && body.undoable === true && !!heard && voiceStop.undo(heard);
     out.write({ type: "heard", text: heard && !/^[\[(]/.test(heard) ? heard : "", stop: stop || undefined, undo: undo || undefined });
     if (!heard || /^[\[(]/.test(heard)) {
@@ -3696,6 +3779,8 @@ app.post("/mint-ai/api/desk/turn", requireApiPerm("moniai.use"), moniAiAudioBody
       persona,
       // A hand-off to MINT AI carries a ui token for this tab (UI control Phase 2).
       uiTicket: () => uiRelay.mint({ actor, tab: body.tab, via: "page" }),
+      // Tier 2 (theme / persona / voice): the page asks the administrator to confirm.
+      openConfirm: (v) => uiConfirmOpen({ username: actor, ip: req.ip, canVoice: req.perm.can("voice.manage") }, v, body.tab, "the voice front desk"),
       // Screen actions (public/ui-actions.js) go back to this tab, in this stream; audited.
       onUi: (ui) => {
         out.write(ui);
@@ -5224,7 +5309,7 @@ function liveUpgrade(req, socket, head) {
       const duplex = voiceLive.DUPLEX.includes(q.get("duplex")) ? q.get("duplex") : audio.duplex;
       const route = q.get("route") === "loopback" ? "loopback" : q.get("route") === "direct" ? "direct" : "unknown";
       const tab = q.get("tab") || null;
-      liveWss.handleUpgrade(req, socket, head, (ws) => liveConnected(ws, { me, cfg, ip, duplex, noise: audio.noise, route, tab }));
+      liveWss.handleUpgrade(req, socket, head, (ws) => liveConnected(ws, { me, cfg, ip, duplex, noise: audio.noise, route, tab, canVoice: perm.can("voice.manage") }));
     } catch (e) {
       console.log("live: upgrade failed: " + e.message);
       refuseUpgrade(socket, 500, "Server error");
@@ -5232,7 +5317,7 @@ function liveUpgrade(req, socket, head) {
   });
 }
 
-function liveConnected(ws, { me, cfg, ip, duplex, noise, route, tab }) {
+function liveConnected(ws, { me, cfg, ip, duplex, noise, route, tab, canVoice }) {
   const actor = me.username;
   const json = (o) => ws.readyState === 1 && ws.send(JSON.stringify(o));
   if (voiceLive.callFor(actor)) {
@@ -5270,6 +5355,10 @@ function liveConnected(ws, { me, cfg, ip, duplex, noise, route, tab }) {
     isUndo: (t) => voiceStop.undo(t),
     // A hand-off to MINT AI carries a ui token for the tab that holds the call (UI control Phase 2).
     uiTicket: () => uiRelay.mint({ actor, tab, via: "live", callId: call.id }),
+    // Tier 2: asked for by the live voice, confirmed by a click or the next "yes" this server hears.
+    openConfirm: (v) => uiConfirmOpen({ username: actor, ip, canVoice }, v, tab, "the live voice"),
+    confirmHeard: (text) => uiConfirmHeard({ username: actor, ip }, text, "live call"),
+    confirmPending: () => !!uiConfirms.pending(actor),
     log: (m) => console.log(m),
     opts: { duplex },
   });

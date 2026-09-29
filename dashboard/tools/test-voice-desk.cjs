@@ -909,6 +909,24 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     check("without a page to send it to (no onUi): refused", r5.rejected.some((x) => /^ui_action:only when/.test(x)));
     d.close();
   }
+  {
+    // Tier 2 (Phase 3): a preference is only asked for.
+    const d = newDesk("text");
+    const ui = [];
+    const opened = [];
+    const asks = (items) => (afterTool(items) ? [{ say: "Please confirm on screen, or say yes." }] : [{ call: "ui_action", args: { action: "voice.set", voice: "cedar" } }]);
+    const r = await withBrain(asks, () => d.turn("switch the voice to cedar", { onUi: (u) => ui.push(u), openConfirm: (v) => (opened.push(v), { id: "0123456789abcdef01", question: "Switch the voice to cedar?" }) }));
+    check("voice.set: a confirm is opened on the server, the page gets the question with its id", opened.length === 1 && opened[0].action === "voice.set" && ui.length === 1 && ui[0].confirm === "0123456789abcdef01" && ui[0].toast === "Switch the voice to cedar?", JSON.stringify(ui));
+    check("  the model is told nothing changed; it may not say it is done", !r.trip && r.ui.join() === "voice.set:confirm");
+    const liar = (items) => (afterTool(items) ? [{ say: "I switched the voice to cedar." }] : [{ call: "ui_action", args: { action: "voice.set", voice: "cedar" } }]);
+    const r2 = await withBrain(liar, () => d.turn("switch the voice to cedar", { onUi: () => {}, openConfirm: () => ({ id: "0123456789abcdef02", question: "?" }) }));
+    check("  \"I switched the voice\" after a confirm status is cut (ui-claim)", r2.trip && r2.trip.rule === "ui-claim", JSON.stringify(r2.trip));
+    const r3 = await withBrain(asks, () => d.turn("switch the voice to cedar", { onUi: (u) => ui.push(u), openConfirm: () => ({ error: "a live call is open: changing the voice would end it" }) }));
+    check("  refused by the server (a call open): refused, nothing on the page", ui.length === 1 && r3.rejected.some((x) => /^ui_action:a live call is open/.test(x)), JSON.stringify(r3.rejected));
+    const r4 = await withBrain(asks, () => d.turn("switch the voice to cedar", { onUi: (u) => ui.push(u) }));
+    check("  without the server's confirm hook: refused", ui.length === 1 && r4.rejected.some((x) => /^ui_action:a preference cannot/.test(x)));
+    d.close();
+  }
 
   section("cost: real usage, priced -- and no cap");
   {

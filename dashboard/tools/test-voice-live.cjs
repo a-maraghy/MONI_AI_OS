@@ -816,6 +816,35 @@ let WS_BASE;
     check(`«${said}»: the page is told to stop, and the call ends`, client.json.some((m) => m.type === "stop" && m.why === "voice-command") && client.json.some((m) => m.type === "ended") && (await until(() => s.closed, 500)));
     check("  the answer in flight is cancelled, nothing is passed on", s.of("response.cancel").length >= 1 && !sup.calls.some((x) => x[0] === "send"));
   }
+  section("Tier 2 (Phase 3): a preference is only asked for; a heard yes answers it");
+  {
+    const { c, client } = makeCall();
+    await c.open();
+    const s = lastSession();
+    const C = require(path.join(ROOT, "lib", "ui-confirm.js")).createConfirms();
+    const U = require(path.join(ROOT, "public", "ui-actions.js"));
+    c.d.openConfirm = (v) => { const o = C.open({ actor: "admin", action: v.action, args: v.args }); return o.error ? o : { id: o.id, question: U.toast(v.action, v.args) }; };
+    c.d.confirmHeard = (text) => C.heard("admin", text, VoiceStop);
+    c.d.confirmPending = () => !!C.pending("admin");
+    const item0 = await userTurn(s, c, null, { noTranscript: true });
+    const r = { turn: c.lastTurn };
+    const out = JSON.parse(await c.uiAction({ action: "theme.set", theme: "dark" }, r));
+    // The asking turn's own transcript can arrive after the question: it must not drop it.
+    s.push({ type: "conversation.item.input_audio_transcription.completed", item_id: item0, transcript: "switch to the dark theme" });
+    await sleep(20);
+    check("the asking turn's own late transcript does not answer or drop the confirm", !!C.pending("admin"));
+    const ask = client.json.find((m) => m.type === "ui" && m.action === "theme.set");
+    check("theme.set: status confirm, nothing done; the page gets the question and the confirm id", out.status === "confirm" && /Never say it is done/.test(out.note) && ask && ask.confirm && /\?$/.test(ask.toast) && !r.turn.uiOk);
+    check("  a second one while it waits: refused", /already waiting/.test(JSON.parse(await c.uiAction({ action: "persona.set", preset: "cairene_f" }, r)).error || ""));
+    const nCreate = s.of("response.create").length;
+    await userTurn(s, c, "Yes, please.");
+    await sleep(40);
+    check("the next utterance, a whole yes: the page is told ui-confirmed; not a turn for the model", client.json.some((m) => m.type === "ui-confirmed" && m.id === ask.confirm) && s.of("response.create").length === nCreate, JSON.stringify({ types: client.json.map((m) => m.type).slice(-8), creates: s.of("response.create").length - nCreate, cancels: s.of("response.cancel").length }));
+    const d = makeCall();
+    check("without openConfirm (no server hook): a preference is refused", /refused/.test(JSON.parse(await d.c.uiAction({ action: "theme.set", theme: "dark" }, { turn: { n: 1 } })).error || ""));
+    c.close("test");
+  }
+
   section("MINT AI's own call.* (UI control Phase 2: deepUi, after the relay's checks)");
   {
     const { c, client } = makeCall();

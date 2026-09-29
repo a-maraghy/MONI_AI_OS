@@ -694,6 +694,25 @@ deploy.
   answers through `POST /mint-ai/api/ui/ack` (CSRF'd, only a nonce delivered to
   that user). A tag this server never minted -- a `send` forged straight onto
   the supervisor's socket -- is dropped and audited ("never minted").
+- **Preferences (Tier 2, Phase 3):** `theme.set` (system/dark/light),
+  `persona.set` (the voice persona presets, or learned) and `voice.set` (the
+  voice's sound -- global, so only with no live call open) are never applied by
+  the model. The server opens a pending confirm (`lib/ui-confirm.js`: one per
+  user, 30 s, audited) and the tab shows "Mint asks: Switch the voice to cedar?
+  Confirm / Cancel". It is applied only after a click on Confirm, or when the
+  administrator's NEXT utterance -- as this server heard or received it (the
+  relay desk's transcript, the live call's, or /send), never the model's words
+  -- is a whole "yes" (`VoiceStop.yes()`: "yes", "go ahead", «أيوه»,
+  «اعملها»...). A whole "no" («لأ», "cancel") cancels it; anything else drops
+  it and goes on as a normal turn; in a live call only a later, non-echo turn
+  counts, and nothing is answered early while it waits. The page then takes it
+  once (`POST /mint-ai/api/ui/confirm`) and applies it through the existing
+  CSRF'd, `voice.manage`-checked routes (`/credentials/openai-voice/persona`,
+  `/options`, which now answer JSON when asked) or the theme switch itself.
+  The voice and MINT AI are told `status: "confirm"`: nothing changed yet, and
+  "I switched the voice" is cut (ui-claim) until it is. Tier 3 (keys, users,
+  roles, 2FA, rules, watchers, voice mode, budget, orders, restart, deploy) has
+  no action names at all.
 - **Closing a panel:** `sheet.close` may name the panel ("close the missions",
   «اقفلي المهام», «اقفل الميشنز»); the page refuses when another is open. The
   tool's description gives the Arabic panel names (المهام / الميشنز, الجلسات /

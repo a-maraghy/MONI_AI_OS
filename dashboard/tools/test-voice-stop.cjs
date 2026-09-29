@@ -202,5 +202,16 @@ check("undo(): too long after pleasantries is a sentence", !VoiceStop.undo("than
   check("the live call gets isUndo", /isUndo: \(t\) => voiceStop\.undo\(t\),/.test(server2));
 }
 
+
+// ------------------------------------------------ yes / no (Tier-2 confirm)
+{
+  const Y = ["yes", "Yes.", "Yes, please.", "yeah do it", "go ahead", "confirm", "Okay, go ahead.", "Mint, yes", "sure", "أيوه", "ايوه اعملها", "اه", "اعمليها", "ماشي", "موافق", "تمام أيوه"];
+  const N = ["no", "No.", "no thanks", "cancel", "never mind", "لأ", "لا خلاص", "بلاش", "سيبها", "مش عايز"];
+  const NEITHER = ["yes and restart odoo", "yes but first tell me the disk usage", "ok", "تمام", "what", "أيوه بس الأول قولي حالة أودو", "no idea what the disk says", "stop listening"];
+  check("yes(): a whole yes, English and Egyptian, polite forms", Y.every((x) => VoiceStop.yes(x) && !VoiceStop.no(x)), Y.filter((x) => !VoiceStop.yes(x)).join(" | "));
+  check("no(): a whole no", N.every((x) => VoiceStop.no(x) && !VoiceStop.yes(x)), N.filter((x) => !VoiceStop.no(x)).join(" | "));
+  check("neither: a yes with a request after it, a bare ok/تمام, other sentences", NEITHER.every((x) => !VoiceStop.yes(x) && !VoiceStop.no(x)), NEITHER.filter((x) => VoiceStop.yes(x) || VoiceStop.no(x)).join(" | "));
+}
+
 console.log(`\n${passes} passed, ${failures} failed`);
 process.exit(failures ? 1 : 0);

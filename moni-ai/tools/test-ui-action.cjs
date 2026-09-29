@@ -222,12 +222,19 @@ const UT = "UtUtUtUtUtUtUtUtUtUtUt01";
     const r2 = await p2;
     check("a refusal comes back as refused, with why", r2.ok && r2.data.status === "refused" && r2.data.why === "a live call is on", JSON.stringify(r2));
 
+    // A Tier-2 preference: the tab asks the administrator; MINT AI is told nothing changed yet.
+    const p3 = ua("theme.set", { theme: "dark" });
+    const ev3 = await sub.waitFor((e) => e.type === "ui" && e.action === "theme.set", 3000);
+    await call("ui-ack", { nonce: ev3.nonce, ok: true, pending: true }, "admin");
+    const r3c = await p3;
+    check("a Tier-2 preference answered pending: status confirm, never ok", r3c.ok && r3c.data.status === "confirm" && /never say it is done/.test(r3c.data.note), JSON.stringify(r3c));
+
     // Nobody answers.
     const t0 = Date.now();
     const r3 = await ua("reply.show");
     check("no answer in 5 s: no-screen (not ok)", r3.ok && r3.data.status === "no-screen" && Date.now() - t0 >= 4800 && Date.now() - t0 < 8000, JSON.stringify(r3));
 
-    // Rate limit: 6 a turn (3 used).
+    // Rate limit: 6 a turn (4 used).
     const quick = [];
     for (let i = 0; i < 4; i++) {
       const pr = ua("view", { name: "map" });
@@ -239,7 +246,7 @@ const UT = "UtUtUtUtUtUtUtUtUtUtUt01";
       quick.push(await pr);
     }
     const results = quick.filter((x) => typeof x === "object");
-    check("at most 6 screen actions in a turn", results.slice(0, 3).every((x) => x.ok) && !results[3].ok && /one turn/.test(results[3].error), JSON.stringify(results.map((x) => x.ok || x.error)));
+    check("at most 6 screen actions in a turn", results.slice(0, 2).every((x) => x.ok) && !results[2].ok && /one turn/.test(results[2].error), JSON.stringify(results.map((x) => x.ok || x.error)));
 
     // The ring and the ledger never hold it.
     const replay = subscribe(0);

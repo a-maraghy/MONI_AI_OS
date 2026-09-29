@@ -49,7 +49,9 @@ function uiTool() {
       "switch the core (A/B/C), switch the voice mode, show or read your last reply, show the waiting decision card, suggest a settings page, " +
       "or end / mute / interrupt their voice call (never unmute). It works only while you answer a request the administrator sent from the " +
       "Command Center, and only when they asked for it in that request. It cannot approve, deny or confirm anything, change keys, users, rules or " +
-      "settings, restart or deploy: approving stays the administrator's click. The result says ok, refused (with why) or no-screen; say what really happened.",
+      "settings, restart or deploy: approving stays the administrator's click. " +
+      "Three preferences -- theme.set, persona.set, voice.set -- only ASK: their result is confirm, nothing has changed yet, and the administrator confirms " +
+      "by a click or by saying yes; never say it is done and never confirm for them. The result says ok, refused (with why), confirm or no-screen; say what really happened.",
     inputSchema: def.parameters,
     map(given) {
       const f = UiActions.fromTool(given);

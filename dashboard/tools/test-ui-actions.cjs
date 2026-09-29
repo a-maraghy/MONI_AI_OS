@@ -25,8 +25,7 @@ function check(name, cond, detail) {
 }
 
 console.log("the allowlist");
-check("exactly the Phase 1 actions", UA.names().sort().join() === ["call.end", "call.mute", "call.interrupt", "voice.mode", "sheet.open", "sheet.close", "view", "core.set", "reply.show", "reply.read", "decision.show", "settings.open"].sort().join(), UA.names().join());
-check("all Tier 1", UA.names().every((n) => UA.ACTIONS[n].tier === 1));
+check("exactly the Phase 1 actions plus the three Tier-2 preferences", UA.names().sort().join() === ["call.end", "call.mute", "call.interrupt", "voice.mode", "sheet.open", "sheet.close", "view", "core.set", "reply.show", "reply.read", "decision.show", "settings.open", "theme.set", "persona.set", "voice.set"].sort().join(), UA.names().join());
 const TIER3 = ["approve", "deny", "approval.approve", "decision.approve", "decision.deny", "credentials.set", "key.set", "users.add", "rules.add", "gate.off", "restart", "deploy", "voice.set", "theme.set", "persona.set", "settings.set", "call.unmute", "eval", "navigate"];
 check("no Tier-2 or Tier-3 name exists (approve, deny, keys, users, rules, gate, restart, deploy, settings values, unmute...)", TIER3.every((n) => !UA.validate(n, {}).ok), TIER3.filter((n) => UA.validate(n, {}).ok).join());
 check("nothing named like an approval at all", !UA.names().some((n) => /approv|deny|confirm|key|user|rule|gate|restart|deploy|unmute/.test(n)));
@@ -63,6 +62,24 @@ check("  its toast names it", UA.toast("sheet.close", { key: "missions" }) === "
     check(`lib/${f}: the instructions say closing a panel is sheet.close, never ending the call`, /Closing a panel \(\\"close the missions\\", «اقفلي المهام», «اقفل الميشنز»\) is sheet\.close, never ending the call/.test(src));
   }
 }
+
+console.log("\nTier 2 (Phase 3): preferences, only after a confirm");
+{
+  const persona = require(path.join(ROOT, "lib", "voice-persona.js"));
+  const voice = require(path.join(ROOT, "lib", "voice.js"));
+  check("theme.set / persona.set / voice.set are tier 2, on the page", ["theme.set", "persona.set", "voice.set"].every((n) => UA.ACTIONS[n].tier === 2 && UA.ACTIONS[n].where === "page"));
+  check("  every other action is tier 1", UA.names().filter((n) => !["theme.set", "persona.set", "voice.set"].includes(n)).every((n) => UA.ACTIONS[n].tier === 1));
+  check("the personas are lib/voice-persona.js PRESETS plus learned", Object.keys(UA.PERSONAS).sort().join() === [...Object.keys(persona.PRESETS), "learned"].sort().join());
+  check("the voices are lib/voice.js VOICES", Object.keys(UA.VOICE_NAMES).sort().join() === [...voice.VOICES].sort().join());
+  check("validation: only listed values", UA.validate("theme.set", { theme: "dark" }).ok && !UA.validate("theme.set", { theme: "neon" }).ok && UA.validate("persona.set", { preset: "cairene_f" }).ok && !UA.validate("persona.set", { preset: "evil" }).ok && UA.validate("voice.set", { voice: "cedar" }).ok && !UA.validate("voice.set", { voice: "onyx" }).ok);
+  check("the toast is a question, doneText the result", /\?/.test(UA.toast("voice.set", { voice: "cedar" })) && UA.doneText("voice.set", { voice: "cedar" }) === "The voice is now cedar" && UA.doneText("sheet.open", { key: "missions" }) === "Mint opened Missions");
+  check("the tool takes theme / preset / voice, and says these need a confirm", ["theme", "preset", "voice"].every((k) => UA.tool().parameters.properties[k]) && /status \\?"confirm\\?"|status "confirm"/.test(UA.tool().description) && /never confirm for them/.test(UA.tool().description));
+  check("fromTool keeps them", JSON.stringify(UA.fromTool({ action: "voice.set", voice: "cedar" })) === JSON.stringify({ action: "voice.set", args: { voice: "cedar" }, extra: [] }));
+  const proto = fs.readFileSync(path.join(ROOT, "..", "moni-ai", "lib", "protocol.js"), "utf8");
+  check("the supervisor's protocol takes exactly the same argument keys", proto.includes("const KEYS = " + JSON.stringify(UA.ARG_KEYS).replace(/,/g, ", ") + ";"));
+}
+console.log("\nTier 3: never by voice or AI -- no action names at all");
+check("nothing about keys, users, roles, 2FA, rules, watchers, voice mode, budget, orders, restart, deploy, approve", !UA.names().some((n) => /key|user|role|totp|2fa|password|rule|watcher|desk|budget|order|restart|deploy|approve|deny|fresh|gate|credential|service|firewall/.test(n)), UA.names().join());
 
 console.log("\nrate limits");
 {

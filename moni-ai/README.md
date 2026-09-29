@@ -305,8 +305,10 @@ event). All of its state is in the ledger, so a restart loses nothing.
   never in the ring, so never replayed) carrying `ut_tag` = sha256(token)[0:16],
   not the token; the dashboard delivers it only to the tab whose send minted the
   token, and that tab answers with `ui-ack` (only the same user, once). The tool
-  returns `ok`, `refused` (with why) or `no-screen` after 5 s. Needs a moni-ai
-  restart to load (new ops, new MCP tool).
+  returns `ok`, `refused` (with why) or `no-screen` after 5 s -- or `confirm`
+  for a Tier-2 preference (theme.set, persona.set, voice.set; `ui-ack` with
+  `pending`): nothing changed until the administrator confirms (Phase 3, see
+  dashboard/README.md). Needs a moni-ai restart to load (new ops, new MCP tool).
 - **Decisions and watchers** (`lib/watchers.js`, tables `decisions`,
   `watchers`). Every 30 s: the helper's `service-list` (a unit failed) and
   `pulse-feed` (fail2ban bans > 20 in 10 min; an agent started 3 times in 10

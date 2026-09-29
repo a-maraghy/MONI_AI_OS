@@ -267,7 +267,9 @@ const INSTRUCTIONS = [
   "- Approvals and decisions are for the administrator to decide in the Command Center; you cannot approve or deny anything.",
   "- The screen: when the administrator asks you to change what they see on this Command Center (open or close a panel, show the missions, the last reply or the waiting card, switch the core or the voice mode), call ui_action. " +
     "Say what you did only after it returns ok (\"I opened Missions.\"). It cannot approve, deny or change settings. " +
-    "Closing a panel (\"close the missions\", «اقفلي المهام», «اقفل الميشنز») is sheet.close, never ending the call; the panel names in Arabic are in the tool's description.",
+    "Closing a panel (\"close the missions\", «اقفلي المهام», «اقفل الميشنز») is sheet.close, never ending the call; the panel names in Arabic are in the tool's description." +
+    "Changing the theme (theme.set), the Arabic voice persona (persona.set) or the voice's sound (voice.set) also goes through ui_action, but it only ASKS: the result is status confirm and nothing has changed. " +
+    "Then say only: \"Please confirm on screen, or say yes.\" (only if they speak Arabic: «أكّد على الشاشة، أو قول أيوه.»). Never say you set, changed or switched it.",
   "While a request is being worked on you may keep talking naturally: acknowledge, say in general terms what you are looking at, ask a clarifying question, make small talk, or help the administrator draft or structure a report from what they tell you -- without inventing progress or results.",
   "Language: reply in the language of the administrator's LAST utterance: English gets English; Arabic, or Arabic mixed with English, gets Arabic in the register the administrator used " +
     "(Egyptian colloquial if they speak Egyptian, Modern Standard Arabic if they speak MSA), with technical terms kept in English in Latin script (Odoo, disk, restart, dashboard). " +
@@ -1555,6 +1557,19 @@ class DeskSession {
     const lim = this.uiLimit.take(this.stats.turns, v.action, Date.now());
     if (lim) return refuse(lim);
     const toast = UiActions.toast(v.action, v.args);
+    if (v.tier === 2) {
+      // A preference (theme / persona / voice): the page asks, the server checks the answer.
+      const o = turn.openConfirm ? turn.openConfirm(v) : { error: "a preference cannot be changed from here" };
+      if (!o || o.error) return refuse((o && o.error) || "not now");
+      try {
+        turn.onUi({ type: "ui", nonce: Math.random().toString(36).slice(2, 12), action: v.action, args: v.args, toast: o.question, confirm: o.id });
+      } catch (e) {
+        return refuse("the screen could not be reached");
+      }
+      turn.ui.push(v.action + ":confirm");
+      turn.tools.push("ui_action");
+      return JSON.stringify({ status: "confirm", asked: o.question, note: "Nothing has changed yet: the screen asks the administrator to confirm. Say only: \"Please confirm on screen, or say yes.\" (only if they speak Arabic: «أكّد على الشاشة، أو قول أيوه.»). Never say it is done, set or switched." });
+    }
     try {
       turn.onUi({ type: "ui", nonce: Math.random().toString(36).slice(2, 12), action: v.action, args: v.args, toast });
     } catch (e) {
@@ -1666,7 +1681,7 @@ class DeskSession {
     }
     await this.refreshReplies();
     this.heard.push(said);
-    const turn = { kind: "turn", heard: said, grounded: true, asked: [], tools: [], rejected: [], lines: [], trip: null, tokens: {}, responses: 0, ui: [], onUi: opts.onUi, uiTicket: opts.uiTicket };
+    const turn = { kind: "turn", heard: said, grounded: true, asked: [], tools: [], rejected: [], lines: [], trip: null, tokens: {}, responses: 0, ui: [], onUi: opts.onUi, uiTicket: opts.uiTicket, openConfirm: opts.openConfirm };
     this.curTurn = turn;
     const emit = (line) => {
       turn.lines.push(line);

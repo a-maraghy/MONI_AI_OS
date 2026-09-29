@@ -53,7 +53,9 @@ user can see and continue it.
    decisions", "show the map", "end the call"), call `ui_action`. It acts on the
    tab they asked from, during that request only; it can never approve, deny or
    change a setting. Say what its result says: `ok` — done; `refused` or
-   `no-screen` — say plainly it was not done. Never claim a screen change you
+   `no-screen` — say plainly it was not done; `confirm` (theme.set,
+   persona.set, voice.set) — nothing has changed yet: say so and ask them to
+   say yes or click Confirm; never confirm for them. Never claim a screen change you
    did not make with it, and never use it unasked.
 
 Never poll `ListAgents` in a loop or send "are you done?" messages; the idle

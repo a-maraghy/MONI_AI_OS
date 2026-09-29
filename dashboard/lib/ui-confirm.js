@@ -1,0 +1,84 @@
+"use strict";
+/**
+ * UI control, Phase 3: the Tier-2 screen actions (theme.set, persona.set,
+ * voice.set) wait for the administrator's own confirm, which this server checks.
+ *
+ * When the voice (or MINT AI) asks for one, open() records it for that user --
+ * one at a time, for 30 s -- and the page shows a confirm chip. It is applied
+ * only after:
+ *   (a) a click on Confirm, or
+ *   (b) the administrator's NEXT utterance, as this server transcribed it
+ *       (never a model's words), being a whole "yes" (public/voice-stop.js
+ *       yes(): "yes", "go ahead", «أيوه», «اعملها»...). heard() marks it
+ *       confirmed and the page is told.
+ * In both cases the page then calls take(), which hands the entry over once;
+ * the page applies it through the existing, CSRF'd, permission-checked route.
+ * A "no" cancels it; any other utterance cancels it too (the next turn has
+ * moved on), and so does the 30 s expiry. Nothing here writes a setting.
+ */
+const crypto = require("crypto");
+
+const TTL_MS = 30000;
+
+function createConfirms({ now = Date.now } = {}) {
+  const byActor = new Map(); // actor -> { id, action, args, tab, exp, heardYes }
+
+  const live = (actor) => {
+    const e = byActor.get(actor);
+    if (e && e.exp < now()) {
+      byActor.delete(actor);
+      return null;
+    }
+    return e || null;
+  };
+
+  return {
+    TTL_MS,
+    /** A new pending confirm; refused while another one is waiting. */
+    open({ actor, action, args, tab }) {
+      if (!actor) return { error: "no user" };
+      if (live(actor)) return { error: "a confirm is already waiting on the screen: let the administrator answer it first" };
+      const id = crypto.randomBytes(9).toString("hex");
+      byActor.set(actor, { id, action, args: { ...(args || {}) }, tab: tab || null, exp: now() + TTL_MS, heardYes: false });
+      return { id };
+    },
+
+    /** What is pending for this user (a copy), or null. */
+    pending(actor) {
+      const e = live(actor);
+      return e ? { id: e.id, action: e.action, args: { ...e.args }, heardYes: e.heardYes } : null;
+    },
+
+    /**
+     * The administrator's next utterance, as this server heard it. Returns
+     * {confirmed: entry} for a whole "yes", {cancelled: entry} for a whole
+     * "no", {dropped: entry} for anything else (the turn goes on as usual),
+     * or null when nothing was pending.
+     */
+    heard(actor, text, matchers) {
+      const e = live(actor);
+      if (!e || e.heardYes) return null;
+      if (matchers.yes(text)) {
+        e.heardYes = true;
+        return { confirmed: { id: e.id, action: e.action, args: { ...e.args } } };
+      }
+      byActor.delete(actor);
+      const out = { id: e.id, action: e.action, args: { ...e.args } };
+      return matchers.no(text) ? { cancelled: out } : { dropped: out };
+    },
+
+    /**
+     * The page's decision: "confirm" (a click, or after a heard yes) hands the
+     * entry over once; "cancel" drops it. Only that user's pending id.
+     */
+    take(actor, id, decision) {
+      const e = live(actor);
+      if (!e || e.id !== id) return null;
+      byActor.delete(actor);
+      if (decision !== "confirm") return { cancelled: true, action: e.action, args: e.args };
+      return { action: e.action, args: e.args, spoken: e.heardYes };
+    },
+  };
+}
+
+module.exports = { createConfirms, TTL_MS };

@@ -46,6 +46,12 @@
     "everything (كل حاجة)",
   ].join("; ");
   var CORES = { A: "A", B: "B", C: "C" };
+  // Tier 2 (UI control Phase 3): preferences, applied only after a confirm the server checks.
+  var THEMES = { system: "the system theme", dark: "the dark theme", light: "the light theme" };
+  // lib/voice-persona.js PRESETS plus "learned" (tested to match).
+  var PERSONAS = { cairene_f: "Cairene Egyptian, feminine", cairene_m: "Cairene Egyptian, masculine", msa_n: "Modern Standard Arabic, neutral", learned: "learned from how you speak" };
+  // lib/voice.js VOICES (tested to match).
+  var VOICE_NAMES = { marin: "marin", cedar: "cedar", alloy: "alloy", ash: "ash", ballad: "ballad", coral: "coral", echo: "echo", sage: "sage", shimmer: "shimmer", verse: "verse" };
   var MODES = { ptt: "push to talk", handsfree: "hands-free", live: "live conversation" };
   var VIEWS = { map: "the map", missions: "Missions" };
   // settings.open: a fixed list of pages, never a URL from the model.
@@ -93,6 +99,10 @@
     "reply.read": { tier: 1, where: "page", args: none, toast: function () { return "Mint is reading the last reply"; } },
     "decision.show": { tier: 1, where: "page", args: none, toast: function () { return "Mint showed the waiting card -- approving it is yours"; } },
     "settings.open": { tier: 1, where: "page", once: true, args: oneOf(PAGES, "page"), toast: function (a) { return "Mint suggests " + PAGES[a.page].label; } },
+    // Tier 2: the toast is the question; done() is what is shown once confirmed and applied.
+    "theme.set": { tier: 2, where: "page", args: oneOf(THEMES, "theme"), toast: function (a) { return "Switch to " + THEMES[a.theme] + "?"; }, done: function (a) { return "Switched to " + THEMES[a.theme]; } },
+    "persona.set": { tier: 2, where: "page", args: oneOf(PERSONAS, "preset"), toast: function (a) { return "Set the voice persona to " + PERSONAS[a.preset] + "?"; }, done: function (a) { return "Voice persona: " + PERSONAS[a.preset]; } },
+    "voice.set": { tier: 2, where: "page", args: oneOf(VOICE_NAMES, "voice"), toast: function (a) { return "Switch the voice to " + a.voice + "? (for everyone; no call may be open)"; }, done: function (a) { return "The voice is now " + a.voice; } },
   };
 
   function names() { return Object.keys(ACTIONS); }
@@ -104,6 +114,12 @@
     var clean = a.args(args && typeof args === "object" && !Array.isArray(args) ? args : {});
     if (!clean) return { ok: false, why: a.why || "bad arguments for " + name };
     return { ok: true, action: name, args: clean, where: a.where, tier: a.tier, once: !!a.once };
+  }
+
+  /** Tier 2: the line shown once the change is confirmed and applied. */
+  function doneText(name, args) {
+    var a = ACTIONS[name];
+    return a && a.done ? a.done(args || {}) : toast(name, args);
   }
 
   function toast(name, args) {
@@ -131,7 +147,10 @@
         "Panel names as the administrator may say them: " + PANEL_WORDS + ". " +
         "\"Close the missions\", \"hide the decisions\", «اقفلي المهام», «اقفل الميشنز», «شيل القرارات» close that PANEL (sheet.close), never the call: " +
         "call.end only when they name the call or the conversation (\"end the call\", «اقفل المكالمة»). " +
-        "It cannot approve, deny or confirm anything, change keys, users, rules, settings values, restart or deploy: approving stays the administrator's click. " +
+        "Three preferences need the administrator's own confirmation: theme.set (system/dark/light), persona.set (the Arabic voice persona) and voice.set " +
+        "(the voice's sound, only when no call is open). For those the result is status \"confirm\": nothing has changed yet -- say so, and ask them to say yes or click Confirm. " +
+        "Never say it is done until they have confirmed, and never confirm for them. " +
+        "It cannot approve, deny or confirm anything, change keys, users, rules, other settings, restart or deploy: approving stays the administrator's click. " +
         "Use it only when the administrator asks for it in this turn.",
       parameters: {
         type: "object",
@@ -142,6 +161,9 @@
           name: { type: "string", enum: Object.keys(VIEWS), description: "view" },
           core: { type: "string", enum: Object.keys(CORES), description: "core.set" },
           page: { type: "string", enum: Object.keys(PAGES), description: "settings.open" },
+          theme: { type: "string", enum: Object.keys(THEMES), description: "theme.set (needs confirm)" },
+          preset: { type: "string", enum: Object.keys(PERSONAS), description: "persona.set (needs confirm)" },
+          voice: { type: "string", enum: Object.keys(VOICE_NAMES), description: "voice.set (needs confirm; never with a call open)" },
         },
         required: ["action"],
         additionalProperties: false,
@@ -149,12 +171,13 @@
     };
   }
 
+  var ARG_KEYS = ["key", "mode", "name", "core", "page", "on", "theme", "preset", "voice"];
   /** The tool's flat arguments split into action and args. */
   function fromTool(args) {
     var a = args && typeof args === "object" ? args : {};
     var out = {};
-    ["key", "mode", "name", "core", "page", "on"].forEach(function (k) { if (a[k] !== undefined) out[k] = a[k]; });
-    var extra = Object.keys(a).filter(function (k) { return ["action", "key", "mode", "name", "core", "page", "on"].indexOf(k) < 0; });
+    ARG_KEYS.forEach(function (k) { if (a[k] !== undefined) out[k] = a[k]; });
+    var extra = Object.keys(a).filter(function (k) { return k !== "action" && ARG_KEYS.indexOf(k) < 0; });
     return { action: a.action, args: out, extra: extra };
   }
 
@@ -197,7 +220,7 @@
   }
 
   return {
-    ACTIONS: ACTIONS, SHEETS: SHEETS, CORES: CORES, MODES: MODES, VIEWS: VIEWS, PAGES: PAGES,
-    names: names, validate: validate, toast: toast, pageUrl: pageUrl, tool: tool, fromTool: fromTool, limiter: limiter, claims: claims,
+    ACTIONS: ACTIONS, SHEETS: SHEETS, CORES: CORES, MODES: MODES, VIEWS: VIEWS, PAGES: PAGES, THEMES: THEMES, PERSONAS: PERSONAS, VOICE_NAMES: VOICE_NAMES, ARG_KEYS: ARG_KEYS,
+    names: names, validate: validate, toast: toast, doneText: doneText, pageUrl: pageUrl, tool: tool, fromTool: fromTool, limiter: limiter, claims: claims,
   };
 });
