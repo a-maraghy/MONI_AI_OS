@@ -14,8 +14,8 @@
  *            copied beforehand with `sqlite3 -readonly -json /var/lib/moni-ai/ledger.db`
  *            (this script never opens the ledger itself)
  * --speak    also speak every released line through the real verbatim reader
- *            (lib/voice.js), to measure when the first audio would play and
- *            what the speech costs
+ *            (lib/voice.js), streamed as the routes stream it, to measure when
+ *            the first audio chunk is ready and what the speech costs
  * --session  also run one kept conversation of ten utterances, and the same
  *            ten each in a fresh session, to compare what the context costs
  *
@@ -43,6 +43,7 @@ const { execFileSync } = require("child_process");
 const ROOT = path.join(__dirname, "..");
 const desk = require(path.join(ROOT, "lib", "voice-desk.js"));
 const voice = require(path.join(ROOT, "lib", "voice.js"));
+const usageLib = require(path.join(ROOT, "lib", "voice-usage.js"));
 const { buildSnapshot } = require(path.join(ROOT, "..", "moni-ai", "lib", "snapshot.js"));
 
 const arg = (name) => {
@@ -180,33 +181,48 @@ const round = (x, n) => (x == null ? null : Math.round(x * 10 ** n) / 10 ** n);
   const vcfg = { key, model: "gpt-realtime-mini", voice: "marin" }; // with the clip cache, as in production
   const results = [];
 
-  /** One desk call with optional real speech of each released line, in order. */
+  /**
+   * One desk call with optional real speech of each released line: streamed,
+   * in order, exactly as the /desk routes do it (desk.createSpeaker over
+   * voice.speakStream). first audio = the first audio chunk ready to go out.
+   */
   async function speakLines(fn) {
     const spoken = [];
-    let chain = Promise.resolve();
     const t0 = Date.now();
-    let firstAudio = null;
-    const onLine = (line, atMs) => {
-      if (!SPEAK) return spoken.push({ text: line.text, released_ms: atMs });
-      const clip = voice.speak(line.text, vcfg).catch((e) => ({ error: e.message }));
-      chain = chain.then(async () => {
-        const out = await clip;
-        const ready = Date.now() - t0;
-        if (firstAudio === null && out && out.wav) firstAudio = ready;
-        spoken.push({
-          text: line.text,
-          released_ms: atMs,
-          audio_ready_ms: ready,
-          audio_s: out && out.wav ? round((out.wav.length - 44) / 48000, 2) : 0,
-          speech_usd: desk.speechCost(out, vcfg.model, line.text),
-          speech_tokens: out && out.usage ? desk.tokensOf(out.usage) : null,
-          engine: out && (out.fallback ? "tts" : out.cached ? "cache" : out.error ? "error" : "realtime"),
-        });
+    if (!SPEAK) {
+      const r = await fn((line, atMs) => spoken.push({ text: line.text, released_ms: atMs }));
+      return { r, spoken, firstAudio: null, speech_usd: 0, audio_s: 0 };
+    }
+    const wire = [];
+    const released = [];
+    const sp = desk.createSpeaker({ speak: voice.speakStream, cfg: vcfg, write: (o) => wire.push({ ...o, at: Date.now() - t0 }), t0 });
+    const r = await fn((line, atMs) => {
+      released.push(atMs);
+      sp.push(line);
+    });
+    const done = await sp.done();
+    const late = await done.lateBilling;
+    wire.filter((o) => o.type === "line").forEach((l) => {
+      const mine = wire.filter((o) => o.i === l.i && o.type !== "line");
+      const audio = mine.filter((o) => o.type === "audio");
+      const end = mine.find((o) => o.type === "end") || {};
+      spoken.push({
+        text: l.text,
+        released_ms: released[l.i],
+        first_audio_ms: audio.length ? audio[0].at : null,
+        audio_s: round(audio.reduce((n, o) => n + Buffer.from(o.pcm, "base64").length, 0) / 48000, 2),
+        cuts: mine.filter((o) => o.type === "cut").length,
+        // how long the failed reading had been playing when it was cut (the page
+        // starts a line 60 ms after its first chunk; negative = cut before a sound)
+        cut_heard_ms: (() => {
+          const c = mine.find((o) => o.type === "cut");
+          return c && audio.length && audio[0].at <= c.at ? c.at - audio[0].at - 60 : null;
+        })(),
+        engine: end.skipped ? "skipped" : end.engine === "cache" ? "cache" : end.fallback ? "tts" : "realtime",
       });
-    };
-    const r = await fn(onLine);
-    await chain;
-    return { r, spoken, firstAudio, speech_usd: spoken.reduce((n, s) => n + (s.speech_usd || 0), 0), audio_s: spoken.reduce((n, s) => n + (s.audio_s || 0), 0) };
+    });
+    const speech_usd = usageLib.billingCost(done.billing) + usageLib.billingCost(late);
+    return { r, spoken, firstAudio: done.firstAudio, speech_usd, audio_s: spoken.reduce((n, s) => n + (s.audio_s || 0), 0) };
   }
 
   if (SPEAK) voice.warm(vcfg);
@@ -384,6 +400,12 @@ const round = (x, n) => (x == null ? null : Math.round(x * 10 ** n) / 10 ** n);
   };
   console.log("\nby kind (medians, from the end of the utterance; transcription not included):");
   for (const [k, v] of Object.entries(lat)) console.log(`  ${k.padEnd(12)} ${JSON.stringify(v)}`);
+  const heardLines = [...all.flatMap((t) => t.spoken || []), ...summaries.flatMap((x) => x.spoken || [])].filter((s) => s.engine);
+  if (heardLines.length) {
+    const by = (e) => heardLines.filter((s) => s.engine === e).length;
+    lat.speech_lines = { lines: heardLines.length, realtime: by("realtime"), fallback: by("tts"), cut_mid_stream: heardLines.filter((s) => s.cuts).length, cut_heard_ms: heardLines.filter((s) => s.cuts).map((s) => s.cut_heard_ms), cached: by("cache"), skipped: by("skipped") };
+    console.log(`\nspeech (streamed): ${JSON.stringify(lat.speech_lines)}`);
+  }
   const speechTokens = [...all.flatMap((t) => t.spoken || []), ...summaries.flatMap((x) => x.spoken || [])].filter((s) => s.speech_tokens);
   if (speechTokens.length) {
     const sum = speechTokens.reduce((a, s) => desk.addTokens(a, s.speech_tokens), {});

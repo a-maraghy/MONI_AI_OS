@@ -23,8 +23,9 @@
  * cc-panels.js, handed this file's helpers and state (the CC object below).
  *
  * Voice goes through OpenAI, on the server only: the page posts its recording
- * to /moni-ai/api/transcribe and each sentence of a reply to /moni-ai/api/speak
- * (a WAV comes back), with the same end-of-utterance detection and barge-in.
+ * to /moni-ai/api/transcribe and each sentence of a reply to /moni-ai/api/speak,
+ * whose audio streams back as PCM chunks (NDJSON) and starts playing with the
+ * first one, with the same end-of-utterance detection and barge-in.
  * No key set, no voice: the controls say where to add one.
  *
  * Only this VPS is shown. The live Odoo server appears nowhere on this page.
@@ -42,8 +43,6 @@
   // The voice front desk (GPT, trial): switched on by an administrator in
   // Settings. When off -- the default -- nothing below changes behaviour.
   var DESK = READY && root.getAttribute("data-voice-desk") === "1";
-  // Today's desk budget was already spent when the page loaded: direct path, said so.
-  var DESK_OVER = READY && root.getAttribute("data-voice-desk-over") === "1";
 
   /* ================================================================ helpers */
 
@@ -452,7 +451,7 @@
     if (c.rules_user != null || c.rules_builtin != null) setCore("rules", String((c.rules_user || 0) + (c.rules_builtin || 0)), "", (c.rules_user || 0) + " of yours · " + (c.rules_builtin || 0) + " built in");
     else setCore("rules", "—", "off", "");
 
-    setCore("voice", Voice.listening ? "live" : READY ? "ready" : "no key", Voice.listening ? "warn" : READY ? "ok" : "off", READY ? "OpenAI · " + (VOICE || "voice") + (DESK ? " · front desk (GPT, trial)" : DESK_OVER ? " · front desk budget used today, direct" : "") : "Add an OpenAI key in Settings to use voice");
+    setCore("voice", Voice.listening ? "live" : READY ? "ready" : "no key", Voice.listening ? "warn" : READY ? "ok" : "off", READY ? "OpenAI · " + (VOICE || "voice") + (DESK ? " · front desk (GPT, trial)" : "") : "Add an OpenAI key in Settings to use voice");
 
     var pend = pendingApprovals().length;
     var mins = Math.round((st.approval_timeout_s || 300) / 60);
@@ -666,6 +665,7 @@
       if (r && r.turn) {
         var tr = upsertTurn(r.turn);
         if (opts.voice || Voice.speakAll) {
+          Voice.tag(r.turn.id, { vt: opts.vt || "t" + r.turn.id, cat: "direct" });
           // The turn may already be over by the time this reply lands: read it now.
           if (tr && tr.ended_at && aiText(tr)) Voice.flush(tr.id, aiText(tr));
           else voiceTurns.add(r.turn.id);
@@ -1498,7 +1498,8 @@
      Record, notice the end of an utterance from the level, have the server
      transcribe it with OpenAI, send; read the reply back sentence by sentence
      as it streams (each sentence spoken by OpenAI's realtime voice on the
-     server and returned as a WAV, the next one fetched while this one plays);
+     server, its audio streamed back and played from the first chunk, the
+     next ones fetched while this one plays);
      and stop talking the moment you talk over it. The browser only ever talks
      to this panel. Without a key the controls stay off and say so. */
 
@@ -1507,7 +1508,7 @@
     var speakBtn = $("cc-speak-toggle");
     var api_ = {
       on: false, listening: false, speaking: false, speakAll: false,
-      say: function () {}, feed: function () {}, flush: function () {}, unlock: function () {}, summary: function () {},
+      say: function () {}, feed: function () {}, flush: function () {}, unlock: function () {}, summary: function () {}, tag: function () {},
     };
     var AC = window.AudioContext || window.webkitAudioContext;
     var canRecord = !!(navigator.mediaDevices && window.MediaRecorder && AC);
@@ -1530,7 +1531,9 @@
     var PTT_TAIL_MS = 250, PTT_KEEP_MS = 60000, keepTimer = 0;
     var spoken = 0, queue = [], busy = false, loudFor = 0, gen = 0, clipAt = 0, lastSkipToast = 0;
     // What the voice did, for the console and for tests: window.__moniVoice.
-    var diag = window.__moniVoice = { fetched: 0, played: 0, playedSeconds: 0, skipped: 0, blocked: 0, bargeIns: 0, engines: [], said: [] };
+    // items: one record per sentence played -- when it was asked for, when its
+    // first chunk arrived, when it started playing, when its stream ended.
+    var diag = window.__moniVoice = { fetched: 0, played: 0, playedSeconds: 0, skipped: 0, blocked: 0, bargeIns: 0, cuts: 0, engines: [], said: [], items: [], cutAt: [] };
 
     // Wave bars for the voice bar, driven by the real level.
     var BARS = 44;
@@ -1635,63 +1638,130 @@
       renderRail();
     }
 
-    /* ---- speaking: fetch ahead, play in order, drop everything on barge-in ---- */
-    function fetchClip(text) {
+    /* ---- speaking, streamed: every sentence is a stream of PCM chunks that
+       starts to play as soon as its first chunk arrives. The server reads the
+       sentence (OpenAI, verbatim-checked while it streams) and sends
+       start / audio / cut / end; a cut means that reading failed the check
+       mid-way -- what plays of it stops at once, and the fallback's reading of
+       the whole sentence follows in the same stream. Sentences are fetched a
+       few ahead and play strictly in order; talking over them drops them all.
+       Everything goes through one gain node per reading into the analyser, so
+       the seed core pulses with the real output level. ---- */
+    var RATE = 24000, PREBUF = 0.06, FADE = 0.012;
+    var current = null; // the stream playing now: { stop() }
+
+    function newStream(text, meta) {
+      return { text: text, meta: meta || {}, chunks: [], ended: false, skipped: "", engine: "", cuts: 0, listener: null, ctrl: null,
+        t: { asked: Date.now(), first: 0, end: 0, play: 0 } };
+    }
+    function pcmToFloat(b64) {
+      var bin = atob(b64), n = bin.length >> 1, out = new Float32Array(n);
+      for (var i = 0; i < n; i++) {
+        var v = bin.charCodeAt(2 * i) | (bin.charCodeAt(2 * i + 1) << 8);
+        out[i] = (v >= 32768 ? v - 65536 : v) / 32768;
+      }
+      return out;
+    }
+    function streamEvent(st, ev) {
+      if (!st || st.ended) return;
+      if (ev.type === "start") { st.engine = ev.engine || ""; if (ev.engine) diag.engines.push(ev.engine); }
+      else if (ev.type === "audio" && ev.pcm) {
+        if (!st.t.first) st.t.first = Date.now();
+        try { st.chunks.push(pcmToFloat(ev.pcm)); } catch (e) { return; }
+        if (st.listener) st.listener("audio");
+      } else if (ev.type === "cut") {
+        // The reading failed the verbatim check part-way: drop what is held
+        // of it; if it is playing, the listener stops it now.
+        st.cuts++;
+        diag.cuts++;
+        st.chunks = [];
+        console.info("[voice] cut a reading that did not match the text (" + (ev.why || "unfaithful") + "); the fallback reads it again");
+        if (st.listener) st.listener("cut");
+      } else if (ev.type === "end" || ev.type === "skipped" || ev.type === "error") {
+        st.ended = true;
+        st.t.end = Date.now();
+        if (ev.type === "skipped" || ev.skipped) st.skipped = ev.why || ev.skipped || "unfaithful";
+        else if (ev.type === "error") st.skipped = ev.code || "error";
+        if (st.listener) st.listener("end");
+      }
+    }
+    function skippedNote(st) {
+      diag.skipped++;
+      if (st.skipped !== "unfaithful") return;
+      console.warn("[voice] not read aloud (the voice would not read it as written):", st.text);
+      var now = Date.now();
+      if (now - lastSkipToast > 10000) { lastSkipToast = now; toast("One sentence was not read aloud. It is on the screen."); }
+    }
+    function readNdjson(r, onEvent) {
+      var reader = r.body.getReader(), dec = new TextDecoder(), buf = "";
+      function take(line) {
+        if (!line.trim()) return;
+        var ev;
+        try { ev = JSON.parse(line); } catch (e) { return; }
+        onEvent(ev);
+      }
+      function pump() {
+        return reader.read().then(function (x) {
+          if (x.value) {
+            buf += dec.decode(x.value, { stream: true });
+            var i;
+            while ((i = buf.indexOf("\n")) >= 0) { take(buf.slice(0, i)); buf = buf.slice(i + 1); }
+          }
+          if (x.done) { take(buf); return; }
+          return pump();
+        });
+      }
+      return pump();
+    }
+    /* The direct path: one POST per sentence, its audio streamed back. */
+    function fetchClip(st) {
       var ctrl = window.AbortController ? new AbortController() : null;
-      var clip = fetch("/moni-ai/api/speak", {
+      st.ctrl = ctrl;
+      var body = { text: st.text };
+      if (st.meta.vt) body.vt = st.meta.vt;
+      if (st.meta.cat) body.cat = st.meta.cat;
+      fetch("/moni-ai/api/speak", {
         method: "POST",
         credentials: "same-origin",
-        headers: { "Content-Type": "application/json", "X-CSRF-Token": CSRF, Accept: "audio/wav, application/json" },
-        body: JSON.stringify({ text: text }),
+        headers: { "Content-Type": "application/json", "X-CSRF-Token": CSRF, Accept: "application/x-ndjson" },
+        body: JSON.stringify(body),
         signal: ctrl ? ctrl.signal : undefined,
       }).then(function (r) {
-        // 204: the voice would not read this sentence as written, so it is
-        // skipped -- the words are on the screen, and invented speech is worse.
-        if (r.status === 204) {
-          diag.skipped++;
-          console.warn("[voice] not read aloud (the voice would not read it as written):", text);
-          var now = Date.now();
-          if (now - lastSkipToast > 10000) { lastSkipToast = now; toast("One sentence was not read aloud. It is on the screen."); }
-          return null;
+        if (!r.ok) {
+          return r.json().catch(function () { return {}; }).then(function (j) {
+            if (j.code === "no-key") toast("Voice needs an OpenAI key. Add one in Settings.", true);
+            streamEvent(st, { type: "error", code: j.code || "error" });
+          });
         }
-        if (r.ok) { diag.fetched++; diag.engines.push(r.headers.get("X-Voice-Engine") || ""); return r.arrayBuffer(); }
-        return r.json().catch(function () { return {}; }).then(function (j) {
-          if (j.code === "no-key") toast("Voice needs an OpenAI key. Add one in Settings.", true);
-          return null;
-        });
-      }).catch(function () { return null; });
-      return { clip: clip, ctrl: ctrl };
+        diag.fetched++;
+        return readNdjson(r, function (ev) { streamEvent(st, ev); });
+      }).catch(function () { /* aborted, or the network */ }).then(function () {
+        if (!st.ended) streamEvent(st, { type: "error", code: "network" });
+      });
     }
     function prefetch() {
       for (var i = 0; i < queue.length && i < AHEAD; i++) {
-        if (!queue[i].clip) { var f = fetchClip(queue[i].text); queue[i].clip = f.clip; queue[i].ctrl = f.ctrl; }
+        if (!queue[i].fetched && !queue[i].remote) { queue[i].fetched = true; fetchClip(queue[i]); }
       }
     }
-    /* A line the front desk already spoke on the server: its WAV arrives with
-       the answer, so it joins the queue ready to play. */
-    function enqueueAudio(text, b64) {
-      if (!READY) return;
-      var clip = null;
-      if (b64) {
-        try {
-          var bin = atob(b64), bytes = new Uint8Array(bin.length);
-          for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-          clip = Promise.resolve(bytes.buffer);
-        } catch (e) { clip = null; }
-      }
-      if (!clip) return enqueue(text);
-      diag.said.push(String(text || "").slice(0, 780));
-      diag.engines.push("desk");
-      queue.push({ text: String(text || ""), clip: clip });
+    /* A line the front desk is speaking on the server: its audio arrives in
+       the desk's own stream (deskLine), so it joins the queue as it is. */
+    function enqueueRemote(text) {
+      var st = newStream(String(text || ""));
+      st.remote = true;
+      if (!READY) return st;
+      diag.said.push(st.text.slice(0, 780));
+      queue.push(st);
       prefetch();
       pump();
+      return st;
     }
-    function enqueue(piece) {
+    function enqueue(piece, meta) {
       if (!READY) return;
       var say = speakable(piece);
       if (say.length < 2 || !/[a-z0-9]/i.test(say)) return;
       diag.said.push(say.slice(0, 780));
-      queue.push({ text: say.slice(0, 780) });
+      queue.push(newStream(say.slice(0, 780), meta));
       prefetch();
       pump();
     }
@@ -1715,23 +1785,91 @@
       document.addEventListener("pointerdown", go, true);
       document.addEventListener("keydown", go, true);
     }
-    function play(ab, my) {
-      var c = outContext();
-      if (!c) return Promise.resolve();
-      var ready = c.state === "running" || !c.resume ? Promise.resolve() : c.resume().catch(function () { /* reported below */ });
-      return ready.then(function () {
-        if (c.state !== "running") blocked(c);
-        return new Promise(function (resolve) {
-          c.decodeAudioData(ab, function (buf) {
-            if (my !== gen) return resolve();
-            source = c.createBufferSource();
-            source.buffer = buf;
-            source.connect(outAn);
-            source.onended = function () { source = null; diag.played++; diag.playedSeconds += buf.duration; resolve(); };
-            clipAt = Date.now();
-            source.start();
-          }, function (e) { console.warn("[voice] could not decode a clip", e); resolve(); });
-        });
+    /* Play one sentence's stream: schedule each chunk right after the one
+       before it (a short lead on the first, and after any underrun), stop at
+       once on a cut, resolve when the stream has ended and the last chunk has
+       played. */
+    function playStream(st, my) {
+      return new Promise(function (resolve) {
+        var c = outContext();
+        if (!c) { resolve(); return; }
+        if (c.state !== "running" && c.resume) c.resume().then(function () { if (c.state !== "running") blocked(c); }, function () { blocked(c); });
+        var gain = null, gains = [], at = 0, live = [], started = false, finished = false, rec = null;
+        function freshGain() { gain = c.createGain(); gain.connect(outAn); gains.push(gain); at = 0; }
+        freshGain();
+        function done() {
+          if (finished) return;
+          finished = true;
+          st.listener = null;
+          // Let any fade finish, then take this reading's gain nodes off the graph.
+          setTimeout(function () { gains.forEach(function (g) { try { g.disconnect(); } catch (e) { /* gone */ } }); }, 200);
+          if (current && current.st === st) current = null;
+          resolve();
+        }
+        function stopLive(fade) {
+          var t = c.currentTime;
+          if (fade) {
+            try { gain.gain.cancelScheduledValues(t); gain.gain.setValueAtTime(gain.gain.value, t); gain.gain.linearRampToValueAtTime(0, t + FADE); } catch (e) { /* closed */ }
+          }
+          live.forEach(function (s) { s.onended = null; try { s.stop(fade ? t + FADE + 0.003 : 0); } catch (e) { /* ended */ } });
+          live = [];
+          source = null;
+        }
+        function maybeDone() {
+          if (!st.ended || live.length || st.chunks.length) return;
+          if (!started || st.skipped) skippedNote(st);
+          else { diag.played++; if (rec) rec.done = Date.now(); }
+          done();
+        }
+        function drain() {
+          if (my !== gen) { stopLive(true); return done(); }
+          while (st.chunks.length) {
+            var f = st.chunks.shift();
+            if (!f.length) continue;
+            var buf = c.createBuffer(1, f.length, RATE);
+            buf.getChannelData(0).set(f);
+            var s = c.createBufferSource();
+            s.buffer = buf;
+            s.connect(gain);
+            var now = c.currentTime;
+            if (at < now + 0.005) at = now + (started ? 0.02 : PREBUF);
+            s.start(at);
+            if (!started) {
+              started = true;
+              st.t.play = Date.now() + Math.round((at - now) * 1000);
+              clipAt = st.t.play;
+              rec = { text: st.text.slice(0, 80), engine: st.engine, asked: st.t.asked, first: st.t.first, sched: Date.now(), play: st.t.play, end: st.t.end || 0, cuts: 0 };
+              diag.items.push(rec);
+            }
+            at += buf.duration;
+            diag.playedSeconds += buf.duration;
+            live.push(s);
+            source = s;
+            s.onended = (function (node) {
+              return function () {
+                var i = live.indexOf(node);
+                if (i >= 0) live.splice(i, 1);
+                if (!live.length) source = null;
+                maybeDone();
+              };
+            })(s);
+          }
+          maybeDone();
+        }
+        current = { st: st, stop: function () { stopLive(true); done(); } };
+        st.listener = function (kind) {
+          if (my !== gen) { stopLive(true); return done(); }
+          if (kind === "end" && rec) rec.end = st.t.end;
+          if (kind === "cut") {
+            // Stop the failed reading now; the fallback's chunks start afresh.
+            if (rec) rec.cuts++;
+            diag.cutAt.push({ text: st.text.slice(0, 80), at: Date.now(), playing: live.length > 0 });
+            stopLive(true);
+            freshGain();
+          }
+          drain();
+        };
+        drain();
       });
     }
     function pump() {
@@ -1743,10 +1881,7 @@
       setUi();
       var item = queue.shift(), my = gen;
       prefetch();
-      item.clip.then(function (ab) {
-        if (my !== gen || !ab) return;
-        return play(ab, my);
-      }).then(function () {
+      playStream(item, my).then(function () {
         if (my !== gen) return;
         busy = false;
         if (queue.length) return pump();
@@ -1754,17 +1889,25 @@
         loudFor = 0;
         if (api_.on && !(S.status && S.status.busy)) listen(true);
         setUi();
+        usageSoon();
       });
     }
-    /** Stop speaking now: the clip playing, the ones fetched, the ones asked for. */
+    /** Stop speaking now: the stream playing, the ones fetched, the ones asked for. */
     function silence() {
       gen++;
-      queue.forEach(function (q) { if (q.ctrl) { try { q.ctrl.abort(); } catch (e) { /* done */ } } });
+      queue.forEach(function (q) { q.listener = null; if (q.ctrl) { try { q.ctrl.abort(); } catch (e) { /* done */ } } });
       queue = [];
-      if (source) { try { source.onended = null; source.stop(); } catch (e) { /* ended */ } source = null; }
+      if (current) { var cur = current; current = null; cur.stop(); if (cur.st.ctrl) { try { cur.st.ctrl.abort(); } catch (e) { /* done */ } } }
+      source = null;
       busy = false;
       api_.speaking = false;
       loudFor = 0;
+    }
+    /* The usage figures follow a voice turn, once its speech is done. */
+    var usageTimer = 0;
+    function usageSoon() {
+      clearTimeout(usageTimer);
+      usageTimer = setTimeout(function () { if (P && P.loadVoiceUsage) P.loadVoiceUsage(); }, 900);
     }
 
     function bargeIn() {
@@ -1772,7 +1915,9 @@
       diag.bargeIns++;
       console.info("[voice] cut in: you spoke over the reply, so the rest of it is not read");
       silence();
-      recording(true);
+      // Hold-to-talk opens the microphone itself; a reply read aloud to typed
+      // text may have none open yet (MediaRecorder would throw on no stream).
+      if (stream) recording(true);
       vbText.textContent = "Listening…";
       setUi();
     }
@@ -1844,36 +1989,50 @@
 
     /* Front desk mode: the recording goes to the desk, which answers from the
        snapshot, makes small talk, or passes the request to MONI AI. Its
-       sentences stream in one by one, each already checked and spoken on the
-       server, and play as they arrive. MONI AI's answer is later summarised
-       aloud (deskSummary); its full text is on screen as always. */
-    function deskSend(blob, data, wasPtt) {
-      var lines = 0;
-      apiStream("desk/turn", { data: data, mime: blob.type }, function (ev) {
+       sentences arrive one by one, each already checked, and their audio is
+       streamed in the same response as it is read on the server -- each
+       sentence starts playing with its first chunk. MONI AI's answer is later
+       summarised aloud (deskSummary); its full text is on screen as always. */
+    function deskLines(my) {
+      var lines = {};
+      return {
+        count: 0,
+        take: function (ev) {
+          if (ev.type === "line") {
+            if (my !== gen) return false; // talked over: the rest is not read
+            this.count++;
+            lines[ev.i] = enqueueRemote(ev.text);
+            return true;
+          }
+          if (ev.i != null && lines[ev.i]) streamEvent(lines[ev.i], ev);
+          return false;
+        },
+      };
+    }
+    function deskSend(blob, data, wasPtt, vt) {
+      var dl = deskLines(gen);
+      apiStream("desk/turn", { data: data, mime: blob.type, vt: vt }, function (ev) {
         if (ev.type === "heard") {
           if (ev.text) vbText.textContent = "“" + clip(ev.text, 80) + "”";
-        } else if (ev.type === "line") {
-          lines++;
-          enqueueAudio(ev.text, ev.audio);
         } else if (ev.type === "asked" && ev.turn) {
           var t = ev.turn, tr = upsertTurn(t);
+          tags.set(t.id, { vt: vt, cat: "handoff" });
           if (tr && tr.ended_at && aiText(tr)) deskSummary(tr.id, aiText(tr));
           else deskTurns.add(t.id);
           showPane("conv");
-        }
+        } else dl.take(ev);
       }).then(function (d) {
         if (d.guard) console.info("[voice] the front desk's guard replaced a reply (" + d.guard.rule + ")");
-        if (d.budget && d.budget.over) budgetReached("Today's voice front desk budget is used up. Your next words go straight to MONI AI.");
-        if (!lines && api_.on && !busy) listen(true);
+        if (d.usage && P && P.setVoiceUsage) P.setVoiceUsage(d.usage);
+        if (!dl.count && api_.on && !busy) listen(true);
       }).catch(function (e) {
-        if (e.code === "desk-off" || e.code === "desk-budget") {
-          // Switched off in Settings, or today's budget is spent: go direct.
-          if (e.code === "desk-budget") budgetReached(e.message);
-          else { DESK = false; paintMode(); }
+        if (e.code === "desk-off") {
+          // Switched off in Settings: go direct.
+          DESK = false; paintMode();
           return transcribeAndSend(blob, wasPtt);
         }
         if (e.message !== "nothing said") toast("The front desk could not answer: " + e.message, true);
-        if (!lines) enqueue("Sorry, I didn't catch that.");
+        if (!dl.count) enqueue("Sorry, I didn't catch that.");
         if (api_.on) listen(true);
       }).then(function () {
         if (!api_.on && wasPtt) keepStream();
@@ -1881,56 +2040,49 @@
       });
     }
     /* MONI AI's answer to a request the desk passed on: a short summary,
-       spoken sentence by sentence. Read word for word instead when the desk
-       says so (a short, plain reply), and whenever the desk cannot: switched
-       off, over budget, or failing -- the direct path, as before. */
+       spoken sentence by sentence as it streams. Read word for word instead
+       when the desk says so (a short, plain reply), and whenever the desk
+       cannot: switched off, or failing -- the direct path, as before. */
     function deskSummary(id, text) {
+      var meta = tags.get(id) || { cat: "handoff" };
       if (!DESK) return api_.flush(id, text);
-      var lines = 0;
-      apiStream("desk/summary", { turn: id }, function (ev) {
-        if (ev.type === "line") { lines++; enqueueAudio(ev.text, ev.audio); }
-      }).then(function (d) {
-        if (d.fallback === "verbatim" || d.pending || !lines) return api_.flush(id, text);
-        if (d.budget && d.budget.over) budgetReached("Today's voice front desk budget is used up. Your next words go straight to MONI AI.");
+      var dl = deskLines(gen);
+      apiStream("desk/summary", { turn: id, vt: meta.vt }, function (ev) { dl.take(ev); }).then(function (d) {
+        if (d.usage && P && P.setVoiceUsage) P.setVoiceUsage(d.usage);
+        if (d.fallback === "verbatim" || d.pending || !dl.count) return api_.flush(id, text);
         if (api_.on && !busy && !queue.length) listen(true);
       }).catch(function (e) {
-        if (e.code === "desk-budget") budgetReached(e.message);
-        else if (e.code === "desk-off") { DESK = false; paintMode(); }
+        if (e.code === "desk-off") { DESK = false; paintMode(); }
         else console.warn("[voice] the front desk could not summarise; reading the answer as written:", e.message);
-        if (!lines) api_.flush(id, text);
+        if (!dl.count) api_.flush(id, text);
       });
-    }
-    function budgetReached(msg) {
-      var was = DESK;
-      DESK = false;
-      DESK_OVER = true;
-      paintMode();
-      if (was) toast(msg || "Today's voice front desk budget is used up. Voice goes straight to MONI AI until midnight (Cairo).", true);
     }
     function paintMode() {
       var tag = $("cc-voice-mode");
       if (!tag) return;
-      tag.textContent = DESK ? "Front desk · GPT" : DESK_OVER ? "Direct · desk budget used" : "Direct · MONI AI";
+      tag.textContent = DESK ? "Front desk · GPT" : "Direct · MONI AI";
       tag.classList.toggle("desk", DESK);
-      tag.classList.toggle("over", !DESK && DESK_OVER);
-      if (!DESK && DESK_OVER) tag.title = "Today's voice front desk budget is used up, so voice goes straight to MONI AI until midnight (Cairo). Settings › OpenAI voice.";
       renderRail();
     }
+    /* A voice turn's id, for the usage figures: sent with its transcription,
+       its desk turn and every sentence spoken for it. */
+    function newVt() { return "v" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
 
     function transcribeAndSend(blob, wasPttAgain) {
       var wasPtt = wasPttAgain === undefined ? ptt : wasPttAgain;
+      var vt = newVt();
       ptt = false;
       listen(false);
       vbText.textContent = "Transcribing…";
       setUi();
       var reader = new FileReader();
       reader.onload = function () {
-        if (DESK) return deskSend(blob, String(reader.result).split(",")[1] || "", wasPtt);
-        api("transcribe", { body: { data: String(reader.result).split(",")[1] || "", mime: blob.type } }).then(function (d) {
+        if (DESK) return deskSend(blob, String(reader.result).split(",")[1] || "", wasPtt, vt);
+        api("transcribe", { body: { data: String(reader.result).split(",")[1] || "", mime: blob.type, vt: vt } }).then(function (d) {
           var said = String(d.text || "").trim();
           if (!said || /^[\[(]/.test(said)) throw new Error("nothing said");
           vbText.textContent = "“" + clip(said, 80) + "”";
-          return send(said, { voice: true, acked: true });
+          return send(said, { voice: true, acked: true, vt: vt });
         }).catch(function (e) {
           if (e.message !== "nothing said") toast("Could not transcribe that: " + e.message, true);
           enqueue("Sorry, I didn't catch that.");
@@ -1974,7 +2126,7 @@
     // "On it." should play the instant a spoken turn is sent; asking for it
     // once here puts it in the server's cache before it is needed.
     var warmed = false;
-    function warm() { if (!warmed && READY) { warmed = true; fetchClip("On it."); } }
+    function warm() { if (!warmed && READY) { warmed = true; fetchClip(newStream("On it.")); } }
 
     /* "On it." the moment the recording ends: it is cached on the server, so it
        plays while the words are still being transcribed. */
@@ -2046,6 +2198,9 @@
       if (!api_.speakAll && !api_.on) { silence(); setUi(); }
     });
 
+    // What each turn's speech is counted as: {vt, cat}, set by send() and the desk.
+    var tags = new Map();
+    api_.tag = function (id, meta) { if (id != null && meta) tags.set(id, meta); };
     api_.unlock = function () { if (READY) outContext(); };
     api_.summary = function (id, text) { if (READY) deskSummary(id, text); };
     api_.say = function (text) { if (READY) enqueue(text); };
@@ -2056,18 +2211,20 @@
       var rest = text.slice(offsetAfter(text, spoken));
       var found = pieces(rest, spoken === 0);
       spoken += nonSpace(rest.slice(0, found.consumed));
-      found.list.forEach(enqueue);
+      var meta = tags.get(id);
+      found.list.forEach(function (p) { enqueue(p, meta); });
     };
     api_.flush = function (id, text) {
       text = String(text || "");
       if (id !== spokenTurn) { spokenTurn = id; spoken = 0; }
       var rest = text.slice(offsetAfter(text, spoken));
       var found = pieces(rest, spoken === 0);
-      found.list.forEach(enqueue);
+      var meta = tags.get(id);
+      found.list.forEach(function (p) { enqueue(p, meta); });
       var tail = rest.slice(found.consumed).trim();
       spoken = 0;
       spokenTurn = null;
-      if (tail) enqueue(tail);
+      if (tail) enqueue(tail, meta);
       if (api_.on && !busy && !queue.length) listen(true);
     };
     return api_;

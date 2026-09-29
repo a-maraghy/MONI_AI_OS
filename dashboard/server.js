@@ -40,6 +40,7 @@ const rbac = require("./lib/rbac");
 const totp = require("./lib/totp");
 const voice = require("./lib/voice");
 const voiceDesk = require("./lib/voice-desk");
+const voiceUsage = require("./lib/voice-usage");
 const chrome = require("./lib/chrome");
 const memgraph = require("./lib/memgraph");
 const pulse = require("./lib/pulse");
@@ -1826,23 +1827,47 @@ function voiceDeskOn() {
 }
 
 /**
- * The desk's daily budget (USD, Africa/Cairo days), tracked here from the real
- * `usage` OpenAI reports for every desk response and every line it speaks.
- * Over it, the desk refuses with 409 "desk-budget" and the page falls back to
- * the direct path, saying so. Also a panel setting.
+ * What the voice costs, recorded here from the real usage OpenAI reports for
+ * every call -- transcription, the desk's responses, every sentence spoken --
+ * per voice turn and per kind of turn (lib/voice-usage.js). Shown in the
+ * Command Center's Cost today card. No cap (the administrator's decision of
+ * 2026-09-29): the desk is never refused for what it has spent.
  */
-const deskBudget = voiceDesk.createBudget({ get: (k) => db.getSetting(k, null), set: (k, v, by) => db.setSetting(k, v, by || "voice front desk") });
-function deskBudgetStatus() {
+const voiceLedger = voiceUsage.createLedger({ insert: (r) => db.voiceUsageInsert(r), rowsSince: (ms) => db.voiceUsageSince(ms) });
+function voiceUsageSummary() {
   try {
-    return deskBudget.status();
-  } catch (_) {
-    return { over: false, spent: 0, limit: voiceDesk.DEFAULT_BUDGET_USD, turns: 0, summaries: 0 };
+    return voiceLedger.summary();
+  } catch (e) {
+    return { error: e.message };
   }
 }
+/** Record priced calls; a failure to record never fails the voice. */
+function recordVoice(fn) {
+  try {
+    return fn() || 0;
+  } catch (e) {
+    console.log("voice usage: could not record: " + e.message);
+    return 0;
+  }
+}
+/** Speech billing now, and the late part (cut readings) when it lands. */
+function recordSpeech({ vt, cat, actor, billing, lateBilling }) {
+  const usd = recordVoice(() => voiceLedger.addBilling({ vt, cat, actor, billing }));
+  if (lateBilling) lateBilling.then((more) => more && more.length && recordVoice(() => voiceLedger.addBilling({ vt, cat, actor, billing: more })), () => {});
+  return usd;
+}
+function recordTranscription({ vt, actor, heard }) {
+  if (!heard || !heard.tokens) return 0;
+  return recordVoice(() => voiceLedger.add({ vt, part: "transcription", model: heard.model, tokens: heard.tokens, actor }).usd);
+}
+function bodyVt(req) {
+  return voiceUsage.cleanVt(req.body && req.body.vt);
+}
+
 /**
- * A refusal the page expects (desk off, budget spent). 409 for a plain JSON
- * caller; a streaming page gets it as its first and only line, so a normal
- * fallback does not show up in the browser console as a failed request.
+ * A refusal the page expects (desk off). 409 for a plain JSON caller; a
+ * streaming page gets it as its first and only line, so a normal fallback
+ * does not show up in the browser console as a failed request.
  */
 function deskRefuse(req, res, body) {
   if (/application\/x-ndjson/.test(String(req.get("accept") || ""))) {
@@ -1850,46 +1875,6 @@ function deskRefuse(req, res, body) {
     return res.end(JSON.stringify({ type: "refused", ...body }) + "\n");
   }
   return res.status(409).json(body);
-}
-function deskBudgetRefusal(req, res, b) {
-  return deskRefuse(req, res, {
-    error: `Today's voice front desk budget ($${b.limit.toFixed(2)}) is used up. Voice goes straight to MONI AI until midnight (Cairo).`,
-    code: "desk-budget",
-    budget: { limit: b.limit, spent: Math.round(b.spent * 10000) / 10000 },
-  });
-}
-
-/**
- * Speak the desk's lines as they are released, in order, while the desk goes
- * on writing. Each line is read by the ordinary verbatim reader; what that
- * reading cost is added up for the budget.
- */
-function deskSpeaker(cfg, write, t0) {
-  let chain = Promise.resolve();
-  let speechUsd = 0;
-  let firstAudio = null;
-  const spoken = [];
-  return {
-    push(line) {
-      const clip = voice.speak(line.text, cfg).then(
-        (out) => {
-          speechUsd += voiceDesk.speechCost(out, cfg.model, line.text);
-          return out.wav;
-        },
-        () => null
-      );
-      chain = chain.then(async () => {
-        const wav = await clip;
-        if (firstAudio === null && wav) firstAudio = Date.now() - t0;
-        spoken.push({ text: line.text, safe: !!line.safe, audio_s: wav ? Math.round(((wav.length - 44) / (voice.RATE * 2)) * 100) / 100 : 0 });
-        write({ type: "line", text: line.text, safe: !!line.safe, audio: wav ? wav.toString("base64") : null });
-      });
-    },
-    async done() {
-      await chain;
-      return { speechUsd, firstAudio, spoken };
-    },
-  };
 }
 
 function ndjson(res) {
@@ -1944,8 +1929,7 @@ async function voicePublic(req) {
     voice: cfg.voice,
     provider: "OpenAI",
     manage: !!(req && req.perm && req.perm.can("voice.manage")),
-    desk: !!cfg.key && voiceDeskOn() && !deskBudgetStatus().over,
-    deskOver: !!cfg.key && voiceDeskOn() && deskBudgetStatus().over,
+    desk: !!cfg.key && voiceDeskOn(),
   };
 }
 
@@ -1969,8 +1953,10 @@ async function voiceTranscribeRoute(req, res) {
     cfg = await voiceConfig();
     // Speech is wanted next ("On it.", then the reply): open a socket now.
     voice.warm(cfg);
-    const text = await voice.transcribe(audio, cfg, AUDIO_MIME_RE.test(mime) ? mime : "audio/webm");
-    voiceLog("transcribe", 200, { model: cfg.transcribe_model, ms: Date.now() - t0, bytes: audio.length, words: text.split(/\s+/).filter(Boolean).length });
+    const heard = await voice.transcribeFull(audio, cfg, AUDIO_MIME_RE.test(mime) ? mime : "audio/webm");
+    const text = heard.text;
+    const usd = recordTranscription({ vt: bodyVt(req), actor: req.me && req.me.username, heard });
+    voiceLog("transcribe", 200, { model: cfg.transcribe_model, ms: Date.now() - t0, bytes: audio.length, words: text.split(/\s+/).filter(Boolean).length, usd: usd ? usd.toFixed(6) : undefined });
     res.json({ text });
   } catch (e) {
     voiceLog("transcribe", e.code || "error", { model: cfg && cfg.transcribe_model, ms: Date.now() - t0, bytes: audio.length, why: e.message });
@@ -1991,16 +1977,92 @@ function voiceLog(kind, status, f) {
   console.log(parts.join(" "));
 }
 
-/** One sentence in, a WAV out -- or 204 when the voice would not read it as written. */
+/**
+ * One sentence in, its audio out.
+ *
+ * Streamed (Accept: application/x-ndjson, what the Command Center asks for):
+ * one JSON object a line, as OpenAI produces the reading --
+ *   {type:"start", engine, rate}  a reading begins
+ *   {type:"audio", pcm}           PCM16 mono 24 kHz, base64
+ *   {type:"cut", why}             the reading failed the verbatim check (or
+ *                                 broke) mid-way: stop it and drop what came
+ *                                 since its start; a start from the fallback
+ *                                 (gpt-4o-mini-tts, which reads verbatim)
+ *                                 follows and reads the sentence from its start
+ *   {type:"end", engine, fallback, cached} | {type:"skipped", why} | {type:"error"}
+ * Whole (anything else, e.g. the console): a WAV -- or 204 when the voice
+ * would not read it as written.
+ *
+ * Body: {text, vt?, cat?} -- vt ties the sentence to a voice turn and cat says
+ * what kind (the direct path by default), for the usage figures.
+ */
 async function voiceSpeakRoute(req, res) {
   const text = typeof (req.body && req.body.text) === "string" ? req.body.text : "";
   if (!text.trim()) return res.status(400).json({ error: "Nothing to say.", code: "invalid" });
   const t0 = Date.now();
   const words = text.split(/\s+/).filter(Boolean).length;
+  const vt = bodyVt(req);
+  const cat = voiceUsage.cleanCat(req.body && req.body.cat) || "direct";
+  const actor = req.me && req.me.username;
+  const streamed = /application\/x-ndjson/.test(String(req.get("accept") || ""));
   let cfg = null;
+  if (streamed) {
+    const out = ndjson(res);
+    let started = false;
+    const write = (o) => {
+      if (!started) {
+        out.start();
+        started = true;
+      }
+      out.write(o);
+    };
+    let aborted = false;
+    res.on("close", () => (aborted = !res.writableEnded));
+    let bytes = 0;
+    try {
+      cfg = await voiceConfig();
+      const r = await voice.speakStream(text, cfg, {
+        start: ({ engine }) => write({ type: "start", engine, rate: voice.RATE }),
+        audio: (b) => {
+          bytes += b.length;
+          write({ type: "audio", pcm: b.toString("base64") });
+        },
+        cut: ({ why }) => {
+          bytes = 0;
+          write({ type: "cut", why });
+        },
+      });
+      const usd = recordSpeech({ vt, cat, actor, billing: r.billing, lateBilling: r.lateBilling });
+      voiceLog("speak", 200, {
+        engine: r.cached ? undefined : r.engine,
+        ms: Date.now() - t0,
+        first_audio_ms: r.firstAudioMs,
+        warm: r.cached ? undefined : r.warm ? 1 : 0,
+        cached: r.cached ? 1 : undefined,
+        fallback: r.fallback ? r.why || "unfaithful" : undefined,
+        cuts: r.cuts || undefined,
+        audio_s: Math.round((bytes / (voice.RATE * 2)) * 100) / 100,
+        words,
+        streamed: 1,
+        aborted: aborted ? 1 : undefined,
+        usd: usd ? usd.toFixed(6) : undefined,
+      });
+      write({ type: "end", engine: r.cached ? "cache" : r.fallback ? "fallback" : "realtime", fallback: !!r.fallback, cached: !!r.cached });
+      out.end();
+    } catch (e) {
+      if (e.billing) recordSpeech({ vt, cat, actor, billing: e.billing, lateBilling: e.lateBilling });
+      voiceLog("speak", e.code === "unfaithful" ? 204 : e.code || "error", { model: cfg && cfg.model, ms: Date.now() - t0, words, streamed: 1, why: e.message });
+      if (!started && e.code !== "unfaithful") return voiceFail(res, e);
+      // Unfaithful and no fallback: skipped -- the sentence stays on screen.
+      write(e.code === "unfaithful" ? { type: "skipped", why: "unfaithful" } : { type: "error", error: voice.scrub(e.message), code: e.code || "error" });
+      out.end();
+    }
+    return;
+  }
   try {
     cfg = await voiceConfig();
     const out = await voice.speak(text, cfg);
+    const usd = recordSpeech({ vt, cat, actor, billing: out.billing, lateBilling: out.lateBilling });
     voiceLog("speak", 200, {
       engine: out.engine || cfg.model,
       ms: Date.now() - t0,
@@ -2010,6 +2072,7 @@ async function voiceSpeakRoute(req, res) {
       fallback: out.fallback ? out.why || "unfaithful" : undefined,
       audio_s: Math.round(((out.wav.length - 44) / (voice.RATE * 2)) * 100) / 100,
       words,
+      usd: usd ? usd.toFixed(6) : undefined,
     });
     res.set({
       "Content-Type": "audio/wav",
@@ -2019,6 +2082,7 @@ async function voiceSpeakRoute(req, res) {
     });
     res.send(out.wav);
   } catch (e) {
+    if (e.billing) recordSpeech({ vt, cat, actor, billing: e.billing, lateBilling: e.lateBilling });
     voiceLog("speak", e.code === "unfaithful" ? 204 : e.code || "error", { model: cfg && cfg.model, ms: Date.now() - t0, words, why: e.message });
     // Not an error to the page: the sentence is skipped, and it stays on screen.
     // With the text-to-speech fallback this should now be rare; the page says so when it happens.
@@ -2049,7 +2113,7 @@ app.get("/credentials/openai-voice", requireAuth, requirePerm("voice.manage"), a
       user: ctx(req),
       credentials: list,
       voice: v,
-      desk: { on: voiceDeskOn(), row: db.settingRow(VOICE_DESK_SETTING), model: voiceDesk.DESK_MODEL, budget: deskBudgetStatus(), budgetRow: db.settingRow(deskBudget.LIMIT_KEY) },
+      desk: { on: voiceDeskOn(), row: db.settingRow(VOICE_DESK_SETTING), model: voiceDesk.DESK_MODEL, usage: voiceUsageSummary() },
       models: voice.MODELS,
       voices: voice.VOICES,
       transcribeModels: voice.TRANSCRIBE_MODELS,
@@ -2112,19 +2176,6 @@ app.post("/credentials/openai-voice/desk", requireAuth, requirePerm("voice.manag
       encodeURIComponent(want === "1" ? "Voice front desk is on. Reload the Command Center to use it." : "Voice front desk is off. The Command Center's voice talks to MONI AI directly again.") +
       "#v-desk"
   );
-});
-
-app.post("/credentials/openai-voice/desk-budget", requireAuth, requirePerm("voice.manage"), requireCsrf, (req, res) => {
-  const raw = String(field(req.body, "budget_usd") || "").trim().replace(/^\$/, "");
-  try {
-    if (!/^\d{1,3}(\.\d{1,2})?$/.test(raw)) throw new voiceDesk.DeskError("Give a daily budget in dollars, such as 1 or 0.50.", "invalid");
-    const before = deskBudget.limit();
-    deskBudget.setLimit(Number(raw), req.me.username);
-    db.logLogin(req.ip, req.me.username, "voice", `voice front desk daily budget $${before.toFixed(2)} -> $${deskBudget.limit().toFixed(2)}`);
-    res.redirect("/credentials/openai-voice?msg=" + encodeURIComponent(`The front desk's daily budget is now $${deskBudget.limit().toFixed(2)}.`) + "#v-desk");
-  } catch (e) {
-    res.redirect("/credentials/openai-voice?err=" + encodeURIComponent(e.message) + "#v-desk");
-  }
 });
 
 app.post("/credentials/openai-voice/test", requireAuth, requirePerm("voice.manage"), requireCsrf, async (req, res) => {
@@ -3282,23 +3333,25 @@ app.post("/moni-ai/api/speak", ...moniAiWrite, voiceSpeakRoute);
 
 /**
  * The voice front desk (TRIAL, off by default): one utterance in -- a recording,
- * or text -- and what the desk says back, streamed as NDJSON a sentence at a
- * time as each passes the guard: {type:"heard"}, then {type:"line", text,
- * audio (a WAV, base64)} per sentence, {type:"asked", turn} for a request passed
- * to MONI AI, and {type:"done"}. The page reads MONI AI's answer later through
- * /desk/summary. Refused with 409 while the Settings switch is off ("desk-off")
- * or today's budget is spent ("desk-budget"), so the page falls back to the
- * direct path.
+ * or text -- and what the desk says back, streamed as NDJSON as it happens:
+ * {type:"heard"}; per released sentence {type:"line", i, text} and then its
+ * audio as it is read -- {type:"start"|"audio"|"cut"|"end", i, ...}, strictly
+ * in sentence order (voiceDesk.createSpeaker); {type:"asked", turn} for a
+ * request passed to MONI AI; and {type:"done"} with what the turn cost and the
+ * voice usage figures. The page reads MONI AI's answer later through
+ * /desk/summary. Refused with 409 while the Settings switch is off
+ * ("desk-off"), so the page falls back to the direct path. There is no budget.
  */
 app.post("/moni-ai/api/desk/turn", requireApiPerm("moniai.use"), moniAiAudioBody, requireApiCsrf, async (req, res) => {
   if (!voiceDeskOn()) return deskRefuse(req, res, { error: "The voice front desk is off.", code: "desk-off" });
-  const budget = deskBudgetStatus();
-  if (budget.over) return deskBudgetRefusal(req, res, budget);
   const t0 = Date.now();
   const body = req.body || {};
+  const vt = bodyVt(req);
+  const actor = req.me.username;
   let cfg = null;
   let heard = "";
   let tTranscribe = null;
+  let transcribeUsd = 0;
   const out = ndjson(res);
   let started = false;
   try {
@@ -3314,21 +3367,26 @@ app.post("/moni-ai/api/desk/turn", requireApiPerm("moniai.use"), moniAiAudioBody
       const mime = String(body.mime || "").split(";")[0].trim().toLowerCase();
       desk().open(); // the socket opens while the words are transcribed
       voice.warm(cfg); // and the reader's, for the first sentence
-      heard = await voice.transcribe(Buffer.from(data, "base64"), cfg, AUDIO_MIME_RE.test(mime) ? mime : "audio/webm");
+      const h = await voice.transcribeFull(Buffer.from(data, "base64"), cfg, AUDIO_MIME_RE.test(mime) ? mime : "audio/webm");
+      heard = h.text;
+      transcribeUsd = recordTranscription({ vt, actor, heard: h });
       tTranscribe = Date.now() - t0;
     }
     out.start();
     started = true;
     out.write({ type: "heard", text: heard && !/^[\[(]/.test(heard) ? heard : "" });
     if (!heard || /^[\[(]/.test(heard)) {
-      out.write({ type: "done", asked: [], lines: 0 });
+      out.write({ type: "done", asked: [], lines: 0, cost_usd: transcribeUsd, usage: voiceUsageSummary() });
       return out.end();
     }
-    const speaker = deskSpeaker(cfg, out.write, t0);
+    const speaker = voiceDesk.createSpeaker({ speak: voice.speakStream, cfg, write: out.write, t0 });
     const r = await desk().turn(heard, { onLine: (line) => speaker.push(line) });
     for (const t of r.asked) out.write({ type: "asked", turn: t });
     const sp = await speaker.done();
-    const after = deskBudget.add({ desk_usd: r.cost_usd, speech_usd: sp.speechUsd, kind: "turn" });
+    const cat = voiceDesk.categoryOf(r);
+    const deskUsd = recordVoice(() => voiceLedger.add({ vt, cat, part: "desk", model: voiceDesk.DESK_MODEL, tokens: r.tokens, actor }).usd);
+    const speechUsd = recordSpeech({ vt, cat, actor, billing: sp.billing, lateBilling: sp.lateBilling });
+    const usage = voiceUsageSummary();
     if (r.asked.length) db.logLogin(req.ip, req.me.username, "moni-ai", "turn via the voice front desk");
     voiceLog("desk", 200, {
       ms: Date.now() - t0,
@@ -3342,15 +3400,18 @@ app.post("/moni-ai/api/desk/turn", requireApiPerm("moniai.use"), moniAiAudioBody
       refused_tools: r.rejected.length || undefined,
       lines: r.lines.length,
       audio_s: Math.round(sp.spoken.reduce((n, l) => n + l.audio_s, 0) * 100) / 100,
-      usd: (r.cost_usd + sp.speechUsd).toFixed(5),
-      day_usd: after.spent.toFixed(4),
+      cat,
+      usd: (transcribeUsd + deskUsd + speechUsd).toFixed(5),
+      day_usd: usage.today ? usage.today.total.toFixed(4) : undefined,
     });
     out.write({
       type: "done",
       asked: r.asked,
+      cat,
       guard: r.trip ? { rule: r.trip.rule } : null,
       ms: { total: Date.now() - t0, transcribe: tTranscribe, desk: r.timings.done, first_line: r.timings.firstLine, first_audio: sp.firstAudio },
-      budget: { over: after.over, spent: Math.round(after.spent * 10000) / 10000, limit: after.limit },
+      cost_usd: transcribeUsd + deskUsd + speechUsd,
+      usage,
     });
     out.end();
   } catch (e) {
@@ -3367,17 +3428,18 @@ app.post("/moni-ai/api/desk/turn", requireApiPerm("moniai.use"), moniAiAudioBody
 
 /**
  * MONI AI's answer to a request the desk passed on, as a short spoken summary
- * (streamed like /desk/turn). The full text is on screen already. {type:"done",
- * fallback:"verbatim"} tells the page to read the reply as written instead (it
- * was short and plain, or the guard cut the summary before a word was said);
- * {pending:true} that MONI AI has not answered yet. Refused like /desk/turn.
+ * (streamed like /desk/turn, a hand-off's cost). The full text is on screen
+ * already. {type:"done", fallback:"verbatim"} tells the page to read the
+ * reply as written instead (it was short and plain, or the guard cut the
+ * summary before a word was said); {pending:true} that MONI AI has not
+ * answered yet. Refused like /desk/turn. Body: {turn, vt?}.
  */
 app.post("/moni-ai/api/desk/summary", ...moniAiWrite, async (req, res) => {
   if (!voiceDeskOn()) return deskRefuse(req, res, { error: "The voice front desk is off.", code: "desk-off" });
-  const budget = deskBudgetStatus();
-  if (budget.over) return deskBudgetRefusal(req, res, budget);
   const id = Number(req.body && req.body.turn);
   if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: "Which request?", code: "invalid" });
+  const vt = bodyVt(req);
+  const actor = req.me.username;
   const t0 = Date.now();
   const out = ndjson(res);
   let started = false;
@@ -3388,10 +3450,12 @@ app.post("/moni-ai/api/desk/summary", ...moniAiWrite, async (req, res) => {
     const desk = voiceDesk.deskFor(req.me.username, cfg, moniai.call, { log: (m) => console.log(m) });
     out.start();
     started = true;
-    const speaker = deskSpeaker(cfg, out.write, t0);
+    const speaker = voiceDesk.createSpeaker({ speak: voice.speakStream, cfg, write: out.write, t0 });
     const r = await desk.summarise(id, { onLine: (line) => speaker.push(line) });
     const sp = await speaker.done();
-    const after = r.fallback || r.pending ? deskBudgetStatus() : deskBudget.add({ desk_usd: r.cost_usd, speech_usd: sp.speechUsd, kind: "summary" });
+    const deskUsd = r.cost_usd ? recordVoice(() => voiceLedger.add({ vt, cat: "handoff", part: "desk", model: voiceDesk.DESK_MODEL, tokens: r.tokens, actor }).usd) : 0;
+    const speechUsd = recordSpeech({ vt, cat: "handoff", actor, billing: sp.billing, lateBilling: sp.lateBilling });
+    const usage = voiceUsageSummary();
     voiceLog("desk-summary", 200, {
       ms: Date.now() - t0,
       first_line_ms: r.timings.firstLine,
@@ -3401,8 +3465,8 @@ app.post("/moni-ai/api/desk/summary", ...moniAiWrite, async (req, res) => {
       reply_chars: r.shape ? r.shape.chars : undefined,
       lines: r.lines.length,
       audio_s: Math.round(sp.spoken.reduce((n, l) => n + l.audio_s, 0) * 100) / 100,
-      usd: (r.cost_usd + sp.speechUsd).toFixed(5),
-      day_usd: after.spent.toFixed(4),
+      usd: (deskUsd + speechUsd).toFixed(5),
+      day_usd: usage.today ? usage.today.total.toFixed(4) : undefined,
     });
     out.write({
       type: "done",
@@ -3410,7 +3474,8 @@ app.post("/moni-ai/api/desk/summary", ...moniAiWrite, async (req, res) => {
       pending: !!r.pending,
       guard: r.trip ? { rule: r.trip.rule } : null,
       ms: { total: Date.now() - t0, first_line: r.timings.firstLine, first_audio: sp.firstAudio },
-      budget: { over: after.over, spent: Math.round(after.spent * 10000) / 10000, limit: after.limit },
+      cost_usd: deskUsd + speechUsd,
+      usage,
     });
     out.end();
   } catch (e) {
@@ -3423,6 +3488,16 @@ app.post("/moni-ai/api/desk/summary", ...moniAiWrite, async (req, res) => {
     if (e.code === "no-key" || e.code === "timeout") return voiceFail(res, e);
     res.status(502).json({ error: voice.scrub(e.message), code: e.code || "error" });
   }
+});
+
+/**
+ * The voice's usage figures for the Command Center: today's and this month's
+ * spend (Cairo), split by kind of turn and transcription, and the last turn.
+ */
+app.get("/moni-ai/api/voice/usage", ...moniAiGuard, (req, res) => {
+  const u = voiceUsageSummary();
+  if (u.error) return res.status(500).json({ error: "Voice usage is not available." });
+  res.json(u);
 });
 
 app.post("/moni-ai/api/restart", ...moniAiWrite, async (req, res) => {

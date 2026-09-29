@@ -862,8 +862,9 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     d.close();
   }
 
-  section("cost: real usage, priced, and a daily budget");
+  section("cost: real usage, priced -- and no cap");
   {
+    const vu = require(path.join(ROOT, "lib", "voice-usage.js"));
     // The usage OpenAI returned for a text reply on gpt-realtime-mini, 2026-09-29.
     const U = { total_tokens: 67, input_tokens: 43, output_tokens: 24, input_token_details: { text_tokens: 43, audio_tokens: 0, image_tokens: 0, cached_tokens: 0, cached_tokens_details: { text_tokens: 0, audio_tokens: 0, image_tokens: 0 } }, output_token_details: { text_tokens: 24, audio_tokens: 0 } };
     const t = desk.tokensOf(U);
@@ -872,39 +873,127 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     const cachedU = { input_tokens: 1000, input_token_details: { text_tokens: 1000, cached_tokens: 800, cached_tokens_details: { text_tokens: 800 } }, output_token_details: {} };
     check("cached tokens are priced at the cached rate", Math.abs(desk.costOf(desk.tokensOf(cachedU), "gpt-realtime-mini") - (200 * 0.6 + 800 * 0.06) / 1e6) < 1e-12);
     const A = { input_tokens: 261, output_tokens: 140, input_token_details: { text_tokens: 64, audio_tokens: 197, cached_tokens: 0 }, output_token_details: { text_tokens: 37, audio_tokens: 103 } };
-    check("a spoken sentence is priced from its reading's usage (audio out at $20 per 1M)", Math.abs(desk.speechCost({ usage: A }, "gpt-realtime-mini", "x") - (64 * 0.6 + 197 * 10 + 37 * 2.4 + 103 * 20) / 1e6) < 1e-12);
-    check("a cached clip costs nothing; a text-to-speech fallback is estimated", desk.speechCost({ cached: true }, "gpt-realtime-mini", "On it.") === 0 && desk.speechCost({ wav: Buffer.alloc(44 + 48000 * 5) }, "gpt-realtime-mini", "x".repeat(80)) > 0);
+    check("a spoken sentence is priced from its reading's usage (audio out at $20 per 1M)", Math.abs(vu.billingCost([{ model: "gpt-realtime-mini", tokens: vu.realtimeTokens(A) }]) - (64 * 0.6 + 197 * 10 + 37 * 2.4 + 103 * 20) / 1e6) < 1e-12);
+    check("the text-to-speech fallback from its speech.audio.done usage ($0.60 text in, $12 audio out)", Math.abs(vu.costOf(vu.ttsTokens({ input_tokens: 12, output_tokens: 83 }), "gpt-4o-mini-tts") - (12 * 0.6 + 83 * 12) / 1e6) < 1e-12);
+    check("transcription from its token usage ($1.25 in, $5 out per 1M on mini)", Math.abs(vu.costOf(vu.transcribeTokens({ type: "tokens", input_tokens: 32, input_token_details: { audio_tokens: 32, text_tokens: 0 }, output_tokens: 12 }), "gpt-4o-mini-transcribe") - (32 * 1.25 + 12 * 5) / 1e6) < 1e-12);
+    check("  or per minute when it reports seconds", Math.abs(vu.costOf(vu.transcribeTokens({ type: "duration", seconds: 30 }), "gpt-4o-mini-transcribe") - 0.0015) < 1e-12);
+    check("a cached clip (no billing) costs nothing", vu.billingCost([]) === 0);
+    check("the price list is in one place, with the date it was read", vu.PRICES_READ === "2026-09-29" && /openai\.com/.test(vu.PRICES_SOURCE) && desk.PRICES === vu.PRICES);
+    check("categories: small talk, snapshot answers, hand-offs, direct", vu.CATEGORIES.join() === "small_talk,snapshot,handoff,direct");
+    check("categoryOf: asked -> hand-off, read_status -> snapshot, else small talk, a summary -> hand-off",
+      desk.categoryOf({ kind: "turn", asked: [{ id: 1 }], tools: ["read_status", "ask_moni"] }) === "handoff" && desk.categoryOf({ kind: "turn", asked: [], tools: ["read_status"] }) === "snapshot" &&
+      desk.categoryOf({ kind: "turn", asked: [], tools: [] }) === "small_talk" && desk.categoryOf({ kind: "summary", asked: [], tools: [] }) === "handoff");
 
-    const mem = new Map();
-    let now = new Date("2026-09-29T20:00:00Z"); // 23:00 in Cairo
-    const store = { get: (k) => (mem.has(k) ? mem.get(k) : null), set: (k, v) => mem.set(k, v) };
-    const b = desk.createBudget(store, { now: () => now });
-    check("the default daily budget is $" + desk.DEFAULT_BUDGET_USD.toFixed(2), b.limit() === desk.DEFAULT_BUDGET_USD && !b.status().over && b.status().spent === 0);
-    b.add({ desk_usd: 0.3, speech_usd: 0.3, kind: "turn" });
-    b.add({ desk_usd: 0.1, speech_usd: 0.2, kind: "summary" });
-    check("spend is added up per day, desk and speech", Math.abs(b.status().spent - 0.9) < 1e-9 && b.status().turns === 1 && b.status().summaries === 1 && !b.status().over);
-    b.add({ desk_usd: 0.05, speech_usd: 0.05, kind: "turn" });
-    check("at the limit the budget is over", b.status().over && b.status().left === 0);
-    now = new Date("2026-09-29T22:30:00Z"); // 01:30 the next day in Cairo
-    check("a new day (Cairo) starts from zero", b.status().day === "2026-09-30" && b.status().spent === 0 && !b.status().over);
-    let threw = 0;
-    for (const bad of [-1, 101, "x"]) {
-      try {
-        b.setLimit(bad, "a");
-      } catch (e) {
-        threw += e.code === "invalid" ? 1 : 0;
-      }
-    }
-    b.setLimit(2.5, "a");
-    check("the limit is a setting, validated", threw === 3 && b.limit() === 2.5);
-    b.setLimit(0, "a");
-    check("a $0 budget keeps the desk off", b.status().over);
+    // The ledger over an in-memory store; Cairo is UTC+3 in late September 2026.
+    const rows = [];
+    let now = Date.parse("2026-09-29T20:00:00Z"); // 23:00 on 29 Sept in Cairo
+    const L = vu.createLedger({ insert: (r) => rows.push(r), rowsSince: (ms) => rows.filter((r) => r.ts >= ms) }, { now: () => now });
+    L.add({ vt: "vaaa1", part: "transcription", model: "gpt-4o-mini-transcribe", tokens: { audio_in: 32, text_out: 12 } });
+    L.add({ vt: "vaaa1", cat: "small_talk", part: "desk", model: "gpt-realtime-mini", tokens: { text_in: 1000, text_out: 20 } });
+    L.addBilling({ vt: "vaaa1", cat: "small_talk", billing: [{ model: "gpt-realtime-mini", tokens: { text_in: 120, audio_out: 66 } }] });
+    now += 60000;
+    L.add({ vt: "vbbb2", part: "transcription", model: "gpt-4o-mini-transcribe", tokens: { audio_in: 50, text_out: 20 } });
+    L.add({ vt: "vbbb2", cat: "snapshot", part: "desk", model: "gpt-realtime-mini", tokens: { text_in: 3000, text_cached: 2000, text_out: 40 } });
+    L.addBilling({ vt: "vbbb2", cat: "snapshot", billing: [{ model: "gpt-realtime-mini", tokens: { text_in: 130, audio_out: 101 } }, { model: "gpt-4o-mini-tts", tokens: { text_in: 12, audio_out: 83 } }] });
+    now += 60000;
+    L.add({ vt: "vccc3", part: "transcription", model: "gpt-4o-mini-transcribe", tokens: { audio_in: 40, text_out: 15 } });
+    L.add({ vt: "vccc3", cat: "handoff", part: "desk", model: "gpt-realtime-mini", tokens: { text_in: 2000, text_out: 30 } });
+    L.addBilling({ vt: "vccc3", cat: "handoff", billing: [{ model: "gpt-realtime-mini", tokens: { text_in: 150, audio_out: 200 } }] });
+    now += 60000;
+    L.addBilling({ vt: "vddd4", cat: "direct", billing: [{ model: "gpt-realtime-mini", tokens: { text_in: 140, audio_out: 90 } }] });
+    L.addBilling({ vt: null, cat: "direct", billing: [{ model: "gpt-realtime-mini", tokens: { text_in: 10, audio_out: 10 } }] }); // "Sorry, I didn't catch that."
+    now += 60000;
+    // The summary of the hand-off lands later, on the same voice turn.
+    L.add({ vt: "vccc3", cat: "handoff", part: "desk", model: "gpt-realtime-mini", tokens: { text_in: 1500, text_out: 50 } });
+    L.addBilling({ vt: "vccc3", cat: "handoff", billing: [{ model: "gpt-realtime-mini", tokens: { text_in: 150, audio_out: 150 } }] });
+    const sumCat = (cat) => rows.filter((r) => r.cat === cat && r.part !== "transcription").reduce((n, r) => n + r.usd, 0) + (cat === "direct" ? 0 : 0);
+    const tr = rows.filter((r) => r.part === "transcription").reduce((n, r) => n + r.usd, 0);
+    let S1 = L.summary();
+    const all = rows.reduce((n, r) => n + r.usd, 0);
+    check("today: every row priced and added up", Math.abs(S1.today.total - all) < 1e-12 && S1.day === "2026-09-29" && S1.month === "2026-09", JSON.stringify({ t: S1.today.total, all }));
+    check("  split by kind: small talk, snapshot, hand-offs, direct (a row with no turn counts as direct)",
+      Math.abs(S1.today.by.small_talk - sumCat("small_talk")) < 1e-12 && Math.abs(S1.today.by.snapshot - sumCat("snapshot")) < 1e-12 && Math.abs(S1.today.by.handoff - sumCat("handoff")) < 1e-12 && Math.abs(S1.today.by.direct - sumCat("direct")) < 1e-12);
+    check("  transcription on its own line, and the split adds up to the total", Math.abs(S1.today.transcription - tr) < 1e-12 && Math.abs(S1.today.by.small_talk + S1.today.by.snapshot + S1.today.by.handoff + S1.today.by.direct + S1.today.transcription - S1.today.total) < 1e-12);
+    check("  four voice turns today", S1.today.turns === 4, S1.today.turns);
+    const c3 = rows.filter((r) => r.vt === "vccc3").reduce((n, r) => n + r.usd, 0);
+    check("the last turn is the hand-off, grown by its summary, with its parts", S1.last && S1.last.vt === "vccc3" && S1.last.cat === "handoff" && Math.abs(S1.last.usd - c3) < 1e-12 && S1.last.parts.transcription > 0 && S1.last.parts.desk > 0 && S1.last.parts.speech > 0, JSON.stringify(S1.last));
+    // Cairo day boundary: 21:30 UTC on the 29th is 00:30 on the 30th in Cairo.
+    now = Date.parse("2026-09-29T21:30:00Z");
+    L.addBilling({ vt: "veee5", cat: "direct", billing: [{ model: "gpt-realtime-mini", tokens: { audio_out: 1000 } }] });
+    let S2 = L.summary();
+    check("a new Cairo day starts at 21:00 UTC: today holds only the new turn, the month holds both", S2.day === "2026-09-30" && Math.abs(S2.today.total - 0.02) < 1e-12 && S2.today.turns === 1 && Math.abs(S2.month_totals.total - (all + 0.02)) < 1e-12, JSON.stringify({ d: S2.day, t: S2.today.total }));
+    check("  the last turn is the newest one", S2.last.vt === "veee5" && S2.last.cat === "direct");
+    // Cairo month boundary: 30 Sept 21:30 UTC is 1 Oct 00:30 in Cairo.
+    now = Date.parse("2026-09-30T21:30:00Z");
+    L.add({ vt: "vfff6", part: "transcription", model: "gpt-4o-mini-transcribe", tokens: { seconds: 60 } });
+    const S3 = L.summary();
+    check("a new Cairo month starts at 21:00 UTC on the last day: September is not in October's figures", S3.month === "2026-10" && S3.day === "2026-10-01" && Math.abs(S3.month_totals.total - 0.003) < 1e-12 && Math.abs(S3.month_totals.transcription - 0.003) < 1e-12, JSON.stringify(S3.month_totals));
+    check("  a turn with only a transcription so far is still the last turn (direct until it says otherwise)", S3.last.vt === "vfff6" && S3.last.cat === "direct");
+    check("aggregate() is pure: the same rows, the same moment, the same figures", JSON.stringify(vu.aggregate(rows, now)) === JSON.stringify(S3));
+    check("rows keep their Cairo day and month", rows[rows.length - 1].day === "2026-10-01" && rows[rows.length - 1].month === "2026-10" && rows[0].day === "2026-09-29");
+    check("a voice turn id is checked; junk is dropped", vu.cleanVt("v1abc") === "v1abc" && vu.cleanVt("x'; drop") === null && vu.cleanCat("evil") === null);
+
+    // No cap anywhere.
+    const serverSrc = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
+    check("the budget is gone: no desk-budget route, refusal or setting", !/desk-budget|deskBudget|voice_desk_budget_usd|createBudget/.test(serverSrc + fs.readFileSync(path.join(ROOT, "lib", "voice-desk.js"), "utf8")), "");
+    check("the desk turn and summary routes refuse only when the desk is off", (serverSrc.match(/return deskRefuse\(req, res, \{ error: "The voice front desk is off\.", code: "desk-off" \}\)/g) || []).length === 2 && !/budget\.over/.test(serverSrc));
+    check("usage is still recorded server-side, per turn: transcription, desk and speech", /recordTranscription\(/.test(serverSrc) && /part: "desk"/.test(serverSrc) && /recordSpeech\(/.test(serverSrc) && /app\.get\("\/moni-ai\/api\/voice\/usage"/.test(serverSrc));
 
     const d = newDesk("text");
     const r = await withBrain(brains.twoFacts, () => d.turn("disk and memory?"));
     check("every desk turn reports its tokens and cost, from the responses' usage", r.responses === 2 && r.tokens.text_in > 0 && r.tokens.text_cached > 0 && r.cost_usd > 0, JSON.stringify(r.tokens));
     check("and the session keeps a running total", d.usage.text_in >= r.tokens.text_in);
     d.close();
+  }
+
+  section("speech, streamed: every line's audio as it arrives, strictly in line order");
+  {
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    // A fake reader: line 0 is slow and line 1 fast, so line 1's audio is
+    // ready first; line 2 is cut mid-way and read again by the fallback; line
+    // 3 cannot be read at all.
+    const plan = {
+      "First, the slow one.": { delay: 60, chunks: 3 },
+      "Second, the fast one.": { delay: 0, chunks: 2 },
+      "Third, cut mid-way.": { delay: 5, chunks: 2, cut: true },
+      "Fourth, never read.": { delay: 5, fail: "unfaithful" },
+    };
+    const speak = async (text, cfg, sink) => {
+      const p = plan[text];
+      await wait(p.delay);
+      if (p.fail) {
+        const e = new Error("no");
+        e.code = p.fail;
+        e.billing = [{ model: "gpt-realtime-mini", tokens: { audio_out: 5 } }];
+        throw e;
+      }
+      sink.start({ engine: "gpt-realtime-mini" });
+      for (let k = 0; k < p.chunks; k++) {
+        sink.audio(Buffer.from([k, 0, k, 0]));
+        await wait(10);
+      }
+      if (p.cut) {
+        sink.cut({ why: "unfaithful" });
+        sink.start({ engine: "gpt-4o-mini-tts" });
+        sink.audio(Buffer.from([9, 0]));
+      }
+      return { engine: p.cut ? "gpt-4o-mini-tts" : "gpt-realtime-mini", fallback: !!p.cut, billing: [{ model: "gpt-realtime-mini", tokens: { audio_out: 10 } }], lateBilling: Promise.resolve(p.cut ? [{ model: "gpt-realtime-mini", tokens: { audio_out: 3 } }] : []) };
+    };
+    const wire = [];
+    const sp = desk.createSpeaker({ speak, cfg: {}, write: (o) => wire.push(o), t0: Date.now() });
+    for (const text of Object.keys(plan)) sp.push({ text, safe: false });
+    const res = await sp.done();
+    const lines = wire.filter((o) => o.type === "line");
+    check("the line events go out at once, in order", lines.map((l) => l.i).join() === "0,1,2,3" && wire.indexOf(lines[3]) < 4, wire.slice(0, 5).map((o) => o.type + o.i).join(" "));
+    const audioOrder = wire.filter((o) => o.type !== "line").map((o) => o.i);
+    check("audio events are strictly in line order, though line 1 was read first", audioOrder.every((v, k) => k === 0 || v >= audioOrder[k - 1]), audioOrder.join(","));
+    const of = (i) => wire.filter((o) => o.i === i && o.type !== "line").map((o) => o.type + (o.engine ? ":" + o.engine : "") + (o.skipped ? ":" + o.skipped : ""));
+    check("each line: start, its audio, end", of(0).join(" ") === "start:gpt-realtime-mini audio audio audio end:gpt-realtime-mini" && of(1).join(" ") === "start:gpt-realtime-mini audio audio end:gpt-realtime-mini", of(0).join(" "));
+    check("a line cut mid-way: its audio, the cut, then the fallback's start and audio, then end", of(2).join(" ") === "start:gpt-realtime-mini audio audio cut start:gpt-4o-mini-tts audio end:gpt-4o-mini-tts", of(2).join(" "));
+    check("a line that could not be read ends as skipped (its text is on screen)", of(3).join(" ") === "end:unfaithful", of(3).join(" "));
+    check("the audio is base64 PCM", wire.find((o) => o.type === "audio").pcm === Buffer.from([0, 0, 0, 0]).toString("base64"));
+    check("done(): first audio time, every billing record (the skipped line's too) and the late ones",
+      res.firstAudio != null && res.billing.length === 4 && (await res.lateBilling).length === 1 && res.spoken.length === 4 && res.spoken.find((x) => x.skipped), JSON.stringify(res.billing.length));
   }
 
   section("a transient OpenAI server error is retried once");
@@ -962,7 +1051,8 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     check("the page says Direct when the desk is off", /data-voice-desk=""/.test(off) && />Direct · MONI AI</.test(off) && !/cc-tag desk/.test(off));
     check("and Front desk when it is on", /data-voice-desk="1"/.test(on) && />Front desk · GPT</.test(on) && /cc-tag desk/.test(on));
     const over = views.page({ csrf: "t", user: { name: "a", perm: admin }, voice: { configured: true, voice: "marin", manage: true, desk: false, deskOver: true } });
-    check("and \"Direct · desk budget used\" when today's budget is spent", /data-voice-desk=""/.test(over) && /data-voice-desk-over="1"/.test(over) && />Direct · desk budget used</.test(over) && /cc-tag over/.test(over));
+    check("no \"desk budget used\" state any more", !/desk budget used|data-voice-desk-over|cc-tag over/.test(over + on + off));
+    check("the Cost today card carries the voice usage block when a key is set", /id="cc-cost-widget"[\s\S]{0,400}id="cc-voice-usage"/.test(on) && /id="cc-voice-usage"/.test(off));
     const nokey = views.page({ csrf: "t", user: { name: "a", perm: admin }, voice: { configured: false, manage: true, desk: true } });
     check("no key, no desk", /data-voice-desk=""/.test(nokey));
     const cred = require(path.join(ROOT, "lib", "views-credentials.js"));
@@ -972,14 +1062,12 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     check("Settings shows the switch, off, offering to switch on", /id="v-desk"/.test(pOff) && /Voice front desk \(GPT\)/.test(pOff) && /name="enabled" value="1"/.test(pOff) && />off</.test(pOff));
     check("and on, offering to switch off, with who changed it", /name="enabled" value="0"/.test(pOn) && /on — trial/.test(pOn) && /by amaraghy/.test(pOn));
     check("the switch posts with the CSRF token", /action="\/credentials\/openai-voice\/desk"[\s\S]{0,120}name="_csrf"/.test(pOff));
-    const pBudget = vpage({ on: true, row: null, model: "gpt-realtime-mini", budget: { spent: 0.4213, limit: 1, turns: 31, summaries: 9, over: false } });
-    check("Settings shows the daily budget next to the switch, with today's spend", /action="\/credentials\/openai-voice\/desk-budget"[\s\S]{0,120}name="_csrf"/.test(pBudget) && /name="budget_usd"[^>]*value="1.00"/.test(pBudget) && /\$0\.4213<\/b> of \$1\.00/.test(pBudget) && /31 turns, 9 summaries/.test(pBudget));
-    const pOver = vpage({ on: true, row: null, model: "gpt-realtime-mini", budget: { spent: 1.02, limit: 1, turns: 80, summaries: 30, over: true } });
-    check("and says when it is used up", /budget used up/.test(pOver) && /direct path until midnight/.test(pOver));
-    check("the budget field has no inline style (CSP)", !/style="/.test(pBudget.slice(pBudget.indexOf('id="v-desk"'), pBudget.indexOf('id="v-desk"') + 6000)));
+    const pUsage = vpage({ on: true, row: null, model: "gpt-realtime-mini", usage: { today: { total: 0.4213 }, month_totals: { total: 3.21 }, prices: { read: "2026-09-29" } } });
+    check("Settings: no budget field or form, just today's and this month's spend", !/desk-budget|budget_usd|Daily budget/.test(pUsage + pOff) && /\$0\.4213<\/b>/.test(pUsage) && /\$3\.2100<\/b>/.test(pUsage) && /No cap/.test(pUsage));
+    check("the usage note has no inline style (CSP)", !/style="/.test(pUsage.slice(pUsage.indexOf('id="v-desk"'), pUsage.indexOf('id="v-desk"') + 6000)));
     const js = fs.readFileSync(path.join(ROOT, "public", "moni-ai.js"), "utf8");
-    check("the page reads MONI AI's answer to a desk request as a summary, and falls back to reading it as written", /deskTurns\.has\(row\.id\)\) \{ deskTurns\.delete\(row\.id\); Voice\.summary\(/.test(js) && /apiStream\("desk\/summary"/.test(js) && /d\.fallback === "verbatim" \|\| d\.pending \|\| !lines\) return api_\.flush\(/.test(js) && /if \(!DESK\) return api_\.flush\(id, text\)/.test(js));
-    check("over budget (409 desk-budget) the page goes direct at once, and says so", /e\.code === "desk-off" \|\| e\.code === "desk-budget"/.test(js) && /return transcribeAndSend\(blob, wasPtt\)/.test(js) && /function budgetReached\(msg\)[\s\S]{0,300}toast\(/.test(js));
+    check("the page reads MONI AI's answer to a desk request as a summary, and falls back to reading it as written", /deskTurns\.has\(row\.id\)\) \{ deskTurns\.delete\(row\.id\); Voice\.summary\(/.test(js) && /apiStream\("desk\/summary"/.test(js) && /d\.fallback === "verbatim" \|\| d\.pending \|\| !dl\.count\) return api_\.flush\(/.test(js) && /if \(!DESK\) return api_\.flush\(id, text\)/.test(js));
+    check("no budget fallback left in the page; switched off (desk-off) it still goes direct", !/desk-budget|budgetReached|DESK_OVER/.test(js) && /e\.code === "desk-off"/.test(js) && /return transcribeAndSend\(blob, wasPtt\)/.test(js));
     check("with the desk off the page never calls it (DESK gates every path)", /var DESK = READY && root\.getAttribute\("data-voice-desk"\) === "1"/.test(js) && /if \(DESK\) return deskSend\(/.test(js) && (js.match(/desk\/turn/g) || []).length === 1);
   }
 

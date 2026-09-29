@@ -258,13 +258,12 @@ function option(value, label, current) {
 function deskCard(csrf, v, desk) {
   const d = desk || { on: false };
   const row = d.row;
-  const b = d.budget || null;
-  const money = (n) => "$" + (Number(n) || 0).toFixed(2);
-  const spend = b
-    ? `<p class="small mt-12" id="voice-desk-budget-state"><span class="pill ${b.over ? "bad" : "neutral"}">${b.over ? "budget used up" : "today"}</span>
-        <span class="muted">Spent today (Cairo): <b>${esc("$" + (Number(b.spent) || 0).toFixed(4))}</b> of ${esc(money(b.limit))}
-        — ${esc(String(b.turns || 0))} turn${b.turns === 1 ? "" : "s"}, ${esc(String(b.summaries || 0))} summar${b.summaries === 1 ? "y" : "ies"}.
-        ${b.over ? "The Command Center is using the direct path until midnight, and says so." : ""}</span></p>`
+  const u = d.usage && d.usage.today ? d.usage : null;
+  const usd = (n) => "$" + (Number(n) || 0).toFixed(4);
+  const spend = u
+    ? `<p class="small mt-12" id="voice-usage-state"><span class="pill neutral">voice spend</span>
+        <span class="muted">Today (Cairo) <b>${esc(usd(u.today.total))}</b>, this month <b>${esc(usd(u.month_totals.total))}</b>, from the usage
+        OpenAI reports, at the prices read ${esc(u.prices.read)}. No cap: the split by kind of turn is in the Command Center's Cost today card.</span></p>`
     : "";
   return card(
     "Voice front desk (GPT)",
@@ -285,15 +284,7 @@ function deskCard(csrf, v, desk) {
       ${v.configured ? "" : `<span class="muted small">Needs the OpenAI key above.</span>`}
     </form>
     ${spend}
-    <form method="post" action="/credentials/openai-voice/desk-budget" class="btn-row mt-12" id="voice-desk-budget-form">
-      <input type="hidden" name="_csrf" value="${esc(csrf)}">
-      <label class="small">Daily budget (USD)
-        <input type="number" name="budget_usd" id="voice-desk-budget" min="0" max="100" step="0.01" inputmode="decimal" class="num-short" value="${esc((b ? Number(b.limit) : 1).toFixed(2))}">
-      </label>
-      <button class="btn small" type="submit" id="voice-desk-budget-save">${icon("check")} Save budget</button>
-      <span class="muted small">Counted on the server from what OpenAI reports for each desk reply and each sentence it speaks. When today's
-        spend reaches it, the voice falls back to the direct path, with a notice, until midnight (Cairo). 0 keeps the desk off in practice.</span>
-    </form>`,
+`,
     { icon: "voice", id: "v-desk" }
   );
 }

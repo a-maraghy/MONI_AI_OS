@@ -133,6 +133,22 @@ db.exec(`
     updated_by TEXT
   );
 
+  -- What the voice cost, one row per priced OpenAI call (lib/voice-usage.js).
+  CREATE TABLE IF NOT EXISTS voice_usage (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts      INTEGER NOT NULL,
+    day     TEXT NOT NULL,
+    month   TEXT NOT NULL,
+    vt      TEXT,
+    cat     TEXT,
+    part    TEXT NOT NULL,
+    model   TEXT,
+    usd     REAL NOT NULL,
+    tokens  TEXT,
+    actor   TEXT
+  );
+  CREATE INDEX IF NOT EXISTS voice_usage_ts ON voice_usage(ts);
+
   CREATE TABLE IF NOT EXISTS login_log (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     ts         TEXT NOT NULL,
@@ -272,6 +288,14 @@ module.exports = {
       )
       .run(String(key), String(value), nowIso(), by || null),
   settingRow: (key) => db.prepare("SELECT * FROM settings WHERE key = ?").get(String(key)) || null,
+
+  /* --- voice usage (priced OpenAI calls; see lib/voice-usage.js) --------- */
+
+  voiceUsageInsert: (r) =>
+    db
+      .prepare("INSERT INTO voice_usage (ts, day, month, vt, cat, part, model, usd, tokens, actor) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(r.ts, r.day, r.month, r.vt, r.cat, r.part, r.model, r.usd, r.tokens, r.actor),
+  voiceUsageSince: (ms) => db.prepare("SELECT ts, vt, cat, part, model, usd FROM voice_usage WHERE ts >= ? ORDER BY ts").all(Number(ms) || 0),
 
   /* --- users ----------------------------------------------------------- */
 

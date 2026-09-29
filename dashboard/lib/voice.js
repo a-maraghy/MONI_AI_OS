@@ -8,9 +8,11 @@
  * thinks; a model that answers instead of reading is treated as a fault.
  *
  * Everything happens on the server. The browser posts its recording and gets
- * text back, posts a sentence and gets a WAV back; it never opens a connection
- * to OpenAI and never sees the key. (An earlier design that handed the browser
- * a WebRTC session was dropped for exactly that reason.)
+ * text back, posts a sentence and gets its audio back -- streamed, a chunk of
+ * PCM at a time as OpenAI produces it (speakStream), so a sentence starts to
+ * play before it has been fully spoken; it never opens a connection to OpenAI
+ * and never sees the key. (An earlier design that handed the browser a WebRTC
+ * session was dropped for exactly that reason.)
  *
  *   hearing   POST {http}/audio/transcriptions with the browser's webm/opus,
  *             model gpt-4o-mini-transcribe by default. The endpoint takes the
@@ -37,11 +39,29 @@
  * the sentence is read by gpt-4o-mini-tts instead -- a text-to-speech model,
  * which has no conversation to join. Tested on the real API, realtime-mini read
  * about 88% of sentences verbatim (out of band); a skipped sentence was a hole
- * in the reply, so skipping is now the last resort. A reading that has clearly
- * wandered off is cut the moment the transcript shows it.
+ * in the reply, so skipping is now the last resort.
+ *
+ * Streaming and the guard. The audio is passed on while the reading is still
+ * being checked. That is safe because of how the realtime model sends it
+ * (measured on gpt-realtime-mini, 2026-09-29): its transcript runs AHEAD of
+ * its audio -- most of a sentence's words arrive before the first audio chunk
+ * -- and the audio arrives several times faster than it plays. So:
+ *   - the transcript so far is checked on every delta, and the moment it holds
+ *     more invented words than a faithful reading may have, the reading is cut
+ *     (usually before any of that audio was even sent);
+ *   - at the end, the whole transcript gets the full check (words dropped as
+ *     well as added); a reading that fails it is cut then, a fraction of a
+ *     second into playback.
+ * A cut is a `cut` event to the sink: the page stops that sentence's playback
+ * at once and drops what it holds of it. The sentence is then read again, from
+ * its start, by gpt-4o-mini-tts -- streamed too -- which reads verbatim by
+ * design; only if that fails is it skipped, its text still on screen. A cut
+ * realtime response is cancelled (response.cancel with its id) and its usage,
+ * reported on the cancelled response.done, is still counted.
  */
 
 const WebSocket = require("ws");
+const usageLib = require("./voice-usage");
 
 const HTTP_BASE = process.env.MONI_OPENAI_HTTP || "https://api.openai.com/v1";
 const WS_BASE = process.env.MONI_OPENAI_WS || "wss://api.openai.com/v1";
@@ -60,6 +80,9 @@ const ATTEMPTS = 1;
 const FALLBACK_TTS_MODEL = "gpt-4o-mini-tts";
 const TTS_VOICES = ["alloy", "ash", "ballad", "coral", "echo", "fable", "onyx", "nova", "sage", "shimmer", "verse", "marin", "cedar"];
 const MAX_AUDIO_BYTES = 25 * 1024 * 1024; // the transcription endpoint's own cap
+// Measured on gpt-realtime-mini (2026-09-29): 103 audio tokens for 5.15 s of speech.
+// Used only to estimate a text-to-speech reading that came back without usage.
+const AUDIO_TOKENS_PER_SECOND = 20;
 
 const MODELS = [
   { id: "gpt-realtime-mini", label: "GPT Realtime mini", protocol: "realtime" },
@@ -178,6 +201,20 @@ function faithful(want, heard) {
 function wandering(want, heardSoFar) {
   const f = faithful(want, heardSoFar);
   return f.extra.length > f.allowExtra + 3;
+}
+
+/**
+ * The streaming check: has a transcript still coming in already added more
+ * words than a faithful reading may? Extra words only ever accumulate, so this
+ * is the final verdict on them, just earlier. The last word is left out while
+ * it may still be growing ("dash" of "dashboard").
+ */
+function overrun(want, heardSoFar) {
+  const soFar = String(heardSoFar || "");
+  const complete = /[\s.,!?;:]$/.test(soFar) ? soFar : soFar.replace(/\S+$/, "");
+  if (!complete.trim()) return false;
+  const f = faithful(want, complete);
+  return f.extra.length > f.allowExtra;
 }
 
 /* ---------------------------------------------------------------- wav -- */
@@ -423,10 +460,16 @@ class RealtimeConn {
     }
   }
 
-  /** Read one sentence. Resolves {pcm, transcript}. */
-  read(text, timeoutMs) {
+  /**
+   * Read one sentence. `onAudio(buf)` gets each chunk of PCM as it arrives.
+   * Resolves {pcm, transcript, firstAudioAt, usage}. A reading whose transcript
+   * runs off script is cut at once: the promise rejects ("unfaithful") and the
+   * response is cancelled; err.lateUsage then resolves to the usage OpenAI
+   * reports for the cancelled response (or null), and the socket is dropped.
+   */
+  read(text, timeoutMs, onAudio) {
     return new Promise((resolve, reject) => {
-      const st = { chunks: [], transcript: "", firstAudioAt: 0 };
+      const st = { chunks: [], transcript: "", firstAudioAt: 0, rid: null, cut: false };
       let done = false;
       const finish = (err, killSocket) => {
         if (done) return;
@@ -440,23 +483,62 @@ class RealtimeConn {
           reject(err);
         } else resolve({ pcm: Buffer.concat(st.chunks), transcript: st.transcript.trim(), firstAudioAt: st.firstAudioAt, usage: st.usage || null });
       };
+      /* Off script: stop passing audio on, reject now (the caller cuts and
+         falls back without waiting), cancel the response and wait briefly for
+         its usage, then drop the socket. */
+      const cutEarly = (err) => {
+        if (done) return;
+        st.cut = true;
+        let settle;
+        err.lateUsage = new Promise((r) => (settle = r));
+        const drainTimer = setTimeout(() => {
+          this.job = null;
+          settle(null);
+          this.kill();
+        }, 3000);
+        if (drainTimer.unref) drainTimer.unref();
+        done = true;
+        clearTimeout(timer);
+        this.job = {
+          finish: () => {
+            clearTimeout(drainTimer);
+            this.job = null;
+            settle(null);
+            this.kill();
+          },
+          onEvent: (ev) => {
+            if (ev.type !== "response.done") return;
+            clearTimeout(drainTimer);
+            this.job = null;
+            settle((ev.response && ev.response.usage) || null);
+            this.kill();
+          },
+        };
+        if (st.rid) this.send({ type: "response.cancel", response_id: st.rid });
+        reject(err);
+      };
       const timer = setTimeout(() => finish(new VoiceError("OpenAI took too long to speak that", "timeout")), timeoutMs);
       this.job = {
         finish,
         onEvent: (ev) => {
           switch (ev.type) {
+            case "response.created":
+              st.rid = (ev.response && ev.response.id) || null;
+              break;
             case "response.output_audio.delta":
             case "response.audio.delta":
-              if (ev.delta) {
+              if (ev.delta && !st.cut) {
                 if (!st.firstAudioAt) st.firstAudioAt = Date.now();
-                st.chunks.push(Buffer.from(ev.delta, "base64"));
+                const buf = Buffer.from(ev.delta, "base64");
+                st.chunks.push(buf);
+                if (onAudio) onAudio(buf);
               }
               break;
             case "response.output_audio_transcript.delta":
             case "response.audio_transcript.delta":
               st.transcript += ev.delta || "";
-              if (wandering(text, st.transcript)) {
-                return finish(new VoiceError("the voice started saying something else", "unfaithful", st.transcript));
+              if (overrun(text, st.transcript)) {
+                return cutEarly(new VoiceError("the voice started saying something else", "unfaithful", st.transcript));
               }
               break;
             case "response.output_audio_transcript.done":
@@ -465,12 +547,14 @@ class RealtimeConn {
               break;
             case "response.done": {
               const r = ev.response || {};
+              st.usage = r.usage || null; // what OpenAI billed for this reading
               if (r.status && r.status !== "completed") {
                 const d = r.status_details || {};
                 const why = (d.error && d.error.message) || d.reason || r.status;
-                return finish(new VoiceError("OpenAI did not finish speaking: " + scrub(why), "upstream"));
+                const err = new VoiceError("OpenAI did not finish speaking: " + scrub(why), "upstream");
+                err.usage = st.usage;
+                return finish(err);
               }
-              st.usage = r.usage || null; // what OpenAI billed for this reading (the front desk counts it)
               finish(null);
               break;
             }
@@ -540,12 +624,12 @@ function closeAll() {
   warming.clear();
 }
 
-async function readRealtime(text, cfg) {
+async function readRealtime(text, cfg, onAudio) {
   const t0 = Date.now();
   const { conn, warm: wasWarm } = takeConn(cfg);
   await conn.ready;
   const tReady = Date.now();
-  const out = await conn.read(text, cfg.timeoutMs || SPEAK_TIMEOUT_MS);
+  const out = await conn.read(text, cfg.timeoutMs || SPEAK_TIMEOUT_MS, onAudio);
   giveBack(conn);
   out.warm = wasWarm;
   out.connectMs = tReady - t0;
@@ -619,11 +703,15 @@ function readLive(text, cfg) {
 /* ---------------------------------------------------- tts (fallback) -- */
 
 /**
- * gpt-4o-mini-tts on {http}/audio/speech, raw PCM back. A text-to-speech model
- * has no conversation to join, so it cannot answer the text; it is the reading
- * the realtime voice falls back to when it would not read a sentence as written.
+ * gpt-4o-mini-tts on {http}/audio/speech, raw PCM, streamed. A text-to-speech
+ * model has no conversation to join, so it cannot answer the text; it is the
+ * reading the realtime voice falls back to when it would not read a sentence
+ * as written. Asked for as server-sent events (stream_format "sse"): audio as
+ * speech.audio.delta, and speech.audio.done carries the usage OpenAI bills --
+ * which the plain PCM stream does not report. A server that answers with a
+ * plain PCM body instead is read as that.
  */
-async function readTts(text, cfg) {
+async function readTts(text, cfg, onAudio) {
   const voice = TTS_VOICES.includes(cfg.voice) ? cfg.voice : DEFAULTS.voice;
   let res;
   try {
@@ -635,6 +723,7 @@ async function readTts(text, cfg) {
         voice,
         input: text,
         response_format: "pcm",
+        stream_format: "sse",
         instructions: "Speak clear, natural English at a brisk conversational pace.",
       }),
       signal: AbortSignal.timeout(cfg.timeoutMs || SPEAK_TIMEOUT_MS),
@@ -643,9 +732,8 @@ async function readTts(text, cfg) {
     if (e.name === "TimeoutError") throw new VoiceError("OpenAI took too long to speak that", "timeout");
     throw new VoiceError("Could not reach OpenAI: " + scrub(e.message), "network");
   }
-  const body = Buffer.from(await res.arrayBuffer());
   if (!res.ok) {
-    let msg = body.toString("utf8");
+    let msg = await res.text().catch(() => "");
     try {
       msg = (JSON.parse(msg).error || {}).message || msg;
     } catch (_) {
@@ -653,7 +741,63 @@ async function readTts(text, cfg) {
     }
     throw classify(res.status, msg);
   }
-  return { pcm: body, transcript: text };
+  const sse = /text\/event-stream/.test(String(res.headers.get("content-type") || ""));
+  const chunks = [];
+  let usage = null;
+  let bytes = 0;
+  const give = (buf) => {
+    if (!buf.length) return;
+    bytes += buf.length;
+    chunks.push(buf);
+    if (onAudio) onAudio(buf);
+  };
+  try {
+    if (!res.body) {
+      give(Buffer.from(await res.arrayBuffer()));
+    } else {
+      const reader = res.body.getReader();
+      let pending = "";
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (!sse) {
+          give(Buffer.from(value));
+          continue;
+        }
+        pending += Buffer.from(value).toString("utf8");
+        let i;
+        while ((i = pending.search(/\r?\n\r?\n/)) >= 0) {
+          const block = pending.slice(0, i);
+          pending = pending.slice(i).replace(/^\r?\n\r?\n/, "");
+          const data = block
+            .split(/\r?\n/)
+            .filter((l) => l.startsWith("data:"))
+            .map((l) => l.slice(5).trim())
+            .join("");
+          if (!data || data === "[DONE]") continue;
+          let ev;
+          try {
+            ev = JSON.parse(data);
+          } catch (_) {
+            continue;
+          }
+          if (ev.type === "speech.audio.delta" && ev.audio) give(Buffer.from(ev.audio, "base64"));
+          else if (ev.type === "speech.audio.done") usage = ev.usage || null;
+          else if (ev.type === "error" || ev.error) throw new VoiceError(scrub((ev.error && ev.error.message) || "OpenAI reported an error"), "upstream");
+        }
+      }
+    }
+  } catch (e) {
+    if (e instanceof VoiceError) throw e;
+    if (e.name === "TimeoutError") throw new VoiceError("OpenAI took too long to speak that", "timeout");
+    throw new VoiceError("Could not reach OpenAI: " + scrub(e.message), "network");
+  }
+  // Without a usage report (a plain PCM body), estimate: ~4 characters a text
+  // token, AUDIO_TOKENS_PER_SECOND audio tokens a second of speech.
+  const tokens = usage
+    ? usageLib.ttsTokens(usage)
+    : { text_in: Math.ceil(String(text).length / 4), audio_out: Math.round((bytes / (RATE * 2)) * AUDIO_TOKENS_PER_SECOND), estimated: 1 };
+  return { pcm: Buffer.concat(chunks), transcript: text, tokens };
 }
 
 /* ------------------------------------------------------------- speak -- */
@@ -675,7 +819,7 @@ function release() {
 
 // Short, often-repeated lines ("On it.") are kept, so the acknowledgement after
 // a send plays at once instead of after a round trip. Keyed by model and voice;
-// cleared whenever the key or the options change.
+// cleared whenever the key or the options change. Holds raw PCM.
 const CACHE_MAX = 64;
 const CACHE_CHARS = 80;
 const cache = new Map();
@@ -695,77 +839,180 @@ function requireKey(cfg) {
   if (!cfg || !cfg.key) throw new VoiceError("Add an OpenAI key in Settings to use voice.", "no-key");
 }
 
+// Failures that, once audio of a reading has gone out, are handled like an
+// unfaithful reading (cut, then the fallback reads the sentence whole) rather
+// than leaving half a sentence in the air.
+const MIDWAY_RETRY = new Set(["upstream", "network", "timeout", "empty"]);
+
 /**
- * Speak one sentence. Resolves {wav, transcript, attempts, cached}. Rejects with
- * code "unfaithful" when no reading matched the text.
+ * Speak one sentence, streamed. `sink` gets, in order:
+ *   start({engine})   a reading begins (engine: the model, "cache", or the
+ *                     fallback's model)
+ *   audio(buf)        PCM16 mono 24 kHz, whole samples, as it arrives
+ *   cut({why})        drop everything since the last start(): that reading
+ *                     failed the verbatim check (or broke) mid-way
+ * Resolves {engine, transcript, attempts, cached, fallback, why, ms, warm,
+ * firstAudioMs, billing, lateBilling, cuts, pcm}. `billing` is one {model,
+ * tokens} per OpenAI response this sentence took; `lateBilling` resolves to
+ * more of them (cut readings whose usage came after). Rejects with code
+ * "unfaithful" when no reading matched the text and the fallback is off or
+ * silent -- after a cut, if anything had gone out.
  */
-async function speak(text, cfg) {
+async function speakStream(text, cfg, sink) {
   requireKey(cfg);
   const say = cleanText(text);
+  const sk = sink || {};
   const model = cfg.model || DEFAULTS.model;
   const voice = cfg.voice || DEFAULTS.voice;
   const ck = model + "|" + voice + "|" + say;
+  const t0 = Date.now();
   if (!cfg.noCache && say.length <= CACHE_CHARS && cache.has(ck)) {
     const hit = cache.get(ck);
     cache.delete(ck);
     cache.set(ck, hit);
     warm({ ...cfg, model, voice }); // "On it." is played: the reply's sentences come next
-    return { ...hit, cached: true, attempts: 0, ms: 0 };
+    if (sk.start) sk.start({ engine: "cache" });
+    if (sk.audio && hit.pcm.length) sk.audio(hit.pcm);
+    return { engine: hit.engine, transcript: hit.transcript, fallback: !!hit.fallback, attempts: 0, cached: true, ms: 0, warm: true, firstAudioMs: 0, billing: [], lateBilling: Promise.resolve([]), cuts: 0, pcm: hit.pcm };
   }
 
-  const read = protocolFor(model) === "live" ? readLive : readRealtime;
+  const live = protocolFor(model) === "live";
+  const read = live ? readLive : readRealtime;
   const opts = { ...cfg, model, voice };
-  const t0 = Date.now();
   const attempts = cfg.attempts || ATTEMPTS;
-  const cacheIt = (result) => {
-    if (say.length <= CACHE_CHARS) {
-      cache.set(ck, result);
+  const billing = [];
+  const late = [];
+  let firstAudioMs = null;
+  let cuts = 0;
+  let collected = [];
+  let sent = 0;
+  let odd = null;
+  let engineOn = null;
+  const begin = (engine) => {
+    engineOn = engine;
+    collected = [];
+    sent = 0;
+    odd = null;
+    if (sk.start) sk.start({ engine });
+  };
+  const push = (engine, b) => {
+    let buf = b;
+    if (!engineOn) begin(engine);
+    if (odd) {
+      buf = Buffer.concat([odd, buf]);
+      odd = null;
+    }
+    if (buf.length % 2) {
+      odd = buf.subarray(buf.length - 1);
+      buf = buf.subarray(0, buf.length - 1);
+    }
+    if (!buf.length) return;
+    if (firstAudioMs === null) firstAudioMs = Date.now() - t0;
+    sent += buf.length;
+    collected.push(buf);
+    if (sk.audio) sk.audio(buf);
+  };
+  const cut = (why) => {
+    if (engineOn && sent) {
+      cuts++;
+      if (sk.cut) sk.cut({ why });
+    }
+    engineOn = null;
+    collected = [];
+    sent = 0;
+    odd = null;
+  };
+  const cacheIt = (entry) => {
+    if (say.length <= CACHE_CHARS && entry.pcm.length) {
+      cache.set(ck, entry);
       if (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value);
     }
   };
+  const lateBilling = () => Promise.all(late).then((xs) => xs.filter(Boolean));
+  const rtBill = (usage) => ({ model, tokens: usageLib.realtimeTokens(usage) });
+
   await slot();
   try {
     let last = null;
     for (let attempt = 1; attempt <= attempts; attempt++) {
       let out;
       try {
-        out = await read(say, opts);
+        out = await read(say, opts, live ? null : (buf) => push(model, buf));
       } catch (e) {
-        if (e.code === "unfaithful") {
+        if (e.usage) billing.push(rtBill(e.usage));
+        if (e.lateUsage) late.push(e.lateUsage.then((u) => (u ? rtBill(u) : null)));
+        const midway = sent > 0;
+        cut(e.code || "error");
+        if (e.code === "unfaithful" || (midway && MIDWAY_RETRY.has(e.code))) {
           last = e;
           continue;
         }
         throw e;
       }
+      if (out.usage) billing.push(rtBill(out.usage));
       if (!out.pcm.length) {
         last = new VoiceError("OpenAI returned no audio", "empty");
         continue;
       }
       const check = faithful(say, out.transcript);
       if (check.ok) {
-        const result = { wav: wav(out.pcm, RATE), transcript: out.transcript, attempts: attempt, engine: model };
-        cacheIt(result);
-        return { ...result, cached: false, ms: Date.now() - t0, warm: !!out.warm, firstAudioMs: out.firstAudioMs == null ? null : out.firstAudioMs, usage: out.usage || null };
+        if (live) push(model, out.pcm); // GPT-Live's reading is trimmed after the fact, so it goes out whole
+        const pcm = Buffer.concat(collected);
+        cacheIt({ pcm, transcript: out.transcript, engine: model });
+        return { engine: model, transcript: out.transcript, attempts: attempt, cached: false, fallback: false, ms: Date.now() - t0, warm: !!out.warm, firstAudioMs, upstreamFirstAudioMs: out.firstAudioMs == null ? null : out.firstAudioMs, usage: out.usage || null, billing, lateBilling: lateBilling(), cuts, pcm };
       }
+      cut("unfaithful");
       last = new VoiceError("the voice did not read the text as written", "unfaithful", out.transcript);
     }
     // The realtime voice would not read it as written. Rather than drop the
-    // sentence, read it with a text-to-speech model, which cannot answer it.
+    // sentence, read it -- from its start -- with a text-to-speech model,
+    // which cannot answer it.
     if (cfg.fallback !== false) {
-      const out = await readTts(say, opts);
-      if (out.pcm.length) {
-        const result = { wav: wav(out.pcm, RATE), transcript: say, attempts, engine: cfg.fallback_model || FALLBACK_TTS_MODEL, fallback: true };
-        cacheIt(result);
-        return { ...result, cached: false, ms: Date.now() - t0, warm: false, firstAudioMs: null, why: last && last.code };
+      const engine = cfg.fallback_model || FALLBACK_TTS_MODEL;
+      let out;
+      try {
+        out = await readTts(say, opts, (buf) => push(engine, buf));
+      } catch (e) {
+        cut(e.code || "error");
+        e.billing = billing;
+        e.lateBilling = lateBilling();
+        throw e;
+      }
+      billing.push({ model: engine, tokens: out.tokens });
+      if (sent) {
+        const pcm = Buffer.concat(collected);
+        cacheIt({ pcm, transcript: say, engine, fallback: true });
+        return { engine, transcript: say, attempts, cached: false, fallback: true, why: last && last.code, ms: Date.now() - t0, warm: false, firstAudioMs, billing, lateBilling: lateBilling(), cuts, pcm };
       }
     }
     const err = last || new VoiceError("the voice did not read the text as written", "unfaithful");
     err.attempts = attempts;
     err.ms = Date.now() - t0;
+    err.billing = billing;
+    err.lateBilling = lateBilling();
+    err.cuts = cuts;
     throw err;
   } finally {
     release();
   }
+}
+
+/**
+ * Speak one sentence, whole: a WAV of what speakStream sent, less anything it
+ * cut. Resolves {wav, transcript, attempts, cached, engine, fallback, ...}.
+ * Rejects with code "unfaithful" when no reading matched the text.
+ */
+async function speak(text, cfg) {
+  let chunks = [];
+  const out = await speakStream(text, cfg, {
+    audio: (b) => chunks.push(b),
+    cut: () => {
+      chunks = [];
+    },
+  });
+  const pcm = out.cached ? out.pcm : Buffer.concat(chunks);
+  const { pcm: _drop, ...rest } = out;
+  return { ...rest, wav: wav(pcm, RATE) };
 }
 
 /* -------------------------------------------------------- transcribe -- */
@@ -775,6 +1022,14 @@ async function speak(text, cfg) {
  * (webm/opus in practice); `mime` is its type.
  */
 async function transcribe(audio, cfg, mime) {
+  return (await transcribeFull(audio, cfg, mime)).text;
+}
+
+/**
+ * transcribe(), with what OpenAI billed for it: {text, model, usage, tokens}.
+ * The gpt-4o transcribe models report usage in tokens (audio in, text out).
+ */
+async function transcribeFull(audio, cfg, mime) {
   requireKey(cfg);
   const buf = Buffer.isBuffer(audio) ? audio : Buffer.from(String(audio || ""), "base64");
   if (!buf.length) throw new VoiceError("No audio arrived.", "invalid");
@@ -812,7 +1067,11 @@ async function transcribe(audio, cfg, mime) {
   }
   if (!res.ok) throw classify(res.status, data && data.error ? data.error.message : body);
   if (!data || typeof data.text !== "string") throw new VoiceError("OpenAI sent back no text", "upstream");
-  return data.text.trim();
+  const model = cfg.transcribe_model || DEFAULTS.transcribe_model;
+  // No usage reported: estimate from the recording's length is not possible
+  // without decoding it, so it is counted as nothing, and marked.
+  const tokens = data.usage ? usageLib.transcribeTokens(data.usage) : { estimated: 1 };
+  return { text: data.text.trim(), model, usage: data.usage || null, tokens };
 }
 
 /* -------------------------------------------------------------- test -- */
@@ -845,10 +1104,13 @@ async function check(cfg) {
 
 module.exports = {
   speak,
+  speakStream,
+  overrun,
   warm,
   closeAll,
   readingInstructions,
   transcribe,
+  transcribeFull,
   check,
   faithful,
   wav,
@@ -864,4 +1126,5 @@ module.exports = {
   MAX_CHARS,
   RATE,
   FALLBACK_TTS_MODEL,
+  AUDIO_TOKENS_PER_SECOND,
 };

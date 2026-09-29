@@ -111,8 +111,10 @@ sends, approvals and restarts in its own login log.
 `deploy-dashboard.sh` now tars the tree it replaces to
 `/root/backups/moni-dashboard_<timestamp>.tgz` before syncing.
 
-    POST /moni-ai/api/transcribe           {data: base64, mime?} -> {text}  (OpenAI transcription)
-    POST /moni-ai/api/speak                {text} -> audio/wav, or 204      (OpenAI realtime voice)
+    POST /moni-ai/api/transcribe           {data: base64, mime?, vt?} -> {text}  (OpenAI transcription)
+    POST /moni-ai/api/speak                {text, vt?, cat?} -> NDJSON PCM stream (Accept: application/x-ndjson),
+                                           else audio/wav or 204            (OpenAI realtime voice)
+    GET  /moni-ai/api/voice/usage          today's / this month's voice spend, by kind, and the last turn
 
 Tests: `node dashboard/tools/test-moniai.cjs` (client and permission).
 
@@ -164,7 +166,12 @@ talks to OpenAI and never sees the key (the CSP still forbids it to).
   (`gpt-4o-mini-transcribe` by default), with a vocabulary prompt (MONI, Odoo,
   sessions, agents) so the panel's own words are spelled right.
 - **Speaking**: each sentence of a reply is posted to `/moni-ai/api/speak` or
-  `/console/:id/speak` and comes back as a 24 kHz WAV. `lib/voice.js` keeps
+  `/console/:id/speak`. The Command Center asks for it **streamed**
+  (`Accept: application/x-ndjson`): `start {engine}`, then `audio {pcm}` (PCM16
+  mono 24 kHz, base64, whole samples) as OpenAI produces it, then `end` -- and
+  plays it with Web Audio from the first chunk (a 60 ms lead, each chunk
+  scheduled right after the last, one gain node per reading into the analyser
+  that drives the seed core). The console still gets a whole WAV. `lib/voice.js` keeps
   WebSockets to `wss://api.openai.com/v1/realtime?model=gpt-realtime-mini`
   (default; `gpt-realtime` and `gpt-live-1` on `/v1/live/sessions` are
   selectable) warm and reuses them, opening two as soon as a recording is
@@ -175,16 +182,27 @@ talks to OpenAI and never sees the key (the CSP still forbids it to).
   you today?"), which is why the first build spoke almost nothing. The page
   fetches the next sentences while one plays. Short lines ("On it.") are cached
   in memory per model and voice.
-- **Verbatim guard**: the model's own transcript of what it said is compared
-  with the text word by word; a reading that adds, answers or drops words is
-  cut as soon as it wanders and the sentence is read by `gpt-4o-mini-tts`
-  (`/v1/audio/speech`) instead, which cannot answer it. Measured 2026-09-27:
-  realtime-mini read about 88% of sentences verbatim out of band (2 of 10 in
-  band). The route answers 204 only if the fallback fails too; the page then
-  says a sentence was not read aloud. Each call logs one key-free, text-free
+- **Verbatim guard, while streaming**: the model's own transcript of what it
+  said is compared with the text word by word. Its transcript runs *ahead* of
+  its audio (measured 2026-09-29: most of a sentence's words arrive before the
+  first audio chunk, and the audio arrives several times faster than it
+  plays), so the check runs on every transcript delta while the audio flows:
+  once it holds more invented words than a faithful reading may, the reading
+  is cut (`cut`), usually before that audio was even sent; at the end the full
+  check (dropped words too) can still cut it, a fraction of a second into
+  playback. On `cut` the page stops that sentence at once (a 12 ms fade, every
+  scheduled chunk stopped) and drops what it held; the server cancels the
+  realtime response (`response.cancel` with its id, whose usage is still
+  counted) and **re-reads the whole sentence with `gpt-4o-mini-tts`**, streamed
+  too (`stream_format: "sse"`, which also reports its usage), which cannot
+  answer it. Only if that fails is the sentence skipped (`skipped`; 204 in the
+  WAV form), its text still on screen, and the page says so. Measured
+  2026-09-27: realtime-mini read about 88% of sentences verbatim out of band.
+  Barge-in stops the stream playing and aborts the ones fetched ahead;
+  sentences play strictly in order. Each call logs one key-free, text-free
   line to the journal: `voice speak 200 engine=... ms=... first_audio_ms=...
-  warm=1 audio_s=... words=...` or `voice transcribe 200 model=... ms=...`.
-  The response header `X-Voice-Engine` says realtime / fallback / cache.
+  warm=1 cuts=... audio_s=... words=... streamed=1 usd=...` or `voice transcribe
+  200 model=... ms=... usd=...`.
 - **The key**: Settings > Credentials > OpenAI voice (`/credentials/openai-voice`,
   permission `voice.manage`, in no stock role -- administrators only). Write-only
   field, shown as its last four characters, Replace, Remove and a Test button
@@ -214,7 +232,7 @@ OpenAI voice > *Voice front desk (GPT)* (`POST /credentials/openai-voice/desk`,
 table, not with the key). While it is off nothing about the voice changes.
 While on, the Command Center's mic posts each utterance to
 `POST /moni-ai/api/desk/turn` (`moniai.use` + CSRF). The voice bar shows
-**Front desk · GPT**, **Direct · MONI AI**, or **Direct · desk budget used**.
+**Front desk · GPT** or **Direct · MONI AI**.
 
 gpt-realtime-mini holds the conversation, server-side, **in text**, with exactly
 two tools: `read_status()` (the supervisor's read-only `snapshot` op: services,
@@ -229,8 +247,11 @@ tools in the session; any other function call is refused; `deskOps()` opens for
 **Sentence by sentence.** The desk answers in text; each sentence is released
 as soon as the guard has passed it and is spoken by the ordinary verbatim
 reader (`lib/voice.js`), so what is heard is exactly what was checked. The
-route streams NDJSON: `heard`, then one `line` (text + WAV) per sentence,
-`asked`, `done`. The guard judges each sentence with the ones before it (a
+route streams NDJSON: `heard`, then per sentence `line {i, text}` and its audio
+as it is read -- `start` / `audio` / `cut` / `end` with the line's `i`,
+strictly in line order (`createSpeaker` holds a later line's audio until the
+one before it has ended) -- `asked`, and `done` with the turn's cost and the
+usage figures. The guard judges each sentence with the ones before it (a
 bare "Done." after an action sentence is a claim about that sentence; "it"
 borrows its subject), and holds a sentence it cannot judge alone -- one that
 mentions an action, a fragment, a hand-off whose `ask_moni` call is not known
@@ -257,23 +278,33 @@ rest becomes "The rest of MONI AI's answer is on screen." A pending approval or
 question the summary left out is said anyway ("It needs your approval or your
 answer."). MONI AI is told its reply will be summarised.
 
-**Cost and the daily budget.** Every desk response's `usage` and every spoken
-line's reading usage are priced (`PRICES`, OpenAI's list read 2026-09-29) and
-added to today's spend (Africa/Cairo day) in the `settings` table. The budget
-(default **$1.00/day**, Settings next to the switch, `POST
-/credentials/openai-voice/desk-budget`) is checked before each turn or summary:
-over it, the desk refuses (`desk-budget`; to a streaming page as a `refused`
-line, to plain JSON callers as 409) and the page goes the direct way at once,
-with a notice. Measured on the real API: small talk ~$0.0015 per utterance,
+**Cost, on screen -- no cap.** The daily budget was removed (the
+administrator's decision of 2026-09-29): nothing refuses or diverts the desk for
+what it has spent. Instead every OpenAI call the voice makes is priced from the
+usage OpenAI reports -- each desk response, each reading (a cancelled one
+included), the text-to-speech fallback (`speech.audio.done`), each
+transcription -- with the one price list in `lib/voice-usage.js` (OpenAI's
+pricing page, read 2026-09-29), and written to the panel's `voice_usage` table
+with its voice turn and kind: **small talk**, **snapshot** answers,
+**hand-offs** (the request and, later, its summary), **direct** (the direct
+path, front desk off), and transcription on its own line. The Command Center
+shows it under *Cost today* (`GET /moni-ai/api/voice/usage`): today's and this
+month's voice spend (Africa/Cairo) by kind, transcription, the total, and the
+last turn's cost. Measured on the real API: small talk ~$0.0015 per utterance,
 a snapshot answer ~$0.0022, a hand-off ~$0.0008 plus ~$0.0054 for the summary
-(transcription, ~$0.00025 per utterance, on top of each). Speech is 85-95% of
-it ($0.024 per minute heard); the desk's own text tokens are $0.0001-0.0005.
+(transcription, ~$0.0001-0.00025 per utterance, on top of each). Speech is 85-95% of
+it; the desk's own text tokens are $0.0001-0.0005.
 A kept conversation is replaced after 12 turns or 12k input tokens.
 
 Tests: `node dashboard/tools/test-voice-desk.cjs` (mock realtime server with the
 real event shapes, including out-of-band responses and `usage`; tools, the
 supervisor door, the snapshot payload, the guard, sentence release and its
-property, small talk, summaries, cost, the budget, session length).
+property, small talk, summaries, cost and the usage figures (Cairo day and
+month boundaries), streamed speech in line order, session length).
+`node dashboard/tools/test-voice-stream.cjs` runs the page's Voice module (cut
+out of `public/moni-ai.js`) against a fake Web Audio clock: playback from the
+first chunk, order, a clean cut and the fallback after it, barge-in during a
+stream, the desk's streamed lines.
 `sudo node dashboard/tools/eval-voice-desk.cjs --replies <copy.json> [--speak]
 [--session]` runs ~25 prompts and summaries of MONI AI's real replies (from a
 read-only copy of the ledger) against the real model with a stubbed supervisor

@@ -53,10 +53,15 @@
  * arrives. What is released has passed the guard in the context that decides
  * it; whatever comes later can only cut itself.
  *
- * Cost. Every response's `usage` is priced (PRICES, the official list, read
- * 2026-09-29) and, with the speech of what the desk says, counted against a
- * daily budget kept by the server (createBudget). Over the budget the page
- * falls back to the direct path and says so.
+ * Cost. Every response's `usage` is priced (lib/voice-usage.js, the official
+ * list read 2026-09-29) and recorded, with the speech of what the desk says,
+ * per voice turn and per kind of turn (small talk, snapshot answer, hand-off).
+ * There is no cap: the Command Center shows the spend instead (the
+ * administrator's decision of 2026-09-29).
+ *
+ * Speech is streamed (createSpeaker): each released line is read at once by
+ * the verbatim reader and its audio goes to the page as it arrives, strictly
+ * in line order.
  *
  * Everything runs on the server, like the rest of the voice: the browser never
  * talks to OpenAI and never sees the key.
@@ -64,6 +69,7 @@
 
 const WebSocket = require("ws");
 const { redactDeep } = require("./priv");
+const usageLib = require("./voice-usage");
 
 const WS_BASE = process.env.MONI_OPENAI_WS || "wss://api.openai.com/v1";
 const DESK_MODEL = "gpt-realtime-mini";
@@ -84,7 +90,6 @@ const MAX_CONTEXT_TOKENS = 12000;
 const REPLY_IN_CONTEXT_CHARS = 1500;
 const SUMMARY_MAX_TOKENS = 220;
 const VERBATIM_MAX_CHARS = 220; // a reply this short, in plain prose, is read as it is
-const DEFAULT_BUDGET_USD = 1.0;
 
 const SAFE_LINE = "Let me pass that to MONI AI.";
 const SAFE_LINE_ASKED = "I've passed that to MONI AI. I'll read you its answer when it arrives.";
@@ -97,63 +102,13 @@ const SUMMARY_NONE_LINE = "MONI AI has replied. Its answer is on screen.";
 
 /* ------------------------------------------------------------- prices -- */
 
-/**
- * USD per 1M tokens (and per minute for transcription), from OpenAI's pricing
- * page, https://developers.openai.com/api/docs/pricing, read 2026-09-29.
- */
-const PRICES = Object.freeze({
-  "gpt-realtime-mini": { text_in: 0.6, text_cached: 0.06, text_out: 2.4, audio_in: 10.0, audio_cached: 0.3, audio_out: 20.0 },
-  "gpt-realtime": { text_in: 4.0, text_cached: 0.4, text_out: 16.0, audio_in: 32.0, audio_cached: 0.4, audio_out: 64.0 },
-  "gpt-4o-mini-tts": { text_in: 0.6, audio_out: 12.0 },
-  "gpt-4o-mini-transcribe": { per_minute: 0.003 },
-  "gpt-4o-transcribe": { per_minute: 0.006 },
-});
-// Measured on gpt-realtime-mini (2026-09-29): 103 audio tokens for 5.15 s of speech.
-const AUDIO_TOKENS_PER_SECOND = 20;
-
-/** A realtime `usage` object as billable counts. */
-function tokensOf(usage) {
-  const u = usage || {};
-  const i = u.input_token_details || {};
-  const c = i.cached_tokens_details || {};
-  const o = u.output_token_details || {};
-  const cachedText = c.text_tokens || 0;
-  const cachedAudio = c.audio_tokens || 0;
-  return {
-    text_in: Math.max(0, (i.text_tokens || 0) - cachedText),
-    text_cached: cachedText,
-    audio_in: Math.max(0, (i.audio_tokens || 0) - cachedAudio),
-    audio_cached: cachedAudio,
-    text_out: o.text_tokens || 0,
-    audio_out: o.audio_tokens || 0,
-  };
-}
-
-function addTokens(a, b) {
-  const out = { ...(a || {}) };
-  for (const [k, v] of Object.entries(b || {})) out[k] = (out[k] || 0) + (v || 0);
-  return out;
-}
-
-/** USD for counts (tokensOf) on a model. */
+// The price list and the token arithmetic live in lib/voice-usage.js, the one
+// place they are kept (with the date they were read).
+const PRICES = usageLib.PRICES;
+const tokensOf = usageLib.realtimeTokens;
+const addTokens = usageLib.addTokens;
 function costOf(tokens, model) {
-  const p = PRICES[model] || PRICES[DESK_MODEL];
-  let usd = 0;
-  for (const k of ["text_in", "text_cached", "audio_in", "audio_cached", "text_out", "audio_out"]) usd += ((tokens && tokens[k]) || 0) * (p[k] || 0);
-  return usd / 1e6;
-}
-
-/**
- * What one spoken line cost: the realtime reading's own usage when it has one,
- * else an estimate for the text-to-speech fallback (its API reports no usage),
- * nothing for a cached clip.
- */
-function speechCost(out, model, text) {
-  if (!out || out.cached) return 0;
-  if (out.usage) return costOf(tokensOf(out.usage), model);
-  const seconds = out.wav ? Math.max(0, (out.wav.length - 44) / (RATE * 2)) : 0;
-  const p = PRICES["gpt-4o-mini-tts"];
-  return ((String(text || "").length / 4) * p.text_in + seconds * AUDIO_TOKENS_PER_SECOND * p.audio_out) / 1e6;
+  return usageLib.costOf(tokens, PRICES[model] ? model : DESK_MODEL);
 }
 
 /* --------------------------------------------------------------- tools -- */
@@ -1384,61 +1339,109 @@ function scrub(text) {
     .slice(0, 300);
 }
 
-/* ------------------------------------------------- the daily budget -- */
+/* ------------------------------------------------ speaking, streamed -- */
 
 /**
- * The desk's spend per day (Africa/Cairo), kept by the server from real usage.
- * `store` is { get(key) -> string|null, set(key, value) } (the panel's
- * settings table). The limit is a setting too; 0 means no desk at all.
+ * What kind of turn this was, for the usage figures: a request passed to MONI
+ * AI (and, later, its summary) is a hand-off; an answer that read the snapshot
+ * is a snapshot answer; anything else is small talk.
  */
-function createBudget(store, opts) {
-  const o = opts || {};
-  const tz = o.tz || "Africa/Cairo";
-  const now = o.now || (() => new Date());
-  const LIMIT_KEY = "voice_desk_budget_usd";
-  const SPEND_KEY = "voice_desk_spend";
-  const day = () => new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }).format(now());
-  const read = () => {
-    let s = null;
-    try {
-      s = JSON.parse(store.get(SPEND_KEY) || "null");
-    } catch (_) {
-      s = null;
-    }
-    const d = day();
-    if (!s || s.day !== d) s = { day: d, usd: 0, desk_usd: 0, speech_usd: 0, turns: 0, summaries: 0 };
-    return s;
+function categoryOf(result) {
+  const r = result || {};
+  if (r.kind === "summary") return "handoff";
+  if ((r.asked || []).length) return "handoff";
+  if ((r.tools || []).includes("read_status")) return "snapshot";
+  return "small_talk";
+}
+
+/**
+ * Speak the desk's lines as they are released, streamed and in order.
+ *
+ * `speak(text, cfg, sink)` is voice.speakStream. Each line's reading starts
+ * the moment the line is pushed (the reader runs a few at a time), and every
+ * event of it goes to `write` as NDJSON-ready objects:
+ *
+ *   {type:"line", i, text, safe}   at once, in order: the page queues it
+ *   {type:"start", i, engine}      a reading of line i begins
+ *   {type:"audio", i, pcm}         PCM16 mono 24 kHz, base64, as it arrives
+ *   {type:"cut", i, why}           drop what was sent of line i since its
+ *                                  last start: that reading failed the check
+ *   {type:"end", i, engine|skipped}  line i is complete (or was not spoken)
+ *
+ * The start/audio/cut/end of line i+1 are held here until line i has ended,
+ * so the wire carries each sentence whole and in order -- and a sentence
+ * that is read faster than the one before it waits its turn.
+ */
+function createSpeaker({ speak, cfg, write, t0 }) {
+  const slots = [];
+  let head = 0;
+  let firstAudio = null;
+  const billing = [];
+  const late = [];
+  const spoken = [];
+  const out = (ev) => {
+    if (ev.type === "audio" && firstAudio === null) firstAudio = Date.now() - (t0 || Date.now());
+    write(ev);
   };
-  const limit = () => {
-    const v = Number(store.get(LIMIT_KEY));
-    return store.get(LIMIT_KEY) == null || !isFinite(v) || v < 0 ? DEFAULT_BUDGET_USD : v;
+  const emit = (i, ev) => {
+    if (i === head) out(ev);
+    else slots[i].buf.push(ev);
+  };
+  const advance = () => {
+    while (head < slots.length && slots[head].done) {
+      head++;
+      if (head < slots.length) slots[head].buf.splice(0).forEach(out);
+    }
   };
   return {
-    LIMIT_KEY,
-    SPEND_KEY,
-    day,
-    limit,
-    setLimit(usd, by) {
-      const v = Number(usd);
-      if (!isFinite(v) || v < 0 || v > 100) throw new DeskError("Give a daily budget between $0 and $100.", "invalid");
-      store.set(LIMIT_KEY, String(Math.round(v * 100) / 100), by);
+    push(line) {
+      const i = slots.length;
+      const sl = { buf: [], done: false, bytes: 0 };
+      slots.push(sl);
+      write({ type: "line", i, text: line.text, safe: !!line.safe });
+      const sink = {
+        start: ({ engine }) => {
+          sl.bytes = 0;
+          emit(i, { type: "start", i, engine });
+        },
+        audio: (b) => {
+          sl.bytes += b.length;
+          emit(i, { type: "audio", i, pcm: b.toString("base64") });
+        },
+        cut: ({ why }) => {
+          sl.bytes = 0;
+          emit(i, { type: "cut", i, why });
+        },
+      };
+      sl.promise = Promise.resolve()
+        .then(() => speak(line.text, cfg, sink))
+        .then(
+          (res) => {
+            billing.push(...(res.billing || []));
+            if (res.lateBilling) late.push(res.lateBilling);
+            emit(i, { type: "end", i, engine: res.cached ? "cache" : res.engine, fallback: !!res.fallback });
+            spoken.push({ text: line.text, safe: !!line.safe, audio_s: Math.round((sl.bytes / (RATE * 2)) * 100) / 100 });
+          },
+          (err) => {
+            if (err && err.billing) billing.push(...err.billing);
+            if (err && err.lateBilling) late.push(err.lateBilling);
+            emit(i, { type: "end", i, skipped: (err && err.code) || "error" });
+            spoken.push({ text: line.text, safe: !!line.safe, audio_s: 0, skipped: true });
+          }
+        )
+        .then(() => {
+          sl.done = true;
+          if (i === head) advance();
+        });
     },
-    /** { day, spent, limit, turns, summaries, over, left } */
-    status() {
-      const s = read();
-      const l = limit();
-      return { day: s.day, spent: s.usd, desk_usd: s.desk_usd, speech_usd: s.speech_usd, turns: s.turns, summaries: s.summaries, limit: l, over: s.usd >= l, left: Math.max(0, l - s.usd) };
-    },
-    /** Count one turn or summary: the desk's own tokens and the speech of its lines. */
-    add({ desk_usd, speech_usd, kind }) {
-      const s = read();
-      s.desk_usd += desk_usd || 0;
-      s.speech_usd += speech_usd || 0;
-      s.usd = s.desk_usd + s.speech_usd;
-      if (kind === "summary") s.summaries++;
-      else s.turns++;
-      store.set(SPEND_KEY, JSON.stringify(s));
-      return this.status();
+    /** Every line spoken (or skipped): {firstAudio, billing, lateBilling, spoken}. */
+    async done() {
+      let n = -1;
+      while (n !== slots.length) {
+        n = slots.length;
+        await Promise.all(slots.map((s) => s.promise));
+      }
+      return { firstAudio, billing, lateBilling: Promise.all(late).then((xs) => xs.flat()), spoken };
     },
   };
 }
@@ -1504,8 +1507,6 @@ module.exports = {
   SUMMARY_NONE_LINE,
   FORBIDDEN_KEYS,
   PRICES,
-  AUDIO_TOKENS_PER_SECOND,
-  DEFAULT_BUDGET_USD,
   MAX_TURNS_PER_SESSION,
   MAX_CONTEXT_TOKENS,
   VERBATIM_MAX_CHARS,
@@ -1532,7 +1533,7 @@ module.exports = {
   tokensOf,
   addTokens,
   costOf,
-  speechCost,
-  createBudget,
+  categoryOf,
+  createSpeaker,
   RATE,
 };

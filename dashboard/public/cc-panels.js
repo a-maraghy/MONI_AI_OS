@@ -940,7 +940,52 @@
       el.innerHTML = h;
       CC.applyBars(el);
     }
+    /* ---- the voice's own spend (OpenAI), from the usage OpenAI reports for
+       every call, priced on the server. Today and this month (Cairo), split by
+       kind of turn, transcription on its own line, and the last turn. ---- */
+    var VU_ROWS = [
+      ["small_talk", "Small talk", "The front desk's small talk"],
+      ["snapshot", "Snapshot", "The front desk's answers from the read-only snapshot"],
+      ["handoff", "Hand-offs", "Requests the front desk passed to MONI AI, and the spoken summaries of its answers"],
+      ["direct", "Direct", "The direct path (front desk off): MONI AI's replies read aloud word for word"],
+    ];
+    var VU_CAT = { small_talk: "small talk", snapshot: "snapshot answer", handoff: "hand-off", direct: "direct" };
+    function vmoney(n) {
+      n = Number(n) || 0;
+      if (!n) return "$0";
+      return "$" + (n < 1 ? n.toFixed(4) : n.toFixed(2));
+    }
+    function renderVoiceUsage() {
+      var el = $("cc-voice-usage");
+      if (!el) return;
+      var u = P.voiceUsage;
+      if (!u || !u.today) { el.innerHTML = '<div class="cc-empty-s">Voice usage ' + esc(P.err.voiceUsage ? "is not available: " + P.err.voiceUsage : "—") + "</div>"; return; }
+      var t = u.today, m = u.month_totals || {}, last = u.last;
+      var h = '<div class="cc-vu-h"><span class="cc-vu-k">Voice · OpenAI</span><span class="cc-vu-n">' + esc((t.turns || 0) + " turn" + (t.turns === 1 ? "" : "s") + " today") + "</span></div>";
+      h += '<div class="cc-vu-t" role="table" aria-label="Voice spend, today and this month"><span role="columnheader"></span><span class="n" role="columnheader">today</span><span class="n" role="columnheader">month</span>';
+      VU_ROWS.forEach(function (r) {
+        h += '<span class="l" role="rowheader" title="' + esc(r[2]) + '">' + esc(r[1]) + '</span><span class="n" role="cell">' + esc(vmoney(t.by[r[0]])) + '</span><span class="n" role="cell">' + esc(vmoney(m.by ? m.by[r[0]] : 0)) + "</span>";
+      });
+      h += '<span class="l" role="rowheader" title="What you said, turned into text (every path)">Transcription</span><span class="n" role="cell">' + esc(vmoney(t.transcription)) + '</span><span class="n" role="cell">' + esc(vmoney(m.transcription)) + "</span>";
+      h += '<span class="l tot" role="rowheader">Voice total</span><span class="n tot" role="cell" id="cc-vu-today">' + esc(vmoney(t.total)) + '</span><span class="n tot" role="cell" id="cc-vu-month">' + esc(vmoney(m.total)) + "</span></div>";
+      h += last
+        ? '<div class="cc-vu-last" id="cc-vu-last" title="The last voice turn: transcription ' + esc(vmoney(last.parts.transcription)) + ", front desk " + esc(vmoney(last.parts.desk)) + ", speech " + esc(vmoney(last.parts.speech)) + '">Last turn <b>' + esc(vmoney(last.usd)) + "</b> · " + esc(VU_CAT[last.cat] || last.cat) + "</div>"
+        : '<div class="cc-vu-last" id="cc-vu-last">No voice turns yet</div>';
+      h += '<div class="cc-vu-f" title="' + esc("Priced from the usage OpenAI reports for each call, at the prices on " + ((u.prices && u.prices.source) || "OpenAI's pricing page")) + '">' + esc("OpenAI usage · prices of " + ((u.prices && u.prices.read) || "")) + "</div>";
+      el.innerHTML = h;
+    }
+    function setVoiceUsage(u) {
+      if (!u || !u.today) return;
+      P.voiceUsage = u;
+      delete P.err.voiceUsage;
+      renderVoiceUsage();
+    }
+    function loadVoiceUsage() {
+      if (!$("cc-voice-usage")) return Promise.resolve();
+      return api("voice/usage").then(setVoiceUsage).catch(function (e) { P.err.voiceUsage = errText(e); renderVoiceUsage(); });
+    }
     function loadCost() {
+      loadVoiceUsage();
       return api("cost").then(function (c) { P.cost = c; delete P.err.cost; }).catch(function (e) { P.err.cost = errText(e); })
         .then(function () { renderCostWidget(); if (OV.kind === "cost") renderCostBody(); });
     }
@@ -1296,6 +1341,7 @@
     function renderAll() {
       renderMisChip();
       renderCostWidget();
+      renderVoiceUsage();
       renderOrders();
       renderDecisions();
       if (S.pane === "rules") renderRules();
@@ -1316,6 +1362,8 @@
       openAlways: openAlways,
       openOrder: openOrder,
       openCost: openCost,
+      setVoiceUsage: setVoiceUsage,
+      loadVoiceUsage: loadVoiceUsage,
       openPalette: openPalette,
       openNewMission: openNewMission,
       setView: setView,

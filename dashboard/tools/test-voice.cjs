@@ -61,15 +61,20 @@ const BAD = "sk-proj-" + "B".repeat(40) + "nope";
 /* ---------------------------------------------------------------- mock --- */
 
 const mock = {
-  mode: "faithful", // faithful | improvise | improvise-once | answer | model-error | hang | handshake-401
+  mode: "faithful", // faithful | improvise | improvise-once | answer | model-error | hang | handshake-401 | drift | drop | die | odd
   connections: 0,
   log: [], // per connection: { url, headers, events: [], closedEarly }
   heard: null, // the last text "spoken", returned by transcription of a RIFF upload
   transcriptions: [],
   responses: 0, // response.create calls, across sockets
   speech: [], // /audio/speech calls
-  speechMode: "ok", // ok | 401
+  speechMode: "ok", // ok | 401 | raw (a plain PCM body, no usage)
+  cancels: [], // response.cancel events received
+  timeline: [], // [what, ms] for the streaming tests
 };
+const USAGE_RT = { total_tokens: 208, input_tokens: 120, output_tokens: 88, input_token_details: { text_tokens: 120, audio_tokens: 0, cached_tokens: 64, cached_tokens_details: { text_tokens: 64, audio_tokens: 0 } }, output_token_details: { text_tokens: 22, audio_tokens: 66 } };
+const USAGE_CANCELLED = { total_tokens: 150, input_tokens: 120, output_tokens: 30, input_token_details: { text_tokens: 120, audio_tokens: 0, cached_tokens: 0, cached_tokens_details: { text_tokens: 0, audio_tokens: 0 } }, output_token_details: { text_tokens: 10, audio_tokens: 20 } };
+const USAGE_TTS = { input_tokens: 12, output_tokens: 83, total_tokens: 95 };
 
 function speechChunk(loud) {
   const b = Buffer.alloc(4800); // 100 ms of PCM16 at 24 kHz
@@ -82,6 +87,10 @@ function readingFor(text, conn) {
     return "Sure! " + text + " Is there anything else I can help you with today, or shall I carry on?";
   }
   if (mock.mode === "answer") return "Yes, I restarted it for you a moment ago and everything looks healthy now.";
+  // Reads the sentence faithfully, then carries on with words of its own.
+  if (mock.mode === "drift") return text + " And by the way I also went ahead and restarted every single service for you just now.";
+  // Reads only the first half: nothing added, too much missing (the end check).
+  if (mock.mode === "drop") return text.split(" ").slice(0, Math.ceil(text.split(" ").length / 2)).join(" ");
   return text;
 }
 
@@ -103,6 +112,23 @@ const server = http.createServer((req, res) => {
         return res.end(JSON.stringify({ error: { message: "Incorrect API key provided: sk-proj-****nope." } }));
       }
       mock.heard = body.input;
+      if (body.stream_format === "sse" && mock.speechMode !== "raw") {
+        // As the real endpoint streams it: CRLF-separated events, audio in
+        // pieces, then the usage, then [DONE].
+        res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+        const pcm = Buffer.from(speechChunk(true), "base64");
+        const parts = [pcm.subarray(0, 1601), pcm.subarray(1601, 3000), pcm.subarray(3000)];
+        let k = 0;
+        const next = () => {
+          if (k < parts.length) {
+            res.write("data: " + JSON.stringify({ type: "speech.audio.delta", audio: parts[k++].toString("base64") }) + "\r\n\r\n");
+            return setTimeout(next, 5);
+          }
+          res.write("data: " + JSON.stringify({ type: "speech.audio.done", usage: USAGE_TTS }) + "\r\n\r\ndata: [DONE]\r\n\r\n");
+          res.end();
+        };
+        return next();
+      }
       res.setHeader("Content-Type", "application/octet-stream");
       res.end(Buffer.from(speechChunk(true), "base64"));
     });
@@ -129,7 +155,7 @@ const server = http.createServer((req, res) => {
         return res.end(JSON.stringify({ error: { message: "The model does not exist", code: "model_not_found" } }));
       }
       const isWav = txt.includes("RIFF") && txt.includes("WAVE");
-      res.end(JSON.stringify({ text: isWav ? mock.heard || "" : "restart the dashboard please" }));
+      res.end(JSON.stringify({ text: isWav ? mock.heard || "" : "restart the dashboard please", usage: { type: "tokens", total_tokens: 44, input_tokens: 32, input_token_details: { text_tokens: 0, audio_tokens: 32 }, output_tokens: 12 } }));
     });
     return;
   }
@@ -174,8 +200,14 @@ wss.on("connection", (ws, req) => {
         send({ type: "conversation.item.added", item: ev.item });
         send({ type: "conversation.item.done", item: ev.item });
       }
+      if (ev.type === "response.cancel") {
+        mock.cancels.push(ev);
+        entry.cancelled = true;
+        return;
+      }
       if (ev.type === "response.create") {
         mock.responses++;
+        entry.cancelled = false;
         if (mock.mode === "model-error") return send({ type: "error", error: { code: "model_not_found", message: "The model gpt-nope does not exist" } });
         if (mock.mode === "hang") return;
         const r = ev.response || {};
@@ -186,6 +218,7 @@ wss.on("connection", (ws, req) => {
         const rid = "resp_" + conn + "_" + ++n;
         entry.finished = false;
         send({ type: "response.created", response: { id: rid, status: "in_progress", output_modalities: ["audio"] } });
+        entry.rid = rid;
         send({ type: "response.output_item.added", response_id: rid, item: { type: "message", role: "assistant" } });
         send({ type: "response.content_part.added", response_id: rid, part: { type: "audio", transcript: "" } });
         const parts = reading.match(/\S+\s*/g) || [];
@@ -195,9 +228,23 @@ wss.on("connection", (ws, req) => {
             entry.closedEarly = i < parts.length;
             return;
           }
+          if (entry.cancelled) {
+            // What the real API does with response.cancel {response_id}: a
+            // response.done, status cancelled, with the usage so far.
+            entry.closedEarly = i < parts.length;
+            entry.finished = true;
+            mock.timeline.push(["cancelled", Date.now()]);
+            return send({ type: "response.done", response: { id: rid, status: "cancelled", usage: USAGE_CANCELLED } });
+          }
+          if (mock.mode === "die" && i === 3) {
+            mock.timeline.push(["died", Date.now()]);
+            return ws.terminate();
+          }
           if (i < parts.length) {
             send({ type: "response.output_audio_transcript.delta", response_id: rid, delta: parts[i] });
-            send({ type: "response.output_audio.delta", response_id: rid, delta: speechChunk(true) });
+            const chunk = Buffer.from(speechChunk(true), "base64");
+            send({ type: "response.output_audio.delta", response_id: rid, delta: (mock.mode === "odd" ? chunk.subarray(0, 4801) : chunk).toString("base64") });
+            mock.timeline.push(["audio", Date.now()]);
             i++;
             return setTimeout(step, 5);
           }
@@ -207,7 +254,8 @@ wss.on("connection", (ws, req) => {
           send({ type: "response.output_item.done", response_id: rid });
           entry.finished = true;
           mock.heard = reading;
-          send({ type: "response.done", response: { id: rid, status: "completed" } });
+          mock.timeline.push(["done", Date.now()]);
+          send({ type: "response.done", response: { id: rid, status: "completed", usage: USAGE_RT } });
           send({ type: "rate_limits.updated", rate_limits: [] });
         };
         step();
@@ -368,7 +416,14 @@ async function main() {
   const tts = mock.speech[mock.speech.length - 1];
   check("  the fallback gets the text as input, the same voice, raw PCM, the key as bearer",
     tts.input === "I restarted the dashboard." && tts.voice === "marin" && tts.response_format === "pcm" && tts.model === "gpt-4o-mini-tts" && tts.auth === "Bearer " + GOOD, JSON.stringify(tts));
-  check("the improvising reading was cut short, not paid for to the end", mock.log[mock.log.length - 1].closedEarly === true);
+  const cutConn = mock.log[mock.log.length - 1];
+  check("the improvising reading was cut short, not paid for to the end: response.cancel with its id",
+    cutConn.closedEarly === true && mock.cancels.length > 0 && mock.cancels[mock.cancels.length - 1].response_id === cutConn.rid, JSON.stringify(mock.cancels.slice(-1)));
+  const late = await out.lateBilling;
+  check("  and what the cut reading cost is still counted, from the cancelled response's usage",
+    late.length === 1 && late[0].model === "gpt-realtime-mini" && late[0].tokens.audio_out === 20 && late[0].tokens.text_in === 120, JSON.stringify(late));
+  check("  the fallback's own usage (speech.audio.done) is in the billing",
+    out.billing.some((b) => b.model === "gpt-4o-mini-tts" && b.tokens.text_in === 12 && b.tokens.audio_out === 83), JSON.stringify(out.billing));
 
   mock.mode = "improvise";
   out = await voice.speak("The backup finished.", cfg({ noCache: true }));
@@ -384,6 +439,98 @@ async function main() {
   check("a fallback that fails reports its error", r.ok, r.got);
   check("  and never carries a key", r.e && !/sk-proj-\*\*\*\*nope/.test(r.e.message) && !r.e.message.includes(GOOD), r.e && r.e.message);
   mock.speechMode = "ok";
+
+  section("streaming: audio passed on as it arrives, the verbatim check running alongside");
+  {
+    const record = () => {
+      const ev = [];
+      return {
+        ev,
+        sink: {
+          start: (x) => ev.push(["start", x.engine, Date.now()]),
+          audio: (b) => ev.push(["audio", b.length, Date.now()]),
+          cut: (x) => ev.push(["cut", x.why, Date.now()]),
+        },
+      };
+    };
+    mock.mode = "faithful";
+    mock.timeline = [];
+    let rec = record();
+    const text = "Every service on this machine is healthy and nothing needs your attention right now.";
+    const res = await voice.speakStream(text, cfg({ noCache: true }), rec.sink);
+    const audios = rec.ev.filter((e) => e[0] === "audio");
+    const doneAt = (mock.timeline.find((t) => t[0] === "done") || [])[1];
+    check("speakStream: a start, then audio chunk by chunk, no cut", rec.ev[0][0] === "start" && rec.ev[0][1] === "gpt-realtime-mini" && audios.length >= 10 && !rec.ev.some((e) => e[0] === "cut"), JSON.stringify(rec.ev.map((e) => e[0])));
+    check("  the first chunk is passed on before the reading has finished upstream", doneAt && audios[0][2] < doneAt, `${audios[0] && audios[0][2]} vs ${doneAt}`);
+    check("  every chunk is whole samples (even length)", audios.every((a) => a[1] % 2 === 0));
+    check("  resolves with the realtime usage as billing, firstAudioMs, no cuts",
+      res.billing.length === 1 && res.billing[0].tokens.text_cached === 64 && res.billing[0].tokens.text_in === 56 && res.billing[0].tokens.audio_out === 66 && res.firstAudioMs != null && res.cuts === 0 && !res.fallback, JSON.stringify(res.billing));
+
+    mock.mode = "odd";
+    rec = record();
+    await voice.speakStream("The disk is at sixty one percent.", cfg({ noCache: true }), rec.sink);
+    const oddAudio = rec.ev.filter((e) => e[0] === "audio");
+    check("odd-sized chunks upstream still reach the sink as whole samples", oddAudio.length > 0 && oddAudio.every((a) => a[1] % 2 === 0), oddAudio.map((a) => a[1]).join(","));
+
+    // Mid-clip failure 1: the transcript runs off script while audio flows.
+    mock.mode = "drift";
+    mock.cancels = [];
+    rec = record();
+    const t2 = "Three sessions are running and two are waiting for your approval.";
+    const r2 = await voice.speakStream(t2, cfg({ noCache: true }), rec.sink);
+    const kinds = rec.ev.map((e) => e[0] + (e[0] === "start" ? ":" + e[1] : ""));
+    const cutIdx = kinds.indexOf("cut");
+    check("a reading that drifts off script mid-clip: audio first, then a cut, then the fallback from the start",
+      kinds[0] === "start:gpt-realtime-mini" && cutIdx > 1 && kinds.slice(1, cutIdx).every((k) => k === "audio") && kinds[cutIdx + 1] === "start:gpt-4o-mini-tts" && kinds.slice(cutIdx + 2).length > 0 && kinds.slice(cutIdx + 2).every((k) => k === "audio"), kinds.join(" "));
+    check("  cut as soon as the transcript showed it, not at the end: the response was cancelled", mock.cancels.length === 1 && r2.cuts === 1 && r2.fallback === true && r2.why === "unfaithful");
+    check("  the fallback read the whole sentence, verbatim by design", mock.heard === t2);
+    let whole = await voice.speak(t2, cfg({ noCache: true }));
+    const fallbackBytes = Buffer.from(speechChunk(true), "base64").length;
+    check("  speak() (the WAV form) keeps only what survived the cut: the fallback's reading", whole.fallback === true && whole.wav.length - 44 === fallbackBytes, `${whole.wav.length - 44} vs ${fallbackBytes}`);
+
+    // Mid-clip failure 2: nothing added, but half the sentence missing -- only
+    // the end check can see it, after the audio has gone out.
+    mock.mode = "drop";
+    rec = record();
+    const r3 = await voice.speakStream("The backup finished at three and every table was copied across cleanly.", cfg({ noCache: true }), rec.sink);
+    const k3 = rec.ev.map((e) => e[0] + (e[0] === "start" ? ":" + e[1] : ""));
+    check("a reading that drops words: every chunk goes out, the end check cuts it, the fallback follows",
+      k3[0] === "start:gpt-realtime-mini" && k3.includes("cut") && k3[k3.indexOf("cut") + 1] === "start:gpt-4o-mini-tts" && r3.fallback === true && r3.cuts === 1, k3.join(" "));
+
+    // With the fallback off: cut, then skipped (rejected), text stays on screen.
+    mock.mode = "drift";
+    rec = record();
+    const r4 = await expectCode(voice.speakStream(t2, cfg({ noCache: true, fallback: false }), rec.sink), "unfaithful");
+    check("with the fallback off: the cut still comes first, then it is rejected as unfaithful", r4.ok && rec.ev.some((e) => e[0] === "cut") && rec.ev[rec.ev.length - 1][0] === "cut", r4.got);
+
+    // A socket that dies mid-reading after audio went out: cut and fall back,
+    // rather than leave half a sentence in the air.
+    mock.mode = "die";
+    rec = record();
+    const r5 = await voice.speakStream("Memory is fine and the swap is almost unused today.", cfg({ noCache: true }), rec.sink);
+    check("a reading that breaks mid-way (socket gone): cut, then the fallback reads it", r5.fallback === true && rec.ev.some((e) => e[0] === "cut") && ["upstream", "network"].includes(r5.why), JSON.stringify({ why: r5.why, k: rec.ev.map((e) => e[0]).join(" ") }));
+
+    // The text-to-speech stream, both shapes.
+    mock.mode = "improvise";
+    mock.speechMode = "raw";
+    const r6 = await voice.speakStream("The dashboard is up.", cfg({ noCache: true }), record().sink);
+    check("a plain PCM fallback body (no usage) still streams, and is estimated and marked", r6.fallback === true && r6.billing.some((b) => b.model === "gpt-4o-mini-tts" && b.tokens.estimated === 1), JSON.stringify(r6.billing));
+    mock.speechMode = "ok";
+    const sse = mock.speech[mock.speech.length - 1];
+    check("the fallback asks for PCM as server-sent events (that is where its usage is)", sse.stream_format === "sse" && sse.response_format === "pcm");
+
+    // A cached line streams too: one start, one chunk.
+    mock.mode = "faithful";
+    await voice.speak("On it.", cfg());
+    rec = record();
+    const r7 = await voice.speakStream("On it.", cfg(), rec.sink);
+    check("a cached line: start(cache) and its audio in one chunk, costing nothing", r7.cached === true && rec.ev[0][1] === "cache" && rec.ev.filter((e) => e[0] === "audio").length === 1 && r7.billing.length === 0);
+
+    check("overrun(): a word still arriving is not counted yet", voice.overrun("The dashboard is up.", "The dash") === false && voice.overrun("The dashboard is up.", "Sure thing! Of course, here you go right away: the") === true);
+    const tf = await voice.transcribeFull(Buffer.from("fake webm"), cfg(), "audio/webm");
+    check("transcribeFull: the text and the usage OpenAI reports, as tokens", tf.text === "restart the dashboard please" && tf.tokens.audio_in === 32 && tf.tokens.text_out === 12 && tf.model === "gpt-4o-mini-transcribe", JSON.stringify(tf.tokens));
+    mock.mode = "faithful";
+  }
 
   section("realtime errors");
   mock.mode = "faithful";
