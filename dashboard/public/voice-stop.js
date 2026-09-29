@@ -21,6 +21,15 @@
  * around it are allowed ("okay", "please", "خلاص", "يا مينت"), and what is
  * left must be one of the phrases below, word for word.
  *
+ * Undo works the same way (2026-09-29, the administrator said "Undo." to
+ * close the Missions sheet the voice had opened, and it went to MINT AI as a
+ * plain turn): undo() is true for "undo", "undo that", "go back", "never
+ * mind", "cancel that", «رجّعها», «رجع», «ألغي ده», «لأ خلاص», «ارجعي»...
+ * as the whole utterance only -- never "undo the last git commit", "go back
+ * to the Odoo question" or «رجع للموضوع اللي فات». The caller acts on it only
+ * while a screen action can still be undone (its toast's Undo); otherwise the
+ * words go on as an ordinary turn.
+ *
  * Loaded on every page before console.js and moni-ai.js (window.VoiceStop),
  * and required by the server for the voice front desk, which hears the words
  * itself (module.exports). Pure: no DOM, no state.
@@ -79,6 +88,28 @@ var VoiceStop = (function () {
     .sort(function (a, b) { return b.length - a.length; });
   // Longer than this after normalising (pleasantries aside), it is a sentence, not a command.
   var MAX_WORDS = 9;
+
+  // "Undo" said aloud: whole utterances only, normalised (see norm()).
+  var UNDO = [
+    "undo", "undo that", "undo it", "undo this", "undo the last one", "undo please",
+    "go back", "go back please", "take that back", "take it back", "put it back", "put that back",
+    "never mind", "nevermind", "cancel that", "cancel it", "cancel this", "revert that", "revert it",
+    "change it back", "change that back", "no go back", "no undo that", "no never mind",
+    // Egyptian Arabic, both genders ("رجّعها" once normalised is "رجعها")
+    "رجعها", "رجعه", "رجعيها", "رجعيه", "رجع", "رجعي", "ارجع", "ارجعي", "رجعها تاني", "رجعيها تاني",
+    "رجعها زي ما كانت", "رجعيها زي ما كانت", "رجعه زي ما كان", "رجعيه زي ما كان", "رجع زي ما كان", "رجعي زي ما كان",
+    "الغي", "الغيها", "الغيه", "الغي ده", "الغي دا", "الغي دي", "الغيها دي", "الغي اللي عملته", "الغي اللي فات",
+    "لا خلاص", "لا لا خلاص", "لا رجعها", "لا رجعيها", "لا الغيها", "لا الغي ده",
+    "كانسل", "كانسل ده", "كانسلها", "انسي", "انسي ده", "انسي الموضوع ده",
+  ];
+  var UNDO_SET = {};
+  UNDO.forEach(function (p) { UNDO_SET[p] = true; });
+  var UNDO_ASK = ["can you", "could you", "would you", "please", "ممكن ت", "ممكن", "عايزك ت", "عايزك", "عاوزك", "لو سمحت"];
+  var UNDO_ASKED = {
+    "undo that": 1, "undo it": 1, "go back": 1, "take that back": 1, "put it back": 1, "cancel that": 1, "revert that": 1, "change it back": 1,
+    "ترجعها": 1, "ترجعيها": 1, "ترجعه": 1, "ترجعيه": 1, "تلغيها": 1, "تلغي ده": 1, "تلغيه": 1,
+    "رجعها": 1, "رجعيها": 1, "الغيها": 1, "الغي ده": 1,
+  };
 
   var PHRASES = {};
   function add(p) { PHRASES[p] = true; }
@@ -148,8 +179,27 @@ var VoiceStop = (function () {
     return false;
   }
 
+  /** True when what was said is "undo" (or the like) and nothing more. */
+  function undo(text) {
+    var s = norm(text);
+    if (!s) return false;
+    if (UNDO_SET[s]) return true;
+    s = strip(s, PLEASANT.filter(function (p) { return p !== "ok" && p !== "okay"; }), false);
+    if (!s || s.split(" ").length > MAX_WORDS) return false;
+    s = strip(strip(s, LEAD, false), TAIL, true);
+    if (UNDO_SET[s]) return true;
+    for (var i = 0; i < UNDO_ASK.length; i++) {
+      if (s.slice(0, UNDO_ASK[i].length + 1) === UNDO_ASK[i] + " ") {
+        var rest = strip(s.slice(UNDO_ASK[i].length + 1), TAIL, true);
+        return !!(UNDO_SET[rest] || UNDO_ASKED[rest]);
+      }
+    }
+    return false;
+  }
+
   return {
-    heard: heard, norm: norm,
+    heard: heard, norm: norm, undo: undo,
+    undoPhrases: function () { return UNDO.slice(); },
     pleasantries: function () { return PLEASANT.slice(); },
     phrases: function () { return Object.keys(PHRASES); },
     asked: function () { return Object.keys(ASKED); },

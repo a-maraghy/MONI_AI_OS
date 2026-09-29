@@ -162,7 +162,8 @@ const INSTRUCTIONS = [
   "- Approvals and decisions are for the administrator to make in the Command Center; you cannot approve or deny anything.",
   "- Before a tool call say nothing, or at most a two-word acknowledgement.",
   "- The screen: when the administrator asks you to change what they see on this Command Center (open or close a panel, show the missions, the last reply or the waiting card, switch the core or the voice mode, end or mute this call, stop reading), call ui_action. " +
-    "Say what you did only after it returns ok (\"I opened Missions.\"). You cannot approve, deny or change settings with it, and you can mute but never unmute.",
+    "Say what you did only after it returns ok (\"I opened Missions.\"). You cannot approve, deny or change settings with it, and you can mute but never unmute. " +
+    "Closing a panel (\"close the missions\", «اقفلي المهام», «اقفل الميشنز») is sheet.close, never ending the call; the panel names in Arabic are in the tool's description.",
   "While a request is being worked on you may keep talking naturally: acknowledge, say in general terms what you are looking at, ask a clarifying question, make small talk, or help the administrator draft or structure a report from what they tell you -- without inventing progress or results.",
   "Style: one or two short spoken sentences. If the administrator starts talking, stop and listen.",
 ].join("\n");
@@ -243,6 +244,8 @@ let callSeq = 0;
  *   summarise  (turnId, {onLine, persona}) -> the desk's guarded summary
  *   record     ({vt, cat, part, model, tokens}) -> usd
  *   isStop     (text) -> the spoken stop command (public/voice-stop.js)
+ *   isUndo     (text) -> the spoken undo command (the same file); acted on
+ *              only while the page says its last screen action can be undone
  *   log, now, opts: { maxMs, silenceMs, handoff: "turn" | "session", pollMs }
  */
 class LiveCall {
@@ -296,6 +299,7 @@ class LiveCall {
     this.uiLimit = UiActions.limiter();
     this.uiPending = new Map(); // nonce -> resolve (the page's ui-ack)
     this.endAfterSpeech = 0; // call.end: when it was asked
+    this.undoUntil = 0; // the page's last screen action can be undone until then (ui-undoable)
     this.diag = { ui: [], responses: 0, trips: [], bargeIns: [], candidates: [], held: [], firstAudio: [], echoes: 0, leaks: 0, stops: 0, refused: [], handoffs: [], transcripts: [], gatedMs: 0, dupUsage: 0, created: 0 };
     this.state = "connecting";
   }
@@ -478,6 +482,9 @@ class LiveCall {
         break;
       case "duplex":
         this.setDuplex(m.mode);
+        break;
+      case "ui-undoable":
+        this.undoUntil = Number(m.ms) > 0 ? this.now() + Math.min(60000, Number(m.ms)) : 0;
         break;
       case "ui-ack": {
         const done = this.uiPending.get(String(m.nonce || ""));
@@ -754,6 +761,11 @@ class LiveCall {
       t.resolveSession(null);
       return this.stopByVoice(t, text);
     }
+    if (this.undoUntil > this.now() && this.d.isUndo && this.d.isUndo(text) && !suspect) {
+      this.diag.undos = (this.diag.undos || 0) + 1;
+      t.resolveSession(null);
+      return this.undoByVoice(t, text);
+    }
     if (suspect && voiceGuard.tokens(text).length <= ECHO_LEAK_WORDS) return this.drop(t, "echo-leak"), t.resolveSession(null);
     if (this.isEcho(text, suspect)) {
       this.diag.echoes++;
@@ -845,6 +857,24 @@ class LiveCall {
     // No response was made for it, so it is still the last item: deleting it keeps the cached prefix.
     this.send({ type: "conversation.item.delete", item_id: t.itemId });
     if (!this.anythingAudible() && !this.resp_active()) this.setState(this.anyPending() ? "waiting" : "listening");
+  }
+
+  /**
+   * "Undo" said aloud while the page's last screen action can still be
+   * undone: the page undoes it (the toast's Undo), and the words go nowhere
+   * else -- the turn is dropped, any answer already started is cut.
+   */
+  undoByVoice(t, text) {
+    this.undoUntil = 0;
+    this.toClient({ type: "flush", at: this.now() });
+    this.drop(t, "undo-command");
+    this.toClient({ type: "ui-undo" });
+    this.toClient({ type: "caption", who: "you", text, final: true });
+    try {
+      if (this.d.audit) this.d.audit(`undo by the live voice ("${text.slice(0, 40)}")`);
+    } catch (_) {
+      /* best effort */
+    }
   }
 
   /** "Stop listening" said aloud: the voice stops, and the call ends. */

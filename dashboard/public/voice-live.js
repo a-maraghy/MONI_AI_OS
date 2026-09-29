@@ -415,6 +415,11 @@
       if (!S || !S.ws || S.ws.readyState !== 1 || !nonce) return;
       try { S.ws.send(JSON.stringify({ type: "ui-ack", nonce: String(nonce), ok: !!ok, why: why ? String(why).slice(0, 200) : undefined })); } catch (e) { /* closed */ }
     },
+    /* The last screen action can still be undone for `ms` (0: no longer), so a spoken "undo" is caught. */
+    undoable: function (ms) {
+      if (!S || !S.ws || S.ws.readyState !== 1) return;
+      try { S.ws.send(JSON.stringify({ type: "ui-undoable", ms: Math.max(0, Math.min(60000, Number(ms) || 0)) })); } catch (e) { /* closed */ }
+    },
     speaking: function () { return !!(S && S.playing); },
     route: function () { return S ? S.route : ""; },
     muted: function () { return !!(S && S.muted); },

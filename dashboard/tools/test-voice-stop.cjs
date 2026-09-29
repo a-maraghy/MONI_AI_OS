@@ -175,5 +175,32 @@ check("the desk ends the turn on it: heard with stop, done, and never desk().tur
   /type: "heard"[^\n]*stop: stop \|\| undefined/.test(route) && /if \(stop\) \{[^}]*\}\);\s*out\.write\(\{ type: "done", asked: \[\], lines: 0, stop: true[^\n]*\}\);\s*return out\.end\(\);/.test(route) &&
   route.indexOf("voiceStop.heard(heard)") < route.indexOf("desk().turn("));
 
+
+// ------------------------------------------------------------- spoken undo
+const UNDO_YES = ["undo", "Undo.", "undo that", "Go back.", "never mind", "Nevermind!", "cancel that", "take that back", "Okay, undo that, please.", "Mint, go back", "can you undo that",
+  "رجّعها", "رجعها", "رجع", "رجعي", "ارجعي", "ارجع", "الغي", "ألغي", "ألغي ده", "الغيها", "لأ خلاص", "لا خلاص", "رجعيها زي ما كانت", "ممكن ترجعها", "لو سمحت رجعيها", "يا مينت الغيها", "كانسل"];
+const UNDO_NO = ["undo the last git commit", "go back to the Odoo question", "رجع للموضوع اللي فات", "never mind the report, what is the disk usage", "cancel the order for the supplier",
+  "اقفلي المهام", "اقفل الميشنز", "close the missions", "stop listening", "ok", "خلاص", "لا", "go", "back"];
+check("undo(): the whole-utterance undo command, English and Egyptian (both genders), polite forms", UNDO_YES.every((x) => VoiceStop.undo(x)), UNDO_YES.filter((x) => !VoiceStop.undo(x)).join(" | "));
+check("undo(): never a request that mentions undoing, never a panel close, never a lone word", UNDO_NO.every((x) => !VoiceStop.undo(x)), UNDO_NO.filter((x) => VoiceStop.undo(x)).join(" | "));
+check("undo and stop never overlap", UNDO_YES.every((x) => !VoiceStop.heard(x)) && VoiceStop.undoPhrases().every((x) => !VoiceStop.heard(x)));
+check("«اقفلي المهام» / «اقفل الميشنز» / «اقفل المهام» (close the missions panel) are not the end-the-call command", !VoiceStop.heard("اقفلي المهام") && !VoiceStop.heard("اقفل الميشنز") && !VoiceStop.heard("اقفل المهام") && !VoiceStop.heard("close the missions"));
+check("undo(): too long after pleasantries is a sentence", !VoiceStop.undo("thank you so much, but I really think we should go back and undo that one now please"));
+{
+  const client2 = fs.readFileSync(path.join(ROOT, "public", "moni-ai.js"), "utf8");
+  const direct2 = client2.slice(client2.indexOf("function transcribeAndSend("), client2.indexOf("function openStream("));
+  check("Command Center, direct path: undo checked after stop, before it is sent, only when undoable", /if \(isUndoCommand\(said\)\) return undoneByVoice\(said\);/.test(direct2) && direct2.indexOf("isUndoCommand(said)") < direct2.indexOf("send(said") &&
+    /function isUndoCommand\(said\) \{\s*return !!\(window\.VoiceStop && window\.VoiceStop\.undo && typeof uiUndoable === "function" && uiUndoable\(\) && window\.VoiceStop\.undo\(said\)\);/.test(client2));
+  const desk2 = client2.slice(client2.indexOf("function deskSend("), client2.indexOf("function deskSummary("));
+  check("Command Center, front desk: tells the server when an undo is possible, and follows its undo flag", /undoable: \(typeof uiUndoable === "function" && uiUndoable\(\)\) \|\| undefined/.test(desk2) && /if \(ev\.undo\) return undoneByVoice\(ev\.text \|\| ""\);/.test(desk2));
+  check("Command Center, live: ui-undo from the server runs the same undo", /if \(m\.type === "ui-undo"\) uiUndoNow\("voice"\);/.test(client2));
+  check("the toast's Undo button and the voice share one path (uiUndoNow), and a newer screen action replaces the undo", /uiUndoNow\("click"\)/.test(client2) && /uiUndoState = undo \? \{ fn: undo, el: el, until: Date\.now\(\) \+ UI_UNDO_MS \} : null;/.test(client2) && /uiUndoSignal\(undo \? UI_UNDO_MS : 0\);/.test(client2));
+  const server2 = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
+  const route2 = server2.slice(server2.indexOf('app.post("/mint-ai/api/desk/turn"'), server2.indexOf('app.post("/mint-ai/api/desk/summary"'));
+  check("the desk: undo only when the page says it is undoable, never answered or passed on, audited", /const undo = !stop && body\.undoable === true && !!heard && voiceStop\.undo\(heard\);/.test(route2) &&
+    /if \(undo\) \{[\s\S]*?"mint-ui", "undo by the voice front desk"[\s\S]*?undo: true[\s\S]*?return out\.end\(\);/.test(route2) && route2.indexOf("voiceStop.undo(heard)") < route2.indexOf("desk().turn("));
+  check("the live call gets isUndo", /isUndo: \(t\) => voiceStop\.undo\(t\),/.test(server2));
+}
+
 console.log(`\n${passes} passed, ${failures} failed`);
 process.exit(failures ? 1 : 0);

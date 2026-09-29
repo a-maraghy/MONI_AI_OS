@@ -266,7 +266,8 @@ const INSTRUCTIONS = [
   "- Never quote a number that is not in the snapshot or in your results.",
   "- Approvals and decisions are for the administrator to decide in the Command Center; you cannot approve or deny anything.",
   "- The screen: when the administrator asks you to change what they see on this Command Center (open or close a panel, show the missions, the last reply or the waiting card, switch the core or the voice mode), call ui_action. " +
-    "Say what you did only after it returns ok (\"I opened Missions.\"). It cannot approve, deny or change settings.",
+    "Say what you did only after it returns ok (\"I opened Missions.\"). It cannot approve, deny or change settings. " +
+    "Closing a panel (\"close the missions\", «اقفلي المهام», «اقفل الميشنز») is sheet.close, never ending the call; the panel names in Arabic are in the tool's description.",
   "While a request is being worked on you may keep talking naturally: acknowledge, say in general terms what you are looking at, ask a clarifying question, make small talk, or help the administrator draft or structure a report from what they tell you -- without inventing progress or results.",
   "Language: reply in the language of the administrator's LAST utterance: English gets English; Arabic, or Arabic mixed with English, gets Arabic in the register the administrator used " +
     "(Egyptian colloquial if they speak Egyptian, Modern Standard Arabic if they speak MSA), with technical terms kept in English in Latin script (Odoo, disk, restart, dashboard). " +
@@ -972,6 +973,10 @@ function judge(sentences, ctx) {
     if (arabic.scriptOf(sentence).other) return fail("unknown-script", sentence, si);
     // A confirmation right after an action sentence: the pair is the claim.
     if (si > 0 && prevAction && sClauses.length && (CONFIRM.test(sClauses[0]) || arabic.confirmFirst(sClauses[0]))) return fail("action-claim", sentences[si - 1] + " " + sentence, si - 1);
+    // A sentence that reports a screen action that really returned ok this turn
+    // («خلاص، قفلت المهام», «عملت اللي طلبته، قفلت المهام»): its bare "done" /
+    // "did what you asked" clauses are about that action, not a new claim.
+    const uiSentence = !summary && !!c.uiOk && UiActions.claims(sentence);
     for (const raw of sClauses) {
       const cl = raw.replace(WORKING_ON_AR, " «checking» ").replace(CHECKING_AR_G, " «checking» ");
       let m;
@@ -1016,7 +1021,7 @@ function judge(sentences, ctx) {
         // "everything" borrow their subject from the clause before.
         const ar = arabic.hasArabic(cl);
         if (ar) {
-          const rule = arabicDeskRule(cl, { stepTalk, replyDid, replied: !!c.replied, uiDid: uiClaim && c.uiOk });
+          const rule = arabicDeskRule(cl, { stepTalk, replyDid, replied: !!c.replied, uiDid: uiClaim && c.uiOk, uiSentence });
           if (rule) return fail(rule, raw, si);
         }
         // (Arabic status words and terms count the same, named by the snapshot's English terms.)
@@ -1087,11 +1092,13 @@ function replyDoing(reply, word) {
  *   "MINT AI said ..." before a reply     → invented-reply (ATTRIBUTION)
  *   a past-tense result it cannot read    → unparsed-claim (fail closed)
  */
-function arabicDeskRule(cl, { stepTalk, replyDid, replied, uiDid }) {
+function arabicDeskRule(cl, { stepTalk, replyDid, replied, uiDid, uiSentence }) {
   const claims = arabic.claimsIn(cl);
   for (const x of claims) {
     if (x.negated) continue;
     if (uiDid && UI_VERBS.test(x.en || "")) continue; // «قفلتلك الـ panel», after a ui_action that returned ok
+    // In the sentence that reports it: «خلاص» and «عملت اللي طلبته», naming no other action.
+    if (uiSentence && ((x.role === "done" && x.generic) || (x.en === "do" && !claimConcept(cl, x) && !ACTION_ANY.test(cl)))) continue;
     if ((x.role === "did1" || x.role === "ptc1") && claimConcept(cl, x) && replyDid(claimConcept(cl, x))) continue; // «عملت restart لأودو» -- and a result says so
     if (x.role === "did1" || x.role === "amb" || x.role === "prog1" || x.role === "ptc1") return "action-claim"; // ptc1: «أنا عاملة ده»
     if (x.role === "done" || x.role === "pass" || x.role === "prog3") {

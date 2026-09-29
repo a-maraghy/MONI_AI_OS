@@ -3608,9 +3608,18 @@ app.post("/mint-ai/api/desk/turn", requireApiPerm("moniai.use"), moniAiAudioBody
     // "Stop listening" said aloud: the page closes the mic, and the desk
     // neither answers it nor passes it to MINT AI.
     const stop = !!heard && voiceStop.heard(heard);
-    out.write({ type: "heard", text: heard && !/^[\[(]/.test(heard) ? heard : "", stop: stop || undefined });
+    // "Undo" said while the tab can still undo its last screen action: the
+    // page undoes it, and the desk neither answers it nor passes it on.
+    const undo = !stop && body.undoable === true && !!heard && voiceStop.undo(heard);
+    out.write({ type: "heard", text: heard && !/^[\[(]/.test(heard) ? heard : "", stop: stop || undefined, undo: undo || undefined });
     if (!heard || /^[\[(]/.test(heard)) {
       out.write({ type: "done", asked: [], lines: 0, cost_usd: transcribeUsd, usage: voiceUsageSummary() });
+      return out.end();
+    }
+    if (undo) {
+      voiceLog("desk", 200, { ms: Date.now() - t0, transcribe_ms: tTranscribe, undo: "voice-command", lines: 0 });
+      db.logLogin(req.ip, req.me.username, "mint-ui", "undo by the voice front desk");
+      out.write({ type: "done", asked: [], lines: 0, undo: true, cost_usd: transcribeUsd, usage: voiceUsageSummary() });
       return out.end();
     }
     if (stop) {
@@ -5193,6 +5202,7 @@ function liveConnected(ws, { me, cfg, ip, duplex, noise, route }) {
     summarise: (id, o) => voiceDesk.deskFor(actor, cfg, moniai.call, { log: (m) => console.log(m) }).summarise(id, o),
     record: (row) => recordVoice(() => voiceLedger.add(row).usd),
     isStop: (t) => voiceStop.heard(t),
+    isUndo: (t) => voiceStop.undo(t),
     log: (m) => console.log(m),
     opts: { duplex },
   });

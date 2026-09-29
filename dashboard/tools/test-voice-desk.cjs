@@ -876,6 +876,16 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     d.close();
   }
 
+  section("the Arabic report of a screen action that returned ok (seen on the real model, 2026-09-29)");
+  {
+    const J = (x, c) => desk.judge([x], c || {});
+    const OK = ["خلاص، قفّلت المهام.", "عملت اللي طلبته، قفلت المهام.", "أقفلت الميشنز.", "أنا قفّلت لك الـ Missions.", "تمام، قفلتلك المهام."];
+    check("after an ok ui_action: «خلاص، قفّلت المهام», «عملت اللي طلبته، قفلت المهام», «أقفلت الميشنز» pass", OK.every((x) => J(x, { uiOk: true }).ok), OK.filter((x) => !J(x, { uiOk: true }).ok).join(" | "));
+    check("  without one, every one of them is cut", OK.every((x) => !J(x).ok));
+    const BAD = ["خلاص، عملت restart لأودو.", "عملت restart لأودو وقفلت المهام.", "خلاص، قفلت المهام وعملت restart لأودو."];
+    check("  another action in the same sentence is still cut, ok ui_action or not", BAD.every((x) => !J(x, { uiOk: true }).ok), BAD.filter((x) => J(x, { uiOk: true }).ok).join(" | "));
+  }
+
   section("screen actions in the relay desk: ui_action, back to the tab that spoke");
   {
     const d = newDesk("text");

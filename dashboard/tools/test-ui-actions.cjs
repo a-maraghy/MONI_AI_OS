@@ -46,6 +46,24 @@ check("one flat tool, ui_action, with the action as an enum", t.name === "ui_act
 check("  its description says approving stays the administrator's click, and no unmute", /cannot approve, deny or confirm/.test(t.description) && /never unmute/.test(t.description));
 check("fromTool splits action and args, and names stray fields", JSON.stringify(UA.fromTool({ action: "sheet.open", key: "dec" })) === JSON.stringify({ action: "sheet.open", args: { key: "dec" }, extra: [] }) && UA.fromTool({ action: "view", url: "/x" }).extra.join() === "url");
 
+console.log("\nclosing a named panel (\"close the missions\", «اقفلي المهام»)");
+check("sheet.close takes the panel it names (optional), and only a real one", UA.validate("sheet.close", { key: "missions" }).ok && UA.validate("sheet.close", { key: "missions" }).args.key === "missions" && !UA.validate("sheet.close", { key: "odoo" }).ok && !UA.validate("sheet.close", { key: "missions", mode: "live" }).ok);
+check("  its toast names it", UA.toast("sheet.close", { key: "missions" }) === "Mint closed Missions" && UA.toast("sheet.close", {}) === "Mint closed the panel");
+{
+  const d = UA.tool().description;
+  check("the tool gives the Arabic panel names (المهام، الميشنز، الجلسات، السيشنز، التكلفة، القرارات)", ["المهام", "الميشنز", "الجلسات", "السيشنز", "التكلفة", "القرارات"].every((w) => d.includes(w)));
+  check("  and says closing a panel is sheet.close, never the call", /«اقفلي المهام», «اقفل الميشنز»[^.]*close that PANEL \(sheet\.close\), never the call/.test(d));
+  check("  and does not offer «المحادثة» (the conversation) as a panel: that ends the call", !d.includes("المحادثة"));
+}
+{
+  const page = fs.readFileSync(path.join(ROOT, "public", "moni-ai.js"), "utf8");
+  check("the page closes a named panel only if it is the one open", /if \(a\.key && a\.key !== wasC && a\.key !== "everything"\) return \{ ok: false, why: "that panel is not the one open" \};/.test(page));
+  for (const f of ["voice-live.js", "voice-desk.js"]) {
+    const src = fs.readFileSync(path.join(ROOT, "lib", f), "utf8");
+    check(`lib/${f}: the instructions say closing a panel is sheet.close, never ending the call`, /Closing a panel \(\\"close the missions\\", «اقفلي المهام», «اقفل الميشنز»\) is sheet\.close, never ending the call/.test(src));
+  }
+}
+
 console.log("\nrate limits");
 {
   const L = UA.limiter();

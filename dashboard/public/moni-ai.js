@@ -59,6 +59,10 @@
   function liveActive() { return typeof LiveUI !== "undefined" && !!(LiveUI && LiveUI.active); }
   /** The live call's microphone or speaker loudness, for the core. */
   function liveLevel(k) { return liveActive() ? Math.min(1, (LiveUI[k] || 0) * (k === "mic" ? 3 : 2.5)) : 0; }
+  /** What was said is only "undo" or the like, and a screen action in this tab can still be undone. */
+  function isUndoCommand(said) {
+    return !!(window.VoiceStop && window.VoiceStop.undo && typeof uiUndoable === "function" && uiUndoable() && window.VoiceStop.undo(said));
+  }
   /** What was said is only "stop listening" or the like (public/voice-stop.js; without it, never). */
   function isStopCommand(said) {
     return !!(window.VoiceStop && window.VoiceStop.heard(said));
@@ -2375,6 +2379,14 @@
     /* "Stop listening" said aloud: the mic closes exactly as if its button
        were clicked, and the words go nowhere -- not to MINT AI, not to the
        desk. A note says so; nothing is spoken. */
+    /* "Undo" said aloud while a screen action can still be undone: the
+       toast's Undo, and the words go nowhere else. */
+    function undoneByVoice(said) {
+      console.info("[voice] \"" + clip(said, 60) + "\" is the undo command: the last screen action was undone, nothing sent");
+      var did = uiUndoNow("voice");
+      vbText.textContent = did ? "Undone." : "Nothing to undo.";
+      if (api_.on) listen(true);
+    }
     function stoppedByVoice(said) {
       diag.voiceStops++;
       console.info("[voice] \"" + clip(said, 60) + "\" is the stop command: listening stopped, nothing sent");
@@ -2428,11 +2440,13 @@
     }
     function deskSend(blob, data, wasPtt, vt, level) {
       var dl = deskLines(gen);
-      apiStream("desk/turn", { data: data, mime: blob.type, vt: vt, level: level }, function (ev) {
+      // undoable: a spoken "undo" would reverse the last screen action here, so the desk does not answer it.
+      apiStream("desk/turn", { data: data, mime: blob.type, vt: vt, level: level, undoable: (typeof uiUndoable === "function" && uiUndoable()) || undefined }, function (ev) {
         if (ev.type === "heard") {
           // The desk does not answer the stop command (ev.stop); a desk that
           // predates it would, so the page checks the words as well.
           if (ev.stop || (ev.text && isStopCommand(ev.text))) return stoppedByVoice(ev.text || "");
+          if (ev.undo) return undoneByVoice(ev.text || "");
           if (ev.text) vbText.textContent = "“" + clip(ev.text, 80) + "”";
         } else if (ev.type === "ui") {
           if (typeof runUiAction === "function") runUiAction(ev);
@@ -2505,6 +2519,7 @@
           var said = String(d.text || "").trim();
           if (!said || /^[\[(]/.test(said)) throw new Error("nothing said");
           if (isStopCommand(said)) return stoppedByVoice(said);
+          if (isUndoCommand(said)) return undoneByVoice(said);
           vbText.textContent = "“" + clip(said, 80) + "”";
           return send(said, { voice: true, acked: true, vt: vt });
         }).catch(function (e) {
@@ -2828,6 +2843,7 @@
           var res = runUiAction(m);
           if (m.nonce) window.VoiceLive.ack(m.nonce, res.ok, res.why);
         }
+        if (m.type === "ui-undo") uiUndoNow("voice"); // "undo" said in the call, caught by the server
         if (m.type === "stop") toast("Stopped listening. The live conversation has ended.");
         else if (m.type === "error" && m.code === "busy") toast(m.error, true);
         if (m.type === "ended" || m.type === "error") liveEnded(m);
@@ -2964,7 +2980,12 @@
           else { if (LiveUI.active) return { ok: false, why: "a live call is on: end it first" }; var wasLive = LiveUI.selected, wasMode = Voice.mode(); liveSelect(false); Voice.setMode(a.mode); undo = function () { if (wasLive) liveSelect(true); else Voice.setMode(wasMode); }; }
           break;
         case "sheet.open": { var wasP = S.pane; openSheet(a.key); undo = function () { if (wasP) openSheet(wasP); else closeSheet(); }; break; }
-        case "sheet.close": { var wasC = S.pane; if (!wasC) return { ok: false, why: "no panel is open" }; closeSheet(); undo = function () { openSheet(wasC); }; break; }
+        case "sheet.close": {
+          var wasC = S.pane;
+          if (!wasC) return { ok: false, why: "no panel is open" };
+          if (a.key && a.key !== wasC && a.key !== "everything") return { ok: false, why: "that panel is not the one open" };
+          closeSheet(); undo = function () { openSheet(wasC); }; break;
+        }
         case "view": { var wasV = S.pane; P.setView(a.name); undo = function () { if (wasV) openSheet(wasV); else closeSheet(); }; break; }
         case "core.set": { var wasK = coreNow(); setCoreChoice(a.core); undo = function () { setCoreChoice(wasK); }; break; }
         case "reply.show": if (!lastReplyTurn()) return { ok: false, why: "there is no reply yet" }; openReply(); undo = closeReply; break;
@@ -2978,6 +2999,23 @@
     }
     uiToast(ev.toast || UA.toast(v.action, a), undo, link);
     return { ok: true };
+  }
+  /* The most recent screen action's undo, while its toast offers it: the
+     toast's button and a spoken "undo" (voice-stop.js undo()) both come here.
+     Any newer screen action replaces it; one without an undo clears it. */
+  var UI_UNDO_MS = 15000;
+  var uiUndoState = null;
+  function uiUndoable() { return !!(uiUndoState && Date.now() < uiUndoState.until); }
+  function uiUndoSignal(ms) { if (window.VoiceLive && window.VoiceLive.undoable && liveActive()) window.VoiceLive.undoable(ms); }
+  function uiUndoNow(how) {
+    if (!uiUndoable()) { uiUndoState = null; return false; }
+    var u = uiUndoState;
+    uiUndoState = null;
+    try { u.fn(); } catch (e) { /* nothing to undo */ }
+    if (u.el) u.el.remove();
+    uiUndoSignal(0);
+    if (how === "voice") toast("Undone.");
+    return true;
   }
   function uiToast(text, undo, link) {
     var old = document.querySelector(".cc-toast");
@@ -3001,14 +3039,16 @@
       b.className = "cc-btn sm";
       b.setAttribute("data-ui-undo", "");
       b.textContent = "Undo";
-      b.addEventListener("click", function () { try { undo(); } catch (e) { /* nothing to undo */ } el.remove(); });
+      b.addEventListener("click", function () { uiUndoNow("click"); el.remove(); });
       el.appendChild(b);
     }
     document.body.appendChild(el);
+    uiUndoState = undo ? { fn: undo, el: el, until: Date.now() + UI_UNDO_MS } : null;
+    uiUndoSignal(undo ? UI_UNDO_MS : 0);
     clearTimeout(uiToast.t);
-    uiToast.t = setTimeout(function () { el.remove(); }, link || undo ? 8000 : 3500);
+    uiToast.t = setTimeout(function () { el.remove(); }, undo ? UI_UNDO_MS : link ? 8000 : 3500);
   }
-  window.__mintUi = { run: runUiAction };
+  window.__mintUi = { run: runUiAction, undoable: uiUndoable, undo: uiUndoNow };
 
   /* ============================================================ end of the live integration block */
 

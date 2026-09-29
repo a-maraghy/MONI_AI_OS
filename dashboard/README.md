@@ -675,6 +675,19 @@ deploy.
   microphone" is spoken only when a `ui_action` in this turn returned ok
   (`ui-claim` otherwise); a bare "... and restarted Odoo" after a first-person
   clause is still an action claim.
+- **Undo by voice:** while the last screen action's toast still offers Undo
+  (15 s), saying "undo", "undo that", "go back", "never mind", "cancel that",
+  «رجّعها», «رجع», «ألغي ده», «لأ خلاص», «ارجعي» (the whole utterance, as with
+  the stop command: `VoiceStop.undo()` in `public/voice-stop.js`) runs that same
+  Undo -- in a live call (the page tells the call `ui-undoable`; the server
+  drops the turn and sends `ui-undo`), through the relay desk (`undoable` in the
+  desk/turn body; the desk answers `heard.undo` and neither answers nor passes
+  it on) and on the direct path. With nothing to undo the words go on as an
+  ordinary turn; "undo the last git commit" is always a request.
+- **Closing a panel:** `sheet.close` may name the panel ("close the missions",
+  «اقفلي المهام», «اقفل الميشنز»); the page refuses when another is open. The
+  tool's description gives the Arabic panel names (المهام / الميشنز, الجلسات /
+  السيشنز, القرارات, التكلفة ...) and says a panel close is never ending the call.
 
 Tests: `tools/test-ui-actions.cjs` (the allowlist, the tool schema, rate limits,
 the claim words), the `ui_action` sections of `test-voice-live.cjs` and

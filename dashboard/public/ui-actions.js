@@ -32,6 +32,19 @@
     tl: "Timeline", rules: "Rules & watchers", orders: "Standing orders", cost: "Cost & voice usage",
     machine: "Machine", everything: "Everything",
   };
+  // The words people use for each panel (English and Egyptian Arabic), for the tool's description.
+  var PANEL_WORDS = [
+    "conv = the chat panel (الشات)",
+    "sessions (الجلسات، السيشنز)",
+    "missions (المهام، الميشنز)",
+    "dec = decisions / approvals (القرارات، الموافقات)",
+    "tl = timeline / activity (التايم لاين، السجل)",
+    "rules = rules & watchers (القواعد، الووتشرز)",
+    "orders = standing orders (الأوامر الدائمة، الأوردرز)",
+    "cost = cost & voice usage (التكلفة، المصاريف)",
+    "machine = the machine / server (الماشين، السيرفر)",
+    "everything (كل حاجة)",
+  ].join("; ");
   var CORES = { A: "A", B: "B", C: "C" };
   var MODES = { ptt: "push to talk", handsfree: "hands-free", live: "live conversation" };
   var VIEWS = { map: "the map", missions: "Missions" };
@@ -52,6 +65,14 @@
     return a && typeof a === "object" && Object.keys(a).some(function (k) { return a[k] !== undefined && a[k] !== null && a[k] !== ""; }) ? null : {};
   }
 
+  function optKey(a) {
+    var x = a && typeof a === "object" ? a : {};
+    var extra = Object.keys(x).some(function (k) { return k !== "key" && x[k] !== undefined && x[k] !== null && x[k] !== ""; });
+    if (extra) return null;
+    if (x.key === undefined || x.key === null || x.key === "") return {};
+    return Object.prototype.hasOwnProperty.call(SHEETS, x.key) ? { key: x.key } : null;
+  }
+
   var ACTIONS = {
     "call.end": { tier: 1, where: "server", once: true, args: none, toast: function () { return "Mint ended the call"; } },
     // Mute only: `on` must be true (or absent). Unmuting is by hand.
@@ -64,7 +85,8 @@
     "call.interrupt": { tier: 1, where: "server", args: none, toast: function () { return "Mint stopped reading"; } },
     "voice.mode": { tier: 1, where: "page", args: oneOf(MODES, "mode"), toast: function (a) { return "Mint switched the voice to " + MODES[a.mode]; } },
     "sheet.open": { tier: 1, where: "page", args: oneOf(SHEETS, "key"), toast: function (a) { return "Mint opened " + SHEETS[a.key]; } },
-    "sheet.close": { tier: 1, where: "page", args: none, toast: function () { return "Mint closed the panel"; } },
+    // key is optional: "close the missions" may name the panel it closes.
+    "sheet.close": { tier: 1, where: "page", args: optKey, toast: function (a) { return a.key ? "Mint closed " + SHEETS[a.key] : "Mint closed the panel"; } },
     view: { tier: 1, where: "page", args: oneOf(VIEWS, "name"), toast: function (a) { return "Mint showed " + VIEWS[a.name]; } },
     "core.set": { tier: 1, where: "page", args: oneOf(CORES, "core"), toast: function (a) { return "Mint switched the core to " + a.core; } },
     "reply.show": { tier: 1, where: "page", args: none, toast: function () { return "Mint opened the last reply"; } },
@@ -106,13 +128,16 @@
         "Change what the administrator sees on this Command Center screen, at once: end or mute this call (never unmute), stop reading, " +
         "switch the voice mode, open or close a panel (" + Object.keys(SHEETS).join(", ") + "), show the map or missions, switch the core (A/B/C), " +
         "show or read the last reply, show the waiting decision card, or suggest a settings page (voice, account, voice-eval). " +
+        "Panel names as the administrator may say them: " + PANEL_WORDS + ". " +
+        "\"Close the missions\", \"hide the decisions\", «اقفلي المهام», «اقفل الميشنز», «شيل القرارات» close that PANEL (sheet.close), never the call: " +
+        "call.end only when they name the call or the conversation (\"end the call\", «اقفل المكالمة»). " +
         "It cannot approve, deny or confirm anything, change keys, users, rules, settings values, restart or deploy: approving stays the administrator's click. " +
         "Use it only when the administrator asks for it in this turn.",
       parameters: {
         type: "object",
         properties: {
           action: { type: "string", enum: names() },
-          key: { type: "string", enum: Object.keys(SHEETS), description: "sheet.open: which panel" },
+          key: { type: "string", enum: Object.keys(SHEETS), description: "sheet.open: which panel; sheet.close: optional, the panel named" },
           mode: { type: "string", enum: Object.keys(MODES), description: "voice.mode" },
           name: { type: "string", enum: Object.keys(VIEWS), description: "view" },
           core: { type: "string", enum: Object.keys(CORES), description: "core.set" },
@@ -164,9 +189,10 @@
   // What a claim of a screen action sounds like: "I opened Missions", «فتحتلك الـ missions».
   // (The desk's guard allows it only when a ui_action in this turn returned ok.)
   var CLAIM_EN = /\b(?:i|i've|ive|i have|i just|i've just)\s+(?:just\s+|now\s+)?(?:opened|closed|muted|ended|switched|showed|shown|brought up|pulled up|put up|hung up|interrupted|stopped reading|set|changed|turned)\b/;
-  var CLAIM_AR = /(?:^|[^ء-ي])[وف]?(?:فتحت|فتحتلك|فتحتهالك|قفلت|قفلتلك|قفلتهالك|كتمت|نهيت|انهيت|غيرت|غيرتلك|حولت|حولتلك|عرضت|عرضتلك|طلعتلك|وقفت\s+القرايه|سكرت)(?:[ء-ي]*)/;
+  var CLAIM_AR = /(?:^|[^ء-ي])[وف]?(?:فتحت|فتحتلك|فتحتهالك|ا?قفلت|ا?قفلتلك|قفلتهالك|كتمت|نهيت|انهيت|غيرت|غيرتلك|حولت|حولتلك|عرضت|عرضتلك|طلعتلك|وقفت\s+القرايه|سكرت)(?:[ء-ي]*)/;
   function claims(normText) {
-    var t = String(normText || "");
+    // Diacritics, tatweel and alef forms out, so «قفّلت» and «أقفلت» read as written plainly.
+    var t = String(normText || "").replace(/[\u064B-\u065F\u0670\u0640]/g, "").replace(/[\u0622\u0623\u0625\u0671]/g, "\u0627");
     return CLAIM_EN.test(t) || CLAIM_AR.test(t);
   }
 

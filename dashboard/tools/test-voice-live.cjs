@@ -245,6 +245,7 @@ function makeCall(extra) {
       return r.usd;
     },
     isStop: (t) => VoiceStop.heard(t),
+    isUndo: (t) => VoiceStop.undo(t),
     log: () => {},
     audit: (line) => audited.push(line),
     opts: { pollMs: 20, uiAckMs: 150, ...(x.opts || {}) },
@@ -814,6 +815,67 @@ let WS_BASE;
     await until(() => client.json.some((m) => m.type === "stop"), 1000);
     check(`«${said}»: the page is told to stop, and the call ends`, client.json.some((m) => m.type === "stop" && m.why === "voice-command") && client.json.some((m) => m.type === "ended") && (await until(() => s.closed, 500)));
     check("  the answer in flight is cancelled, nothing is passed on", s.of("response.cancel").length >= 1 && !sup.calls.some((x) => x[0] === "send"));
+  }
+  section("a spoken undo reverses the last screen action, only while the page can undo it");
+  for (const said of ["Undo.", "undo that", "Never mind", "رجّعها", "ألغي ده", "لأ خلاص"]) {
+    const { c, client, sup, audited } = makeCall({ turnText: said });
+    await c.open();
+    const s = lastSession();
+    c.message({ type: "ui-undoable", ms: 15000 });
+    const item = await userTurn(s, c, null, { noTranscript: true });
+    s.push({ type: "response.created", response: { id: "r_undo" } });
+    s.push({ type: "conversation.item.input_audio_transcription.completed", item_id: item, transcript: said });
+    await until(() => client.json.some((m) => m.type === "ui-undo"), 1000);
+    check(`«${said}»: the page is told to undo; the call goes on`, client.json.some((m) => m.type === "ui-undo") && !c.closed && !client.json.some((m) => m.type === "stop"));
+    check("  the answer in flight is cancelled, the turn deleted, nothing passed on, audited", s.of("response.cancel").length >= 1 && s.of("conversation.item.delete").length >= 1 && !sup.calls.some((x) => x[0] === "send") && audited.some((l) => /^undo by the live voice/.test(l)));
+    check("  once: the window closes with it", c.undoUntil === 0);
+    c.close("test");
+  }
+  {
+    // Nothing undoable: "undo" is an ordinary turn.
+    const { c, client } = makeCall();
+    await c.open();
+    const s = lastSession();
+    await userTurn(s, c, "undo");
+    await sleep(60);
+    check("with nothing to undo, «undo» is an ordinary turn (not swallowed)", !client.json.some((m) => m.type === "ui-undo") && s.of("response.create").length >= 1);
+    c.close("test");
+  }
+  {
+    // The window has passed.
+    let now = 1e6;
+    const { c, client } = makeCall({ opts: {} });
+    c.now = () => now;
+    await c.open();
+    const s = lastSession();
+    c.message({ type: "ui-undoable", ms: 15000 });
+    now += 16000;
+    await userTurn(s, c, "undo that");
+    await sleep(60);
+    check("after the toast's window, «undo that» is an ordinary turn", !client.json.some((m) => m.type === "ui-undo"));
+    c.close("test");
+  }
+  {
+    const { c, client } = makeCall();
+    await c.open();
+    const s = lastSession();
+    c.message({ type: "ui-undoable", ms: 15000 });
+    await userTurn(s, c, "undo the last git commit");
+    await sleep(60);
+    check("«undo the last git commit» is a request, not the undo command", !client.json.some((m) => m.type === "ui-undo") && c.undoUntil > 0);
+    c.message({ type: "ui-undoable", ms: 0 });
+    check("  the page can close the window (ui-undoable 0)", c.undoUntil === 0);
+    c.close("test");
+  }
+  {
+    const { c, client } = makeCall();
+    await c.open();
+    const s = lastSession();
+    c.message({ type: "ui-undoable", ms: 15000 });
+    await userTurn(s, c, "اقفلي المهام");
+    await sleep(60);
+    check("«اقفلي المهام» (close the missions) is neither stop nor undo: the call goes on and the model answers", !client.json.some((m) => m.type === "stop" || m.type === "ui-undo") && !c.closed && s.of("response.create").length >= 1);
+    c.close("test");
   }
   {
     const { c, client } = makeCall();
