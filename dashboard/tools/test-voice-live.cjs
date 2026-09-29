@@ -848,6 +848,37 @@ let WS_BASE;
     c.close("test");
   }
 
+  section("a new voice while the call is open: the upstream reconnects, the call goes on");
+  {
+    const { c, client, spoke } = makeCall();
+    await c.open();
+    const s1 = lastSession();
+    c.setDuplex("full");
+    c.mute(true);
+    await userTurn(s1, c, "change the voice to cedar");
+    const n0 = mock.sessions.length;
+    const r = await c.swapUpstream({ voice: "cedar" }, { greet: true });
+    const s2 = lastSession();
+    check("a second upstream session opened with the new voice, the old one closed", mock.sessions.length === n0 + 1 && s2 !== s1 && s2.session.audio.output.voice === "cedar" && (await until(() => s1.closed, 1000)), JSON.stringify(s2.session && s2.session.audio && s2.session.audio.output));
+    check("  the call itself goes on: not closed, same page socket, mode, mute, noise and persona", !c.closed && !client.closed && c.duplex === "full" && c.muted === true && s2.session.audio.input.noise_reduction && s2.session.instructions === s1.session.instructions);
+    check("  the gap is measured and under 2 s", r.ok && typeof r.ms === "number" && r.ms < 2000, JSON.stringify(r));
+    check("  the new session is told what happened", await until(() => s2.of("conversation.item.create").some((e) => /voice was just changed to cedar/.test(JSON.stringify(e.item))), 1000));
+    await until(() => spoke.length > 0, 1000);
+    check("  and the voice says its line in the new voice (a guarded, true claim)", spoke.some((x) => x === "I switched my voice, this is my new voice.") && client.json.some((m) => m.type === "voice-changed" && m.voice === "cedar" && m.greet === true), JSON.stringify(spoke));
+    check("  the old session going away does not end the call", !c.closed);
+    c.close("test");
+  }
+  {
+    const { c, client, spoke } = makeCall();
+    await c.open();
+    live.register("other-user", c);
+    const out = await live.swapAll({ voice: "sage" }, "someone-else");
+    check("swapAll: another user's call reconnects with no line, and its page is told", out.some((x) => x.actor === "other-user" && x.ok) && client.json.some((m) => m.type === "voice-changed" && m.voice === "sage" && !m.greet) && spoke.length === 0 && !c.closed);
+    c.close("test");
+    live.unregister("other-user", c);
+  }
+  check("the new-voice line passes the guard only once a screen action was applied, EN and Arabic", ["en", "ar"].every((l) => desk.judge(desk.sentencesOf(live.voiceChangedLine(l, {}), true), { uiOk: true }).ok && !desk.judge(desk.sentencesOf(live.voiceChangedLine(l, {}), true), {}).ok));
+
   section("MINT AI's own call.* (UI control Phase 2: deepUi, after the relay's checks)");
   {
     const { c, client } = makeCall();

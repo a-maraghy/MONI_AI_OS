@@ -102,7 +102,7 @@
     // Tier 2: the toast is the question; done() is what is shown once confirmed and applied.
     "theme.set": { tier: 2, where: "page", args: oneOf(THEMES, "theme"), toast: function (a) { return "Switch to " + THEMES[a.theme] + "?"; }, done: function (a) { return "Switched to " + THEMES[a.theme]; } },
     "persona.set": { tier: 2, where: "page", args: oneOf(PERSONAS, "preset"), toast: function (a) { return "Set the voice persona to " + PERSONAS[a.preset] + "?"; }, done: function (a) { return "Voice persona: " + PERSONAS[a.preset]; } },
-    "voice.set": { tier: 2, where: "page", args: oneOf(VOICE_NAMES, "voice"), toast: function (a) { return "Switch the voice to " + a.voice + "? (for everyone; no call may be open)"; }, done: function (a) { return "The voice is now " + a.voice; } },
+    "voice.set": { tier: 2, where: "page", args: oneOf(VOICE_NAMES, "voice"), toast: function (a) { return "Switch the voice to " + a.voice + "? (for everyone; an open call reconnects with it)"; }, done: function (a) { return "The voice is now " + a.voice; } },
   };
 
   function names() { return Object.keys(ACTIONS); }
@@ -149,7 +149,7 @@
         "call.end only when they name the call or the conversation (\"end the call\", «اقفل المكالمة»). " +
         "Three preferences need the administrator's own confirmation: theme.set (system/dark/light -- \"dark mode\", «دارك», «الوضع الليلي»), " +
         "persona.set (the Arabic voice persona: cairene_f = Egyptian woman «مصرية بنت», cairene_m = Egyptian man «مصري ولد», msa_n = formal Arabic «فصحى», learned = learn from how I speak) and voice.set " +
-        "(the voice's sound, only when no call is open). For those the result is status \"confirm\": nothing has changed yet -- say so, and ask them to say yes or click Confirm. " +
+        "(the voice's sound, for everyone; after the confirm any open live call reconnects in the new voice by itself). For those the result is status \"confirm\": nothing has changed yet -- say so, and ask them to say yes or click Confirm. " +
         "Never say it is done until they have confirmed, and never confirm for them. " +
         "It cannot approve, deny or confirm anything, change keys, users, rules, other settings, restart or deploy: approving stays the administrator's click. " +
         "Use it only when the administrator asks for it in this turn.",
@@ -164,7 +164,7 @@
           page: { type: "string", enum: Object.keys(PAGES), description: "settings.open" },
           theme: { type: "string", enum: Object.keys(THEMES), description: "theme.set (needs confirm)" },
           preset: { type: "string", enum: Object.keys(PERSONAS), description: "persona.set (needs confirm)" },
-          voice: { type: "string", enum: Object.keys(VOICE_NAMES), description: "voice.set (needs confirm; never with a call open)" },
+          voice: { type: "string", enum: Object.keys(VOICE_NAMES), description: "voice.set (needs confirm; an open call reconnects with it)" },
         },
         required: ["action"],
         additionalProperties: false,

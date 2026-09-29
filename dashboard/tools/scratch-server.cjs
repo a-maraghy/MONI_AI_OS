@@ -37,8 +37,13 @@ process.env.MONI_LOG_DIR = LOGS;
 
 const FAKE_KEY = "sk-proj-SCRATCHFAKEKEY-not-real-0000000000000000";
 
-/** Copy the dashboard and cut it off from the helper. */
-function makeCopy() {
+/**
+ * Copy the dashboard and cut it off from the helper. With fakeVoiceOptions,
+ * saving the voice settings writes a file in the scratch data dir (and the key
+ * read answers from it) -- never the helper -- so a test can change the voice.
+ */
+function makeCopy(o) {
+  o = o || {};
   fs.cpSync(SRC, APP, { recursive: true, filter: (p) => !/node_modules|\.git$/.test(p) });
   const p = path.join(APP, "lib", "priv.js");
   let s = fs.readFileSync(p, "utf8");
@@ -48,6 +53,13 @@ function makeCopy() {
   const status = 'voiceStatus: () => callHelper("voice-status"),';
   const key = 'voiceKeyRead: () => callHelper("voice-key-read"),';
   if (!s.includes(status) || !s.includes(key)) throw new Error("scratch: priv.js voice reads not found");
+  if (o.fakeVoiceOptions) {
+    const setter = s.match(/voiceOptionsSet: \(model, voice, transcribeModel\) =>[\s\S]*?\),\n/);
+    if (!setter) throw new Error("scratch: priv.js voiceOptionsSet not found");
+    const file = JSON.stringify(path.join(DATA, "fake-voice-options.json"));
+    s = s.replace(setter[0], `voiceOptionsSet: async (model, voice, transcribeModel) => { require("fs").writeFileSync(${file}, JSON.stringify({ model, voice, transcribe_model: transcribeModel })); return { ok: true }; },\n`);
+    s = s.replace(key, `voiceKeyRead: async () => { let o = {}; try { o = JSON.parse(require("fs").readFileSync(${file}, "utf8")); } catch (_) { o = {}; } return { key: "${FAKE_KEY}", model: o.model || "gpt-realtime-mini", voice: o.voice || "marin", transcribe_model: o.transcribe_model || "gpt-4o-mini-transcribe" }; },`);
+  }
   s = s
     .replace(status, 'voiceStatus: async () => ({ configured: true, last4: "fake", length: 52, path: "(scratch)", mode: "0o600", modified: null, model: "gpt-realtime-mini", voice: "marin", transcribe_model: "gpt-4o-mini-transcribe" }),')
     .replace(key, `voiceKeyRead: async () => ({ key: "${FAKE_KEY}", model: "gpt-realtime-mini", voice: "marin", transcribe_model: "gpt-4o-mini-transcribe" }),`);
@@ -58,7 +70,7 @@ function makeCopy() {
 
 async function startScratch(opts) {
   const o = opts || {};
-  makeCopy();
+  makeCopy(o);
   const port = o.port || 3600 + Math.floor(Math.random() * 300);
   const env = Object.assign({}, process.env, {
     MONI_PORT: String(port),

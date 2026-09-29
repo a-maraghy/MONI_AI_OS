@@ -58,9 +58,15 @@ console.log("the pending confirm");
 console.log("\nserver.js");
 const s = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
 const open = s.slice(s.indexOf("function uiConfirmOpen("), s.indexOf("function uiConfirmHeard("));
-check("open: persona/voice need voice.manage; voice.set never with a live call; audited", /!who\.canVoice\) return \{ error/.test(open) && /v\.action === "voice\.set" && voiceLive\.activeCount\(\) > 0\) return \{ error/.test(open) && /waiting for the administrator's confirm/.test(open));
+check("open: persona/voice need voice.manage; one voice.set confirm at a time (the voice is global); audited; no call-open refusal", /!who\.canVoice\) return \{ error/.test(open) && /v\.action === "voice\.set" && uiConfirms\.anyPending\("voice\.set"\)\) return \{ error/.test(open) && /waiting for the administrator's confirm/.test(open) && !/activeCount/.test(open));
 const route = s.slice(s.indexOf('app.post("/mint-ai/api/ui/confirm"'), s.indexOf('app.post("/mint-ai/api/ui/ack"'));
-check("/ui/confirm: CSRF'd, strict body, only the user's pending id, re-checks the permission and the open call", /\.\.\.moniAiWrite/.test(route) && /uiConfirms\.take\(req\.me\.username, b\.id, b\.decision\)/.test(route) && /req\.perm\.can\("voice\.manage"\)/.test(route) && /voiceLive\.activeCount\(\) > 0\) return res\.status\(409\)/.test(route));
+check("/ui/confirm: CSRF'd, strict body, only the user's pending id, re-checks the permission; a voice.set marks this user's call to greet in the new voice", /\.\.\.moniAiWrite/.test(route) && /uiConfirms\.take\(req\.me\.username, b\.id, b\.decision\)/.test(route) && /req\.perm\.can\("voice\.manage"\)/.test(route) && /voiceGreet\.set\(req\.me\.username, Date\.now\(\) \+ 20000\)/.test(route) && !/activeCount/.test(route));
+{
+  const opt = s.slice(s.indexOf('app.post("/credentials/openai-voice/options"'), s.indexOf("app.post(\"/credentials/openai-voice/persona\""));
+  check("the options route: locked while a voice.set waits for a confirm; after saving, open calls RECONNECT (voiceForget(\"reconnect\") + voiceReconnect), greeting only the confirmer", /const lock = uiConfirmsVoicePending\(\);/.test(opt) && /voiceForget\("reconnect"\);/.test(opt) && /voiceReconnect\(greet\)/.test(opt) && !/voiceForget\(\);/.test(opt));
+  const fg = s.slice(s.indexOf("function voiceForget("), s.indexOf("async function voiceReconnect("));
+  check("voiceForget closes live calls only when told to (the key was removed); the key test keeps them; a new key reconnects them", /if \(live === "close"\) voiceLive\.closeAll/.test(fg) && /voiceKeyClear\(\);\s*voiceForget\("close"\);/.test(s) && /voiceForget\("keep"\); \/\/ test/.test(s) && /voiceKeySet\(value\);\s*voiceForget\("reconnect"\);\s*voiceReconnect\(null\)/.test(s) && !/voiceForget\(\)/.test(s.replace(/function voiceForget\(live\)/, "")));
+}
 check("  it writes no setting itself: it hands the page the form for the existing route", !/setVoicePersona|voiceOptionsSet|setSetting/.test(route) && /form = \{ model: cfg\.model, voice: t\.args\.voice, transcribe_model: cfg\.transcribe_model \}/.test(route));
 const send = s.slice(s.indexOf('app.post("/mint-ai/api/send"'), s.indexOf('app.post("/mint-ai/api/interrupt"'));
 check("/send: a whole yes/no answers a pending confirm and goes nowhere else", /const conf = uiConfirmHeard\(/.test(send) && send.indexOf("uiConfirmHeard") < send.indexOf('moniai.call("send"') && /return res\.json\(\{ confirm:/.test(send));

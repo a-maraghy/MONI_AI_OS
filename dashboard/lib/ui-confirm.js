@@ -43,6 +43,15 @@ function createConfirms({ now = Date.now } = {}) {
       return { id };
     },
 
+    /** Is an action of this kind waiting for anyone's confirm? */
+    anyPending(action) {
+      for (const [actor, e] of byActor) {
+        if (e.exp < now()) byActor.delete(actor);
+        else if (e.action === action) return true;
+      }
+      return false;
+    },
+
     /** What is pending for this user (a copy), or null. */
     pending(actor) {
       const e = live(actor);

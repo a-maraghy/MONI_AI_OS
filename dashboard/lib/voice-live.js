@@ -154,7 +154,7 @@ const INSTRUCTIONS = [
   "3. Small talk: a greeting, thanks, \"how are you\", \"can you hear me\" get one short, friendly, honest sentence, with nothing about the machine in it.",
   "4. This screen: anything about what the administrator sees here -- dark or light mode, the voice, the Arabic voice persona, a panel, the core, the voice mode, this call -- is done by CALLING the ui_action tool, never look_into. Examples:",
   "   \"Switch to dark mode\" / \"dark mode please\" / «خلّيها دارك» / «حوّلي للوضع الليلي» -> ui_action action=theme.set theme=dark; \"light mode\" / «خلّيها لايت» -> theme.set theme=light; \"follow the system theme\" -> theme.set theme=system.",
-  "   \"Change the voice to cedar\" / «غيّري الصوت لـ cedar» -> ui_action action=voice.set voice=cedar (voice.set is refused while this call is open; if so, say it can only change after the call).",
+  "   \"Change the voice to cedar\" / «غيّري الصوت لـ cedar» -> ui_action action=voice.set voice=cedar (after their confirm this call reconnects by itself and I speak in the new voice).",
   "   «خلّيكي مصرية بنت» / \"speak as an Egyptian woman\" -> ui_action action=persona.set preset=cairene_f; «خلّيك مصري ولد» / \"Egyptian man\" -> preset=cairene_m; \"formal Arabic\" / «فصحى» -> preset=msa_n; \"learn from how I speak\" -> preset=learned.",
   "   \"Open the missions\" -> action=sheet.open key=missions; \"close the missions\" / «اقفلي المهام» -> action=sheet.close key=missions.",
   "Only a look_into call starts any checking: never say you are checking or looking into something unless you called it (or a request is still being worked on).",
@@ -345,6 +345,62 @@ class LiveCall {
     }
   }
 
+  /**
+   * A new voice (or key, or listening model) while the call is open: the
+   * upstream session is replaced and the call goes on -- the same page, its
+   * socket, microphone and playback, the same mode, persona, mute and noise
+   * settings. What was playing stops; the old session is closed quietly; the
+   * new one gets a note of what happened. With `greet`, the voice says one
+   * short line in its new voice (a true claim: the change is applied).
+   * Returns { ok, ms } -- ms from the swap to the new session being ready.
+   */
+  async swapUpstream(patch, o) {
+    o = o || {};
+    if (this.closed) return { ok: false, why: "the call has ended" };
+    const t0 = this.now();
+    const was = this.cfg.voice;
+    this.cfg = { ...this.cfg, ...(patch || {}) };
+    this.speechGen++;
+    this.toClient({ type: "flush", at: this.now() });
+    for (const s of this.segs.values()) s.over = true;
+    const old = this.ws;
+    this.ws = null;
+    this.ready = null;
+    this.resp = null;
+    this.pendingRound = null;
+    this.queued = null;
+    this.pendingBarge = null;
+    try {
+      if (old) old.close(1000, "voice changed");
+    } catch (_) {
+      /* already gone */
+    }
+    this.setState("connecting");
+    try {
+      await this.open();
+    } catch (e) {
+      this.close("upstream", "Could not reconnect with the new voice: " + scrub(e.message));
+      return { ok: false, why: e.message };
+    }
+    const ms = this.now() - t0;
+    this.diag.swaps = (this.diag.swaps || []).concat([{ ms, voice: this.cfg.voice }]);
+    this.log(`live: call ${this.id} reconnected with voice ${this.cfg.voice} (was ${was}) in ${ms} ms${o.greet ? ", greeting" : ""}`);
+    // The new session knows nothing of the old one: tell it what just happened.
+    this.send({ type: "conversation.item.create", item: { type: "message", role: "user", content: [{ type: "input_text", text: "(System note, not the administrator speaking: the voice was just changed to " + this.cfg.voice + " at the administrator's request, after their confirmation. The conversation goes on.)" }] } });
+    this.toClient({ type: "voice-changed", voice: this.cfg.voice, greet: !!o.greet, ms });
+    if (this.muted) this.setState("muted");
+    else this.setState("listening");
+    if (o.greet) {
+      const line = voiceChangedLine(desk.langOf(this.heard.length ? this.heard[this.heard.length - 1] : "", ""), this.persona);
+      const g = desk.judge(desk.sentencesOf(line, true), { uiOk: true });
+      if (g.ok) {
+        this.send({ type: "conversation.item.create", item: { type: "message", role: "assistant", content: [{ type: "output_text", text: line }] } });
+        this.say([{ text: line, safe: true }], "safe", null);
+      } else this.log("live: the new-voice line did not pass the guard (" + g.rule + "); not said");
+    }
+    return { ok: true, ms };
+  }
+
   /** Open the upstream session with the fixed configuration. */
   open() {
     if (this.ready) return this.ready;
@@ -356,7 +412,9 @@ class LiveCall {
         perMessageDeflate: false,
       }));
       let opened = false;
+      // A session replaced by swapUpstream() goes quietly: only the current one can end the call.
       const fail = (why) => {
+        if (ws !== this.ws) return !opened && reject(new Error("replaced"));
         if (!opened) reject(new Error(why));
         else this.close("upstream", why);
       };
@@ -365,6 +423,7 @@ class LiveCall {
       ws.on("close", () => fail("OpenAI closed the live session"));
       ws.on("open", () => this.send({ type: "session.update", session: this.sessionConfig() }));
       ws.on("message", (data) => {
+        if (ws !== this.ws) return;
         let ev;
         try {
           ev = JSON.parse(String(data));
@@ -375,7 +434,7 @@ class LiveCall {
           if (ev.type === "session.updated") {
             opened = true;
             this.sessionAt = this.now();
-            this.timer(() => this.close("max-length", "The live conversation reached its 20-minute limit."), this.opts.maxMs);
+            if (!this.maxTimer) this.maxTimer = this.timer(() => this.close("max-length", "The live conversation reached its 20-minute limit."), this.opts.maxMs);
             this.setState("listening");
             return resolve(this);
           }
@@ -1462,6 +1521,17 @@ function liveSources() {
   return liveSourcesCache;
 }
 
+/**
+ * The line the voice says in its new voice, in the administrator's language.
+ * A first-person claim the guard lets through only after a screen action was
+ * applied (uiOk) -- which it just was. «غيّرت» is the same for either gender;
+ * the persona still decides the Arabic register of everything else.
+ */
+function voiceChangedLine(lang, persona) {
+  void persona;
+  return lang === "ar" ? "غيّرت صوتي، ده صوتي الجديد." : "I switched my voice, this is my new voice.";
+}
+
 /* ------------------------------------------------ one call per user -- */
 
 const calls = new Map(); // actor -> LiveCall
@@ -1479,6 +1549,21 @@ function unregister(actor, call) {
 function closeAll(why) {
   for (const c of calls.values()) c.close(why || "closed");
   calls.clear();
+}
+/**
+ * The voice settings changed (the voice is global): every open call is
+ * reconnected with them instead of being dropped. `greetActor`'s call says its
+ * one line in the new voice; the others just tell their page. Returns
+ * [{actor, ok, ms}].
+ */
+async function swapAll(patch, greetActor) {
+  const out = [];
+  for (const [actor, c] of [...calls.entries()]) {
+    if (c.closed) continue;
+    const r = await c.swapUpstream(patch, { greet: actor === greetActor });
+    out.push({ actor, ok: r.ok, ms: r.ms });
+  }
+  return out;
 }
 function activeCount() {
   return [...calls.values()].filter((c) => !c.closed).length;
@@ -1505,6 +1590,8 @@ module.exports = {
   register,
   unregister,
   closeAll,
+  swapAll,
+  voiceChangedLine,
   activeCount,
   liveSources,
 };

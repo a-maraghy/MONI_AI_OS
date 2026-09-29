@@ -2867,6 +2867,11 @@
           if (m.nonce) window.VoiceLive.ack(m.nonce, res.ok, res.why);
         }
         if (m.type === "ui-undo") uiUndoNow("voice"); // "undo" said in the call, caught by the server
+        // The voice settings changed and the call reconnected with them (the voice is global).
+        if (m.type === "voice-changed") {
+          var vt = $("cc-voice-tag"); if (vt && m.voice) vt.textContent = m.voice;
+          if (!m.greet) toast("The voice was changed" + (m.voice ? " to " + m.voice : "") + ".");
+        }
         if (m.type === "ui-confirmed" || m.type === "ui-confirm-cancelled") uiConfirmAnswer(m.id, m.type === "ui-confirmed");
         if (m.type === "stop") toast("Stopped listening. The live conversation has ended.");
         else if (m.type === "error" && m.code === "busy") toast(m.error, true);
@@ -3081,7 +3086,6 @@
   var uiConfirmState = null;
   function uiConfirmAsk(ev, v) {
     if (!ev.confirm || !/^[0-9a-f]{18}$/.test(ev.confirm)) return { ok: false, why: "a preference needs the server's confirm" };
-    if (v.action === "voice.set" && liveActive()) return { ok: false, why: "a live call is open" };
     var old = document.querySelector(".cc-toast");
     if (old) old.remove();
     var el = document.createElement("div");

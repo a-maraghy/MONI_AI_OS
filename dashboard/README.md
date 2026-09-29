@@ -696,7 +696,9 @@ deploy.
   the supervisor's socket -- is dropped and audited ("never minted").
 - **Preferences (Tier 2, Phase 3):** `theme.set` (system/dark/light),
   `persona.set` (the voice persona presets, or learned) and `voice.set` (the
-  voice's sound -- global, so only with no live call open) are never applied by
+  voice's sound -- global: once applied, every open live call reconnects its
+  upstream with it and goes on; the confirmer's call says "I switched my voice,
+  this is my new voice." in it, the others get a toast) are never applied by
   the model. The server opens a pending confirm (`lib/ui-confirm.js`: one per
   user, 30 s, audited) and the tab shows "Mint asks: Switch the voice to cedar?
   Confirm / Cancel". It is applied only after a click on Confirm, or when the

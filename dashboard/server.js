@@ -58,7 +58,7 @@ const uiConfirms = require("./lib/ui-confirm").createConfirms();
  */
 function uiConfirmOpen(who, v, tab, by) {
   if ((v.action === "persona.set" || v.action === "voice.set") && !who.canVoice) return { error: "this account cannot change voice settings" };
-  if (v.action === "voice.set" && voiceLive.activeCount() > 0) return { error: "a live call is open: changing the voice would end it, so it is only done with no call open" };
+  if (v.action === "voice.set" && uiConfirms.anyPending("voice.set")) return { error: "another voice change is already waiting for a confirm" };
   const o = uiConfirms.open({ actor: who.username, action: v.action, args: v.args, tab });
   if (o.error) return o;
   db.logLogin(who.ip, who.username, "mint-ui", `${v.action} ${JSON.stringify(v.args)} asked by ${by}: waiting for the administrator's confirm`);
@@ -1882,11 +1882,40 @@ app.post("/services/agent-action", requireAuth, requirePerm("agents.control"), r
 let voiceCache = { at: 0, cfg: null, pending: null };
 const VOICE_TTL_MS = 5 * 60 * 1000;
 
-function voiceForget() {
+/**
+ * Drop the cached voice settings. `live` says what happens to open live
+ * calls: "close" (the key was removed: nothing to talk with), "keep" (a test
+ * of what is on disk: nothing changed), or "reconnect" (a new key or new voice
+ * settings: every call reconnects its upstream with them and goes on -- see
+ * voiceReconnect). A live call is never dropped for a change it can survive.
+ */
+function voiceForget(live) {
   voiceCache = { at: 0, cfg: null, pending: null };
   voice.clearCache();
   voiceDesk.closeAll(); // a changed key or voice must not keep a front desk open on the old one
-  voiceLive.closeAll("settings-changed"); // and no live call keeps talking on the old one
+  if (live === "close") voiceLive.closeAll("settings-changed");
+}
+/** After voiceForget("reconnect"): every open live call reconnects with the settings now on disk. */
+async function voiceReconnect(greetActor) {
+  if (!voiceLive.activeCount()) return [];
+  const cfg = await voiceConfig();
+  if (!cfg.key) {
+    voiceLive.closeAll("settings-changed");
+    return [];
+  }
+  const out = await voiceLive.swapAll({ key: cfg.key, voice: cfg.voice, model: cfg.model, transcribe_model: cfg.transcribe_model }, greetActor);
+  out.forEach((r) => console.log(`live: ${r.actor}'s call ${r.ok ? "reconnected" : "could not reconnect"} after a voice settings change${r.ms != null ? " (" + r.ms + " ms)" : ""}`));
+  return out;
+}
+/**
+ * A voice.set the administrator confirmed (UI control Phase 3): while its
+ * confirm is open the voice is locked -- no other change of voice gets in --
+ * and once taken, the options post that applies it may greet in the new voice.
+ */
+const voiceGreet = new Map(); // actor -> until (ms): their confirmed voice.set is being applied
+/** Is a voice.set waiting for anyone's confirm? (The voice is global.) */
+function uiConfirmsVoicePending() {
+  return uiConfirms.anyPending("voice.set");
 }
 
 /**
@@ -2310,7 +2339,8 @@ app.post("/credentials/openai-voice/key", requireAuth, requirePerm("voice.manage
   const value = String((req.body && req.body.value) || "").trim();
   try {
     const out = await priv.voiceKeySet(value);
-    voiceForget();
+    voiceForget("reconnect");
+    voiceReconnect(null).catch(() => {});
     db.logLogin(req.ip, req.me.username, "voice", "set the OpenAI voice key (…" + out.last4 + ")");
     res.redirect("/credentials/openai-voice?msg=" + encodeURIComponent("Key saved. Press Test to check it."));
   } catch (e) {
@@ -2321,7 +2351,7 @@ app.post("/credentials/openai-voice/key", requireAuth, requirePerm("voice.manage
 app.post("/credentials/openai-voice/clear", requireAuth, requirePerm("voice.manage"), requireCsrf, async (req, res) => {
   try {
     await priv.voiceKeyClear();
-    voiceForget();
+    voiceForget("close");
     db.logLogin(req.ip, req.me.username, "voice", "removed the OpenAI voice key");
     res.redirect("/credentials/openai-voice?msg=" + encodeURIComponent("Key removed. Voice is off until a key is added."));
   } catch (e) {
@@ -2348,10 +2378,17 @@ app.post("/credentials/openai-voice/options", requireAuth, requirePerm("voice.ma
   if (!voice.MODELS.some((m) => m.id === model) || !voice.VOICES.includes(name) || !voice.TRANSCRIBE_MODELS.some((m) => m.id === tmodel)) {
     return formReply(req, res, "/credentials/openai-voice?err=" + encodeURIComponent("Pick a model, voice and listening model from the lists."));
   }
+  // The voice is locked while someone's confirm for a voice.set is open (their confirm applies it).
+  const lock = uiConfirmsVoicePending();
+  if (lock) return formReply(req, res, "/credentials/openai-voice?err=" + encodeURIComponent("A voice change is waiting for a confirm on the Command Center; answer that first."));
   try {
     await priv.voiceOptionsSet(model, name, tmodel);
-    voiceForget();
-    db.logLogin(req.ip, req.me.username, "voice", `voice settings ${model} / ${name} / ${tmodel}`);
+    voiceForget("reconnect");
+    const greet = (voiceGreet.get(req.me.username) || 0) > Date.now() ? req.me.username : null;
+    voiceGreet.delete(req.me.username);
+    // Open live calls reconnect with the new voice and go on; the one whose confirm this is says a line in it.
+    voiceReconnect(greet).catch(() => {});
+    db.logLogin(req.ip, req.me.username, "voice", `voice settings ${model} / ${name} / ${tmodel}${voiceLive.activeCount() ? ` (${voiceLive.activeCount()} live call(s) reconnect with it)` : ""}`);
     formReply(req, res, "/credentials/openai-voice?msg=" + encodeURIComponent("Voice settings saved."));
   } catch (e) {
     formReply(req, res, "/credentials/openai-voice?err=" + encodeURIComponent(e.message));
@@ -2414,7 +2451,7 @@ app.post("/credentials/openai-voice/live-audio", requireAuth, requirePerm("voice
 });
 
 app.post("/credentials/openai-voice/test", requireAuth, requirePerm("voice.manage"), requireCsrf, async (req, res) => {
-  voiceForget(); // test what is on disk now, not a cached copy
+  voiceForget("keep"); // test what is on disk now, not a cached copy; open calls are not touched
   let ok = false;
   let text;
   try {
@@ -3588,12 +3625,13 @@ app.post("/mint-ai/api/ui/confirm", ...moniAiWrite, async (req, res) => {
     return res.json({ ok: true, cancelled: true });
   }
   if ((t.action === "persona.set" || t.action === "voice.set") && !req.perm.can("voice.manage")) return res.status(403).json({ error: "This account cannot change voice settings." });
-  if (t.action === "voice.set" && voiceLive.activeCount() > 0) return res.status(409).json({ error: "A live call is open: the voice is only changed with no call open.", code: "call-open" });
   let form = null;
   if (t.action === "persona.set") form = { preset: t.args.preset };
   if (t.action === "voice.set") {
     const cfg = await voiceConfig();
     form = { model: cfg.model, voice: t.args.voice, transcribe_model: cfg.transcribe_model };
+    // Its options post reconnects the open live calls; this user's call says a line in the new voice.
+    voiceGreet.set(req.me.username, Date.now() + 20000);
   }
   db.logLogin(req.ip, req.me.username, "mint-ui", `${what} confirmed (${t.spoken ? "spoken yes" : "click"}); the page applies it`);
   res.json({ ok: true, action: t.action, args: t.args, form, done: UiActions.doneText(t.action, t.args) });
