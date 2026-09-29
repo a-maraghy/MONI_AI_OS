@@ -1,34 +1,33 @@
 "use strict";
 /**
- * The MINT AI Command Center (v3).
+ * The MINT AI Command Center, simplified (Mint, 2026-09-29).
  *
- * One screen, no page scroll. Left rail: this machine, MINT AI's core, today's
- * cost and the standing orders. Centre: the orbit map (MINT AI's seed core with
- * the live sessions around it) or the missions board, the sessions strip and
- * the composer with voice. Right drawer: Conversation, Decisions (approvals,
- * watcher findings and the event log), Timeline and Rules.
+ * One quiet screen: the MINT AI core in the middle (a WebGL canvas, three
+ * concepts -- A dotted sphere, B Siri fluid, C hybrid -- chosen per person in
+ * Settings and switchable any time), the live sessions as points on a faint
+ * orbit round it, a one-line caption under it saying what is happening, and
+ * one pill composer with voice. Everything else is one tap away: the faint
+ * icon bar on the left opens sheets from the right (Conversation, Sessions,
+ * Missions, Decisions, Timeline, Rules & watchers, Standing orders, Cost &
+ * voice usage, Machine); on a phone a grid button opens them all. Anything that
+ * needs a decision appears as one card, top right.
  *
- * Everything that changes is filled in by public/moni-ai.js (with
- * public/cc-map.js and public/cc-panels.js) from the JSON and SSE API under
+ * Everything that changes is filled in by public/moni-ai.js (with cc-logic.js,
+ * mint-core.js, cc-map.js and cc-panels.js) from the JSON and SSE API under
  * /mint-ai/api/ -- this renders the frame, the labels and the few facts the
- * server already knows (who is looking, whether a voice is installed), all
- * escaped here. No inline script, style or handler anywhere: the CSP refuses
- * them.
+ * server already knows (who is looking, whether a voice is installed, which
+ * core they chose), all escaped here. No inline script, style or handler
+ * anywhere: the CSP refuses them. The chosen core is written as data-core on
+ * #cc, so the right one is drawn from the first frame.
  *
  * Only this VPS is shown. The live Odoo server appears nowhere on this page.
- *
- * Three themes: System (the default, following prefers-color-scheme live),
- * Dark and Light, switched from the top bar like every other page. The choice
- * is applied before first paint by theme-init.js; this page's palette lives in
- * public/moni-ai.css as custom properties.
  */
 
-const { esc, shell } = require("./ui");
+const { esc, shell, card } = require("./ui");
+const marks = require("./marks");
+const logic = require("../public/cc-logic");
 
-/* Icons for the page, as one sprite referenced by <use>. Kept separate from
-   lib/icons.js because the canvas-drawn page needs a few that nothing else
-   does, and a sprite lets the client script draw them without markup of its
-   own beyond a reference. */
+/* Icons for the page, as one sprite referenced by <use>. */
 const SPRITE = {
   core: '<circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="8"/><path d="M12 1v3M12 20v3M1 12h3M20 12h3"/>',
   sessions: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>',
@@ -77,6 +76,20 @@ const SPRITE = {
   list: '<path d="M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01"/>',
 };
 
+/* Icons the simple Command Center added: the dock, the menus, the chevrons. */
+Object.assign(SPRITE, {
+  inbox: '<path d="M3 13h5l1.5 3h5L16 13h5"/><path d="M5 5h14l2 8v6H3v-6Z"/>',
+  repeat: '<path d="M17 2l3 3-3 3"/><path d="M4 11V9a4 4 0 0 1 4-4h12"/><path d="M7 22l-3-3 3-3"/><path d="M20 13v2a4 4 0 0 1-4 4H4"/>',
+  grid: '<rect x="4" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.5"/>',
+  chevd: '<path d="M6 9l6 6 6-6"/>',
+  chevl: '<path d="M15 6l-6 6 6 6"/>',
+  chevr: '<path d="M9 6l6 6-6 6"/>',
+  up: '<path d="M12 19V5M5.5 11.5 12 5l6.5 6.5"/>',
+  cpu: '<rect x="6" y="6" width="12" height="12" rx="2"/><rect x="9.5" y="9.5" width="5" height="5"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/>',
+  bot: '<rect x="5" y="8" width="14" height="11" rx="3"/><path d="M12 4v4M9 13h.01M15 13h.01"/>',
+  spark: '<path d="M12 2.5c.6 4.6 2.9 6.9 9.5 9.5-6.6 2.6-8.9 4.9-9.5 9.5-.6-4.6-2.9-6.9-9.5-9.5 6.6-2.6 8.9-4.9 9.5-9.5Z"/>',
+});
+
 function ic(name, cls) {
   return `<svg class="cc-i${cls ? " " + cls : ""}" aria-hidden="true" focusable="false"><use href="#cc-i-${name}"/></svg>`;
 }
@@ -91,187 +104,233 @@ function sprite() {
   );
 }
 
-/** One cell of the rail's MINT AI Core grid. Values arrive from the page script. */
-function coreCell(key, label) {
-  return `<div data-core="${key}"><span>${esc(label)}</span><b data-st>—</b></div>`;
+/** The brand spark at the heart of concept C (a DOM element the page places over the core). */
+function sparkSvg() {
+  return (
+    `<svg viewBox="-26 -26 52 52" aria-hidden="true" focusable="false"><defs>` +
+    `<radialGradient id="cc-spg" cx="0" cy="0" r="24" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#FFFFFF"/><stop offset=".4" stop-color="#C9FFEC"/><stop offset="1" stop-color="#5FE8BF"/></radialGradient>` +
+    `<linearGradient id="cc-spl" x1="-20" y1="20" x2="20" y2="-20" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#00B884"/><stop offset=".55" stop-color="#1FA3B0"/><stop offset="1" stop-color="#7A2BD6"/></linearGradient>` +
+    `</defs><path class="sp-d" d="${marks.spark(0, 0, 24, 24, 24)}" fill="url(#cc-spg)"/><path class="sp-l" d="${marks.spark(0, 0, 24, 24, 24)}" fill="url(#cc-spl)"/></svg>`
+  );
 }
 
-/* Top-bar additions: the status chip and the command palette button before the
-   theme switch (which is the shell's own, on every page), the clock after it. */
-const TOP_CHIP =
-  `<span class="cc-sys-chip" id="cc-sys" role="status"><span class="cc-dot" id="cc-sys-dot"></span><span id="cc-sys-label"><span class="long">Connecting</span><span class="short">Connecting</span></span></span>` +
-  `<button type="button" class="cc-kbtn" id="cc-kbtn" title="Command palette (Ctrl+K)" aria-keyshortcuts="Control+K">${ic("search")}<span class="kl">Search or run</span><kbd>Ctrl K</kbd></button>`;
-const TOP_CLOCK = `<div class="cc-clock" aria-hidden="true"><b id="cc-clock">--:--:--</b><span id="cc-clock-date">Cairo</span></div>`;
+/** One cell of the Machine sheet's MINT AI core grid. Values arrive from the page script. */
+function coreCell(key, label) {
+  return `<div data-cell="${key}"><span>${esc(label)}</span><b data-st>—</b></div>`;
+}
+
+/** A sheet behind the dock: its head (title, a line under it, actions, close) and body. */
+function pane(key, title, sub, actions, body, foot) {
+  return `<section class="cc-pane" id="cc-pane-${key}" data-sheet-pane="${key}" role="dialog" aria-labelledby="cc-h-${key}" hidden>
+    <div class="sh-hd"><div class="cc-min0"><h2 id="cc-h-${key}">${esc(title)}</h2><div class="sub">${sub}</div></div><span class="sp"></span>${actions || ""}<button type="button" class="cc-ibtn" data-sheet-close title="Close (Esc)" aria-label="Close">${ic("close")}</button></div>
+    <div class="sh-bd cc-scroll"${key === "conv" ? ' id="cc-chat-scroll"' : ""}>${body}</div>${foot ? `<div class="sh-ft">${foot}</div>` : ""}
+  </section>`;
+}
+
+/** The dock: the sheets, in the order MintLogic.SHEETS gives them, then search. */
+function dock() {
+  const badge = { dec: `<span class="cc-badge-n warn" id="cc-dec-count" hidden>0</span>`, missions: `<span class="cc-badge-n" id="cc-mis-count" hidden>0</span>` };
+  return (
+    logic.SHEETS.map((s) =>
+      s === "-"
+        ? `<span class="sep" aria-hidden="true"></span>`
+        : `<button type="button" data-sheet="${s.key}" aria-expanded="false" aria-label="${esc(s.label)}">${ic(s.icon)}${badge[s.key] || ""}<span class="tip">${esc(s.label)}</span></button>`
+    ).join("") +
+    `<span class="sep" aria-hidden="true"></span>` +
+    `<button type="button" id="cc-kbtn" aria-label="Search or run (Ctrl+K)" aria-keyshortcuts="Control+K">${ic("search")}<span class="tip">Search or run · Ctrl K</span></button>`
+  );
+}
+
+/** The core choice as three buttons (the voice menu and the Everything sheet use the same markup). */
+function coreSwitch(core, cls) {
+  return `<div class="cc-core-seg${cls ? " " + cls : ""}" role="radiogroup" aria-label="MINT AI core">${Object.keys(logic.CORES)
+    .map((k) => `<button type="button" role="radio" data-core-set="${k}" aria-checked="${k === core}"><b>${k}</b><span>${esc(logic.CORES[k])}</span></button>`)
+    .join("")}</div>`;
+}
+
+/* Top-bar additions, before the theme switch: the status chip, the amber
+   "N need you" pill, the active mission, and the phone's Everything button.
+   The clock goes after it. */
+function topExtra() {
+  return (
+    `<span class="cc-sys-chip" id="cc-sys" role="status"><span class="cc-dot" id="cc-sys-dot"></span><span id="cc-sys-label"><span class="long">Connecting</span><span class="short">Connecting</span></span></span>` +
+    `<button type="button" class="cc-needpill" id="cc-needpill" hidden><span class="cc-dot warn"></span><span id="cc-needn">0</span> need you</button>` +
+    `<button type="button" class="cc-mis-chip" id="cc-mis-chip" title="Open the missions" hidden></button>` +
+    `<button type="button" class="cc-ibtn cc-evbtn" id="cc-more" aria-label="Everything">${ic("grid")}</button>`
+  );
+}
+const TOP_CLOCK = `<div class="cc-clock" aria-hidden="true"><b id="cc-clock">--:--</b><span id="cc-clock-date">Cairo</span></div>`;
 
 /**
- * @param o  { csrf, user, voice: {configured, model, voice, manage, desk} }
+ * @param o  { csrf, user, core, voice: {configured, model, voice, manage, desk} }
+ *   core  the viewer's saved MINT AI core (A / B / C; anything else is C),
+ *         rendered here so the page paints the right one from the first frame
  */
 function page(o) {
   const voice = o.voice || {};
+  const core = logic.normCore(o.core);
+  const perm = o.user && o.user.perm;
   const voiceOff = voice.configured
     ? ""
     : voice.manage
-    ? ` · voice is off: <a href="/credentials/openai-voice">Add an OpenAI key in Settings</a>`
-    : ` · voice is off: Add an OpenAI key in Settings — ask an administrator`;
+    ? `<span class="cc-voice-off">voice is off: <a href="/credentials/openai-voice">Add an OpenAI key in Settings</a></span>`
+    : `<span class="cc-voice-off">voice is off: Add an OpenAI key in Settings — ask an administrator</span>`;
+  const deskOn = !!(voice.configured && voice.desk);
+  const dashLinks = [
+    ["/os", "cpu", "OS Dashboard", "os"],
+    ["/agents/dashboard", "bot", "Agents", "agents"],
+  ]
+    .filter((d) => !perm || perm.canDash(d[3]))
+    .map((d) => `<a class="cc-card cc-link-card" href="${d[0]}">${ic(d[1])}<b>${esc(d[2])}</b><span class="sp"></span>${ic("chevr")}</a>`)
+    .join("");
+
   const body = `${sprite()}
 <div class="cc-shell" id="cc"
+     data-core="${core}" data-state="idle"
      data-csrf="${esc(o.csrf)}"
      data-viewer="${esc(o.user && o.user.name)}"
      data-voice-ready="${voice.configured ? "1" : ""}"
      data-voice-manage="${voice.manage ? "1" : ""}"
      data-voice="${esc(voice.voice || "")}"
      data-voice-model="${esc(voice.model || "")}"
-     data-voice-desk="${voice.configured && voice.desk ? "1" : ""}">
+     data-voice-desk="${deskOn ? "1" : ""}">
+  <div class="cc-bg" aria-hidden="true"></div>
+  <div class="cc-halo" id="cc-halo" aria-hidden="true"></div>
+  <canvas class="cc-core" id="cc-core" aria-hidden="true"></canvas>
+  <div class="cc-spark" id="cc-spark" aria-hidden="true">${sparkSvg()}</div>
+  <div class="cc-orbit" id="cc-orbit" role="group" aria-label="Live sessions"><svg class="cc-ring" id="cc-ring" aria-hidden="true" focusable="false"><ellipse/></svg></div>
 
-  <aside class="cc-rail" aria-label="Machine, core, cost and standing orders">
-    <section class="cc-card cc-hud" aria-labelledby="cc-mach-h">
-      <div class="cc-card-h"><h2 id="cc-mach-h">Machines</h2><span class="cc-aside" id="cc-mach-aside">this VPS</span></div>
-      <ul class="cc-mach">
-        <li class="cc-mach-this" id="cc-mach-this">
-          <div class="cc-mach-top">${ic("server")}<b id="cc-host">This VPS</b><span class="cc-badge b-mute" id="cc-mach-badge">—</span></div>
-          <div class="cc-mach-sub" id="cc-mach-sub">this box</div>
-          <div class="cc-mach-bars">
-            <span class="cc-mb" data-mb="cpu">CPU —<i></i></span><span class="cc-mb" data-mb="ram">RAM —<i></i></span><span class="cc-mb" data-mb="disk">DISK —<i></i></span>
-          </div>
-          <div class="cc-mach-note" id="cc-mach-note">—</div>
-        </li>
-        <li class="cc-mach-add" aria-disabled="true" title="Watching another machine comes later">${ic("plus")}Add a machine<em>coming later</em></li>
-      </ul>
-    </section>
-
-    <section class="cc-card" aria-labelledby="cc-core-h">
-      <div class="cc-card-h"><h2 id="cc-core-h">MINT AI Core</h2><span class="cc-aside cc-mono" id="cc-core-aside">—</span></div>
-      <div class="cc-core-grid" id="cc-core-grid">
-        ${coreCell("core", "Core")}${coreCell("sessions", "Sessions")}
-        ${coreCell("agents", "Agents")}${coreCell("memory", "Memory")}
-        ${coreCell("watchers", "Watchers")}${coreCell("rules", "Rules")}
-        ${coreCell("voice", "Voice")}${coreCell("guard", "Guardrails")}
-      </div>
-    </section>
-
-    <section class="cc-card" aria-labelledby="cc-cost-h">
-      <div class="cc-card-h"><h2 id="cc-cost-h">Cost today</h2><button type="button" class="cc-link" data-open="cost">Details</button></div>
-      <div id="cc-cost-widget"><div class="cc-empty-s">—</div></div>${
-        voice.configured
-          ? `<div class="cc-vu" id="cc-voice-usage" aria-live="polite"><div class="cc-empty-s">Voice usage —</div></div>`
-          : ""
-      }
-    </section>
-
-    <section class="cc-card cc-orders-card" aria-labelledby="cc-orders-h">
-      <div class="cc-card-h"><h2 id="cc-orders-h">Standing orders</h2><button type="button" class="cc-link" data-open="order-new">+ New</button></div>
-      <ul class="cc-orders cc-scroll" id="cc-orders"></ul>
-    </section>
-  </aside>
-
-  <main class="cc-center" id="cc-center">
-    <div class="cc-ctr-head">
-      <h1>Command Center</h1>
-      <div class="cc-seg" role="tablist" aria-label="Centre view">
-        <button type="button" role="tab" aria-selected="true" data-view="map">${ic("orbit")}Map</button>
-        <button type="button" role="tab" aria-selected="false" data-view="missions">${ic("flag")}Missions<span class="cc-count" id="cc-mis-count" hidden>0</span></button>
-      </div>
-      <div class="cc-sp">
-        <button type="button" class="cc-mis-chip" id="cc-mis-chip" title="Open the mission board" hidden></button>
-        <div class="cc-state-pill" id="cc-state" role="status"><span class="cc-dot" id="cc-state-dot"></span><span id="cc-state-label">Idle</span></div>
-      </div>
+  <main class="cc-main" id="cc-center" aria-label="MINT AI">
+    <h1 class="cc-sr">MINT AI Command Center</h1>
+    <div class="cc-stage" id="cc-stage"><div class="cc-offline" id="cc-offline" hidden><b>MINT AI is not reachable</b><span id="cc-offline-msg"></span></div></div>
+    <div class="cc-caption">
+      <span class="cc-cap-state" id="cc-cap-state" data-s="idle"><span class="d" aria-hidden="true"></span><span id="cc-cap-label">Connecting</span></span>
+      <div class="cc-cap-line" id="cc-cap" aria-live="polite">Connecting to MINT AI…</div>
+      <button type="button" class="cc-cap-more" id="cc-cap-more" aria-expanded="false" aria-controls="cc-reply" hidden>${ic("chev")}<span id="cc-cap-more-t">Full reply</span> · <span id="cc-cap-at"></span></button>
     </div>
-
-    <section class="cc-stage" id="cc-stage">
-      <div class="cc-view" id="cc-view-map">
-        <canvas id="cc-map" role="img" aria-label="Orbit map: MINT AI at the centre, the live sessions on the inner ring, their sub-agents as moons"></canvas>
-        <div class="cc-map-say" id="cc-map-say" hidden></div>
-        <div class="cc-map-legend" aria-hidden="true">
-          <span><span class="lg-ring"></span>inner: live sessions</span>
-          <span><span class="lg-moon"></span>sub-agent</span>
-          <span><span class="lg-out"></span>delegation</span>
-          <span><span class="lg-back"></span>reply</span>
-          <span><span class="lg-mis"></span>mission</span>
-        </div>
-        <div class="cc-map-stats">
-          <div><b id="cc-stat-deleg">—</b><span>delegated · 24h</span></div>
-          <div><b id="cc-stat-done">—</b><span>done · 24h</span></div>
-          <div><b id="cc-stat-median">—</b><span>median turn</span></div>
-        </div>
-      </div>
-      <div class="cc-view" id="cc-view-missions" hidden>
-        <div class="cc-missions">
-          <div class="cc-mis-tabs" id="cc-mis-tabs"></div>
-          <div class="cc-mis-head" id="cc-mis-head"></div>
-          <div class="cc-lanes" id="cc-lanes"></div>
-        </div>
-      </div>
-      <div class="cc-offline" id="cc-offline" hidden><b>MINT AI is not reachable</b><span id="cc-offline-msg"></span></div>
-    </section>
-
-    <section class="cc-sess-sec" aria-labelledby="cc-sess-h">
-      <div class="cc-sec-h"><h2 id="cc-sess-h">Sessions</h2><span class="cc-aside" id="cc-sess-aside">—</span></div>
-      <div class="cc-strip" id="cc-sessions"></div>
-    </section>
-
     <div class="cc-dock" id="cc-dock">
       <form class="cc-composer" id="cc-compose" autocomplete="off">
-        <button type="button" class="cc-c-mic" id="cc-c-mic" title="${voice.configured ? "Talk to MINT (voice mode)" : "Add an OpenAI key in Settings to use voice"}" aria-label="Talk to MINT"${voice.configured ? "" : " disabled"}>${ic("voice")}</button>
-        <button type="button" class="cc-mic-mode" id="cc-mic-mode" data-mode="ptt" title="Voice mode: push to talk — hold the mic or Space to talk. Click to switch to hands-free." aria-label="Voice mode: push to talk. Click to switch to hands-free."${voice.configured ? "" : " hidden"}>Push to talk</button>
-        <input id="cc-input" name="text" placeholder="Tell MINT AI what to do…" aria-label="Message MINT AI" maxlength="20000" autocomplete="off">
-        <button type="button" class="cc-target" id="cc-target" aria-haspopup="menu" aria-expanded="false">${ic("route")}<span id="cc-target-label">Auto-route</span>${ic("chev")}</button>
+        <button type="button" class="cc-c-mic" id="cc-c-mic" title="${voice.configured ? "Talk to MINT AI (hold, or hold Space)" : "Add an OpenAI key in Settings to use voice"}" aria-label="Talk to MINT AI"${voice.configured ? "" : " disabled"}>${ic("voice")}</button>
+        <button type="button" class="cc-target" id="cc-target" aria-haspopup="menu" aria-expanded="false" title="MINT AI picks the session">${ic("route")}<span id="cc-target-label">Auto-route</span></button>
+        <input id="cc-input" name="text" placeholder="Ask MINT AI…" aria-label="Message MINT AI" maxlength="20000" autocomplete="off">
         <button type="button" class="cc-c-stop" id="cc-stop" title="Interrupt the current turn" aria-label="Interrupt" hidden>${ic("stop")}</button>
-        <button type="submit" class="cc-c-send" id="cc-send" title="Send" aria-label="Send">${ic("send")}</button>
+        <button type="submit" class="cc-c-send" id="cc-send" title="Send" aria-label="Send">${ic("up")}</button>
       </form>
       <div class="cc-voicebar" id="cc-voicebar">
-        <button type="button" class="cc-c-mic live" id="cc-vb-stop" title="Stop talking" aria-label="Stop voice mode">${ic("voice")}</button>
-        <div class="cc-vb-text"><b>TALK TO MINT</b><span id="cc-vb-text">Listening…</span></div>
+        <button type="button" class="cc-c-mic live" id="cc-vb-stop" title="Send what you said" aria-label="Stop and send">${ic("voice")}</button>
+        <div class="cc-vb-text"><b>TALK TO MINT AI</b><span id="cc-vb-text">Listening…</span></div>
         <div class="cc-vb-wave" id="cc-vb-wave" aria-hidden="true"></div>
-        <span class="cc-vb-tags"><span class="cc-tag cc-tag-mode" id="cc-vb-mode">Push to talk</span><span class="cc-tag${voice.configured && voice.desk ? " desk" : ""}" id="cc-voice-mode" title="${
-          voice.configured && voice.desk
+        <span class="cc-vb-tags"><span class="cc-tag cc-tag-mode" id="cc-vb-mode">Push to talk</span><span class="cc-tag${deskOn ? " desk" : ""}" id="cc-voice-mode" title="${
+          deskOn
             ? "Voice front desk (GPT, trial): quick answers from a read-only snapshot, and short summaries of MINT AI's answers; everything else goes to MINT AI. Switch it off in Settings › OpenAI voice."
             : "Voice goes straight to MINT AI: OpenAI only hears and reads aloud."
-        }">${voice.configured && voice.desk ? "Front desk · GPT" : "Direct · MINT AI"}</span><span class="cc-tag">OpenAI</span><span class="cc-tag" id="cc-voice-tag">${esc(voice.configured ? String(voice.voice || "voice") : "no key")}</span></span>
+        }">${deskOn ? "Front desk · GPT" : "Direct · MINT AI"}</span><span class="cc-tag">OpenAI</span><span class="cc-tag" id="cc-voice-tag">${esc(voice.configured ? String(voice.voice || "voice") : "no key")}</span></span>
         <span class="cc-target cc-static">${ic("route")}<span id="cc-vb-target">Auto-route</span></span>
-        <button type="button" class="cc-c-kbd" id="cc-vb-close" title="Back to typing" aria-label="Back to typing">${ic("close")}</button>
+        <button type="button" class="cc-ibtn" id="cc-vb-close" title="Back to typing" aria-label="Back to typing">${ic("close")}</button>
       </div>
-      <div class="cc-hint"><kbd>Enter</kbd> send · <kbd>@</kbd> session · <kbd>Ctrl K</kbd> palette${voice.configured ? " · <kbd>Space</kbd> hold to talk" : ""} · destructive commands wait for your approval${voiceOff}</div>
+      <div class="cc-hint" id="cc-hint"><button type="button" class="cc-vm" id="cc-vm" aria-haspopup="menu" aria-expanded="false" title="Voice and core settings">${ic("voice")}<span id="cc-mic-mode" data-mode="ptt">Push to talk</span>${ic("chevd")}</button>${
+        voice.configured ? `<span class="kb"><kbd>Space</kbd> hold to talk</span>` : ""
+      }<span class="kb"><kbd>@</kbd> a session</span><span class="kb"><kbd>Ctrl K</kbd> everything</span><span class="kb cc-guard">destructive steps wait for your approval</span>${voiceOff}</div>
     </div>
   </main>
 
-  <aside class="cc-drawer" id="cc-drawer" aria-label="MINT AI conversation and inbox">
-    <div class="cc-dr-head">
-      <span class="cc-av cc-av-lg"></span>
-      <div class="cc-min0 cc-dr-title"><h2>MINT AI</h2><small id="cc-dr-sub">CEO session · /root/moni-ai</small></div>
-      <div class="cc-sp">
-        <button type="button" class="cc-iconbtn" id="cc-speak-toggle" aria-pressed="false" title="Replies are silent — click to read MINT AI's replies aloud" aria-label="Read replies aloud"${voice.configured ? "" : " hidden"}>${ic("mute")}</button>
-        <button type="button" class="cc-iconbtn" id="cc-rc-open" title="Open in Claude Desktop (Remote Control)" aria-label="Open in Claude Desktop">${ic("open")}</button>
-        <button type="button" class="cc-iconbtn" id="cc-expand" title="Widen the drawer" aria-label="Widen the drawer">${ic("expand")}</button>
-        <button type="button" class="cc-iconbtn" id="cc-collapse" title="Collapse or open the drawer" aria-label="Collapse the drawer">${ic("panel")}</button>
-      </div>
-    </div>
-    <div class="cc-dr-tabs" role="tablist">
-      <button type="button" role="tab" aria-selected="true" data-pane="conv" id="cc-tab-conv">Conversation</button>
-      <button type="button" role="tab" aria-selected="false" data-pane="dec" id="cc-tab-dec">Decisions<span class="cc-count warn" id="cc-dec-count" hidden>0</span></button>
-      <button type="button" role="tab" aria-selected="false" data-pane="tl">Timeline<span class="cc-count opt" id="cc-tl-count">0</span></button>
-      <button type="button" role="tab" aria-selected="false" data-pane="rules">Rules</button>
-    </div>
-    <div class="cc-pane" id="cc-pane-conv" role="tabpanel">
-      <section class="cc-activity" id="cc-activity">
-        <h3><span class="cc-dot" id="cc-act-dot"></span>Current AI activity<span class="cc-muted" id="cc-act-sub">—</span></h3>
-        <ol class="cc-steps" id="cc-steps"></ol>
-      </section>
-      <div class="cc-pane-scroll cc-chat-scroll" id="cc-chat-scroll"><div class="cc-chat" id="cc-chat" aria-live="polite"></div></div>
-    </div>
-    <div class="cc-pane" id="cc-pane-dec" role="tabpanel" hidden>
-      <div class="cc-pane-scroll" id="cc-dec-scroll">
-        <div id="cc-dec-list"></div>
-        <details class="cc-evlog" id="cc-evlog" open>
-          <summary class="cc-inbox-h">${ic("bolt")}Event log<span class="cc-muted"><span id="cc-feed-count">0</span> events · this VPS</span></summary>
-          <ul class="cc-feed" id="cc-feed"></ul>
-        </details>
-      </div>
-    </div>
-    <div class="cc-pane" id="cc-pane-tl" role="tabpanel" hidden><div class="cc-pane-scroll"><ul class="cc-timeline" id="cc-timeline"></ul></div></div>
-    <div class="cc-pane" id="cc-pane-rules" role="tabpanel" hidden><div class="cc-pane-scroll" id="cc-rules-pane"></div></div>
-    <div class="cc-dr-foot"><span class="cc-dot" id="cc-rc-dot"></span><span id="cc-rc-text">Mirrors the MINT AI session — the same conversation in Claude Desktop (Remote Control) and here.</span></div>
-  </aside>
+  <nav class="cc-rail" id="cc-rail" aria-label="Behind the scenes">${dock()}</nav>
 </div>
+
+<section class="cc-reply" id="cc-reply" aria-label="MINT AI's last reply" hidden>
+  <div class="hd"><span id="cc-reply-h">MINT AI</span><span class="sp"></span><button type="button" class="cc-ibtn" id="cc-reply-x" aria-label="Close">${ic("close")}</button></div>
+  <div class="bd cc-scroll" id="cc-reply-body"></div>
+  <div class="ft"><button type="button" class="cc-btn sm" data-sheet="conv">${ic("message")}Whole conversation</button><button type="button" class="cc-btn sm" id="cc-reply-read"${voice.configured ? "" : " hidden"}>${ic("speaker")}Read aloud</button></div>
+</section>
+
+<aside class="cc-need" id="cc-need" role="alertdialog" aria-label="Needs you" hidden></aside>
+<div class="cc-pop" id="cc-pop" role="menu" hidden></div>
+<div class="cc-sheet-scrim" id="cc-scrim" hidden></div>
+<aside class="cc-sheet" id="cc-sheet" aria-label="Behind the scenes">
+  ${pane(
+    "conv",
+    "Conversation",
+    `<span id="cc-dr-sub">the MINT AI session</span>`,
+    `<button type="button" class="cc-ibtn" id="cc-speak-toggle" aria-pressed="false" title="Replies are silent — click to read MINT AI's replies aloud" aria-label="Read replies aloud"${voice.configured ? "" : " hidden"}>${ic("mute")}</button>` +
+      `<button type="button" class="cc-ibtn" id="cc-rc-open" title="Open in Claude Desktop (Remote Control)" aria-label="Open in Claude Desktop">${ic("open")}</button>` +
+      `<button type="button" class="cc-ibtn" id="cc-expand" title="Widen the sheet" aria-label="Widen the sheet">${ic("expand")}</button>`,
+    `<section class="cc-activity" id="cc-activity"><h3><span class="cc-dot" id="cc-act-dot"></span>Current AI activity<span class="cc-muted" id="cc-act-sub">—</span></h3><ol class="cc-steps" id="cc-steps"></ol></section>
+      <div class="cc-chat" id="cc-chat" aria-live="polite"></div>`,
+    `<span class="cc-dot" id="cc-rc-dot"></span><span id="cc-rc-text">Mirrors the MINT AI session — the same conversation in Claude Desktop (Remote Control) and here.</span>`
+  )}
+  ${pane(
+    "sessions",
+    "Sessions",
+    `<span id="cc-sess-aside">—</span>`,
+    "",
+    `<div class="cc-stats"><div><b id="cc-stat-deleg">—</b><span>delegated · 24h</span></div><div><b id="cc-stat-done">—</b><span>done · 24h</span></div><div><b id="cc-stat-median">—</b><span>median turn</span></div></div>
+      <div class="cc-sess-list" id="cc-sessions"></div>
+      <div class="cc-card dashed" aria-disabled="true">${ic("plus")}<b>Hire a session</b><span class="sp"></span><span class="cc-tag mute">coming later</span></div>`
+  )}
+  ${pane(
+    "missions",
+    "Missions",
+    `<span id="cc-mis-sub">goals MINT AI plans into steps</span>`,
+    `<button type="button" class="cc-btn pri sm" data-open="mission-new">${ic("plus")}New mission</button>`,
+    `<div class="cc-mis-tabs" id="cc-mis-tabs"></div><div class="cc-mis-head" id="cc-mis-head" hidden></div><div class="cc-lanes" id="cc-lanes"></div>`
+  )}
+  ${pane(
+    "dec",
+    "Decisions",
+    `<span id="cc-dec-sub">approvals and watcher findings</span>`,
+    "",
+    `<div id="cc-dec-list"></div>
+      <details class="cc-evlog" id="cc-evlog" open><summary class="cc-inbox-h">${ic("bolt")}Event log<span class="cc-muted"><span id="cc-feed-count">0</span> events · this VPS</span></summary><ul class="cc-feed" id="cc-feed"></ul></details>`
+  )}
+  ${pane("tl", "Timeline", `<span id="cc-tl-count">0</span> delegations and approvals, newest first`, "", `<ul class="cc-timeline" id="cc-timeline"></ul>`)}
+  ${pane("rules", "Rules & watchers", "what needs your approval, what is watched", "", `<div id="cc-rules-pane"></div>`)}
+  ${pane(
+    "orders",
+    "Standing orders",
+    "run on a schedule, as MINT AI or a session",
+    `<button type="button" class="cc-btn pri sm" data-open="order-new">${ic("plus")}New</button>`,
+    `<ul class="cc-orders" id="cc-orders"></ul>`
+  )}
+  ${pane(
+    "cost",
+    "Cost & voice usage",
+    "estimates · Cairo day",
+    `<button type="button" class="cc-btn sm" data-open="cost">Details and budget</button>`,
+    `<div id="cc-cost-widget"><div class="cc-empty-s">—</div></div>${voice.configured ? `<div class="cc-vu" id="cc-voice-usage" aria-live="polite"><div class="cc-empty-s">Voice usage —</div></div>` : ""}`
+  )}
+  ${pane(
+    "machine",
+    "Machine",
+    `<span id="cc-mach-aside">this VPS</span>`,
+    "",
+    `<div class="cc-card cc-mach-this" id="cc-mach-this">
+        <div class="cc-mach-top">${ic("server")}<b id="cc-host">This VPS</b><span class="sp"></span><span class="cc-tag mute" id="cc-mach-badge">—</span></div>
+        <div class="cc-mach-sub cc-mono" id="cc-mach-sub">this box</div>
+        <div class="cc-mach-bars"><span class="cc-mb" data-mb="cpu">CPU —<i></i></span><span class="cc-mb" data-mb="ram">RAM —<i></i></span><span class="cc-mb" data-mb="disk">DISK —<i></i></span></div>
+        <div class="cc-mach-note" id="cc-mach-note">—</div>
+      </div>
+      <div class="cc-sec-t">MINT AI core<span class="cc-muted cc-mono" id="cc-core-aside">—</span></div>
+      <div class="cc-core-grid" id="cc-core-grid">
+        ${coreCell("core", "Core")}${coreCell("sessions", "Sessions")}${coreCell("agents", "Agents")}${coreCell("memory", "Memory")}
+        ${coreCell("watchers", "Watchers")}${coreCell("rules", "Rules")}${coreCell("voice", "Voice")}${coreCell("guard", "Guardrails")}
+      </div>
+      <div class="cc-sec-t">Other machines</div>
+      <div class="cc-card dashed cc-mach-add" aria-disabled="true" title="Watching another machine comes later">${ic("plus")}<b>Add a machine</b><span class="sp"></span><em class="cc-tag mute">coming later</em></div>`
+  )}
+  ${pane(
+    "everything",
+    "Everything",
+    "one tap away",
+    "",
+    `<div class="cc-everything">${logic.SHEETS.filter((s) => s !== "-")
+      .map((s) => `<button type="button" data-sheet="${s.key}">${ic(s.icon)}<span>${esc(s.label.replace(" & voice usage", "").replace(" & watchers", ""))}</span>${s.key === "dec" ? `<span class="cc-badge-n warn" data-dec-mirror hidden>0</span>` : ""}</button>`)
+      .join("")}<button type="button" data-open-palette>${ic("search")}<span>Search or run</span></button></div>
+      ${dashLinks ? `<div class="cc-sec-t">Dashboards</div>${dashLinks}` : ""}
+      <div class="cc-sec-t">MINT AI core</div>${coreSwitch(core, "wide")}
+      <div class="cc-sec-t">Theme</div>
+      <div class="cc-theme-mini" role="group" aria-label="Theme"><button type="button" data-theme-to="system" aria-label="System theme">${ic("monitor")}</button><button type="button" data-theme-to="dark" aria-label="Dark theme">${ic("moon")}</button><button type="button" data-theme-to="light" aria-label="Light theme">${ic("sun")}</button></div>`
+  )}
+</aside>
 <div id="cc-overlay"></div>
 <noscript><div class="cc-noscript">The Command Center needs JavaScript. The older chat is at <a href="/console">/console</a>.</div></noscript>`;
 
@@ -280,12 +339,56 @@ function page(o) {
     csrf: o.csrf,
     active: "moni-ai",
     dash: "console",
+    brand: "ai",
     heading: null,
     pageClass: "cc-page",
-    assets: ["moni-ai.css", "cc-map.js", "cc-panels.js", "moni-ai.js"],
-    topExtra: TOP_CHIP,
+    assets: ["moni-ai.css", "cc-logic.js", "mint-core.js", "cc-map.js", "cc-panels.js", "moni-ai.js"],
+    topExtra: topExtra(),
     topEnd: TOP_CLOCK,
   });
 }
 
-module.exports = { page, SPRITE };
+/* ------------------------------------------------ Account ▸ Appearance --- */
+
+/**
+ * The Appearance card on /account: the three cores, each with a small live
+ * preview, the saved one ticked. Works without JavaScript (a plain form post
+ * to /account/appearance); mint-settings.js switches it in place instead, and
+ * any open Command Center picks the change up on its next load -- or at once,
+ * from its own quick switch.
+ *
+ * @param o { csrf, core }
+ */
+function appearance(o) {
+  const core = logic.normCore(o.core);
+  const desc = {
+    A: "A sphere of dots that ripples when you talk, knots while it thinks and gathers into rings when it needs you.",
+    B: "A glassy fluid orb that melts into voice waves when it listens and speaks.",
+    C: "The dotted sphere with the brand spark at its heart. The default.",
+  };
+  const opts = Object.keys(logic.CORES)
+    .map(
+      (k) => `<label class="mint-core-opt" data-core-opt="${k}">
+        <input type="radio" name="core" value="${k}"${k === core ? " checked" : ""}>
+        <span class="mint-prev"><canvas data-prev-core="${k}" aria-hidden="true"></canvas>${k === "C" ? `<span class="mint-prev-spark" aria-hidden="true">${sparkSvg().replace(/cc-sp/g, "mp-sp")}</span>` : ""}</span>
+        <span class="mint-core-name"><b>${k}</b> · ${esc(logic.CORES[k])}</span>
+        <span class="mint-core-desc">${esc(desc[k])}</span>
+      </label>`
+    )
+    .join("");
+  return {
+    html: card(
+      "Appearance",
+      `<form method="post" action="/account/appearance" class="mint-appearance" id="mint-appearance" data-csrf="${esc(o.csrf)}">
+        <input type="hidden" name="_csrf" value="${esc(o.csrf)}">
+        <p class="muted">The MINT AI core in the Command Center. Switch any time; an open Command Center can switch too, from its voice menu.</p>
+        <fieldset class="mint-core-opts"><legend class="cc-sr">MINT AI core</legend>${opts}</fieldset>
+        <div class="btn-row"><button class="btn primary mint-core-save" type="submit">Save</button><span class="muted small" id="mint-appearance-note" role="status"></span></div>
+      </form>`,
+      { icon: "eye", id: "appearance" }
+    ),
+    assets: ["mint-settings.css", "mint-core.js", "mint-settings.js"],
+  };
+}
+
+module.exports = { page, appearance, SPRITE, coreSwitch };

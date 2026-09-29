@@ -34,14 +34,17 @@ const html = views.page({ csrf: "t", user: { name: "a", perm: admin }, voice: { 
 const noKey = views.page({ csrf: "t", user: { name: "a", perm: admin }, voice: { configured: false, manage: true } });
 
 /* ---- the frame ---- */
-const toggle = (/<button[^>]*id="cc-mic-mode"[^>]*>([^<]*)<\/button>/.exec(html) || [])[0] || "";
-check("the composer has a voice-mode switch next to the mic", !!toggle && html.indexOf('id="cc-c-mic"') < html.indexOf('id="cc-mic-mode"') && html.indexOf('id="cc-mic-mode"') < html.indexOf('id="cc-input"'));
-check("it renders as push to talk (the default), so nothing flips on load", /data-mode="ptt"/.test(toggle) && />Push to talk<\/button>/.test(toggle));
-check("it says how to switch", /Click to switch to hands-free/.test(toggle));
+// The mode lives under the composer: "Push to talk ▾" opens the voice menu
+// (push to talk / hands-free, read aloud, the core), built by moni-ai.js.
+const toggle = (/<button[^>]*id="cc-vm"[^>]*>[\s\S]*?<\/button>/.exec(html) || [])[0] || "";
+check("the voice-mode button sits under the composer, after the mic and the input", !!toggle && html.indexOf('id="cc-c-mic"') < html.indexOf('id="cc-input"') && html.indexOf('id="cc-input"') < html.indexOf('id="cc-vm"'));
+check("it renders as push to talk (the default), so nothing flips on load", /<span id="cc-mic-mode" data-mode="ptt">Push to talk<\/span>/.test(toggle));
+check("it opens a menu that switches it", /aria-haspopup="menu"/.test(toggle) && /data-vmode="ptt"/.test(client0()) && /data-vmode="handsfree"/.test(client0()) && /Voice\.setMode\(/.test(client0()));
 check("the voice bar shows the active mode", /id="cc-vb-mode"[^>]*>Push to talk</.test(html));
-check("without a key the switch is hidden", /id="cc-mic-mode"[^>]*hidden/.test(noKey));
+check("without a key the menu's modes are disabled and Space is not offered", /\(ready \? "" : " disabled"\)/.test(client0()) && !/<kbd>Space<\/kbd>/.test(noKey));
 check("no inline style or handler on the new markup", !/\sstyle\s*=|\son[a-z]+\s*=/i.test(toggle));
 check("hold-to-talk hint is still there", /<kbd>Space<\/kbd> hold to talk/.test(html));
+function client0() { return fs.readFileSync(path.join(ROOT, "public", "moni-ai.js"), "utf8"); }
 const ids = [...html.matchAll(/\sid="([^"]+)"/g)].map((m) => m[1]);
 check("ids stay unique", ids.length === new Set(ids).size);
 

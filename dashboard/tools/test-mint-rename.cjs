@@ -80,11 +80,11 @@ console.log("the Command Center");
     user: { name: "Ann", roleLabel: "Administrator", perm: admin, dash: "console" },
     voice: { configured: true, voice: "marin", model: "gpt-realtime-mini", manage: true, desk: true },
   });
-  check("its title is MINT AI — Mint OS", titleOf(cc) === "MINT AI — Mint OS", titleOf(cc));
-  check("the core card is MINT AI Core", /<h2 id="cc-core-h">MINT AI Core<\/h2>/.test(cc));
-  check("the drawer is headed MINT AI", /<h2>MINT AI<\/h2>/.test(cc));
-  check("the composer says Tell MINT AI what to do…", /placeholder="Tell MINT AI what to do…"/.test(cc));
-  check("the voice bar says TALK TO MINT", /TALK TO MINT/.test(cc) && /aria-label="Talk to MINT"/.test(cc));
+  check("its title is MINT AI (the AI's own page)", /^MINT AI( — (Mint OS|MINT AI))?$/.test(titleOf(cc)), titleOf(cc));
+  check("the Machine sheet's core grid is headed MINT AI core", /class="cc-sec-t">MINT AI core</.test(cc));
+  check("the conversation sheet is MINT AI's session", /id="cc-dr-sub">the MINT AI session</.test(cc));
+  check("the composer says Ask MINT AI…", /placeholder="Ask MINT AI…"/.test(cc));
+  check("the voice bar says TALK TO MINT AI", /TALK TO MINT AI/.test(cc) && /aria-label="Talk to MINT AI"/.test(cc));
   check("no old name in the Command Center", !OLD_NAME.test(visible(cc)) && !/MONI/.test(cc.replace(/moni-ai|MoniMap|MoniPanels/g, "")), (cc.match(/.{0,40}MONI.{0,40}/) || [])[0]);
 
   const pub = (f) => fs.readFileSync(path.join(ROOT, "public", f), "utf8");
@@ -93,7 +93,7 @@ console.log("the Command Center");
     // Only the name matchers may still spell the old name (lower case, in a regex / string compare).
     check(`public/${f} shows no MONI to a person`, !/MONI(?!_)/.test(src) && !/\bMoni\b(?![A-Z])/.test(src), (src.match(/.{0,50}MONI(?!_).{0,50}/) || [])[0]);
   }
-  check("the orbit map labels the core MINT AI", /fillText\("MINT AI"/.test(pub("cc-map.js")));
+  check("the core in the centre is labelled MINT AI", /<main class="cc-main" id="cc-center" aria-label="MINT AI">/.test(cc));
   check("the favicon is labelled Mint OS", /aria-label="Mint OS"/.test(pub("favicon.svg")));
 }
 

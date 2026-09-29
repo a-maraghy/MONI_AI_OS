@@ -66,7 +66,7 @@ function cutFrom(src, name) {
   }
   throw new Error("unbalanced " + name);
 }
-check("the session card opens the deep view (wired in the sessions click handler)", /data-sess[\s\S]{0,200}P\.openDeep\(/.test(client));
+check("the session card opens the deep view (wired in the sessions click handler)", /data-deep-open[\s\S]{0,200}P\.openDeep\(/.test(client));
 {
   const fn = cutFrom(panels, "deepToldHTML");
   check("the deep view shows each delegation's full text (summary only as a fallback)", /esc\(d\.text \|\| d\.summary \|\| ""\)/.test(fn));

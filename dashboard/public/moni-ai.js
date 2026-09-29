@@ -1,6 +1,6 @@
 "use strict";
 /*
- * The MINT AI Command Center (v3), live.
+ * The MINT AI Command Center, live (the simplified Mint layout).
  *
  * Reads the JSON API under /mint-ai/api/ once on load (overview, the turns,
  * approvals, delegations and inbound ledgers, then missions, decisions,
@@ -12,11 +12,15 @@
  * after the markup is in place (applyBars), never as a style attribute: the
  * CSP would refuse it.
  *
- * The orbit map in the middle is cc-map.js: MINT AI's seed core with the live
- * sessions around it. Its states come from real events -- thinking while a
- * turn runs, delegating when a SendMessage lands (a bead runs out to that
- * session), a reply bead back when the session answers, listening while the
- * microphone records, speaking while a reply is read aloud.
+ * The screen: the MINT AI core in the middle (mint-core.js, placed and fed by
+ * cc-map.js) with the live sessions as points on its orbit; one caption under
+ * it; one pill composer; the dock on the left opening sheets from the right;
+ * one decision card top right. What the core and the caption show is decided
+ * in one place, cc-logic.js (MintLogic.caption), from real events -- the
+ * running turn and its current step, a SendMessage delegation and its target
+ * (the stream of dots flies to that session), the sentence being read aloud
+ * (its words appear as it is spoken), the microphone, and anything waiting
+ * for a decision.
  *
  * The missions board, the Decisions inbox, Rules and Watchers, the standing
  * orders, the cost view, the session deep view and the Ctrl+K palette are
@@ -243,9 +247,12 @@
     skew: 0,               // server clock minus ours, ms
     target: "auto",
     delegatingUntil: 0,
-    view: "map",           // centre: map | missions
-    pane: "conv",          // drawer: conv | dec | tl | rules
+    delegTo: "",           // the session the last delegation went to, and what it said
+    delegText: "",
+    spoken: "",            // the sentence being read aloud now
+    pane: null,            // the open sheet: conv | sessions | missions | dec | tl | rules | orders | cost | machine | everything
   };
+  var ML = window.MintLogic;
 
   function nowServer() { return Date.now() + S.skew; }
 
@@ -302,9 +309,10 @@
 
   function tick() {
     var d = new Date();
-    $("cc-clock").textContent = fmtHMS.format(d);
+    $("cc-clock").textContent = fmtHM.format(d);
     $("cc-clock-date").textContent = fmtDate.format(d) + " · Cairo";
     tickApprovals();
+    tickNeed();
   }
 
   /* ================================================================ theme
@@ -313,45 +321,139 @@
 
   document.addEventListener("moni-theme", function () { Orb.palette(); });
 
-  /* ================================================================ the orbit map */
+  /* ================================================================ the core and its orbit */
 
-  var Orb = window.MoniMap($("cc-map"), {
-    visible: function () { return S.view === "map"; },
-    onClick: function (key) { P.openDeep(key); },
+  var Orb = window.MoniMap({
+    root: root, stage: $("cc-stage"), canvas: $("cc-core"), orbit: $("cc-orbit"), ring: $("cc-ring"), halo: $("cc-halo"), spark: $("cc-spark"),
+  }, {
+    onClick: function (key) { openSheet("sessions"); highlightSess(key); },
+  });
+  window.__mintCC = { core: Orb.core, orbit: Orb, S: S };
+
+  /* ---- the core setting: A dotted sphere, B Siri fluid, C hybrid. The
+     server rendered the saved one as data-core; this browser remembers it too
+     (the fallback if the attribute is ever missing), and a switch here saves it
+     for the person and swaps the running core in place, no reload. ---- */
+  var CORE_KEY = "mint-core";
+  function coreNow() { return Orb.core.S.concept; }
+  (function () {
+    var c = root.getAttribute("data-core");
+    if (!c) { try { c = window.localStorage.getItem(CORE_KEY); } catch (e) { c = null; } }
+    c = ML.normCore(c);
+    Orb.setConcept(c);
+    try { window.localStorage.setItem(CORE_KEY, c); } catch (e) { /* not remembered here; the server has it */ }
+  })();
+  function paintCoreSwitches() {
+    var bs = document.querySelectorAll("[data-core-set]");
+    for (var i = 0; i < bs.length; i++) bs[i].setAttribute("aria-checked", String(bs[i].getAttribute("data-core-set") === coreNow()));
+  }
+  function setCoreChoice(c) {
+    c = ML.normCore(c);
+    var was = coreNow();
+    Orb.setConcept(c);
+    paintCoreSwitches();
+    try { window.localStorage.setItem(CORE_KEY, c); } catch (e) { /* the server keeps it */ }
+    if (c === was) return Promise.resolve(c);
+    return api("prefs/core", { body: { core: c } }).then(function (r) {
+      toast("MINT AI core: " + c + " · " + ML.CORES[c]);
+      return r && r.core;
+    }).catch(function (e) {
+      toast("The core switched here, but was not saved: " + e.message, true);
+    });
+  }
+  document.addEventListener("click", function (e) {
+    var b = e.target.closest("[data-core-set]");
+    if (b) { e.preventDefault(); setCoreChoice(b.getAttribute("data-core-set")); }
   });
 
   /* ================================================================ core state
-     One place decides what the core shows and what the pills say. */
+     One place decides what the core shows and what the caption says:
+     MintLogic.caption, from a snapshot of what is really happening. */
 
   var stateTimer = 0;
-  function orbState() {
-    if (Voice.listening && !Voice.speaking) return "listening";
-    if (Voice.speaking) return "speaking";
-    if (Date.now() < S.delegatingUntil) return "delegating";
-    if (S.status && S.status.busy) return "thinking";
-    return "idle";
-  }
-  var LABEL = { idle: "Idle", listening: "Listening", thinking: "Thinking", delegating: "Delegating", speaking: "Speaking" };
   function failedServices() {
     var m = S.status && S.status.machine;
     return (m && m.services && m.services.failed) || [];
   }
-  function paintState() {
-    var st = orbState();
-    Orb.setState(st);
-    var pending = pendingApprovals().length;
-    var pill = $("cc-state"), dot = $("cc-state-dot"), label = $("cc-state-label");
-    pill.className = "cc-state-pill";
-    if (!S.online) {
-      label.textContent = "Offline"; dot.className = "cc-dot bad"; pill.classList.add("bad");
-    } else if (pending) {
-      label.textContent = "Waiting for you"; dot.className = "cc-dot warn"; pill.classList.add("warn");
-    } else {
-      label.textContent = LABEL[st];
-      var busy = st === "thinking" || st === "delegating" || st === "speaking" || st === "listening";
-      dot.className = "cc-dot" + (busy ? " work" : "");
-      if (busy) pill.classList.add("work");
+  /** The running turn's current step, in words (the last one still running). */
+  function currentStep() {
+    var cur = S.status && S.status.current_turn;
+    if (!cur) return "";
+    var steps = S.steps && S.steps.turn_id === cur.id ? S.steps.steps : cur.steps || [];
+    for (var i = (steps || []).length - 1; i >= 0; i--) {
+      var st = steps[i];
+      if (st && (st.st === "run" || st.st === "wait")) return STEP_NAMES[st.txt] || st.txt;
     }
+    var last = steps && steps.length ? steps[steps.length - 1] : null;
+    return last ? STEP_NAMES[last.txt] || last.txt : "";
+  }
+  /** A session MINT AI is waiting on: an open delegation from the running turn. */
+  function waitingOn() {
+    var cur = S.status && S.status.current_turn, out = "";
+    if (!cur) return "";
+    S.delegations.forEach(function (d) { if (d.turn_id === cur.id && (d.status === "sent" || d.status === "working")) out = d.target_name || out; });
+    return out;
+  }
+  function lastReplyTurn() {
+    for (var i = S.turnOrder.length - 1; i >= 0; i--) {
+      var x = S.turns.get(S.turnOrder[i]);
+      if (x && x.source !== "system" && x.status !== "running" && aiText(x)) return x;
+    }
+    return null;
+  }
+  function snapshot() {
+    var busy = !!(S.status && S.status.busy), q = needQueue();
+    var cur = S.status && S.status.current_turn, tr = cur ? S.turns.get(cur.id) : null;
+    var last = lastReplyTurn(), vb = $("cc-vb-text");
+    var dg = Date.now() < S.delegatingUntil;
+    return {
+      online: S.online, offlineMsg: S.offlineMsg,
+      listening: Voice.listening, speaking: Voice.speaking, voiceLive: $("cc-dock").classList.contains("voice-on"),
+      voiceText: vb ? vb.textContent : "", spoken: S.spoken,
+      busy: busy, stepText: currentStep(), waitingOn: waitingOn(), streamText: tr && tr.status === "running" && !Voice.speaking ? aiText(tr) : "",
+      queued: (S.status && S.status.queue_depth) || 0,
+      delegatingTo: dg ? S.delegTo : "", delegation: dg ? S.delegText : "",
+      pending: q.length, needTitle: q.length ? (ML.card(q[0]) || {}).title : "",
+      lastReply: last ? ML.gist(aiText(last)) : "",
+    };
+  }
+  var capSig = "";
+  function paintCaption(snap) {
+    var c = ML.caption(snap || snapshot());
+    var cs = $("cc-cap-state");
+    cs.setAttribute("data-s", S.online ? c.state : "offline");
+    $("cc-cap-label").textContent = c.label;
+    var line = $("cc-cap"), sig = c.state + "|" + c.text + "|" + c.interim;
+    if (sig !== capSig) {
+      capSig = sig;
+      line.classList.toggle("interim", !!c.interim);
+      if (c.words && !reducedMotion()) {
+        // The sentence being spoken: each word fades in at speaking pace.
+        line.textContent = "";
+        c.text.split(" ").forEach(function (w, i) {
+          var sp = document.createElement("span");
+          sp.className = "w";
+          sp.textContent = w + " ";
+          sp.style.animationDelay = Math.round(i * 300) + "ms";
+          line.appendChild(sp);
+        });
+      } else line.textContent = c.text;
+    }
+    var last = lastReplyTurn();
+    var more = $("cc-cap-more");
+    more.hidden = !(c.state === "idle" && S.online && last);
+    if (last) $("cc-cap-at").textContent = hm(last.ended_at || last.started_at || last.created_at);
+    return c;
+  }
+  function reducedMotion() { return !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches); }
+  function paintState() {
+    if (!Voice.speaking) S.spoken = "";
+    var snap = snapshot();
+    var st = ML.coreState(snap);
+    Orb.setState(st);
+    paintCaption(snap);
+    renderNeed();
+    var pending = snap.pending;
     var chip = $("cc-sys"), cdot = $("cc-sys-dot");
     var lng = chip.querySelector(".long"), sht = chip.querySelector(".short");
     function lab(l, s) { lng.textContent = l; sht.textContent = s; }
@@ -363,8 +465,6 @@
     } else if (proc && proc.state !== "ready") {
       chip.classList.add(proc.state === "starting" || proc.state === "stopping" ? "warn" : "bad");
       cdot.className = "cc-dot warn"; lab("MINT AI " + proc.state, proc.state);
-    } else if (pending) {
-      chip.classList.add("warn"); cdot.className = "cc-dot warn"; lab("Awaiting approval", "Approval");
     } else if (failed) {
       chip.classList.add("warn"); cdot.className = "cc-dot warn"; lab(failed + " failed service" + (failed === 1 ? "" : "s"), failed + " issue" + (failed === 1 ? "" : "s"));
     } else if (S.status && S.status.busy) {
@@ -431,7 +531,7 @@
   }
 
   function setCore(key, val, cls, title) {
-    var cell = document.querySelector('[data-core="' + key + '"]');
+    var cell = document.querySelector('[data-cell="' + key + '"]');
     if (!cell) return;
     var b = cell.querySelector("[data-st]");
     b.textContent = val;
@@ -516,36 +616,49 @@
     var list = sortSessions(S.sessions);
     var sig = JSON.stringify(list.map(function (s) {
       return [s.pid, s.name, s.status, s.waiting_for, s.where, s.open_delegations, s.last_delegation && [s.last_delegation.id, s.last_delegation.status],
-        s.mission && [s.mission.ref, s.mission.step_n, s.mission.step_status], s.cost_today_usd_est,
+        s.mission && [s.mission.ref, s.mission.step_n, s.mission.step_status], s.cost_today_usd_est, s.cwd,
         (s.subagents || []).map(function (a) { return [a.id, a.status, a.description]; })];
-    })) + "|" + S.target + "|" + (S.status && S.status.busy);
+    })) + "|" + S.target + "|" + (S.status && S.status.busy) + "|" + (S.status && S.status.process && S.status.process.model);
     var live = liveSessions();
-    $("cc-sess-aside").textContent = live.length + " live" + (S.status && S.status.sessions_at ? " · polled " + ago(S.status.sessions_at) : "") + " · click one for the deep view";
+    $("cc-sess-aside").textContent = live.length + " live" + (S.status && S.status.sessions_at ? " · polled " + ago(S.status.sessions_at) : "");
     if (sig === sessSig && !force) return;
     sessSig = sig;
 
     Orb.setNodes(sortSessions(live).map(function (s) {
       return { id: sessKey(s), label: clip(s.name || "unnamed session", 26), st: sessState(s), subs: s.subagents || [], mission: !!s.mission };
     }));
+    Orb.mark(S.target !== "auto" ? (function () { var x = sessionNamed(S.target); return x ? sessKey(x) : null; })() : null);
 
     var el = $("cc-sessions");
     if (!list.length) {
-      el.innerHTML = '<div class="cc-sessions-empty">' + (S.online ? "No Claude Code sessions are registered on this machine right now." : "Sessions appear here when MINT AI's supervisor is reachable.") + "</div>";
+      el.innerHTML = '<div class="cc-empty-s">' + (S.online ? "No Claude Code sessions are registered on this machine right now." : "Sessions appear here when MINT AI's supervisor is reachable.") + "</div>";
       return;
     }
-    el.innerHTML = list.map(function (s) {
-      var st = s.self ? selfState() : sessState(s);
-      var key = sessKey(s);
-      var name = s.self ? "MINT AI" : s.name || "unnamed session";
-      var tags = s.self ? '<span class="cc-badge b-self">' + ic("core") + "CEO · you talk to it</span>" : "";
-      if (s.mission) tags += '<span class="cc-badge b-mis">' + ic("flag") + esc(s.mission.ref || "mission") + (s.mission.step_n ? " · step " + esc(s.mission.step_n) : "") + "</span>";
-      if (!s.self && !s.mission) tags += '<span class="cc-badge b-mute">' + esc(sessWhere(s)) + "</span>";
-      var dot = st === "working" ? "work" : st === "waiting" ? "wait" : "idle";
-      return '<button type="button" class="cc-sc ' + st + (s.self ? " self" : "") + (s.mission ? " mis" : "") + (!s.self && S.target === s.name ? " target" : "") +
-        '" data-sess="' + esc(key) + '" title="' + esc(name + " · " + (s.cwd || "") + " · pid " + (s.pid || "?") + " · open the deep view") + '">' +
-        '<span class="cc-sc-ic">' + ic(sessIcon(s)) + '</span><span class="cc-sc-name"><b>' + esc(name) + '</b><span class="cc-dot ' + dot + '" title="' + esc(st) + '"></span></span>' +
-        '<span class="cc-sc-tags">' + tags + '</span><span class="cc-sc-line">' + sessLine(s) + "</span></button>";
-    }).join("");
+    var p = (S.status && S.status.process) || {};
+    var self = list.filter(function (s) { return s.self; });
+    var others = list.filter(function (s) { return !s.self; });
+    var h = "";
+    self.forEach(function (s) {
+      h += '<div class="cc-sec-t">MINT AI<span class="sp"></span><span class="cc-tag ai">CEO · you talk to it</span></div>' +
+        '<div class="cc-card cc-sc self" data-sess="' + esc(sessKey(s)) + '"><div class="t"><b>MINT AI</b><span class="sp"></span><span class="cc-mono">' + esc(s.cost_today_usd_est != null ? money(s.cost_today_usd_est) : "") + "</span></div>" +
+        '<div class="m">' + esc([p.model ? modelLabel(p.model) + (p.effort ? " · " + p.effort : "") : "", s.cwd || "/root/moni-ai", selfState() === "working" ? "working on a turn" : "routes work to the sessions below"].filter(Boolean).join(" · ")) + "</div>" +
+        '<div class="acts"><button type="button" class="cc-btn sm" data-deep-open="' + esc(sessKey(s)) + '">' + ic("eye") + "Deep view</button></div></div>";
+    });
+    h += '<div class="cc-sec-t">Sessions and their sub-agents</div>';
+    if (!others.length) h += '<div class="cc-empty-s">No other sessions are live.</div>';
+    others.forEach(function (s) {
+      var st = sessState(s), key = sessKey(s), name = s.name || "unnamed session";
+      var tag = st === "working" ? '<span class="cc-tag ok">working</span>' : st === "waiting" ? '<span class="cc-tag warn">waiting' + (s.waiting_for ? " on " + esc(clip(s.waiting_for, 24)) : "") + "</span>" : '<span class="cc-tag mute">idle</span>';
+      if (s.mission) tag = '<span class="cc-tag ai">' + ic("flag") + esc(s.mission.ref || "mission") + (s.mission.step_n ? " · step " + esc(s.mission.step_n) : "") + "</span>" + tag;
+      var subs = s.subagents || [];
+      h += '<div class="cc-card cc-sc ' + st + (S.target === s.name ? " target" : "") + '" data-sess="' + esc(key) + '" title="' + esc(name + " · " + (s.cwd || "") + " · pid " + (s.pid || "?")) + '">' +
+        '<div class="t"><span class="cc-dot ' + (st === "working" ? "work" : st === "waiting" ? "wait" : "idle") + '"></span><b>' + esc(name) + '</b><span class="sp"></span>' + tag + "</div>" +
+        '<div class="m">' + sessLine(s) + " · " + esc(sessWhere(s)) + "</div>" +
+        (subs.length ? '<div class="cc-subagents">' + subs.map(function (a) { return "<div><i></i><b>" + esc(a.type || "agent") + "</b> " + esc(clip(a.description || "", 80)) + "</div>"; }).join("") + "</div>" : "") +
+        '<div class="acts"><button type="button" class="cc-btn sm" data-deep-open="' + esc(key) + '">' + ic("eye") + "Deep view</button>" +
+        (s.name ? '<button type="button" class="cc-btn sm" data-at="' + esc(s.name) + '">' + ic("message") + "Message via MINT AI</button>" : "") + "</div></div>";
+    });
+    el.innerHTML = h;
   }
   function findSess(key) {
     for (var i = 0; i < S.sessions.length; i++) if (sessKey(S.sessions[i]) === key) return S.sessions[i];
@@ -559,8 +672,10 @@
   }
 
   $("cc-sessions").addEventListener("click", function (e) {
-    var b = e.target.closest("[data-sess]");
-    if (b) P.openDeep(b.getAttribute("data-sess"));
+    var d = e.target.closest("[data-deep-open]");
+    if (d) { P.openDeep(d.getAttribute("data-deep-open")); return; }
+    var at = e.target.closest("[data-at]");
+    if (at) { setTarget(at.getAttribute("data-at")); closeSheet(); input.focus(); }
   });
 
   /** The Remote Control link, fetched when asked for and never kept on the page. */
@@ -599,8 +714,8 @@
     $("cc-target-label").textContent = set ? "→ " + clip(S.target, 26) : "Auto-route";
     $("cc-vb-target").textContent = set ? "→ " + clip(S.target, 22) : "Auto-route";
     $("cc-target").classList.toggle("set", set);
-    $("cc-target").title = set ? "Addressed to " + S.target + " (MINT AI delegates it there)" : "MINT AI picks the session";
-    input.placeholder = set ? "Tell " + clip(S.target, 30) + " what to do (through MINT AI)…" : "Tell MINT AI what to do…";
+    $("cc-target").title = set ? "Addressed to " + S.target + " (MINT AI delegates it there) — click to change" : "MINT AI picks the session — click to address one";
+    input.placeholder = set ? "Tell " + clip(S.target, 30) + " what to do (through MINT AI)…" : "Ask MINT AI…";
     renderSessions(true);
   }
 
@@ -650,9 +765,18 @@
   input.addEventListener("keydown", function (e) {
     if (e.key === "@" && !input.value) { e.preventDefault(); openMenu(); }
   });
+  // "@planning-engine do this": a session named at the start addresses the message to it.
+  input.addEventListener("input", function () {
+    $("cc-send").classList.toggle("ready", !!input.value.trim());
+    var m = /^@(\S+)\s/.exec(input.value);
+    if (!m) return;
+    var q = m[1].toLowerCase(), hit = null;
+    liveSessions().forEach(function (s) { if (!hit && s.name && s.name.toLowerCase().indexOf(q) === 0) hit = s; });
+    if (hit) { setTarget(hit.name); input.value = input.value.slice(m[0].length); }
+  });
 
   function hint(text, bad) {
-    var h = document.querySelector(".cc-hint");
+    var h = $("cc-hint");
     if (!h.getAttribute("data-default")) h.setAttribute("data-default", h.innerHTML);
     if (!text) { h.innerHTML = h.getAttribute("data-default"); h.classList.remove("err"); return; }
     h.textContent = text;
@@ -692,7 +816,8 @@
         if (opts.voice && r.queued_behind) Voice.say("Got it. I'll pick that up as soon as I'm free.");
         else if (opts.voice && !opts.acked) Voice.say("On it.");
       }
-      showPane("conv");
+      $("cc-send").classList.remove("ready");
+      paintState();
       return r;
     }).catch(function (e) {
       hint("Not sent: " + e.message, true);
@@ -710,24 +835,51 @@
   });
   $("cc-stop").addEventListener("click", function () { interrupt($("cc-stop")); });
 
-  /* ================================================================ drawer */
+  /* ================================================================ sheets
+     The dock's sheets slide in from the right (a bottom sheet on a phone).
+     Only one is open at a time; each keeps its own content live while closed,
+     so opening one is instant. S.pane names the open one. */
 
-  function showPane(id) {
+  var SHEET_KEYS = ML.sheetKeys().concat(["everything"]);
+  function openSheet(id, toggle) {
+    if (SHEET_KEYS.indexOf(id) < 0) return;
+    if (toggle && S.pane === id) return closeSheet();
+    closePop();
+    closeReply();
     S.pane = id;
-    var bs = document.querySelectorAll(".cc-dr-tabs button");
-    for (var i = 0; i < bs.length; i++) bs[i].setAttribute("aria-selected", bs[i].getAttribute("data-pane") === id ? "true" : "false");
-    ["conv", "dec", "tl", "rules"].forEach(function (p) { $("cc-pane-" + p).hidden = p !== id; });
-    if (root.classList.contains("drawer-closed")) { root.classList.remove("drawer-closed"); setTimeout(Orb.resize, 240); }
-    if (id === "conv") toBottom(true);
+    SHEET_KEYS.forEach(function (k) { var p = $("cc-pane-" + k); if (p) p.hidden = k !== id; });
+    $("cc-sheet").classList.add("open");
+    $("cc-scrim").hidden = false;
+    var bs = document.querySelectorAll("#cc-rail [data-sheet]");
+    for (var i = 0; i < bs.length; i++) bs[i].setAttribute("aria-expanded", String(bs[i].getAttribute("data-sheet") === id));
+    if (id === "conv") { renderSteps(); requestAnimationFrame(function () { toBottom(true); }); }
     if (id === "rules") P.renderRules();
     if (id === "dec") P.renderDecisions();
+    if (id === "missions") P.renderMissions();
+    if (id === "sessions") renderSessions(true);
+    var f = $("cc-pane-" + id).querySelector("[data-sheet-close]");
+    if (f && !$("cc-sheet").contains(document.activeElement)) f.focus({ preventScroll: true });
   }
-  document.querySelector(".cc-dr-tabs").addEventListener("click", function (e) {
-    var b = e.target.closest("button[data-pane]");
-    if (b) showPane(b.getAttribute("data-pane"));
+  function closeSheet() {
+    if (!S.pane) return;
+    S.pane = null;
+    $("cc-sheet").classList.remove("open", "wide");
+    $("cc-scrim").hidden = true;
+    var bs = document.querySelectorAll("#cc-rail [data-sheet]");
+    for (var i = 0; i < bs.length; i++) bs[i].setAttribute("aria-expanded", "false");
+  }
+  /** The v3 name for the drawer's tabs; everything that called it opens the sheet now. */
+  function showPane(id) { openSheet(id); }
+  document.addEventListener("click", function (e) {
+    var b = e.target.closest("[data-sheet]");
+    if (b) { openSheet(b.getAttribute("data-sheet"), !!b.closest("#cc-rail")); return; }
+    if (e.target.closest("[data-sheet-close]") || e.target.id === "cc-scrim") { closeSheet(); return; }
+    if (e.target.closest("[data-open-palette]")) { closeSheet(); P.openPalette(); return; }
+    var th = e.target.closest("[data-theme-to]");
+    if (th) { var tb = document.querySelector('.topbar [data-theme-opt="' + th.getAttribute("data-theme-to") + '"]'); if (tb) tb.click(); }
   });
-  $("cc-collapse").addEventListener("click", function () { root.classList.remove("drawer-wide"); root.classList.toggle("drawer-closed"); setTimeout(Orb.resize, 240); });
-  $("cc-expand").addEventListener("click", function () { root.classList.remove("drawer-closed"); root.classList.toggle("drawer-wide"); setTimeout(Orb.resize, 240); });
+  $("cc-more").addEventListener("click", function () { openSheet("everything", true); });
+  $("cc-expand").addEventListener("click", function () { $("cc-sheet").classList.toggle("wide"); });
 
   var scroller = $("cc-chat-scroll");
   function atBottom() { return scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 60; }
@@ -976,25 +1128,51 @@
   }
   function visibleTurn(row) { return row && row.source !== "system"; }
 
-  /** MINT AI's latest words, in the map's corner. */
-  var saySig = "";
+  /* ---------------------------------------------------------- the last reply
+     Under the caption, "Full reply" opens MINT AI's last answer in full, with
+     the way to the whole conversation and to hear it read aloud. */
+
+  var replySig = "";
   function renderSay() {
-    var box = $("cc-map-say");
-    var last = null;
-    for (var i = S.turnOrder.length - 1; i >= 0 && !last; i--) {
-      var x = S.turns.get(S.turnOrder[i]);
-      if (x && aiText(x)) last = x;
+    var last = lastReplyTurn();
+    if (!$("cc-reply").hidden && last) {
+      var sig = last.id + "|" + aiText(last).length;
+      if (sig !== replySig) { replySig = sig; paintReply(last); }
     }
-    if (!last) { box.hidden = true; return; }
-    var text = clip(String(aiText(last)).split(/\n+/).map(plain).filter(Boolean).join(" · "), 260);
-    var sig = last.id + "|" + text;
-    if (sig === saySig) return;
-    saySig = sig;
-    box.hidden = false;
-    box.innerHTML = '<div class="who"><span class="cc-av"></span>MINT AI<time>' + esc(hm(last.ended_at || last.started_at || last.created_at)) + "</time></div><p>" + esc(text) + "</p>";
-    box.title = "Open the conversation";
+    paintCaption();
   }
-  $("cc-map-say").addEventListener("click", function () { showPane("conv"); });
+  function paintReply(last) {
+    $("cc-reply-h").textContent = "MINT AI · " + hm(last.ended_at || last.started_at || last.created_at) + (last.duration_ms ? " · " + dur(last.duration_ms) : "");
+    $("cc-reply-body").innerHTML = md(aiText(last));
+    $("cc-reply").setAttribute("data-turn", String(last.id));
+  }
+  function openReply() {
+    var last = lastReplyTurn();
+    if (!last) return;
+    closePop();
+    replySig = last.id + "|" + aiText(last).length;
+    paintReply(last);
+    $("cc-reply").hidden = false;
+    $("cc-cap-more").setAttribute("aria-expanded", "true");
+    $("cc-cap-more-t").textContent = "Hide reply";
+    $("cc-cap-more").classList.add("open");
+  }
+  function closeReply() {
+    if ($("cc-reply").hidden) return;
+    $("cc-reply").hidden = true;
+    $("cc-cap-more").setAttribute("aria-expanded", "false");
+    $("cc-cap-more-t").textContent = "Full reply";
+    $("cc-cap-more").classList.remove("open");
+  }
+  $("cc-cap-more").addEventListener("click", function () { if ($("cc-reply").hidden) openReply(); else closeReply(); });
+  $("cc-reply-x").addEventListener("click", closeReply);
+  $("cc-reply").addEventListener("click", function (e) { if (e.target.closest("[data-sheet]")) closeReply(); });
+  $("cc-reply-read").addEventListener("click", function () {
+    var last = lastReplyTurn();
+    if (!last) return;
+    Voice.unlock();
+    Voice.flush("r" + last.id, aiText(last));
+  });
 
   /* ---------------------------------------------------------- approvals */
 
@@ -1023,7 +1201,7 @@
     P.renderDecisions();
     renderTimeline();
     if (!replay && a.status === "pending" && (!cur || cur.status !== "pending")) {
-      if (S.pane !== "conv" && S.pane !== "dec") showPane("dec");
+      openNeed("a" + a.id);
       feedPush({ key: "ap" + a.id + "p", ts: a.created_at, kind: "approval", html: "<b>Approval needed</b> · " + esc(clip(a.summary, 140)) });
       if (Voice.on) Voice.say("I need your approval before I go on.");
     }
@@ -1058,6 +1236,167 @@
     var o = e.target.closest("[data-order]");
     if (o) P.openOrder(o.getAttribute("data-order"));
   });
+
+  /* ---------------------------------------------------------- the decision card
+     One card, top right, for everything waiting for you: approvals first (they
+     expire), then watcher findings. It pages through them, and each button is
+     the same call the Decisions sheet makes (MintLogic.card names the route).
+     "Later" puts it away; the amber "N need you" pill brings it back. */
+
+  var Need = { open: false, idx: 0, sig: "", busy: false, seen: {} };
+  function needQueue() {
+    return ML.needQueue(pendingApprovals(), typeof P !== "undefined" && P ? P.decisionsList() : []);
+  }
+  function openNeed(key) {
+    var q = needQueue();
+    if (!q.length) return;
+    var i = key ? q.map(function (x) { return x.key; }).indexOf(key) : -1;
+    Need.idx = i >= 0 ? i : Math.min(Need.idx, q.length - 1);
+    Need.open = true;
+    Need.sig = "";
+    renderNeed();
+  }
+  function closeNeed() {
+    Need.open = false;
+    Need.sig = "";
+    renderNeed();
+  }
+  function renderNeed() {
+    var q = needQueue(), n = q.length;
+    $("cc-needn").textContent = n;
+    $("cc-needpill").hidden = !n || Need.open;
+    var mir = document.querySelectorAll("[data-dec-mirror]");
+    for (var m = 0; m < mir.length; m++) { mir[m].textContent = n; mir[m].hidden = !n; }
+    var box = $("cc-need");
+    if (Need.busy) return;
+    if (!n || !Need.open) {
+      if (!box.hidden) { box.hidden = true; box.innerHTML = ""; }
+      if (!n) Need.open = false;
+      return;
+    }
+    Need.idx = Math.max(0, Math.min(Need.idx, n - 1));
+    var it = q[Need.idx], c = ML.card(it);
+    var sig = it.key + "|" + n + "|" + Need.idx + "|" + c.title + "|" + c.why + "|" + c.actions.map(function (x) { return x.act; }).join(",");
+    box.hidden = false;
+    if (sig === Need.sig) return;
+    Need.sig = sig;
+    box.setAttribute("data-kind", c.kind.toLowerCase());
+    box.innerHTML = '<div class="k">' + ic(c.icon) + "<span>Needs you · " + esc(c.kind) + '</span><span class="sp"></span>' +
+      '<span class="pg">' + (n > 1 ? '<button type="button" data-need-pg="-1" aria-label="Previous">' + ic("chevl") + "</button>" : "") + (Need.idx + 1) + " of " + n +
+      (n > 1 ? '<button type="button" data-need-pg="1" aria-label="Next">' + ic("chevr") + "</button>" : "") + "</span></div>" +
+      "<h3>" + esc(c.title) + "</h3>" + (c.meta ? '<div class="meta">' + esc(c.meta) + "</div>" : "") +
+      (c.why ? '<p class="why">' + esc(c.why) + "</p>" : "") +
+      (it.type === "approval" ? '<div class="timer"><span data-need-timer>—</span><span class="bar"><i data-need-bar></i></span></div>' : "") +
+      '<div class="acts">' + c.actions.map(function (x, i) {
+        if (x.link) return "";
+        return (x.act === "later" ? '<span class="sp"></span>' : "") +
+          '<button type="button" class="cc-btn ' + (x.primary ? "pri" : x.act === "later" ? "link" : "") + '" data-need-act="' + i + '">' + (x.primary ? ic("check") : "") + esc(x.label) + "</button>";
+      }).join("") + "</div>" +
+      c.actions.map(function (x, i) { return x.link ? '<button type="button" class="more" data-need-act="' + i + '">' + ic("scale") + esc(x.label) + "</button>" : ""; }).join("") +
+      '<div class="err" data-need-err hidden></div>';
+    tickNeed();
+  }
+  function tickNeed() {
+    var el = document.querySelector("[data-need-timer]");
+    if (!el) return;
+    var q = needQueue(), it = q[Need.idx];
+    if (!it || it.type !== "approval") return;
+    var a = it.item;
+    var left = Math.max(0, Math.round((Date.parse(a.expires_at) - nowServer()) / 1000));
+    var total = Math.max(1, Math.round((Date.parse(a.expires_at) - Date.parse(a.created_at)) / 1000));
+    if (!isFinite(left)) return;
+    el.textContent = Math.floor(left / 60) + ":" + String(left % 60).padStart(2, "0") + " left · then denied";
+    el.classList.toggle("low", left < 60);
+    var bar = document.querySelector("[data-need-bar]");
+    if (bar) bar.style.transform = "scaleX(" + (left / total).toFixed(3) + ")";
+  }
+  $("cc-need").addEventListener("click", function (e) {
+    var pg = e.target.closest("[data-need-pg]");
+    var q = needQueue();
+    if (pg) { Need.idx = (Need.idx + Number(pg.getAttribute("data-need-pg")) + q.length) % q.length; Need.sig = ""; renderNeed(); return; }
+    var b = e.target.closest("[data-need-act]");
+    if (!b || b.disabled || Need.busy) return;
+    var it = q[Need.idx], c = ML.card(it);
+    var act = c && c.actions[Number(b.getAttribute("data-need-act"))];
+    if (!act) return;
+    if (act.act === "later") { closeNeed(); return; }
+    if (act.act === "always") { P.openAlways(it.id); return; }
+    var bs = $("cc-need").querySelectorAll("[data-need-act]");
+    for (var i = 0; i < bs.length; i++) bs[i].disabled = true;
+    b.classList.add("pressed");
+    Need.busy = true;
+    api(act.path, { body: act.body }).then(function (r) {
+      $("cc-need").classList.add("done");
+      $("cc-need").querySelector(".k span").textContent = ML.doneText(act.act);
+      setTimeout(function () {
+        Need.busy = false;
+        $("cc-need").classList.remove("done");
+        Need.sig = "";
+        if (r && r.approval) upsertApproval(r.approval, false);
+        if (r && r.decision) P.upsertDecision(r.decision, true);
+        if (r && r.turn) upsertTurn(r.turn);
+        renderNeed();
+        paintState();
+      }, 700);
+    }).catch(function (ex) {
+      Need.busy = false;
+      for (var j = 0; j < bs.length; j++) bs[j].disabled = false;
+      b.classList.remove("pressed");
+      var err = $("cc-need").querySelector("[data-need-err]");
+      if (err) { err.hidden = false; err.textContent = "Not recorded: " + ex.message; }
+    });
+  });
+  $("cc-needpill").addEventListener("click", function () { Need.idx = 0; openNeed(); });
+
+  /* ---------------------------------------------------------- the voice menu
+     Under the composer, "Push to talk ▾": the mic's mode, replies read aloud,
+     which voice path is on (the front desk is switched in Settings), the MINT
+     AI core (a quick switch, saved for you), and the voice's spend. */
+
+  function closePop() {
+    var p = $("cc-pop");
+    if (p.hidden) return;
+    p.hidden = true;
+    p.innerHTML = "";
+    $("cc-vm").setAttribute("aria-expanded", "false");
+  }
+  function openVoiceMenu() {
+    var p = $("cc-pop"), mode = Voice.mode(), ready = READY;
+    var h = '<div class="grp">Voice</div>' +
+      '<button type="button" role="menuitemradio" data-vmode="ptt" aria-checked="' + (mode === "ptt") + '"' + (ready ? "" : " disabled") + '><span class="chk"></span>Push to talk<small>hold the mic or Space</small></button>' +
+      '<button type="button" role="menuitemradio" data-vmode="handsfree" aria-checked="' + (mode === "handsfree") + '"' + (ready ? "" : " disabled") + '><span class="chk"></span>Hands-free<small>a pause sends</small></button>' +
+      '<button type="button" role="menuitemcheckbox" data-vread aria-checked="' + Voice.speakAll + '"' + (ready ? "" : " disabled") + '><span class="chk"></span>Read replies aloud<small>streamed</small></button>' +
+      '<div class="line">' + ic("route") + "<span>" + (DESK ? "Front desk · GPT (trial)" : "Direct to MINT AI") + "</span>" +
+      (root.getAttribute("data-voice-manage") === "1" ? '<a href="/credentials/openai-voice#v-desk">Settings</a>' : "<small>set in Settings</small>") + "</div>" +
+      (ready ? "" : '<div class="line">' + ic("info") + "<span>Voice is off until an OpenAI key is added.</span></div>") +
+      "<hr>" + '<div class="grp">MINT AI core</div>' +
+      '<div class="cc-core-seg" role="radiogroup" aria-label="MINT AI core">' + Object.keys(ML.CORES).map(function (k) {
+        return '<button type="button" role="radio" data-core-set="' + k + '" aria-checked="' + (k === coreNow()) + '"><b>' + k + "</b><span>" + esc(ML.CORES[k]) + "</span></button>";
+      }).join("") + "</div><hr>" +
+      '<button type="button" data-sheet="cost">' + ic("coin") + "Voice usage<small id=\"cc-pop-vu\">" + esc(P.voiceToday ? P.voiceToday() : "") + "</small></button>";
+    p.innerHTML = h;
+    p.hidden = false;
+    $("cc-vm").setAttribute("aria-expanded", "true");
+    var r = $("cc-vm").getBoundingClientRect(), pr = p.getBoundingClientRect();
+    var x = Math.min(window.innerWidth - pr.width - 12, Math.max(12, r.left + r.width / 2 - pr.width / 2));
+    p.style.left = x + "px";
+    p.style.top = Math.max(12, r.top - pr.height - 8) + "px";
+  }
+  $("cc-vm").addEventListener("click", function (e) {
+    e.stopPropagation();
+    if ($("cc-pop").hidden) openVoiceMenu(); else closePop();
+  });
+  $("cc-pop").addEventListener("click", function (e) {
+    e.stopPropagation();
+    var m = e.target.closest("[data-vmode]");
+    if (m && !m.disabled) { Voice.setMode(m.getAttribute("data-vmode")); openVoiceMenu(); return; }
+    var rd = e.target.closest("[data-vread]");
+    if (rd && !rd.disabled) { $("cc-speak-toggle").click(); openVoiceMenu(); return; }
+    var cs = e.target.closest("[data-core-set]");
+    if (cs) { setCoreChoice(cs.getAttribute("data-core-set")); openVoiceMenu(); return; }
+    if (e.target.closest("[data-sheet]")) { var k = e.target.closest("[data-sheet]").getAttribute("data-sheet"); closePop(); openSheet(k); }
+  });
+  document.addEventListener("click", function (e) { if (!$("cc-pop").hidden && !e.target.closest("#cc-pop") && !e.target.closest("#cc-vm")) closePop(); });
 
   /* ---------------------------------------------------------- activity */
 
@@ -1137,7 +1476,9 @@
     var s = sessionFor(d);
     if (!replay && !cur && d.status === "sent") {
       S.delegatingUntil = Date.now() + 2600;
-      if (s && Orb.send(sessKey(s))) highlightSess(sessKey(s));
+      S.delegTo = d.target_name || d.target || "a session";
+      S.delegText = d.summary || firstLine(d.text) || "";
+      if (s && Orb.send(sessKey(s), 2600)) highlightSess(sessKey(s));
       paintState();
       feedPush({ key: "d" + d.id + "sent", ts: d.created_at, kind: "live", label: "sent", html: "Delegated to <b>" + esc(d.target_name) + "</b> · " + esc(clip(d.summary || firstLine(d.text), 120)) });
     }
@@ -1277,6 +1618,8 @@
       renderAll();
       renderTurn({ id: -1 });
       requestAnimationFrame(function () { toBottom(true); });
+      // Approvals expire: any already waiting get the card at once.
+      if (pendingApprovals().length) openNeed();
       connect(0);
     }).catch(function (e) {
       S.online = false;
@@ -1864,6 +2207,8 @@
               clipAt = st.t.play;
               rec = { text: st.text.slice(0, 80), engine: st.engine, asked: st.t.asked, first: st.t.first, sched: Date.now(), play: st.t.play, end: st.t.end || 0, cuts: 0 };
               diag.items.push(rec);
+              // The caption shows this sentence as it is heard, word by word.
+              if (api_.onSpeak) { var said = st.text; setTimeout(function () { if (my === gen) api_.onSpeak(said); }, Math.max(0, st.t.play - Date.now())); }
             }
             at += buf.duration;
             diag.playedSeconds += buf.duration;
@@ -2068,7 +2413,7 @@
           tags.set(t.id, { vt: vt, cat: "handoff" });
           if (tr && tr.ended_at && aiText(tr)) deskSummary(tr.id, aiText(tr));
           else deskTurns.add(t.id);
-          showPane("conv");
+          paintState();
         } else dl.take(ev);
       }).then(function (d) {
         if (d.guard) console.info("[voice] the front desk's guard replaced a reply (" + d.guard.rule + ")");
@@ -2220,8 +2565,8 @@
       if (modeBtn) {
         modeBtn.textContent = ptt_ ? "Push to talk" : "Hands-free";
         modeBtn.setAttribute("data-mode", mode);
-        modeBtn.setAttribute("aria-label", "Voice mode: " + (ptt_ ? "push to talk" : "hands-free") + ". Click to switch to " + (ptt_ ? "hands-free" : "push to talk") + ".");
-        modeBtn.title = ptt_ ? "Voice mode: push to talk — hold the mic or Space to talk. Click to switch to hands-free." : "Voice mode: hands-free — the mic listens and a pause sends. Click to switch to push to talk.";
+        var vmBtn = $("cc-vm");
+        if (vmBtn) vmBtn.title = ptt_ ? "Voice mode: push to talk — hold the mic or Space to talk. Open for hands-free, read-aloud and the core." : "Voice mode: hands-free — the mic listens and a pause sends. Open for push to talk, read-aloud and the core.";
       }
       if (vbMode) vbMode.textContent = ptt_ ? "Push to talk" : "Hands-free";
     }
@@ -2231,7 +2576,9 @@
       if (mode === "ptt" && api_.on) stop();
       paintVoiceMode();
     }
-    if (modeBtn) modeBtn.addEventListener("click", function () { setVoiceMode(mode === "ptt" ? "handsfree" : "ptt"); });
+    // The switch itself is the voice menu under the composer (openVoiceMenu).
+    api_.setMode = setVoiceMode;
+    api_.mode = function () { return mode; };
     paintVoiceMode();
 
     /** Start a push-to-talk recording (Space or the mic held). */
@@ -2362,7 +2709,8 @@
     AI_NAME: AI_NAME, isAiName: isAiName, aiLabel: aiLabel,
     liveSessions: liveSessions, selfSession: selfSession, sessKey: sessKey, sessState: sessState, sessIcon: sessIcon, sessWhere: sessWhere,
     selfState: selfState, findSess: findSess, sessionNamed: sessionNamed, sortSessions: sortSessions, subagentLabel: subagentLabel,
-    setTarget: setTarget, showPane: showPane, send: send, focusInput: function () { input.focus(); },
+    setTarget: setTarget, showPane: showPane, openSheet: openSheet, closeSheet: closeSheet, send: send, focusInput: function () { input.focus(); },
+    setCore: setCoreChoice, coreNow: coreNow, renderNeed: renderNeed, openNeed: openNeed, voice: function () { return Voice; },
     pendingApprovals: pendingApprovals, approvalHTML: approvalHTML, approvalCmd: approvalCmd, upsertApproval: upsertApproval,
     upsertTurn: upsertTurn, feedPush: feedPush, renderRail: renderRail, renderSessions: renderSessions, renderTurn: renderTurn, paintState: paintState,
     openRemoteControl: openRemoteControl, interrupt: interrupt, map: Orb, TL_LAB: TL_LAB,
@@ -2373,16 +2721,29 @@
   /* ================================================================ keys */
 
   document.addEventListener("keydown", function (e) {
-    if (e.key === "Escape") closeMenu();
+    if (e.key !== "Escape") return;
+    if (menu) { closeMenu(); return; }
+    if (e.defaultPrevented) return;   // the palette or a dialog took it
+    if (!$("cc-pop").hidden) { closePop(); return; }
+    if (!$("cc-reply").hidden) { closeReply(); return; }
+    if (S.pane) { closeSheet(); return; }
+    if (Need.open) closeNeed();
   });
+
+  /* The caption follows the voice bar's line (Listening…, what was heard,
+     Transcribing…) and the sentence being spoken. */
+  Voice.onSpeak = function (text) { S.spoken = text; paintState(); };
+  if (window.MutationObserver) new MutationObserver(function () { paintCaption(); }).observe($("cc-vb-text"), { childList: true, characterData: true, subtree: true });
 
   /* ================================================================ start */
 
-  Orb.palette();
   tick();
   setInterval(tick, 1000);
-  Orb.resize();
   Orb.start();
+  paintCoreSwitches();
   renderAll();
   load();
+  // Web fonts change the caption's height, and with it where the core sits.
+  if (document.fonts && document.fonts.ready) document.fonts.ready.then(function () { Orb.resize(); });
+  window.addEventListener("load", function () { Orb.resize(); });
 })();
