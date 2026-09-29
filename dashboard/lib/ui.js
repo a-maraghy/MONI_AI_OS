@@ -530,6 +530,7 @@ ${theme}<link rel="stylesheet" href="${asset("style.css")}">
 <link rel="stylesheet" href="${asset("os.css")}">
 ${css}
 <script src="${asset("app.js")}" defer></script>
+<script src="${asset("voice-stop.js")}" defer></script>
 <script src="${asset("console.js")}" defer></script>
 <script src="${asset("os.js")}" defer></script>
 ${js}

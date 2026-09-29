@@ -57,14 +57,16 @@ if (start < 0 || end < 0) {
   console.log("  FAIL could not find the Voice module in moni-ai.js");
   process.exit(1);
 }
-// The mic-mode helper lives with the page's other helpers, outside the Voice
-// module, so it is carried into the sandbox alongside it.
+// The mic-mode and stop-command helpers live with the page's other helpers,
+// outside the Voice module, so they are carried into the sandbox alongside it.
 const helperStart = SRC.indexOf("  function voiceModeFrom(");
-const helperEnd = SRC.indexOf("\n  }\n", helperStart);
-if (helperStart < 0 || helperEnd < 0) {
-  console.log("  FAIL could not find voiceModeFrom in moni-ai.js");
+const helperEnd = SRC.indexOf("\n  }\n", SRC.indexOf("  function isStopCommand(", helperStart));
+if (helperStart < 0 || helperEnd < 0 || SRC.indexOf("  function isStopCommand(", helperStart) < 0) {
+  console.log("  FAIL could not find voiceModeFrom and isStopCommand in moni-ai.js");
   process.exit(1);
 }
+// What the browser loads before moni-ai.js: window.VoiceStop.
+const VoiceStop = require(path.join(ROOT, "public", "voice-stop.js"));
 const VOICE_SRC = SRC.slice(helperStart, helperEnd + 4) + "\n" + SRC.slice(start, end + endMark.length);
 
 /* ---------------------------------------------------------------- fakes --- */
@@ -116,7 +118,8 @@ class FakeAC {
       fftSize: 512,
       connect() {},
       getByteTimeDomainData(buf) {
-        for (let i = 0; i < buf.length; i++) buf[i] = ctx.loud && ctx.sources.some((s) => s.playing()) ? (i % 2 ? 200 : 56) : 128;
+        // micLoud: somebody talking into the microphone this context listens to.
+        for (let i = 0; i < buf.length; i++) buf[i] = ctx.micLoud || (ctx.loud && ctx.sources.some((s) => s.playing())) ? (i % 2 ? 200 : 56) : 128;
       },
     };
   }
@@ -311,7 +314,62 @@ function boot(opts) {
     sandbox,
     outLevel: () => outLevelFn(),
     keydown: (code) => (docListeners.keydown || []).forEach((fn) => fn({ code, repeat: false, preventDefault() {} })),
+    keyup: (code) => (docListeners.keyup || []).forEach((fn) => fn({ code, repeat: false, preventDefault() {} })),
   };
+}
+
+/**
+ * The microphone end of the page, for the spoken stop command: the level
+ * meter's tick driven by hand, recorders counted, the upload and the
+ * transcription faked, and whatever would be sent to MINT AI recorded.
+ */
+function micRig(t, transcript) {
+  const sb = t.sandbox;
+  const rig = { sent: [], asked: [], recs: [], tracks: [{ stopped: false, stop() { this.stopped = true; } }], tick: null };
+  sb.window.VoiceStop = VoiceStop;
+  sb.setInterval = (fn) => ((rig.tick = fn), 1);
+  const Base = sb.window.MediaRecorder;
+  sb.MediaRecorder = sb.window.MediaRecorder = class extends Base {
+    constructor(st, o) {
+      super(st, o);
+      rig.recs.push(this);
+    }
+  };
+  sb.navigator.mediaDevices.getUserMedia = () => Promise.resolve({ getTracks: () => rig.tracks });
+  sb.FileReader = class {
+    readAsDataURL() {
+      this.result = "data:audio/webm;base64,AAAA";
+      this.onload();
+    }
+  };
+  sb.Blob = class {
+    constructor(parts, o) {
+      this.type = (o && o.type) || "";
+    }
+  };
+  sb.send = (text) => (rig.sent.push(text), Promise.resolve(null));
+  sb.api = (p) => (rig.asked.push(p), Promise.resolve(p === "transcribe" ? { text: transcript } : {}));
+  /** Say something: loud for a while, with audio recorded, long enough to count. */
+  rig.speak = async () => {
+    const mic = t.ctx();
+    for (let i = 0; i < 8; i++) rig.tick(); // hands-free calibrates first; push to talk does not
+    mic.micLoud = true;
+    for (let i = 0; i < 6; i++) rig.tick();
+    rig.recs[rig.recs.length - 1].ondataavailable({ data: { size: 100 } });
+    await new Promise((r) => setTimeout(r, 330)); // longer than MIN_MS
+    mic.micLoud = false;
+  };
+  /** Then a pause, which sends it in hands-free (END_MS of quiet). */
+  rig.pause = async () => {
+    for (let i = 0; i < 30; i++) rig.tick();
+    await settle(10);
+  };
+  rig.handsFree = async () => {
+    sb.$("cc-mic-mode").listeners.click[0](); // the switch: push to talk -> hands-free
+    sb.$("cc-c-mic").listeners.click[0](); // the mic button: start listening
+    await settle();
+  };
+  return rig;
 }
 
 /* ----------------------------------------------------------------- tests --- */
@@ -524,6 +582,80 @@ function boot(opts) {
     ctx.advance(1);
     await settle();
     check("barge-in during the desk's stream: what plays stops, and its later lines are not read", ctx.sources[n - 1].stoppedAt != null && ctx.sources.length === n, `${n} ${ctx.sources.length}`);
+  }
+
+  section("the stop command said aloud, hands-free: listening stops, nothing is sent");
+  {
+    const t = boot();
+    const rig = micRig(t, "Stop listening.");
+    await rig.handsFree();
+    check("hands-free is on and listening", t.Voice.on === true && t.Voice.listening === true && rig.recs.length === 1);
+    await rig.speak();
+    await rig.pause();
+    check("the pause sent the recording to be transcribed", rig.asked.indexOf("transcribe") >= 0 && t.diag().uploads === 1, rig.asked.join());
+    check("  the words were not sent to MINT AI", rig.sent.length === 0, rig.sent.join(" | "));
+    check("  listening is off, as if the mic button were clicked", t.Voice.on === false && t.Voice.listening === false && t.sandbox.$("cc-c-mic").attrs["aria-pressed"] === "false");
+    check("  and the microphone is released", rig.tracks[0].stopped === true);
+    check("  a note says so", t.toasts.indexOf("Stopped listening.") >= 0 && t.sandbox.$("cc-vb-text").textContent === "Stopped listening.", t.toasts.join(" | "));
+    check("  nothing is said about it (no \"didn't catch that\")", !t.diag().said.some((x) => /catch that/.test(x)) && t.diag().voiceStops === 1, t.diag().said.join(" | "));
+    check("  no new recorder was opened after it", rig.recs.length === 1 && rig.recs[0].state === "inactive");
+  }
+
+  section("a sentence that merely contains the words is sent as usual");
+  {
+    const t = boot();
+    const rig = micRig(t, "Why did the service stop listening on port 80?");
+    await rig.handsFree();
+    await rig.speak();
+    await rig.pause();
+    check("it is sent to MINT AI, word for word", rig.sent.length === 1 && rig.sent[0] === "Why did the service stop listening on port 80?", rig.sent.join(" | "));
+    check("  and hands-free stays on", t.Voice.on === true && rig.tracks[0].stopped === false && t.toasts.indexOf("Stopped listening.") < 0);
+  }
+
+  section("the stop command in Arabic, through the front desk");
+  {
+    const t = boot({ desk: true });
+    const rig = micRig(t, "");
+    await rig.handsFree();
+    await rig.speak();
+    await rig.pause();
+    check("the recording went to the desk", deskCalls.length === 1 && deskCalls[0].path === "desk/turn" && rig.asked.indexOf("transcribe") < 0);
+    deskCalls[0].onEvent({ type: "heard", text: "وقف الاستماع", stop: true });
+    deskCalls[0].resolve({ type: "done", asked: [], lines: 0, stop: true });
+    await settle();
+    check("the desk's stop flag closes the mic, and nothing is sent", t.Voice.on === false && rig.tracks[0].stopped === true && rig.sent.length === 0 && t.toasts.indexOf("Stopped listening.") >= 0);
+    check("  and hands-free does not start listening again when the desk is done", t.Voice.listening === false && rig.recs.length === 1);
+
+    // A desk that predates the flag: the page reads the words itself.
+    const t2 = boot({ desk: true });
+    const rig2 = micRig(t2, "");
+    await rig2.handsFree();
+    await rig2.speak();
+    await rig2.pause();
+    deskCalls[0].onEvent({ type: "heard", text: "اقفل ال live session" });
+    deskCalls[0].resolve({ type: "done", asked: [], lines: 0 });
+    await settle();
+    check("  without the flag, the words alone stop it too", t2.Voice.on === false && rig2.tracks[0].stopped === true && t2.toasts.indexOf("Stopped listening.") >= 0);
+  }
+
+  section("the stop command in push to talk: not sent, and the mic kept open for the next press is released");
+  {
+    const t = boot();
+    const rig = micRig(t, "Okay, stop listening, please.");
+    t.keydown("Space");
+    await settle();
+    check("holding Space records", rig.recs.length === 1 && rig.recs[0].state === "recording");
+    const mic = t.ctx();
+    mic.micLoud = true;
+    for (let i = 0; i < 6; i++) rig.tick();
+    rig.recs[0].ondataavailable({ data: { size: 100 } });
+    await new Promise((r) => setTimeout(r, 330));
+    mic.micLoud = false;
+    t.keyup("Space");
+    await new Promise((r) => setTimeout(r, 300)); // the release's short tail
+    await settle(10);
+    check("it was transcribed and not sent", rig.asked.indexOf("transcribe") >= 0 && rig.sent.length === 0, rig.asked.join() + " / " + rig.sent.join());
+    check("  the microphone is released at once, not kept for a minute", rig.tracks[0].stopped === true && t.Voice.on === false && t.toasts.indexOf("Stopped listening.") >= 0);
   }
 
   console.log(`\n${passed} passed, ${failed} failed`);
