@@ -44,6 +44,8 @@ const voiceDesk = require("./lib/voice-desk");
 const voiceUsage = require("./lib/voice-usage");
 const voiceGuard = require("./lib/voice-guard");
 const voiceIntake = require("./lib/voice-intake");
+// The spoken "stop listening" command; the same file runs in the browser.
+const voiceStop = require("./public/voice-stop.js");
 const chrome = require("./lib/chrome");
 const memgraph = require("./lib/memgraph");
 const pulse = require("./lib/pulse");
@@ -3487,9 +3489,17 @@ app.post("/mint-ai/api/desk/turn", requireApiPerm("moniai.use"), moniAiAudioBody
     if (dropped) voiceLog("desk", 200, { ms: Date.now() - t0, transcribe_ms: tTranscribe, dropped, lines: 0 });
     out.start();
     started = true;
-    out.write({ type: "heard", text: heard && !/^[\[(]/.test(heard) ? heard : "" });
+    // "Stop listening" said aloud: the page closes the mic, and the desk
+    // neither answers it nor passes it to MINT AI.
+    const stop = !!heard && voiceStop.heard(heard);
+    out.write({ type: "heard", text: heard && !/^[\[(]/.test(heard) ? heard : "", stop: stop || undefined });
     if (!heard || /^[\[(]/.test(heard)) {
       out.write({ type: "done", asked: [], lines: 0, cost_usd: transcribeUsd, usage: voiceUsageSummary() });
+      return out.end();
+    }
+    if (stop) {
+      voiceLog("desk", 200, { ms: Date.now() - t0, transcribe_ms: tTranscribe, stop: "voice-command", lines: 0 });
+      out.write({ type: "done", asked: [], lines: 0, stop: true, cost_usd: transcribeUsd, usage: voiceUsageSummary() });
       return out.end();
     }
     const speaker = voiceDesk.createSpeaker({ speak: voice.speakStream, cfg, write: out.write, t0 });
