@@ -12,7 +12,9 @@
  * one upstream realtime session with a fixed configuration:
  *
  *   - model gpt-realtime-2.1-mini, server VAD with 700 ms of silence (500 ms
- *     split an Egyptian greeting's pause into a false turn), interrupt_response;
+ *     split an Egyptian greeting's pause into a false turn) at threshold 0.7,
+ *     far-field noise reduction (configurable), and NEITHER create_response
+ *     NOR interrupt_response: this server decides both (see "Self-hearing");
  *   - exactly two tools, read_status and ask_mint_ai; any other name is refused
  *     here and never runs, and both go through deskOps() (lib/voice-desk.js):
  *     `snapshot` and `send` only;
@@ -41,10 +43,28 @@
  * the session's own input transcription) that passed the transcript guard --
  * never the model's `text`. At most one per utterance.
  *
- * Barge-in: when the upstream VAD hears the administrator start speaking, the
- * page is told to flush what it has buffered (it answers with the millisecond
- * it had played), the response is cancelled, and the item truncated there.
- * MINT AI summaries being read stop too.
+ * Barge-in: when the administrator really talks over the voice, the page is
+ * told to flush what it has buffered (it answers with the millisecond it had
+ * played), the response is cancelled, and the item truncated there. MINT AI
+ * summaries being read stop too.
+ *
+ * Self-hearing (2026-09-29: laptop speakers leaked into the microphone and the
+ * voice kept interrupting itself). Three layers:
+ *   - "speakers" mode (half-duplex, the default until the page's echo-cancelled
+ *     playback is proven): while anything is audible, and for TAIL_MS after,
+ *     the microphone's audio is not relayed at all. The administrator
+ *     interrupts with a tap, Space or Esc (the page sends "interrupt").
+ *   - "full" mode (headphones): the upstream VAD's speech_started while the
+ *     voice is audible is only a CANDIDATE; the barge-in happens when the page
+ *     also reports sustained voice above the speaker's leak
+ *     (public/voice-live-detect.js). Speech that stops first is not one.
+ *   - Before any answer: a turn heard during (or just after) playback that
+ *     was not a confirmed barge-in, and whose transcript is empty or one or
+ *     two words, is the speaker's leak ("echo-leak"): no response is created,
+ *     nothing is paid for it, and its item is deleted while it is still the
+ *     last one. Responses are created here (create_response off) only for
+ *     turns that passed. Two such leaks within 10 s in full mode make the page
+ *     suggest speakers mode.
  *
  * Also here: the echo guard (a transcript that matches what the voice just
  * said is dropped: the speaker leaking into the mic), the spoken stop command
@@ -72,6 +92,15 @@ const REPLY_POLL_MS = 2000;
 const REPLY_WATCH_MS = 30 * 60 * 1000;
 const TRUNCATE_WAIT_MS = 400;
 const ECHO_WINDOW_MS = 30 * 1000;
+const VAD_THRESHOLD = 0.7; // 0.5 (the default) fired on the speaker's leak
+const NOISE_REDUCTION = ["far_field", "near_field", "off"];
+const DUPLEX = ["speakers", "full"];
+const TAIL_MS = 300; // speakers mode: the room's tail after the voice stops
+const LEAK_AFTER_MS = 1500; // a turn starting this soon after playback is still suspect
+const TRANSCRIPT_WAIT_MS = 3000; // a turn with no transcript by then: answered (or dropped if suspect)
+const SUGGEST_WINDOW_MS = 10 * 1000;
+const ECHO_LEAK_WORDS = 2;
+const FAST_MIN_MS = 450; // a turn this long, nowhere near the voice, is answered at once (no wait for its transcript)
 const MAX_ROUNDS = 4;
 const MAX_ASK_CHARS = 2000;
 const VERBATIM_MAX_SENTENCES = 8;
@@ -237,7 +266,18 @@ class LiveCall {
     this.spoken = []; // [{text, at}] what the voice said, for the echo guard
     this.timers = new Set();
     this.usd = 0;
-    this.diag = { responses: 0, trips: [], bargeIns: [], held: [], firstAudio: [], echoes: 0, stops: 0, refused: [], handoffs: [], transcripts: [] };
+    this.duplex = DUPLEX.includes(this.opts.duplex) ? this.opts.duplex : "speakers";
+    this.noise = NOISE_REDUCTION.includes(this.cfg.noise_reduction) ? this.cfg.noise_reduction : "far_field";
+    this.playStartAt = null; // when the current stretch of audible voice began
+    this.lastAudibleAt = 0;
+    this.pendingBarge = null; // { turn, at, sincePlay }: VAD heard speech over the voice, not yet confirmed
+    this.voiceOn = false; // the page's detector: sustained voice above the speaker's leak
+    this.voiceOnAt = 0;
+    this.queued = null; // a turn to answer once the cancelled response has finished
+    this.billed = new Set(); // response ids already recorded (response.done can arrive twice)
+    this.leaks = []; // times of echo-leak turns, for the speakers-mode suggestion
+    this.suggested = false;
+    this.diag = { responses: 0, trips: [], bargeIns: [], candidates: [], held: [], firstAudio: [], echoes: 0, leaks: 0, stops: 0, refused: [], handoffs: [], transcripts: [], gatedMs: 0, dupUsage: 0, created: 0 };
     this.state = "connecting";
   }
 
@@ -333,7 +373,8 @@ class LiveCall {
       audio: {
         input: {
           format: { type: "audio/pcm", rate: RATE },
-          turn_detection: { type: "server_vad", silence_duration_ms: this.opts.silenceMs, prefix_padding_ms: 300, create_response: true, interrupt_response: true },
+          noise_reduction: this.noise === "off" ? null : { type: this.noise },
+          turn_detection: { type: "server_vad", threshold: this.opts.vadThreshold || VAD_THRESHOLD, silence_duration_ms: this.opts.silenceMs, prefix_padding_ms: 300, create_response: false, interrupt_response: false },
           transcription: { model: this.cfg.transcribe_model || "gpt-4o-mini-transcribe" },
         },
         output: { format: { type: "audio/pcm", rate: RATE }, voice: this.cfg.voice || "marin" },
@@ -366,6 +407,12 @@ class LiveCall {
   /** PCM16 mono 24 kHz from the page's microphone. */
   audioIn(buf) {
     if (this.closed || this.muted || !buf || !buf.length || buf.length % 2) return;
+    const audible = this.audibleNow();
+    if (this.duplex === "speakers" && (audible || this.now() - this.lastAudibleAt < TAIL_MS)) {
+      // Half-duplex: the microphone is not heard while the voice speaks.
+      this.diag.gatedMs += buf.length / BYTES_PER_MS;
+      return;
+    }
     this.input.push({ at: this.inputMs, buf });
     this.inputMs += buf.length / BYTES_PER_MS;
     while (this.input.length && this.input[0].at < this.inputMs - KEEP_INPUT_MS) this.input.shift();
@@ -393,12 +440,40 @@ class LiveCall {
       case "mute":
         this.mute(!!m.on);
         break;
+      case "voice":
+        // The page's detector (public/voice-live-detect.js).
+        this.voiceOn = !!m.on;
+        if (this.voiceOn) {
+          this.voiceOnAt = this.now();
+          if (this.pendingBarge) this.confirmBarge("voice");
+        }
+        break;
+      case "interrupt":
+        // A tap, Space or Esc while the voice speaks.
+        if (this.audibleNow() || this.resp_active()) {
+          this.log(`live: interrupted by the administrator (${this.duplex} mode, +${this.sincePlay()} ms into playback)`);
+          this.pendingBarge = null;
+          this.bargeIn("tap");
+          this.setState("listening");
+        }
+        break;
+      case "duplex":
+        this.setDuplex(m.mode);
+        break;
       case "end":
         this.close("hung-up");
         break;
       default:
         break;
     }
+  }
+
+  setDuplex(mode) {
+    if (!DUPLEX.includes(mode) || mode === this.duplex || this.closed) return;
+    this.duplex = mode;
+    this.pendingBarge = null;
+    this.log(`live: call ${this.id} switched to ${mode} mode`);
+    this.toClient({ type: "duplex", mode });
   }
 
   mute(on) {
@@ -422,6 +497,8 @@ class LiveCall {
         const t = this.turnFor(ev.item_id);
         t.sessionFailed = true;
         if (!t.sessionText) t.resolveSession(null);
+        if (this.suspect(t)) this.drop(t, "echo-leak");
+        else this.answer(t);
         return;
       }
       case "response.created":
@@ -469,17 +546,66 @@ class LiveCall {
   }
 
   anythingAudible() {
-    if (this.resp && !this.resp.done && this.resp.sentBytes > 0) return true;
+    if (this.resp && !this.resp.done && !this.resp.cancelled && this.resp.sentBytes > 0) return true;
     if (this.speechBusy) return true;
-    for (const [seg, s] of this.segs) if (s.sentBytes / BYTES_PER_MS > (this.played.get(seg) || 0) + 40) return true;
+    const now = this.now();
+    for (const [seg, s] of this.segs) {
+      if (s.over || !s.sentBytes) continue;
+      const sentMs = s.sentBytes / BYTES_PER_MS;
+      // The page cannot still be playing a segment long after it could have finished.
+      if (s.firstAt && now > s.firstAt + sentMs + 1500) continue;
+      if (sentMs > (this.played.get(seg) || 0) + 40) return true;
+    }
     return false;
+  }
+
+  /** anythingAudible(), keeping when the current stretch of voice began and ended. */
+  audibleNow() {
+    const a = this.anythingAudible();
+    const now = this.now();
+    if (a) {
+      if (this.playStartAt == null) this.playStartAt = now;
+      this.lastAudibleAt = now;
+    } else if (this.playStartAt != null) {
+      this.playStartAt = null;
+    }
+    return a;
+  }
+  sincePlay() {
+    return this.playStartAt == null ? -1 : this.now() - this.playStartAt;
+  }
+  /** Audio went out to the page: the voice is audible from now. */
+  sentAudio(s, n) {
+    if (!s.firstAt) s.firstAt = this.now();
+    s.sentBytes += n;
+    this.audibleNow();
   }
 
   speechStarted(ev) {
     const t = this.turnFor(ev.item_id);
     t.startMs = ev.audio_start_ms != null ? ev.audio_start_ms : this.inputMs;
     t.startedAt = this.now();
-    if (this.anythingAudible()) this.bargeIn();
+    const audible = this.audibleNow();
+    t.overVoice = audible || (this.lastAudibleAt > 0 && t.startedAt - this.lastAudibleAt < LEAK_AFTER_MS);
+    t.sincePlay = audible ? this.sincePlay() : null;
+    if (!audible) return this.setState("talking");
+    // Speech over the voice is only a candidate until the page confirms sustained voice.
+    const p = { turn: t, at: t.startedAt, sincePlay: t.sincePlay };
+    this.pendingBarge = p;
+    this.diag.candidates.push({ turn: t.n, sincePlay: p.sincePlay, confirmed: false });
+    this.log(`live: barge-in candidate +${p.sincePlay} ms into playback (${this.duplex} mode)`);
+    if (this.voiceOn) this.confirmBarge("voice-already");
+  }
+
+  confirmBarge(how) {
+    const p = this.pendingBarge;
+    if (!p) return;
+    this.pendingBarge = null;
+    p.turn.bargeConfirmed = true;
+    const c = this.diag.candidates.find((x) => x.turn === p.turn.n);
+    if (c) c.confirmed = true;
+    this.log(`live: barge-in confirmed (${how}) +${p.sincePlay} ms into playback, ${this.now() - p.at} ms after the candidate`);
+    this.bargeIn(how);
     this.setState("talking");
   }
 
@@ -488,13 +614,16 @@ class LiveCall {
    * buffered (and says how far it had played), the response is cancelled, the
    * realtime item is truncated there, and any summary being read stops.
    */
-  bargeIn() {
+  bargeIn(how) {
     const at = this.now();
-    const b = { at, flushedAt: null };
+    const b = { at, flushedAt: null, how: how || "voice", sincePlay: this.sincePlay() };
     this.diag.bargeIns.push(b);
     this.toClient({ type: "flush", at });
     this.setState("interrupted");
     this.speechGen++; // summaries and safe lines queued or being read stop here
+    for (const s of this.segs.values()) s.over = true; // flushed: nothing of them is audible any more
+    this.playStartAt = null;
+    this.lastAudibleAt = at;
     const r = this.resp;
     if (r && !r.done) {
       r.cancelled = true;
@@ -524,8 +653,27 @@ class LiveCall {
     t.endMs = ev.audio_end_ms != null ? ev.audio_end_ms : this.inputMs;
     t.stoppedAt = this.now();
     if (t.startMs == null) t.startMs = Math.max(0, t.endMs - 3000);
-    this.setState("thinking");
-    if (this.opts.handoff === "turn" && this.d.transcribe) t.turnP = this.transcribeTurn(t);
+    if (this.pendingBarge && this.pendingBarge.turn === t) {
+      this.pendingBarge = null;
+      this.log(`live: barge-in candidate dropped (speech stopped after ${t.stoppedAt - t.startedAt} ms without sustained voice)`);
+    }
+    if (!this.suspect(t)) this.setState("thinking");
+    if (this.opts.handoff === "turn" && this.d.transcribe && !this.suspect(t)) t.turnP = this.transcribeTurn(t);
+    // Fast path: a real-length turn that did not overlap the voice cannot be its leak, so it is
+    // answered now (as create_response did) instead of after its transcript (~0.7 s later).
+    // Anything heard over the voice, or too short to be sure of, waits for the transcript guard.
+    if (!this.suspect(t) && this.opts.fastAnswer !== false && t.endMs - t.startMs >= FAST_MIN_MS) this.answer(t);
+    // No transcript in time: a real turn is answered anyway (the model hears the audio); a suspect one is dropped.
+    this.timer(() => {
+      if (t.dropped || t.answered || this.closed) return;
+      if (this.suspect(t)) return this.drop(t, "echo-leak");
+      this.answer(t);
+    }, this.opts.transcriptWaitMs || TRANSCRIPT_WAIT_MS);
+  }
+
+  /** Heard over (or just after) the voice, and not a confirmed barge-in: maybe the speaker's leak. */
+  suspect(t) {
+    return !!(t && t.overVoice && !t.bargeConfirmed);
   }
 
   /** The turn's audio, from what this server relayed. */
@@ -574,15 +722,18 @@ class LiveCall {
     const g = voiceGuard.checkTranscript(text, { audioSeconds, sources: liveSources() });
     t.sessionText = g.ok ? text : "";
     this.diag.transcripts.push({ turn: t.n, kind: "session", ms: t.stoppedAt ? this.now() - t.stoppedAt : null, ok: g.ok });
-    if (!g.ok) return this.drop(t, g.rule), t.resolveSession(null);
-    if (this.isEcho(text)) {
-      this.diag.echoes++;
-      return this.drop(t, "echo-of-voice"), t.resolveSession(null);
-    }
+    if (t.dropped) return t.resolveSession(null);
+    const suspect = this.suspect(t);
+    if (!g.ok) return this.drop(t, suspect ? "echo-leak" : g.rule), t.resolveSession(null);
     if (this.d.isStop && this.d.isStop(text)) {
       this.diag.stops++;
       t.resolveSession(null);
       return this.stopByVoice(t, text);
+    }
+    if (suspect && voiceGuard.tokens(text).length <= ECHO_LEAK_WORDS) return this.drop(t, "echo-leak"), t.resolveSession(null);
+    if (this.isEcho(text, suspect)) {
+      this.diag.echoes++;
+      return this.drop(t, "echo-of-voice"), t.resolveSession(null);
     }
     if (this.d.hearPersona) {
       const before = JSON.stringify([this.persona.dialect, this.persona.gender]);
@@ -592,15 +743,52 @@ class LiveCall {
     this.heard.push(text);
     this.toClient({ type: "caption", who: "you", text, final: true });
     t.resolveSession(text);
+    this.answer(t);
+  }
+
+  /**
+   * The turn passed: create its response (create_response is off upstream).
+   * Over a voice still audible it is a late barge-in; over a response still
+   * being generated, that response is cancelled first and this one follows.
+   */
+  answer(t) {
+    if (!t || t.answered || t.dropped || this.closed) return;
+    t.answered = true;
+    if (this.opts.handoff === "turn" && this.d.transcribe && !t.turnP && t.endMs != null) t.turnP = this.transcribeTurn(t);
+    if (this.audibleNow()) {
+      this.log(`live: late barge-in (a turn over the voice passed the guard, ${this.duplex} mode)`);
+      this.bargeIn("turn");
+    } else if (this.resp_active() && !this.resp.cancelled && this.resp.turn !== t) {
+      this.resp.cancelled = true;
+      this.resp.chunks = [];
+      this.send({ type: "response.cancel" });
+    }
+    if (this.resp_active()) {
+      this.queued = t;
+      return;
+    }
+    this.createFor(t);
+  }
+  createFor(t) {
+    this.pendingRound = { turn: t, round: 0 };
+    this.diag.created++;
+    t.createdAt = this.now();
+    this.setState("thinking");
+    this.send({ type: "response.create" });
   }
 
   /** Was this "heard" text what the voice itself just said, coming back through the mic? */
-  isEcho(text) {
+  isEcho(text, suspect) {
     const cut = this.now() - ECHO_WINDOW_MS;
     const recent = this.spoken.filter((s) => s.at >= cut).map((s) => s.text).join(" ");
     if (!recent) return false;
     const heard = voiceGuard.tokens(text);
     if (heard.length < 2) return false;
+    // Heard over the voice: most of it being the voice's own words is enough.
+    if (suspect) {
+      const said = new Set(voiceGuard.tokens(recent));
+      if (heard.filter((w) => said.has(w)).length / heard.length >= 0.7) return true;
+    }
     const said = new Set(voiceGuard.tokens(recent));
     const inSaid = heard.filter((w) => said.has(w)).length;
     const run = voiceGuard.longestRun(heard, voiceGuard.tokens(recent));
@@ -609,16 +797,30 @@ class LiveCall {
 
   /** Nothing of this turn is answered or passed on; the model forgets it. */
   drop(t, rule) {
+    if (t.dropped) return;
     t.dropped = rule;
-    this.log(`live: dropped a turn (${rule})`);
+    if (this.pendingBarge && this.pendingBarge.turn === t) this.pendingBarge = null;
+    if (rule === "echo-leak") {
+      this.diag.leaks++;
+      const at = this.now();
+      this.leaks = this.leaks.filter((x) => at - x < SUGGEST_WINDOW_MS);
+      this.leaks.push(at);
+      this.log(`live: phantom turn (echo-leak) ${t.sincePlay != null && t.sincePlay >= 0 ? "+" + t.sincePlay + " ms into playback" : "just after playback"}, ${this.duplex} mode`);
+      if (this.duplex === "full" && this.leaks.length >= 2 && !this.suggested) {
+        this.suggested = true;
+        this.log(`live: suggested speakers mode (${this.leaks.length} phantom turns within ${SUGGEST_WINDOW_MS / 1000} s)`);
+        this.toClient({ type: "suggest", mode: "speakers", why: "echo" });
+      }
+    } else this.log(`live: dropped a turn (${rule})`);
     const r = this.resp;
     if (r && r.turn === t && !r.done) {
       r.cancelled = true;
       r.chunks = [];
       this.send({ type: "response.cancel" });
     }
+    // No response was made for it, so it is still the last item: deleting it keeps the cached prefix.
     this.send({ type: "conversation.item.delete", item_id: t.itemId });
-    this.setState("listening");
+    if (!this.anythingAudible() && !this.resp_active()) this.setState(this.anyPending() ? "waiting" : "listening");
   }
 
   /** "Stop listening" said aloud: the voice stops, and the call ends. */
@@ -710,7 +912,7 @@ class LiveCall {
         this.setState("speaking");
       }
       this.diag.held.push(this.now() - c.at);
-      s.sentBytes += c.buf.length;
+      this.sentAudio(s, c.buf.length);
       r.sentBytes += c.buf.length;
       this.d.client.audio(r.seg, c.buf);
     }
@@ -762,9 +964,22 @@ class LiveCall {
   async responseDone(ev) {
     const r = this.resp;
     const resp = ev.response || {};
+    const dup = resp.id ? this.billed.has(resp.id) : false;
+    if (dup) {
+      this.diag.dupUsage++;
+      this.log(`live: a second response.done for ${String(resp.id).slice(0, 40)} was ignored (not billed twice)`);
+      return;
+    }
+    if (resp.id) this.billed.add(resp.id);
     if (resp.usage) this.record({ vt: r && r.turn ? r.turn.vt : this.id, part: "realtime", model: this.model, tokens: usageLib.realtimeTokens(resp.usage) });
     if (!r || (r.id && resp.id && r.id !== resp.id)) return;
+    if (r.done) return;
     r.done = true;
+    if (this.queued) {
+      const q = this.queued;
+      this.queued = null;
+      if (q !== r.turn && !q.dropped) this.createFor(q);
+    }
     const calls = (resp.output || []).filter((o) => o.type === "function_call").map((o) => ({ name: o.name, call_id: o.call_id, arguments: o.arguments }));
     for (const o of resp.output || []) {
       if (o.type === "message" && !r.trip && !r.cancelled) {
@@ -1011,12 +1226,13 @@ class LiveCall {
         start: () => {},
         audio: (b) => {
           if (!live()) return;
-          s.sentBytes += b.length;
+          this.sentAudio(s, b.length);
           this.d.client.audio(seg, b);
         },
         cut: () => {
           if (!live()) return;
           s.sentBytes = 0;
+          s.over = true;
           this.toClient({ type: "cut", seg });
         },
       });
@@ -1069,6 +1285,10 @@ module.exports = {
   LIVE_MODEL,
   RATE,
   SILENCE_MS,
+  VAD_THRESHOLD,
+  NOISE_REDUCTION,
+  DUPLEX,
+  TAIL_MS,
   MAX_CALL_MS,
   TOOLS,
   TOOL_NAMES,

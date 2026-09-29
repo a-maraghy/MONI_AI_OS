@@ -26,6 +26,7 @@ const live = require(path.join(ROOT, "lib", "voice-live.js"));
 const desk = require(path.join(ROOT, "lib", "voice-desk.js"));
 const usage = require(path.join(ROOT, "lib", "voice-usage.js"));
 const VoiceStop = require(path.join(ROOT, "public", "voice-stop.js"));
+const Detect = require(path.join(ROOT, "public", "voice-live-detect.js"));
 
 let passed = 0;
 let failed = 0;
@@ -72,7 +73,9 @@ mockServer.on("upgrade", (req, sock, head) => {
     ws.on("message", (d) => {
       const ev = JSON.parse(String(d));
       if (ev.type === "input_audio_buffer.append") {
-        s.appended += Buffer.from(ev.audio, "base64").length;
+        const buf = Buffer.from(ev.audio, "base64");
+        s.appended += buf.length;
+        if (s.vad) vadFeed(s, buf);
         return;
       }
       s.events.push(ev);
@@ -84,6 +87,106 @@ mockServer.on("upgrade", (req, sock, head) => {
     mock.sessions.push(s);
   });
 });
+
+/**
+ * A crude energy VAD standing in for OpenAI's server VAD (it fires on the
+ * speaker's leak exactly as the real one did on 2026-09-29): speech after
+ * 60 ms above `thr`, a turn after 700 ms below it, then the transcript
+ * `text(turnIndex)` ("" = the empty transcript a leak gets).
+ */
+function vadFeed(s, buf) {
+  const v = s.vad;
+  let sum = 0;
+  for (let i = 0; i + 1 < buf.length; i += 2) {
+    const x = buf.readInt16LE(i) / 32768;
+    sum += x * x;
+  }
+  const rms = Math.sqrt(sum / Math.max(1, buf.length / 2));
+  const ms = buf.length / 48;
+  v.ms = (v.ms || 0) + ms;
+  if (rms > v.thr) {
+    v.above = (v.above || 0) + ms;
+    v.below = 0;
+  } else {
+    v.below = (v.below || 0) + ms;
+    if (!v.speaking) v.above = 0;
+  }
+  if (!v.speaking && v.above >= 60) {
+    v.speaking = true;
+    v.n = (v.n || 0) + 1;
+    v.item = "item_vad" + v.n;
+    v.startedAt = Date.now();
+    s.push({ type: "input_audio_buffer.speech_started", audio_start_ms: Math.round(v.ms - v.above), item_id: v.item });
+  } else if (v.speaking && v.below >= 700) {
+    v.speaking = false;
+    v.above = 0;
+    s.push({ type: "input_audio_buffer.speech_stopped", audio_end_ms: Math.round(v.ms - 700), item_id: v.item });
+    s.push({ type: "input_audio_buffer.committed", item_id: v.item });
+    s.push({ type: "conversation.item.input_audio_transcription.completed", item_id: v.item, content_index: 0, transcript: v.text(v.n), usage: { type: "tokens", total_tokens: 12, input_tokens: 10, input_token_details: { text_tokens: 0, audio_tokens: 10 }, output_tokens: 2 } });
+  }
+}
+
+/** 20 ms of a square wave whose RMS is `level` (0..1). */
+function pcmLevel(level, ms) {
+  const b = Buffer.alloc(Math.round((ms || 20) * 48));
+  const a = Math.max(0, Math.min(32767, Math.round(level * 32767)));
+  for (let i = 0; i < b.length; i += 2) b.writeInt16LE(i % 8 < 4 ? a : -a, i);
+  return b;
+}
+
+/**
+ * The page, simulated in real time: it plays what the server sends (at 0.09
+ * RMS), reports the played millisecond every 100 ms, flushes on "flush", runs
+ * the real detector (public/voice-live-detect.js) and sends its "voice"
+ * messages, and streams a microphone that hears the speaker's leak
+ * (`leak` x output) plus room noise, plus the administrator's voice
+ * (`speech` RMS from `speechAt` for `speechMs`, both from playback's start).
+ */
+async function fakePage(c, client, o) {
+  const d = Detect.create();
+  const out = { flushAt: null, speechAt: null, voiceOn: null, playStart: null, playedMs: 0 };
+  let played = 0;
+  let flushedBytes = 0;
+  let lastReport = 0;
+  const t0 = Date.now();
+  const seenFlush = () => client.json.some((m) => m.type === "flush");
+  while (Date.now() - t0 < o.ms) {
+    const t = Date.now() - t0;
+    const recv = client.audio.reduce((n, a) => n + a.bytes, 0);
+    if (seenFlush() && out.flushAt == null) {
+      out.flushAt = Date.now();
+      flushedBytes = recv - played * 48;
+      const seg = client.audio.length ? client.audio[client.audio.length - 1].seg : 0;
+      c.message({ type: "flushed", seg, ms: Math.round(played) });
+    }
+    const avail = (recv - flushedBytes) / 48;
+    const playing = played + 1 < avail;
+    if (playing) {
+      if (out.playStart == null) out.playStart = Date.now();
+      played = Math.min(avail, played + 20);
+    }
+    const level = playing ? 0.09 : 0;
+    if (t - lastReport >= 100 || (!playing && lastReport >= 0)) {
+      d.out(level, playing, t);
+      if (client.audio.length && t - lastReport >= 100) c.message({ type: "played", seg: client.audio[client.audio.length - 1].seg, ms: Math.round(played) });
+      lastReport = t;
+    }
+    const sinceStart = out.playStart == null ? -1 : Date.now() - out.playStart;
+    const talking = o.speechAt != null && sinceStart >= o.speechAt && sinceStart < o.speechAt + (o.speechMs || 1200);
+    if (talking && out.speechAt == null) out.speechAt = Date.now();
+    const echo = level * (o.leak == null ? 0.35 : o.leak);
+    const mic = Math.sqrt(echo * echo + (talking ? o.speech * o.speech : 0) + 0.002 * 0.002);
+    const ev = d.mic(mic, t);
+    if (ev) {
+      if (ev === "on" && out.voiceOn == null) out.voiceOn = Date.now();
+      c.message({ type: "voice", on: ev === "on" });
+    }
+    c.audioIn(pcmLevel(mic, 20));
+    await sleep(20 - ((Date.now() - t0) % 20) || 1);
+  }
+  out.playedMs = played;
+  return out;
+}
 
 /* ------------------------------------------------ the fakes around it --- */
 
@@ -216,7 +319,9 @@ let WS_BASE;
     check("model gpt-realtime-2.1-mini, by default", /model=gpt-realtime-2\.1-mini$/.test(s.url) && live.LIVE_MODEL === "gpt-realtime-2.1-mini", s.url);
     check("audio out, PCM 24 kHz both ways, voice marin", cfg.output_modalities.join() === "audio" && cfg.audio.input.format.rate === 24000 && cfg.audio.output.format.rate === 24000 && cfg.audio.output.voice === "marin");
     const td = cfg.audio.input.turn_detection;
-    check("server VAD at 700 ms of silence, interrupt_response and create_response on", td.type === "server_vad" && td.silence_duration_ms === 700 && td.interrupt_response === true && td.create_response === true);
+    check("server VAD at 700 ms of silence, threshold 0.7; interrupt_response and create_response OFF (this server decides)", td.type === "server_vad" && td.silence_duration_ms === 700 && td.threshold === 0.7 && td.interrupt_response === false && td.create_response === false);
+    check("far-field noise reduction by default", cfg.audio.input.noise_reduction && cfg.audio.input.noise_reduction.type === "far_field");
+    check("speakers mode (half-duplex) by default", c.duplex === "speakers");
     check("the session transcribes the input (gpt-4o-mini-transcribe)", cfg.audio.input.transcription.model === "gpt-4o-mini-transcribe");
     check("exactly two tools: read_status and ask_mint_ai, frozen", cfg.tools.map((t) => t.name).join() === "read_status,ask_mint_ai" && Object.isFrozen(live.TOOLS));
     check("ask_mint_ai takes only text; read_status nothing", Object.keys(live.TOOLS[1].parameters.properties).join() === "text" && live.TOOLS[1].parameters.additionalProperties === false && Object.keys(live.TOOLS[0].parameters.properties).length === 0);
@@ -415,9 +520,9 @@ let WS_BASE;
     c.close("test");
   }
 
-  section("barge-in: flush, cancel, truncate at the played millisecond");
+  section("barge-in: flush, cancel, truncate at the played millisecond (headphones mode, confirmed by the page)");
   {
-    const { c, client } = makeCall();
+    const { c, client } = makeCall({ opts: { duplex: "full" } });
     await c.open();
     const s = lastSession();
     await userTurn(s, c, "tell me a bit about the machine please");
@@ -426,11 +531,15 @@ let WS_BASE;
     const seg = client.audio.length ? client.audio[0].seg : 0;
     check("audio was going out before the barge-in", client.audio.length > 0);
     c.message({ type: "played", seg, ms: 120 });
-    const t0 = Date.now();
     await userTurn(s, c, null, { onlyStart: true });
+    await sleep(30);
+    check("speech over the voice is only a candidate: no flush, nothing cancelled", !client.json.some((m) => m.type === "flush") && s.of("response.cancel").length === 0 && c.pendingBarge);
+    const t0 = Date.now();
+    c.message({ type: "voice", on: true });
     await until(() => client.json.some((m) => m.type === "flush"), 500);
     check("the page is told to flush at once", client.json.some((m) => m.type === "flush") && Date.now() - t0 < 200);
-    check("the response is cancelled", s.of("response.cancel").length === 1);
+    await sleep(20);
+    check("the response is cancelled", s.of("response.cancel").length === 1, s.of("response.cancel").length);
     check("the state flashes 'interrupted', then 'talking'", states(client).slice(-2).join() === "interrupted,talking", states(client).join());
     const before = client.audio.length;
     s.push({ type: "response.output_audio.delta", item_id: r.item, delta: pcm(80).toString("base64") });
@@ -446,7 +555,7 @@ let WS_BASE;
   }
   {
     // A barge-in during a MINT AI summary stops the rest of it.
-    const { c, sup, spoke } = makeCall({ turnText: "restart it", slowSpeak: 60, summaryLines: [{ text: "MINT AI restarted the dashboard." }, { text: "It took four seconds." }, { text: "No errors since." }] });
+    const { c, sup, spoke } = makeCall({ opts: { duplex: "full" }, turnText: "restart it", slowSpeak: 60, summaryLines: [{ text: "MINT AI restarted the dashboard." }, { text: "It took four seconds." }, { text: "No errors since." }] });
     await c.open();
     const s = lastSession();
     await userTurn(s, c, "restart it");
@@ -455,13 +564,14 @@ let WS_BASE;
     sup.replies.set(sup.nextTurn, "The dashboard was restarted and is answering again. It took 4 seconds, and the logs show no errors since.");
     await until(() => spoke.length === 1, 2000);
     await userTurn(s, c, null, { onlyStart: true });
+    c.message({ type: "voice", on: true });
     await sleep(300);
     check("a barge-in during a summary: the lines not yet read are dropped", spoke.length === 1, JSON.stringify(spoke));
     c.close("test");
   }
   {
     // Truncate falls back to the last reported position if the page does not answer.
-    const { c, client } = makeCall();
+    const { c, client } = makeCall({ opts: { duplex: "full" } });
     await c.open();
     const s = lastSession();
     await userTurn(s, c, "hello there how are you");
@@ -469,9 +579,221 @@ let WS_BASE;
     await sleep(10);
     const seg = client.audio[0].seg;
     c.message({ type: "played", seg, ms: 90 });
+    c.message({ type: "voice", on: true });
     await userTurn(s, c, null, { onlyStart: true });
     await until(() => s.of("conversation.item.truncate").length, 1000);
     check("no 'flushed' from the page: truncated at its last reported position", s.of("conversation.item.truncate")[0].audio_end_ms === 90 && s.of("conversation.item.truncate")[0].item_id === r.item);
+    c.close("test");
+  }
+
+  section("self-hearing: the detector (public/voice-live-detect.js), pure");
+  {
+    const run = (mic, ms, playFrom) => {
+      const d = Detect.create();
+      let on = null;
+      for (let t = 0; t < ms; t += 20) {
+        const playing = t >= (playFrom || 0);
+        if (t % 100 === 0) d.out(playing ? 0.09 : 0, playing, t);
+        if (d.mic(mic(t, playing), t) === "on" && on == null) on = t;
+      }
+      return on;
+    };
+    check("the speaker's leak alone (echo cancelling working: 0.35 x output) is never voice", run((t, p) => (p ? 0.09 * 0.35 : 0) + 0.002, 4000) == null);
+    check("  nor a strong leak (no echo cancelling: 0.9 x output), measured in the first 600 ms", run((t, p) => (p ? 0.09 * 0.9 : 0) + 0.002, 4000) == null);
+    const on = run((t, p) => (p ? 0.09 * 0.35 : 0) + (t >= 1000 && t < 2500 ? 0.15 : 0) + 0.002, 4000);
+    check("real speech over the voice is voice after ~400 ms", on != null && on >= 1360 && on <= 1500, on);
+    {
+      // A clean first segment, then the administrator talks from the very start of the second.
+      const d2 = Detect.create();
+      let on2 = null;
+      for (let t = 0; t < 6000; t += 20) {
+        const playing = t < 2000 || t >= 3000;
+        if (t % 100 === 0 || t === 2000 || t === 3000) d2.out(playing ? 0.09 : 0, playing, t);
+        const m = (playing ? 0.09 * 0.35 : 0) + (t >= 3100 && t < 5000 ? 0.15 : 0) + 0.002;
+        if (d2.mic(m, t) === "on" && on2 == null) on2 = t;
+      }
+      check("  never in the first 600 ms of a playback segment; talking from its start is still caught after it", on2 != null && on2 >= 3000 + 600 + 360 && on2 <= 3000 + 600 + 500, on2);
+    }
+    check("  a short burst (a cough, 200 ms) is not", run((t, p) => (p ? 0.03 : 0) + (t >= 1000 && t < 1200 ? 0.2 : 0) + 0.002, 3000) == null);
+    // "Wait, stop, never mind" as the real TTS says it: 250 ms, a 350 ms pause, 300 ms, a pause, 600 ms.
+    const choppy = (t) => (t >= 1000 && t < 1250) || (t >= 1600 && t < 1900) || (t >= 2350 && t < 2950);
+    const onC = run((t, p) => (p ? 0.09 * 0.35 : 0) + (choppy(t) ? 0.12 : 0) + 0.002, 4000);
+    check("  choppy real speech ('wait, stop, never mind') is voice by its second word", onC != null && onC <= 1800, onC);
+    check("  two coughs 400 ms apart are not", run((t, p) => (p ? 0.03 : 0) + ((t >= 1000 && t < 1150) || (t >= 1550 && t < 1700) ? 0.2 : 0) + 0.002, 3000) == null);
+    const d = Detect.create();
+    let any = null;
+    for (let t = 0; t < 2000; t += 20) any = any || d.mic(0.2, t);
+    check("nothing playing: nothing to guard, never 'on'", any == null);
+  }
+
+  section("self-hearing: speakers mode (the default) does not relay the microphone while the voice is audible");
+  {
+    const { c, client } = makeCall();
+    await c.open();
+    const s = lastSession();
+    await userTurn(s, c, "tell me a bit about the machine please");
+    check("create_response is off: this server asks for the answer, once, after the turn passed", s.of("response.create").length === 1 && c.diag.created === 1);
+    await respond(s, "Sure thing, happy to help today. Just ask me anything you like.");
+    await sleep(10);
+    const seg = client.audio[0].seg;
+    const sentMs = client.audio.reduce((n, a) => n + a.bytes, 0) / 48;
+    c.message({ type: "played", seg, ms: 100 });
+    const a0 = s.appended;
+    c.audioIn(pcm(100));
+    await sleep(20);
+    check("while it speaks, the microphone's audio is not relayed", s.appended === a0 && c.diag.gatedMs >= 100);
+    c.message({ type: "played", seg, ms: sentMs });
+    c.audioIn(pcm(100));
+    await sleep(20);
+    check("  nor in the 300 ms tail after it stops", s.appended === a0);
+    await sleep(320);
+    c.audioIn(pcm(100));
+    await sleep(20);
+    check("  then the microphone is heard again", s.appended === a0 + 4800);
+    c.close("test");
+  }
+  {
+    // Interrupt with a tap / Space / Esc (the only way in speakers mode).
+    const { c, client } = makeCall();
+    await c.open();
+    const s = lastSession();
+    await userTurn(s, c, "tell me a bit about the machine please");
+    const r = await respond(s, "Sure thing, happy to help today. Just ask me anything you like. I am listening closely.", { stopAfter: 12 });
+    await sleep(10);
+    c.message({ type: "played", seg: client.audio[0].seg, ms: 150 });
+    c.message({ type: "interrupt" });
+    await sleep(30);
+    check("'interrupt' from the page: flush, cancel, truncate", client.json.some((m) => m.type === "flush") && s.of("response.cancel").length === 1 && c.diag.bargeIns[0].how === "tap");
+    c.message({ type: "flushed", seg: client.audio[0].seg, ms: 160 });
+    await until(() => s.of("conversation.item.truncate").length, 500);
+    check("  truncated where the page had played", s.of("conversation.item.truncate")[0].audio_end_ms === 160 && s.of("conversation.item.truncate")[0].item_id === r.item);
+    const a0 = s.appended;
+    c.audioIn(pcm(100));
+    await sleep(20);
+    check("  and the microphone is open again at once", s.appended > a0 || c.now() - c.lastAudibleAt < live.TAIL_MS);
+    c.close("test");
+  }
+
+  section("self-hearing: headphones mode -- candidates, confirmation, echo-leak turns");
+  {
+    const { c, client, rows } = makeCall({ opts: { duplex: "full" } });
+    const logs = [];
+    c.log = (m) => logs.push(m);
+    await c.open();
+    const s = lastSession();
+    await userTurn(s, c, "tell me a bit about the machine please");
+    const lateR = await respond(s, "Sure thing, happy to help today. Just ask me anything you like. I am listening closely.", { stopAfter: 12 });
+    await sleep(10);
+    c.message({ type: "played", seg: client.audio[0].seg, ms: 100 });
+    const created = s.of("response.create").length;
+    // A leak: VAD fires, the page never confirms, the transcript is one word.
+    const item = await userTurn(s, c, null, { onlyStart: true });
+    await sleep(10);
+    check("a candidate is logged with the time into playback", logs.some((l) => /barge-in candidate \+\d+ ms into playback \(full mode\)/.test(l)));
+    s.push({ type: "input_audio_buffer.speech_stopped", audio_end_ms: c.inputMs, item_id: item });
+    await sleep(10);
+    check("  speech that stops unconfirmed is no barge-in (logged)", !client.json.some((m) => m.type === "flush") && logs.some((l) => /candidate dropped/.test(l)));
+    s.push({ type: "conversation.item.input_audio_transcription.completed", item_id: item, transcript: "you" });
+    await sleep(20);
+    check("  its one-word transcript is an echo-leak: dropped, deleted, NO response created", c.diag.leaks === 1 && s.of("conversation.item.delete").some((e) => e.item_id === item) && s.of("response.create").length === created);
+    check("  logged as a phantom turn, with the mode", logs.some((l) => /phantom turn \(echo-leak\) \+\d+ ms into playback, full mode/.test(l)));
+    check("  the voice was not interrupted", c.diag.bargeIns.length === 0 && !client.json.some((m) => m.type === "caption" && m.who === "you" && m.text === "you"));
+    // A second one, empty: the transcript guard's refusal is an echo-leak too, and two in 10 s suggest speakers mode.
+    const item2 = await userTurn(s, c, "", {});
+    await sleep(20);
+    check("an empty transcript over the voice: echo-leak", c.diag.leaks === 2 && s.of("conversation.item.delete").some((e) => e.item_id === item2));
+    check("two phantom turns within 10 s: the page is told to suggest speakers mode, once", client.json.filter((m) => m.type === "suggest" && m.mode === "speakers").length === 1);
+    check("  and no realtime answer was paid for either", s.of("response.create").length === created && rows.filter((r) => r.part === "realtime").length === 0);
+    // A real sentence over the voice that the page did not confirm (spoken softly): it passes, so it interrupts late.
+    await userTurn(s, c, "wait a moment, how full is the disk");
+    await sleep(20);
+    s.push({ type: "response.done", response: { id: lateR.rid, status: "cancelled", output: [] } });
+    await sleep(30);
+    check("a real turn over the voice that passes the guard: a late barge-in, then its answer", c.diag.bargeIns.length === 1 && c.diag.bargeIns[0].how === "turn" && s.of("response.create").length === created + 1);
+    c.message({ type: "duplex", mode: "speakers" });
+    check("the page can switch the mode mid-call", c.duplex === "speakers" && client.json.some((m) => m.type === "duplex" && m.mode === "speakers"));
+    c.close("test");
+  }
+  {
+    // When the answer is asked for: at once for a real-length turn away from the voice, after the transcript otherwise.
+    const { c } = makeCall();
+    await c.open();
+    const s = lastSession();
+    await userTurn(s, c, null, { noTranscript: true, ms: 1200 });
+    check("a 1.2 s turn nowhere near the voice is answered at once, before its transcript (no added latency)", s.of("response.create").length === 1);
+    const short = await userTurn(s, c, null, { noTranscript: true, ms: 300 });
+    check("  a 0.3 s one waits for its transcript", s.of("response.create").length === 1);
+    s.push({ type: "conversation.item.input_audio_transcription.completed", item_id: short, transcript: "" });
+    await sleep(20);
+    check("  and, empty, is dropped without a response", s.of("response.create").length === 1 && s.of("conversation.item.delete").some((e) => e.item_id === short));
+    const late = await userTurn(s, c, null, { noTranscript: true, ms: 300 });
+    await sleep(3100);
+    check("  a short one whose transcript never comes is answered after 3 s (the model hears the audio)", s.of("response.create").length === 2 && !s.of("conversation.item.delete").some((e) => e.item_id === late));
+    c.close("test");
+  }
+  {
+    // A response.done that arrives twice is billed once.
+    const { c, rows } = makeCall();
+    await c.open();
+    const s = lastSession();
+    await userTurn(s, c, "hello there, can you hear me");
+    const rid = "resp_dup";
+    s.push({ type: "response.created", response: { id: rid } });
+    const done = { type: "response.done", response: { id: rid, status: "completed", output: [], usage: { input_tokens: 10, output_tokens: 10, input_token_details: { text_tokens: 5, audio_tokens: 5 }, output_token_details: { text_tokens: 2, audio_tokens: 8 } } } };
+    s.push(done);
+    s.push(done);
+    await sleep(30);
+    check("a duplicate response.done is billed once (voice_usage 'live' was double-counting)", rows.filter((r) => r.part === "realtime").length === 1 && c.diag.dupUsage === 1);
+    c.close("test");
+  }
+
+  section("self-hearing: the loopback simulation (the voice's own audio fed back as the microphone)");
+  {
+    // Headphones mode, a leaky room: the server VAD fires on the leak, the page's detector must not.
+    const { c, client } = makeCall({ opts: { duplex: "full" } });
+    await c.open();
+    const s = lastSession();
+    await userTurn(s, c, "tell me about the machine");
+    const created = s.of("response.create").length;
+    const words = Array.from({ length: 40 }, (_, i) => "word" + i + (i % 8 === 7 ? "." : "")).join(" ");
+    await respond(s, words);
+    s.vad = { thr: 0.02, text: () => "" };
+    const pg = await fakePage(c, client, { ms: 5200 });
+    check("the echo alone made the VAD fire (as on the real API)", s.vad.n >= 1, s.vad.n);
+    check("  but NO barge-in: nothing flushed, the voice played to the end", !client.json.some((m) => m.type === "flush") && c.diag.bargeIns.length === 0 && pg.playedMs >= 3000, JSON.stringify({ played: pg.playedMs, b: c.diag.bargeIns.length }));
+    check("  the phantom turn was dropped as echo-leak, and no response was created for it", c.diag.leaks >= 1 && s.of("response.create").length === created, JSON.stringify({ leaks: c.diag.leaks, created: s.of("response.create").length - created }));
+    c.close("test");
+  }
+  {
+    // Real speech over the same leak: interrupted within ~0.7 s.
+    const { c, client } = makeCall({ opts: { duplex: "full" } });
+    await c.open();
+    const s = lastSession();
+    await userTurn(s, c, "tell me about the machine");
+    const created = s.of("response.create").length;
+    const words = Array.from({ length: 40 }, (_, i) => "word" + i + (i % 8 === 7 ? "." : "")).join(" ");
+    await respond(s, words);
+    s.vad = { thr: 0.02, text: () => "wait a moment, how full is the disk" };
+    const pg = await fakePage(c, client, { ms: 4000, speechAt: 1200, speechMs: 1400, speech: 0.15 });
+    const lat = pg.flushAt && pg.speechAt ? pg.flushAt - pg.speechAt : null;
+    check("real speech over the voice interrupts it within ~0.7 s", lat != null && lat <= 700, lat);
+    check("  a confirmed barge-in (the page's detector and the VAD agree)", c.diag.bargeIns.length === 1 && c.diag.candidates.some((x) => x.confirmed));
+    await until(() => s.of("response.create").length > created, 2500);
+    check("  and the administrator's turn is answered", s.of("response.create").length === created + 1, s.of("response.create").length - created);
+    console.log("       (barge-in latency in the simulation: " + lat + " ms from speech onset)");
+    c.close("test");
+  }
+  {
+    // Speakers mode, same leaky room: the echo never reaches the VAD at all.
+    const { c, client } = makeCall();
+    await c.open();
+    const s = lastSession();
+    await userTurn(s, c, "tell me about the machine");
+    const words = Array.from({ length: 30 }, (_, i) => "word" + i + (i % 8 === 7 ? "." : "")).join(" ");
+    await respond(s, words);
+    s.vad = { thr: 0.02, text: () => "" };
+    const pg = await fakePage(c, client, { ms: 3400 });
+    check("speakers mode: the leak is never relayed, the VAD never fires, the voice plays out", !s.vad.n && c.diag.bargeIns.length === 0 && pg.playedMs >= 2300, JSON.stringify({ vad: s.vad.n, played: pg.playedMs }));
     c.close("test");
   }
 
@@ -567,7 +889,7 @@ let WS_BASE;
     check("the microphone is opened with echo cancellation, noise suppression and auto gain", /echoCancellation: true, noiseSuppression: true, autoGainControl: true/.test(src));
     check("capture and playback are AudioWorklets from a same-origin file (the CSP allows only 'self')", /audioWorklet\.addModule\(o\.worklet/.test(src) && /registerProcessor\("mint-live-capture"/.test(wk) && /registerProcessor\("mint-live-player"/.test(wk) && !/blob:|data:/.test(src));
     check("24 kHz PCM16 in 20 ms frames", /OUT_RATE = 24000/.test(wk) && /FRAME = 480/.test(wk));
-    check("the player flushes at once and reports the played millisecond", /type === "flush"/.test(wk) && /type: "flushed", seg: seg, ms: self\.ms\(seg\)/.test(wk) && /type: "flushed", seg: m\.seg, ms: m\.ms/.test(src));
+    check("the player flushes at once and reports the played millisecond", /type === "flush"/.test(wk) && /type: "flushed", seg: seg, ms: self\.ms\(seg\)/.test(wk) && /type: "flushed", seg: m\.seg, ms: heardMs\(me, m\.ms\)/.test(src));
     check("the page talks only to this server's /mint-ai/api/live, with the CSRF token", /\/mint-ai\/api\/live\?csrf=/.test(src) && !/openai/i.test(src.replace(/Nothing here talks to OpenAI/, "")));
     check("the API: start, stop, mute, muted, active, state, supported", /window\.VoiceLive = \{[\s\S]*supported[\s\S]*start[\s\S]*stop[\s\S]*mute[\s\S]*muted[\s\S]*active[\s\S]*state/.test(src));
     check("the states the brief asks for are all produced", ["listening", "talking", "thinking", "speaking", "interrupted", "waiting", "muted"].every((st) => src.includes('"' + st + '"')));
@@ -575,7 +897,18 @@ let WS_BASE;
     check("moni-ai.js has one clearly marked integration block", block.length > 500 && (page.match(/LIVE CONVERSATION \(trial\)/g) || []).length === 1);
     check("  it feeds the core and the caption from onState, onCaption and onLevel", /onState: function/.test(block) && /onCaption: function/.test(block) && /onLevel: function/.test(block) && /function liveSnapshot/.test(block));
     check("  the mode is offered only when the server says so (data-voice-live), and remembered per browser in a guarded way", /data-voice-live/.test(block) && block.split("\n").filter((l) => /localStorage/.test(l)).every((l) => /try \{[^}]*localStorage[^}]*\} catch/.test(l)));
-    check("  headphones are advised in the tooltip", /Headphones are advised/.test(block));
+    check("  the tooltip explains speakers and headphones modes", /In speakers mode \(the default\) the microphone pauses while the voice speaks/.test(block) && /headphones mode and just talk over it/.test(block));
+    // Self-hearing, page side.
+    check("playback goes through a local WebRTC loopback into an <audio> element (the echo canceller covers it), with a direct fallback", /createMediaStreamDestination\(\)/.test(src) && /new RTCPeerConnection\(\)/.test(src) && /createElement\("audio"\)/.test(src) && /if \(!ok\) me\.player\.connect\(me\.ctx\.destination\)/.test(src));
+    check("  the loopback's delay is measured and taken off the played milliseconds", /jitterBufferDelay/.test(src) && /function heardMs/.test(src) && /ms: heardMs\(me, m\.ms\)/.test(src));
+    check("  and it is torn down with the call", /me\.pcA\.close\(\)/.test(src) && /me\.pcB\.close\(\)/.test(src) && /me\.el\.remove\(\)/.test(src));
+    check("the detector is fed both levels and its verdict goes to the server", /me\.det\.mic\(me\.mic/.test(src) && /me\.det\.out\(me\.out/.test(src) && /type: "voice", on: v === "on"/.test(src));
+    check("the API gains interrupt, duplex, speaking and route", /interrupt: interrupt/.test(src) && /duplex: duplex/.test(src) && /speaking: function/.test(src) && /route: function/.test(src));
+    const viewsSrc = fs.readFileSync(path.join(ROOT, "lib", "views-moniai.js"), "utf8");
+    check("the detector script loads before voice-live.js (a file of this origin, for the CSP)", /"voice-live-detect\.js", "voice-live\.js"/.test(viewsSrc));
+    check("the bar shows which mode is on and switches it (remembered per browser); the Settings value is the default", /id="cc-live-duplex"/.test(viewsSrc) && /data-live-duplex=/.test(viewsSrc) && /function liveDuplex/.test(block) && /LIVE_DUPLEX_KEY/.test(block));
+    check("in speakers mode, Space / the mute button / a tap on the bar / Esc interrupt the voice while it speaks", /LiveUI\.duplex !== "full" && liveSpeaking\(\)\) window\.VoiceLive\.interrupt\(\)/.test(block) && /cc-vb-text"\) && liveSpeaking\(\)\) \{ e\.stopPropagation\(\); return window\.VoiceLive\.interrupt\(\)/.test(block) && /if \(liveSpeaking\(\)\) window\.VoiceLive\.interrupt\(\);\n\s*else liveStop\(\)/.test(block));
+    check("the server's suggestion is a small non-blocking prompt", /m\.type === "suggest"/.test(block) && /function liveSuggest\(\)/.test(block) && /role", "status"/.test(block));
     check("  no inline script or style is added by the page", !/<script|style="/.test(block));
     // The voice bar in a call (the administrator's report of 2026-09-29: chips overflowing the pill, two X buttons).
     const css = fs.readFileSync(path.join(ROOT, "public", "voice-live.css"), "utf8");
@@ -584,7 +917,7 @@ let WS_BASE;
     check("  the tag's tooltip names the model and the voice", /cc-live-tag"\)\.title = "Live conversation \(trial\)" \+ \(LiveUI\.model/.test(block) && /m\.type === "ready"\) \{ LiveUI\.model = m\.model/.test(block));
     check("  mute and End grouped at the right; End collapses to its icon on narrow screens", /id="cc-live-acts"[\s\S]*id="cc-live-mute"[\s\S]*id="cc-live-end"[\s\S]*class="lbl">End conversation</.test(views) && /max-width: 720px\)[\s\S]*\.cc-live-end \.lbl \{ display: none; \}/.test(css));
     check("  the status text takes the room and truncates", /\.cc-dock\.live-on \.cc-vb-text \{ flex: 1 1 auto; min-width: 0; \}/.test(css));
-    check("  the hint under the pill says what Space and Esc do in live mode", /<kbd>Space<\/kbd> mute · <kbd>Esc<\/kbd> end/.test(block) && /id="cc-kb-live"/.test(views));
+    check("  the hint under the pill says what Space and Esc do in live mode", /<kbd>Space<\/kbd> mute · <kbd>Esc<\/kbd> end/.test(block) && /<kbd>Space<\/kbd> or <kbd>Esc<\/kbd> interrupt/.test(block) && /id="cc-kb-live"/.test(views));
     check("  the old code that relabelled the push-to-talk tags during a call is gone", !/cc-voice-mode"\)\.textContent = "Live/.test(page));
   }
 
@@ -633,7 +966,8 @@ let WS_BASE;
     check("mode off: the upgrade is refused (409)", r.status === 409, r.status);
     // Switch it on in the SCRATCH database, through the Settings form.
     const set = await s.req("GET", "/credentials/openai-voice", { cookie: A.cookie });
-    check("Settings offers the third mode, off by default", /id="voice-live-toggle"/.test(set.body) && /Switch to live conversation \(trial\)/.test(set.body) && /headphones are advised/.test(set.body));
+    check("Settings offers the third mode, off by default", /id="voice-live-toggle"/.test(set.body) && /Switch to live conversation \(trial\)/.test(set.body) && /microphone pauses while the voice speaks \(speakers mode\)/.test(set.body));
+    check("  and the live audio choices: speakers mode and far-field noise reduction checked by default", /id="voice-live-audio"/.test(set.body) && /name="duplex" value="speakers" checked/.test(set.body) && /name="noise" value="far_field" checked/.test(set.body));
     const stok = s.csrfOf(set.body);
     r = await s.req("POST", "/credentials/openai-voice/desk", { cookie: A.cookie, body: new URLSearchParams({ _csrf: stok, mode: "live" }).toString() });
     check("the form sets mode=live (scratch db)", r.status === 302 && db.getSetting("voice_desk") === "live", r.status);
@@ -672,6 +1006,8 @@ let WS_BASE;
     check("an administrator, the right token and origin, mode live: connected", r.status === 101 && first);
     await until(() => r.got.some((m) => m.type === "ready"), 3000, "ready");
     check("  the server opened the upstream session and says ready", r.got.some((m) => m.type === "ready" && m.model === "gpt-realtime-2.1-mini" && m.max_s === 1200), JSON.stringify(r.got));
+    check("  in speakers mode (the default), far-field noise reduction upstream", r.got.some((m) => m.type === "ready" && m.duplex === "speakers" && m.noise === "far_field") && lastSession().session.audio.input.noise_reduction.type === "far_field");
+    check("  the start is audited with the mode and the playback route", db.recentLogins(30).some((x) => /live conversation \(trial\) started \(speakers mode, playback unknown, noise reduction far_field\)/.test(x.detail || "")));
     const r2 = await open(A.cookie, "?csrf=" + tok);
     await until(() => r2.closed != null, 2000, "the busy close");
     const closed2 = r2.closed;
@@ -679,9 +1015,25 @@ let WS_BASE;
     first.send(Buffer.alloc(voiceLiveRate() * 2)); // one second in one frame: too large
     check("a frame over half a second of audio ends the call", await until(() => r.closed != null, 2000));
     check("  and the call is audited, start and end", db.recentLogins(30).some((x) => /live conversation \(trial\) started/.test(x.detail || "")) && (await until(() => db.recentLogins(30).some((x) => /live conversation \(trial\) ended/.test(x.detail || "")), 1000)));
-    r = await open(A.cookie, "?csrf=" + tok);
+    // The live audio setting, through its Settings form (scratch db).
+    const set2 = await s.req("GET", "/credentials/openai-voice", { cookie: A.cookie });
+    const stok2 = s.csrfOf(set2.body);
+    r = await s.req("POST", "/credentials/openai-voice/live-audio", { cookie: A.cookie, body: new URLSearchParams({ _csrf: "bad", duplex: "full", noise: "near_field" }).toString() });
+    check("the live audio form needs the CSRF token", r.status === 403);
+    r = await s.req("POST", "/credentials/openai-voice/live-audio", { cookie: A.cookie, body: new URLSearchParams({ _csrf: stok2, duplex: "loud", noise: "near_field" }).toString() });
+    check("  an unknown mode is refused", /err=/.test(r.headers.location || "") && !db.getSetting("voice_live_audio"));
+    r = await s.req("POST", "/credentials/openai-voice/live-audio", { cookie: O.cookie, body: new URLSearchParams({ _csrf: otok, duplex: "full", noise: "off" }).toString() });
+    check("  a non-administrator cannot set it", r.status === 403 || (r.status === 302 && !db.getSetting("voice_live_audio")), r.status);
+    r = await s.req("POST", "/credentials/openai-voice/live-audio", { cookie: A.cookie, body: new URLSearchParams({ _csrf: stok2, duplex: "full", noise: "near_field" }).toString() });
+    check("  headphones mode, near field: saved (scratch db) and audited", JSON.parse(db.getSetting("voice_live_audio")).duplex === "full" && db.recentLogins(30).some((x) => /live conversation audio: headphones mode, noise reduction near_field \(was speakers, far_field\)/.test(x.detail || "")));
+    const page3 = await s.req("GET", "/mint-ai", { cookie: A.cookie });
+    check("  the page gets the new default", /data-live-duplex="full"/.test(page3.body) && /voice-live-detect\.js\?v=/.test(page3.body));
+    r = await open(A.cookie, "?csrf=" + tok + "&duplex=speakers&route=loopback");
     check("after hanging up, a new call is allowed", r.status === 101);
     await until(() => r.got.some((m) => m.type === "ready"), 3000);
+    check("  this browser's own choice (speakers) wins over the default; noise reduction near field upstream", r.got.some((m) => m.type === "ready" && m.duplex === "speakers" && m.noise === "near_field") && lastSession().session.audio.input.noise_reduction.type === "near_field");
+    r.ws.send(JSON.stringify({ type: "duplex", mode: "full" }));
+    check("  switching mode from the bar mid-call is echoed back", await until(() => r.got.some((m) => m.type === "duplex" && m.mode === "full"), 1000));
     r.ws.close();
     // The evaluation page and its API: administrators only; a recording must be PCM16 mono 24 kHz.
     const evp = await s.req("GET", "/mint-ai/voice-eval", { cookie: A.cookie });

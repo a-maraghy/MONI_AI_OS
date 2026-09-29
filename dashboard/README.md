@@ -399,7 +399,9 @@ conversation (trial)*; everyone else, and push to talk, keep the relay desk.
 **How it works.** The page opens the mic with echo cancellation, noise
 suppression and auto gain, and an AudioWorklet streams 24 kHz PCM16 in 20 ms
 frames to `GET /mint-ai/api/live?csrf=…` (a WebSocket). The server relays it to
-`gpt-realtime-2.1-mini` (server VAD at 700 ms of silence, interrupt_response)
+`gpt-realtime-2.1-mini` (server VAD at 700 ms of silence and threshold 0.7,
+far-field noise reduction; `create_response` and `interrupt_response` off --
+this server decides both, see *Self-hearing*)
 with exactly two tools, `read_status` and `ask_mint_ai`, dispatched only through
 `deskOps()` (`snapshot` / `send`); any other tool name is refused. The key never
 leaves the server.
@@ -429,14 +431,60 @@ leaves the server.
   one "restart" (twice out of two). At most one hand-off per utterance. A pure
   hand-off said in the passive («تم تمرير الطلب لـ MINT AI») is allowed once the
   call really happened (`judge` ctx `askedNow`).
-- **Barge-in.** On the upstream VAD's `speech_started` the server tells the page
-  to flush (the playback worklet drops its buffer and answers with the
-  millisecond it had played), cancels the response and truncates the item there
-  (or at the page's last reported position after 400 ms). Summaries being read
-  stop too.
+- **Barge-in.** When the administrator really talks over the voice (below),
+  the server tells the page to flush (the playback worklet drops its buffer and
+  answers with the millisecond it had played), cancels the response and
+  truncates the item there (or at the page's last reported position after
+  400 ms). Summaries being read stop too.
+- **Self-hearing** (2026-09-29: on laptop speakers the voice heard itself and
+  kept cutting itself off -- 13 phantom turns and 16 dropped empty turns in 6
+  calls, each phantom a paid response). Four layers:
+  1. *Echo-cancelled playback.* Chromium's echo canceller does not reliably
+     cover Web Audio output. The player worklet now feeds a
+     `MediaStreamDestination` -> a local `RTCPeerConnection` pair (loopback,
+     never leaves the page; Opus 96 kbit/s) -> an unmuted `<audio>` element, so
+     the canceller knows the audio and removes it from the mic. Falls back to
+     `ctx.destination` if WebRTC is missing or does not connect in 3 s
+     (`VoiceLive.route()`: `loopback` | `direct`, logged per call). The loopback's
+     jitter-buffer delay (getStats) is taken off the played milliseconds, and
+     on a flush the element is silenced for that delay so nothing buffered is heard.
+  2. *Speakers mode* (half-duplex, **the default** until the loopback is proven
+     on the administrator's laptop): while anything is audible and for 300 ms
+     after, the server does not relay the mic at all. Interrupt with a tap on
+     the bar's text, Space or the mute button (both interrupt while it speaks),
+     or Esc (stops the voice first; a second Esc ends the call). *Headphones
+     mode* (full duplex) is a toggle in the live bar (remembered per browser,
+     `localStorage` `mint-live-duplex`) and the default in Settings > OpenAI
+     voice > *Live conversation* (`POST /credentials/openai-voice/live-audio`,
+     `duplex=speakers|full`, `noise=far_field|near_field|off`, audited; setting
+     `voice_live_audio`). The bar shows which mode is on.
+  3. *Guarded barge-in* (headphones mode). The VAD's `speech_started` while the
+     voice is audible is only a candidate. It becomes a barge-in when the page's
+     detector (`public/voice-live-detect.js`, the same code the tests drive)
+     says `voice`: at least 400 ms of mic level within 800 ms above
+     max(6 x noise floor + 0.01, 2 x output level x the measured leak), never in
+     the first 600 ms of a playback segment (that is when the leak -- mic /
+     output -- is measured; the noise floor is learned while nothing plays, and
+     never from speech). Speech that stops first is not a barge-in. A turn over
+     the voice that the detector missed but that passes the guard still
+     interrupts (a late barge-in).
+  4. *Echo guard before the answer.* `create_response` is off. A turn that
+     started over (or within 1.5 s after) the voice and was not a confirmed
+     barge-in is held for its transcript: empty, refused by the transcript guard,
+     or one or two words -> `echo-leak`: no response is created (nothing paid),
+     and its item is deleted while still the last one (the cached prefix
+     survives). A real-length turn (>= 450 ms) nowhere near the voice is
+     answered at once, as before. Two echo-leaks within 10 s in headphones mode
+     make the page offer speakers mode (a small non-blocking prompt).
+  Logged: each call's mode, playback route and noise reduction; barge-in
+  candidates and confirmations with the ms into playback; phantom turns; mode
+  switches; the end-of-call line counts barge-ins of candidates and phantoms.
+  A `response.done` that arrives twice for one response is billed once (it had
+  been: `voice_usage` rows 439/440, 462/463, 499/500, 535/536, +$0.0252 of
+  the day's $0.2608 live total, 9.7%).
 - **Also:** the echo guard (a transcript matching what the voice said in the
-  last 30 s is dropped and the item deleted -- headphones are advised in the
-  tooltip); the spoken stop command (`public/voice-stop.js`, English and Arabic,
+  last 30 s is dropped and the item deleted; over the voice, 70% of its words
+  being the voice's is enough); the spoken stop command (`public/voice-stop.js`, English and Arabic,
   polite forms) ends the call; one call per user, at most 4 at once, 20 minutes
   a call, frames of at most half a second, no more than twice real time; the
   saved persona is in the instructions and refreshed when it changes.
@@ -448,6 +496,15 @@ leaves the server.
 **What cannot be guaranteed.** The guard reads the model's transcript of its
 audio, not the audio itself; audio that differs from its own transcript would
 be heard. MINT AI's answers never take that path.
+
+**Self-hearing, measured (2026-09-29, real API, stubbed supervisor, same clips,
+6aeca3c vs this change).** First audio after the end of speech: English 1.42 ->
+1.16 s, Egyptian 1.79 -> 1.93 s, mixed (a guard cut and hand-off) 2.92 -> 3.34 s --
+no added latency, the fast path answers clean turns at once (waiting for every
+transcript had cost +0.7-0.85 s: 2.15 / 2.64 s). Barge-in with a choppy "Wait,
+stop, never mind" over the voice (headphones mode): VAD candidate after
+209-235 ms as before, flush 640 ms after the talking-over began (was 184-197 ms
+with no guard). Speakers mode interrupts on a tap at once. Measurement cost $0.17.
 
 **Measured (2026-09-29, real API, stubbed supervisor, TTS clips).** End of
 speech to the first audio the page plays, including the 700 ms VAD, a
@@ -475,30 +532,38 @@ location = /mint-ai/api/live {
 ```
 
 **Integration contract** (for any page, e.g. the Mint rebuild). Load
-`voice-live.css` and `voice-live.js` (before the page's own script); render
-`data-voice-live="1"` when the server's `voicePublic(req).live` is true, and
-`data-live-worklet="${asset("voice-live-worklet.js")}"`; then:
+`voice-live.css`, `voice-live-detect.js` and `voice-live.js` (in that order,
+before the page's own script); render `data-voice-live="1"` when the server's
+`voicePublic(req).live` is true, `data-live-worklet="${asset("voice-live-worklet.js")}"`
+and `data-live-duplex="${voicePublic(req).liveDuplex}"` (the Settings default); then:
 
 ```js
 if (window.VoiceLive && VoiceLive.supported() && root.getAttribute("data-voice-live") === "1") {
   VoiceLive.start({
     csrf: root.getAttribute("data-csrf"),
     worklet: root.getAttribute("data-live-worklet"),
+    duplex: "speakers",   // or "full" (headphones); this browser's choice, else data-live-duplex
     onState: (s) => {},   // connecting | listening | talking | thinking | speaking | interrupted | waiting | muted | ended | error
     onCaption: (c) => {}, // {who: "you" | "desk" | "mint", text, final}
     onLevel: (l) => {},   // {mic, out}, 0..1-ish
-    onEvent: (m) => {},   // every server message: asked, replied, stop, ended, error (code "busy": another tab)
+    onEvent: (m) => {},   // every server message: ready {model, voice, duplex, noise}, asked, replied, stop, ended,
+                          // error (code "busy": another tab), duplex {mode}, suggest {mode: "speakers"} (offer it)
   }).catch((e) => {});    // refused, no mic, or the call could not connect
 }
 VoiceLive.stop();          // hang up
 VoiceLive.mute(true);      // hard mute; VoiceLive.muted(), .active(), .state()
+VoiceLive.interrupt();     // stop the voice now (tap / Space / Esc); false if it was not speaking
+VoiceLive.duplex("full");  // switch mode mid-call; .speaking(), .route() ("loopback" | "direct")
 ```
 
 Map `listening`/`talking`/`interrupted` to the core's *listening*, `thinking`
 to *thinking*, `speaking` to *speaking* (the caption: `onCaption` text of
 `who !== "you"`, word by word), `waiting` to *delegating* (to MINT AI); flash
 the voice bar on `interrupted`; feed `onLevel` to the core's amplitude. While
-live is the mode, Space starts a call, then mutes and unmutes it, and Esc ends it.
+live is the mode, Space starts a call, then mutes and unmutes it, and Esc ends it;
+while the voice speaks, Space (speakers mode) and Esc interrupt it instead, and
+the hint row says so. `#cc-live-duplex` (in `#cc-live-acts`, before mute) shows
+and switches the mode; its label goes at ≤1100 px.
 During a call the voice bar is one row inside the pill (2026-09-29, after the
 administrator's report of chips overflowing it and two X buttons): the status
 text (it takes the room, with an ellipsis), the wave, one `#cc-live-tag` "Live ·
@@ -530,6 +595,11 @@ the real event shapes: the session's configuration, the sentence hold,
 cross-sentence and Arabic cuts and fail-closed, the tool whitelist, hand-off
 grounding (the paraphrase sends exactly the transcript), MINT AI's answers via
 summary and reader only, barge-in (flush, cancel, truncate at the played ms),
+self-hearing (the detector; speakers mode's gate and tap interrupt; candidates,
+confirmation, echo-leak turns, the suggestion, the late barge-in, when the answer
+is asked for, a duplicate response.done billed once; and a real-time loopback
+simulation in which the voice's own audio fed back as the mic makes the mock VAD
+fire but never interrupts, while real speech over it interrupts in ~0.4 s),
 the stop command, the echo guard, usage rows, the persona, the maximum length;
 then the WebSocket route on the real server from a scratch copy that cannot
 reach the helper: auth, CSRF, origin, the mode, one call per user, frame size,

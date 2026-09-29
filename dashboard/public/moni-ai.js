@@ -2739,19 +2739,21 @@
          sentence, word by word, onLevel -> the core's amplitude. */
   var LIVE_OK = READY && root.getAttribute("data-voice-live") === "1" && !!(window.VoiceLive && window.VoiceLive.supported());
   var LIVE_KEY = "mint-voice-live";
-  var LiveUI = { selected: false, active: false, state: "idle", caption: "", who: "", mic: 0, out: 0 };
+  var LIVE_DUPLEX_KEY = "mint-live-duplex";
+  var LiveUI = { selected: false, active: false, state: "idle", caption: "", who: "", mic: 0, out: 0, duplex: root.getAttribute("data-live-duplex") === "full" ? "full" : "speakers" };
   try { LiveUI.selected = LIVE_OK && window.localStorage.getItem(LIVE_KEY) === "1"; } catch (e) { /* storage blocked: not selected */ }
+  try { var dxSaved = window.localStorage.getItem(LIVE_DUPLEX_KEY); if (dxSaved === "full" || dxSaved === "speakers") LiveUI.duplex = dxSaved; } catch (e) { /* storage blocked: the Settings default */ }
   var LIVE_TEXT = {
     connecting: "Connecting…", listening: "Listening — just talk", talking: "You're talking…", thinking: "Thinking…",
-    speaking: "Speaking — talk over it to interrupt", interrupted: "Interrupted — go ahead", waiting: "Passed to MINT AI — waiting for its answer",
+    speaking: "Speaking — talk over it to interrupt", speakingHalf: "Speaking — tap here to interrupt", interrupted: "Interrupted — go ahead", waiting: "Passed to MINT AI — waiting for its answer",
     muted: "Muted — the microphone is off", ended: "Conversation ended", error: "The live conversation stopped", idle: "",
   };
-  var LIVE_TIP = "Live conversation (trial): talk freely and interrupt any time. Headphones are advised — without them the speaker can leak into the microphone. Say “stop listening” or press End to finish.";
+  var LIVE_TIP = "Live conversation (trial): talk freely. In speakers mode (the default) the microphone pauses while the voice speaks, so laptop speakers cannot make it interrupt itself: tap the bar, Space or Esc to interrupt. With headphones, switch the bar to headphones mode and just talk over it. Say “stop listening” or press End to finish.";
   function liveSelected() { return !!(LiveUI && LiveUI.selected); }
   function liveMenuItem(mode) {
     if (!(READY && root.getAttribute("data-voice-live") === "1")) return "";
     var ok = !!(window.VoiceLive && window.VoiceLive.supported());
-    return '<button type="button" role="menuitemradio" data-vmode="live" aria-checked="' + (mode === "live") + '"' + (ok ? "" : " disabled") + ' title="' + esc(LIVE_TIP) + '"><span class="chk"></span>Live conversation<small><b>trial</b> · headphones advised</small></button>';
+    return '<button type="button" role="menuitemradio" data-vmode="live" aria-checked="' + (mode === "live") + '"' + (ok ? "" : " disabled") + ' title="' + esc(LIVE_TIP) + '"><span class="chk"></span>Live conversation<small><b>trial</b> · speakers or headphones</small></button>';
   }
   function liveSelect(on) {
     LiveUI.selected = !!(on && LIVE_OK);
@@ -2777,13 +2779,23 @@
     $("cc-live-acts").hidden = !on;
     $("cc-live-tag").hidden = !on;
     var muted = on && st === "muted";
+    var half = LiveUI.duplex !== "full", talkingOver = on && st === "speaking" && half;
     $("cc-live-mute").setAttribute("aria-pressed", muted ? "true" : "false");
-    $("cc-live-mute").title = muted ? "Unmute the microphone" : "Mute the microphone (the conversation stays open)";
+    $("cc-live-mute").title = muted ? "Unmute the microphone" : talkingOver ? "Interrupt the voice (Space)" : "Mute the microphone (the conversation stays open)";
+    var dx = $("cc-live-duplex");
+    if (dx) {
+      dx.setAttribute("data-duplex", half ? "speakers" : "full");
+      $("cc-live-duplex-lbl").textContent = half ? "Speakers" : "Headphones";
+      dx.title = half
+        ? "Speakers mode: the microphone pauses while the voice speaks, so it cannot hear itself. Tap the bar, Space or Esc to interrupt. Click for headphones mode."
+        : "Headphones mode: talk over the voice to interrupt it. Click for speakers mode (if it hears itself through laptop speakers).";
+      dx.setAttribute("aria-label", (half ? "Speakers mode" : "Headphones mode") + ": switch to " + (half ? "headphones" : "speakers") + " mode");
+    }
     // One tag says it all; the model and voice are in its tooltip.
-    $("cc-live-tag").title = "Live conversation (trial)" + (LiveUI.model ? " · " + LiveUI.model : "") + (LiveUI.voice ? " · voice " + LiveUI.voice : "") + ". Headphones are advised.";
+    $("cc-live-tag").title = "Live conversation (trial)" + (LiveUI.model ? " · " + LiveUI.model : "") + (LiveUI.voice ? " · voice " + LiveUI.voice : "") + " · " + (half ? "speakers mode" : "headphones mode") + (LiveUI.route ? " · playback " + LiveUI.route : "") + ".";
     paintLiveKeys();
     if (on) {
-      if (!(LiveUI.who === "you" && st === "thinking")) $("cc-vb-text").textContent = LIVE_TEXT[st] || st;
+      if (!(LiveUI.who === "you" && st === "thinking")) $("cc-vb-text").textContent = (st === "speaking" && half ? LIVE_TEXT.speakingHalf : LIVE_TEXT[st]) || st;
     }
     paintState();
   }
@@ -2795,6 +2807,7 @@
     paintLive("connecting");
     window.VoiceLive.start({
       csrf: CSRF,
+      duplex: LiveUI.duplex,
       worklet: root.getAttribute("data-live-worklet") || undefined,
       onState: function (st) { if (LiveUI.active) paintLive(st); },
       onCaption: function (c) {
@@ -2805,7 +2818,9 @@
       },
       onLevel: function (l) { LiveUI.mic = l.mic || 0; LiveUI.out = l.out || 0; },
       onEvent: function (m) {
-        if (m.type === "ready") { LiveUI.model = m.model || ""; LiveUI.voice = m.voice || ""; paintLive(LiveUI.state); }
+        if (m.type === "ready") { LiveUI.model = m.model || ""; LiveUI.voice = m.voice || ""; LiveUI.route = window.VoiceLive.route ? window.VoiceLive.route() : ""; paintLive(LiveUI.state); }
+        if (m.type === "duplex" && (m.mode === "full" || m.mode === "speakers")) { LiveUI.duplex = m.mode; paintLive(LiveUI.state); }
+        if (m.type === "suggest" && m.mode === "speakers" && LiveUI.duplex === "full") liveSuggest();
         if (m.type === "stop") toast("Stopped listening. The live conversation has ended.");
         else if (m.type === "error" && m.code === "busy") toast(m.error, true);
         if (m.type === "ended" || m.type === "error") liveEnded(m);
@@ -2823,7 +2838,31 @@
     Voice.setMode(Voice.mode());
     paintLiveMode();
   }
-  function liveStop() { if (window.VoiceLive) window.VoiceLive.stop(); liveEnded(); }
+  function liveStop() { if (window.VoiceLive) window.VoiceLive.stop(); liveEnded(); liveSuggestClose(); }
+  /** Speakers or headphones, for this browser (the Settings value is only the default). */
+  function liveDuplex(mode) {
+    LiveUI.duplex = mode === "full" ? "full" : "speakers";
+    try { window.localStorage.setItem(LIVE_DUPLEX_KEY, LiveUI.duplex); } catch (e) { /* not remembered */ }
+    if (LiveUI.active && window.VoiceLive.duplex) window.VoiceLive.duplex(LiveUI.duplex);
+    liveSuggestClose();
+    paintLive(LiveUI.state);
+  }
+  /** The voice is hearing itself: offer speakers mode, without blocking anything. */
+  function liveSuggest() {
+    liveSuggestClose();
+    var el = document.createElement("div");
+    el.className = "cc-toast cc-live-suggest";
+    el.setAttribute("role", "status");
+    el.innerHTML = '<span>The voice seems to hear itself through the speakers.</span> <button type="button" class="cc-btn sm" data-live-suggest="speakers">Use speakers mode</button> <button type="button" class="cc-ibtn" data-live-suggest="no" aria-label="Dismiss" title="Dismiss">✕</button>';
+    document.body.appendChild(el);
+    LiveUI.suggestT = setTimeout(liveSuggestClose, 15000);
+  }
+  function liveSuggestClose() {
+    clearTimeout(LiveUI.suggestT);
+    var el = document.querySelector(".cc-live-suggest");
+    if (el) el.remove();
+  }
+  function liveSpeaking() { return LiveUI.active && window.VoiceLive.speaking && window.VoiceLive.speaking(); }
   /** What the core and the caption show while a call is on (see snapshot()). */
   function liveSnapshot(snap) {
     if (!liveActive()) return snap;
@@ -2846,7 +2885,16 @@
     if (!e.target.closest) return;
     if (LiveUI.selected && e.target.closest("#cc-c-mic")) { e.stopPropagation(); e.preventDefault(); return LiveUI.active ? liveStop() : liveStart(); }
     if (LiveUI.active && (e.target.closest("#cc-vb-close") || e.target.closest("#cc-live-end"))) { e.stopPropagation(); return liveStop(); }
-    if (LiveUI.active && e.target.closest("#cc-live-mute")) { e.stopPropagation(); return window.VoiceLive.mute(!window.VoiceLive.muted()); }
+    var sg = e.target.closest("[data-live-suggest]");
+    if (sg) { e.stopPropagation(); return sg.getAttribute("data-live-suggest") === "speakers" ? liveDuplex("speakers") : liveSuggestClose(); }
+    if (LiveUI.active && e.target.closest("#cc-live-duplex")) { e.stopPropagation(); return liveDuplex(LiveUI.duplex === "full" ? "speakers" : "full"); }
+    if (LiveUI.active && e.target.closest("#cc-live-mute")) {
+      e.stopPropagation();
+      if (LiveUI.duplex !== "full" && liveSpeaking()) return window.VoiceLive.interrupt();
+      return window.VoiceLive.mute(!window.VoiceLive.muted());
+    }
+    // A tap on the bar's text while the voice speaks interrupts it.
+    if (LiveUI.active && e.target.closest(".cc-dock.live-on .cc-vb-text") && liveSpeaking()) { e.stopPropagation(); return window.VoiceLive.interrupt(); }
   }, true);
   // Keys while live is the mode: Space starts a call, then mutes and unmutes it; Esc ends it
   // (when nothing else is open for Esc to close). Push to talk's Space is never reached.
@@ -2856,10 +2904,13 @@
       e.stopPropagation();
       e.preventDefault();
       if (!LiveUI.active) liveStart();
+      else if (LiveUI.duplex !== "full" && liveSpeaking()) window.VoiceLive.interrupt();
       else window.VoiceLive.mute(!window.VoiceLive.muted());
     } else if (e.key === "Escape" && LiveUI.active && $("cc-pop").hidden && $("cc-reply").hidden && !document.querySelector(".cc-sheet.open") && !document.querySelector(".cc-need:not([hidden])")) {
       e.stopPropagation();
-      liveStop();
+      // Esc first stops the voice if it is speaking; otherwise it ends the call.
+      if (liveSpeaking()) window.VoiceLive.interrupt();
+      else liveStop();
     }
   }, true);
   window.addEventListener("keyup", function (e) { if (LiveUI.selected && e.code === "Space" && !liveTyping(document.activeElement)) e.stopPropagation(); }, true);
@@ -2869,7 +2920,11 @@
     if (!sp || !lk) return;
     sp.hidden = !!LiveUI.selected;
     lk.hidden = !LiveUI.selected;
-    lk.innerHTML = LiveUI.active ? "<kbd>Space</kbd> mute · <kbd>Esc</kbd> end" : "<kbd>Space</kbd> start a conversation";
+    var speaking = LiveUI.active && LiveUI.state === "speaking";
+    lk.innerHTML = !LiveUI.active ? "<kbd>Space</kbd> start a conversation"
+      : speaking && LiveUI.duplex !== "full" ? "<kbd>Space</kbd> or <kbd>Esc</kbd> interrupt"
+      : speaking ? "<kbd>Space</kbd> mute · <kbd>Esc</kbd> interrupt"
+      : "<kbd>Space</kbd> mute · <kbd>Esc</kbd> end";
   }
   function liveTyping(el) { return el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable || el.tagName === "BUTTON"); }
   window.addEventListener("beforeunload", function () { if (LiveUI.active) window.VoiceLive.stop(); });

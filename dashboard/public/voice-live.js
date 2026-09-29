@@ -4,10 +4,14 @@
  * the integration contract any page can use:
  *
  *   VoiceLive.supported()            the browser can do it (getUserMedia + AudioWorklet + WebSocket)
- *   VoiceLive.start({ csrf, worklet, url?, onState, onCaption, onLevel, onEvent }) -> Promise
+ *   VoiceLive.start({ csrf, worklet, url?, duplex?, onState, onCaption, onLevel, onEvent }) -> Promise
  *   VoiceLive.stop()                 hang up
  *   VoiceLive.mute(on) / .muted()    a hard mute: the microphone sends nothing
- *   VoiceLive.active() / .state()
+ *   VoiceLive.interrupt()            stop the voice now (a tap, Space or Esc)
+ *   VoiceLive.duplex(mode?)          "speakers" (half-duplex: the microphone is
+ *                                    not heard while the voice speaks) | "full"
+ *                                    (headphones: talk over it)
+ *   VoiceLive.active() / .state() / .speaking() / .route()
  *
  *   onState(state)     "connecting" | "listening" | "talking" | "thinking" |
  *                      "speaking" | "interrupted" | "waiting" | "muted" |
@@ -23,12 +27,27 @@
  * flushed the moment the server says the administrator started talking; it
  * reports how many milliseconds of each segment were played, so the server
  * can cut the conversation exactly there. Nothing here talks to OpenAI.
+ *
+ * Echo-cancelled playback (2026-09-29: laptop speakers leaked into the
+ * microphone and the voice interrupted itself). Chromium's echo canceller
+ * does not reliably cover Web Audio output, only what WebRTC plays. So the
+ * player's output goes into a MediaStream, through a local RTCPeerConnection
+ * pair (loopback, never leaves the page) and plays from an <audio> element:
+ * the canceller then knows it and removes it from the microphone. If that
+ * cannot be set up, the player plays to the speakers directly ("direct").
+ * The loopback adds its jitter buffer's delay, measured and subtracted from
+ * the played milliseconds the server truncates at.
+ *
+ * The barge-in detector (voice-live-detect.js, loaded before this file) is fed
+ * the microphone and output levels; its "on"/"off" go to the server, which
+ * interrupts only when it and its own VAD agree.
  */
 (function () {
   "use strict";
   var AC = window.AudioContext || window.webkitAudioContext;
   var S = null; // the running call
-  var diag = (window.__mintLive = { calls: 0, frames: 0, bytesIn: 0, segs: 0, flushes: [], states: [], captions: [], played: 0, errors: [] });
+  var diag = (window.__mintLive = { calls: 0, frames: 0, bytesIn: 0, segs: 0, flushes: [], states: [], captions: [], played: 0, errors: [], route: "", lagMs: 0, voice: [], interrupts: 0, duplex: "" });
+  var DUPLEX = { speakers: 1, full: 1 };
 
   function supported() {
     return !!(AC && window.AudioWorkletNode && navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.WebSocket);
@@ -65,8 +84,11 @@
     if (!supported()) return Promise.reject(new Error("This browser cannot hold a live conversation (no AudioWorklet or microphone)."));
     o = o || {};
     diag.calls++;
-    S = { o: o, serverState: "connecting", shown: "", muted: false, playing: false, ended: false, flash: 0, anyAsked: false, ws: null, ctx: null, stream: null, cap: null, player: null, src: null, mic: 0, out: 0, lastPos: null };
+    S = { o: o, serverState: "connecting", shown: "", muted: false, playing: false, ended: false, flash: 0, anyAsked: false, ws: null, ctx: null, stream: null, cap: null, player: null, src: null, mic: 0, out: 0, lastPos: null,
+      duplex: DUPLEX[o.duplex] ? o.duplex : "speakers", route: "", lagMs: 0, t0: performance.now(),
+      det: window.MintLiveDetect ? window.MintLiveDetect.create() : null };
     var me = S;
+    diag.duplex = S.duplex;
     paint();
     return navigator.mediaDevices
       .getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 } })
@@ -82,11 +104,16 @@
         me.src = ctx.createMediaStreamSource(me.stream);
         me.cap = new AudioWorkletNode(ctx, "mint-live-capture", { numberOfInputs: 1, numberOfOutputs: 0 });
         me.player = new AudioWorkletNode(ctx, "mint-live-player", { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [1] });
-        me.player.connect(ctx.destination);
         me.src.connect(me.cap);
         me.player.port.onmessage = function (e) { onPlayer(me, e.data || {}); };
         me.cap.port.onmessage = function (e) { onFrame(me, e.data || {}); };
         if (ctx.state === "suspended" && ctx.resume) ctx.resume();
+        return o.direct ? false : loopback(me);
+      })
+      .then(function (ok) {
+        if (me !== S) throw new Error("stopped");
+        if (!ok) me.player.connect(me.ctx.destination);
+        me.route = diag.route = ok ? "loopback" : "direct";
         return openSocket(me);
       })
       .catch(function (e) {
@@ -95,9 +122,92 @@
       });
   }
 
+  /* ---- echo-cancelled playback: player -> MediaStream -> local WebRTC loopback -> <audio> ---- */
+
+  function noop() {}
+  // Opus at a speech-friendly high bitrate, mono, with in-band FEC.
+  function opusHi(sdp) {
+    var m = /a=rtpmap:(\d+) opus\/48000/i.exec(sdp || "");
+    if (!m) return sdp;
+    var re = new RegExp("a=fmtp:" + m[1] + " ([^\\r\\n]*)");
+    return re.test(sdp) ? sdp.replace(re, function (all, p) { return "a=fmtp:" + m[1] + " " + p + ";maxaveragebitrate=96000;stereo=0;usedtx=0"; }) : sdp;
+  }
+  function loopback(me) {
+    if (!window.RTCPeerConnection || !me.ctx.createMediaStreamDestination) return Promise.resolve(false);
+    var a, b, el, dest;
+    function undo() {
+      try { if (a) a.close(); } catch (e) { /* closed */ }
+      try { if (b) b.close(); } catch (e) { /* closed */ }
+      if (el) { el.srcObject = null; el.remove(); }
+      try { if (dest) me.player.disconnect(dest); } catch (e) { /* not connected */ }
+      return false;
+    }
+    try {
+      dest = me.ctx.createMediaStreamDestination();
+      a = new RTCPeerConnection();
+      b = new RTCPeerConnection();
+      el = document.createElement("audio");
+      el.autoplay = true;
+      el.setAttribute("playsinline", "");
+      el.setAttribute("data-mint-live", "loopback");
+      el.hidden = true;
+      document.body.appendChild(el);
+    } catch (e) {
+      return Promise.resolve(undo());
+    }
+    a.onicecandidate = function (e) { if (e.candidate) b.addIceCandidate(e.candidate).catch(noop); };
+    b.onicecandidate = function (e) { if (e.candidate) a.addIceCandidate(e.candidate).catch(noop); };
+    b.ontrack = function (e) { el.srcObject = (e.streams && e.streams[0]) || new MediaStream([e.track]); };
+    me.player.connect(dest);
+    dest.stream.getAudioTracks().forEach(function (t) { a.addTrack(t, dest.stream); });
+    var connected = new Promise(function (res, rej) {
+      var t = setTimeout(function () { rej(new Error("loopback timeout")); }, 3000);
+      b.oniceconnectionstatechange = function () {
+        var st = b.iceConnectionState;
+        if (st === "connected" || st === "completed") { clearTimeout(t); res(); }
+        else if (st === "failed") { clearTimeout(t); rej(new Error("loopback failed")); }
+      };
+    });
+    return a.createOffer()
+      .then(function (off) { return a.setLocalDescription({ type: "offer", sdp: opusHi(off.sdp) }); })
+      .then(function () { return b.setRemoteDescription(a.localDescription); })
+      .then(function () { return b.createAnswer(); })
+      .then(function (ans) { return b.setLocalDescription({ type: "answer", sdp: opusHi(ans.sdp) }); })
+      .then(function () { return a.setRemoteDescription(b.localDescription); })
+      .then(function () { return connected; })
+      .then(function () {
+        me.pcA = a;
+        me.pcB = b;
+        me.el = el;
+        me.dest = dest;
+        var p = el.play && el.play();
+        if (p && p.catch) p.catch(function (e) { diag.errors.push("loopback play: " + (e && e.name)); });
+        me.lagT = setInterval(function () { measureLag(me); }, 1000);
+        return true;
+      })
+      .catch(function (e) {
+        diag.errors.push("loopback: " + ((e && e.message) || e));
+        return undo();
+      });
+  }
+  /** The loopback's own delay (its jitter buffer), so the played milliseconds stay honest. */
+  function measureLag(me) {
+    if (!me.pcB || !me.pcB.getStats) return;
+    me.pcB.getStats().then(function (rep) {
+      rep.forEach(function (r) {
+        if (r.type === "inbound-rtp" && r.kind === "audio" && r.jitterBufferEmittedCount) {
+          me.lagMs = diag.lagMs = Math.round((r.jitterBufferDelay / r.jitterBufferEmittedCount) * 1000) + 20;
+        }
+      });
+    }).catch(noop);
+  }
+  function heardMs(me, ms) {
+    return me.route === "loopback" ? Math.max(0, (ms || 0) - (me.lagMs || 0)) : ms || 0;
+  }
+
   function openSocket(me) {
     var o = me.o;
-    var url = o.url || (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/mint-ai/api/live?csrf=" + encodeURIComponent(o.csrf || "");
+    var url = o.url || (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/mint-ai/api/live?csrf=" + encodeURIComponent(o.csrf || "") + "&duplex=" + me.duplex + "&route=" + me.route;
     return new Promise(function (resolve, reject) {
       var ws = (me.ws = new WebSocket(url));
       ws.binaryType = "arraybuffer";
@@ -125,6 +235,14 @@
     if (m.type !== "frame") return;
     me.mic = m.level || 0;
     emit(me.o.onLevel, { mic: me.mic, out: me.out });
+    if (me.det && !me.muted) {
+      var t = performance.now() - me.t0;
+      var v = me.det.mic(me.mic, t);
+      if (v) {
+        diag.voice.push({ v: v, t: Math.round(t) });
+        if (me.ws && me.ws.readyState === 1) me.ws.send(JSON.stringify({ type: "voice", on: v === "on" }));
+      }
+    }
     if (me.muted || !me.ws || me.ws.readyState !== 1) return;
     me.ws.send(m.pcm);
     diag.frames++;
@@ -146,13 +264,14 @@
       emit(me.o.onLevel, { mic: me.mic, out: me.out });
       var was = me.playing;
       me.playing = !!m.playing;
-      if (m.seg && me.ws && me.ws.readyState === 1 && (m.playing || was)) me.ws.send(JSON.stringify({ type: "played", seg: m.seg, ms: m.ms }));
+      if (me.det) me.det.out(me.out, me.playing, performance.now() - me.t0);
+      if (m.seg && me.ws && me.ws.readyState === 1 && (m.playing || was)) me.ws.send(JSON.stringify({ type: "played", seg: m.seg, ms: heardMs(me, m.ms) }));
       if (me.playing !== was) paint();
       diag.played = m.ms;
     } else if (m.type === "flushed") {
       var f = diag.flushes[diag.flushes.length - 1];
       if (f) { f.flushedAt = performance.now(); f.ms = m.ms; f.seg = m.seg; }
-      if (me.ws && me.ws.readyState === 1) me.ws.send(JSON.stringify({ type: "flushed", seg: m.seg, ms: m.ms }));
+      if (me.ws && me.ws.readyState === 1) me.ws.send(JSON.stringify({ type: "flushed", seg: m.seg, ms: heardMs(me, m.ms) }));
       me.playing = false;
       paint();
     }
@@ -172,6 +291,7 @@
       case "flush":
         // The administrator started talking: drop what is buffered, at once.
         diag.flushes.push({ at: performance.now(), serverAt: m.at });
+        silenceTail(me);
         me.player.port.postMessage({ type: "flush", at: m.at });
         me.flash = 1;
         paint();
@@ -195,6 +315,9 @@
         return;
       case "error":
         diag.errors.push(m.code || "error");
+        return;
+      case "duplex":
+        if (DUPLEX[m.mode]) me.duplex = diag.duplex = m.mode;
         return;
       default:
         return;
@@ -224,7 +347,13 @@
     S = null;
     if (!me) return;
     clearTimeout(me.flashT);
+    clearTimeout(me.muteT);
+    clearInterval(me.lagT);
     try { if (me.ws && me.ws.readyState <= 1) me.ws.close(1000, "hung up"); } catch (e) { /* closed */ }
+    try { if (me.pcA) me.pcA.close(); } catch (e) { /* closed */ }
+    try { if (me.pcB) me.pcB.close(); } catch (e) { /* closed */ }
+    if (me.el) { try { me.el.pause(); } catch (e) { /* gone */ } me.el.srcObject = null; me.el.remove(); }
+    if (me.dest) me.dest.stream.getTracks().forEach(function (t) { t.stop(); });
     try { if (me.src) me.src.disconnect(); } catch (e) { /* gone */ }
     try { if (me.cap) me.cap.disconnect(); } catch (e) { /* gone */ }
     try { if (me.player) me.player.disconnect(); } catch (e) { /* gone */ }
@@ -246,11 +375,43 @@
     paint();
   }
 
+  /** What the loopback still holds (its jitter buffer) is silenced at once, then it plays again. */
+  function silenceTail(me) {
+    if (!me.el) return;
+    me.el.muted = true;
+    clearTimeout(me.muteT);
+    me.muteT = setTimeout(function () { if (me.el) me.el.muted = false; }, Math.max(150, (me.lagMs || 100) + 120));
+  }
+
+  /** Stop the voice now: a tap, Space or Esc (the only way in speakers mode). */
+  function interrupt() {
+    if (!S || !S.playing) return false;
+    diag.interrupts++;
+    silenceTail(S);
+    S.player.port.postMessage({ type: "flush", at: Date.now() });
+    try { if (S.ws && S.ws.readyState === 1) S.ws.send(JSON.stringify({ type: "interrupt" })); } catch (e) { /* closed */ }
+    diag.flushes.push({ at: performance.now(), serverAt: 0, by: "tap" });
+    return true;
+  }
+
+  function duplex(mode) {
+    if (!S) return DUPLEX[mode] ? mode : "";
+    if (DUPLEX[mode] && mode !== S.duplex) {
+      S.duplex = diag.duplex = mode;
+      try { if (S.ws && S.ws.readyState === 1) S.ws.send(JSON.stringify({ type: "duplex", mode: mode })); } catch (e) { /* closed */ }
+    }
+    return S.duplex;
+  }
+
   window.VoiceLive = {
     supported: supported,
     start: start,
     stop: stop,
     mute: mute,
+    interrupt: interrupt,
+    duplex: duplex,
+    speaking: function () { return !!(S && S.playing); },
+    route: function () { return S ? S.route : ""; },
     muted: function () { return !!(S && S.muted); },
     active: function () { return !!S; },
     state: function () { return S ? S.shown : "idle"; },

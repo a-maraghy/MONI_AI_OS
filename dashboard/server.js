@@ -1880,6 +1880,27 @@ function voiceMode() {
 function voiceDeskOn() {
   return voiceMode() !== "off";
 }
+/**
+ * How live conversation handles the speaker (a panel setting, JSON):
+ *   duplex  "speakers" (half-duplex: the microphone is not heard while the
+ *           voice speaks; the default) | "full" (headphones: talk over it).
+ *           Each browser can override it from the live bar (remembered there).
+ *   noise   OpenAI's input noise reduction: "far_field" (laptop microphone,
+ *           the default) | "near_field" (headset) | "off".
+ */
+const VOICE_LIVE_AUDIO_SETTING = "voice_live_audio";
+function liveAudio() {
+  let v = {};
+  try {
+    v = JSON.parse(db.getSetting(VOICE_LIVE_AUDIO_SETTING, "") || "{}") || {};
+  } catch (_) {
+    v = {};
+  }
+  return {
+    duplex: voiceLive.DUPLEX.includes(v.duplex) ? v.duplex : "speakers",
+    noise: voiceLive.NOISE_REDUCTION.includes(v.noise) ? v.noise : "far_field",
+  };
+}
 
 /**
  * What the voice costs, recorded here from the real usage OpenAI reports for
@@ -2016,6 +2037,7 @@ async function voicePublic(req) {
     mode: voiceMode(),
     // Live conversation: a key, the mode set to live, and an administrator.
     live: !!cfg.key && voiceMode() === "live" && liveAllowed(req && req.perm),
+    liveDuplex: liveAudio().duplex,
   };
 }
 
@@ -2236,7 +2258,7 @@ app.get("/credentials/openai-voice", requireAuth, requirePerm("voice.manage"), a
       user: ctx(req),
       credentials: list,
       voice: v,
-      desk: { on: voiceDeskOn(), mode: voiceMode(), row: db.settingRow(VOICE_DESK_SETTING), model: voiceDesk.DESK_MODEL, liveModel: voiceLive.LIVE_MODEL, usage: voiceUsageSummary() },
+      desk: { on: voiceDeskOn(), mode: voiceMode(), row: db.settingRow(VOICE_DESK_SETTING), model: voiceDesk.DESK_MODEL, liveModel: voiceLive.LIVE_MODEL, usage: voiceUsageSummary(), liveAudio: liveAudio() },
       persona: voicePersona.describe(personaOf(req.me.id)),
       models: voice.MODELS,
       voices: voice.VOICES,
@@ -2329,6 +2351,18 @@ app.post("/credentials/openai-voice/desk", requireAuth, requirePerm("voice.manag
     live: "Live conversation (trial) is on for administrators. Reload the Command Center and pick it in the voice menu; headphones are advised.",
   }[mode];
   res.redirect("/credentials/openai-voice?msg=" + encodeURIComponent(msg) + "#v-desk");
+});
+
+app.post("/credentials/openai-voice/live-audio", requireAuth, requirePerm("voice.manage"), requireCsrf, (req, res) => {
+  const duplex = field(req.body, "duplex");
+  const noise = field(req.body, "noise");
+  if (!voiceLive.DUPLEX.includes(duplex) || !voiceLive.NOISE_REDUCTION.includes(noise)) {
+    return res.redirect("/credentials/openai-voice?err=" + encodeURIComponent("Choose speakers or headphones, and a noise reduction.") + "#v-live");
+  }
+  const was = liveAudio();
+  db.setSetting(VOICE_LIVE_AUDIO_SETTING, JSON.stringify({ duplex, noise }), req.me.username);
+  db.logLogin(req.ip, req.me.username, "voice", `live conversation audio: ${duplex === "speakers" ? "speakers mode" : "headphones mode"}, noise reduction ${noise} (was ${was.duplex}, ${was.noise})`);
+  res.redirect("/credentials/openai-voice?msg=" + encodeURIComponent("Live conversation audio saved. It applies to the next call; each browser can still switch from the live bar.") + "#v-live");
 });
 
 app.post("/credentials/openai-voice/test", requireAuth, requirePerm("voice.manage"), requireCsrf, async (req, res) => {
@@ -5105,7 +5139,10 @@ function liveUpgrade(req, socket, head) {
       if (voiceLive.activeCount() >= LIVE_MAX_CALLS && !voiceLive.callFor(me.username)) return refuseUpgrade(socket, 503, "Too many live calls");
       const fwd = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
       const ip = /^(127\.0\.0\.1|::1|::ffff:127\.0\.0\.1)$/.test(req.socket.remoteAddress || "") && fwd ? fwd : req.socket.remoteAddress;
-      liveWss.handleUpgrade(req, socket, head, (ws) => liveConnected(ws, { me, cfg, ip }));
+      const audio = liveAudio();
+      const duplex = voiceLive.DUPLEX.includes(q.get("duplex")) ? q.get("duplex") : audio.duplex;
+      const route = q.get("route") === "loopback" ? "loopback" : q.get("route") === "direct" ? "direct" : "unknown";
+      liveWss.handleUpgrade(req, socket, head, (ws) => liveConnected(ws, { me, cfg, ip, duplex, noise: audio.noise, route }));
     } catch (e) {
       console.log("live: upgrade failed: " + e.message);
       refuseUpgrade(socket, 500, "Server error");
@@ -5113,7 +5150,7 @@ function liveUpgrade(req, socket, head) {
   });
 }
 
-function liveConnected(ws, { me, cfg, ip }) {
+function liveConnected(ws, { me, cfg, ip, duplex, noise, route }) {
   const actor = me.username;
   const json = (o) => ws.readyState === 1 && ws.send(JSON.stringify(o));
   if (voiceLive.callFor(actor)) {
@@ -5121,7 +5158,7 @@ function liveConnected(ws, { me, cfg, ip }) {
     return ws.close(4409, "busy");
   }
   const call = new voiceLive.LiveCall({
-    cfg: { key: cfg.key, voice: cfg.voice, model: cfg.model, transcribe_model: cfg.transcribe_model },
+    cfg: { key: cfg.key, voice: cfg.voice, model: cfg.model, transcribe_model: cfg.transcribe_model, noise_reduction: noise },
     actor,
     ops: voiceDesk.deskOps(moniai.call, actor),
     client: {
@@ -5148,9 +5185,11 @@ function liveConnected(ws, { me, cfg, ip }) {
     record: (row) => recordVoice(() => voiceLedger.add(row).usd),
     isStop: (t) => voiceStop.heard(t),
     log: (m) => console.log(m),
+    opts: { duplex },
   });
   voiceLive.register(actor, call);
-  db.logLogin(ip, actor, "voice", "live conversation (trial) started");
+  db.logLogin(ip, actor, "voice", `live conversation (trial) started (${duplex === "full" ? "headphones" : "speakers"} mode, playback ${route}, noise reduction ${noise})`);
+  console.log(`live: call ${call.id} started: ${duplex} mode, playback ${route}, noise reduction ${noise}`);
   // Twice real time is the most a microphone can send; more is not a microphone.
   let window0 = Date.now();
   let bytes = 0;
@@ -5186,12 +5225,13 @@ function liveConnected(ws, { me, cfg, ip }) {
     clearInterval(ping);
     call.close("hung-up");
     voiceLive.unregister(actor, call);
-    db.logLogin(ip, actor, "voice", `live conversation (trial) ended after ${Math.round((Date.now() - call.bornAt) / 1000)} s, $${call.usd.toFixed(4)}`);
+    const dg = call.diag;
+    db.logLogin(ip, actor, "voice", `live conversation (trial) ended after ${Math.round((Date.now() - call.bornAt) / 1000)} s, $${call.usd.toFixed(4)}; ${call.duplex} mode, barge-ins ${dg.bargeIns.length} of ${dg.candidates.length} candidates, phantom turns ${dg.leaks}`);
   });
   ws.on("error", () => {});
   call
     .open()
-    .then(() => json({ type: "ready", call: call.id, model: call.model, voice: cfg.voice, max_s: Math.round(call.opts.maxMs / 1000), rate: voiceLive.RATE }))
+    .then(() => json({ type: "ready", call: call.id, model: call.model, voice: cfg.voice, max_s: Math.round(call.opts.maxMs / 1000), rate: voiceLive.RATE, duplex: call.duplex, noise }))
     .catch((e) => {
       json({ type: "error", code: "upstream", error: voice.scrub(e.message) });
       call.close("upstream");

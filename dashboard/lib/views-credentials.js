@@ -288,8 +288,9 @@ function deskCard(csrf, v, desk) {
       interrupt it: the microphone streams to this server, which relays it to ${esc(d.liveModel || "gpt-realtime-2.1-mini")} and plays back
       only the sentences the same guard has passed. MINT AI's answers are still read from its own text (a checked summary or word for
       word), never made up by the voice model; requests pass to MINT AI in your own words, as this server heard them. It can do nothing
-      else, and saying "stop listening" ends it. At most 20 minutes a call, one call at a time; headphones are advised (without them the
-      speaker can leak into the microphone). Other users, and push to talk, keep the relay desk.</p>
+      else, and saying "stop listening" ends it. At most 20 minutes a call, one call at a time. With laptop speakers the voice can leak into the
+      microphone, so by default the microphone pauses while the voice speaks (speakers mode); with headphones, headphones mode lets
+      you talk over it. Other users, and push to talk, keep the relay desk.</p>
     <form method="post" action="/credentials/openai-voice/desk" class="btn-row">
       <input type="hidden" name="_csrf" value="${esc(csrf)}">
       <input type="hidden" name="mode" value="${d.mode === "live" ? "desk" : "live"}">
@@ -297,6 +298,7 @@ function deskCard(csrf, v, desk) {
         ${icon(d.mode === "live" ? "close" : "play")} ${d.mode === "live" ? "Back to the relay desk" : "Switch to live conversation (trial)"}</button>
       <a class="btn small" href="/mint-ai/voice-eval" id="voice-eval-link">${icon("voice")} Evaluate models and voices with your own voice</a>
     </form>
+    ${liveAudioForm(csrf, d.liveAudio || {})}
     ${spend}
 `,
     { icon: "voice", id: "v-desk" }
@@ -308,6 +310,31 @@ function deskCard(csrf, v, desk) {
  * from a fixed list (lib/voice-persona.js PRESETS). There is deliberately no
  * field to type one in.
  */
+/** Live conversation: how it handles the speaker, and OpenAI's noise reduction. */
+const LIVE_DUPLEX_CHOICES = [
+  ["speakers", "Speakers mode (default)", "The microphone is not heard while the voice speaks, so laptop speakers can never make it interrupt itself. Interrupt it with a tap on the bar, Space or Esc."],
+  ["full", "Headphones mode", "Talk over the voice to interrupt it. The page plays through the browser's echo canceller and only sustained speech above the speaker's leak interrupts; if it still hears itself it suggests speakers mode."],
+];
+const LIVE_NOISE_CHOICES = [
+  ["far_field", "Far field (laptop or room microphone, default)"],
+  ["near_field", "Near field (headset microphone)"],
+  ["off", "Off"],
+];
+function liveAudioForm(csrf, a) {
+  const duplex = a.duplex || "speakers";
+  const noise = a.noise || "far_field";
+  return `<form method="post" action="/credentials/openai-voice/live-audio" class="mt-8" id="voice-live-audio">
+      <input type="hidden" name="_csrf" value="${esc(csrf)}">
+      <fieldset class="radio-list"><legend class="small">Speaker handling (the default; each browser can switch from the live bar)</legend>
+        ${LIVE_DUPLEX_CHOICES.map(([v, label, help]) => `<label class="radio-row"><input type="radio" name="duplex" value="${v}"${v === duplex ? " checked" : ""}><span><b>${esc(label)}</b><br><span class="muted small">${esc(help)}</span></span></label>`).join("")}
+      </fieldset>
+      <fieldset class="radio-list"><legend class="small">Noise reduction (OpenAI, on the microphone's audio)</legend>
+        ${LIVE_NOISE_CHOICES.map(([v, label]) => `<label class="radio-row"><input type="radio" name="noise" value="${v}"${v === noise ? " checked" : ""}><span>${esc(label)}</span></label>`).join("")}
+      </fieldset>
+      <button class="btn small" type="submit" id="voice-live-audio-save">${icon("check")} Save live audio</button>
+    </form>`;
+}
+
 const PERSONA_CHOICES = [
   ["learned", "Learn from how I speak", "The register and how it refers to itself follow how you speak to it (the default)."],
   ["cairene_f", "Cairene Egyptian — feminine", "Arabic replies in Cairo colloquial, feminine first person (أنا جاهزة، حاضر), warm; English terms in Latin script."],

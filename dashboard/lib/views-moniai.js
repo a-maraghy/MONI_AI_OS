@@ -49,6 +49,7 @@ const SPRITE = {
   close: '<path d="M6 6l12 12M18 6 6 18"/>',
   shield: '<path d="M12 3 4.5 6v5.5c0 4.6 3.2 8.3 7.5 9.5 4.3-1.2 7.5-4.9 7.5-9.5V6Z"/><path d="M12 8v5M12 16.5h.01"/>',
   speaker: '<path d="M4 9.5h4l5-4v13l-5-4H4Z"/><path d="M16.5 9a4 4 0 0 1 0 6M19 6.5a7.5 7.5 0 0 1 0 11"/>',
+  headphones: '<path d="M4 15v-3a8 8 0 0 1 16 0v3"/><rect x="3.5" y="14" width="4" height="6.5" rx="1.5"/><rect x="16.5" y="14" width="4" height="6.5" rx="1.5"/>',
   mute: '<path d="M4 9.5h4l5-4v13l-5-4H4Z"/><path d="M17 9.5l4 5M21 9.5l-4 5"/>',
   info: '<circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><path d="M12 8h.01"/>',
   message: '<path d="M4 5h16v11H8l-4 4V5Z"/><path d="M8 9h8M8 12.5h5"/>',
@@ -197,7 +198,8 @@ function page(o) {
      data-voice-model="${esc(voice.model || "")}"
      data-voice-desk="${deskOn ? "1" : ""}"
      data-voice-live="${voice.configured && voice.live ? "1" : ""}"
-     data-live-worklet="${voice.configured && voice.live ? esc(asset("voice-live-worklet.js")) : ""}">
+     data-live-worklet="${voice.configured && voice.live ? esc(asset("voice-live-worklet.js")) : ""}"
+     data-live-duplex="${voice.configured && voice.live ? esc(voice.liveDuplex || "speakers") : ""}">
   <div class="cc-bg" aria-hidden="true"></div>
   <div class="cc-halo" id="cc-halo" aria-hidden="true"></div>
   <canvas class="cc-core" id="cc-core" aria-hidden="true"></canvas>
@@ -231,7 +233,7 @@ function page(o) {
         }">${deskOn ? "Front desk · GPT" : "Direct · MINT AI"}</span><span class="cc-tag">OpenAI</span><span class="cc-tag" id="cc-voice-tag">${esc(voice.configured ? String(voice.voice || "voice") : "no key")}</span></span>
         <span class="cc-target cc-static">${ic("route")}<span id="cc-vb-target">Auto-route</span></span>
         <span class="cc-tag cc-live-tag cc-live-only" id="cc-live-tag" title="Live conversation (trial)" hidden>Live · trial</span>
-        <span class="cc-live-acts cc-live-only" id="cc-live-acts" hidden><button type="button" class="cc-ibtn" id="cc-live-mute" title="Mute the microphone (the conversation stays open)" aria-label="Mute" aria-pressed="false">${ic("mute")}</button><button type="button" class="cc-btn sm cc-live-end" id="cc-live-end" title="End the live conversation" aria-label="End conversation">${ic("close")}<span class="lbl">End conversation</span></button></span>
+        <span class="cc-live-acts cc-live-only" id="cc-live-acts" hidden><button type="button" class="cc-btn sm cc-live-duplex" id="cc-live-duplex" data-duplex="speakers" title="Speakers mode" aria-label="Speakers mode: switch to headphones mode">${ic("speaker", "dx-sp")}${ic("headphones", "dx-hp")}<span class="lbl" id="cc-live-duplex-lbl">Speakers</span></button><button type="button" class="cc-ibtn" id="cc-live-mute" title="Mute the microphone (the conversation stays open)" aria-label="Mute" aria-pressed="false">${ic("mute")}</button><button type="button" class="cc-btn sm cc-live-end" id="cc-live-end" title="End the live conversation" aria-label="End conversation">${ic("close")}<span class="lbl">End conversation</span></button></span>
         <button type="button" class="cc-ibtn" id="cc-vb-close" title="Back to typing" aria-label="Back to typing">${ic("close")}</button>
       </div>
       <div class="cc-hint" id="cc-hint"><button type="button" class="cc-vm" id="cc-vm" aria-haspopup="menu" aria-expanded="false" title="Voice and core settings">${ic("voice")}<span id="cc-mic-mode" data-mode="ptt">Push to talk</span>${ic("chevd")}</button>${
@@ -348,7 +350,7 @@ function page(o) {
     brand: "ai",
     heading: null,
     pageClass: "cc-page",
-    assets: ["moni-ai.css", "voice-live.css", "cc-logic.js", "mint-core.js", "cc-map.js", "cc-panels.js", "voice-live.js", "moni-ai.js"],
+    assets: ["moni-ai.css", "voice-live.css", "cc-logic.js", "mint-core.js", "cc-map.js", "cc-panels.js", "voice-live-detect.js", "voice-live.js", "moni-ai.js"],
     topExtra: topExtra(),
     topEnd: TOP_CLOCK,
   });
