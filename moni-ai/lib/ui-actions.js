@@ -147,7 +147,8 @@
         "Panel names as the administrator may say them: " + PANEL_WORDS + ". " +
         "\"Close the missions\", \"hide the decisions\", «اقفلي المهام», «اقفل الميشنز», «شيل القرارات» close that PANEL (sheet.close), never the call: " +
         "call.end only when they name the call or the conversation (\"end the call\", «اقفل المكالمة»). " +
-        "Three preferences need the administrator's own confirmation: theme.set (system/dark/light), persona.set (the Arabic voice persona) and voice.set " +
+        "Three preferences need the administrator's own confirmation: theme.set (system/dark/light -- \"dark mode\", «دارك», «الوضع الليلي»), " +
+        "persona.set (the Arabic voice persona: cairene_f = Egyptian woman «مصرية بنت», cairene_m = Egyptian man «مصري ولد», msa_n = formal Arabic «فصحى», learned = learn from how I speak) and voice.set " +
         "(the voice's sound, only when no call is open). For those the result is status \"confirm\": nothing has changed yet -- say so, and ask them to say yes or click Confirm. " +
         "Never say it is done until they have confirmed, and never confirm for them. " +
         "It cannot approve, deny or confirm anything, change keys, users, rules, other settings, restart or deploy: approving stays the administrator's click. " +
