@@ -80,7 +80,7 @@ console.log("the Command Center");
     user: { name: "Ann", roleLabel: "Administrator", perm: admin, dash: "console" },
     voice: { configured: true, voice: "marin", model: "gpt-realtime-mini", manage: true, desk: true },
   });
-  check("its title is MINT AI — Mint OS", titleOf(cc) === "MINT AI — Mint OS", titleOf(cc));
+  check("its title is MINT AI (the AI brand names itself once)", titleOf(cc) === "MINT AI", titleOf(cc));
   check("the core card is MINT AI Core", /<h2 id="cc-core-h">MINT AI Core<\/h2>/.test(cc));
   check("the drawer is headed MINT AI", /<h2>MINT AI<\/h2>/.test(cc));
   check("the composer says Tell MINT AI what to do…", /placeholder="Tell MINT AI what to do…"/.test(cc));

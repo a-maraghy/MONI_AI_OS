@@ -402,6 +402,8 @@ function shell(title, body, opts = {}) {
   // A dashboard that carries its own navigation inside the page gets the full
   // width instead of a sidebar it would only duplicate.
   const bare = !!(NAV.find((d) => d.key === dash) || {}).noSidebar;
+  // MINT AI's own world (the Command Center, its chat) wears the AI brand.
+  opts = Object.assign({}, opts, { brand: opts.brand || (dash === "console" ? "ai" : "os") });
   const pattern = bare ? null : ["a", "b", "c"].includes(opts.pattern) ? opts.pattern : "c";
 
   // A dashboard the actor cannot reach at all is hidden rather than shown as a
@@ -516,7 +518,7 @@ function page(title, inner, opts = {}) {
 <html lang="en"${cls}><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${esc(title)} — ${ai ? "MINT AI" : "Mint OS"}</title>
+<title>${ai && title === "MINT AI" ? "MINT AI" : `${esc(title)} — ${ai ? "MINT AI" : "Mint OS"}`}</title>
 <link rel="icon" href="${asset(`brand/favicon-${ai ? "ai" : "os"}-16.svg`)}" type="image/svg+xml" sizes="16x16">
 <link rel="icon" href="${asset(`brand/favicon-${ai ? "ai" : "os"}-32.svg`)}" type="image/svg+xml" sizes="32x32">
 <link rel="icon" href="${asset(ai ? "favicon-ai.svg" : "favicon.svg")}" type="image/svg+xml" sizes="any">
