@@ -2745,7 +2745,7 @@
   try { var dxSaved = window.localStorage.getItem(LIVE_DUPLEX_KEY); if (dxSaved === "full" || dxSaved === "speakers") LiveUI.duplex = dxSaved; } catch (e) { /* storage blocked: the Settings default */ }
   var LIVE_TEXT = {
     connecting: "Connecting…", listening: "Listening — just talk", talking: "You're talking…", thinking: "Thinking…",
-    speaking: "Speaking — talk over it to interrupt", speakingHalf: "Speaking — tap here to interrupt", interrupted: "Interrupted — go ahead", waiting: "Passed to MINT AI — waiting for its answer",
+    speaking: "Speaking — talk over it to interrupt", speakingHalf: "Speaking — tap here to interrupt", interrupted: "Interrupted — go ahead", waiting: "Working on it — I'll tell you what I find",
     muted: "Muted — the microphone is off", ended: "Conversation ended", error: "The live conversation stopped", idle: "",
   };
   var LIVE_TIP = "Live conversation (trial): talk freely. In speakers mode (the default) the microphone pauses while the voice speaks, so laptop speakers cannot make it interrupt itself: tap the bar, Space or Esc to interrupt. With headphones, switch the bar to headphones mode and just talk over it. Say “stop listening” or press End to finish.";
@@ -2872,7 +2872,7 @@
     snap.voiceLive = st === "thinking";
     snap.voiceText = $("cc-vb-text").textContent;
     snap.spoken = st === "speaking" && LiveUI.who !== "you" ? LiveUI.caption : "";
-    if (st === "waiting") { snap.delegatingTo = "MINT AI"; snap.delegation = "Passed to MINT AI — its answer will be read when it arrives."; }
+    if (st === "waiting") { snap.delegatingTo = "MINT AI"; snap.delegation = "Working on it — I'll tell you what I find."; }
     return snap;
   }
   // The mic, Space and the voice bar belong to the call while one is on.

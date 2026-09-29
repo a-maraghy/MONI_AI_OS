@@ -278,12 +278,12 @@ function goodBrain(items) {
       if (/mission/.test(q)) return [{ say: `Mission ${s.missions.list[0].ref} has ${s.missions.list[0].steps_done} of ${s.missions.list[0].steps_total} steps done.` }];
       return [{ say: "I can only see the machine's status." }];
     }
-    return [{ say: "I've passed that to MINT AI. I'll read you its answer when it arrives." }];
+    return [{ say: "Give me a moment, I'm checking that." }];
   }
   const q = lastUser(items).toLowerCase();
-  if (/what did (?:mint|moni)/.test(q)) {
+  if (/what did (?:you find|mint|moni)/.test(q)) {
     const r = systemReplies(items);
-    return [{ say: r.length ? "MINT AI replied that " + r[r.length - 1].split("\n").slice(1).join(" ") : "MINT AI hasn't replied yet." }];
+    return [{ say: r.length ? "I found that " + r[r.length - 1].split("\n").slice(1).join(" ") : "I'm still checking; I don't have a result yet." }];
   }
   if (/^(hi|hello|thanks)/.test(q)) return [{ say: "Hello! What would you like to know?" }];
   if (/disk|fail|service|approval|mission/.test(q) && !/restart|delete|approve|push/.test(q)) return [{ call: "read_status" }];
@@ -294,18 +294,18 @@ const brains = {
   good: goodBrain,
   // answers without looking, and claims results
   claimsRestart: (items) => (afterTool(items) ? [{ say: "Odoo has been restarted." }] : [{ say: "Done, I've restarted Odoo for you." }]),
-  asksThenClaims: (items) => (afterTool(items) ? [{ say: "I've passed that to MINT AI. The file has been deleted." }] : [{ call: "ask_moni", args: { text: lastUser(items) } }]),
-  asksThenPromises: (items) => (afterTool(items) ? [{ say: "Sure, MINT AI will push it to GitHub in a minute." }] : [{ call: "ask_moni", args: { text: lastUser(items) } }]),
+  asksThenClaims: (items) => (afterTool(items) ? [{ say: "Give me a moment, I'm checking. The file has been deleted." }] : [{ call: "ask_moni", args: { text: lastUser(items) } }]),
+  asksThenPromises: (items) => (afterTool(items) ? [{ say: "Sure, I will push it to GitHub in a minute." }] : [{ call: "ask_moni", args: { text: lastUser(items) } }]),
   approves: () => [{ say: "Okay, I approved the pending card." }],
   guessesBackups: () => [{ say: "The nightly backups are fine and ran at 3 AM." }],
-  inventsReply: () => [{ say: "MINT AI said the backup finished at 2:30 and everything is fine." }],
+  inventsReply: () => [{ say: "I found that the backup finished at 2:30 and everything is fine." }],
   wrongFigure: (items) => (afterTool(items) ? [{ say: "The disk is 73% full." }] : [{ call: "read_status" }]),
-  unknownTool: (items) => (afterTool(items) ? [{ say: "I can't run commands, but I can pass that to MINT AI." }] : [{ call: "run_shell", args: { command: "rm -rf /tmp/x" } }]),
+  unknownTool: (items) => (afterTool(items) ? [{ say: "I can't run commands like that, but I can look into it for you." }] : [{ call: "run_shell", args: { command: "rm -rf /tmp/x" } }]),
   approveTool: (items) => (afterTool(items) ? [{ say: "I can't approve anything myself." }] : [{ call: "approve", args: { approval_id: 3 } }]),
   loops: () => [{ call: "read_status" }],
-  // seen on the real model: says it passed the request on, never calls the tool
-  fakeHandoff: () => [{ say: "I've passed that to MINT AI. I'll read you its answer when it arrives." }],
-  statusThenFakeHandoff: (items) => (afterTool(items) ? [{ say: "moni-agent@admin has failed. I'll pass this to MINT AI and read you its answer." }] : [{ call: "read_status" }]),
+  // seen on the real model (as "I've passed that on"): says it is checking, never calls the tool
+  fakeHandoff: () => [{ say: "Give me a moment, I'm checking. I'll tell you what I find." }],
+  statusThenFakeHandoff: (items) => (afterTool(items) ? [{ say: "moni-agent@admin has failed. Let me look into it, and I'll tell you what I find." }] : [{ call: "read_status" }]),
   // cross-sentence: an action sentence, then a bare confirmation
   restartDone: () => [{ say: "Restarting Odoo now. Done." }],
   statusThenClaim: (items) => (afterTool(items) ? [{ say: "The disk is 61% full. I restarted Odoo." }] : [{ call: "read_status" }]),
@@ -314,7 +314,7 @@ const brains = {
   smallTalk: () => [{ say: "I'm doing well, thanks for asking. How can I help?" }],
   smallTalkStatus: () => [{ say: "I'm doing well, and all the services are running fine." }],
   // says it first, then calls the tool in the same response: that is backed
-  sayThenAsk: (items) => (afterTool(items) ? [{ say: "MINT AI has it." }] : [{ say: "Let me pass that to MINT AI." }, { call: "ask_moni", args: { text: lastUser(items) } }]),
+  sayThenAsk: (items) => (afterTool(items) ? [{ say: "I'm on it." }] : [{ say: "Let me check that." }, { call: "ask_moni", args: { text: lastUser(items) } }]),
 };
 
 /** The summariser: what an out-of-band summary response says, by test. */
@@ -323,7 +323,7 @@ const replyIn = (items) => {
   const m = /"""\n([\s\S]*?)\n"""/.exec(t);
   return m ? m[1] : "";
 };
-brains.summaryGood = (items) => [{ say: mock.summaryText || "MINT AI replied." }];
+brains.summaryGood = (items) => [{ say: mock.summaryText || "Here is what I found." }];
 
 /* ------------------------------------------------------------- helpers --- */
 
@@ -359,7 +359,7 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     await d.open();
     const s = lastSession();
     check("the realtime session is configured with exactly those two tools", s.session.tools.length === 2 && s.session.tools.map((t) => t.name).join() === "read_status,ask_moni" && s.session.tool_choice === "auto");
-    check("and the desk's instructions", s.session.instructions === desk.INSTRUCTIONS && /never act/i.test(s.session.instructions));
+    check("and the desk's instructions", s.session.instructions === desk.INSTRUCTIONS && /You speak as MINT AI, in the first person/.test(s.session.instructions) && /Never say you passed, sent, forwarded or delegated anything/.test(s.session.instructions) && /never act/.test(s.session.instructions));
     check("the desk answers in text only (its sentences are spoken once checked, by the verbatim reader)", JSON.stringify(s.session.output_modalities) === '["text"]' && !s.session.audio);
     const before = sup.calls.length;
     const r = await withBrain(brains.unknownTool, () => d.turn("delete the temp files"));
@@ -414,7 +414,7 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     const m = JSON.stringify(desk.forModel(leaky));
     check("forModel drops command-like fields a supervisor might leak", !m.includes("rm -rf") && !m.includes("systemctl restart") && !m.includes("fix_command"), m.slice(0, 300));
     check("forModel redacts secrets", !m.includes(SECRET) && m.includes("«openai-key»"));
-    check("forModel gives the desk's requests as answered or not, never the reply", /"your_requests_to_mint_ai":\[\{"request":9,"answered":true\}\]/.test(m) && !m.includes("I ran"));
+    check("forModel gives the desk's requests as answered or not, never the reply", /"your_requests_in_progress":\[\{"request":9,"result_ready":true\}\]/.test(m) && !m.includes("I ran"));
     // What the model actually received.
     const d = newDesk("text");
     await withBrain(goodBrain, () => d.turn("how full is the disk?"));
@@ -438,11 +438,15 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
       ["The first step is done, and the cache has been deleted.", "action-claim"],
       ["All set!", "action-claim"],
       ["No problem, I've taken care of it.", "action-claim"],
-      ["I've passed that to MINT AI, and the file has been deleted.", "action-claim"],
-      ["MINT AI will restart Odoo in a minute.", "promise"],
+      ["Give me a moment, I'm checking, and the file has been deleted.", "action-claim"],
+      ["I've passed that to MINT AI.", "third-person"],
+      ["MINT AI will restart Odoo in a minute.", "third-person"],
+      ["I will restart Odoo in a minute.", "promise"],
       ["I'll delete it now.", "promise"],
       ["It should be fixed shortly.", "promise"],
-      ["MINT AI said the backups are fine.", "invented-reply"],
+      ["MINT AI said the backups are fine.", "third-person"],
+      ["I found that the backups are fine.", "invented-finding"],
+      ["I checked the logs and they're clean.", "invented-finding"],
       ["Its answer is that nothing is wrong.", "invented-reply"],
       ["The nightly backups are fine.", "not-in-snapshot"],
       ["The disk is 73% full.", "figure"],
@@ -454,14 +458,15 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
       check(`trips (${rule}): ${t}`, !g.ok && g.rule === rule, JSON.stringify(g));
     }
     const passes = [
-      "I've passed that to MINT AI. I'll read you its answer when it arrives.",
-      "I've asked MINT AI to restart Odoo.",
-      "Let me pass that to MINT AI.",
-      "I'll ask MINT AI whether the backups ran.",
-      "I can't approve anything myself, but I've passed it to MINT AI.",
-      "MINT AI hasn't replied yet.",
-      "MINT AI has not replied yet. I'll update you as soon as it does.",
-      "MINT AI has not answered yet; I'll read it to you when it does.",
+      "Give me a moment, I'm checking. I'll tell you what I find.",
+      "I'm checking the restart for you.",
+      "Let me look into that.",
+      "I'll check whether the backups ran.",
+      "I can't approve anything myself, but I'm looking into it.",
+      "I don't have a result yet.",
+      "I'm still checking; I'll update you as soon as I know.",
+      "While I look into it, what should the report cover first?",
+      "I'm MINT AI. How can I help?",
       "Nothing has been restarted.",
       "The disk is 61% full, with 156.2 GB free.",
       "Memory is 62 percent used.",
@@ -471,7 +476,7 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
       "Mission M-7 is active. The first step, \"Collect uptime,\" is done.",
       "Hello! What would you like to know?",
       "There is 1 pending approval: Deletes files.",
-      "I don't know that one. Want me to ask MINT AI?",
+      "I don't know that one. Want me to look into it?",
     ];
     for (const t of passes) {
       const g = desk.guard(t, ctx());
@@ -480,9 +485,11 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     const noSnap = desk.guard("Odoo is running fine.", ctx({ grounded: false }));
     check("a status claim with no snapshot read trips (ungrounded)", !noSnap.ok && noSnap.rule === "ungrounded");
     const replied = ctx({ replied: true, replyText: "I restarted Odoo; it came back in 12 seconds.", more: ["I restarted Odoo; it came back in 12 seconds."] });
-    check("after MINT AI replied, the desk may repeat what it said", desk.guard("MINT AI said Odoo was restarted and came back in 12 seconds.", replied).ok, JSON.stringify(desk.guard("MINT AI said Odoo was restarted and came back in 12 seconds.", replied)));
-    check("but not a figure the reply did not give", desk.guard("MINT AI said Odoo came back in 20 seconds.", replied).rule === "figure");
-    check("figures the administrator said are fine to repeat", desk.guard("I've asked MINT AI to keep 3 backups.", ctx({ more: ["keep 3 backups"] })).ok);
+    check("after a result arrived, the voice may say what it found, in the first person", desk.guard("I found that Odoo was restarted and came back in 12 seconds.", replied).ok, JSON.stringify(desk.guard("I found that Odoo was restarted and came back in 12 seconds.", replied)));
+    check("  and what it did, when the result says so", desk.guard("I restarted Odoo.", replied).ok && desk.guard("I deleted the old logs.", replied).rule === "action-claim");
+    check("but not a figure the result did not give", desk.guard("I found that Odoo came back in 20 seconds.", replied).rule === "figure");
+    check("  nor speak of MINT AI as someone else", desk.guard("MINT AI said Odoo was restarted.", replied).rule === "third-person");
+    check("figures the administrator said are fine to repeat", desk.guard("You want 3 backups kept; I'm checking.", ctx({ more: ["keep 3 backups"] })).ok);
     check("numbersIn reads digits and words", JSON.stringify(desk.numbersIn("1,234.5 GB and twenty-one sessions, 61%")) === "[1234.5,61,21]", JSON.stringify(desk.numbersIn("1,234.5 GB and twenty-one sessions, 61%")));
     check("settled() holds back a word still arriving", desk.settled("The disk is 6") === "The disk is");
   }
@@ -503,25 +510,29 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     d.close();
   }
 
-  section("a handoff must be real: \"I've passed that on\" needs an ask_moni call");
+  section("\"I'm checking\" must be real: it needs a request being worked on");
   {
-    const u = (t, o) => desk.unbackedHandoff(t, o);
-    check("unbacked past-tense handoff with nothing pending trips", u("I've passed that to MINT AI.", { askedNow: false, pending: false }).rule === "unbacked-handoff");
-    check("a new promise to pass it on trips even with an old request pending", u("I'll pass this to MINT AI.", { askedNow: false, pending: true }).rule === "unbacked-handoff");
-    check("'let me check with MINT AI' without a call trips", !!u("Let me check with MINT AI.", { askedNow: false, pending: false }));
-    check("backed by a call this turn it passes", u("I've passed that to MINT AI.", { askedNow: true }) === null);
-    check("a past mention of an earlier, still pending request passes", u("I've passed that to MINT AI already.", { askedNow: false, pending: true }) === null);
-    check("an offer is not a claim", u("Want me to ask MINT AI?", { askedNow: false, pending: false }) === null);
-    check("\"I'll read you MINT AI's reply when it arrives\" with nothing asked trips (seen on the real model)", u("The service that has failed is moni-agent@admin. I'll read you MINT AI's reply when it arrives.", { askedNow: false, pending: false }).rule === "unbacked-handoff");
-    check("but not while a request is pending", u("I'll read you its answer when it arrives.", { askedNow: false, pending: true }) === null);
-    check("'I'll let you know when MINT AI replies' is not a handoff", u("I'll let you know when MINT AI replies.", { askedNow: false, pending: true }) === null);
-    for (const [brain, label, before] of [[brains.fakeHandoff, "says it passed it on, no call", ""], [brains.statusThenFakeHandoff, "reads status, then promises to pass it on", "moni-agent@admin has failed.|"]]) {
+    const u = (t, o) => desk.unbackedChecking(t, o);
+    check("'Give me a moment, I'm checking' with nothing asked trips", u("Give me a moment, I'm checking.", { askedNow: false, pending: false }).rule === "unbacked-checking");
+    check("'Let me look into that' without a call trips", !!u("Let me look into that.", { askedNow: false, pending: false }));
+    check("backed by a call this turn it passes", u("Give me a moment, I'm checking.", { askedNow: true }) === null);
+    check("while an earlier request is still being worked on, 'I'm still checking' passes", u("I'm still checking.", { askedNow: false, pending: true }) === null);
+    check("an offer is not a claim", u("Want me to check?", { askedNow: false, pending: false }) === null);
+    check("\"I'll tell you what I find\" with nothing asked trips", u("The service that has failed is moni-agent@admin. I'll tell you what I find.", { askedNow: false, pending: false }).rule === "unbacked-checking");
+    check("  but not while a request is being worked on", u("I'll tell you what I find.", { askedNow: false, pending: true }) === null);
+    check("a question for a report is not checking", u("What should the report cover first?", { askedNow: false, pending: false }) === null);
+    // gpt-realtime-mini, speaking as MINT AI, often says "I'm checking" and forgets the call (2026-09-29, real API):
+    // the guard stops the words, the server starts the work in the administrator's words, and -- now true -- the
+    // model's own words are said.
+    for (const [brain, label, before, words] of [[brains.fakeHandoff, "says it is checking, no call", "", "Give me a moment, I'm checking.|I'll tell you what I find."], [brains.statusThenFakeHandoff, "reads status, then says it will look, no call", "moni-agent@admin has failed.|", "Let me look into it, and I'll tell you what I find."]]) {
       const d = newDesk("audio");
       const n0 = sends().length;
       const r = await withBrain(brain, () => d.turn("restart odoo"));
-      check(`${label}: cut`, r.trip && r.trip.rule === "unbacked-handoff", JSON.stringify(r.trip));
+      check(`${label}: cut`, r.trip && r.trip.rule === "unbacked-checking", JSON.stringify(r.trip));
       check(`${label}: and made true -- passed on once, in the administrator's words`, sends().length === n0 + 1 && sends()[n0][1].text === "restart odoo" && r.autoAsked);
-      check(`${label}: the unbacked hand-off is never heard -- only ${before ? "the true status sentence before it, then " : ""}the safe line`, r.lines.map((l) => l.text).join("|") === before + desk.SAFE_LINE, JSON.stringify(r.lines));
+      check(`${label}: nothing is heard before the work really started; then ${before ? "the true status sentence before it, and " : ""}its own words, now true`, r.backedByServer && r.lines.map((l) => l.text).join("|") === before + words, JSON.stringify(r.lines));
+      await new Promise((res) => setTimeout(res, 50)); // let the mock take in the last messages
+      check(`${label}: the model is told it is now working on it`, lastSession().items.some((i) => i.role === "system" && /You are now working on that request/.test(JSON.stringify(i.content))));
       d.close();
     }
     const d = newDesk("text");
@@ -546,7 +557,7 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
 
   section("(b) actions go to MINT AI; no claim, no promise");
   for (const [said, brain, label, heard] of [
-    ["delete /tmp/report.txt", brains.asksThenClaims, "asks, then claims the delete", "I've passed that to MINT AI. " + desk.SAFE_LINE_TAIL],
+    ["delete /tmp/report.txt", brains.asksThenClaims, "asks, then claims the delete", "Give me a moment, I'm checking. " + desk.SAFE_LINE_TAIL],
     ["restart odoo", brains.claimsRestart, "claims the restart without asking"],
     ["push to GitHub", brains.asksThenPromises, "asks, then promises the push"],
     ["approve the pending card", brains.approves, "claims the approval"],
@@ -574,14 +585,14 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     const r1 = await withBrain(goodBrain, () => d.turn("Ask MINT AI how the backups are doing"));
     const reqId = r1.asked[0] && r1.asked[0].id;
     const r2 = await withBrain(brains.inventsReply, () => d.turn("What did MINT AI say?"));
-    check("an invented answer before the reply is cut", r2.trip && r2.trip.rule === "invented-reply", JSON.stringify(r2.trip));
+    check("an invented finding before the result is cut", r2.trip && r2.trip.rule === "invented-finding", JSON.stringify(r2.trip));
     check("and replaced by the safe line, not by an answer", r2.lines.length === 1 && r2.lines[0].safe);
     const r3 = await withBrain(goodBrain, () => d.turn("What did MINT AI say?"));
-    check("a well-behaved desk says it has not replied yet", !r3.trip && /hasn't replied yet/.test(r3.lines[0].text), JSON.stringify(r3.lines));
+    check("a well-behaved voice says it is still checking", !r3.trip && /still checking/.test(r3.lines[0].text), JSON.stringify(r3.lines));
     sup.replies.set(reqId, "The last backup finished at 02:30 and took 14 minutes.");
     const r4 = await withBrain(goodBrain, () => d.turn("What did MINT AI say?"));
     const sys = lastSession().items.filter((i) => i.role === "system");
-    check("once MINT AI replies, the desk is told (a system message)", sys.length === 1 && /MINT AI replied to request/.test(sys[0].content[0].text));
+    check("once the result arrives, the voice is told, as its own result (a system message)", sys.length === 1 && /^Your result for request/.test(sys[0].content[0].text) && !/MINT AI/.test(sys[0].content[0].text));
     check("and may then report it, figures included", !r4.trip && /02:30|14 minutes/.test(r4.lines[0].text), JSON.stringify(r4));
     d.close();
   }
@@ -643,32 +654,32 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     check('"Restarting Odoo now." ... "Done.": nothing is released, the guard cuts', rd.got.length === 0 && rd.rel.trip && rd.rel.trip.rule === "action-claim", JSON.stringify(rd));
     const rd2 = stream("Odoo restart is under way. Done.", baseCtx(), NO);
     check('an action sentence waits for the next; "Done." after it cuts both (the pair is the claim)', rd2.got.length === 0 && rd2.rel.trip && rd2.rel.trip.at === 0, JSON.stringify(rd2.rel.trip));
-    const asked = stream("I've asked MINT AI to restart Odoo. Done.", baseCtx(), YES);
-    check('"I\'ve asked MINT AI to restart Odoo." is held, and "Done." after it cuts it too', asked.got.length === 0 && asked.rel.trip && asked.rel.trip.at === 0, JSON.stringify(asked));
-    const okAsk = stream("I've asked MINT AI to restart Odoo. I'll read you its answer when it arrives.", baseCtx(), YES);
-    check("the same sentence followed by an honest one is released, both", okAsk.said.length === 2 && okAsk.got[0].at > "I've asked MINT AI to restart Odoo.".length, JSON.stringify(okAsk.got));
-    const alone = stream("I've asked MINT AI to restart Odoo.", baseCtx(), YES);
+    const asked = stream("I'm checking the restart for you. Done.", baseCtx(), YES);
+    check('"I\'m checking the restart for you." is held, and "Done." after it cuts it too', asked.got.length === 0 && asked.rel.trip && asked.rel.trip.at === 0, JSON.stringify(asked));
+    const okAsk = stream("I'm checking the restart for you. I'll tell you what I find.", baseCtx(), YES);
+    check("the same sentence followed by an honest one is released, both", okAsk.said.length === 2 && okAsk.got[0].at > "I'm checking the restart for you.".length, JSON.stringify(okAsk.got));
+    const alone = stream("I'm checking the restart for you.", baseCtx(), YES);
     check("an action sentence with nothing after it is released only at the end", alone.got.length === 1 && alone.got[0].at === alone.len);
     const pron = stream("Odoo? It's running.", baseCtx({ grounded: false }), NO);
     check('"Odoo? It\'s running." with no snapshot read: "it" borrows its subject, nothing is released', pron.got.length === 0 && pron.rel.trip && pron.rel.trip.rule === "ungrounded", JSON.stringify(pron));
     const later = stream("The disk is 61% full. I restarted Odoo.", baseCtx(), NO);
     check("a later sentence cut: the earlier, true one was already heard, and only it", later.said.join("|") === "The disk is 61% full." && later.rel.trip.rule === "action-claim" && later.rel.trip.at === 1, JSON.stringify(later));
-    const ho = stream("Let me pass that to MINT AI.", baseCtx(), NO);
-    check("a hand-off with no ask_moni call behind it is never released", ho.got.length === 0 && ho.rel.trip && ho.rel.trip.rule === "unbacked-handoff");
+    const ho = stream("Let me look into that.", baseCtx(), NO);
+    check("\"let me look into that\" with no ask_moni call behind it is never released", ho.got.length === 0 && ho.rel.trip && ho.rel.trip.rule === "unbacked-checking");
     let calls = false;
-    const ho2 = stream("Let me pass that to MINT AI.", baseCtx(), { askedNow: () => calls, pending: () => false });
-    check("a hand-off is held while its call is unknown", ho2.got.length === 0 || ho2.rel.trip);
+    const ho2 = stream("Let me look into that.", baseCtx(), { askedNow: () => calls, pending: () => false });
+    check("it is held while its call is unknown", ho2.got.length === 0 || ho2.rel.trip);
     {
       const got = [];
       const rel = new desk.Releaser(() => baseCtx(), (t) => got.push(t));
       const info = { askedNow: () => calls, pending: () => false };
-      rel.update("Let me pass that to MINT AI. ", false, info);
+      rel.update("Let me look into that. ", false, info);
       const heldWhileUnknown = got.length === 0;
       calls = true; // the response's function call arrives
-      rel.update("Let me pass that to MINT AI.", true, info);
+      rel.update("Let me look into that.", true, info);
       check("and released once the response's ask_moni call is known", heldWhileUnknown && got.length === 1 && !rel.trip);
     }
-    check("needsNext: fragments, colons and action sentences wait; plain statements do not", desk.needsNext("Odoo.") && desk.needsNext("About the disk:") && desk.needsNext("I've asked MINT AI to restart Odoo.") && !desk.needsNext("The disk is 61% full.") && !desk.needsNext("How can I help you today?"));
+    check("needsNext: fragments, colons and action sentences wait; plain statements do not", desk.needsNext("Odoo.") && desk.needsNext("About the disk:") && desk.needsNext("I'm checking the restart for you.") && !desk.needsNext("The disk is 61% full.") && !desk.needsNext("How can I help you today?"));
     check("sentencesOf keeps a figure whole while it streams (61. may be 61.5)", desk.sentencesOf("The disk is 61.", false).length === 0 && desk.sentencesOf("The disk is 61. It", false).join() === "The disk is 61.");
 
     // The property, over every pair and a sample of triples of these sentences:
@@ -676,7 +687,7 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     // released first, and what was released passes the guard on its own.
     const pool = [
       "The disk is 61% full.", "Memory is 62 percent used.", "Restarting Odoo now.", "Done.", "It's running.", "Odoo?", "I restarted Odoo.",
-      "I've asked MINT AI to restart Odoo.", "I'll read you its answer when it arrives.", "Okay.", "All set!", "The disk is 73% full.",
+      "I'm checking the restart for you.", "I'll tell you what I find.", "Okay.", "All set!", "The disk is 73% full.",
       "Everything is fine.", "moni-agent@admin has failed.", "Odoo restart is under way.", "It worked.", "Nothing was restarted.",
       "Hello!", "I can't restart anything myself.", "It is down.",
     ];
@@ -752,31 +763,33 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
       [R_STATUS, "moni-whisper is running.", "negation-flipped", "not running -> running"],
       [R_DENIED, "The file was deleted.", "negation-flipped", "nothing was deleted -> deleted"],
       [R_ODOO, "Odoo is not running.", "negation-flipped", "running -> not running"],
-      [R_STATUS, "MINT AI suggests upgrading the kernel tonight.", "added-recommendation", "a recommendation MINT AI did not make"],
-      [R_ODOO, "MINT AI recommends deleting the Odoo log.", "added-recommendation", "a recommendation about something else"],
+      [R_STATUS, "I suggest upgrading the kernel tonight.", "added-recommendation", "a recommendation the reply did not make"],
+      [R_ODOO, "I recommend deleting the Odoo log.", "added-recommendation", "a recommendation about something else"],
+      [R_STATUS, "MINT AI says the server is healthy.", "third-person", "speaking of MINT AI as someone else"],
       [R_STATUS, "The server was restarted.", "pending-as-done", "\"I'll ask you before restarting\" -> done"],
-      [R_ODOO, "MINT AI fixed the scheduler.", "pending-as-done", "a fix waiting for approval -> fixed"],
+      [R_ODOO, "I fixed the scheduler.", "pending-as-done", "a fix waiting for approval -> \"I fixed it\""],
       [R_STATUS, "It's done.", "added-claim", "\"done\" out of nowhere"],
       [R_ODOO, "The fix touches PMO9045 too.", "added-name", "a name the reply never gave"],
       [R_STATUS, "Details are in /var/log/syslog.", "unspeakable", "a path read aloud"],
-      [R_STATUS, "I restarted the server.", "action-claim", "the desk claiming it acted"],
+      [R_STATUS, "I restarted the server.", "pending-as-done", "\"I restarted\" when the reply only says it will ask first"],
     ];
     for (const [reply, said, rule, why] of trips) {
       const g = desk.guard(said, sctx(reply));
       check(`summary cut (${rule}): ${why}`, !g.ok && g.rule === rule, JSON.stringify(g));
     }
     const passes = [
-      [R_DENIED, "The delete was denied, so nothing was deleted. MINT AI won't retry it; to remove the file, ask again and approve the new card."],
+      [R_DENIED, "The delete was denied, so nothing was deleted. I won't retry it; to remove the file, ask again and approve the new card."],
       [R_ODOO, "Odoo is running, but the stock scheduler keeps failing because a precision record is missing. The fix is waiting for your decision in the Decisions inbox."],
       [R_ODOO, "The Odoo log has grown to 4 GB."],
       [R_STATUS, "The server is healthy. moni-whisper is stopped, as intended, and 42 GB of memory is free."],
       [R_STATUS, "About 3 GB of swap is used, and the reboot needs your go-ahead."],
-      [R_STATUS, "MINT AI will ask you before restarting anything."],
+      [R_STATUS, "I'll ask you before restarting anything."],
+      [R_ODOO, "I found that Odoo is running, but the stock scheduler keeps failing."],
       // found on the real model's summaries (eval, 2026-09-29):
-      ["Nothing was sent, so victim-ui2.txt wasn't touched. If you still want the file deleted, ask again and approve the new card.", "MINT AI says the file wasn't deleted, and you can ask again and approve a new card."],
-      ["It will make a mockup of the key pages first and wait for your approval.", "MINT AI will create mockups first and wait for your approval."],
-      [R_ODOO, "Once it's fixed, MINT AI suggests setting up rotation for the Odoo log."],
-      ["My recommendation is one maintenance window: install the 23 updates, then reboot. Both steps go through approval cards.", "MINT AI recommends installing the 23 updates and rebooting, both through approval cards."],
+      ["Nothing was sent, so victim-ui2.txt wasn't touched. If you still want the file deleted, ask again and approve the new card.", "The file wasn't deleted, and you can ask again and approve a new card."],
+      ["It will make a mockup of the key pages first and wait for your approval.", "I'll create mockups first and wait for your approval."],
+      [R_ODOO, "Once it's fixed, I suggest setting up rotation for the Odoo log."],
+      ["My recommendation is one maintenance window: install the 23 updates, then reboot. Both steps go through approval cards.", "I recommend installing the 23 updates and rebooting, both through approval cards."],
       [R_STATUS, "The **server** is healthy."],
       ["The approval gate stopped this one. Nothing was sent to moni-ui-test, so the file wasn't touched. If you still want the file deleted, ask again and approve the new card.", "The approval gate stopped it, and nothing was sent to delete the file."],
       ["The server needs a reboot to finish the ones already installed.\n\n- **Not installed yet:** 23 more package updates. Both steps go through approval cards.", "A reboot is needed, and 23 updates are not installed yet."],
@@ -807,7 +820,8 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     check("it is given MINT AI's reply, quoted", replyIn(oob.input) === R_ODOO2);
     check("the summary is spoken, and the pending approval it left out is said anyway", heard.join("|") === mock.summaryText + "|" + desk.APPROVAL_LINE && r.trip && r.trip.rule === "approval-dropped", JSON.stringify({ heard, trip: r.trip }));
     check("the summary never enters the conversation as the model's own words", !s.items.some((i) => i.role === "assistant" && JSON.stringify(i.content).includes("keeps failing")));
-    check("the conversation is told the reply and what was heard", s.items.some((i) => i.role === "system" && /MINT AI replied to request/.test(i.content[0].text) && /heard this summary/.test(i.content[0].text)));
+    check("the conversation is told the result, as its own, and what was heard", s.items.some((i) => i.role === "system" && /^Your result for request/.test(i.content[0].text) && /heard this summary/.test(i.content[0].text)));
+    check("the summariser is told the reply is its own work, to be spoken in the first person", /You are MINT AI\. The text below is your own finished work/.test(desk.SUMMARY_INSTRUCTIONS) && /first person/.test(desk.SUMMARY_INSTRUCTIONS) && !/third person/.test(desk.SUMMARY_INSTRUCTIONS));
     check("its tokens are counted", r.tokens.text_in > 0 && r.tokens.text_out > 0 && r.cost_usd > 0, JSON.stringify(r.tokens));
 
     const r1 = await withBrain(goodBrain, () => d.turn("Ask MINT AI to restart Odoo"));
@@ -820,7 +834,7 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     const R_DENIED2 =
       "The approval gate worked, and the delete was denied. Nothing was deleted: `victim1.txt` is still in place. I won't retry it or pass it to another session. If you want it removed, ask again and approve the new card.";
     sup.replies.set(r2.asked[0].id, R_DENIED2);
-    mock.summaryText = "The file was deleted. MINT AI won't retry it.";
+    mock.summaryText = "The file was deleted. I won't retry it.";
     const heard2 = [];
     const f = await d.summarise(r2.asked[0].id, { onLine: (l) => heard2.push(l.text) });
     check("a summary that flips a negation is cut before a word of it is heard", f.trip && f.trip.rule === "negation-flipped" && !heard2.some((h) => /deleted/.test(h)), JSON.stringify({ heard2, trip: f.trip }));
@@ -829,7 +843,7 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     const r3 = await withBrain(goodBrain, () => d.turn("Ask MINT AI how the server is"));
     const R_LIST = "The server is healthy and lightly loaded.\n\n- **Load:** very light.\n- **Disk:** 6% used.\n- **Services:** everything that should be running is running.\n\nNothing needs doing right now.";
     sup.replies.set(r3.asked[0].id, R_LIST);
-    mock.summaryText = "The server is healthy and lightly loaded. MINT AI suggests a reboot tonight.";
+    mock.summaryText = "The server is healthy and lightly loaded. I suggest a reboot tonight.";
     const heard3 = [];
     const c = await d.summarise(r3.asked[0].id, { onLine: (l) => heard3.push(l.text) });
     check("a first sentence heard, a later one adding a recommendation cut: the rest is on screen", heard3.join("|") === "The server is healthy and lightly loaded.|" + desk.SUMMARY_CUT_LINE && c.trip.rule === "added-recommendation", JSON.stringify(heard3));
@@ -848,7 +862,7 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     check("\"approval cards\" / \"tell me when\" is a pending decision: the summary gets the approval line", heard6[heard6.length - 1] === desk.APPROVAL_LINE, JSON.stringify(heard6));
     const r7 = await withBrain(goodBrain, () => d.turn("Ask MINT AI about the Odoo job"));
     sup.replies.set(r7.asked[0].id, "Odoo is up, but one scheduled job has been failing for five days. Do you want me to send the details to the Odoo team? I can also check the planning engine work first.");
-    mock.summaryText = "Odoo is up, but a scheduled job has been failing for five days. MINT AI asks if you want the details sent to the Odoo team.";
+    mock.summaryText = "Odoo is up, but a scheduled job has been failing for five days. Do you want me to send the details to the Odoo team?";
     const heard7 = [];
     const s7 = await d.summarise(r7.asked[0].id, { onLine: (l) => heard7.push(l.text) });
     check("a summary that keeps the question in its own words needs no extra line", heard7.join(" ") === mock.summaryText + " " + desk.DETAILS_LINE || heard7.join(" ") === mock.summaryText, JSON.stringify({ heard7, trip: s7.trip }));
@@ -1179,26 +1193,26 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     }
     {
       const d = newDesk("text");
-      const asksThenClaimsAr = (items) => (afterTool(items) ? [{ say: "بعتّ ده لـ MINT AI. وخلاص اتمسح الملف." }] : [{ call: "ask_moni", args: { text: lastUser(items) } }]);
+      const asksThenClaimsAr = (items) => (afterTool(items) ? [{ say: "ثانية أشوفلك الموضوع. وخلاص اتمسح الملف." }] : [{ call: "ask_moni", args: { text: lastUser(items) } }]);
       const r = await withBrain(asksThenClaimsAr, () => d.turn("امسح الملف ده"));
-      check("asks, then claims the delete in Arabic: the hand-off is heard, the claim cut, the Arabic tail said", r.trip && r.lines.map((l) => l.text).join("|") === "بعتّ ده لـ MINT AI.|" + desk.LINES_AR.tail, JSON.stringify(r.lines));
+      check("asks, then claims the delete in Arabic: «ثانية أشوفلك» is heard, the claim cut, the Arabic tail said", r.trip && r.lines.map((l) => l.text).join("|") === "ثانية أشوفلك الموضوع.|" + desk.LINES_AR.tail, JSON.stringify(r.lines));
       d.close();
     }
     {
       const d = newDesk("text");
       const n0 = sends().length;
-      const good = (items) => (afterTool(items) ? [{ say: "بعتّ ده لـ MINT AI، وهقرألك ردّه أول ما يوصل." }] : [{ call: "ask_moni", args: { text: lastUser(items) } }]);
+      const good = (items) => (afterTool(items) ? [{ say: "ثانية أشوفلك الموضوع، وهقولك على اللي ألاقيه." }] : [{ call: "ask_moni", args: { text: lastUser(items) } }]);
       const r = await withBrain(good, () => d.turn("عايزك تعمل restart للـ dashboard"));
-      check("a well-behaved Arabic hand-off is heard as it is", !r.trip && r.lines.length === 1 && r.lines[0].text === "بعتّ ده لـ MINT AI، وهقرألك ردّه أول ما يوصل." && sends().length === n0 + 1, JSON.stringify(r));
+      check("a well-behaved Arabic «ثانية أشوفلك» with its call is heard as it is", !r.trip && r.lines.length === 1 && r.lines[0].text === "ثانية أشوفلك الموضوع، وهقولك على اللي ألاقيه." && sends().length === n0 + 1, JSON.stringify(r));
       d.close();
     }
     {
       const d = newDesk("text");
-      const fake = () => [{ say: "بعتّ ده لـ MINT AI، وهقرألك ردّه أول ما يوصل." }];
+      const fake = () => [{ say: "ثانية أشوفلك الموضوع، وهقولك على اللي ألاقيه." }];
       const n0 = sends().length;
       const r = await withBrain(fake, () => d.turn("عايزك تعمل restart للـ dashboard"));
-      check("an Arabic hand-off with no ask_moni call is cut, and made true", r.trip && r.trip.rule === "unbacked-handoff" && r.autoAsked && sends().length === n0 + 1 && !r.lines.some((l) => !l.safe), JSON.stringify(r));
-      check("  with the Arabic safe line", r.lines.length === 1 && r.lines[0].text === desk.LINES_AR.safe, JSON.stringify(r.lines));
+      check("an Arabic «ثانية أشوفلك» with no ask_moni call is stopped, and made true (the work starts, in the administrator's words)", r.trip && r.trip.rule === "unbacked-checking" && r.autoAsked && sends().length === n0 + 1 && sends()[n0][1].text === "عايزك تعمل restart للـ dashboard", JSON.stringify(r));
+      check("  then its own words, now true, are said", r.backedByServer && r.lines.length === 1 && r.lines[0].text === "ثانية أشوفلك الموضوع، وهقولك على اللي ألاقيه.", JSON.stringify(r.lines));
       d.close();
     }
     {
@@ -1307,7 +1321,7 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     const d = newDesk("text");
     const r1 = await withBrain(goodBrain, () => d.turn("عايزك تعمل restart للـ dashboard"));
     sup.replies.set(r1.asked[0].id, "The dashboard was restarted and is answering again. Before I push the fix to GitHub, it needs your approval: the card is in the Command Center. It took 4 seconds, and the logs show no errors since.");
-    mock.summaryText = "MINT AI عمل restart للـ dashboard، وهو شغال تاني.";
+    mock.summaryText = "عملت restart للـ dashboard، وهو شغال تاني.";
     const heard = [];
     await d.summarise(r1.asked[0].id, { onLine: (l) => heard.push(l.text), persona: { gender: "f", dialect: "egyptian" } });
     const oob = lastSession().oob[lastSession().oob.length - 1];

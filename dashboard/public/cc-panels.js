@@ -942,7 +942,7 @@
     var VU_ROWS = [
       ["small_talk", "Small talk", "The front desk's small talk"],
       ["snapshot", "Snapshot", "The front desk's answers from the read-only snapshot"],
-      ["handoff", "Hand-offs", "Requests the front desk passed to MINT AI, and the spoken summaries of its answers"],
+      ["handoff", "Hand-offs", "Requests the voice worked on (MINT AI's real work), and the spoken summaries of the results"],
       ["direct", "Direct", "The direct path (front desk off): MINT AI's replies read aloud word for word"],
       ["live", "Live", "The live conversation (trial): the realtime model's audio in and out, and MINT AI's summaries read into the call"],
     ];

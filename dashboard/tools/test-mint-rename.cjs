@@ -118,23 +118,22 @@ console.log("voice");
   check("the transcription vocabulary names Mint and MINT AI", /Mint/.test(voice.TRANSCRIBE_PROMPT) && /MINT AI/.test(voice.TRANSCRIBE_PROMPT), voice.TRANSCRIBE_PROMPT);
   check("the transcription vocabulary no longer says MONI", !/MONI/.test(voice.TRANSCRIBE_PROMPT), voice.TRANSCRIBE_PROMPT);
   const instr = [desk.INSTRUCTIONS, desk.SUMMARY_INSTRUCTIONS, JSON.stringify(desk.TOOLS)].join("\n");
-  check("the front desk's instructions name MINT AI", /front desk of MINT AI/.test(desk.INSTRUCTIONS) && /MINT AI replied/.test(desk.INSTRUCTIONS), desk.INSTRUCTIONS.slice(0, 200));
+  check("the front desk's instructions name MINT AI (the voice IS MINT AI, 2026-09-29)", /^You are the voice of MINT AI\b/.test(desk.INSTRUCTIONS) && /You speak as MINT AI, in the first person/.test(desk.INSTRUCTIONS), desk.INSTRUCTIONS.slice(0, 200));
   check("no MONI in the desk's instructions or tool descriptions", !/MONI/.test(instr), (instr.match(/.{0,40}MONI.{0,40}/) || [])[0]);
   const lines = [desk.SAFE_LINE, desk.SAFE_LINE_ASKED, desk.SAFE_LINE_TAIL, desk.APPROVAL_LINE, desk.APPROVAL_LINE_SHORT, desk.DETAILS_LINE, desk.SUMMARY_CUT_LINE, desk.SUMMARY_NONE_LINE];
   check("every fixed spoken line is free of MONI", lines.every((l) => !/MONI/i.test(String(l || ""))), lines.join(" | "));
-  check("the fixed lines that name the assistant say MINT AI", /MINT AI/.test(desk.SAFE_LINE) && /MINT AI/.test(desk.SUMMARY_NONE_LINE));
+  check("no fixed line names the assistant at all: they are in its own voice, first person", lines.every((l) => !/MINT|MONI/i.test(String(l || ""))) && /^Give me a moment, I'm/.test(desk.SAFE_LINE));
 
   // The guard catches the same claims about either name.
   const ctx = { grounded: true, snapshotText: "{}" };
   for (const n of ["MINT AI", "MONI AI", "Mint"]) {
     const g = desk.guard(`${n} said the backups are fine.`, ctx);
-    check(`an invented "${n} said…" is cut`, !g.ok && g.rule === "invented-reply", JSON.stringify(g));
-    const h = desk.unbackedHandoff(`I've passed that to ${n}.`, { askedNow: false, pending: false });
-    check(`an unbacked "passed that to ${n}" is cut`, h && h.rule === "unbacked-handoff", JSON.stringify(h));
-    check(`backed by a call, "passed that to ${n}" passes`, desk.unbackedHandoff(`I've passed that to ${n}.`, { askedNow: true }) === null);
+    check(`"${n} said…" is cut (third-person: the voice is MINT AI)`, !g.ok && g.rule === "third-person", JSON.stringify(g));
+    const h = desk.guard(`I've passed that to ${n}.`, { ...ctx, askedNow: true });
+    check(`"passed that to ${n}" is cut even with a call behind it`, !h.ok && h.rule === "third-person", JSON.stringify(h));
   }
   const view = desk.forModel({ moni_ai: { state: "Ready" }, requests_to_moni_ai: [{ id: 3, answered: true, reply: "x" }] });
-  check("the desk's model view speaks of mint_ai, not moni_ai", view.mint_ai && view.mint_ai.state === "Ready" && !("moni_ai" in view) && Array.isArray(view.your_requests_to_mint_ai), JSON.stringify(view));
+  check("the desk's model view: its own state and requests, never moni_ai", view.your_own_state && view.your_own_state.state === "Ready" && !("moni_ai" in view) && Array.isArray(view.your_requests_in_progress), JSON.stringify(view));
 }
 
 console.log("the Command Center's name helper (public/moni-ai.js)");

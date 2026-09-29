@@ -228,7 +228,7 @@ function page(o) {
         <div class="cc-vb-wave" id="cc-vb-wave" aria-hidden="true"></div>
         <span class="cc-vb-tags"><span class="cc-tag cc-tag-mode" id="cc-vb-mode">Push to talk</span><span class="cc-tag${deskOn ? " desk" : ""}" id="cc-voice-mode" title="${
           deskOn
-            ? "Voice front desk (GPT, trial): quick answers from a read-only snapshot, and short summaries of MINT AI's answers; everything else goes to MINT AI. Switch it off in Settings › OpenAI voice."
+            ? "Voice front desk (GPT, trial): MINT AI's voice, speaking as MINT AI -- quick answers from a read-only snapshot, and short spoken summaries of MINT AI's own results. Switch it off in Settings › OpenAI voice."
             : "Voice goes straight to MINT AI: OpenAI only hears and reads aloud."
         }">${deskOn ? "Front desk · GPT" : "Direct · MINT AI"}</span><span class="cc-tag">OpenAI</span><span class="cc-tag" id="cc-voice-tag">${esc(voice.configured ? String(voice.voice || "voice") : "no key")}</span></span>
         <span class="cc-target cc-static">${ic("route")}<span id="cc-vb-target">Auto-route</span></span>

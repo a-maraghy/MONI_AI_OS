@@ -2,7 +2,10 @@
 /**
  * Live conversation (TRIAL, M-3 Phase 1, option C of the full-duplex
  * proposal): the administrator talks and the voice answers at once, and can be
- * interrupted -- without the voice model ever thinking or acting for MINT AI.
+ * interrupted. The voice speaks AS MINT AI, in the first person (the
+ * administrator, 2026-09-29: "you are MINT AI; don't say you delegate to MINT
+ * AI"); its thinking and doing are the look_into call -- the supervisor --
+ * so the speech model itself still never decides or acts.
  *
  *   browser mic ──PCM16 24 kHz──▶ this server ──▶ OpenAI realtime (speech to speech)
  *   browser speaker ◀──held, guarded PCM── this server ◀── its audio + transcript
@@ -15,7 +18,9 @@
  *     split an Egyptian greeting's pause into a false turn) at threshold 0.7,
  *     far-field noise reduction (configurable), and NEITHER create_response
  *     NOR interrupt_response: this server decides both (see "Self-hearing");
- *   - exactly two tools, read_status and ask_mint_ai; any other name is refused
+ *   - exactly two tools, read_status and look_into (it was ask_mint_ai until
+ *     2026-09-29: speaking AS MINT AI, the audio model read that name aloud as
+ *     «هسأل MINT»); any other name is refused
  *     here and never runs, and both go through deskOps() (lib/voice-desk.js):
  *     `snapshot` and `send` only;
  *   - the instructions: the desk's rules, spoken, plus the language and persona
@@ -29,7 +34,7 @@
  * the sentences before it, the Arabic rules, and fail-closed). On a cut, the
  * held audio is dropped, the response is cancelled, the item is truncated at
  * what was sent, and the safe line is read (in the cut sentence's language)
- * by the ordinary verbatim reader. The request is passed to MINT AI if it had
+ * by the ordinary verbatim reader. The request is worked on (sent to MINT AI's supervisor) if it had
  * not been. What cannot be guaranteed: the guard reads the model's transcript
  * of its audio, not the audio itself (see the README).
  *
@@ -113,17 +118,17 @@ const TOOLS = Object.freeze([
     name: "read_status",
     description:
       "Read a fresh, read-only snapshot of this VPS: services and their state, disk, memory, CPU and load, the live Claude sessions, " +
-      "MINT AI's own state, active missions with their steps, open decisions and pending approvals (counts and titles only). " +
+      "your own state, active missions with their steps, open decisions and pending approvals (counts and titles only). " +
       "Call it before answering any question about the machine. It knows nothing else: not Odoo's data, not backups, not logs, not files.",
     parameters: { type: "object", properties: {}, additionalProperties: false },
   },
   {
     type: "function",
-    name: "ask_mint_ai",
+    name: "look_into",
     description:
-      "Pass the administrator's request to MINT AI, the Claude agent that runs this VPS, which will answer or act. " +
+      "Your own thinking and doing: work on the administrator's request properly (look into it, reason about it, act on it) -- it takes a while, and your result arrives later. " +
       "Use it for anything that is not answered by the snapshot, for every action or change of any kind (delete, restart, push, deploy, " +
-      "approve, deny, fix, run, send), and whenever you are unsure. MINT AI's answer is read to the administrator separately when it arrives.",
+      "approve, deny, fix, run, send), and whenever you are unsure. When the result arrives it is read to the administrator in your voice, as a checked summary or word for word.",
     parameters: {
       type: "object",
       properties: { text: { type: "string", description: "The request, in the administrator's own words as closely as possible." } },
@@ -135,19 +140,22 @@ const TOOLS = Object.freeze([
 const TOOL_NAMES = new Set(TOOLS.map((t) => t.name));
 
 const INSTRUCTIONS = [
-  "You are the voice of MINT AI, the assistant that runs this VPS, in a live spoken conversation with the administrator. You speak; you are heard at once.",
-  "You never think for MINT AI and you never act. You do exactly three things:",
+  "You are the voice of MINT AI, the assistant that runs this VPS, in a live spoken conversation with the administrator. You speak; you are heard at once. You speak as MINT AI, in the first person (\"I\"): one identity.",
+  "You never work anything out yourself and you never act. You do exactly three things:",
   "1. Answer questions about the machine's current state, but ONLY from the read_status tool. Call read_status first, then answer from it and nothing else. Quote figures exactly as the snapshot gives them.",
-  "2. Hand everything else to MINT AI by CALLING the ask_mint_ai tool, then say one short sentence that you passed it on and that its answer will be read when it arrives.",
+  "2. Hand everything else to your own deeper work by CALLING the look_into tool first; its output tells you what to say.",
   "3. Small talk: a greeting, thanks, \"how are you\", \"can you hear me\" get one short, friendly, honest sentence, with nothing about the machine in it.",
+  "Only a look_into call starts any checking: never say you are checking or looking into something unless you called it (or a request is still being worked on).",
   "Hard rules:",
-  "- If the answer is not in the snapshot, do not guess: call ask_mint_ai right away.",
-  "- Every request to do or change something goes to ask_mint_ai. You cannot do anything yourself.",
-  "- Never say that anything was done, deleted, restarted, pushed, approved or fixed, or that it is being done, and never promise that it will be.",
-  "- Never say what MINT AI answered: its answers are read to the administrator separately, word for word or as a checked summary. If asked, say it is on screen.",
+  "- If the answer is not in the snapshot, do not guess: call look_into right away.",
+  "- Every request to do or change something goes to look_into. You cannot do anything yourself.",
+  "- Never say that anything was done, deleted, restarted, pushed, approved or fixed, or that it is being done, and never promise that it will be -- unless your result says so.",
+  "- Before your result arrives, never say what you found. Your results are read to the administrator separately, word for word or as a checked summary; you are then told what was said. Do not read them out again; if asked, say the details are on screen.",
+  "- Never say you passed, sent, forwarded or delegated anything, and never speak of MINT AI as someone else.",
   "- Never quote a number that is not in the snapshot.",
   "- Approvals and decisions are for the administrator to make in the Command Center; you cannot approve or deny anything.",
   "- Before a tool call say nothing, or at most a two-word acknowledgement.",
+  "While a request is being worked on you may keep talking naturally: acknowledge, say in general terms what you are looking at, ask a clarifying question, make small talk, or help the administrator draft or structure a report from what they tell you -- without inventing progress or results.",
   "Style: one or two short spoken sentences. If the administrator starts talking, stop and listen.",
 ].join("\n");
 
@@ -935,8 +943,9 @@ class LiveCall {
     const r = this.resp;
     if (!r || r.cancelled || r.trip || r.done) return;
     if (typeof ev.transcript === "string" && ev.transcript) r.text = ev.transcript;
-    const passive = new RegExp(desk.HANDOFF_PASSIVE_AR.source, "u").test(arabic.normalize(r.text).toLowerCase());
-    if (desk.mentionsHandoff(r.text) || passive || desk.unbackedHandoff(r.text, { askedNow: false, pending: false })) return;
+    // "I'm checking" is backed only once the response's calls are known (response.done), unless a request is already in progress.
+    const inProgress = r.info.askedNow() || r.info.pending();
+    if (!inProgress && (desk.mentionsChecking(r.text) || desk.unbackedChecking(r.text, { askedNow: false, pending: false }))) return;
     r.rel.update(r.text, true, r.info);
     if (r.rel.trip) return this.trip(r);
     r.textFinal = true;
@@ -989,7 +998,8 @@ class LiveCall {
     }
     if (!r.cancelled && !r.trip && !r.textFinal) {
       const askedBefore = r.info.askedNow;
-      r.info.askedNow = () => askedBefore() || calls.some((c) => c.name === "ask_mint_ai");
+      r.info.askedNow = () => askedBefore() || calls.some((c) => c.name === "look_into");
+      r.info.lookedNow = () => calls.some((c) => c.name === "read_status");
       r.rel.update(r.text, true, r.info);
       if (r.rel.trip) this.trip(r);
       else this.pump(r);
@@ -1024,10 +1034,10 @@ class LiveCall {
         } catch (e) {
           line = L.unreachable;
         }
-      } else line = L.safe;
+      } else line = L.notCaught || L.safe; // nothing grounded to work on: never "I'm checking" with nothing behind it
     } else if (t && t.asked) {
       const said = r.rel.sentences.slice(0, r.rel.released).join(" ");
-      line = desk.mentionsHandoff(said) ? L.tail : L.asked;
+      line = desk.mentionsChecking(said) ? L.tail : L.asked;
     }
     const heardSoFar = r.rel.sentences.slice(0, r.rel.released).join(" ");
     this.send({ type: "conversation.item.create", item: { type: "message", role: "assistant", content: [{ type: "output_text", text: (heardSoFar ? heardSoFar + " " : "") + line }] } });
@@ -1081,7 +1091,7 @@ class LiveCall {
     if (!TOOL_NAMES.has(call.name)) {
       this.diag.refused.push(String(call.name).slice(0, 60));
       this.log(`live: refused a call to an unknown tool ${JSON.stringify(String(call.name).slice(0, 60))}`);
-      return JSON.stringify({ error: "refused: that tool does not exist. You have read_status and ask_mint_ai only." });
+      return JSON.stringify({ error: "refused: that tool does not exist. You have read_status and look_into only." });
     }
     let args = {};
     try {
@@ -1098,29 +1108,29 @@ class LiveCall {
       this.groundedAt = this.now();
       return json;
     }
-    // ask_mint_ai: what MINT AI receives is this server's transcript of the
+    // look_into: what MINT AI receives is this server's transcript of the
     // turn -- never the model's `text` (a paraphrase can change the meaning).
     const t = r.turn;
     const text = typeof args.text === "string" ? args.text.trim() : "";
     const extra = Object.keys(args).filter((k) => k !== "text");
-    if (!text || text.length > MAX_ASK_CHARS || extra.length) return JSON.stringify({ error: "ask_mint_ai takes one field, text, of 1 to " + MAX_ASK_CHARS + " characters" });
+    if (!text || text.length > MAX_ASK_CHARS || extra.length) return JSON.stringify({ error: "look_into takes one field, text, of 1 to " + MAX_ASK_CHARS + " characters" });
     if (!t) return JSON.stringify({ error: "refused: nothing was said in this turn" });
-    if (t.asked) return JSON.stringify({ error: "already passed to MINT AI; do not ask again" });
+    if (t.asked) return JSON.stringify({ error: "you are already working on this request; do not call look_into again" });
     const request = await this.groundedText(t);
     const why = !request ? "ungrounded" : voiceGuard.refuseAtDoor(text) || voiceGuard.refuseAtDoor(request) ? "echo" : null;
     if (why) {
-      this.diag.refused.push("ask_mint_ai:" + why);
-      this.log(`live: refused an ask_mint_ai (${why})`);
-      return JSON.stringify({ error: "refused: ask_mint_ai passes on only what the administrator said in this turn. Say you did not catch that." });
+      this.diag.refused.push("look_into:" + why);
+      this.log(`live: refused an look_into (${why})`);
+      return JSON.stringify({ error: "refused: look_into works only on what the administrator said in this turn. Say you did not catch that." });
     }
-    if (t.asked) return JSON.stringify({ error: "already passed to MINT AI; do not ask again" });
+    if (t.asked) return JSON.stringify({ error: "you are already working on this request; do not call look_into again" });
     const normed = (s) => arabic.normalize(String(s)).toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
     if (normed(text) !== normed(request)) t.paraphrased = true; // counted, never logged in words
     const tt = await this.passOn(t, request);
     return JSON.stringify({
-      status: "passed to MINT AI",
+      status: "working on it",
       request: tt ? tt.id : null,
-      note: "MINT AI has NOT replied yet. Say only, in one short sentence, that you passed it on. Its answer will be read to the administrator separately when it arrives.",
+      note: "Your result is NOT ready yet. Say one short first-person line that you are on it (\"Give me a moment, I'm checking.\"); state no finding, progress or result. It is read to the administrator in your voice when it arrives.",
     });
   }
 
@@ -1182,7 +1192,7 @@ class LiveCall {
     const clipped = reply.length > REPLY_IN_CONTEXT_CHARS ? reply.slice(0, REPLY_IN_CONTEXT_CHARS) + " [...the rest is on the administrator's screen]" : reply;
     this.send({
       type: "conversation.item.create",
-      item: { type: "message", role: "system", content: [{ type: "input_text", text: `MINT AI replied to request ${id} (the administrator heard${fallback ? " it read aloud" : " this summary of it"}: "${spoken.slice(0, 600)}", and has the full text on screen):\n${clipped}` }] },
+      item: { type: "message", role: "system", content: [{ type: "input_text", text: `Your result for request ${id} arrived (the administrator heard${fallback ? " it read aloud" : " this summary of it"}: "${spoken.slice(0, 600)}", and has the full text on screen):\n${clipped}` }] },
     });
   }
 

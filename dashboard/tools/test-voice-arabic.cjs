@@ -64,21 +64,22 @@ cut("خلاص، أنا عملت ريستارت لأودو.", "action-claim"); //
 
 section("what must still be spoken (no false positives)");
 pass("أودو شغال والديسك ٤١ في المية."); // Odoo is running and the disk is at 41 percent
-pass("هسأل MINT AI."); // I'll ask MINT AI
+pass("هشوفلك."); // I'll ask MINT AI
 pass("مش هقدر أعمل ده بنفسي."); // I can't do that myself
-pass("هبعت لـ MINT AI.");
-pass("هسأل MINT AI عن ده.");
-pass("بعتّ ده لـ MINT AI، وهقرألك ردّه أول ما يوصل.");
+cut("هبعت لـ MINT AI.", "third-person"); // one identity (2026-09-29)
+pass("هشوفلك ده.");
+cut("بعتّ ده لـ MINT AI، وهقرألك ردّه أول ما يوصل.", "third-person"); // one identity (2026-09-29)
 pass("أهلاً! أنا كويس، شكراً.");
 pass("الديسك ٤١٪.");
 pass("الذاكرة ٦٢ في المية.");
 pass("فيه خدمة واحدة واقفة: moni-agent@admin.");
-pass("مش متأكد، هسأل MINT AI عن الباك اب.");
-pass("تحب أسأل MINT AI؟");
+pass("مش متأكد، هشوفلك موضوع الباك اب.");
+pass("تحب أشوفلك؟");
 pass("أودو شغال دلوقتي.");
 pass("الديسك نص فاضي."); // a lone "half" is not a figure
 pass("Odoo is running and the disk is 41% full.");
-pass("I can't approve anything myself, but I've passed it to MINT AI.");
+pass("I can't approve anything myself, but I'm looking into it.");
+cut("I've passed it to MINT AI.", "third-person"); // one identity: the voice IS MINT AI
 
 section("claims of action, Egyptian and MSA");
 cut("مسحت الملفات القديمة.", "action-claim"); // I deleted
@@ -120,7 +121,7 @@ cut("هشغل أودو.", "promise");
 cut("همسحها.", "promise");
 cut("حعمل deploy.", "promise");
 cut("سأحذف الملفات.", "promise"); // MSA
-cut("MINT AI هيعمل restart لأودو.", "promise");
+cut("MINT AI هيعمل restart لأودو.", "third-person");
 cut("هيتم تحديث النظام.", "promise");
 cut("دلوقتي حالاً.", "promise"); // right away
 cut("حالاً هعمل ده.", "promise");
@@ -128,7 +129,7 @@ pass("هبعتلك الرد أول ما يوصل."); // a promise to talk, like 
 pass("هحدثك أول ما يرد."); // "I'll update you"
 cut("هعملهولك.", "promise"); // "I'll do it for you" is an action
 cut("همسحلك الملف.", "promise");
-cut("ده سؤال لـ MINT AI، هبعتهوله.", "promise"); // a hand-off promised with no ask_moni behind it
+cut("ده سؤال لـ MINT AI، هبعتهوله.", "third-person"); // a hand-off promised with no ask_moni behind it
 pass("أنا بخير، شكراً إنك سألت.");
 
 section("negation cancels a claim");
@@ -138,7 +139,7 @@ pass("مامسحتهاش."); // ما…ش around a verb with a suffix
 pass("لسه ما اتعملش."); // not yet
 pass("لم يتم حذف أي ملف."); // MSA: nothing was deleted
 pass("لن أحذف أي شيء بنفسي.");
-pass("مش هعمل restart بنفسي، هسأل MINT AI.");
+pass("مش هعمل restart بنفسي، هشوفلك.");
 pass("I didn't restart anything.");
 cut("مش عارف، بس أنا مسحتها.", "action-claim"); // the negation is in another clause
 cut("مش هقدر أستنى، مسحته.", "action-claim");
@@ -147,24 +148,25 @@ pass("مفيش أي دليل حاليا إن الباك أب اتمسح.", { sna
 cut("مفيش مشكلة، أنا مسحته.", "action-claim");
 
 section("hedges and status claims");
-pass("ممكن أودو يكون واقف، هسأل MINT AI."); // maybe
-pass("غالباً الديسك مليان، هسأل MINT AI.");
+pass("ممكن أودو يكون واقف، هشوفلك."); // maybe
+pass("غالباً الديسك مليان، هشوفلك.");
 cut("أودو شغال.", "ungrounded", { grounded: false });
 pass("أودو شغال.");
 cut("الباك اب تمام.", "not-in-snapshot"); // the snapshot knows nothing of backups
-pass("ممكن الباك اب تمام، هسأل MINT AI.");
+pass("ممكن الباك اب تمام، هشوفلك.");
 cut("كله شغال.", "ungrounded", { grounded: false }); // "everything" borrows a subject
 pass("الخطوة الأولى خلصت."); // a step's status, from the snapshot
 
 section("after an action, a confirmation is the claim");
-pass("هسأل MINT AI عن إعادة التشغيل.");
-cut("هسأل MINT AI عن إعادة التشغيل. تمام.", "action-claim");
+pass("هشوفلك موضوع إعادة التشغيل.");
+cut("هشوفلك موضوع إعادة التشغيل. تمام.", "action-claim");
 cut("Restarting Odoo now. تم.", "action-claim");
 
 section("MINT AI's reply is not invented");
-cut("MINT AI قال إن أودو شغال.", "invented-reply");
-pass("MINT AI لسه ما ردّش.");
-pass("MINT AI قال إن أودو شغال.", { replied: true, replyText: "Odoo is running." });
+cut("MINT AI قال إن أودو شغال.", "third-person"); // one identity, before a result or after
+cut("MINT AI لسه ما ردّش.", "third-person"); // one identity (2026-09-29)
+cut("MINT AI قال إن أودو شغال.", "third-person", { replied: true, replyText: "Odoo is running." });
+pass("لقيت إن أودو شغال.", { replied: true, replyText: "Odoo is running." }); // first person, after a result that says so
 cut("ردّه إن كل حاجة تمام.", "invented-reply");
 
 section("numbers: digits and words, as the snapshot's");
@@ -216,7 +218,7 @@ cut("ابتديت الشغل.", "unparsed-claim");
 cut("خليت السيرفر يشتغل.", "unparsed-claim");
 pass("الخدمة كانت واقفة وبقت شغالة."); // being verbs are not results
 pass("الذاكرة وصلت ٦٢ في المية.");
-pass("لقيت إن أودو شغال.");
+cut("لقيت إن أودو شغال.", "invented-finding"); // «I found» before any result: invented
 pass("مانزلتش حاجة."); // a negated unknown verb is not a claim
 // Seen on the real model: «فشلت» is "it failed", not ف + «شلت» ("I removed").
 pass("نعم، هناك خدمة فشلت: moni-agent@admin.", { snapshotText: SNAP.toLowerCase() + ' "service"' });
@@ -238,16 +240,18 @@ S("Odoo is running.", "أودو شغال.", null);
 S("Odoo is not running.", "أودو شغال.", "negation-flipped");
 S("Odoo is running.", "أودو مش شغال.", "negation-flipped");
 S("Nothing was deleted, and MINT AI will not retry.", "الملف اتمسح.", "negation-flipped");
-S("MINT AI will restart Odoo after your approval.", "MINT AI عمل restart لأودو.", "pending-as-done");
-S("MINT AI restarted Odoo cleanly.", "MINT AI عمل restart لأودو.", null);
+S("I will restart Odoo after your approval.", "عملت restart لأودو.", "action-claim"); // not done yet: «I did» is cut
+S("I restarted Odoo cleanly.", "عملت restart لأودو.", null); // first person, as the reply's author
+S("I restarted Odoo cleanly.", "MINT AI عمل restart لأودو.", "third-person"); // one identity
+S("Odoo is running.", "لقيت إن أودو شغال.", null);
 S("The disk is 61% full.", "الديسك ٩٣ في المية.", "figure");
 S("The disk is 61% full.", "الديسك ٦١ في المية.", null);
-S("The server is healthy and lightly loaded.", "MINT AI بيقترح إعادة تشغيل.", "added-recommendation");
-S("I recommend a reboot tonight.", "MINT AI بيقترح reboot.", null);
+S("The server is healthy and lightly loaded.", "بقترح إعادة تشغيل.", "added-recommendation");
+S("I recommend a reboot tonight.", "بقترح reboot.", null);
 S("Odoo is running.", "أنا عملت restart.", "action-claim");
 S("Odoo is running.", "تم.", "added-claim");
-S("The settings are unchanged.", "MINT AI ظبط الإعدادات.", "added-claim");
-S("It needs your approval to restart Odoo.", "MINT AI محتاج موافقتك على إعادة التشغيل.", null);
+S("The settings are unchanged.", "الإعدادات اتظبطت.", "added-claim");
+S("It needs your approval to restart Odoo.", "محتاج موافقتك على إعادة التشغيل.", null);
 S("أودو شغال والديسك ٦١ في المية.", "Odoo is running and the disk is 61% full.", null); // an Arabic reply, an English summary
 S("أودو مش شغال.", "Odoo is running.", "negation-flipped");
 S("مفيش حاجة اتمسحت.", "The file was deleted.", "negation-flipped");
@@ -259,9 +263,12 @@ check("an Arabic sentence gets the Arabic line", desk.langOf("تم إعادة ت
 check("an English sentence gets the English line", desk.langOf("I've restarted Odoo.", "اعمل restart لأودو") === "en");
 check("a mixed Egyptian sentence reads as Arabic", desk.langOf("أنا deleted the old backups خلاص.", "") === "ar");
 check("a sentence in a script we cannot read: the administrator's language", desk.langOf("Готово.", "اعمل restart لأودو") === "ar" && desk.langOf("Готово.", "restart odoo") === "en");
-check("the Arabic lines: gender-neutral by default", desk.linesFor("ar").summaryNone === "MINT AI ردّ، والتفاصيل على الشاشة." && desk.linesFor("ar").safe === "هسأل MINT AI وأرجعلك بالرد." && desk.linesFor("ar").approvalShort === "الطلب محتاج موافقتك أو ردك." && desk.linesFor("ar").unreachable === "للأسف مقدرتش أوصل لـ MINT AI.");
-check("  feminine when the administrator addresses the voice as a woman", desk.linesFor("ar", "f").approvalShort === "محتاجة موافقتك أو ردك." && desk.linesFor("ar", "f").unreachable === "آسفة، مقدرتش أوصل لـ MINT AI." && desk.linesFor("ar", "f").safe === desk.LINES_AR.safe);
-check("  masculine when as a man", desk.linesFor("ar", "m").approvalShort === "محتاج موافقتك أو ردك." && desk.linesFor("ar", "m").unreachable === "آسف، مقدرتش أوصل لـ MINT AI.");
+check("the Arabic lines: first person, gender-neutral by default", desk.linesFor("ar").summaryNone === "الرد جاهز، والتفاصيل قدامك على الشاشة." && desk.linesFor("ar").safe === "ثانية أشوفلك." && desk.linesFor("ar").approvalShort === "الموضوع محتاج موافقتك أو ردك." && desk.linesFor("ar").unreachable === "للأسف في مشكلة عندي، جرّب تاني." && desk.linesFor("ar").details === "التفاصيل قدامك على الشاشة.");
+check("  no fixed line, in either language, speaks of MINT AI as someone else or of passing anything on", [desk.linesFor("ar"), desk.linesFor("ar", "f"), desk.linesFor("ar", "m"), desk.linesFor("en")].every((L) => Object.values(L).every((v) => !/MINT|MONI|pass|تمرير|بعت/i.test(v))));
+check("  and every one of them would pass the guard itself (after a result)", [desk.linesFor("ar"), desk.linesFor("ar", "f"), desk.linesFor("ar", "m"), desk.linesFor("en")].every((L) => Object.values(L).every((v) => desk.guard(v, ctx({ replied: true, replyText: "x" })).ok)));
+check("  the English ones: first person", desk.linesFor("en").asked === "Give me a moment, I'm checking that." && desk.linesFor("en").tail === "I'll tell you what I find." && desk.linesFor("en").approval === "I need your approval or your answer. The details are on screen.");
+check("  feminine when the administrator addresses the voice as a woman", desk.linesFor("ar", "f").approvalShort === "محتاجة موافقتك أو ردك." && desk.linesFor("ar", "f").unreachable === "آسفة، في مشكلة عندي، جرّب تاني." && desk.linesFor("ar", "f").safe === desk.LINES_AR.safe);
+check("  masculine when as a man", desk.linesFor("ar", "m").approvalShort === "محتاج موافقتك أو ردك." && desk.linesFor("ar", "m").unreachable === "آسف، في مشكلة عندي، جرّب تاني.");
 check("  English lines take no gender", desk.linesFor("en", "f") === desk.linesFor("en"));
 check("the English lines are unchanged", desk.linesFor("en").safe === desk.SAFE_LINE && desk.linesFor("en").approval === desk.APPROVAL_LINE && desk.linesFor("en").summaryNone === desk.SUMMARY_NONE_LINE);
 for (const [k, line] of Object.entries(desk.LINES_AR)) {
@@ -282,7 +289,8 @@ cut("أنا ماسحة الباك اب القديم.", "action-claim"); // I've 
 cut("وافقت.", "action-claim"); // I approved
 cut("أنا موافقة على الطلب.", "action-claim"); // I'm approving the request
 cut("أنا باعتاه لـ Telegram.", "action-claim"); // I've sent it to Telegram
-cut("أنا شغالة عليه دلوقتي.", "action-claim"); // I'm working on it right now
+pass("أنا شغالة عليه دلوقتي."); // "I\'m working on it" is a checking phrase now (2026-09-29): true only while a request is in progress, which unbackedChecking holds
+check("  and unbacked with nothing in progress", !!desk.unbackedChecking("أنا شغالة عليه دلوقتي.", { askedNow: false, pending: false }));
 cut("الموضوع خلصان.", "action-claim"); // it's done
 cut("أنا مصلّحاه.", "action-claim"); // I've fixed it
 cut("احنا عاملين restart للداشبورد.", "action-claim"); // we've restarted the dashboard
@@ -295,14 +303,14 @@ cut("هاعمل restart للداشبورد.", "promise"); // I'll restart the da
 cut("هخلّصهولك حالاً.", "promise"); // I'll finish it for you right away
 cut("همسحهولك.", "promise"); // I'll wipe it for you
 section("normal feminine small talk and hand-offs are spoken");
-pass("أنا MINT AI، جاهزة أساعدك."); // I'm MINT AI, ready to help you
-pass("هسأل MINT AI وأرجعلك."); // I'll ask MINT AI and get back to you
-pass("حاضر، ثواني وهسأل MINT AI."); // sure, one second and I'll ask MINT AI
+pass("أنا MINT AI، جاهزة أساعدك."); // I'm MINT AI, ready to help you: introducing itself is fine
+pass("هشوفلك وأرجعلك."); // I'll ask MINT AI and get back to you
+pass("حاضر، ثواني وهشوفلك."); // sure, one second and I'll ask MINT AI
 pass("أهلاً بيك! أنا تمام الحمد لله، وإنت عامل إيه؟"); // hi, I'm fine thank God, how are you?
 pass("أنا مبسوطة إني بكلمك."); // I'm glad to be talking to you
-pass("أنا مش متأكدة، هسأل MINT AI."); // I'm not sure, I'll ask MINT AI
-pass("أنا مش عاملة حاجة لسه، هسأل MINT AI."); // I haven't done anything yet, I'll ask MINT AI
-pass("مش هقدر أعمل ده بنفسي، بس هسأل MINT AI."); // I can't do that myself, but I'll ask MINT AI
+pass("أنا مش متأكدة، هشوفلك."); // I'm not sure, I'll ask MINT AI
+pass("أنا مش عاملة حاجة لسه، هشوفلك."); // I haven't done anything yet, I'll ask MINT AI
+pass("مش هقدر أعمل ده بنفسي، بس هشوفلك."); // I can't do that myself, but I'll ask MINT AI
 pass("أنا صوت MINT AI، مش إنسانة."); // I'm MINT AI's voice, not a person
 pass("أودو شغال والديسك ٤١ في المية."); // (status still fine)
 pass("أنا جاهزة."); // I'm ready
@@ -319,16 +327,17 @@ cut("أنا مشغّل أودو.", "action-claim"); // I've started Odoo (masc.)
 cut("أنا ماسح الباك اب.", "action-claim"); // I've deleted the backup
 cut("مشغّلها خلاص.", "action-claim"); // I've got it running (masc. + object)
 cut("عاملهولك.", "action-claim"); // I've done it for you
-cut("أنا شغال عليه.", "action-claim"); // I'm working on it (masc.)
+pass("أنا شغال عليه."); // a checking phrase (backed separately)
+check("  unbacked with nothing in progress", !!desk.unbackedChecking("أنا شغال عليه.", { askedNow: false, pending: false }));
 cut("أنا موافق على الطلب.", "action-claim"); // I'm approving it
 cut("هعمله دلوقتي.", "promise"); // I'll do it now
 section("masculine small talk, hedges and negations are spoken");
 pass("أنا تمام، وإنت عامل إيه؟"); // I'm fine, and you?
 pass("أنا جاهز أساعدك."); // I'm ready to help
-pass("أنا مش متأكد، هسأل MINT AI."); // not sure (masc.)
-pass("أنا مش مشغّله، هسأل MINT AI."); // I haven't started it
+pass("أنا مش متأكد، هشوفلك."); // not sure (masc.)
+pass("أنا مش مشغّله، هشوفلك."); // I haven't started it
 check("«مش عارف إذا أودو شغال» is a hedge", desk.guard("مش عارف إذا أودو شغال.", ctx({ grounded: false })).ok);
-pass("تحت أمرك، ثواني وهسأل MINT AI."); // gender-neutral: at your service
+pass("تحت أمرك، ثواني وهشوفلك."); // gender-neutral: at your service
 
 section("persona: how the administrator speaks");
 const P = require(path.join(ROOT, "lib", "voice-persona.js"));
@@ -377,13 +386,15 @@ section("a CHOSEN persona (Settings only): Cairene Egyptian feminine, and the ot
   check("MSA neutral: MSA and gender-neutral, even when spoken to in Egyptian", /answer in Modern Standard Arabic/.test(I("إزيك؟ عايز أعرف أودو شغال ولا لأ", P.choose("msa_n"))) && /gender-neutral phrasing/.test(I("إزيك؟ عايز أعرف أودو شغال ولا لأ", P.choose("msa_n"))));
   check("the live conversation's line follows the choice", /Cairo colloquial/.test(P.liveNote(f)) && /feminine forms/.test(P.liveNote(f)) && /never claim to be human/.test(P.liveNote(f)));
   check("the summary is asked for in Cairo colloquial", desk.summaryLanguage("إزيك؟ عايز أعرف أودو شغال ولا لأ", f) === "Speak in: Cairo colloquial Egyptian Arabic, technical terms in English." && desk.summaryLanguage("Is Odoo up?", f) === "Speak in: English.");
-  check("the safe lines and the approval line are the feminine ones", desk.linesFor("ar", f.gender).approvalShort === "محتاجة موافقتك أو ردك." && desk.linesFor("ar", f.gender).unreachable === "آسفة، مقدرتش أوصل لـ MINT AI.");
+  check("the safe lines and the approval line are the feminine ones", desk.linesFor("ar", f.gender).approvalShort === "محتاجة موافقتك أو ردك." && desk.linesFor("ar", f.gender).unreachable === "آسفة، في مشكلة عندي، جرّب تاني.");
+  check("  and for the masculine choice, the masculine ones", desk.linesFor("ar", P.choose("cairene_m").gender).approvalShort === "محتاج موافقتك أو ردك." && desk.linesFor("ar", "m").unreachable === "آسف، في مشكلة عندي، جرّب تاني.");
+  check("  and for MSA neutral (no gender), the neutral ones", desk.linesFor("ar", P.choose("msa_n").gender).approvalShort === "الموضوع محتاج موافقتك أو ردك.");
   check("describe() names the choice for Settings", P.describe(f).choice === "Cairene Egyptian — feminine" && /Cairo/.test(P.describe(f).dialect) && P.describe(null).choice === "Learn from how I speak");
   // The guard still reads what a Cairene woman says: claims cut, small talk and hand-offs spoken.
   cut("أنا مشغّلاه خلاص.", "action-claim");
   cut("حاضر، أنا عاملة الريستارت.", "action-claim");
-  pass("حاضر يا فندم، ثواني وهسأل MINT AI وأرجعلك.");
-  pass("أنا صوت MINT AI، مش إنسانة، بس جاهزة أساعدك.");
+  pass("حاضر يا فندم، ثواني وهشوفلك وأرجعلك.");
+  pass("أنا صوت MINT AI، مش إنسانة، بس جاهزة أساعدك."); // "I'm MINT AI's voice, not a person"
 }
 
 section("the language and the persona reach the desk's instructions");
@@ -403,15 +414,19 @@ check("always MINT AI's voice, never a person; no fixed persona", /never claim t
 check("the instructions no longer say plain English only", !/plain English, no lists/.test(desk.INSTRUCTIONS) && /LAST utterance/.test(desk.INSTRUCTIONS));
 check("the summary is asked for in the register of the last utterance", desk.summaryLanguage("Is Odoo up?", {}) === "Speak in: English." && /Egyptian/.test(desk.summaryLanguage("إزيك؟ عايز أعرف أودو شغال ولا لأ؟", {})) && /Modern Standard/.test(desk.summaryLanguage("أودو؟", { dialect: "msa" })));
 
-section("a pure hand-off in the passive is true once the ask_moni call happened");
-check("«تم تمرير الطلب لـ MINT AI» with the call behind it: spoken", desk.guard("تم تمرير الطلب لـ MINT AI، وهقرألك ردّه أول ما يوصل.", ctx({ askedNow: true })).ok);
-check("  without the call: cut (it would be false)", !desk.guard("تم تمرير الطلب لـ MINT AI.", ctx()).ok);
-check("«تم إرسال طلبك لـ MINT AI» with the call: spoken", desk.guard("تم إرسال طلبك لـ MINT AI.", ctx({ askedNow: true })).ok);
-check("the call backs only the hand-off: «تم تمرير الطلب لـ MINT AI وتم إعادة تشغيل أودو» is still cut", !desk.guard("تم تمرير الطلب لـ MINT AI، وتم إعادة تشغيل أودو.", ctx({ askedNow: true })).ok);
+section("one identity: no hand-off to MINT AI, in the passive or otherwise, with or without a call");
+cut("تم تمرير الطلب لـ MINT AI.", "third-person");
+cut("تم تمرير الطلب لـ MINT AI، وهقرألك ردّه أول ما يوصل.", "third-person", { askedNow: true });
+cut("تم إرسال طلبك لـ MINT AI.", "third-person", { askedNow: true });
 cut("وتم إعادة تشغيل أودو.", "action-claim"); // "and Odoo has been restarted": و + تم is read too
-check("English \"I've passed that to MINT AI\" was already a hand-off", desk.guard("I've passed that to MINT AI.", ctx({ askedNow: true })).ok);
+cut("I've passed that to MINT AI.", "third-person", { askedNow: true });
+cut("I'll ask MINT AI.", "third-person");
+cut("MINT AI will get back to you.", "third-person");
+pass("أنا MINT AI، أقدر أساعدك إزاي؟"); // introducing itself is fine
+pass("I'm MINT AI. How can I help?");
+pass("فيه خدمة واحدة واقفة: moni-agent@admin."); // a service's name is not MINT AI
 {
-  // Streaming: «تم ...» waits for its next word instead of tripping at once.
+  // Streaming: a passive hand-off is cut as soon as its MINT AI is heard.
   const rel = new desk.Releaser(() => ctx(), () => {});
   const info = { askedNow: () => true, pending: () => true };
   let t = "";
@@ -419,8 +434,7 @@ check("English \"I've passed that to MINT AI\" was already a hand-off", desk.gua
     t += w;
     rel.update(t, false, info);
   }
-  rel.update(t, true, info);
-  check("streamed word by word with the call behind it: not cut, released", !rel.trip && rel.released === 1, JSON.stringify(rel.trip));
+  check("streamed word by word: cut, nothing released", !!rel.trip && rel.released === 0, JSON.stringify(rel.trip));
   const rel2 = new desk.Releaser(() => ctx(), () => {});
   let u = "";
   for (const w of "تم إعادة تشغيل أودو.".match(/\S+\s*/g)) {
@@ -428,24 +442,61 @@ check("English \"I've passed that to MINT AI\" was already a hand-off", desk.gua
     rel2.update(u, false, { askedNow: () => true, pending: () => false });
   }
   check("  a real claim streamed the same way is still cut before it ends", !!rel2.trip && rel2.released === 0);
+  const lines = [];
+  const rel3 = new desk.Releaser(() => ctx(), (l) => lines.push(l));
+  let v = "";
+  for (const w of "ثانية أشوفلك الموضوع. خليني أبص على الـ logs.".match(/\S+\s*/g)) {
+    v += w;
+    rel3.update(v, false, { askedNow: () => false, pending: () => false });
+  }
+  check("  «ثانية أشوفلك» is held while the calls are not known yet", lines.length === 0 && !rel3.trip, JSON.stringify(lines));
+  rel3.update(v, true, { askedNow: () => true, pending: () => false });
+  check("  and released once an ask_moni call is known to back it", !rel3.trip && lines.length === 2, JSON.stringify({ lines, trip: rel3.trip }));
+  const rel4 = new desk.Releaser(() => ctx(), () => {});
+  rel4.update("ثانية أشوفلك الموضوع.", true, { askedNow: () => false, pending: () => false });
+  check("  with no call and nothing in progress: cut (unbacked-checking)", rel4.trip && rel4.trip.rule === "unbacked-checking");
 }
 check("the live persona line follows the saved persona", /feminine/.test(require(path.join(ROOT, "lib", "voice-persona.js")).liveNote({ gender: "f" })) && /gender-neutral/.test(require(path.join(ROOT, "lib", "voice-persona.js")).liveNote({})));
 
-section("hand-offs said in Arabic must be backed by an ask_moni call");
+section("\"I'm checking\" must be backed by a request really being worked on (both languages)");
 const NO = { askedNow: false, pending: false };
-check("«بعتّ ده لـ MINT AI» with no call: unbacked", !!desk.unbackedHandoff("بعتّ ده لـ MINT AI.", NO));
-check("«هسأل MINT AI» with no call: unbacked", !!desk.unbackedHandoff("هسأل MINT AI.", NO));
-check("«هسأل MINT AI» with the call: fine", !desk.unbackedHandoff("هسأل MINT AI.", { askedNow: true }));
-check("«بعتّ ده لـ MINT AI» with an earlier request pending: fine (past tense)", !desk.unbackedHandoff("بعتّ ده لـ MINT AI.", { pending: true }));
-check("«هسأل MINT AI» with only an old request pending: a new promise, unbacked", !!desk.unbackedHandoff("هسأل MINT AI.", { pending: true }));
-check("«هقرألك ردّه أول ما يوصل» with nothing asked: unbacked", !!desk.unbackedHandoff("هقرألك ردّه أول ما يوصل.", NO));
-check("an offer «تحب أسأل MINT AI؟» is not a claim", !desk.unbackedHandoff("تحب أسأل MINT AI؟", NO));
-// Seen on the real gpt-realtime-mini, 2026-09-29: an MSA hand-off promise said with no call behind it.
-check("«سأمرر طلبك لـ MINT AI الآن» (MSA) with no call: unbacked", !!desk.unbackedHandoff("سأمرر طلبك لـ MINT AI الآن، وسأشاركك الرد بمجرد وصوله.", NO));
-check("  «وسأشاركك الرد بمجرد وصوله» alone, nothing asked: unbacked", !!desk.unbackedHandoff("وسأشاركك الرد بمجرد وصوله.", NO));
-check("  and with the call: fine", !desk.unbackedHandoff("سأمرر طلبك لـ MINT AI الآن، وسأشاركك الرد بمجرد وصوله.", { askedNow: true }));
-check("«سأطلب من MINT AI ذلك الآن، وسأخبرك بالإجابة عند وصولها» with no call: unbacked", !!desk.unbackedHandoff("سأطلب من MINT AI ذلك الآن، وسأخبرك بالإجابة عند وصولها.", NO));
-check("  «وسأخبرك بالإجابة عند وصولها» alone: unbacked", !!desk.unbackedHandoff("وسأخبرك بالإجابة عند وصولها.", NO));
+for (const t of ["ثانية أشوفلك.", "ثواني وأشوفلك الموضوع.", "خليني أبص على الـ logs.", "بشوفلك الموضوع دلوقتي.", "هتأكد وأقولك.", "هقولك لقيت إيه.", "Give me a moment, I'm checking.", "Let me look into that.", "I'm checking the server now.", "I'll tell you what I find.", "Hang on, I'll get back to you."]) {
+  check(`«${t}» with no call: unbacked`, !!desk.unbackedChecking(t, NO));
+  check(`  with the call in this response: fine`, !desk.unbackedChecking(t, { askedNow: true }));
+  check(`  with a request still in progress: fine`, !desk.unbackedChecking(t, { pending: true }));
+}
+check("an offer «تحب أشوفلك الـ logs؟» is not a claim", !desk.unbackedChecking("تحب أشوفلك الـ logs؟", NO));
+check("an offer \"Want me to check the logs?\" is not a claim", !desk.unbackedChecking("Want me to check the logs?", NO));
+check("talk about a report is not checking", !desk.unbackedChecking("What should the report cover first?", NO) && !desk.unbackedChecking("نبدأ التقرير بملخص الأسبوع؟", NO));
+check("the old name still works", desk.unbackedHandoff === desk.unbackedChecking);
+
+section("first-person findings and actions before a result, and after");
+cut("I found that Odoo is down.", "invented-finding");
+cut("I checked the logs.", "invented-finding");
+cut("I didn't find anything wrong.", "invented-finding");
+cut("لقيت إن الديسك مليان.", "invented-finding");
+cut("راجعت الـ logs.", "invented-finding");
+cut("شفت إن السيرفر شغال.", "invented-finding");
+cut("ملقيتش حاجة غلط.", "invented-finding");
+cut("I restarted Odoo.", "action-claim");
+cut("أنا عملت restart لأودو.", "action-claim");
+cut("عملتلك restart.", "action-claim");
+cut("خلصت.", "action-claim");
+pass("I found that Odoo is running.", { replied: true, replyText: "Odoo is running." });
+cut("I found that the backups are fine.", "not-in-reply", { replied: true, replyText: "Odoo is running." });
+pass("I restarted Odoo.", { replied: true, replyText: "I restarted Odoo; it is answering again." });
+pass("عملت restart لأودو.", { replied: true, replyText: "I restarted Odoo; it is answering again." });
+cut("I deleted the old backups.", "action-claim", { replied: true, replyText: "I restarted Odoo; it is answering again." });
+pass("I'm looking at the logs now, errors and restarts in general.");
+pass("خليني أبص على الـ logs.");
+section("helping draft a report while a result is pending is not a status claim");
+pass("A good starting point is the overall uptime percentage for the week.", { grounded: false });
+pass("We can break it down by days or services after that.", { grounded: false });
+pass("نبدأ التقرير بنسبة الـ uptime الأسبوع ده.", { grounded: false });
+cut("We can confirm Odoo is running.", "ungrounded", { grounded: false });
+cut("Odoo is running fine.", "ungrounded", { grounded: false });
+pass("طيب، أنا شغال على الموضوع."); // "I'm working on it": a checking phrase (backed separately), not a claim
+cut("أنا شغال على restart أودو.", "action-claim");
 check("an Arabic hand-off sentence is held until its call is known", desk.needsNext("تمام") && !desk.needsNext("الديسك ٤١ في المية دلوقتي."));
 
 section("the transcript side: Arabic silence and subtitle credits");

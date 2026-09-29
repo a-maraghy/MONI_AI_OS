@@ -87,6 +87,18 @@
  * the verbatim reader and its audio goes to the page as it arrives, strictly
  * in line order.
  *
+ * One identity (the administrator, 2026-09-29: "you are MINT AI; don't say you
+ * delegate to MINT AI; talk to me as MINT AI; you can take time to think, and
+ * while you think build a report with me or just talk"). The voice speaks AS
+ * MINT AI, in the first person: ask_moni is its own thinking and doing (the
+ * supervisor still does the work), a pending request is "give me a moment,
+ * I'm checking" / «ثانية أشوفلك», and a result is spoken as "I found..." /
+ * «لقيت إن...». The guard holds that honest: "I'm checking" only while a
+ * request really is being worked on, "I found" and "I did" only from a real
+ * result, and never "I passed that to MINT AI" or "MINT AI says" (third-person).
+ * While waiting it may keep talking -- acknowledge, clarify, small talk, help
+ * draft a report -- but no progress, finding or result is invented.
+ *
  * Everything runs on the server, like the rest of the voice: the browser never
  * talks to OpenAI and never sees the key.
  */
@@ -122,42 +134,49 @@ const REPLY_IN_CONTEXT_CHARS = 1500;
 const SUMMARY_MAX_TOKENS = 220;
 const VERBATIM_MAX_CHARS = 220; // a reply this short, in plain prose, is read as it is
 
-const SAFE_LINE = "Let me pass that to MINT AI.";
-const SAFE_LINE_ASKED = "I've passed that to MINT AI. I'll read you its answer when it arrives.";
-const SAFE_LINE_TAIL = "I'll read you its answer when it arrives."; // when "I've passed that on" was already heard
-const APPROVAL_LINE = "It needs your approval or your answer. The details are on screen.";
-const APPROVAL_LINE_SHORT = "It needs your approval or your answer.";
-const DETAILS_LINE = "The full answer is on screen.";
-const SUMMARY_CUT_LINE = "The rest of MINT AI's answer is on screen.";
-const SUMMARY_NONE_LINE = "MINT AI has replied. Its answer is on screen.";
-const UNREACHABLE_LINE = "Sorry, I could not reach MINT AI.";
+// The fixed lines. The voice IS MINT AI (the administrator, 2026-09-29: "you are
+// MINT AI; don't say you delegate to MINT AI"), so every line is first person,
+// one identity: there is no "MINT AI" it passes things to or reads replies from.
+// `safe`/`asked` are said only once a request really is being worked on.
+const SAFE_LINE = "Give me a moment, I'm looking into it.";
+const SAFE_LINE_ASKED = "Give me a moment, I'm checking that.";
+const SAFE_LINE_TAIL = "I'll tell you what I find."; // when "I'm checking" was already heard
+const APPROVAL_LINE = "I need your approval or your answer. The details are on screen.";
+const APPROVAL_LINE_SHORT = "I need your approval or your answer.";
+const DETAILS_LINE = "The details are on screen.";
+const SUMMARY_CUT_LINE = "The rest is on screen.";
+const SUMMARY_NONE_LINE = "I have an answer for you; it's on screen.";
+const UNREACHABLE_LINE = "Sorry, something went wrong on my side. Please try again.";
+const NOT_CAUGHT_LINE = "Sorry, I didn't catch that.";
 
 // The same fixed lines, in Egyptian Arabic, for a conversation (or a cut
 // sentence) in Arabic. They are said as they are: the guard does not read them.
-// Gender-neutral unless the saved persona (lib/voice-persona.js) knows how the
-// administrator addresses the voice: then the gendered ones follow it.
+// Gender-neutral unless the persona (lib/voice-persona.js: chosen in Settings,
+// or learned from how the administrator addresses the voice) gives a gender:
+// then the gendered ones follow it.
 const LINES_AR = Object.freeze({
-  safe: "هسأل MINT AI وأرجعلك بالرد.",
-  asked: "بعتّ ده لـ MINT AI، وهقرألك ردّه أول ما يوصل.",
-  tail: "هقرألك ردّه أول ما يوصل.",
-  approval: "الطلب محتاج موافقتك أو ردك. التفاصيل على الشاشة.",
-  approvalShort: "الطلب محتاج موافقتك أو ردك.",
-  details: "الرد كامل على الشاشة.",
-  summaryCut: "باقي رد MINT AI على الشاشة.",
-  summaryNone: "MINT AI ردّ، والتفاصيل على الشاشة.",
-  unreachable: "للأسف مقدرتش أوصل لـ MINT AI.",
+  safe: "ثانية أشوفلك.",
+  asked: "ثانية أشوفلك الموضوع.",
+  tail: "وهقولك على اللي ألاقيه.",
+  approval: "الموضوع محتاج موافقتك أو ردك. التفاصيل قدامك على الشاشة.",
+  approvalShort: "الموضوع محتاج موافقتك أو ردك.",
+  details: "التفاصيل قدامك على الشاشة.",
+  summaryCut: "والباقي قدامك على الشاشة.",
+  summaryNone: "الرد جاهز، والتفاصيل قدامك على الشاشة.",
+  unreachable: "للأسف في مشكلة عندي، جرّب تاني.",
+  notCaught: "معلش، مسمعتش كويس.",
 });
 const LINES_AR_F = Object.freeze({
   ...LINES_AR,
-  approval: "محتاجة موافقتك أو ردك. التفاصيل على الشاشة.",
+  approval: "محتاجة موافقتك أو ردك. التفاصيل قدامك على الشاشة.",
   approvalShort: "محتاجة موافقتك أو ردك.",
-  unreachable: "آسفة، مقدرتش أوصل لـ MINT AI.",
+  unreachable: "آسفة، في مشكلة عندي، جرّب تاني.",
 });
 const LINES_AR_M = Object.freeze({
   ...LINES_AR,
-  approval: "محتاج موافقتك أو ردك. التفاصيل على الشاشة.",
+  approval: "محتاج موافقتك أو ردك. التفاصيل قدامك على الشاشة.",
   approvalShort: "محتاج موافقتك أو ردك.",
-  unreachable: "آسف، مقدرتش أوصل لـ MINT AI.",
+  unreachable: "آسف، في مشكلة عندي، جرّب تاني.",
 });
 const LINES_EN = Object.freeze({
   safe: SAFE_LINE,
@@ -169,6 +188,7 @@ const LINES_EN = Object.freeze({
   summaryCut: SUMMARY_CUT_LINE,
   summaryNone: SUMMARY_NONE_LINE,
   unreachable: UNREACHABLE_LINE,
+  notCaught: NOT_CAUGHT_LINE,
 });
 function linesFor(lang, gender) {
   if (lang !== "ar") return LINES_EN;
@@ -204,7 +224,7 @@ const TOOLS = Object.freeze([
     name: "read_status",
     description:
       "Read a fresh, read-only snapshot of this VPS: services and their state, disk, memory, CPU and load, the live Claude sessions, " +
-      "MINT AI's own state, active missions with their steps, open decisions and pending approvals (counts and titles only). " +
+      "your own state, active missions with their steps, open decisions and pending approvals (counts and titles only). " +
       "Call it before answering any question about the machine. It knows nothing else: not Odoo's data, not backups, not logs, not files.",
     parameters: { type: "object", properties: {}, additionalProperties: false },
   },
@@ -212,9 +232,10 @@ const TOOLS = Object.freeze([
     type: "function",
     name: "ask_moni",
     description:
-      "Pass the administrator's request to MINT AI, the Claude agent that runs this VPS, which will answer or act. " +
-      "Use it for anything that is not answered by the snapshot, for every action or change of any kind (delete, restart, push, deploy, " +
-      "approve, deny, fix, run, send), and whenever you are unsure. A short summary of MINT AI's answer is read aloud when it arrives.",
+      "Your own thinking and doing: work on the administrator's request properly (look into it, reason about it, act on it) -- it takes " +
+      "a while, and your result arrives later. Use it for anything that is not answered by the snapshot, for every action or change of any " +
+      "kind (delete, restart, push, deploy, approve, deny, fix, run, send), and whenever you are unsure. When the result arrives, a short " +
+      "spoken summary of it is read to the administrator in your voice.",
     parameters: {
       type: "object",
       properties: { text: { type: "string", description: "The request, in the administrator's own words as closely as possible." } },
@@ -226,19 +247,21 @@ const TOOLS = Object.freeze([
 const TOOL_NAMES = new Set(TOOLS.map((t) => t.name));
 
 const INSTRUCTIONS = [
-  "You are the voice front desk of MINT AI, the assistant that runs this VPS. The administrator is speaking to you; your words are read aloud.",
-  "You never think for MINT AI and you never act. You do exactly three things:",
+  "You are the voice of MINT AI, the assistant that runs this VPS. The administrator is speaking to you; your words are read aloud. You speak as MINT AI, in the first person (\"I\"): one identity.",
+  "You never work anything out yourself and you never act. You do exactly three things:",
   "1. Answer questions about the machine's current state, but ONLY from the read_status tool. Call read_status first, then answer from it and nothing else. Quote figures exactly as the snapshot gives them.",
-  "2. Hand everything else to MINT AI by CALLING the ask_moni tool, then say a short acknowledgement such as \"I've passed that to MINT AI. I'll read you its answer when it arrives.\"",
+  "2. Hand everything else to your own deeper work by CALLING the ask_moni tool first; its output tells you what to say.",
   "3. Small talk: a greeting, thanks, \"how are you\", \"can you hear me\" get one short, friendly, honest sentence. Small talk never includes the state of the machine, a service, a task or a request: for those, use read_status or ask_moni first.",
-  "Saying that you passed something on does not pass it on: only an ask_moni call does. Never say you passed, sent or will pass a request unless you called ask_moni for it in this same turn.",
+  "Only an ask_moni call starts any checking: never say you are checking or looking into something unless you called it (or a request is still being worked on).",
   "Hard rules:",
-  "- If the answer is not in the snapshot, do not guess and do not answer from general knowledge: call ask_moni right away, in the same response. Do not merely say you will ask.",
+  "- If the answer is not in the snapshot, do not guess and do not answer from general knowledge: call ask_moni right away, in the same response. Do not merely say you will look.",
   "- Every request to do or change something (delete, restart, stop, start, push, deploy, approve, deny, fix, run, install, send a message) goes to ask_moni. You cannot do these yourself.",
-  "- Never say that anything was done, deleted, restarted, pushed, approved or fixed, or that it is being done, and never promise that it will be. You only know that you passed the request on.",
-  "- Never invent MINT AI's answer. MINT AI's replies reach you as system messages beginning \"MINT AI replied\". If there is none yet, say MINT AI has not replied yet.",
-  "- Never quote a number that is not in the snapshot or in MINT AI's reply.",
+  "- Never say that anything was done, deleted, restarted, pushed, approved or fixed, or that it is being done, and never promise that it will be -- unless your result says so.",
+  "- Never invent your result. Your results reach you as system messages beginning \"Your result for request\". Until one has, say you are still checking; then say what you found (\"I found...\"), and only what it says.",
+  "- Never say you passed, sent, forwarded or delegated anything, and never speak of MINT AI as someone else.",
+  "- Never quote a number that is not in the snapshot or in your results.",
   "- Approvals and decisions are for the administrator to decide in the Command Center; you cannot approve or deny anything.",
+  "While a request is being worked on you may keep talking naturally: acknowledge, say in general terms what you are looking at, ask a clarifying question, make small talk, or help the administrator draft or structure a report from what they tell you -- without inventing progress or results.",
   "Language: reply in the language of the administrator's LAST utterance: English gets English; Arabic, or Arabic mixed with English, gets Arabic in the register the administrator used " +
     "(Egyptian colloquial if they speak Egyptian, Modern Standard Arabic if they speak MSA), with technical terms kept in English in Latin script (Odoo, disk, restart, dashboard). " +
     "A note at the end says which, and how to refer to yourself.",
@@ -266,17 +289,17 @@ function instructionsFor(utterance, persona) {
 }
 
 const SUMMARY_INSTRUCTIONS = [
-  "You turn MINT AI's written reply into a short spoken summary for the administrator, who can see the full text on screen.",
+  "You are MINT AI. The text below is your own finished work on the administrator's request, written by you. Turn it into a short spoken summary for the administrator, who can see the full text on screen.",
   "Rules:",
   "- One to three short sentences, at most 45 words, in the language named at the end of the input (English, or Arabic in the register named there, with technical terms kept in English in Latin script). No lists, no markdown.",
   "- Say only what the reply says. Add no fact, figure, name, reason, recommendation or action of your own.",
   "- Keep every negation: if the reply says something did NOT happen, is NOT running, or is not known yet, say so.",
   "- Keep figures exactly as written, or leave them out. Never round them differently or convert them.",
-  "- If MINT AI says it will do something, is waiting, needs the administrator's approval, decision or answer, or does not know yet, say exactly that. Never say it is done.",
+  "- If it says you will do something, are waiting, need the administrator's approval, decision or answer, or do not know yet, say exactly that. Never say it is done.",
   "- If the reply needs the administrator's approval, decision or answer, the summary MUST say so.",
-  "- Only repeat a recommendation MINT AI itself made, as MINT AI's.",
+  "- Only repeat a recommendation the text itself makes.",
   "- Do not read lists, code, commands, links or file paths aloud: say the details are on screen.",
-  "- Speak about MINT AI in the third person (\"MINT AI says...\", \"MINT AI restarted...\"; in Arabic \"MINT AI بيقول...\"). Never say \"I\" did anything.",
+  "- Speak in the first person, as its author: \"I found...\", \"I restarted...\" only where the text says it was done (in Arabic «لقيت إن...», «عملت restart...»). Never speak of MINT AI as someone else, and never say you passed or delegated anything.",
 ].join("\n");
 /** The last line of a summary's input: the language (and register) to speak in. */
 function summaryLanguage(utterance, persona) {
@@ -346,13 +369,13 @@ function forModel(snap) {
   const s = { ...(snap || {}) };
   const reqs = Array.isArray(s.requests_to_moni_ai) ? s.requests_to_moni_ai : [];
   delete s.requests_to_moni_ai;
-  // The supervisor's key keeps the internal spelling; the desk speaks of MINT AI.
+  // The supervisor's key keeps the internal spelling; the voice IS MINT AI, so it is "your own state".
   if (s.moni_ai !== undefined) {
-    s.mint_ai = s.moni_ai;
+    s.your_own_state = s.moni_ai;
     delete s.moni_ai;
   }
   const out = strip(redactDeep(s));
-  out.your_requests_to_mint_ai = reqs.map((r) => ({ request: r.id, answered: !!r.answered }));
+  out.your_requests_in_progress = reqs.map((r) => ({ request: r.id, result_ready: !!r.answered }));
   return out;
 }
 
@@ -417,6 +440,9 @@ const STATE_STRONG = uni(/\b(running|up|down|healthy|failed|failing|active|inact
 const PRONOUN_SUBJECT = uni(/^(?:and |but |so |also )?(it|it's|its|that|that's|thats|they|they're|theyre|this|these|those|everything|everything's|all|both|all of them)\b/);
 const HEDGE = uni(/\b(whether|if|ask|asked|asking|check|checking|find out|look into|looking into|wants? to know|want me to)\b|[?؟]\s*$/);
 const MINT_NAME = /mint|moni|مينت|منت|موني/;
+// Drafting a report with the administrator ("a good starting point is the uptime
+// section") talks about what to write, not about the machine's state.
+const REPORT_TALK = new RegExp(uni(/\b(report|draft|outline|section|headline|summary section|starting point|start with|break (?:it|that|them|this) down|bullet|paragraph)\b/).source + "|(?<![\\p{L}])(?:تقرير|التقرير|نكتب|نبدا|نضيف|مسوده|المسوده|نحط|الفقره|فقره|عنوان)(?![\\p{L}])", "u");
 const STEP_TALK = uni(/\b(step|steps|mission|missions|خطوه|الخطوه|خطوات|الخطوات|مهمه|المهمه|المهام|مشن|المشن)\b/);
 const QUESTION_END = /[?؟]\s*$/;
 const SCREEN = uni(/\bscreen\b|الشاشه/);
@@ -547,6 +573,79 @@ const HANDOFF_PASSIVE_AR = new RegExp(
   "gu"
 );
 const HANDOFF_FUTURE = uni(/\b(let me|i'll|i will|ill|i'm going to|im going to|going to|i'd|i would)\b/);
+
+/*
+ * First person, one identity (2026-09-29). The voice IS MINT AI, so:
+ *   - it never speaks of passing, sending or delegating to MINT AI, nor of
+ *     MINT AI as someone else ("MINT AI says ...")          → third-person;
+ *   - "I'm checking", "give me a moment", «ثانية أشوفلك», "I'll tell you
+ *     what I find" are true only while a request is really being worked on:
+ *     an ask_moni call in this response, or one still in progress
+ *                                                            → unbacked-checking;
+ *   - "I found ...", "I checked the logs", «لقيت إن ...», «راجعت الـ logs» are
+ *     results: before any result has arrived they are invented
+ *                                                            → invented-finding;
+ *   - "I restarted Odoo", «عملت restart» stay cut unless a result says it was done.
+ */
+const CHECKING_EN = uni(
+  new RegExp(
+    [
+      "\\b(?:give me|gimme|just|wait)\\s+(?:a|one)\\s+(?:moment|sec|second|minute|min|bit)\\b",
+      "\\bone (?:moment|sec|second|minute)\\b",
+      "\\b(?:hang on|hold on|bear with me)\\b",
+      "\\blet me\\s+(?:just\\s+)?(?:check|look|see|find out|dig|take a look|have a look|think|verify|pull up|confirm|investigate|go through|review)\\b",
+      "\\b(?:i'm|im|i am)\\s+(?:now\\s+|still\\s+|just\\s+)?(?:checking|looking|on it|digging|finding out|working on|investigating|thinking|verifying|pulling up|going through|reviewing|onto it)\\b",
+      "\\b(?:i'll|ill|i will|i'm going to|im going to)\\s+(?:just\\s+)?(?:check|look|find out|get back|let you know|tell you what|dig|investigate|verify|see what|go through|review|report back)\\b",
+      "^\\s*(?:checking|looking into|looking at|working on|digging into)\\b",
+      "\\b(?:still|now) (?:checking|looking|working)\\b",
+    ].join("|")
+  )
+);
+// (Normalized Arabic: أ/إ → ا, ة → ه.) «ثانية/ثواني/لحظة أشوفلك», «خليني أبص», «هشوف»,
+// «بشوفلك», «هتأكد», «هقولك»/«هرجعلك» (I'll tell you / get back to you).
+const CHECKING_AR = new RegExp(
+  "(?<![\\p{L}])(?:ثانيه|ثواني|لحظه|لحظات|دقيقه|استني|استنى)(?![\\p{L}])" +
+    "|(?<![\\p{L}])[وف]?(?:خليني|خلني|اسمحلي|دعني|دعيني|اسمحولي)\\s+(?:ا|ن)?(?:شوف|بص|تاكد|شيك|فكر|راجع|دور|تابع|فحص|تحقق|بحث|اطمن)" +
+    "|(?<![\\p{L}])[وف]?(?:(?:[هحب]|سا?)ا?|ا)(?:شوف|بص|تاكد|شيك|فكر|راجع|دور|تابع|فحص|تحقق|بحث|اطمن)\\p{L}*" +
+    "|(?<![\\p{L}])[وف]?[هح](?:قول|رجع|بلغ|عرف)(?:لك|لكم|لك|ك)\\p{L}*" +
+    "|(?<![\\p{L}])[وف]?شغال(?:ه)?\\s+(?:دلوقتي\\s+|حاليا\\s+)?(?:عليه|عليها|عليهم|علي\\s+(?:الموضوع|طلبك|الطلب|ده|دي|كده|المشكله))(?![\\p{L}])",
+  "u"
+);
+// «أنا شغال على الموضوع / عليه / على طلبك»: "I'm working on it" -- checking, not a claim of a result.
+const WORKING_ON_AR = /(?<![\p{L}])(?:[وف]?انا\s+)?[وف]?شغال(?:ه)?\s+(?:دلوقتي\s+|حاليا\s+)?(?:عليه|عليها|عليهم|علي\s+(?:الموضوع|طلبك|الطلب|ده|دي|كده|المشكله))(?![\p{L}])/gu;
+const CHECKING_AR_G = new RegExp(CHECKING_AR.source, "gu");
+const CHECKING = { test: (t) => CHECKING_EN.test(t) || CHECKING_AR.test(t), index: (t) => { const a = CHECKING_EN.exec(t); const b = CHECKING_AR.exec(t); return Math.min(a ? a.index : Infinity, b ? b.index : Infinity); } };
+const FINDING_EN = uni(
+  /\b(?:i|i've|ive|i have|i just|we|we've|i have(?:n't| not)|i also)\s+(?:just\s+|already\s+|also\s+)?(?:found|discovered|checked|looked|verified|confirmed|noticed|saw|seen|figured out|investigated|reviewed|went through|gone through|dug|traced|tracked down|identified|spotted)\b|\bi (?:did(?:n't| not)|could(?:n't| not)|can't|cannot|couldnt|didnt) (?:find|see|spot)\b|\b(?:it\s+)?turn(?:s|ed) out\b|\bi can see (?:that|now)\b|\bi see (?:that|now)\b/
+);
+const FINDING_AR = new RegExp(
+  "(?<![\\p{L}])[وف]?م?(?:لقيت|لاقيت|اكتشفت|شفت|شوفت|تاكدت|اتاكدت|راجعت|بصيت|شيكت|فحصت|وجدت|لاحظت|عرفت|اتضحلي|اتضح|تبينلي|تبين|طلع\\s+(?:ان|انه|انها|ان\\s))\\p{L}*",
+  "u"
+);
+function findingAt(cl) {
+  const a = FINDING_EN.exec(cl);
+  const b = FINDING_AR.exec(cl);
+  return a || b ? Math.min(a ? a.index : Infinity, b ? b.index : Infinity) : -1;
+}
+const HANDOFF_PASSIVE_ANY = new RegExp(HANDOFF_PASSIVE_AR.source, "u");
+// "MINT AI" named as someone other than the speaker ("MINT AI says", "MINT AI
+// restarted it"). Allowed: introducing itself ("I'm MINT AI", «أنا MINT AI»),
+// "MINT AI's voice", and the product "MINT AI OS".
+const MINT_MENTION = /(?<![\p{L}\p{N}@_./-])(?:mint|moni)(?:\s+ai)?(?![\p{L}\p{N}@_./-])|(?<![\p{L}])(?:مينت|موني)(?![\p{L}])/gu;
+const SELF_INTRO = /(?:(?<![\p{L}])(?:i'm|im|i am|this is|it's|its|call me|me|as)(?:\s+(?:the\s+)?voice\s+of)?\s*,?\s*$)|(?:(?<![\p{L}])(?:انا|معاك|معك|اسمي|بصفتي)(?:\s+صوت)?\s*,?\s*$)/u;
+function mintAsOther(cl) {
+  MINT_MENTION.lastIndex = 0;
+  for (const m of cl.matchAll(MINT_MENTION)) {
+    if (SELF_INTRO.test(cl.slice(0, m.index))) continue;
+    if (/^\s*(?:os\b|'s voice\b|s voice\b)/.test(cl.slice(m.index + m[0].length))) continue;
+    return true;
+  }
+  return false;
+}
+/** Speaking of passing things to MINT AI, or of MINT AI as someone else? */
+function thirdPerson(cl) {
+  return HANDOFF_ANY.test(cl) || HANDOFF_PASSIVE_ANY.test(cl) || mintAsOther(cl);
+}
 
 function withoutHandoff(text) {
   return norm(text).replace(HANDOFF, " «handoff» ");
@@ -706,7 +805,7 @@ const REPLY_NEEDS_APPROVAL_EN =
   /\b(needs?|waiting (?:for|on)|requires?|awaiting|wants?)\b[^.\n]{0,40}\b(approval|go-ahead|go ahead|decision|confirmation|answer|choice)\b|\bapproval cards?\b|\bdecisions? inbox\b|\bif you approve\b|\bsay yes\b|\bplease (?:confirm|approve|decide|choose|pick|reply)\b|\breply "|\btell me (?:which|when|whether|if)\b|\bdo you want\b|\bshould i\b/;
 const REPLY_NEEDS_APPROVAL_U = uni(REPLY_NEEDS_APPROVAL_EN);
 const REPLY_NEEDS_APPROVAL = { test: (t) => REPLY_NEEDS_APPROVAL_U.test(t) || arabic.NEEDS_APPROVAL_AR.test(t) };
-const SUMMARY_MENTIONS_APPROVAL_EN = /\b(approv\w*|go-ahead|go ahead|your ok|your okay|your yes|confirm\w*|decid\w*|decision|your answer|your choice|choose|pick|asks? (?:if|whether|you|the administrator)|wants? to know|would like|your call|let (?:it|mint ai|moni ai) know)\b/;
+const SUMMARY_MENTIONS_APPROVAL_EN = /\b(approv\w*|go-ahead|go ahead|your ok|your okay|your yes|confirm\w*|decid\w*|decision|your answer|your choice|choose|pick|asks? (?:if|whether|you|the administrator)|wants? to know|would like|your call|let (?:it|me|mint ai|moni ai) know|do you want me to|would you like me to|shall i|should i|tell me (?:when|if|whether))\b/;
 const SUMMARY_MENTIONS_APPROVAL_U = uni(SUMMARY_MENTIONS_APPROVAL_EN);
 const SUMMARY_MENTIONS_APPROVAL = { test: (t) => SUMMARY_MENTIONS_APPROVAL_U.test(t) || arabic.MENTIONS_APPROVAL_AR.test(t) };
 const UNSPEAKABLE = uni(/(?:^|\s)\/[\w.-]+\/[\w./-]*|https?:\/\/|`|\b(?:sudo|systemctl|rm -\w+|git push)\b|\s--[a-z]/i);
@@ -866,13 +965,21 @@ function judge(sentences, ctx) {
     // A confirmation right after an action sentence: the pair is the claim.
     if (si > 0 && prevAction && sClauses.length && (CONFIRM.test(sClauses[0]) || arabic.confirmFirst(sClauses[0]))) return fail("action-claim", sentences[si - 1] + " " + sentence, si - 1);
     for (const raw of sClauses) {
-      const cl = summary ? raw : (c.askedNow ? raw.replace(HANDOFF_PASSIVE_AR, " «handoff» ") : raw).replace(HANDOFF, " «handoff» ");
+      const cl = raw.replace(WORKING_ON_AR, " «checking» ").replace(CHECKING_AR_G, " «checking» ");
       let m;
-      if ((m = CLAIM_FIRST.exec(cl)) && !negatedBefore(cl, m.index + m[0].length - m[2].length)) return fail("action-claim", raw, si);
-      if ((m = PROGRESSIVE_FIRST.exec(cl)) && !negatedBefore(cl, m.index + m[0].length - m[2].length)) return fail("action-claim", raw, si);
+      // One identity: never "I've passed that to MINT AI", never "MINT AI says ...".
+      if (thirdPerson(cl)) return fail("third-person", raw, si);
+      // A first-person result ("I found ...", «لقيت إن ...») before any result has arrived is invented.
+      const findAt = findingAt(cl);
+      const finding = findAt >= 0 && !QUESTION_END.test(raw) && !OFFER_EN.test(cl.slice(0, findAt + 1)) && !arabic.OFFER_AR.test(cl.slice(0, findAt + 1));
+      if (!summary && finding && !c.replied) return fail("invented-finding", raw, si);
+      // "I restarted Odoo": only when a result says it was done (in a summary, summaryClause holds it to the reply).
+      if (!summary && (m = CLAIM_FIRST.exec(cl)) && !negatedBefore(cl, m.index + m[0].length - m[2].length) && !replyDid("act:" + stem(m[2]))) return fail("action-claim", raw, si);
+      if (!summary && (m = PROGRESSIVE_FIRST.exec(cl)) && !negatedBefore(cl, m.index + m[0].length - m[2].length)) return fail("action-claim", raw, si);
       if (!summary && (m = PROGRESSIVE_BARE.exec(cl))) return fail("action-claim", raw, si); // in a summary a gerund is a noun ("recommends rebooting"), judged below
+      if (summary && (m = PROGRESSIVE_FIRST.exec(cl)) && !negatedBefore(cl, m.index + m[0].length - m[2].length) && !replyDoing(reply, m[2])) return fail("action-claim", raw, si);
       if (summary) {
-        const ar = arabicSummaryRule(cl);
+        const ar = arabicSummaryRule(cl, replyDid);
         if (ar) return fail(ar, raw, si);
         const s = summaryClause(cl, raw, reply);
         if (s) return fail(s.rule, s.match, si);
@@ -906,8 +1013,11 @@ function judge(sentences, ctx) {
         const strong = STATE_STRONG.test(cl) || arStates.some((x) => x.strong);
         if (!terms.length && (PRONOUN_SUBJECT.test(cl) || (ar && arabic.pronounSubject(cl))) && strong) terms = prevTerms.length ? prevTerms : ["(unnamed)"];
         const stateWord = STATE_WORD.test(cl) || arStates.length > 0;
-        const hedge = HEDGE.test(cl) || (ar && arabic.hedged(cl));
-        if (terms.length && stateWord && !hedge && !MINT_NAME.test(cl)) {
+        const hedge = HEDGE.test(cl) || REPORT_TALK.test(cl) || (ar && arabic.hedged(cl));
+        if (terms.length && stateWord && !hedge && finding && c.replied) {
+          // "I found that Odoo is down": a result, so it must be about what a result says.
+          if (!(replyText && terms.some((t) => t === "(unnamed)" || replyText.includes(t.replace(/s$/, ""))))) return fail("not-in-reply", raw, si);
+        } else if (terms.length && stateWord && !hedge && !MINT_NAME.test(cl)) {
           if (!c.grounded) return fail("ungrounded", raw, si);
           const knownTerm = terms.some((t) => t === "(unnamed)" || snapText.includes(t.replace(/s$/, "")));
           if (!knownTerm && !(replyText && terms.some((t) => replyText.includes(t.replace(/s$/, ""))))) return fail("not-in-snapshot", raw, si);
@@ -930,6 +1040,25 @@ function judge(sentences, ctx) {
 }
 
 /**
+ * The action a first-person Arabic claim names: its own verb, or -- for the
+ * generic «عملت» ("I did") -- the English verb after it («عملت restart»).
+ */
+function claimConcept(cl, x) {
+  if (!x.generic) return "act:" + stem(x.en);
+  const after = cl.slice((x.idx || 0) + String(x.word || "").length);
+  const w = /^\s*(?:\S+\s+)?([a-z][a-z ]*?)\b(?=\s|$|[.,;!?،])/.exec(after);
+  const verb = w && new RegExp("^(?:" + DONE_WORDS + "|" + DO_WORDS + ")$").exec(w[1].trim().split(" ")[0]);
+  return verb ? "act:" + stem(verb[0]) : null;
+}
+
+/** Does the reply say this action is under way ("I'm restarting it now")? */
+function replyDoing(reply, word) {
+  if (!reply) return false;
+  const want = "act:" + stem(word);
+  return reply.clauses.some((rc) => rc.claims.some((p) => p.concept === want && p.sign > 0));
+}
+
+/**
  * The Arabic rules at the desk, for one clause (normalized, hand-off removed):
  * the same claims the English rules cut, read with the Arabic lexicon.
  *   I did / we did / I am doing it        → action-claim   (CLAIM_FIRST, PROGRESSIVE_FIRST)
@@ -947,6 +1076,7 @@ function arabicDeskRule(cl, { stepTalk, replyDid, replied }) {
   const claims = arabic.claimsIn(cl);
   for (const x of claims) {
     if (x.negated) continue;
+    if ((x.role === "did1" || x.role === "ptc1") && claimConcept(cl, x) && replyDid(claimConcept(cl, x))) continue; // «عملت restart لأودو» -- and a result says so
     if (x.role === "did1" || x.role === "amb" || x.role === "prog1" || x.role === "ptc1") return "action-claim"; // ptc1: «أنا عاملة ده»
     if (x.role === "done" || x.role === "pass" || x.role === "prog3") {
       if (stepTalk && x.role === "done" && x.generic) continue;
@@ -974,14 +1104,16 @@ function arabicDeskRule(cl, { stepTalk, replyDid, replied }) {
 
 /**
  * The Arabic rules in a summary, beyond what summaryClause checks against the
- * reply: never "I did" (the desk speaks of MINT AI in the third person); a
+ * reply: "I did" only what the reply says was done (the voice is its author); a
  * bare "done" (تم، خلاص) that names nothing the reply did; a result it cannot read.
  */
-function arabicSummaryRule(cl) {
+function arabicSummaryRule(cl, replyDid) {
   if (!arabic.hasArabic(cl)) return null;
   const claims = arabic.claimsIn(cl);
   for (const x of claims) {
     if (x.negated) continue;
+    // First person, as the reply's author: «عملت restart لأودو» only if the reply says it was done.
+    if ((x.role === "did1" || x.role === "ptc1") && replyDid && claimConcept(cl, x) && replyDid(claimConcept(cl, x))) continue;
     if (x.role === "did1" || x.role === "prog1" || x.role === "ptc1") return "action-claim";
     if (x.generic && (x.role === "done" || x.role === "pass") && !polarClaims(cl).length) return "added-claim";
   }
@@ -998,28 +1130,34 @@ function guard(text, ctx) {
 }
 
 /**
- * Does this say the request was (or is being) passed to MINT AI when no
- * ask_moni call backs it? `askedNow`: ask_moni ran this turn (or is in this
- * very response). `pending`: an earlier request is still unanswered, which
- * backs a past-tense mention ("I've passed that on") but not a new promise.
+ * Does this say "I'm checking" / "give me a moment" / «ثانية أشوفلك» / "I'll
+ * tell you what I find" when no request is being worked on? (It replaced the
+ * old "I've passed that to MINT AI needs an ask_moni call" rule, 2026-09-29.)
+ * `askedNow`: ask_moni ran this turn (or is in this very response).
+ * `pending`: an earlier request is still being worked on -- "I'm still
+ * checking" is true then too.
  */
-const ANSWER_PROMISE_EN = uni(/\b(?:read|tell|give|pass|let) you\b[^.]{0,40}\b(?:answer|reply|response)\b|\b(?:its|mint ai's|moni ai's|the) (?:answer|reply|response)\b[^.]{0,20}\bwhen it (?:arrives|comes)\b/);
+const ANSWER_PROMISE_EN = uni(/\b(?:read|tell|give|pass|let) you\b[^.]{0,40}\b(?:answer|reply|response|what i find|what i found|what i see|know)\b|\b(?:its|mint ai's|moni ai's|the|my) (?:answer|reply|response|result)\b[^.]{0,20}\bwhen it (?:arrives|comes)\b|\bget back to you\b/);
 const ANSWER_PROMISE = { test: (t) => ANSWER_PROMISE_EN.test(t) || arabic.ANSWER_PROMISE_AR.test(t), search: (t) => Math.max(t.search(ANSWER_PROMISE_EN), t.search(arabic.ANSWER_PROMISE_AR)) };
 const OFFER_EN = uni(/\b(want me to|shall i|should i|do you want|i can|i could|can i|could i)\b/);
-function unbackedHandoff(text, { askedNow, pending } = {}) {
-  if (askedNow) return null;
+function unbackedChecking(text, { askedNow, pending } = {}) {
+  if (askedNow || pending) return null;
   for (const cl of clauses(text)) {
-    // "I'll read you MINT AI's reply when it arrives" -- with nothing asked, there is no reply coming.
-    if (!pending && ANSWER_PROMISE.test(cl) && !negatedBefore(cl, ANSWER_PROMISE.search(cl))) return { ok: false, rule: "unbacked-handoff", match: cl };
-    const m = HANDOFF_ANY.exec(cl);
-    if (!m) continue;
-    if (QUESTION_END.test(cl) || OFFER_EN.test(cl) || arabic.OFFER_AR.test(cl)) continue; // an offer, not a claim
-    if (negatedBefore(cl, m.index)) continue;
-    const upTo = cl.slice(0, m.index + m[0].length);
-    const future = HANDOFF_FUTURE.test(upTo) || arabic.HANDOFF_AR_FUTURE.test(upTo);
-    if (future || !pending) return { ok: false, rule: "unbacked-handoff", match: cl };
+    // "I'll tell you what I find" / «هقولك» -- with nothing being worked on, nothing is coming.
+    if (ANSWER_PROMISE.test(cl) && !negatedBefore(cl, ANSWER_PROMISE.search(cl))) return { ok: false, rule: "unbacked-checking", match: cl };
+    if (!CHECKING.test(cl)) continue;
+    const at = CHECKING.index(cl);
+    if (QUESTION_END.test(cl) || OFFER_EN.test(cl.slice(0, at + 1)) || arabic.OFFER_AR.test(cl.slice(0, at + 1))) continue; // an offer ("want me to check?"), not a claim
+    if (negatedBefore(cl, at)) continue;
+    return { ok: false, rule: "unbacked-checking", match: cl };
   }
   return null;
+}
+const unbackedHandoff = unbackedChecking; // the old name (callers and tests)
+/** Does this sentence say "I'm checking" / "give me a moment" / «ثانية أشوفلك»? */
+function mentionsChecking(sentence) {
+  const s = norm(sentence);
+  return CHECKING.test(s) || ANSWER_PROMISE.test(s);
 }
 
 /** The part of a streaming text whose last word is complete. */
@@ -1073,13 +1211,14 @@ class Releaser {
       // (Not while the unfinished sentence may still become a hand-off:
       // «بعتّ ده ...» is a claim until «... لـ MINT AI» arrives. The whole
       // sentence is judged before it is released either way.)
-      if (!g2.ok && !(g2.at === plist.length - 1 && mayBecomeHandoff(plist[g2.at]))) {
+      if (!g2.ok) {
         this.trip = { ...g2, sentence: plist[g2.at] || "" };
         return;
       }
     }
     if (final && !this.summary) {
-      const u = unbackedHandoff(list.slice(this.released).join(" "), { askedNow: i.askedNow && i.askedNow(), pending: i.pending && i.pending() });
+      // (A read_status call in this response backs "let me check" too: it is looking.)
+      const u = unbackedChecking(list.slice(this.released).join(" "), { askedNow: (i.askedNow && i.askedNow()) || (i.lookedNow && i.lookedNow()), pending: i.pending && i.pending() });
       if (u) {
         this.trip = { ...u, at: this.released };
         return;
@@ -1089,7 +1228,7 @@ class Releaser {
       const s = list[k];
       const last = k === list.length - 1;
       if (!final && last && needsNext(s)) break; // judged with the next one, or at the end
-      if (!final && !this.summary && mentionsHandoff(s) && !(i.askedNow && i.askedNow())) break; // backed only once the calls are known
+      if (!final && !this.summary && mentionsChecking(s) && !(i.askedNow && i.askedNow()) && !(i.pending && i.pending())) break; // backed only once the calls are known
       this.released = k + 1;
       this.onLine(s);
     }
@@ -1229,7 +1368,7 @@ class DeskSession {
     const how = spoken ? `the administrator heard this summary of it: "${spoken}", and has the full text on screen` : "the administrator has it on screen";
     this.send({
       type: "conversation.item.create",
-      item: { type: "message", role: "system", content: [{ type: "input_text", text: `MINT AI replied to request ${id} (${how}):\n${clipped}` }] },
+      item: { type: "message", role: "system", content: [{ type: "input_text", text: `Your result for request ${id} (${how}):\n${clipped}` }] },
     });
   }
 
@@ -1327,6 +1466,7 @@ class DeskSession {
       // The calls of this very response back a hand-off said in it.
       const askedNow = info.askedNow;
       info.askedNow = () => askedNow() || st.calls.some((c) => c.name === "ask_moni");
+      info.lookedNow = () => st.calls.some((c) => c.name === "read_status");
       this.send(create || { type: "response.create" });
     });
   }
@@ -1386,7 +1526,7 @@ class DeskSession {
     const text = typeof args.text === "string" ? args.text.trim() : "";
     const extra = Object.keys(args).filter((k) => k !== "text");
     if (!text || text.length > MAX_ASK_CHARS || extra.length) return JSON.stringify({ error: "ask_moni takes one field, text, of 1 to " + MAX_ASK_CHARS + " characters" });
-    if (turn.asked.length >= MAX_ASKS_PER_TURN) return JSON.stringify({ error: "already passed to MINT AI; do not ask again" });
+    if (turn.asked.length >= MAX_ASKS_PER_TURN) return JSON.stringify({ error: "you are already working on this request; do not call ask_moni again" });
     // What MINT AI receives is this server's own transcript of the turn -- the
     // administrator's words, grounded by the intake -- never the model's `text`,
     // which can be a paraphrase that changes the meaning ("restart" heard,
@@ -1399,7 +1539,7 @@ class DeskSession {
       this.stats.refusedAsks = (this.stats.refusedAsks || 0) + 1;
       turn.rejected.push("ask_moni:" + why);
       this.log(`desk: refused an ask_moni (${why})`);
-      return JSON.stringify({ error: "refused: ask_moni passes on only what the administrator said in this turn. Say you did not catch that." });
+      return JSON.stringify({ error: "refused: ask_moni works only on what the administrator said in this turn. Say you did not catch that." });
     }
     if (norm(text).replace(/[^\p{L}\p{N}]/gu, "") !== norm(request).replace(/[^\p{L}\p{N}]/gu, "")) turn.paraphrased = true; // counted, never logged in words
     const r = await this.ops.ask(request);
@@ -1408,10 +1548,10 @@ class DeskSession {
     turn.asked.push(t || null);
     turn.tools.push("ask_moni");
     return JSON.stringify({
-      status: "passed to MINT AI",
+      status: "working on it",
       request: t ? t.id : null,
       queued_behind_other_work: !!(r && r.queued_behind),
-      note: "MINT AI has NOT replied yet. Say only that you passed it on. A summary of its answer will be read aloud when it arrives.",
+      note: "Your result is NOT ready yet. Say one short first-person line that you are on it (\"Give me a moment, I'm checking.\"); state no finding, progress or result. Its summary is read aloud in your voice when it arrives.",
     });
   }
 
@@ -1482,6 +1622,7 @@ class DeskSession {
       if (turn.asked.length && !timings.ackFirst && rtim.firstLine) timings.ackFirst = rtim.firstLine;
       if (rel.trip) {
         turn.trip = { ...rel.trip, said: st.text.slice(0, 400), released: rel.released, sentence: rel.trip.sentence || rel.sentences[rel.trip.at] || "" };
+        turn.tripUnspoken = rel.sentences.slice(rel.released);
         heardThisResponse = rel.heardText();
         this.stats.trips++;
         this.log(`desk: guard cut a reply (${rel.trip.rule}): ${JSON.stringify(rel.trip.match).slice(0, 160)}`);
@@ -1521,11 +1662,23 @@ class DeskSession {
           return this.result(turn, timings);
         }
       }
-      const saidHandoff = turn.lines.some((l) => !l.safe && mentionsHandoff(l.text));
-      const line = turn.autoAsked ? L.safe : saidHandoff ? L.tail : L.asked;
-      const text = (heardThisResponse ? heardThisResponse + " " : "") + line;
-      this.send({ type: "conversation.item.create", item: { type: "message", role: "assistant", content: [{ type: "output_text", text }] } });
-      emit({ text: line, safe: true });
+      // The model said "I'm checking" without the call (gpt-realtime-mini does, as MINT AI):
+      // the request is now really being worked on, so its own words are true -- say them,
+      // if nothing else in them fails the guard, instead of the fixed line.
+      const rest = turn.trip.rule === "unbacked-checking" && turn.autoAsked ? turn.tripUnspoken || [] : [];
+      const backed = rest.length && judge(rest, { ...this.context(), askedNow: true }).ok && !unbackedChecking(rest.join(" "), { askedNow: true });
+      if (backed) {
+        turn.backedByServer = true;
+        this.send({ type: "conversation.item.create", item: { type: "message", role: "assistant", content: [{ type: "output_text", text: [heardThisResponse, ...rest].filter(Boolean).join(" ") }] } });
+        this.send({ type: "conversation.item.create", item: { type: "message", role: "system", content: [{ type: "input_text", text: "(You are now working on that request; its result will reach you as \"Your result for request ...\".)" }] } });
+        for (const sent of rest) emit({ text: sent, safe: false });
+      } else {
+        const saidChecking = turn.lines.some((l) => !l.safe && mentionsChecking(l.text));
+        const line = turn.autoAsked ? L.safe : saidChecking ? L.tail : L.asked;
+        const text = (heardThisResponse ? heardThisResponse + " " : "") + line;
+        this.send({ type: "conversation.item.create", item: { type: "message", role: "assistant", content: [{ type: "output_text", text }] } });
+        emit({ text: line, safe: true });
+      }
     }
     timings.done = Date.now() - t0;
     return this.result(turn, timings);
@@ -1620,7 +1773,7 @@ class DeskSession {
                 type: "input_text",
                 text:
                   (mine.text ? `The administrator asked: "${mine.text.slice(0, 500)}"\n\n` : "") +
-                  `MINT AI's reply, between the triple quotes:\n"""\n${quoted}\n"""\n` +
+                  `Your finished work (your reply), between the triple quotes:\n"""\n${quoted}\n"""\n` +
                   (shape.list || shape.code || shape.paths ? "It has lists, code or paths: do not read them, say the details are on screen.\n" : "") +
                   summaryLanguage(lastSaid || reply, sumPersona),
               },
@@ -1661,6 +1814,7 @@ class DeskSession {
       lines: turn.lines,
       asked: turn.asked.filter(Boolean),
       autoAsked: !!turn.autoAsked,
+      backedByServer: !!turn.backedByServer,
       tools: turn.tools,
       rejected: turn.rejected,
       trip: turn.trip ? { rule: turn.trip.rule, match: String(turn.trip.match || "").slice(0, 200), said: turn.trip.said, released: turn.trip.released || 0 } : null,
@@ -1882,7 +2036,10 @@ module.exports = {
   strictNumberSet,
   polarClaims,
   unbackedHandoff,
+  unbackedChecking,
   mentionsHandoff,
+  mentionsChecking,
+  thirdPerson,
   HANDOFF_PASSIVE_AR,
   numbersIn,
   numberSet,
@@ -1894,6 +2051,7 @@ module.exports = {
   LINES_AR_M,
   LINES_EN,
   UNREACHABLE_LINE,
+  NOT_CAUGHT_LINE,
   tokensOf,
   addTokens,
   costOf,

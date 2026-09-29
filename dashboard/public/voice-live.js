@@ -15,7 +15,7 @@
  *
  *   onState(state)     "connecting" | "listening" | "talking" | "thinking" |
  *                      "speaking" | "interrupted" | "waiting" | "muted" |
- *                      "ended" | "error"  ("waiting": passed to MINT AI)
+ *                      "ended" | "error"  ("waiting": working on a request, result pending)
  *   onCaption({who, text, final})   who: "you" | "desk" | "mint"
  *   onLevel({mic, out})             0..1-ish loudness, for the core
  *   onEvent(msg)                    every server message (asked, replied, stop, ended, error)

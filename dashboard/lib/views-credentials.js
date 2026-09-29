@@ -272,10 +272,12 @@ function deskCard(csrf, v, desk) {
     <p class="muted small mt-12">A trial. When on, the Command Center's microphone talks to a GPT realtime model
       (${esc(d.model || "gpt-realtime-mini")}) that answers at once from a read-only snapshot of this VPS — services,
       disk, memory, sessions, missions, open decisions and pending approvals, counted and titled, never a command —
-      makes brief small talk, and passes everything else to MINT AI as your request. It cannot run anything, message a
-      session, or approve or deny anything; a guard checks every sentence before it is spoken and cuts it off if it
-      claims an action or quotes a figure it was not given. MINT AI's answers are summarised aloud, held to what MINT AI
-      wrote — the full text stays on screen. When off, voice goes straight to MINT AI.</p>
+      makes brief small talk, and works on everything else as your request. It is MINT AI's voice and speaks as MINT AI,
+      in the first person ("give me a moment, I'm checking", then "I found..."); the thinking and any action are MINT AI's
+      real work, behind it. The voice itself cannot run anything, message a session, or approve or deny anything; a guard
+      checks every sentence before it is spoken and cuts it off if it claims an action, a finding or a figure it was not
+      given. Results are summarised aloud, held to what was actually written — the full text stays on screen. When off,
+      voice goes straight to MINT AI.</p>
     <form method="post" action="/credentials/openai-voice/desk" class="btn-row">
       <input type="hidden" name="_csrf" value="${esc(csrf)}">
       <input type="hidden" name="enabled" value="${d.on ? "0" : "1"}">
@@ -286,9 +288,9 @@ function deskCard(csrf, v, desk) {
     <h3 class="mt-16" id="v-live">Live conversation (trial)</h3>
     <p class="muted small">A third mode, for administrators only, off unless chosen here. You talk and it answers at once, and you can
       interrupt it: the microphone streams to this server, which relays it to ${esc(d.liveModel || "gpt-realtime-2.1-mini")} and plays back
-      only the sentences the same guard has passed. MINT AI's answers are still read from its own text (a checked summary or word for
-      word), never made up by the voice model; requests pass to MINT AI in your own words, as this server heard them. It can do nothing
-      else, and saying "stop listening" ends it. At most 20 minutes a call, one call at a time. With laptop speakers the voice can leak into the
+      only the sentences the same guard has passed. It is MINT AI's voice, speaking as MINT AI in the first person; results are read from
+      MINT AI's own text (a checked summary or word for word), never made up by the voice model, and requests are worked on in your own
+      words, as this server heard them. The voice can do nothing else, and saying "stop listening" ends it. At most 20 minutes a call, one call at a time. With laptop speakers the voice can leak into the
       microphone, so by default the microphone pauses while the voice speaks (speakers mode); with headphones, headphones mode lets
       you talk over it. Other users, and push to talk, keep the relay desk.</p>
     <form method="post" action="/credentials/openai-voice/desk" class="btn-row">

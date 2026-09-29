@@ -269,11 +269,48 @@ it can only cut itself (property-tested over ~1,900 streamed texts).
 
 It cuts: a claim that something was done/deleted/restarted/pushed/approved (or
 is being: "Restarting Odoo."), a promise of one, a figure not in the snapshot /
-MINT AI's reply / what was said, a status claim with no snapshot or about
-something the snapshot does not hold, "MINT AI said ..." before a reply, and "I've
-passed that on" (or "I'll read you its answer") with no `ask_moni` call behind
-it. A cut reply is replaced by "Let me pass that to MINT AI." and the request
-really is passed on. A transient OpenAI server error is retried once.
+a result / what was said, a status claim with no snapshot or about something
+the snapshot does not hold, a finding ("I found ...", "I checked the logs",
+«لقيت إن ...», «راجعت الـ logs») before any result has arrived, and "I'm
+checking" / "give me a moment" / «ثانية أشوفلك» / "I'll tell you what I find"
+when no request is being worked on (an `ask_moni` call in this response, or
+one still in progress). A cut reply is replaced by "Give me a moment, I'm
+looking into it." and the request really is worked on. A transient OpenAI
+server error is retried once.
+
+**One identity: the voice IS MINT AI** (the administrator, 2026-09-29: "you
+are MINT AI; don't say you delegate to MINT AI; talk to me as MINT AI; you can
+take time to think, and while you think build a report with me or just talk").
+Relay desk, live conversation, summaries and every fixed line speak as MINT AI
+in the first person. `ask_moni` stays (internally it is still the supervisor's
+`send`); the live mode's tool is now named `look_into` (it was `ask_mint_ai`:
+speaking as MINT AI, the audio model read that name aloud -- «هسأل MINT» --
+and was cut as third-person), same handler. The instructions describe the tool
+as the voice's own deeper work, which takes a while. The relay model, speaking as
+MINT AI, often says "Give me a moment, I'm checking" and forgets the call
+(gpt-realtime-mini, real API 2026-09-29): the guard stops the words, the server
+starts the work in the administrator's own words, and then -- now true -- the
+model's own words are said (`backedByServer`); a `read_status` call in the same
+response backs "let me check" too. Pending: "Give me a moment, I'm
+checking…" / «ثانية أشوفلك…» / «خليني أبص على الـ logs»; the result, when it
+arrives, is summarised as "I found…" / «لقيت إن…» (the summariser is told the
+reply is its own finished work). While waiting the voice may keep talking --
+acknowledge, say in general terms what it is looking at, ask a clarifying
+question, small talk, help draft or structure a report -- but never invents
+progress, findings, results or finished actions. The guard adds a
+`third-person` rule: "I've passed that to MINT AI", «تم تمرير الطلب لـ MINT AI»,
+"MINT AI says / restarted …" are cut in the desk and in summaries ("I'm MINT
+AI", «أنا صوت MINT AI», "MINT AI OS" and service names like `moni-agent@admin`
+are not). "I restarted Odoo" / «عملت restart لأودو» is spoken only when a result
+says it was done. Fixed lines, first person, gendered in Arabic by the persona
+(feminine for Cairene feminine, masculine for Cairene masculine, neutral for
+MSA or while unknown): "Give me a moment, I'm checking that." / «ثانية أشوفلك
+الموضوع.»; "I'll tell you what I find." / «وهقولك على اللي ألاقيه.»; "I need
+your approval or your answer." / «محتاجة / محتاج موافقتك أو ردك.» (neutral
+«الموضوع محتاج موافقتك أو ردك.»); "The details are on screen." / «التفاصيل
+قدامك على الشاشة.»; "Sorry, I didn't catch that." / «معلش، مسمعتش كويس.» when
+there is nothing grounded to work on. It is always MINT AI's voice and never
+claims to be human.
 
 **Summaries.** MINT AI's answer to a desk request stays on screen exactly as
 written; aloud, the page asks `POST /mint-ai/api/desk/summary {turn}` for a
@@ -282,10 +319,11 @@ quoted). A reply of one or two plain sentences is read word for word instead
 (`fallback: "verbatim"`). The summary is held to the reply: a figure changed
 or rounded wrongly (2.7 may become 3, never 2), a negation flipped, a
 recommendation MINT AI did not make, "I'll ask you first" turned into "done", a
-name or a path it did not give, the desk saying "I did" -- each is cut, and the
-rest becomes "The rest of MINT AI's answer is on screen." A pending approval or
-question the summary left out is said anyway ("It needs your approval or your
-answer."). MINT AI is told its reply will be summarised.
+name or a path it did not give, "I did" what the reply did not say was done,
+MINT AI spoken of in the third person -- each is cut, and the rest becomes "The
+rest is on screen." A pending approval or question the summary left out is said
+anyway ("I need your approval or your answer."). MINT AI is told its reply will
+be summarised.
 
 **Language and persona** (`lib/voice-persona.js`, the administrator's decision
 of 2026-09-29: "replies in my language and saves the persona based on how I
@@ -402,7 +440,7 @@ frames to `GET /mint-ai/api/live?csrf=…` (a WebSocket). The server relays it t
 `gpt-realtime-2.1-mini` (server VAD at 700 ms of silence and threshold 0.7,
 far-field noise reduction; `create_response` and `interrupt_response` off --
 this server decides both, see *Self-hearing*)
-with exactly two tools, `read_status` and `ask_mint_ai`, dispatched only through
+with exactly two tools, `read_status` and `look_into`, dispatched only through
 `deskOps()` (`snapshot` / `send`); any other tool name is refused. The key never
 leaves the server.
 
@@ -428,9 +466,10 @@ leaves the server.
   and sends that -- through the transcript guard -- never the model's `text`;
   the session's own transcription is the fallback. Measured on the mixed clip:
   the session transcript heard «ريكستور» / «ريكارك» for "restart", the full-turn
-  one "restart" (twice out of two). At most one hand-off per utterance. A pure
-  hand-off said in the passive («تم تمرير الطلب لـ MINT AI») is allowed once the
-  call really happened (`judge` ctx `askedNow`).
+  one "restart" (twice out of two). At most one hand-off per utterance. Spoken,
+  it is first person ("Give me a moment, I'm checking."), true only while the
+  call is really in flight; «تم تمرير الطلب لـ MINT AI» and the like are cut
+  (`third-person`, see *One identity*).
 - **Barge-in.** When the administrator really talks over the voice (below),
   the server tells the page to flush (the playback worklet drops its buffer and
   answers with the millisecond it had played), cancels the response and

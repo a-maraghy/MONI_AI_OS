@@ -235,7 +235,7 @@ function makeCall(extra) {
     transcribe: x.transcribe || (async () => ({ text: x.turnText || "", model: "gpt-4o-mini-transcribe", tokens: { audio_in: 30, text_in: 5, text_out: 10 } })),
     summarise: x.summarise || (async (id, o) => {
       summarised.push(id);
-      for (const l of x.summaryLines || [{ text: "MINT AI says the dashboard is back up.", safe: false }]) o.onLine(l);
+      for (const l of x.summaryLines || [{ text: "I found that the dashboard is back up.", safe: false }]) o.onLine(l);
       return { tokens: { text_in: 300, text_out: 30 }, fallback: null };
     }),
     record: (row) => {
@@ -323,10 +323,12 @@ let WS_BASE;
     check("far-field noise reduction by default", cfg.audio.input.noise_reduction && cfg.audio.input.noise_reduction.type === "far_field");
     check("speakers mode (half-duplex) by default", c.duplex === "speakers");
     check("the session transcribes the input (gpt-4o-mini-transcribe)", cfg.audio.input.transcription.model === "gpt-4o-mini-transcribe");
-    check("exactly two tools: read_status and ask_mint_ai, frozen", cfg.tools.map((t) => t.name).join() === "read_status,ask_mint_ai" && Object.isFrozen(live.TOOLS));
-    check("ask_mint_ai takes only text; read_status nothing", Object.keys(live.TOOLS[1].parameters.properties).join() === "text" && live.TOOLS[1].parameters.additionalProperties === false && Object.keys(live.TOOLS[0].parameters.properties).length === 0);
+    check("exactly two tools: read_status and look_into, frozen", cfg.tools.map((t) => t.name).join() === "read_status,look_into" && Object.isFrozen(live.TOOLS));
+    check("look_into takes only text; read_status nothing", Object.keys(live.TOOLS[1].parameters.properties).join() === "text" && live.TOOLS[1].parameters.additionalProperties === false && Object.keys(live.TOOLS[0].parameters.properties).length === 0);
     check("the instructions are the fixed ones plus the saved persona's line", cfg.instructions.startsWith(live.INSTRUCTIONS) && /feminine forms for yourself/.test(cfg.instructions) && /Egyptian colloquial/.test(cfg.instructions));
-    check("they say MINT AI's answers are never spoken by the voice model", /Never say what MINT AI answered/.test(live.INSTRUCTIONS));
+    check("they say its results are read separately, never by the voice model", /Your results are read to the administrator separately/.test(live.INSTRUCTIONS));
+    check("  and that it speaks AS MINT AI, first person, never delegating", /You speak as MINT AI, in the first person/.test(live.INSTRUCTIONS) && /Never say you passed, sent, forwarded or delegated anything/.test(live.INSTRUCTIONS) && !/Hand everything else to MINT AI/.test(live.INSTRUCTIONS) && !/ask_mint_ai/.test(live.INSTRUCTIONS));
+    check("  while its result is pending it may keep talking, or help with a report, but never invent a finding", /help the administrator draft or structure a report/.test(live.INSTRUCTIONS) && /never say what you found/.test(live.INSTRUCTIONS));
     check("the page is told the call listens", states(client).includes("listening"));
     c.audioIn(pcm(100));
     check("microphone audio is relayed as input_audio_buffer.append", await until(() => s.appended === 4800, 500));
@@ -379,7 +381,9 @@ let WS_BASE;
     ["تم إعادة تشغيل أودو.", "اعمل restart لأودو", "action-claim", "ar"],
     ["الديسك وصل ٩٣ في المية.", "الديسك عامل ايه", "figure", "ar"],
     ["Готово, я перезапустил Odoo.", "اعمل restart لأودو", "unknown-script", "ar"],
-    ["MINT AI said the backup finished at 2:30.", "did the backup finish", "invented-reply", "en"],
+    ["MINT AI said the backup finished at 2:30.", "did the backup finish", "third-person", "en"],
+    ["I found that the backup finished at 2:30.", "did the backup finish", "invented-finding", "en"],
+    ["لقيت إن الباك اب خلص الساعة ٢:٣٠.", "الباك اب خلص؟", "invented-finding", "ar"],
   ]) {
     const { c, client, sup, spoke } = makeCall({ turnText: heardText });
     await c.open();
@@ -409,7 +413,7 @@ let WS_BASE;
     c.close("test");
   }
 
-  section("tools: only read_status and ask_mint_ai, only through deskOps");
+  section("tools: only read_status and look_into, only through deskOps");
   {
     const { c, sup } = makeCall({ turnText: "delete tmp" });
     await c.open();
@@ -448,17 +452,17 @@ let WS_BASE;
     const s = lastSession();
     await userTurn(s, c, "طب وص عايزك تعمل restart للداشبورد"); // the session's own, slightly worse, transcript
     // Seen on the real model: the paraphrase is a different request.
-    await respond(s, null, { calls: [{ name: "ask_mint_ai", args: { text: "Please restore the dashboard. If a restart is necessary, proceed safely and report result." } }] });
+    await respond(s, null, { calls: [{ name: "look_into", args: { text: "Please restore the dashboard. If a restart is necessary, proceed safely and report result." } }] });
     await until(() => sup.calls.some((x) => x[0] === "send"), 2000, "the hand-off");
     const sends = sup.calls.filter((x) => x[0] === "send");
     check("the paraphrase case: MINT AI gets exactly the full-turn transcript, not the model's text", sends.length === 1 && sends[0][1].text === heard, JSON.stringify(sends));
     check("  the paraphrase is counted, never sent", c.turns.get([...c.turns.keys()].pop()).paraphrased === true);
     check("  the page is told, and the state is 'passed to MINT AI (waiting)'", client.json.some((m) => m.type === "asked") && states(client).includes("waiting"));
-    check("  the model is told it has NOT replied", /has NOT replied yet/.test(s.of("conversation.item.create").filter((e) => e.item.type === "function_call_output").pop().item.output));
-    await respond(s, "تم تمرير الطلب لـ MINT AI، وهقرألك ردّه أول ما يوصل.", { calls: [{ name: "ask_mint_ai", args: { text: "again" } }] });
+    check("  the model is told its result is NOT ready yet, and to speak in the first person", /result is NOT ready yet/.test(s.of("conversation.item.create").filter((e) => e.item.type === "function_call_output").pop().item.output));
+    await respond(s, "ثانية أشوفلك الموضوع، وهقولك على اللي ألاقيه.", { calls: [{ name: "look_into", args: { text: "again" } }] });
     await sleep(40);
-    check("a second hand-off in the same utterance is refused", sup.calls.filter((x) => x[0] === "send").length === 1 && /already passed/.test(s.of("conversation.item.create").filter((e) => e.item.type === "function_call_output").pop().item.output));
-    check("«تم تمرير الطلب لـ MINT AI» is allowed once the hand-off really happened", c.diag.trips.length === 0 && client.audio.length > 0, JSON.stringify(c.diag.trips));
+    check("a second hand-off in the same utterance is refused", sup.calls.filter((x) => x[0] === "send").length === 1 && /already working on this request/.test(s.of("conversation.item.create").filter((e) => e.item.type === "function_call_output").pop().item.output));
+    check("«ثانية أشوفلك» is spoken while the request really is being worked on", c.diag.trips.length === 0 && client.audio.length > 0, JSON.stringify(c.diag.trips));
     c.close("test");
   }
   {
@@ -467,7 +471,7 @@ let WS_BASE;
     await c.open();
     const s = lastSession();
     await userTurn(s, c, "please restart the dashboard");
-    await respond(s, null, { calls: [{ name: "ask_mint_ai", args: { text: "restart it" } }] });
+    await respond(s, null, { calls: [{ name: "look_into", args: { text: "restart it" } }] });
     await until(() => sup.calls.some((x) => x[0] === "send"), 1000);
     check("handoff: 'session' sends the session's transcript", sup.calls.find((x) => x[0] === "send")[1].text === "please restart the dashboard");
     c.close("test");
@@ -478,7 +482,7 @@ let WS_BASE;
     await c.open();
     const s = lastSession();
     await userTurn(s, c, "MINT AI, Mint, Odoo, Giza, PMO, Claude, VPS, sub-agents");
-    await respond(s, null, { calls: [{ name: "ask_mint_ai", args: { text: "check odoo" } }] });
+    await respond(s, null, { calls: [{ name: "look_into", args: { text: "check odoo" } }] });
     await sleep(100);
     check("a transcript that is the prompt echoed is dropped, and nothing reaches MINT AI", sup.calls.filter((x) => x[0] === "send").length === 0);
     c.close("test");
@@ -490,19 +494,19 @@ let WS_BASE;
     await c.open();
     const s = lastSession();
     await userTurn(s, c, "restart the dashboard");
-    await respond(s, null, { calls: [{ name: "ask_mint_ai", args: { text: "restart the dashboard" } }] });
+    await respond(s, null, { calls: [{ name: "look_into", args: { text: "restart the dashboard" } }] });
     await until(() => sup.calls.some((x) => x[0] === "send"), 1000);
     await respond(s, "I've passed that to MINT AI. I'll read you its answer when it arrives.");
     const creates0 = s.of("response.create").length;
     const id = sup.nextTurn;
     sup.replies.set(id, "The dashboard was restarted and is answering again. It took 4 seconds, and the logs show no errors since.");
-    await until(() => spoke.includes("MINT AI says the dashboard is back up."), 2000, "the summary");
+    await until(() => spoke.includes("I found that the dashboard is back up."), 2000, "the summary");
     check("the reply goes through the desk's summariser", summarised.join() === String(id));
     check("  and its lines are read by the verbatim reader, as 'mint' segments", client.json.some((m) => m.type === "seg" && m.kind === "mint") && client.json.some((m) => m.type === "caption" && m.who === "mint"));
     check("  the realtime model is not asked to speak it (no new response)", s.of("response.create").length === creates0);
     await until(() => s.of("conversation.item.create").some((e) => e.item.role === "system"), 1000);
     const note = s.of("conversation.item.create").find((e) => e.item.role === "system");
-    check("  the conversation is told what MINT AI said and what was heard", note && /MINT AI replied to request/.test(note.item.content[0].text) && /MINT AI says the dashboard is back up/.test(note.item.content[0].text));
+    check("  the conversation is told what MINT AI said and what was heard", note && /^Your result for request/.test(note.item.content[0].text) && /I found that the dashboard is back up/.test(note.item.content[0].text));
     check("  the page hears that the reply came", client.json.some((m) => m.type === "replied"));
     check("  the summary's own cost is recorded as desk tokens, live", rows.some((r) => r.part === "desk" && r.cat === "live"));
     c.close("test");
@@ -512,7 +516,7 @@ let WS_BASE;
     await c.open();
     const s = lastSession();
     await userTurn(s, c, "is odoo up");
-    await respond(s, null, { calls: [{ name: "ask_mint_ai", args: { text: "is odoo up" } }] });
+    await respond(s, null, { calls: [{ name: "look_into", args: { text: "is odoo up" } }] });
     await until(() => sup.calls.some((x) => x[0] === "send"), 1000);
     sup.replies.set(sup.nextTurn, "Odoo is running. `systemctl status odoo` says active.");
     await until(() => spoke.length >= 2, 2000, "the verbatim reading");
@@ -555,11 +559,11 @@ let WS_BASE;
   }
   {
     // A barge-in during a MINT AI summary stops the rest of it.
-    const { c, sup, spoke } = makeCall({ opts: { duplex: "full" }, turnText: "restart it", slowSpeak: 60, summaryLines: [{ text: "MINT AI restarted the dashboard." }, { text: "It took four seconds." }, { text: "No errors since." }] });
+    const { c, sup, spoke } = makeCall({ opts: { duplex: "full" }, turnText: "restart it", slowSpeak: 60, summaryLines: [{ text: "I restarted the dashboard." }, { text: "It took four seconds." }, { text: "No errors since." }] });
     await c.open();
     const s = lastSession();
     await userTurn(s, c, "restart it");
-    await respond(s, null, { calls: [{ name: "ask_mint_ai", args: { text: "restart it" } }] });
+    await respond(s, null, { calls: [{ name: "look_into", args: { text: "restart it" } }] });
     await until(() => sup.calls.some((x) => x[0] === "send"), 1000);
     sup.replies.set(sup.nextTurn, "The dashboard was restarted and is answering again. It took 4 seconds, and the logs show no errors since.");
     await until(() => spoke.length === 1, 2000);
