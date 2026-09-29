@@ -57,7 +57,15 @@ if (start < 0 || end < 0) {
   console.log("  FAIL could not find the Voice module in moni-ai.js");
   process.exit(1);
 }
-const VOICE_SRC = SRC.slice(start, end + endMark.length);
+// The mic-mode helper lives with the page's other helpers, outside the Voice
+// module, so it is carried into the sandbox alongside it.
+const helperStart = SRC.indexOf("  function voiceModeFrom(");
+const helperEnd = SRC.indexOf("\n  }\n", helperStart);
+if (helperStart < 0 || helperEnd < 0) {
+  console.log("  FAIL could not find voiceModeFrom in moni-ai.js");
+  process.exit(1);
+}
+const VOICE_SRC = SRC.slice(helperStart, helperEnd + 4) + "\n" + SRC.slice(start, end + endMark.length);
 
 /* ---------------------------------------------------------------- fakes --- */
 
