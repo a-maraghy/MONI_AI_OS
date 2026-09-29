@@ -537,7 +537,8 @@ function userMessage(row) {
     content =
       `${content}\n\n` +
       `[Dashboard: the administrator said this aloud and the voice front desk passed it on. ` +
-      `Your reply will be read aloud to them word for word.]`;
+      `The desk will read them a short spoken summary of your reply, held to what you wrote; the full text stays on their screen. ` +
+      `So say plainly what happened, what did not, and anything that needs their approval or answer.]`;
   }
   if (row.target) {
     content =
