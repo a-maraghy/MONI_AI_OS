@@ -24,6 +24,7 @@ function check(name, ok, detail) {
 }
 const req = (o) => p.parseRequest(JSON.stringify(o));
 const good = (o) => req({ id: "r1", actor: "amaraghy", ...o });
+const refuseLater = [];
 
 /* ------------------------------------------------------------- accepted --- */
 
@@ -41,6 +42,16 @@ check("numeric id is accepted and stringified", req({ id: 7, op: "status", actor
 }
 check("send with a target", good({ op: "send", text: "hi", target: "Odoo 19 VPS setup customizations" }).ok);
 check("send with target auto", good({ op: "send", text: "hi", target: "auto" }).ok);
+check("send via the voice front desk", good({ op: "send", text: "hi", via: "voice-desk" }).ok && good({ op: "send", text: "hi", via: "voice-desk" }).req.params.via === "voice-desk");
+refuseLater.push(["send via anything else", { op: "send", text: "hi", via: "telegram" }, "via must be one of"]);
+{
+  const r = good({ op: "snapshot" });
+  check("snapshot is a read", r.ok && r.req.mutating === false);
+  check("snapshot with the desk's own turns", good({ op: "snapshot", turns: [3, 4, 4] }).ok && good({ op: "snapshot", turns: [3, 4, 4] }).req.params.turns.length === 2);
+  refuseLater.push(["snapshot turns that are not integers", { op: "snapshot", turns: ["3"] }, "list of at most"]);
+  refuseLater.push(["snapshot with too many turns", { op: "snapshot", turns: Array.from({ length: 21 }, (_, i) => i + 1) }, "list of at most"]);
+  refuseLater.push(["snapshot with an unexpected field", { op: "snapshot", command: "rm -rf /" }, "unexpected field"]);
+}
 check("approve", good({ op: "approve", approval_id: 3 }).ok);
 check("deny with a note", good({ op: "deny", approval_id: 3, note: "not today" }).ok);
 check("ledger delegations", good({ op: "ledger", table: "delegations", limit: 20, status: "done" }).ok);
@@ -58,6 +69,7 @@ const refuse = (name, line, want) => {
   const r = typeof line === "string" ? p.parseRequest(line) : req(line);
   check("refuses " + name, !r.ok && (!want || new RegExp(want).test(r.error)), r.ok ? "accepted" : r.error);
 };
+for (const [name, o, want] of refuseLater) refuse(name, { id: "r1", actor: "amaraghy", ...o }, want);
 refuse("non-JSON", "hello", "JSON");
 refuse("a JSON array", "[1,2]", "object");
 refuse("null", "null", "object");

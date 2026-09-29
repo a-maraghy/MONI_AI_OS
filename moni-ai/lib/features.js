@@ -1002,6 +1002,7 @@ function createFeatures(deps) {
     missions,
     watchers,
     machine,
+    serviceList: () => services.list.map((x) => ({ unit: x.unit, active: x.active })),
     counts,
     costToday,
     sessionExtras,

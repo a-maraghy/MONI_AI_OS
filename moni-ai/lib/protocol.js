@@ -59,6 +59,9 @@ const OPS = {
     params: {
       text: text(1, MAX_TEXT),
       target: optString(300, /^[^\n\r\u0000]*$/),
+      // "voice-desk": passed on by the voice front desk (trial). Recorded as the
+      // turn's source; it changes nothing else about the turn.
+      via: optEnum(["voice-desk"]),
     },
   },
   interrupt: { mutating: true, params: {} },
@@ -82,6 +85,9 @@ const OPS = {
   "rule-test": { mutating: false, params: { command: text(1, 8000), tool: optEnum(["Bash", "SendMessage"]) } },
   "rule-suggest": { mutating: false, params: { approval_id: int(1, Number.MAX_SAFE_INTEGER) } },
   cost: { mutating: false, params: {} },
+  // The voice front desk's read-only view: counts, titles and figures, never a
+  // command. `turns`: the desk's own earlier requests, to learn their replies.
+  snapshot: { mutating: false, params: { turns: optIntList(1, Number.MAX_SAFE_INTEGER, 20) } },
   "session-mirror": { mutating: false, params: { session_id: str(36, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/) } },
 
   /* ---- writes ---- */
@@ -125,6 +131,15 @@ const OPS = {
 
 /* ------------------------------------------------------------ validators --- */
 
+function optIntList(min, max, maxLen) {
+  const f = (v, name) => {
+    if (!Array.isArray(v) || v.length > maxLen || v.some((x) => typeof x !== "number" || !Number.isInteger(x) || x < min || x > max))
+      throw new Error(`${name} must be a list of at most ${maxLen} integers`);
+    return [...new Set(v)];
+  };
+  f.optional = true;
+  return f;
+}
 function optEnum(values) {
   const f = enumOf(values);
   f.optional = true;

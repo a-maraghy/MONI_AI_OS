@@ -39,6 +39,7 @@ const rulesLib = require("./lib/rules");
 const peers = require("./lib/peers");
 const { redact, redactDeep, clip } = require("./lib/redact");
 const { createFeatures } = require("./lib/features");
+const { buildSnapshot } = require("./lib/snapshot");
 
 /* ----------------------------------------------------------------- config --- */
 
@@ -532,9 +533,15 @@ function writeChild(obj) {
 
 function userMessage(row) {
   let content = row.text;
+  if (row.source === "voice-desk") {
+    content =
+      `${content}\n\n` +
+      `[Dashboard: the administrator said this aloud and the voice front desk passed it on. ` +
+      `Your reply will be read aloud to them word for word.]`;
+  }
   if (row.target) {
     content =
-      `${row.text}\n\n` +
+      `${content}\n\n` +
       `[Dashboard: the administrator addressed this to the session named "${row.target}". ` +
       `Delegate it there unless it is plainly something you should answer yourself.]`;
   }
@@ -542,7 +549,7 @@ function userMessage(row) {
 }
 
 /** Turns this supervisor wrote itself: their replayed text is already recorded. */
-const OUR_SOURCES = new Set(["dashboard", "order", "watcher", "mission-request", "decision"]);
+const OUR_SOURCES = new Set(["dashboard", "voice-desk", "order", "watcher", "mission-request", "decision"]);
 
 /**
  * Queue a turn for MONI AI. The CLI queues it behind a running turn rather
@@ -1517,6 +1524,35 @@ function status() {
   };
 }
 
+/**
+ * The voice front desk's read-only snapshot (lib/snapshot.js). `turns` are the
+ * desk's own earlier requests: only voice-desk turns by this same actor are
+ * returned, so one panel user cannot read another's.
+ */
+function snapshotFor(actor, turnIds) {
+  const m = features.machine();
+  let requests;
+  if (turnIds && turnIds.length) {
+    requests = turnIds
+      .map((id) => ledger.get("turns", id))
+      .filter((r) => r && r.source === "voice-desk" && r.actor === actor);
+  }
+  return buildSnapshot({
+    now: now(),
+    host: m.host,
+    vitals: vitalsCache,
+    services: features.serviceList(),
+    servicesAt: m.services.at,
+    servicesError: m.services.error,
+    sessions: sessionsCache.list || [],
+    process: { state: proc.state, busy: !!turns.running, queued: turns.pending.length },
+    missions: features.missions.list({ status: "active", limit: 10 }),
+    decisions: features.ops.decisions({ status: "open", limit: 50 }).decisions,
+    approvals: ledger.pendingApprovals(),
+    requests,
+  });
+}
+
 /* ------------------------------------------------------------------ socket --- */
 
 async function handle(req, sock) {
@@ -1529,6 +1565,8 @@ async function handle(req, sock) {
     case "sessions":
       if (!sessionsCache.at) await new Promise((r) => setTimeout(r, 400));
       return { at: sessionsCache.at, error: sessionsCache.error, sessions: sessionsWithLedger() };
+    case "snapshot":
+      return snapshotFor(req.actor, p.turns);
     case "rc-url":
       return { enabled: rc.enabled, state: rc.state, url: rc.enabled ? rc.url : null, bridge_session_id: rc.enabled ? rc.bridgeSessionId : null };
     case "ledger":
@@ -1553,7 +1591,7 @@ async function handle(req, sock) {
         if (!live) throw new Error(`no live session is named "${p.target}"`);
       }
       const busy = !!turns.running;
-      const turn = queueTurn({ source: "dashboard", actor: req.actor, text: p.text, target: p.target && p.target !== "auto" ? p.target : null });
+      const turn = queueTurn({ source: p.via === "voice-desk" ? "voice-desk" : "dashboard", actor: req.actor, text: p.text, target: p.target && p.target !== "auto" ? p.target : null });
       return { turn, process: proc.state, queued_behind: busy ? 1 : 0 };
     }
     case "interrupt": {

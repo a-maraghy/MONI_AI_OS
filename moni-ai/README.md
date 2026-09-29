@@ -168,7 +168,8 @@ every call; unknown fields are refused. `lib/protocol.js` is the definition.
 | `ping`, `status`, `sessions`, `rc-url` | – | read |
 | `events` | `since?` | reply, then `{"event": …}` lines until closed |
 | `ledger` | `table` (delegations, inbound, approvals, turns, audit), `limit?`, `before_id?`, `status?` | read |
-| `send` | `text`, `target?` (a live session's name, or `auto`) | audited |
+| `send` | `text`, `target?` (a live session's name, or `auto`), `via?` (`voice-desk`: recorded as the turn's source) | audited |
+| `snapshot` | `turns?` (the voice front desk's own earlier turns) | read: counts, titles and human-unit figures for the voice front desk, never a command (`lib/snapshot.js`) |
 | `interrupt` | – | audited |
 | `approve`, `deny` | `approval_id`, `note?` | audited |
 | `rc` | `enabled` | audited |

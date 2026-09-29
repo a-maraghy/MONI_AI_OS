@@ -208,6 +208,19 @@ async function until(fn, ms = 10000) {
     const ended = await sub.waitFor((e) => e.type === "turn" && e.phase === "end" && e.turn.id === sent.data.turn.id);
     check("the turn ends done", ended && ended.turn.status === "done", JSON.stringify(ended));
 
+    // --- the voice front desk: a send marked as coming from it, and its snapshot
+    const desk = await call("send", { text: "how is the disk", via: "voice-desk" }, "amaraghy");
+    check("a voice-desk send is queued with its own source", desk.ok && desk.data.turn.source === "voice-desk" && desk.data.turn.actor === "amaraghy", JSON.stringify(desk));
+    const deskEcho = await sub.waitFor((e) => e.type === "assistant" && /^echo: how is the disk/.test(e.text));
+    check("MONI AI is told the reply will be read aloud", !!deskEcho && /voice front desk passed it on/.test(deskEcho.text), deskEcho && deskEcho.text);
+    await sub.waitFor((e) => e.type === "turn" && e.phase === "end" && e.turn.id === desk.data.turn.id);
+    const snap = await call("snapshot", { turns: [desk.data.turn.id, sent.data.turn.id] }, "amaraghy");
+    check("snapshot answers", snap.ok && snap.data.machine && snap.data.services && snap.data.sessions && snap.data.approvals, JSON.stringify(snap).slice(0, 300));
+    check("snapshot returns only the desk's own turns (not a dashboard turn)", snap.ok && snap.data.requests_to_moni_ai.length === 1 && snap.data.requests_to_moni_ai[0].id === desk.data.turn.id && snap.data.requests_to_moni_ai[0].answered === true);
+    const other = await call("snapshot", { turns: [desk.data.turn.id] }, "someone-else");
+    check("another panel user cannot read the desk's turns", other.ok && other.data.requests_to_moni_ai.length === 0);
+    check("snapshot figures are in human units", snap.ok && typeof snap.data.machine.memory.used_percent === "number" && typeof snap.data.machine.disk.free_gb === "number");
+
     // --- approval: deny
     await call("send", { text: "DESTROY one" });
     const ap1 = await sub.waitFor((e) => e.type === "approval" && e.approval.status === "pending");
@@ -216,6 +229,9 @@ async function until(fn, ms = 10000) {
     check("the card has an expiry", ap1 && Date.parse(ap1.approval.expires_at) > Date.now());
     const st1 = await call("status");
     check("status lists the pending approval", st1.data.approvals.some((a) => a.id === ap1.approval.id));
+    const snapAp = await call("snapshot", {}, "amaraghy");
+    check("the desk's snapshot counts the pending approval by title", snapAp.ok && snapAp.data.approvals.pending >= 1 && snapAp.data.approvals.titles.some((t) => /\(Bash\)$/.test(t)), JSON.stringify(snapAp.data && snapAp.data.approvals));
+    check("and never carries its command", snapAp.ok && !JSON.stringify(snapAp.data).includes("moni-fake-victim"));
     check("status shows the step waiting", st1.data.current_turn && st1.data.current_turn.steps.some((s) => s.st === "wait"));
     const d1 = await call("deny", { approval_id: ap1.approval.id, note: "not today" }, "amaraghy");
     check("deny is accepted", d1.ok && d1.data.approval.status === "denied" && d1.data.approval.decided_by === "amaraghy");
