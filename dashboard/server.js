@@ -41,6 +41,8 @@ const totp = require("./lib/totp");
 const voice = require("./lib/voice");
 const voiceDesk = require("./lib/voice-desk");
 const voiceUsage = require("./lib/voice-usage");
+const voiceGuard = require("./lib/voice-guard");
+const voiceIntake = require("./lib/voice-intake");
 const chrome = require("./lib/chrome");
 const memgraph = require("./lib/memgraph");
 const pulse = require("./lib/pulse");
@@ -1941,6 +1943,22 @@ function voiceFail(res, e) {
 
 const AUDIO_MIME_RE = /^audio\/[a-z0-9.+-]{1,30}$/;
 
+/**
+ * The transcripts this server produced, per user and voice turn: a voice send
+ * to MINT AI must be one of them (see /moni-ai/api/send). In memory only; a
+ * restart just means a voice turn in flight is said again.
+ */
+const voiceGrounds = new voiceGuard.Grounds();
+
+/**
+ * A recording through lib/voice-intake.js: silence is not sent to OpenAI, and
+ * a transcript that is a prompt echo, too long for its audio, or a stock
+ * silence phrase is dropped. Returns {text, dropped, heard, audioSeconds}.
+ */
+function voiceHear(audio, mime, level, cfg) {
+  return voiceIntake.intake({ audio, mime: AUDIO_MIME_RE.test(mime) ? mime : "audio/webm", level, cfg, transcribe: voice.transcribeFull });
+}
+
 /** Shared by the console and the Command Center: base64 recording in, text out. */
 async function voiceTranscribeRoute(req, res) {
   const data = typeof (req.body && req.body.data) === "string" ? req.body.data : "";
@@ -1951,12 +1969,33 @@ async function voiceTranscribeRoute(req, res) {
   let cfg = null;
   try {
     cfg = await voiceConfig();
-    // Speech is wanted next ("On it.", then the reply): open a socket now.
-    voice.warm(cfg);
-    const heard = await voice.transcribeFull(audio, cfg, AUDIO_MIME_RE.test(mime) ? mime : "audio/webm");
-    const text = heard.text;
-    const usd = recordTranscription({ vt: bodyVt(req), actor: req.me && req.me.username, heard });
-    voiceLog("transcribe", 200, { model: cfg.transcribe_model, ms: Date.now() - t0, bytes: audio.length, words: text.split(/\s+/).filter(Boolean).length, usd: usd ? usd.toFixed(6) : undefined });
+    const vt = bodyVt(req);
+    // Speech is wanted next ("On it.", then the reply): open a socket now --
+    // unless the clip will not even be transcribed.
+    if (!voiceIntake.preCheck(audio, voiceIntake.cleanLevel(req.body && req.body.level))) voice.warm(cfg);
+    const got = await voiceIntake.transcribeTurn({
+      audio,
+      mime: AUDIO_MIME_RE.test(mime) ? mime : "audio/webm",
+      level: req.body && req.body.level,
+      cfg,
+      transcribe: voice.transcribeFull,
+      grounds: voiceGrounds,
+      actor: req.me && req.me.username,
+      vt,
+    });
+    const text = got.text;
+    const usd = got.heard ? recordTranscription({ vt, actor: req.me && req.me.username, heard: got.heard }) : 0;
+    voiceLog("transcribe", 200, {
+      model: cfg.transcribe_model,
+      ms: Date.now() - t0,
+      bytes: audio.length,
+      audio_s: got.audioSeconds != null ? Math.round(got.audioSeconds * 10) / 10 : undefined,
+      words: text.split(/\s+/).filter(Boolean).length,
+      dropped: got.dropped || undefined,
+      echo_of: got.why && got.why.source ? JSON.stringify(got.why.source) : undefined,
+      usd: usd ? usd.toFixed(6) : undefined,
+    });
+    if (got.dropped) return res.json({ text: "", dropped: got.dropped });
     res.json({ text });
   } catch (e) {
     voiceLog("transcribe", e.code || "error", { model: cfg && cfg.transcribe_model, ms: Date.now() - t0, bytes: audio.length, why: e.message });
@@ -3276,6 +3315,15 @@ app.get("/moni-ai/api/events", ...moniAiGuard, (req, res) => {
 app.post("/moni-ai/api/send", ...moniAiWrite, async (req, res) => {
   try {
     const params = moniai.cleanSend(req.body || {});
+    // A voice turn (the page sends its voice-turn id): MINT AI gets exactly
+    // what this server heard for it, once -- never a prompt echo, never words
+    // that no transcript here produced. Typed turns are the administrator's
+    // own keystrokes and pass as before.
+    const refusal = voiceIntake.sendRefusal({ grounds: voiceGrounds, actor: req.me.username, body: req.body || {}, text: params.text });
+    if (refusal) {
+      voiceLog("send", "refused", { rule: refusal.rule, source: refusal.source ? JSON.stringify(refusal.source) : undefined });
+      return res.status(422).json({ error: "That voice turn was not sent: it does not match what was heard.", code: "ungrounded" });
+    }
     db.logLogin(req.ip, req.me.username, "moni-ai", `turn${params.target ? " for " + params.target : ""}`);
     res.json(await moniai.call("send", params, req.me.username));
   } catch (e) {
@@ -3358,20 +3406,32 @@ app.post("/moni-ai/api/desk/turn", requireApiPerm("moniai.use"), moniAiAudioBody
     cfg = await voiceConfig();
     if (!cfg.key) throw new voice.VoiceError("Add an OpenAI key in Settings to use voice.", "no-key");
     const desk = () => voiceDesk.deskFor(req.me.username, cfg, moniai.call, { log: (m) => console.log(m) });
+    let dropped = null;
     if (typeof body.text === "string" && body.text.trim()) {
       if (body.text.length > 4000 || body.text.includes("\u0000")) return res.status(400).json({ error: "That is too long.", code: "invalid" });
       heard = body.text.trim();
+      const door = voiceGuard.refuseAtDoor(heard);
+      if (door) {
+        dropped = door.rule;
+        heard = "";
+      }
     } else {
       const data = typeof body.data === "string" ? body.data : "";
       if (!data || !/^[A-Za-z0-9+/=]+$/.test(data)) return res.status(400).json({ error: "No audio arrived.", code: "invalid" });
       const mime = String(body.mime || "").split(";")[0].trim().toLowerCase();
-      desk().open(); // the socket opens while the words are transcribed
-      voice.warm(cfg); // and the reader's, for the first sentence
-      const h = await voice.transcribeFull(Buffer.from(data, "base64"), cfg, AUDIO_MIME_RE.test(mime) ? mime : "audio/webm");
-      heard = h.text;
-      transcribeUsd = recordTranscription({ vt, actor, heard: h });
+      const audio = Buffer.from(data, "base64");
+      // Nothing is opened for a clip that will not be transcribed.
+      if (!voiceIntake.preCheck(audio, voiceIntake.cleanLevel(body.level))) {
+        desk().open(); // the socket opens while the words are transcribed
+        voice.warm(cfg); // and the reader's, for the first sentence
+      }
+      const got = await voiceHear(audio, mime, body.level, cfg);
+      heard = got.text;
+      dropped = got.dropped;
+      if (got.heard) transcribeUsd = recordTranscription({ vt, actor, heard: got.heard });
       tTranscribe = Date.now() - t0;
     }
+    if (dropped) voiceLog("desk", 200, { ms: Date.now() - t0, transcribe_ms: tTranscribe, dropped, lines: 0 });
     out.start();
     started = true;
     out.write({ type: "heard", text: heard && !/^[\[(]/.test(heard) ? heard : "" });

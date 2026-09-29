@@ -59,6 +59,10 @@ check("ledger approvals by status", good({ op: "ledger", table: "approvals", sta
 check("ledger audit", good({ op: "ledger", table: "audit", before_id: 100 }).ok);
 check("rc on", good({ op: "rc", enabled: true }).ok);
 check("restart", good({ op: "restart" }).ok);
+check("fresh", good({ op: "fresh" }).ok);
+check("fresh with a reason and force", (() => { const r = good({ op: "fresh", reason: "  context too large ", force: true }); return r.ok && r.req.params.reason === "context too large" && r.req.params.force === true && r.req.mutating === true; })());
+check("fresh refuses a non-boolean force", !good({ op: "fresh", force: "yes" }).ok);
+check("fresh refuses an unexpected field", !good({ op: "fresh", session_id: "x" }).ok);
 check("interrupt", good({ op: "interrupt" }).ok);
 check("status is not mutating", good({ op: "status" }).req.mutating === false);
 check("an email-style actor", req({ id: "x", op: "status", actor: "amaraghy@gizaseeds.com" }).ok);

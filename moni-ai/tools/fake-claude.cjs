@@ -201,7 +201,7 @@ rl.on("line", (line) => {
     const r = msg.request || {};
     if (r.subtype === "initialize") {
       out({ type: "control_response", response: { subtype: "success", request_id: msg.request_id, response: { commands: [] } } });
-      out({ type: "system", subtype: "init", session_id: sessionId, model: flag("--model"), permissionMode: flag("--permission-mode"), claude_code_version: "2.1.283", tools: ["Bash"] });
+      out({ type: "system", subtype: "init", session_id: sessionId, model: flag("--model"), permissionMode: flag("--permission-mode"), claude_code_version: "2.1.283", tools: ["Bash", "mcp__moni-ai__status_snapshot", "mcp__memory__memory_search"], mcp_servers: [{ name: "moni-ai", status: "connected" }, { name: "memory", status: "connected" }] });
     } else if (r.subtype === "remote_control") {
       out({ type: "control_response", response: { subtype: "success", request_id: msg.request_id, response: r.enabled ? { session_url: "https://claude.ai/code/session_FAKE", bridge_session_id: "session_FAKE" } : {} } });
     } else if (r.subtype === "interrupt") {

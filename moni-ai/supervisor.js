@@ -261,6 +261,62 @@ function sessionId() {
   return s.session_id;
 }
 
+/**
+ * Every session id MINT AI has ever used: the current one, the ones retired by
+ * a fresh start (session_history) and one the CLI made us adopt. Their
+ * transcripts stay on disk; they are MINT AI's own, so the cost scanner must
+ * not count them as some other session's spend.
+ */
+function selfSessionIds() {
+  const s = readState();
+  const ids = new Set();
+  if (s.session_id) ids.add(s.session_id);
+  if (s.previous_session_id) ids.add(s.previous_session_id);
+  for (const h of Array.isArray(s.session_history) ? s.session_history : []) if (h && h.session_id) ids.add(h.session_id);
+  return ids;
+}
+
+/** The one-shot flag file: `touch` it and the next start is a fresh session. */
+const FRESH_FLAG = path.join(cfg.state_dir, "fresh-start");
+
+/**
+ * Retire the current session id and pick a new one, so the next start runs
+ * `--session-id <new>`. The old transcript is left where it is; the old id is
+ * kept in session_history so it can be traced and is never resumed.
+ */
+function rotateSession(actor, reason) {
+  const s = readState();
+  const old = s.session_id || null;
+  let id = crypto.randomUUID();
+  while (id === old) id = crypto.randomUUID();
+  const at = now();
+  const history = Array.isArray(s.session_history) ? s.session_history.slice(-49) : [];
+  if (old) history.push({ session_id: old, created_at: s.created_at || null, retired_at: at, retired_by: actor, reason: reason || null, next_session_id: id });
+  writeState({ session_id: id, created_at: at, created_by: actor, previous_session_id: old, session_history: history, rc: null, last_init: null });
+  auditLine(actor, "session-rotate", { old_session_id: old, new_session_id: id, reason: reason || null }, true);
+  log(`fresh session: ${old || "(none)"} -> ${id} (${actor}${reason ? ": " + reason : ""})`);
+  emit("notice", { level: "warn", text: `Fresh session started by ${actor}` });
+  return { old_session_id: old, new_session_id: id, at };
+}
+
+/** Honour the flag file, once. */
+function takeFreshFlag() {
+  let text;
+  try {
+    text = fs.readFileSync(FRESH_FLAG, "utf8");
+  } catch (_) {
+    return null;
+  }
+  try {
+    fs.unlinkSync(FRESH_FLAG);
+  } catch (e) {
+    // A flag we cannot remove would rotate on every start: refuse it instead.
+    warn(`cannot remove ${FRESH_FLAG}: ${e.message}; ignoring it`);
+    return null;
+  }
+  return rotateSession("flag-file", clip(String(text).trim(), 300) || "fresh-start flag file");
+}
+
 function transcriptExists(id) {
   try {
     for (const dir of fs.readdirSync(PROJECTS_DIR)) {
@@ -374,6 +430,7 @@ async function start() {
     return scheduleRestart(true);
   }
 
+  takeFreshFlag();
   const id = sessionId();
   const holders = holdersOf(id);
   if (holders.length) {
@@ -383,6 +440,13 @@ async function start() {
     return scheduleRestart(true);
   }
 
+  const retired = (readState().session_history || []).some((h) => h && h.session_id === id);
+  if (retired) {
+    proc.error = `session ${id} was retired by a fresh start; refusing to resume it`;
+    warn(proc.error);
+    setState("error", { error: proc.error });
+    return scheduleRestart(true);
+  }
   const resume = transcriptExists(id);
   const argv = [
     "-p",
@@ -710,6 +774,19 @@ function onSystem(ev) {
       warn(`CLI started session ${ev.session_id}, not ${want}; adopting it`);
       writeState({ session_id: ev.session_id, previous_session_id: want });
     }
+    const tools = Array.isArray(ev.tools) ? ev.tools.map(String) : [];
+    writeState({
+      last_init: {
+        session_id: ev.session_id || null,
+        at: now(),
+        model: ev.model || null,
+        cli_version: ev.claude_code_version || null,
+        permission_mode: ev.permissionMode || null,
+        tools: tools.length,
+        mcp_tools: tools.filter((t) => t.startsWith("mcp__")),
+        mcp_servers: Array.isArray(ev.mcp_servers) ? ev.mcp_servers.map((m) => ({ name: m && m.name, status: m && m.status })) : null,
+      },
+    });
     emit("init", {
       session_id: ev.session_id,
       model: ev.model,
@@ -1521,6 +1598,7 @@ const features = createFeatures({
   sessions: () => sessionsCache.list || [],
   sessionsWithLedger: () => sessionsWithLedger(),
   selfSessionId: () => readState().session_id || null,
+  selfSessionIds: () => selfSessionIds(),
   currentTurnId: () => (turns.running ? turns.running.id : null),
   projectsDir: PROJECTS_DIR,
   describeTool: (n, i) => describeTool(n, i),
@@ -1550,6 +1628,7 @@ function publicApproval(a) {
 }
 
 function status() {
+  const st = readState();
   return {
     name: cfg.name,
     process: {
@@ -1567,7 +1646,10 @@ function status() {
       effort: cfg.effort,
       permission_mode: cfg.permission_mode,
     },
-    session_id: readState().session_id || null,
+    session_id: st.session_id || null,
+    session_created_at: st.created_at || null,
+    previous_session_id: st.previous_session_id || null,
+    init: st.last_init || null,
     busy: !!turns.running,
     current_turn: turns.running ? { ...publicTurn(ledger.get("turns", turns.running.id)), steps: turns.running.steps } : null,
     queued: turnQueue.order(turns.pending, Date.now(), cfg.queue_background_max_wait_s * 1000).map((p) => ({ ...publicTurn(p.row), priority: turnQueue.classOf(p.row) })),
@@ -1688,9 +1770,51 @@ async function handle(req, sock) {
       await start();
       return { restarted: true, state: proc.state };
     }
+    case "fresh":
+      return await freshStart(req.actor, p);
     default:
       if (Object.prototype.hasOwnProperty.call(features.ops, req.op)) return await features.ops[req.op](p, req);
       throw new Error("unknown op");
+  }
+}
+
+/**
+ * Start MINT AI in a new conversation: stop the CLI, retire its session id,
+ * start with `--session-id <new>`. Never resumes the old id. Only a person may
+ * ask for it -- not MINT AI itself (actor "moni-ai", its own MCP tools) nor
+ * the supervisor's internal actors -- and not while it is working, has turns
+ * waiting or approvals open, unless `force` says so.
+ */
+const FRESH_REFUSED_ACTORS = new Set(["moni-ai", "watcher", "supervisor", "flag-file", "scheduler", "order"]);
+let freshBusy = false;
+async function freshStart(actor, p) {
+  if (FRESH_REFUSED_ACTORS.has(actor)) throw new Error(`a fresh start is for the administrator; actor "${actor}" may not ask for one`);
+  if (freshBusy) throw new Error("a fresh start is already under way");
+  if (!p.force) {
+    const why = [];
+    if (turns.running) why.push("a turn is running");
+    if (turns.inflight) why.push("a turn is being handed over");
+    if (turns.pending.length) why.push(`${turns.pending.length} turn(s) queued`);
+    const open = ledger.pendingApprovals().length;
+    if (open) why.push(`${open} approval(s) pending`);
+    if (why.length) throw new Error(`MINT AI is not idle (${why.join(", ")}); wait, or pass force`);
+  }
+  freshBusy = true;
+  try {
+    emit("notice", { level: "warn", text: `Fresh start requested by ${actor}` });
+    proc.backoff = cfg.backoff_min_s;
+    // Nothing may restart the old session while it is being retired.
+    proc.wantRunning = false;
+    clearTimeout(proc.timer);
+    await stopChild();
+    const r = rotateSession(actor, p.reason);
+    proc.wantRunning = true;
+    clearTimeout(proc.timer);
+    await start();
+    return { fresh: true, ...r, state: proc.state };
+  } finally {
+    proc.wantRunning = true;
+    freshBusy = false;
   }
 }
 

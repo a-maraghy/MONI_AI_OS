@@ -189,11 +189,38 @@ moni-ai-ctl events                      # live stream, Ctrl-C to stop
 moni-ai-ctl send '{"text":"What is every session doing?"}'
 moni-ai-ctl approve '{"approval_id":7}'
 moni-ai-ctl restart                     # graceful: stdin closed, transcript kept, resumed
+moni-ai-ctl fresh '{"reason":"…"}'      # NEW conversation: new session id, old transcript kept
 sudo bash /root/moni/MONI_AI_OS/deploy/deploy-moni-ai.sh
 ```
 
 `systemctl stop moni-ai` closes MINT AI's stdin and waits for it to write its
 transcript before killing anything. Starting again resumes the same session.
+
+### Fresh start (a new conversation)
+
+When MINT AI's context has grown large enough to slow every reply, start it in
+a new conversation instead of resuming. Its memory (long-term memory, the
+ledger's missions, rules, orders, decisions and costs) is untouched; only the
+chat history is left behind.
+
+- `moni-ai-ctl fresh '{"reason":"context too large"}'` -- stops the CLI
+  gracefully, retires the session id, and starts with `--session-id <new>`.
+  Refused while a turn is running or handed over, turns are queued or
+  approvals are pending (add `"force":true` to override), and refused for
+  MINT AI itself (actor `moni-ai`) and the supervisor's internal actors. The
+  dashboard has no route for it.
+- Or, one-shot: `echo "reason" > /var/lib/moni-ai/fresh-start`, then
+  `systemctl restart moni-ai`. The supervisor honours the file at its next
+  start and deletes it.
+
+Either way `state.json` gets the new `session_id`, `previous_session_id`, and a
+`session_history` entry (old id, created/retired time, who, why, next id); the
+audit log gets `fresh` and `session-rotate` lines with both ids. The old
+transcript stays in `~/.claude/projects/`; a retired id is never resumed
+(the supervisor refuses to), and the cost scanner keeps excluding it, since
+MINT AI's own cost comes from its ledger. `moni-ai-ctl status` shows the
+`session_id`, `previous_session_id` and the new process's `init` (model, CLI
+version, MCP tools and servers).
 
 ### Socket protocol
 
@@ -212,6 +239,7 @@ every call; unknown fields are refused. `lib/protocol.js` is the definition.
 | `approve`, `deny` | `approval_id`, `note?` | audited |
 | `rc` | `enabled` | audited |
 | `restart` | – | audited |
+| `fresh` | `reason?`, `force?` | audited; a new conversation (see *Fresh start*) |
 
 Events: `proc`, `init`, `rc`, `turn` (queued / start / source / end), `text`
 (streamed deltas, not buffered), `assistant`, `tool`, `tool_result`, `steps`,

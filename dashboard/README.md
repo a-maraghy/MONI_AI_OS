@@ -305,6 +305,18 @@ month boundaries), streamed speech in line order, session length).
 out of `public/moni-ai.js`) against a fake Web Audio clock: playback from the
 first chunk, order, a clean cut and the fallback after it, barge-in during a
 stream, the desk's streamed lines.
+`node dashboard/tools/test-voice-guard.cjs` covers the guard between the
+microphone and MINT AI (`lib/voice-guard.js`, `lib/voice-intake.js`): silence
+is never transcribed (under 1,200 bytes, or measured by the page as under
+300 ms or with under 150 ms above its speech threshold); a transcript that
+echoes the transcription prompt, the desk's instructions or tool descriptions,
+has more words than its audio could hold, or is a stock silence phrase on a
+short or quiet clip is dropped ("didn't catch that"); a voice send
+(`/moni-ai/api/send` with `vt`) must match what the server transcribed for that
+voice turn, once; the desk's `ask_moni` and its supervisor door refuse
+prompt-like text. Why: on 2026-09-29 a silent push-to-talk press came back from
+gpt-4o-mini-transcribe as its own prompt and reached MONI AI as a turn (ledger
+turn 92); prompted transcription models echo the prompt on silence.
 `sudo node dashboard/tools/eval-voice-desk.cjs --replies <copy.json> [--speak]
 [--session]` runs ~25 prompts and summaries of MINT AI's real replies (from a
 read-only copy of the ledger) against the real model with a stubbed supervisor
