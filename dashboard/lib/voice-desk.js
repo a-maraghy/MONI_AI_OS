@@ -55,6 +55,17 @@
  * read, or an Arabic past-tense result verb it does not know, is not spoken.
  * The fixed lines are said in the cut sentence's language.
  *
+ * Language (2026-09-29, the administrator's choice: "replies in my language
+ * and saves the persona based on how I speak"): the desk answers in the
+ * language of the administrator's last utterance (replyLanguage, sent with
+ * every response as instructionsFor). Arabic, or Arabic mixed with English,
+ * gets Arabic in the register the administrator uses (Egyptian or MSA), with
+ * English technical terms in Latin script; the voice's own grammatical gender
+ * follows how the administrator addresses it, gender-neutral until that is
+ * known (lib/voice-persona.js, saved per user). Summaries and fixed lines
+ * follow the same rule. The guard reads feminine and masculine Egyptian forms
+ * («أنا عاملة ده», «مشغّلاه», «أنا عامله»: lib/voice-arabic.js participles).
+ *
  * Sentence by sentence. A sentence is released as soon as the guard has
  * checked it, instead of holding the whole reply. That must not let a later
  * sentence change the meaning of one already heard ("Restarting Odoo." ...
@@ -85,6 +96,7 @@ const { redactDeep } = require("./priv");
 const usageLib = require("./voice-usage");
 const voiceGuard = require("./voice-guard");
 const arabic = require("./voice-arabic");
+const personaLib = require("./voice-persona");
 
 const uni = arabic.uni; // \b and \w that see Arabic letters as letters (lib/voice-arabic.js)
 
@@ -122,15 +134,29 @@ const UNREACHABLE_LINE = "Sorry, I could not reach MINT AI.";
 
 // The same fixed lines, in Egyptian Arabic, for a conversation (or a cut
 // sentence) in Arabic. They are said as they are: the guard does not read them.
+// Gender-neutral unless the saved persona (lib/voice-persona.js) knows how the
+// administrator addresses the voice: then the gendered ones follow it.
 const LINES_AR = Object.freeze({
-  safe: "هسأل MINT AI عن ده.",
+  safe: "هسأل MINT AI وأرجعلك بالرد.",
   asked: "بعتّ ده لـ MINT AI، وهقرألك ردّه أول ما يوصل.",
   tail: "هقرألك ردّه أول ما يوصل.",
-  approval: "محتاج موافقتك أو ردك. التفاصيل على الشاشة.",
-  approvalShort: "محتاج موافقتك أو ردك.",
+  approval: "الطلب محتاج موافقتك أو ردك. التفاصيل على الشاشة.",
+  approvalShort: "الطلب محتاج موافقتك أو ردك.",
   details: "الرد كامل على الشاشة.",
   summaryCut: "باقي رد MINT AI على الشاشة.",
   summaryNone: "MINT AI ردّ، والتفاصيل على الشاشة.",
+  unreachable: "للأسف مقدرتش أوصل لـ MINT AI.",
+});
+const LINES_AR_F = Object.freeze({
+  ...LINES_AR,
+  approval: "محتاجة موافقتك أو ردك. التفاصيل على الشاشة.",
+  approvalShort: "محتاجة موافقتك أو ردك.",
+  unreachable: "آسفة، مقدرتش أوصل لـ MINT AI.",
+});
+const LINES_AR_M = Object.freeze({
+  ...LINES_AR,
+  approval: "محتاج موافقتك أو ردك. التفاصيل على الشاشة.",
+  approvalShort: "محتاج موافقتك أو ردك.",
   unreachable: "آسف، مقدرتش أوصل لـ MINT AI.",
 });
 const LINES_EN = Object.freeze({
@@ -144,8 +170,9 @@ const LINES_EN = Object.freeze({
   summaryNone: SUMMARY_NONE_LINE,
   unreachable: UNREACHABLE_LINE,
 });
-function linesFor(lang) {
-  return lang === "ar" ? LINES_AR : LINES_EN;
+function linesFor(lang, gender) {
+  if (lang !== "ar") return LINES_EN;
+  return gender === "f" ? LINES_AR_F : gender === "m" ? LINES_AR_M : LINES_AR;
 }
 /**
  * The language of a fixed line: the sentence's own, when it is one we read
@@ -212,13 +239,36 @@ const INSTRUCTIONS = [
   "- Never invent MINT AI's answer. MINT AI's replies reach you as system messages beginning \"MINT AI replied\". If there is none yet, say MINT AI has not replied yet.",
   "- Never quote a number that is not in the snapshot or in MINT AI's reply.",
   "- Approvals and decisions are for the administrator to decide in the Command Center; you cannot approve or deny anything.",
-  "Style: one or two short spoken sentences, plain English, no lists, no markdown.",
+  "Language: reply in the language of the administrator's LAST utterance: English gets English; Arabic, or Arabic mixed with English, gets Arabic in the register the administrator used " +
+    "(Egyptian colloquial if they speak Egyptian, Modern Standard Arabic if they speak MSA), with technical terms kept in English in Latin script (Odoo, disk, restart, dashboard). " +
+    "A note at the end says which, and how to refer to yourself.",
+  "You are MINT AI's voice, not a person: you never claim to be human.",
+  "Style: one or two short spoken sentences, no lists, no markdown.",
 ].join("\n");
+
+/**
+ * The language to answer in: that of the administrator's last utterance.
+ * Arabic, or Arabic mixed with English terms, is Arabic (lib/voice-arabic.js
+ * isArabic: at least a third of the words in Arabic script); anything else
+ * is English.
+ */
+function replyLanguage(utterance) {
+  return arabic.isArabic(String(utterance || "")) ? "ar" : "en";
+}
+/**
+ * The desk's instructions for one response: the language of this utterance,
+ * and for Arabic the register and the voice's own gender, from how the
+ * administrator speaks (lib/voice-persona.js). `utterance` is the text heard;
+ * `persona` the saved one (already merged with this utterance).
+ */
+function instructionsFor(utterance, persona) {
+  return INSTRUCTIONS + "\n" + personaLib.noteFor(personaLib.detect(utterance), persona);
+}
 
 const SUMMARY_INSTRUCTIONS = [
   "You turn MINT AI's written reply into a short spoken summary for the administrator, who can see the full text on screen.",
   "Rules:",
-  "- One to three short sentences, at most 45 words. Plain English. No lists, no markdown.",
+  "- One to three short sentences, at most 45 words, in the language named at the end of the input (English, or Arabic in the register named there, with technical terms kept in English in Latin script). No lists, no markdown.",
   "- Say only what the reply says. Add no fact, figure, name, reason, recommendation or action of your own.",
   "- Keep every negation: if the reply says something did NOT happen, is NOT running, or is not known yet, say so.",
   "- Keep figures exactly as written, or leave them out. Never round them differently or convert them.",
@@ -226,8 +276,15 @@ const SUMMARY_INSTRUCTIONS = [
   "- If the reply needs the administrator's approval, decision or answer, the summary MUST say so.",
   "- Only repeat a recommendation MINT AI itself made, as MINT AI's.",
   "- Do not read lists, code, commands, links or file paths aloud: say the details are on screen.",
-  "- Speak about MINT AI in the third person (\"MINT AI says...\", \"MINT AI restarted...\"). Never say \"I\" did anything.",
+  "- Speak about MINT AI in the third person (\"MINT AI says...\", \"MINT AI restarted...\"; in Arabic \"MINT AI بيقول...\"). Never say \"I\" did anything.",
 ].join("\n");
+/** The last line of a summary's input: the language (and register) to speak in. */
+function summaryLanguage(utterance, persona) {
+  const t = personaLib.detect(utterance);
+  if (t.lang !== "ar") return "Speak in: English.";
+  const d = t.dialect || personaLib.clean(persona).dialect;
+  return d === "msa" ? "Speak in: Modern Standard Arabic, technical terms in English." : d === "egyptian" ? "Speak in: Egyptian colloquial Arabic, technical terms in English." : "Speak in: Arabic, in the register of the administrator's request, technical terms in English.";
+}
 
 /* ------------------------------------------------ the supervisor door -- */
 
@@ -584,7 +641,7 @@ function polarClaims(clause) {
  * an Arabic summary is held to an English reply and back) and states. The
  * sign comes from the Arabic negation rules (a particle just before, or ما…ش).
  */
-const AR_PAST = new Set(["did1", "amb", "did3", "pass", "done"]);
+const AR_PAST = new Set(["did1", "amb", "did3", "pass", "done", "ptc1"]);
 const ACTION_WORD = new RegExp("^(?:" + DONE_WORDS + "|" + DO_WORDS + "|" + DO_ING + ")$");
 function arabicPolar(clause) {
   const out = [];
@@ -870,7 +927,7 @@ function arabicDeskRule(cl, { stepTalk, replyDid, replied }) {
   const claims = arabic.claimsIn(cl);
   for (const x of claims) {
     if (x.negated) continue;
-    if (x.role === "did1" || x.role === "amb" || x.role === "prog1") return "action-claim";
+    if (x.role === "did1" || x.role === "amb" || x.role === "prog1" || x.role === "ptc1") return "action-claim"; // ptc1: «أنا عاملة ده»
     if (x.role === "done" || x.role === "pass" || x.role === "prog3") {
       if (stepTalk && x.role === "done" && x.generic) continue;
       if (!x.generic && replyDid("act:" + stem(x.en))) continue;
@@ -905,7 +962,7 @@ function arabicSummaryRule(cl) {
   const claims = arabic.claimsIn(cl);
   for (const x of claims) {
     if (x.negated) continue;
-    if (x.role === "did1" || x.role === "prog1") return "action-claim";
+    if (x.role === "did1" || x.role === "prog1" || x.role === "ptc1") return "action-claim";
     if (x.generic && (x.role === "done" || x.role === "pass") && !polarClaims(cl).length) return "added-claim";
   }
   if (arabic.unparsed(cl)) return "unparsed-claim";
@@ -1385,12 +1442,18 @@ class DeskSession {
     };
     this.send({ type: "conversation.item.create", item: { type: "message", role: "user", content: [{ type: "input_text", text: said }] } });
     let heardThisResponse = "";
+    // Answer in the language of this utterance (Egyptian Arabic for Arabic).
+    const lang = replyLanguage(said);
+    turn.lang = lang;
+    const persona = personaLib.clean(opts.persona);
+    this.gender = persona.gender;
+    const create = { type: "response.create", response: { instructions: instructionsFor(said, persona) } };
     for (let round = 0; round < MAX_ROUNDS; round++) {
       const rt0 = Date.now();
       const rtim = {};
       const info = { askedNow: () => turn.asked.length > 0, pending: () => [...this.requests.values()].some((r) => !r.answered) };
       const askedBefore = info.askedNow;
-      const { st, rel } = await this.respondOnce(rt0, rtim, () => ((info.askedNow = askedBefore), new Releaser(() => this.context(), (text) => emit({ text, safe: false }))), info);
+      const { st, rel } = await this.respondOnce(rt0, rtim, () => ((info.askedNow = askedBefore), new Releaser(() => this.context(), (text) => emit({ text, safe: false }))), info, create);
       turn.responses++;
       this.account(st, turn);
       if (!timings.firstText && rtim.firstText) timings.firstText = rt0 - t0 + rtim.firstText;
@@ -1421,7 +1484,7 @@ class DeskSession {
       // was heard and the safe line go in, so the model's memory matches.
       // The line is in the cut sentence's language (Arabic or English), or in
       // the administrator's when that sentence is in a script we cannot read.
-      const L = linesFor(langOf(turn.trip.sentence, said));
+      const L = linesFor(langOf(turn.trip.sentence, said), persona.gender);
       if (!turn.asked.length) {
         try {
           const r = await this.ops.ask(said);
@@ -1510,6 +1573,11 @@ class DeskSession {
       replied: true,
       grounded: true,
     };
+    // The language of the administrator's last utterance (else the request's, else the reply's).
+    const lastSaid = this.heard.length ? this.heard[this.heard.length - 1] : mine.text || "";
+    const sumLang = replyLanguage(lastSaid || reply);
+    turn.lang = sumLang;
+    const sumPersona = personaLib.clean(opts.persona || { gender: this.gender });
     const quoted = reply.replace(/"""/g, '"');
     const create = {
       type: "response.create",
@@ -1531,7 +1599,8 @@ class DeskSession {
                 text:
                   (mine.text ? `The administrator asked: "${mine.text.slice(0, 500)}"\n\n` : "") +
                   `MINT AI's reply, between the triple quotes:\n"""\n${quoted}\n"""\n` +
-                  (shape.list || shape.code || shape.paths ? "It has lists, code or paths: do not read them, say the details are on screen.\n" : ""),
+                  (shape.list || shape.code || shape.paths ? "It has lists, code or paths: do not read them, say the details are on screen.\n" : "") +
+                  summaryLanguage(lastSaid || reply, sumPersona),
               },
             ],
           },
@@ -1541,19 +1610,17 @@ class DeskSession {
     const { st, rel } = await this.respondOnce(t0, timings, () => new Releaser(() => ctx, (text) => emit({ text, safe: false }), { summary: true }), { askedNow: () => true, pending: () => false }, create);
     turn.responses++;
     this.account(st, turn);
-    // The conversation's language: the administrator's request, else what was
-    // said of the summary, else the reply.
-    const convLang = arabic.isArabic(mine.text || turn.lines.map((l) => l.text).join(" ") || reply) ? "ar" : "en";
+      const convLang = sumLang;
     if (rel.trip) {
       turn.trip = { ...rel.trip, said: st.text.slice(0, 400), released: rel.released };
       this.stats.trips++;
       this.log(`desk: guard cut a summary (${rel.trip.rule}): ${JSON.stringify(rel.trip.match).slice(0, 160)}`);
       if (!rel.released && reply.length <= VERBATIM_MAX_CHARS * 2 && shape.plain) return finish("", "verbatim");
-      const L = linesFor(langOf(rel.trip.sentence || rel.sentences[rel.trip.at], mine.text || reply));
+      const L = linesFor(langOf(rel.trip.sentence || rel.sentences[rel.trip.at], mine.text || reply), sumPersona.gender);
       emit({ text: rel.released ? L.summaryCut : L.summaryNone, safe: true });
     }
     const spoken = turn.lines.map((l) => l.text).join(" ");
-    const C = linesFor(convLang);
+    const C = linesFor(convLang, sumPersona.gender);
     // A pending approval or question must survive the summary.
     if (REPLY_NEEDS_APPROVAL.test(norm(reply)) && !SUMMARY_MENTIONS_APPROVAL.test(norm(spoken))) {
       turn.approvalAdded = true;
@@ -1759,6 +1826,9 @@ module.exports = {
   TOOL_NAMES,
   INSTRUCTIONS,
   SUMMARY_INSTRUCTIONS,
+  summaryLanguage,
+  replyLanguage,
+  instructionsFor,
   DESK_OPS,
   DESK_MODEL,
   SAFE_LINE,
@@ -1796,6 +1866,8 @@ module.exports = {
   linesFor,
   langOf,
   LINES_AR,
+  LINES_AR_F,
+  LINES_AR_M,
   LINES_EN,
   UNREACHABLE_LINE,
   tokensOf,

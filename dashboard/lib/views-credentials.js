@@ -289,6 +289,30 @@ function deskCard(csrf, v, desk) {
   );
 }
 
+/**
+ * The voice persona: learned from how this administrator speaks, shown here
+ * read-only, with a Reset. There is deliberately no field to type one in.
+ */
+function personaCard(csrf, p) {
+  const x = p || { dialect: "not known yet", gender: "not known yet (gender-neutral)", updated_at: null };
+  return card(
+    "Voice persona",
+    `<p class="muted small">Learned from how you speak, never typed. The voice answers in the language you last used; in Arabic it
+      matches your register and refers to itself in the gender you address it with. It is always MINT AI's voice and never
+      claims to be human. It changes only when your speech clearly shows a change.</p>
+    <table class="kv mt-12" id="voice-persona">
+      <tr><td>Arabic register</td><td id="voice-persona-dialect">${esc(x.dialect)}</td></tr>
+      <tr><td>How it refers to itself</td><td id="voice-persona-gender">${esc(x.gender)}</td></tr>
+      <tr><td>Last learned</td><td class="mono small">${x.updated_at ? esc(stamp(x.updated_at)) : "—"}</td></tr>
+    </table>
+    <form method="post" action="/credentials/openai-voice/persona/reset" class="btn-row mt-12">
+      <input type="hidden" name="_csrf" value="${esc(csrf)}">
+      <button class="btn small" type="submit" id="voice-persona-reset">${icon("close")} Reset</button>
+    </form>`,
+    { icon: "voice", id: "v-persona" }
+  );
+}
+
 /** How each voice sounds, for the voice cards. A word or two, not a promise. */
 const VOICE_NOTES = {
   marin: "warm · clear · default",
@@ -303,7 +327,7 @@ const VOICE_NOTES = {
   verse: "bright · quick",
 };
 
-exports.voice = ({ csrf, user, credentials, voice: v, desk, models, voices, transcribeModels, test, flash, err }) => {
+exports.voice = ({ csrf, user, credentials, voice: v, desk, persona, models, voices, transcribeModels, test, flash, err }) => {
   const known = (list, id) => list.some((m) => (m.id || m) === id);
   const modelList = known(models, v.model) ? models : [{ id: v.model, label: v.model }, ...models];
   const tModels = known(transcribeModels, v.transcribe_model)
@@ -311,7 +335,7 @@ exports.voice = ({ csrf, user, credentials, voice: v, desk, models, voices, tran
     : [{ id: v.transcribe_model, label: v.transcribe_model }, ...transcribeModels];
   const voiceList = voices.includes(v.voice) ? voices : [v.voice, ...voices];
 
-  const toc = [["v-state", "Current state"], ["v-key", v.configured ? "Replace the key" : "Add the key"], ["v-voice", "Voice"], ["v-desk", "Voice front desk"]];
+  const toc = [["v-state", "Current state"], ["v-key", v.configured ? "Replace the key" : "Add the key"], ["v-voice", "Voice"], ["v-desk", "Voice front desk"], ["v-persona", "Voice persona"]];
   if (v.configured) toc.push(["v-remove", "Remove"]);
   return shell(
     "OpenAI voice",
@@ -382,6 +406,7 @@ exports.voice = ({ csrf, user, credentials, voice: v, desk, models, voices, tran
     )}
 
     ${deskCard(csrf, v, desk)}
+    ${personaCard(csrf, persona)}
 
     ${
       v.configured

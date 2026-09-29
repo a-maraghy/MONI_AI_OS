@@ -42,6 +42,7 @@ const totp = require("./lib/totp");
 const voice = require("./lib/voice");
 const voiceDesk = require("./lib/voice-desk");
 const voiceUsage = require("./lib/voice-usage");
+const voicePersona = require("./lib/voice-persona");
 const voiceGuard = require("./lib/voice-guard");
 const voiceIntake = require("./lib/voice-intake");
 // The spoken "stop listening" command; the same file runs in the browser.
@@ -1899,6 +1900,34 @@ function bodyVt(req) {
 }
 
 /**
+ * How the voice speaks to this user (lib/voice-persona.js): the register and
+ * the voice's own gender, learned from how they speak to it and saved on their
+ * account. personaHear() reads one utterance and saves (and audits) a change
+ * only when the utterance clearly shows one.
+ */
+function personaOf(userId) {
+  try {
+    return voicePersona.clean(db.getVoicePersona(userId));
+  } catch (_) {
+    return voicePersona.clean(null);
+  }
+}
+function personaHear({ userId, username, ip }, text) {
+  const saved = personaOf(userId);
+  const m = voicePersona.merge(saved, voicePersona.detect(text));
+  if (m.changed.length) {
+    try {
+      db.setVoicePersona(userId, JSON.stringify(m.persona));
+      const d = voicePersona.describe(m.persona);
+      db.logLogin(ip, username, "voice", `voice persona learned from speech: ${m.changed.map((k) => (k === "dialect" ? "dialect " + d.dialect : "self-gender " + d.gender)).join(", ")}`);
+    } catch (e) {
+      console.log("voice persona: could not save: " + e.message);
+    }
+  }
+  return m.persona;
+}
+
+/**
  * A refusal the page expects (desk off). 409 for a plain JSON caller; a
  * streaming page gets it as its first and only line, so a normal fallback
  * does not show up in the browser console as a failed request.
@@ -2185,6 +2214,7 @@ app.get("/credentials/openai-voice", requireAuth, requirePerm("voice.manage"), a
       credentials: list,
       voice: v,
       desk: { on: voiceDeskOn(), row: db.settingRow(VOICE_DESK_SETTING), model: voiceDesk.DESK_MODEL, usage: voiceUsageSummary() },
+      persona: voicePersona.describe(personaOf(req.me.id)),
       models: voice.MODELS,
       voices: voice.VOICES,
       transcribeModels: voice.TRANSCRIBE_MODELS,
@@ -2233,6 +2263,13 @@ app.post("/credentials/openai-voice/options", requireAuth, requirePerm("voice.ma
   } catch (e) {
     res.redirect("/credentials/openai-voice?err=" + encodeURIComponent(e.message));
   }
+});
+
+/* The voice persona is learned, never typed: the only thing Settings can do to it is forget it. */
+app.post("/credentials/openai-voice/persona/reset", requireAuth, requirePerm("voice.manage"), requireCsrf, (req, res) => {
+  db.setVoicePersona(req.me.id, "");
+  db.logLogin(req.ip, req.me.username, "voice", "reset the voice persona (register and self-gender forgotten)");
+  res.redirect("/credentials/openai-voice?msg=" + encodeURIComponent("Voice persona reset. It is learned again from how you speak.") + "#v-persona");
 });
 
 app.post("/credentials/openai-voice/desk", requireAuth, requirePerm("voice.manage"), requireCsrf, (req, res) => {
@@ -3503,7 +3540,8 @@ app.post("/mint-ai/api/desk/turn", requireApiPerm("moniai.use"), moniAiAudioBody
       return out.end();
     }
     const speaker = voiceDesk.createSpeaker({ speak: voice.speakStream, cfg, write: out.write, t0 });
-    const r = await desk().turn(heard, { onLine: (line) => speaker.push(line) });
+    const persona = personaHear({ userId: req.me.id, username: req.me.username, ip: req.ip }, heard);
+    const r = await desk().turn(heard, { onLine: (line) => speaker.push(line), persona });
     for (const t of r.asked) out.write({ type: "asked", turn: t });
     const sp = await speaker.done();
     const cat = voiceDesk.categoryOf(r);
@@ -3574,7 +3612,7 @@ app.post("/mint-ai/api/desk/summary", ...moniAiWrite, async (req, res) => {
     out.start();
     started = true;
     const speaker = voiceDesk.createSpeaker({ speak: voice.speakStream, cfg, write: out.write, t0 });
-    const r = await desk.summarise(id, { onLine: (line) => speaker.push(line) });
+    const r = await desk.summarise(id, { onLine: (line) => speaker.push(line), persona: personaOf(req.me.id) });
     const sp = await speaker.done();
     const deskUsd = r.cost_usd ? recordVoice(() => voiceLedger.add({ vt, cat: "handoff", part: "desk", model: voiceDesk.DESK_MODEL, tokens: r.tokens, actor }).usd) : 0;
     const speechUsd = recordSpeech({ vt, cat: "handoff", actor, billing: sp.billing, lateBilling: sp.lateBilling });

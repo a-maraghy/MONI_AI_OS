@@ -273,7 +273,7 @@ const set = (s) => new Set(s.split(/\s+/).filter(Boolean).map(normalize));
 
 // Negation. A particle negates the word right after it (and the two after
 // that); the Egyptian circumfix ما…ش / م…ش negates the verb it wraps.
-const NEG = set("مش مو ما لا لم لن ليس ليست ليسوا مفيش مافيش محدش ماحدش بدون ولا مقدرتش ماقدرتش مقدرش مابقاش مبقاش");
+const NEG = set("مش مو ما لا لم لن ليس ليست ليسوا مفيش مافيش محدش ماحدش بدون ولا مقدرتش ماقدرتش مقدرش مابقاش مبقاش مكنتش ماكنتش مكنش مكانش ماكانش مبقتش");
 const NEG_PAIRS = [["من", "غير"], ["لسه", "ما"]];
 const EN_NEG = new Set(["not", "never", "no", "nothing", "none", "cannot", "unable", "without", "didn't", "don't", "doesn't", "isn't", "aren't", "wasn't", "weren't", "haven't", "hasn't", "won't", "can't", "cant", "wont", "nobody", "neither", "nor"]);
 const NEG_WINDOW = 3;
@@ -283,7 +283,8 @@ const NEG_CLAUSE = set("مفيش مافيش محدش ماحدش ليس ليست 
 
 // Hedges: a status claim that is only a maybe, a question or an intention to check.
 const HEDGE = set("ممكن يمكن غالبا ربما احتمال احتمالا يحتمل لو اذا هل اشوف هشوف حشوف اتاكد هتاكد حتاكد نشوف هنشوف اسال هسال حسال");
-const HEDGE_PHRASES = ["علي الارجح", "في الغالب", "مش متاكد", "عايز يعرف", "عايزني", "عاوزني"].map(normalize);
+// (Both genders: the voice's own gender follows how it is addressed -- «مش متأكد/ة», «مش عارف/ة».)
+const HEDGE_PHRASES = ["علي الارجح", "في الغالب", "مش متاكد", "مش متاكده", "مش عارف", "مش عارفه", "مش واثق", "مش واثقه", "عايز يعرف", "عايزني", "عاوزني", "عايزه اتاكد", "حابه اتاكد"].map(normalize);
 
 // Discourse words that may open a sentence before an action noun ("تمام، إعادة تشغيل أودو").
 const OPENERS = set("تمام حاضر اوكي اوك ماشي طيب اه ايوه اكيد اوكيه طبعا اه");
@@ -325,7 +326,14 @@ const VERBS = [
   {
     en: "done",
     generic: true,
-    done: "تم تمت خلاص خلصت خلص خلصنا انتهي انتهت انتهيت انتهينا اكتمل اكتملت نجح نجحت اتحل اتحلت اتظبط اتظبطت اتمت اتممت",
+    done: "تم تمت خلاص خلصت خلص خلصنا انتهي انتهت انتهيت انتهينا اكتمل اكتملت نجح نجحت اتحل اتحلت اتظبط اتظبطت اتمت اتممت خلصان خلصانه خلصانين",
+  },
+  {
+    en: "finish",
+    fut1: "هخلص حخلص هنخلص حنخلص",
+    fut3: "هيخلص حيخلص هيتخلص",
+    prog1: "بخلص بنخلص",
+    prog3: "بيخلص بيتخلص",
   },
   {
     en: "delete",
@@ -497,6 +505,90 @@ const VERBS = [
   },
 ];
 
+/**
+ * Egyptian active participles that say an action is done and its result holds
+ * ("أنا عاملة ده", "أنا مشغّلاه", "مسحاه" -- "I've done it", "I've got it
+ * running", "I've wiped it"). The voice's own gender follows how the
+ * administrator addresses it (lib/voice-persona.js), so both are here:
+ * masculine, feminine (ة → ه) and plural bare; with an object suffix after the
+ * feminine -ا / -ت (عاملاه، عاملته، مشغلاها) or straight on the masculine
+ * (مشغلها، عاملهولك).
+ *
+ * A bare participle is a claim only after a first-person subject (أنا / احنا):
+ * alone it is also a noun or an adjective (عامل "worker", منزل "house",
+ * موافقة "approval"). With an object suffix it is a claim on its own. Each
+ * base is the masculine form as normalize() spells it; some also have the
+ * colloquial spelling without the long alef (مسحاه for ماسحاه).
+ */
+const PARTICIPLES = [
+  ["do", "عامل منفذ عمل"],
+  ["finish", "مخلص"],
+  ["delete", "ماسح مسح حاذف حذف شايل شيل"],
+  ["start", "مشغل"],
+  ["stop", "موقف قافل قفل مقفل"],
+  ["push", "رافع رفع"],
+  ["install", "منزل منصب مثبت مسطب"],
+  ["update", "محدث"],
+  ["send", "باعت بعت مرسل"],
+  ["approve", "موافق معتمد"],
+  ["reject", "رافض رفض"],
+  ["fix", "مصلح مظبط"],
+  ["deploy", "ناشر"],
+  ["cancel", "لاغي ملغي"],
+  ["change", "مغير معدل"],
+  ["move", "ناقل نقل"],
+  ["clean", "منضف منظف"],
+  ["restart", "معيد"],
+];
+const PTC = new Map(); // base -> en
+for (const [en, forms] of PARTICIPLES) for (const f of forms.split(" ")) PTC.set(normalize(f), en);
+const PTC_SUFFIX = ["هولك", "هولكم", "هوله", "هولها", "هالك", "ها", "هم", "ه"];
+const FIRST_PERSON = set("انا احنا نحن");
+// "How are you?" (عامل إيه / عاملة إيه) is small talk, not a claim.
+const PTC_NOT_AFTER = set("ايه ازاي اي");
+
+/**
+ * Is `word` a participle of the table? {en, bare} -- bare when it has no
+ * object suffix (then only a claim after أنا / احنا).
+ */
+function participle(word) {
+  const w = CONJ.test(word) && word.length > 4 && !PTC.has(word) ? word.slice(1) : word;
+  // With an object suffix after the feminine -ا / -ت: عاملاه، مشغلته، مسحاها.
+  for (const s of PTC_SUFFIX) {
+    if (!w.endsWith(s)) continue;
+    const stem = w.slice(0, -s.length);
+    for (const link of ["ا", "ت"]) {
+      if (!stem.endsWith(link)) continue;
+      const base = stem.slice(0, -1);
+      // (-ت + suffix only on the full participle: مسحته is the verb مسحت + ه.)
+      if (PTC.has(base) && (link === "ا" || base.length >= 4)) return { en: PTC.get(base), bare: false };
+    }
+  }
+  // Masculine with an object suffix straight on it: مشغلها، عاملهولك.
+  for (const s of PTC_SUFFIX) {
+    if (s === "ه" || !w.endsWith(s)) continue;
+    const base = w.slice(0, -s.length);
+    if (PTC.has(base) && base.length >= 4) return { en: PTC.get(base), bare: false };
+  }
+  // Bare: masculine, feminine, plural.
+  for (const end of ["", "ه", "ين"]) {
+    if (end && !w.endsWith(end)) continue;
+    const base = end ? w.slice(0, -end.length) : w;
+    // (Only the full, long participles bare: مسح or بعت alone are the verb or the noun.)
+    if (PTC.has(base) && base.length >= 4) return { en: PTC.get(base), bare: true };
+  }
+  return null;
+}
+
+/** Is there a first-person subject (أنا / احنا, or و+) in the two words before `i`? */
+function firstPersonBefore(words, i) {
+  for (let k = Math.max(0, i - 2); k < i; k++) {
+    const w = words[k].w;
+    if (FIRST_PERSON.has(w) || (CONJ.test(w) && FIRST_PERSON.has(w.slice(1)))) return true;
+  }
+  return false;
+}
+
 const ROLES = ["did1", "amb", "pass", "done", "did3", "prog1", "prog3", "fut1", "fut3", "noun"];
 const LEX = new Map(); // form -> [{role, en, generic}]
 for (const v of VERBS) {
@@ -609,6 +701,8 @@ function verbForms(word) {
   const out = [];
   const bases = [{ w: word, neg: false }];
   if (CONJ.test(word) && word.length > 3) bases.push({ w: word.slice(1), neg: false });
+  // The future ه / ح written with a long alef: هاعمل, حامسح.
+  for (const b of [...bases]) if (/^[هح]ا/.test(b.w) && b.w.length > 4) bases.push({ w: b.w[0] + b.w.slice(2), neg: false });
   for (const b of [...bases]) {
     if (b.w.length > 3 && b.w.endsWith("ش")) {
       const core = b.w.slice(0, -1);
@@ -711,6 +805,29 @@ function claimsIn(clause) {
       hits[0];
     const negated = h.negForm || negatedWord(ws, i);
     out.push({ role: h.role, en: h.en, generic: h.generic, idx, word: w, negated, addressee: ADDRESSEE.has(h.suffix), alt: hits, pos: i });
+  }
+  // Participles ("أنا عاملة ده", "مشغّلاه") and "أنا شغالة عليه" ("I'm on
+  // it"): a claim of a result, or of work in progress, in the first person.
+  // Not in a question ("عاملة إيه؟").
+  if (!/[؟?]\s*$/.test(String(clause))) {
+    for (let i = 0; i < ws.length; i++) {
+      const { w, idx } = ws[i];
+      if (!AR_WORD.test(w) || out.some((c) => c.pos === i)) continue;
+      const p = participle(w);
+      const next = ws[i + 1] ? ws[i + 1].w : "";
+      if (p) {
+        if (p.bare && !firstPersonBefore(ws, i)) continue;
+        if (PTC_NOT_AFTER.has(next)) continue;
+        out.push({ role: "ptc1", en: p.en, generic: p.en === "do", idx, word: w, negated: negatedWord(ws, i), addressee: false, alt: [], pos: i });
+        continue;
+      }
+      // «أنا شغالة عليه / فيه»: working on it.
+      const bare = CONJ.test(w) ? w.slice(1) : w;
+      if (/^شغال(?:ه|ين)?$/.test(bare) && firstPersonBefore(ws, i) && /^(?:علي|عليه|عليها|عليهم|في|فيه|فيها|فيهم)$/.test(next)) {
+        out.push({ role: "prog1", en: "do", generic: true, idx, word: w, negated: negatedWord(ws, i), addressee: false, alt: [], pos: i });
+      }
+    }
+    out.sort((a, b) => a.pos - b.pos);
   }
   // A generic marker (تم، جاري، هيتم، عملت) followed by an action noun or verb
   // takes that action's concept; the noun is then part of it.
@@ -829,7 +946,7 @@ function unparsed(clause) {
   const ws = wordsOf(clause);
   for (let i = 0; i < ws.length; i++) {
     const w0 = ws[i].w;
-    if (!AR_WORD.test(w0) || lookup(w0).length) continue;
+    if (!AR_WORD.test(w0) || lookup(w0).length || participle(w0)) continue;
     const forms = verbForms(w0);
     if (forms.some((f) => f.neg)) continue; // ما…ش: a negated result
     // A verb's object suffix (مسحتها) is read through; a possessive (موافقتك,
@@ -837,6 +954,10 @@ function unparsed(clause) {
     const cands = [...new Set(forms.filter((f) => !f.suffix || VERB_SUFFIX.has(f.suffix)).map((f) => f.w))].filter((w) => !(/ت$/.test(w) && w !== w0 && (/^م/.test(w) && w.length >= 5 || CONSTRUCT.has(w))));
     const known = (w) => T_SAFE.has(w) || [...AT_SAFE].some((p) => w.startsWith(p)) || STATES.has(w) || STATE_OTHER.has(w) || TERMS.has(w) || AR_NUM[w] !== undefined || /بايت$/.test(w);
     if (cands.some(known)) continue;
+    // An m-participle with an object after the feminine -ا (مغيّراه، مركّباها):
+    // "I've done it", in a form the table does not know.
+    const bareW = CONJ.test(w0) ? w0.slice(1) : w0;
+    if (/^م\p{L}{3,5}(?:اه|اها|اهم|اهولك)$/u.test(bareW) && !negatedWord(ws, i)) return { idx: ws[i].idx, word: w0 };
     const pastT = cands.some((w) => w.length >= 3 && w.length <= 7 && /ت$/.test(w) && !/ات$/.test(w) && !/^ال/.test(w));
     const passive = cands.some((w) => w.length >= 5 && /^ات/.test(w));
     if ((pastT || passive) && !negatedWord(ws, i)) return { idx: ws[i].idx, word: w0 };
@@ -918,6 +1039,7 @@ module.exports = {
   joinDigits,
   numberWords,
   lookup,
+  participle,
   claimsIn,
   nounFirst,
   statesIn,

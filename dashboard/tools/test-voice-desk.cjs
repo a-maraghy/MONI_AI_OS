@@ -1275,6 +1275,49 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     check("with the desk off the page never calls it (DESK gates every path)", /var DESK = READY && root\.getAttribute\("data-voice-desk"\) === "1"/.test(js) && /if \(DESK\) return deskSend\(/.test(js) && (js.match(/desk\/turn/g) || []).length === 1);
   }
 
+  section("the desk answers in the language of the last utterance, as the administrator speaks");
+  {
+    const d = newDesk("text");
+    const creates = () => lastSession().events.filter((e) => e.type === "response.create" && !(e.response && e.response.conversation === "none"));
+    const last = () => creates()[creates().length - 1].response.instructions;
+    await withBrain(() => [{ say: "Hello! What would you like to know?" }], () => d.turn("hello there"));
+    check("English utterance: English", last() === desk.instructionsFor("hello there", {}) && /plain English\.$/.test(last()));
+    await withBrain(() => [{ say: "أهلاً بيك! تحت أمرك." }], () => d.turn("إزيك؟ عايز أعرف أودو شغال ولا لأ"));
+    check("Egyptian utterance, no persona yet: Egyptian, gender-neutral", /Egyptian colloquial/.test(last()) && /gender-neutral/.test(last()));
+    await withBrain(() => [{ say: "أهلاً بيكي! أنا جاهزة." }], () => d.turn("إزيك؟ عايز أعرف أودو شغال ولا لأ", { persona: { gender: "f", dialect: "egyptian" } }));
+    check("with a saved feminine persona: feminine forms", /feminine forms for yourself/.test(last()));
+    await withBrain(() => [{ say: "Hello! What would you like to know?" }], () => d.turn("thanks, and the disk?", { persona: { gender: "f" } }));
+    check("back to English: English again (the LAST utterance decides)", /plain English\.$/.test(last()));
+    const n0 = creates().length;
+    await withBrain(goodBrain, () => d.turn("عايزك تعمل restart للـ dashboard", { persona: { gender: "m" } }));
+    const c = creates().slice(n0);
+    check("mixed Arabic-English: Arabic, on every response of the turn (the tool round too)", c.length >= 2 && c.every((e) => e.response.instructions === desk.instructionsFor("عايزك تعمل restart للـ dashboard", { gender: "m" })), c.length);
+    check("the session keeps the base instructions", lastSession().session.instructions === desk.INSTRUCTIONS);
+    d.close();
+  }
+  {
+    // A guard cut in Arabic: the safe line follows the saved gender.
+    const d = newDesk("text");
+    const r = await withBrain(() => [{ say: "تم إعادة تشغيل أودو." }], () => d.turn("اعمل restart لأودو", { persona: { gender: "f" } }));
+    check("cut in Arabic: the safe line (neutral) is said", r.trip && r.lines.length === 1 && r.lines[0].text === desk.LINES_AR_F.safe, JSON.stringify(r.lines));
+    d.close();
+  }
+  {
+    // The summary: in the register of the administrator's last utterance, fixed lines in the saved gender.
+    const d = newDesk("text");
+    const r1 = await withBrain(goodBrain, () => d.turn("عايزك تعمل restart للـ dashboard"));
+    sup.replies.set(r1.asked[0].id, "The dashboard was restarted and is answering again. Before I push the fix to GitHub, it needs your approval: the card is in the Command Center. It took 4 seconds, and the logs show no errors since.");
+    mock.summaryText = "MINT AI عمل restart للـ dashboard، وهو شغال تاني.";
+    const heard = [];
+    await d.summarise(r1.asked[0].id, { onLine: (l) => heard.push(l.text), persona: { gender: "f", dialect: "egyptian" } });
+    const oob = lastSession().oob[lastSession().oob.length - 1];
+    const text = oob && oob.input[0].content[0].text;
+    check("the summary is asked for in Egyptian Arabic after an Egyptian request", text && /Speak in: Egyptian colloquial Arabic/.test(text), text && text.slice(-90));
+    check("  the pending approval line is the feminine one", heard[heard.length - 1] === desk.LINES_AR_F.approval, JSON.stringify(heard));
+    mock.summaryText = null;
+    d.close();
+  }
+
   server.close();
   fs.rmSync(TMP, { recursive: true, force: true });
   console.log(`\n${passed} passed, ${failed} failed`);

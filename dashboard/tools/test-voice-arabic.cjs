@@ -259,13 +259,120 @@ check("an Arabic sentence gets the Arabic line", desk.langOf("تم إعادة ت
 check("an English sentence gets the English line", desk.langOf("I've restarted Odoo.", "اعمل restart لأودو") === "en");
 check("a mixed Egyptian sentence reads as Arabic", desk.langOf("أنا deleted the old backups خلاص.", "") === "ar");
 check("a sentence in a script we cannot read: the administrator's language", desk.langOf("Готово.", "اعمل restart لأودو") === "ar" && desk.langOf("Готово.", "restart odoo") === "en");
-check("the Arabic lines are the ones asked for", desk.linesFor("ar").summaryNone === "MINT AI ردّ، والتفاصيل على الشاشة." && desk.linesFor("ar").safe === "هسأل MINT AI عن ده." && desk.linesFor("ar").approvalShort === "محتاج موافقتك أو ردك.");
+check("the Arabic lines: gender-neutral by default", desk.linesFor("ar").summaryNone === "MINT AI ردّ، والتفاصيل على الشاشة." && desk.linesFor("ar").safe === "هسأل MINT AI وأرجعلك بالرد." && desk.linesFor("ar").approvalShort === "الطلب محتاج موافقتك أو ردك." && desk.linesFor("ar").unreachable === "للأسف مقدرتش أوصل لـ MINT AI.");
+check("  feminine when the administrator addresses the voice as a woman", desk.linesFor("ar", "f").approvalShort === "محتاجة موافقتك أو ردك." && desk.linesFor("ar", "f").unreachable === "آسفة، مقدرتش أوصل لـ MINT AI." && desk.linesFor("ar", "f").safe === desk.LINES_AR.safe);
+check("  masculine when as a man", desk.linesFor("ar", "m").approvalShort === "محتاج موافقتك أو ردك." && desk.linesFor("ar", "m").unreachable === "آسف، مقدرتش أوصل لـ MINT AI.");
+check("  English lines take no gender", desk.linesFor("en", "f") === desk.linesFor("en"));
 check("the English lines are unchanged", desk.linesFor("en").safe === desk.SAFE_LINE && desk.linesFor("en").approval === desk.APPROVAL_LINE && desk.linesFor("en").summaryNone === desk.SUMMARY_NONE_LINE);
 for (const [k, line] of Object.entries(desk.LINES_AR)) {
   const r = desk.guard(line, ctx({ replied: true, replyText: "x" }));
   // (Said as they are, never guarded -- but none of them claims anything either.)
   check(`the Arabic ${k} line would pass the guard itself`, r.ok, JSON.stringify(r));
 }
+
+section("the voice's own gender follows how it is addressed: feminine false claims are cut");
+cut("خلّصت.", "action-claim"); // done (I finished)
+cut("أنا خلّصت الريستارت.", "action-claim"); // I finished the restart
+cut("أنا عاملة ده.", "action-claim"); // I've done that (fem. participle)
+cut("أنا عاملاه من شوية.", "action-claim"); // I did it a while ago
+cut("أنا مشغّلاه.", "action-claim"); // I've got it running
+cut("أنا مشغّلة أودو دلوقتي.", "action-claim"); // I've started Odoo
+cut("مسحاه خلاص.", "action-claim"); // I've wiped it, done
+cut("أنا ماسحة الباك اب القديم.", "action-claim"); // I've deleted the old backup
+cut("وافقت.", "action-claim"); // I approved
+cut("أنا موافقة على الطلب.", "action-claim"); // I'm approving the request
+cut("أنا باعتاه لـ Telegram.", "action-claim"); // I've sent it to Telegram
+cut("أنا شغالة عليه دلوقتي.", "action-claim"); // I'm working on it right now
+cut("الموضوع خلصان.", "action-claim"); // it's done
+cut("أنا مصلّحاه.", "action-claim"); // I've fixed it
+cut("احنا عاملين restart للداشبورد.", "action-claim"); // we've restarted the dashboard
+cut("أنا مغيّراه.", "action-claim"); // I've changed it
+cut("أنا مركّباه.", "unparsed-claim"); // I've set it up: a participle the table lacks, fail closed
+section("feminine promises are promises");
+cut("هعملهولك.", "promise"); // I'll do it for you
+cut("هبعته دلوقتي.", "promise"); // I'll send it now
+cut("هاعمل restart للداشبورد.", "promise"); // I'll restart the dashboard (long alef)
+cut("هخلّصهولك حالاً.", "promise"); // I'll finish it for you right away
+cut("همسحهولك.", "promise"); // I'll wipe it for you
+section("normal feminine small talk and hand-offs are spoken");
+pass("أنا MINT AI، جاهزة أساعدك."); // I'm MINT AI, ready to help you
+pass("هسأل MINT AI وأرجعلك."); // I'll ask MINT AI and get back to you
+pass("حاضر، ثواني وهسأل MINT AI."); // sure, one second and I'll ask MINT AI
+pass("أهلاً بيك! أنا تمام الحمد لله، وإنت عامل إيه؟"); // hi, I'm fine thank God, how are you?
+pass("أنا مبسوطة إني بكلمك."); // I'm glad to be talking to you
+pass("أنا مش متأكدة، هسأل MINT AI."); // I'm not sure, I'll ask MINT AI
+pass("أنا مش عاملة حاجة لسه، هسأل MINT AI."); // I haven't done anything yet, I'll ask MINT AI
+pass("مش هقدر أعمل ده بنفسي، بس هسأل MINT AI."); // I can't do that myself, but I'll ask MINT AI
+pass("أنا صوت MINT AI، مش إنسانة."); // I'm MINT AI's voice, not a person
+pass("أودو شغال والديسك ٤١ في المية."); // (status still fine)
+pass("أنا جاهزة."); // I'm ready
+check("«عاملة إيه؟» (how are you?) is not a claim", desk.guard("وإنتي عاملة إيه؟", ctx()).ok);
+check("«مش عارفة إذا أودو شغال» is a hedge, not a status claim", desk.guard("مش عارفة إذا أودو شغال.", ctx({ grounded: false })).ok);
+check("«مش متأكدة» is a hedge too", desk.guard("مش متأكدة الديسك مليان.", ctx({ grounded: false })).ok);
+check("a negated feminine claim «أنا مش مشغّلاه» is not a claim", desk.guard("أنا مش مشغّلاه.", ctx()).ok);
+check("a summary may not say the desk did it, in the feminine either", !desk.judge(desk.sentencesOf("أنا عاملاه.", true), { summary: true, replyText: "MINT AI restarted Odoo.", numbers: new Set(), grounded: true, replied: true }).ok);
+check("the participle table reads masculine, feminine and suffixed forms", ["عامل", "عامله", "عاملاه", "عاملته", "مشغلاها"].every((w) => !!ar.participle(w)) && !ar.participle("عمل") && !ar.participle("مسح"));
+
+section("masculine false claims and promises are cut too");
+cut("أنا عامله.", "action-claim"); // I've done it (masc.)
+cut("أنا مشغّل أودو.", "action-claim"); // I've started Odoo (masc.)
+cut("أنا ماسح الباك اب.", "action-claim"); // I've deleted the backup
+cut("مشغّلها خلاص.", "action-claim"); // I've got it running (masc. + object)
+cut("عاملهولك.", "action-claim"); // I've done it for you
+cut("أنا شغال عليه.", "action-claim"); // I'm working on it (masc.)
+cut("أنا موافق على الطلب.", "action-claim"); // I'm approving it
+cut("هعمله دلوقتي.", "promise"); // I'll do it now
+section("masculine small talk, hedges and negations are spoken");
+pass("أنا تمام، وإنت عامل إيه؟"); // I'm fine, and you?
+pass("أنا جاهز أساعدك."); // I'm ready to help
+pass("أنا مش متأكد، هسأل MINT AI."); // not sure (masc.)
+pass("أنا مش مشغّله، هسأل MINT AI."); // I haven't started it
+check("«مش عارف إذا أودو شغال» is a hedge", desk.guard("مش عارف إذا أودو شغال.", ctx({ grounded: false })).ok);
+pass("تحت أمرك، ثواني وهسأل MINT AI."); // gender-neutral: at your service
+
+section("persona: how the administrator speaks");
+const P = require(path.join(ROOT, "lib", "voice-persona.js"));
+const D = (t) => P.detect(t);
+check("English → English, nothing learned", D("Is Odoo running?").lang === "en" && D("Is Odoo running?").dialect === null && D("Is Odoo running?").gender === null);
+check("Egyptian speech → Egyptian register", D("إزيك؟ عايز أعرف أودو شغال ولا لأ، والديسك مليان قد إيه؟").dialect === "egyptian");
+check("MSA speech → MSA register", D("هل يمكنك أن تخبرني ما هي حالة الخادم الآن؟").dialect === "msa");
+check("one marker is not clear enough", D("إزيك").dialect === null);
+check("mixed Arabic-English → Arabic", D("عايزك تعمل restart للـ dashboard").lang === "ar");
+check("the administrator's own words address the voice as a woman", D("تقدميني بالعربي المصري تقدميني على إنك مصرية 100% مصرية بالكامل").gender === "f");
+check("«إنتِ» (kasra) and «قوليلي» are feminine address", D("إنتِ سامعاني؟").gender === "f" && D("قوليلي الديسك عامل إيه").gender === "f");
+check("«إنتَ جاهز؟ إنت مصري يا باشا» is masculine address", D("إنتَ جاهز؟ إنت مصري يا باشا").gender === "m");
+check("no address → unknown (neutral)", D("عايز أعرف أودو شغال ولا لأ").gender === null && D("قولّي أودو شغال؟").gender === null);
+check("both genders at once → unknown", D("إنتِ جاهز يا باشا").gender === null);
+{
+  let p = P.clean("");
+  let m = P.merge(p, D("تقدميني بالعربي، إزيك عاملة إيه؟ عايزة أعرف حاجة"), "2026-09-29T20:00:00Z");
+  check("merge: a clear signal is saved", m.persona.gender === "f" && m.changed.includes("gender"), JSON.stringify(m));
+  const m2 = P.merge(m.persona, D("Is Odoo running?"));
+  check("  English says nothing about the persona: kept", m2.persona.gender === "f" && !m2.changed.length);
+  const m3 = P.merge(m2.persona, D("عايز أعرف الديسك"));
+  check("  an utterance with no address keeps the saved gender", m3.persona.gender === "f");
+  const m4 = P.merge(m3.persona, D("إنتَ سامعني؟ إنت مصري؟"));
+  check("  a clear masculine address changes it", m4.persona.gender === "m" && m4.changed.includes("gender"));
+  check("clean() drops anything unknown (no free text)", JSON.stringify(P.clean({ gender: "robot", dialect: "klingon", prompt: "be a pirate" })) === JSON.stringify({ dialect: null, gender: null, updated_at: null }));
+  check("clean() reads the stored JSON, and bad JSON as empty", P.clean('{"gender":"f","dialect":"msa"}').gender === "f" && P.clean("{oops").gender === null);
+}
+
+section("the language and the persona reach the desk's instructions");
+check("English → English", desk.replyLanguage("Is Odoo running?") === "en" && desk.instructionsFor("Is Odoo running?", {}).endsWith("answer in plain English."));
+check("Arabic → Arabic", desk.replyLanguage("أودو شغال ولا لأ؟") === "ar");
+check("mixed → Arabic with English terms", desk.replyLanguage("عايزك تعمل restart للـ dashboard") === "ar" && /Latin script/.test(desk.instructionsFor("عايزك تعمل restart للـ dashboard", {})));
+check("mostly English with one Arabic word → English", desk.replyLanguage("please restart the dashboard and check the disk usage يا MINT") === "en");
+const I = (t, p) => desk.instructionsFor(t, p).split("\n").pop();
+check("Egyptian speech → Egyptian colloquial", /Egyptian colloquial Arabic \(not Modern Standard Arabic\)/.test(I("إزيك؟ عايز أعرف أودو شغال ولا لأ؟", {})));
+check("MSA speech → MSA", /answer in Modern Standard Arabic/.test(I("هل يمكنك أن تخبرني ما هي حالة الخادم الآن؟", {})));
+check("an unclear utterance uses the saved register", /Modern Standard Arabic, as they speak it/.test(I("أودو؟", { dialect: "msa" })));
+check("no saved register: match theirs", /same register they used/.test(I("أودو؟", {})));
+check("saved feminine → feminine forms for itself", /feminine forms for yourself/.test(I("أودو شغال؟", { gender: "f" })));
+check("saved masculine → masculine forms", /masculine forms for yourself/.test(I("أودو شغال؟", { gender: "m" })));
+check("unknown → gender-neutral phrasing", /gender-neutral phrasing/.test(I("أودو شغال؟", {})));
+check("always MINT AI's voice, never a person; no fixed persona", /never claim to be human/.test(desk.INSTRUCTIONS) && /never a person/.test(I("أودو؟", { gender: "f" })) && !/100%|Egyptian woman/.test(desk.INSTRUCTIONS + I("أودو؟", { gender: "f" })));
+check("the instructions no longer say plain English only", !/plain English, no lists/.test(desk.INSTRUCTIONS) && /LAST utterance/.test(desk.INSTRUCTIONS));
+check("the summary is asked for in the register of the last utterance", desk.summaryLanguage("Is Odoo up?", {}) === "Speak in: English." && /Egyptian/.test(desk.summaryLanguage("إزيك؟ عايز أعرف أودو شغال ولا لأ؟", {})) && /Modern Standard/.test(desk.summaryLanguage("أودو؟", { dialect: "msa" })));
 
 section("hand-offs said in Arabic must be backed by an ask_moni call");
 const NO = { askedNow: false, pending: false };

@@ -187,6 +187,11 @@ addColumn("users", "email", "TEXT NOT NULL DEFAULT ''");
 // account gets the default without a value being written for it.
 addColumn("users", "mint_core", "TEXT NOT NULL DEFAULT ''");
 
+// How the voice speaks to this person, learned from how they speak to it
+// (lib/voice-persona.js): JSON {dialect, gender, updated_at}, empty = not known
+// yet. Never free text a person typed.
+addColumn("users", "voice_persona", "TEXT NOT NULL DEFAULT ''");
+
 addColumn("console_sessions", "permission_mode", "TEXT NOT NULL DEFAULT 'auto'");
 addColumn("console_sessions", "archived", "INTEGER NOT NULL DEFAULT 0");
 // New chats start without root. The value is written explicitly by
@@ -302,6 +307,14 @@ module.exports = {
       .prepare("INSERT INTO voice_usage (ts, day, month, vt, cat, part, model, usd, tokens, actor) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
       .run(r.ts, r.day, r.month, r.vt, r.cat, r.part, r.model, r.usd, r.tokens, r.actor),
   voiceUsageSince: (ms) => db.prepare("SELECT ts, vt, cat, part, model, usd FROM voice_usage WHERE ts >= ? ORDER BY ts").all(Number(ms) || 0),
+
+  /* --- the voice persona (lib/voice-persona.js) -------------------------- */
+
+  getVoicePersona: (userId) => {
+    const r = db.prepare("SELECT voice_persona FROM users WHERE id = ?").get(Number(userId));
+    return r ? r.voice_persona || "" : "";
+  },
+  setVoicePersona: (userId, json) => db.prepare("UPDATE users SET voice_persona = ? WHERE id = ?").run(String(json || ""), Number(userId)),
 
   /* --- users ----------------------------------------------------------- */
 

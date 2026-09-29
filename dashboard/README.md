@@ -287,6 +287,28 @@ rest becomes "The rest of MINT AI's answer is on screen." A pending approval or
 question the summary left out is said anyway ("It needs your approval or your
 answer."). MINT AI is told its reply will be summarised.
 
+**Language and persona** (`lib/voice-persona.js`, the administrator's decision
+of 2026-09-29: "replies in my language and saves the persona based on how I
+speak"). Each reply is in the language of the administrator's last utterance:
+English gets English; Arabic, or Arabic mixed with English, gets Arabic with
+technical terms kept in Latin script. In Arabic the register follows theirs
+(Egyptian colloquial or MSA), and the voice's grammatical gender for itself
+follows how they address it («تقدميني», «إنتِ مصرية» → feminine; «إنتَ»,
+«إنت مصري» → masculine), gender-neutral phrasing until that is known. It is
+always MINT AI's voice and never claims to be human. The register and the
+gender are saved per user (`users.voice_persona`, JSON), change only when an
+utterance clearly shows a change (at least two markers of one register and none
+of the other; an unambiguous form of address), and each change is audited.
+Settings > OpenAI voice > *Voice persona* shows it read-only with a **Reset**;
+there is no free-text persona. The instruction for the language, register and
+gender is sent with every response (`instructionsFor`); summaries and the
+Arabic fixed lines follow it. The guard reads feminine and masculine Egyptian
+forms (participles such as «أنا عاملة ده», «مشغّلاه», «أنا عامله»). Tests:
+`test-voice-persona.cjs` (the real server from a scratch copy that cannot reach
+the helper -- `tools/scratch-server.cjs` -- saving, carrying over, the audit,
+Reset), and the persona and gender sections of `test-voice-arabic.cjs` and
+`test-voice-desk.cjs`.
+
 **Cost, on screen -- no cap.** The daily budget was removed (the
 administrator's decision of 2026-09-29): nothing refuses or diverts the desk for
 what it has spent. Instead every OpenAI call the voice makes is priced from the
