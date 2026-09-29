@@ -85,6 +85,9 @@ const voiceGuard = require("./voice-guard");
 const personaLib = require("./voice-persona");
 const usageLib = require("./voice-usage");
 const arabic = require("./voice-arabic");
+const UiActions = require("../public/ui-actions");
+const UI_ACK_MS = 3000; // a page action the tab has not confirmed by then did not happen
+const UI_END_MAX_MS = 8000; // call.end: the goodbye may be said, then the call ends regardless
 
 const LIVE_MODEL = "gpt-realtime-2.1-mini";
 const RATE = 24000;
@@ -112,7 +115,7 @@ const VERBATIM_MAX_SENTENCES = 8;
 const REPLY_IN_CONTEXT_CHARS = 1500;
 const WS_BASE = process.env.MONI_OPENAI_WS || "wss://api.openai.com/v1";
 
-const TOOLS = Object.freeze([
+const TOOLS = [
   {
     type: "function",
     name: "read_status",
@@ -136,7 +139,10 @@ const TOOLS = Object.freeze([
       additionalProperties: false,
     },
   },
-]);
+];
+// Screen control (UI control Phase 1, 2026-09-29): the third tool, from the shared allowlist.
+TOOLS.push(UiActions.tool());
+Object.freeze(TOOLS);
 const TOOL_NAMES = new Set(TOOLS.map((t) => t.name));
 
 const INSTRUCTIONS = [
@@ -155,6 +161,8 @@ const INSTRUCTIONS = [
   "- Never quote a number that is not in the snapshot.",
   "- Approvals and decisions are for the administrator to make in the Command Center; you cannot approve or deny anything.",
   "- Before a tool call say nothing, or at most a two-word acknowledgement.",
+  "- The screen: when the administrator asks you to change what they see on this Command Center (open or close a panel, show the missions, the last reply or the waiting card, switch the core or the voice mode, end or mute this call, stop reading), call ui_action. " +
+    "Say what you did only after it returns ok (\"I opened Missions.\"). You cannot approve, deny or change settings with it, and you can mute but never unmute.",
   "While a request is being worked on you may keep talking naturally: acknowledge, say in general terms what you are looking at, ask a clarifying question, make small talk, or help the administrator draft or structure a report from what they tell you -- without inventing progress or results.",
   "Style: one or two short spoken sentences. If the administrator starts talking, stop and listen.",
 ].join("\n");
@@ -285,7 +293,10 @@ class LiveCall {
     this.billed = new Set(); // response ids already recorded (response.done can arrive twice)
     this.leaks = []; // times of echo-leak turns, for the speakers-mode suggestion
     this.suggested = false;
-    this.diag = { responses: 0, trips: [], bargeIns: [], candidates: [], held: [], firstAudio: [], echoes: 0, leaks: 0, stops: 0, refused: [], handoffs: [], transcripts: [], gatedMs: 0, dupUsage: 0, created: 0 };
+    this.uiLimit = UiActions.limiter();
+    this.uiPending = new Map(); // nonce -> resolve (the page's ui-ack)
+    this.endAfterSpeech = 0; // call.end: when it was asked
+    this.diag = { ui: [], responses: 0, trips: [], bargeIns: [], candidates: [], held: [], firstAudio: [], echoes: 0, leaks: 0, stops: 0, refused: [], handoffs: [], transcripts: [], gatedMs: 0, dupUsage: 0, created: 0 };
     this.state = "connecting";
   }
 
@@ -468,6 +479,11 @@ class LiveCall {
       case "duplex":
         this.setDuplex(m.mode);
         break;
+      case "ui-ack": {
+        const done = this.uiPending.get(String(m.nonce || ""));
+        if (done) done({ ok: !!m.ok, why: typeof m.why === "string" ? m.why.slice(0, 200) : "" });
+        break;
+      }
       case "end":
         this.close("hung-up");
         break;
@@ -886,6 +902,8 @@ class LiveCall {
       snapshotText: this.snapshotText,
       replied: this.replies.length > 0,
       grounded: this.now() - this.groundedAt < 5 * 60 * 1000,
+      // "I opened Missions": true only when a ui_action in this turn returned ok.
+      uiOk: !!(this.resp && this.resp.turn && this.resp.turn.uiOk),
     };
   }
 
@@ -1015,8 +1033,19 @@ class LiveCall {
     }
     if (r.cancelled) return;
     if (calls.length) return this.runCalls(r, calls);
+    if (this.endAfterSpeech) return this.endWhenQuiet();
     if (r.turn && r.turn.asked) this.setState("waiting");
     else if (this.state !== "talking") this.setState("listening");
+  }
+
+  /** call.end: once the goodbye has been played, the call ends. */
+  endWhenQuiet() {
+    const tick = () => {
+      if (this.closed) return;
+      if (this.anythingAudible() && this.now() - this.endAfterSpeech < UI_END_MAX_MS) return this.timer(tick, 100);
+      this.close("mint-ended", "Mint ended the call.");
+    };
+    tick();
   }
 
   /** After a cut: make the safe line true (pass the request on), then say it. */
@@ -1091,7 +1120,7 @@ class LiveCall {
     if (!TOOL_NAMES.has(call.name)) {
       this.diag.refused.push(String(call.name).slice(0, 60));
       this.log(`live: refused a call to an unknown tool ${JSON.stringify(String(call.name).slice(0, 60))}`);
-      return JSON.stringify({ error: "refused: that tool does not exist. You have read_status and look_into only." });
+      return JSON.stringify({ error: "refused: that tool does not exist. You have read_status, look_into and ui_action only." });
     }
     let args = {};
     try {
@@ -1100,6 +1129,7 @@ class LiveCall {
       return JSON.stringify({ error: "the arguments were not valid JSON" });
     }
     if (!args || typeof args !== "object" || Array.isArray(args)) args = {};
+    if (call.name === "ui_action") return this.uiAction(args, r);
     if (call.name === "read_status") {
       if (Object.keys(args).length) return JSON.stringify({ error: "read_status takes no arguments" });
       const snap = desk.forModel(await this.d.ops.snapshot());
@@ -1132,6 +1162,77 @@ class LiveCall {
       request: tt ? tt.id : null,
       note: "Your result is NOT ready yet. Say one short first-person line that you are on it (\"Give me a moment, I'm checking.\"); state no finding, progress or result. It is read to the administrator in your voice when it arrives.",
     });
+  }
+
+  /**
+   * ui_action: change what the administrator sees (public/ui-actions.js, the
+   * shared allowlist). Only in a turn the administrator really started (a
+   * transcript this server heard), rate-limited, audited, and shown on the
+   * page with a toast. call.end / call.mute / call.interrupt act on this call
+   * here; everything else goes to the tab that holds the call, which confirms
+   * (ui-ack) -- no confirmation, no "ok".
+   */
+  async uiAction(args, r) {
+    const t = r && r.turn;
+    const refuse = (why) => {
+      this.diag.refused.push("ui_action:" + why.slice(0, 40));
+      this.log(`live: refused a ui_action (${why.slice(0, 80)})`);
+      return JSON.stringify({ error: "refused: " + why + ". Tell the administrator plainly that you could not do it." });
+    };
+    if (!t || t.dropped) return refuse("only when the administrator asked in this turn");
+    const f = UiActions.fromTool(args);
+    if (f.extra.length) return refuse("unknown arguments");
+    const v = UiActions.validate(f.action, f.args);
+    if (!v.ok) return refuse(v.why);
+    const lim = this.uiLimit.take(t.n, v.action, this.now());
+    if (lim) return refuse(lim);
+    const toast = UiActions.toast(v.action, v.args);
+    const audit = (how) => {
+      try {
+        if (this.d.audit) this.d.audit(`${v.action}${Object.keys(v.args).length ? " " + JSON.stringify(v.args) : ""} by the live voice, turn ${t.n} (${how})`);
+      } catch (_) {
+        /* the audit line is best effort */
+      }
+    };
+    let result;
+    if (v.where === "server") {
+      this.toClient({ type: "ui", action: v.action, args: v.args, toast, server: true });
+      if (v.action === "call.end") {
+        this.endAfterSpeech = this.now();
+        this.timer(() => this.endAfterSpeech && this.close("mint-ended", "Mint ended the call."), UI_END_MAX_MS);
+        result = { status: "ok", done: toast, note: "The call ends after you say one short goodbye, in the first person." };
+      } else if (v.action === "call.mute") {
+        this.mute(true);
+        result = { status: "ok", done: toast, note: "The microphone is muted; only the administrator can unmute it. Say so in one short sentence." };
+      } else {
+        this.speechGen++;
+        this.toClient({ type: "flush", at: this.now() });
+        for (const s of this.segs.values()) s.over = true;
+        result = { status: "ok", done: toast };
+      }
+    } else {
+      const nonce = Math.random().toString(36).slice(2, 12);
+      const ack = await new Promise((resolve) => {
+        this.uiPending.set(nonce, resolve);
+        this.toClient({ type: "ui", nonce, action: v.action, args: v.args, toast });
+        this.timer(() => resolve(null), this.opts.uiAckMs || UI_ACK_MS);
+      });
+      this.uiPending.delete(nonce);
+      if (!ack) {
+        audit("no answer from the page");
+        return refuse("the screen did not answer");
+      }
+      if (!ack.ok) {
+        audit("refused by the page: " + ack.why);
+        return refuse(ack.why || "the screen refused it");
+      }
+      result = { status: "ok", done: toast, note: "Say in one short first-person sentence what you did." };
+    }
+    t.uiOk = true;
+    this.diag.ui.push({ turn: t.n, action: v.action });
+    this.log(`live: ui_action ${v.action} (turn ${t.n})`);
+    audit("ok");
+    return JSON.stringify(result);
   }
 
   /* ---- MINT AI's answers: the guarded summary, then the verbatim reader ---- */

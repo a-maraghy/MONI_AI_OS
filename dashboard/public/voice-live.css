@@ -60,3 +60,6 @@
 
 /* The voice menu's third mode. */
 .cc-pop [data-vmode="live"] small b { color: var(--accent); font-weight: 600; }
+
+/* A screen action the voice took ("Mint opened Missions"), with Undo / Open. */
+.cc-ui-toast { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; max-width: min(520px, calc(100vw - 32px)); }

@@ -109,6 +109,7 @@ const usageLib = require("./voice-usage");
 const voiceGuard = require("./voice-guard");
 const arabic = require("./voice-arabic");
 const personaLib = require("./voice-persona");
+const UiActions = require("../public/ui-actions");
 
 const uni = arabic.uni; // \b and \w that see Arabic letters as letters (lib/voice-arabic.js)
 
@@ -218,7 +219,7 @@ function costOf(tokens, model) {
 
 /* --------------------------------------------------------------- tools -- */
 
-const TOOLS = Object.freeze([
+const TOOLS = [
   {
     type: "function",
     name: "read_status",
@@ -243,7 +244,10 @@ const TOOLS = Object.freeze([
       additionalProperties: false,
     },
   },
-]);
+];
+// Screen control (UI control Phase 1, 2026-09-29): the page-side actions of the shared allowlist.
+TOOLS.push(UiActions.tool());
+Object.freeze(TOOLS);
 const TOOL_NAMES = new Set(TOOLS.map((t) => t.name));
 
 const INSTRUCTIONS = [
@@ -261,6 +265,8 @@ const INSTRUCTIONS = [
   "- Never say you passed, sent, forwarded or delegated anything, and never speak of MINT AI as someone else.",
   "- Never quote a number that is not in the snapshot or in your results.",
   "- Approvals and decisions are for the administrator to decide in the Command Center; you cannot approve or deny anything.",
+  "- The screen: when the administrator asks you to change what they see on this Command Center (open or close a panel, show the missions, the last reply or the waiting card, switch the core or the voice mode), call ui_action. " +
+    "Say what you did only after it returns ok (\"I opened Missions.\"). It cannot approve, deny or change settings.",
   "While a request is being worked on you may keep talking naturally: acknowledge, say in general terms what you are looking at, ask a clarifying question, make small talk, or help the administrator draft or structure a report from what they tell you -- without inventing progress or results.",
   "Language: reply in the language of the administrator's LAST utterance: English gets English; Arabic, or Arabic mixed with English, gets Arabic in the register the administrator used " +
     "(Egyptian colloquial if they speak Egyptian, Modern Standard Arabic if they speak MSA), with technical terms kept in English in Latin script (Odoo, disk, restart, dashboard). " +
@@ -415,6 +421,8 @@ const HANDOFF = new RegExp(uni(HANDOFF_EN).source + "|" + arabic.HANDOFF_AR.sour
 // ("أنا deleted the old backups": an Arabic "I" before an English verb is a claim too.)
 const CLAIM_FIRST = uni(new RegExp("\\b(i|i've|ive|i have|i had|i just|we|we've|weve|we have|انا|احنا|نحن)\\b(?:\\s+\\w+){0,4}?\\s+(" + DONE_WORDS + ")\\b"));
 const CLAIM_THIRD = uni(new RegExp("\\b(has|have|had|was|were|is|are|it's|its|that's|thats|got|been|now|already|successfully)\\b(?:\\s+\\w+){0,3}?\\s+(" + DONE_WORDS + ")\\b"));
+// "... and restarted Odoo": a clause that starts on a past action (its "I" was in the clause before).
+const CLAIM_BARE_PAST = uni(new RegExp("^\\s*(?:also\\s+|then\\s+|just\\s+)?(" + DONE_WORDS + ")\\b(?!\\s+(?:by|in|at|on|files?|items?|services?|sessions?)\\b)"));
 const CLAIM_BARE = uni(/^\s*(?:all\s+|it's\s+|its\s+|that's\s+|thats\s+)?(done|finished|completed|complete|sorted|handled|taken care of|all set|success|successful)\b/);
 const PROGRESSIVE_FIRST = uni(new RegExp("\\b(i'm|im|i am|we're|were|we are|انا|احنا)\\s+(?:now\\s+|just\\s+|already\\s+|currently\\s+)?(" + DO_ING + ")\\b"));
 const PROGRESSIVE_BARE = uni(new RegExp("^\\s*(?:ok(?:ay)?\\s+|sure\\s+|alright\\s+|right\\s+)?(" + DO_ING + ")\\b"));
@@ -969,13 +977,17 @@ function judge(sentences, ctx) {
       let m;
       // One identity: never "I've passed that to MINT AI", never "MINT AI says ...".
       if (thirdPerson(cl)) return fail("third-person", raw, si);
+      // "I opened Missions" / «فتحتلك الـ missions»: only after a ui_action in this turn returned ok.
+      const uiClaim = !summary && UiActions.claims(cl);
+      if (uiClaim && !c.uiOk) return fail("ui-claim", raw, si);
       // A first-person result ("I found ...", «لقيت إن ...») before any result has arrived is invented.
       const findAt = findingAt(cl);
       const finding = findAt >= 0 && !QUESTION_END.test(raw) && !OFFER_EN.test(cl.slice(0, findAt + 1)) && !arabic.OFFER_AR.test(cl.slice(0, findAt + 1));
       if (!summary && finding && !c.replied) return fail("invented-finding", raw, si);
       // "I restarted Odoo": only when a result says it was done (in a summary, summaryClause holds it to the reply).
-      if (!summary && (m = CLAIM_FIRST.exec(cl)) && !negatedBefore(cl, m.index + m[0].length - m[2].length) && !replyDid("act:" + stem(m[2]))) return fail("action-claim", raw, si);
+      if (!summary && (m = CLAIM_FIRST.exec(cl)) && !negatedBefore(cl, m.index + m[0].length - m[2].length) && !replyDid("act:" + stem(m[2])) && !(uiClaim && UI_VERBS.test(m[2]))) return fail("action-claim", raw, si);
       if (!summary && (m = PROGRESSIVE_FIRST.exec(cl)) && !negatedBefore(cl, m.index + m[0].length - m[2].length)) return fail("action-claim", raw, si);
+      if (!summary && sClauses.length > 1 && raw !== sClauses[0] && (m = CLAIM_BARE_PAST.exec(cl)) && !replyDid("act:" + stem(m[1])) && !(c.uiOk && UI_VERBS.test(m[1]))) return fail("action-claim", raw, si);
       if (!summary && (m = PROGRESSIVE_BARE.exec(cl))) return fail("action-claim", raw, si); // in a summary a gerund is a noun ("recommends rebooting"), judged below
       if (summary && (m = PROGRESSIVE_FIRST.exec(cl)) && !negatedBefore(cl, m.index + m[0].length - m[2].length) && !replyDoing(reply, m[2])) return fail("action-claim", raw, si);
       if (summary) {
@@ -1004,7 +1016,7 @@ function judge(sentences, ctx) {
         // "everything" borrow their subject from the clause before.
         const ar = arabic.hasArabic(cl);
         if (ar) {
-          const rule = arabicDeskRule(cl, { stepTalk, replyDid, replied: !!c.replied });
+          const rule = arabicDeskRule(cl, { stepTalk, replyDid, replied: !!c.replied, uiDid: uiClaim && c.uiOk });
           if (rule) return fail(rule, raw, si);
         }
         // (Arabic status words and terms count the same, named by the snapshot's English terms.)
@@ -1051,6 +1063,9 @@ function claimConcept(cl, x) {
   return verb ? "act:" + stem(verb[0]) : null;
 }
 
+// The verbs a screen action is claimed with, as the claim rules name them (English stems too).
+const UI_VERBS = /^(?:stopped|stop|closed|close|ended|end|changed|change|switched|switch|opened|open|muted|mute|showed|show|set|turned)$/;
+
 /** Does the reply say this action is under way ("I'm restarting it now")? */
 function replyDoing(reply, word) {
   if (!reply) return false;
@@ -1072,10 +1087,11 @@ function replyDoing(reply, word) {
  *   "MINT AI said ..." before a reply     → invented-reply (ATTRIBUTION)
  *   a past-tense result it cannot read    → unparsed-claim (fail closed)
  */
-function arabicDeskRule(cl, { stepTalk, replyDid, replied }) {
+function arabicDeskRule(cl, { stepTalk, replyDid, replied, uiDid }) {
   const claims = arabic.claimsIn(cl);
   for (const x of claims) {
     if (x.negated) continue;
+    if (uiDid && UI_VERBS.test(x.en || "")) continue; // «قفلتلك الـ panel», after a ui_action that returned ok
     if ((x.role === "did1" || x.role === "ptc1") && claimConcept(cl, x) && replyDid(claimConcept(cl, x))) continue; // «عملت restart لأودو» -- and a result says so
     if (x.role === "did1" || x.role === "amb" || x.role === "prog1" || x.role === "ptc1") return "action-claim"; // ptc1: «أنا عاملة ده»
     if (x.role === "done" || x.role === "pass" || x.role === "prog3") {
@@ -1359,6 +1375,7 @@ class DeskSession {
       snapshotText: this.snapshotText,
       replied: this.replies.length > 0,
       grounded: Date.now() - this.groundedAt < GROUNDED_MS,
+      uiOk: !!(this.curTurn && this.curTurn.uiOk), // "I opened Missions": only after an ok ui_action this turn
     };
   }
 
@@ -1497,13 +1514,46 @@ class DeskSession {
     this.lastInputTokens = (st.usage.input_tokens || 0);
   }
 
+  /**
+   * ui_action in the relay desk: the page-side actions of the allowlist
+   * (public/ui-actions.js), sent back in this turn's stream to the tab that
+   * sent the audio (opts.onUi). There is no live call here, so call.* is
+   * refused. The page checks the same allowlist before it acts.
+   */
+  uiAction(args, turn) {
+    const refuse = (why) => {
+      turn.rejected.push("ui_action:" + String(why).slice(0, 40));
+      this.log(`desk: refused a ui_action (${String(why).slice(0, 80)})`);
+      return JSON.stringify({ error: "refused: " + why + ". Tell the administrator plainly that you could not do it." });
+    };
+    if (!turn.grounded || !turn.heard || !turn.onUi) return refuse("only when the administrator asked in this turn, from the Command Center");
+    const f = UiActions.fromTool(args);
+    if (f.extra.length) return refuse("unknown arguments");
+    const v = UiActions.validate(f.action, f.args);
+    if (!v.ok) return refuse(v.why);
+    if (v.where !== "page") return refuse("there is no live call in this voice mode");
+    if (!this.uiLimit) this.uiLimit = UiActions.limiter();
+    const lim = this.uiLimit.take(this.stats.turns, v.action, Date.now());
+    if (lim) return refuse(lim);
+    const toast = UiActions.toast(v.action, v.args);
+    try {
+      turn.onUi({ type: "ui", nonce: Math.random().toString(36).slice(2, 12), action: v.action, args: v.args, toast });
+    } catch (e) {
+      return refuse("the screen could not be reached");
+    }
+    turn.uiOk = true;
+    turn.ui.push(v.action);
+    turn.tools.push("ui_action");
+    return JSON.stringify({ status: "ok", done: toast, note: "Say in one short first-person sentence what you did." });
+  }
+
   /** Run one tool call. Returns the output string for the model. */
   async runTool(call, turn) {
     if (!TOOL_NAMES.has(call.name)) {
       this.stats.rejected++;
       turn.rejected.push(String(call.name).slice(0, 60));
       this.log(`desk: refused a call to an unknown tool ${JSON.stringify(String(call.name).slice(0, 60))}`);
-      return JSON.stringify({ error: "refused: that tool does not exist. You have read_status and ask_moni only." });
+      return JSON.stringify({ error: "refused: that tool does not exist. You have read_status, ask_moni and ui_action only." });
     }
     let args = {};
     try {
@@ -1512,6 +1562,7 @@ class DeskSession {
       return JSON.stringify({ error: "the arguments were not valid JSON" });
     }
     if (!args || typeof args !== "object" || Array.isArray(args)) args = {};
+    if (call.name === "ui_action") return this.uiAction(args, turn);
     if (call.name === "read_status") {
       if (Object.keys(args).length) return JSON.stringify({ error: "read_status takes no arguments" });
       const snap = forModel(await this.ops.snapshot());
@@ -1596,7 +1647,8 @@ class DeskSession {
     }
     await this.refreshReplies();
     this.heard.push(said);
-    const turn = { kind: "turn", heard: said, grounded: true, asked: [], tools: [], rejected: [], lines: [], trip: null, tokens: {}, responses: 0 };
+    const turn = { kind: "turn", heard: said, grounded: true, asked: [], tools: [], rejected: [], lines: [], trip: null, tokens: {}, responses: 0, ui: [], onUi: opts.onUi };
+    this.curTurn = turn;
     const emit = (line) => {
       turn.lines.push(line);
       if (!timings.firstLine) timings.firstLine = Date.now() - t0;
@@ -1814,6 +1866,7 @@ class DeskSession {
       lines: turn.lines,
       asked: turn.asked.filter(Boolean),
       autoAsked: !!turn.autoAsked,
+      ui: turn.ui || [],
       backedByServer: !!turn.backedByServer,
       tools: turn.tools,
       rejected: turn.rejected,

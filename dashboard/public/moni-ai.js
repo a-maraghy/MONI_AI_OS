@@ -2434,6 +2434,8 @@
           // predates it would, so the page checks the words as well.
           if (ev.stop || (ev.text && isStopCommand(ev.text))) return stoppedByVoice(ev.text || "");
           if (ev.text) vbText.textContent = "“" + clip(ev.text, 80) + "”";
+        } else if (ev.type === "ui") {
+          if (typeof runUiAction === "function") runUiAction(ev);
         } else if (ev.type === "asked" && ev.turn) {
           var t = ev.turn, tr = upsertTurn(t);
           tags.set(t.id, { vt: vt, cat: "handoff" });
@@ -2821,6 +2823,11 @@
         if (m.type === "ready") { LiveUI.model = m.model || ""; LiveUI.voice = m.voice || ""; LiveUI.route = window.VoiceLive.route ? window.VoiceLive.route() : ""; paintLive(LiveUI.state); }
         if (m.type === "duplex" && (m.mode === "full" || m.mode === "speakers")) { LiveUI.duplex = m.mode; paintLive(LiveUI.state); }
         if (m.type === "suggest" && m.mode === "speakers" && LiveUI.duplex === "full") liveSuggest();
+        if (m.type === "ui") {
+          // A screen action the voice asked for (public/ui-actions.js); the server waits for this answer.
+          var res = runUiAction(m);
+          if (m.nonce) window.VoiceLive.ack(m.nonce, res.ok, res.why);
+        }
         if (m.type === "stop") toast("Stopped listening. The live conversation has ended.");
         else if (m.type === "error" && m.code === "busy") toast(m.error, true);
         if (m.type === "ended" || m.type === "error") liveEnded(m);
@@ -2930,6 +2937,79 @@
   window.addEventListener("beforeunload", function () { if (LiveUI.active) window.VoiceLive.stop(); });
   if (LiveUI.selected) paintLiveMode();
   paintLiveKeys();
+  /* ---------------------------------------------------------- screen actions
+     What MINT AI's voice may change on this screen (UI control Phase 1): the
+     shared allowlist public/ui-actions.js, checked again here, run through
+     the same functions the buttons and the palette use, and always shown
+     with a toast ("Mint opened Missions") and an Undo where it makes sense.
+     Nothing here can press Approve, touch settings values or unmute. */
+  var uiSeen = {};
+  function runUiAction(ev) {
+    var UA = window.UiActions;
+    if (!UA || !ev) return { ok: false, why: "this page has no screen actions" };
+    if (ev.nonce) {
+      if (uiSeen[ev.nonce]) return { ok: false, why: "already done" };
+      uiSeen[ev.nonce] = 1;
+    }
+    var v = UA.validate(ev.action, ev.args);
+    if (!v.ok) return v;
+    var a = v.args, undo = null, link = null;
+    try {
+      switch (v.action) {
+        case "call.end": break; // the server ends it after the goodbye; the tab follows
+        case "call.interrupt": break;
+        case "call.mute": if (LiveUI.active && window.VoiceLive && !window.VoiceLive.muted()) window.VoiceLive.mute(true); break;
+        case "voice.mode":
+          if (a.mode === "live") { if (!LIVE_OK) return { ok: false, why: "live conversation is not available here" }; liveSelect(true); }
+          else { if (LiveUI.active) return { ok: false, why: "a live call is on: end it first" }; var wasLive = LiveUI.selected, wasMode = Voice.mode(); liveSelect(false); Voice.setMode(a.mode); undo = function () { if (wasLive) liveSelect(true); else Voice.setMode(wasMode); }; }
+          break;
+        case "sheet.open": { var wasP = S.pane; openSheet(a.key); undo = function () { if (wasP) openSheet(wasP); else closeSheet(); }; break; }
+        case "sheet.close": { var wasC = S.pane; if (!wasC) return { ok: false, why: "no panel is open" }; closeSheet(); undo = function () { openSheet(wasC); }; break; }
+        case "view": { var wasV = S.pane; P.setView(a.name); undo = function () { if (wasV) openSheet(wasV); else closeSheet(); }; break; }
+        case "core.set": { var wasK = coreNow(); setCoreChoice(a.core); undo = function () { setCoreChoice(wasK); }; break; }
+        case "reply.show": if (!lastReplyTurn()) return { ok: false, why: "there is no reply yet" }; openReply(); undo = closeReply; break;
+        case "reply.read": if (!lastReplyTurn()) return { ok: false, why: "there is no reply yet" }; $("cc-reply-read").click(); break;
+        case "decision.show": if (!needQueue().length) return { ok: false, why: "no card is waiting" }; openNeed(); break;
+        case "settings.open": link = UA.pageUrl(a.page); break; // a link to click: never navigates by itself (a call would end)
+        default: return { ok: false, why: "not on this page" };
+      }
+    } catch (e) {
+      return { ok: false, why: "it did not work here: " + ((e && e.message) || e) };
+    }
+    uiToast(ev.toast || UA.toast(v.action, a), undo, link);
+    return { ok: true };
+  }
+  function uiToast(text, undo, link) {
+    var old = document.querySelector(".cc-toast");
+    if (old) old.remove();
+    var el = document.createElement("div");
+    el.className = "cc-toast cc-ui-toast";
+    el.setAttribute("role", "status");
+    var t = document.createElement("span");
+    t.textContent = text;
+    el.appendChild(t);
+    if (link) {
+      var l = document.createElement("a");
+      l.className = "cc-btn sm";
+      l.href = link;
+      l.textContent = "Open";
+      el.appendChild(l);
+    }
+    if (undo) {
+      var b = document.createElement("button");
+      b.type = "button";
+      b.className = "cc-btn sm";
+      b.setAttribute("data-ui-undo", "");
+      b.textContent = "Undo";
+      b.addEventListener("click", function () { try { undo(); } catch (e) { /* nothing to undo */ } el.remove(); });
+      el.appendChild(b);
+    }
+    document.body.appendChild(el);
+    clearTimeout(uiToast.t);
+    uiToast.t = setTimeout(function () { el.remove(); }, link || undo ? 8000 : 3500);
+  }
+  window.__mintUi = { run: runUiAction };
+
   /* ============================================================ end of the live integration block */
 
   /* ================================================================ panels

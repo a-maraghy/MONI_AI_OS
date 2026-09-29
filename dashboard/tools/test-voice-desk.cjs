@@ -351,14 +351,14 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
   WS_BASE = "ws://127.0.0.1:" + server.address().port + "/v1";
 
   section("tools: exactly two, and nothing else runs");
-  check("TOOLS is read_status and ask_moni, frozen", desk.TOOLS.length === 2 && desk.TOOLS.map((t) => t.name).join() === "read_status,ask_moni" && Object.isFrozen(desk.TOOLS));
+  check("TOOLS is read_status, ask_moni and ui_action (the screen), frozen", desk.TOOLS.map((t) => t.name).join() === "read_status,ask_moni,ui_action" && Object.isFrozen(desk.TOOLS));
   check("read_status takes no arguments", JSON.stringify(desk.TOOLS[0].parameters) === JSON.stringify({ type: "object", properties: {}, additionalProperties: false }));
   check("ask_moni takes only text", Object.keys(desk.TOOLS[1].parameters.properties).join() === "text" && desk.TOOLS[1].parameters.additionalProperties === false);
   {
     const d = newDesk("text");
     await d.open();
     const s = lastSession();
-    check("the realtime session is configured with exactly those two tools", s.session.tools.length === 2 && s.session.tools.map((t) => t.name).join() === "read_status,ask_moni" && s.session.tool_choice === "auto");
+    check("the realtime session is configured with exactly those tools, plus ui_action (the screen)", s.session.tools.length === 3 && s.session.tools.map((t) => t.name).join() === "read_status,ask_moni,ui_action" && s.session.tool_choice === "auto");
     check("and the desk's instructions", s.session.instructions === desk.INSTRUCTIONS && /You speak as MINT AI, in the first person/.test(s.session.instructions) && /Never say you passed, sent, forwarded or delegated anything/.test(s.session.instructions) && /never act/.test(s.session.instructions));
     check("the desk answers in text only (its sentences are spoken once checked, by the verbatim reader)", JSON.stringify(s.session.output_modalities) === '["text"]' && !s.session.audio);
     const before = sup.calls.length;
@@ -873,6 +873,30 @@ const sends = () => sup.calls.filter((c) => c[0] === "send");
     await d.summarise("abc", {}).catch((e) => (err = e));
     check("a bad request id is refused", err && err.code === "invalid");
     mock.summaryText = null;
+    d.close();
+  }
+
+  section("screen actions in the relay desk: ui_action, back to the tab that spoke");
+  {
+    const d = newDesk("text");
+    const n0 = sends().length;
+    const ui = [];
+    const opens = (items) => (afterTool(items) ? [{ say: "I opened Missions for you." }] : [{ call: "ui_action", args: { action: "sheet.open", key: "missions" } }]);
+    const r = await withBrain(opens, () => d.turn("open the missions", { onUi: (u) => ui.push(u) }));
+    check("the action goes to this turn's stream, with its toast, and nothing to MINT AI", ui.length === 1 && ui[0].type === "ui" && ui[0].action === "sheet.open" && ui[0].toast === "Mint opened Missions" && sends().length === n0);
+    check("  and \"I opened Missions\" is spoken (the action returned ok)", !r.trip && r.lines.map((l) => l.text).join() === "I opened Missions for you." && r.ui.join() === "sheet.open", JSON.stringify(r));
+    const liar = () => [{ say: "I opened Missions for you." }];
+    const r2 = await withBrain(liar, () => d.turn("open the missions", { onUi: (u) => ui.push(u) }));
+    check("saying it without the action is cut (ui-claim)", r2.trip && r2.trip.rule === "ui-claim", JSON.stringify(r2.trip));
+    const ends = (items) => (afterTool(items) ? [{ say: "I can't do that here." }] : [{ call: "ui_action", args: { action: "call.end" } }]);
+    const n1 = ui.length;
+    await withBrain(ends, () => d.turn("end the call", { onUi: (u) => ui.push(u) }));
+    check("call.* is refused in the relay desk (there is no live call)", ui.length === n1);
+    const approves = (items) => (afterTool(items) ? [{ say: "I can't approve anything." }] : [{ call: "ui_action", args: { action: "decision.approve" } }]);
+    const r4 = await withBrain(approves, () => d.turn("approve the card", { onUi: (u) => ui.push(u) }));
+    check("an approve action does not exist: refused, nothing sent to the page", ui.length === n1 && r4.rejected.some((x) => /^ui_action:no such screen action/.test(x)), JSON.stringify(r4.rejected));
+    const r5 = await withBrain(opens, () => d.turn("open the missions"));
+    check("without a page to send it to (no onUi): refused", r5.rejected.some((x) => /^ui_action:only when/.test(x)));
     d.close();
   }
 

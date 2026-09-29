@@ -214,6 +214,7 @@ function makeCall(extra) {
   const rows = [];
   const summarised = [];
   const persona = { v: x.persona || {} };
+  const audited = [];
   const c = new live.LiveCall({
     cfg: { key: KEY, voice: "marin", model: "gpt-realtime-mini", transcribe_model: "gpt-4o-mini-transcribe", wsBase: WS_BASE },
     actor: "amaraghy",
@@ -245,9 +246,10 @@ function makeCall(extra) {
     },
     isStop: (t) => VoiceStop.heard(t),
     log: () => {},
-    opts: { pollMs: 20, ...(x.opts || {}) },
+    audit: (line) => audited.push(line),
+    opts: { pollMs: 20, uiAckMs: 150, ...(x.opts || {}) },
   });
-  return { c, client, sup, spoke, rows, summarised, persona };
+  return { c, client, sup, spoke, rows, summarised, persona, audited };
 }
 const lastSession = () => mock.sessions[mock.sessions.length - 1];
 const states = (client) => client.json.filter((m) => m.type === "state").map((m) => m.state);
@@ -323,7 +325,7 @@ let WS_BASE;
     check("far-field noise reduction by default", cfg.audio.input.noise_reduction && cfg.audio.input.noise_reduction.type === "far_field");
     check("speakers mode (half-duplex) by default", c.duplex === "speakers");
     check("the session transcribes the input (gpt-4o-mini-transcribe)", cfg.audio.input.transcription.model === "gpt-4o-mini-transcribe");
-    check("exactly two tools: read_status and look_into, frozen", cfg.tools.map((t) => t.name).join() === "read_status,look_into" && Object.isFrozen(live.TOOLS));
+    check("exactly three tools: read_status, look_into and ui_action (the screen), frozen", cfg.tools.map((t) => t.name).join() === "read_status,look_into,ui_action" && Object.isFrozen(live.TOOLS));
     check("look_into takes only text; read_status nothing", Object.keys(live.TOOLS[1].parameters.properties).join() === "text" && live.TOOLS[1].parameters.additionalProperties === false && Object.keys(live.TOOLS[0].parameters.properties).length === 0);
     check("the instructions are the fixed ones plus the saved persona's line", cfg.instructions.startsWith(live.INSTRUCTIONS) && /feminine forms for yourself/.test(cfg.instructions) && /Egyptian colloquial/.test(cfg.instructions));
     check("they say its results are read separately, never by the voice model", /Your results are read to the administrator separately/.test(live.INSTRUCTIONS));
@@ -840,6 +842,77 @@ let WS_BASE;
     await userTurn(s, c, "okay and how much memory is used");
     check("a real question after it is heard", client.json.some((m) => m.type === "caption" && m.who === "you" && /memory/.test(m.text)) && sup.calls.length === n);
     c.close("test");
+  }
+
+  section("screen actions: ui_action (UI control, Phase 1)");
+  {
+    const outputs = (s) => s.of("conversation.item.create").filter((e) => e.item.type === "function_call_output").map((e) => e.item.output);
+    const { c, client, audited } = makeCall();
+    await c.open();
+    const s = lastSession();
+    await userTurn(s, c, "open the missions please");
+    // The page confirms what it did (ui-ack).
+    const acker = setInterval(() => {
+      for (const m of client.json) if (m.type === "ui" && m.nonce && !m.acked) (m.acked = true), c.message({ type: "ui-ack", nonce: m.nonce, ok: true });
+    }, 5);
+    await respond(s, null, { calls: [{ name: "ui_action", args: { action: "sheet.open", key: "missions" } }] });
+    await until(() => outputs(s).length === 1, 1000);
+    const ui = client.json.find((m) => m.type === "ui");
+    check("a page action goes to the tab that holds the call, with its toast", ui && ui.action === "sheet.open" && ui.args.key === "missions" && ui.toast === "Mint opened Missions" && ui.nonce);
+    check("  the page confirmed it: ok, and the model is told to say it in the first person", /"status":"ok"/.test(outputs(s)[0]) && /first-person/.test(outputs(s)[0]));
+    check("  audited", audited.some((l) => /^sheet\.open \{"key":"missions"\} by the live voice, turn \d+ \(ok\)$/.test(l)), JSON.stringify(audited));
+    const n0 = client.audio.length;
+    await respond(s, "I opened Missions for you.");
+    await sleep(20);
+    check("\"I opened Missions\" is spoken: a ui_action in this turn returned ok", c.diag.trips.length === 0 && client.audio.length > n0, JSON.stringify(c.diag.trips));
+    clearInterval(acker);
+    c.close("test");
+  }
+  {
+    const outputs = (s) => s.of("conversation.item.create").filter((e) => e.item.type === "function_call_output").map((e) => e.item.output);
+    const { c, client, audited } = makeCall();
+    await c.open();
+    const s = lastSession();
+    await userTurn(s, c, "open the missions please");
+    await respond(s, null, { calls: [{ name: "ui_action", args: { action: "sheet.open", key: "missions" } }] });
+    await until(() => outputs(s).length === 1, 1000);
+    check("no answer from the page: refused, not ok", /refused: the screen did not answer/.test(outputs(s)[0]) && audited.some((l) => /no answer from the page/.test(l)));
+    await respond(s, "I opened Missions for you.");
+    await sleep(20);
+    check("  and then \"I opened Missions\" is cut (ui-claim)", c.diag.trips.some((t) => t.rule === "ui-claim"), JSON.stringify(c.diag.trips));
+    c.close("test");
+  }
+  {
+    const { c, client } = makeCall();
+    await c.open();
+    const s = lastSession();
+    await userTurn(s, c, "open the decisions");
+    const t = c.lastTurn;
+    const r = { turn: t };
+    const o = async (a) => JSON.parse(await c.uiAction(a, r));
+    check("an action that is not on the list (approve) is refused", /no such screen action/.test((await o({ action: "approve" })).error));
+    check("  nor deny, keys, users, rules, restart, deploy", (await Promise.all(["decision.approve", "credentials.set", "users.add", "rules.add", "restart", "deploy"].map((a) => o({ action: a })))).every((x) => /refused/.test(x.error)));
+    check("unmute is refused (the administrator unmutes by hand)", /never unmuted/.test((await o({ action: "call.mute", on: false })).error) && !c.muted);
+    check("a stray argument is refused", /unknown arguments/.test((await o({ action: "sheet.close", url: "/credentials" })).error));
+    check("no turn: refused", /only when the administrator asked/.test(JSON.parse(await c.uiAction({ action: "sheet.close" }, { turn: null })).error));
+    check("mute: the call is muted here, and the page is told", (await o({ action: "call.mute" })).status === "ok" && c.muted && client.json.some((m) => m.type === "ui" && m.action === "call.mute" && m.server));
+    c.mute(false);
+    const res = [];
+    for (let i = 0; i < 4; i++) res.push(await o({ action: "call.interrupt" }));
+    check("at most 6 screen actions in a turn (mute + 4 interrupts ok, then refused)", res.every((x) => x.status === "ok") && /too many screen actions in one turn/.test((await o({ action: "call.interrupt" })).error + (await o({ action: "call.interrupt" })).error));
+    c.close("test");
+  }
+  {
+    // call.end: ended on the server, after the goodbye is played.
+    const { c, client } = makeCall();
+    await c.open();
+    const s = lastSession();
+    await userTurn(s, c, "okay you can end the call now thanks");
+    await respond(s, null, { calls: [{ name: "ui_action", args: { action: "call.end" } }] });
+    await until(() => s.of("conversation.item.create").some((e) => e.item.type === "function_call_output"), 1000);
+    check("call.end: not closed before the goodbye", !c.closed && client.json.some((m) => m.type === "ui" && m.action === "call.end"));
+    await respond(s, "Okay, I ended the call. Talk soon.");
+    check("  closed once the goodbye has been played (the page stops reporting it as audible)", await until(() => c.closed, 3000) && client.json.some((m) => m.type === "ended" && m.why === "mint-ended"));
   }
 
   section("usage: priced per response into voice_usage, category 'live'");

@@ -644,6 +644,42 @@ then the WebSocket route on the real server from a scratch copy that cannot
 reach the helper: auth, CSRF, origin, the mode, one call per user, frame size,
 the evaluation page's API).
 
+### Screen control by voice (UI control, Phase 1: the desk's `ui_action`)
+
+The administrator: *"Ideally, I want Mint AI to be able to do everything on the
+front end here as well."* The voice (live call and relay desk) has a third tool,
+`ui_action`, from one shared allowlist, `public/ui-actions.js` (pure, required by
+the server and loaded by the page, so both refuse the same things):
+`call.end`, `call.mute` (mute only -- **unmute is by hand**), `call.interrupt`,
+`voice.mode` (ptt / handsfree / live), `sheet.open` (the dock's sheets and
+Everything), `sheet.close`, `view` (map / missions), `core.set` (A/B/C),
+`reply.show`, `reply.read`, `decision.show` (shows the card; **Approve stays a
+human click**), `settings.open` (a fixed list -- voice, account, voice-eval --
+offered as a link in the toast, never navigated to by itself). Nothing else has
+a name: no approve/deny, keys, users, rules, gate, settings values, restart or
+deploy.
+
+- **Live call:** `call.*` act on the call on the server (`call.end` ends it after
+  the goodbye has played); the rest go to the tab that holds the call over its own
+  WebSocket (`{type:"ui", nonce, action, args, toast}`); the page checks the
+  allowlist again, acts through the same functions the buttons use, and answers
+  `ui-ack` -- no answer in 3 s, or a refusal, and the tool returns *refused*.
+- **Relay desk:** page actions only, back to the tab that spoke, in that turn's
+  NDJSON stream (`{type:"ui", ...}`); `call.*` is refused (no call).
+- Only in a turn the administrator really started (a transcript this server
+  heard); at most 6 actions a turn and 20 a minute, `call.end` and
+  `settings.open` once a turn; audited (`mint-ui` in the sign-in log); every one
+  shown as a toast ("Mint opened Missions"), with **Undo** for sheets, view, core
+  and voice mode.
+- **The guard:** "I opened Missions" / «فتحتلك الـ missions» / "I muted the
+  microphone" is spoken only when a `ui_action` in this turn returned ok
+  (`ui-claim` otherwise); a bare "... and restarted Odoo" after a first-person
+  clause is still an action claim.
+
+Tests: `tools/test-ui-actions.cjs` (the allowlist, the tool schema, rate limits,
+the claim words), the `ui_action` sections of `test-voice-live.cjs` and
+`test-voice-desk.cjs`.
+
 ### Themes
 
 System (the default), Dark and Light, from a switch in the top bar of every

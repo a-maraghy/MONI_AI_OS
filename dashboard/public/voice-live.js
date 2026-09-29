@@ -12,6 +12,7 @@
  *                                    not heard while the voice speaks) | "full"
  *                                    (headphones: talk over it)
  *   VoiceLive.active() / .state() / .speaking() / .route()
+ *   VoiceLive.ack(nonce, ok, why)    answer a "ui" message (a screen action the voice asked for)
  *
  *   onState(state)     "connecting" | "listening" | "talking" | "thinking" |
  *                      "speaking" | "interrupted" | "waiting" | "muted" |
@@ -410,6 +411,10 @@
     mute: mute,
     interrupt: interrupt,
     duplex: duplex,
+    ack: function (nonce, ok, why) {
+      if (!S || !S.ws || S.ws.readyState !== 1 || !nonce) return;
+      try { S.ws.send(JSON.stringify({ type: "ui-ack", nonce: String(nonce), ok: !!ok, why: why ? String(why).slice(0, 200) : undefined })); } catch (e) { /* closed */ }
+    },
     speaking: function () { return !!(S && S.playing); },
     route: function () { return S ? S.route : ""; },
     muted: function () { return !!(S && S.muted); },

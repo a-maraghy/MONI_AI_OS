@@ -350,7 +350,7 @@ function page(o) {
     brand: "ai",
     heading: null,
     pageClass: "cc-page",
-    assets: ["moni-ai.css", "voice-live.css", "cc-logic.js", "mint-core.js", "cc-map.js", "cc-panels.js", "voice-live-detect.js", "voice-live.js", "moni-ai.js"],
+    assets: ["moni-ai.css", "voice-live.css", "cc-logic.js", "mint-core.js", "cc-map.js", "cc-panels.js", "voice-live-detect.js", "voice-live.js", "ui-actions.js", "moni-ai.js"],
     topExtra: topExtra(),
     topEnd: TOP_CLOCK,
   });

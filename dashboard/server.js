@@ -3620,7 +3620,15 @@ app.post("/mint-ai/api/desk/turn", requireApiPerm("moniai.use"), moniAiAudioBody
     }
     const speaker = voiceDesk.createSpeaker({ speak: voice.speakStream, cfg, write: out.write, t0 });
     const persona = personaHear({ userId: req.me.id, username: req.me.username, ip: req.ip }, heard);
-    const r = await desk().turn(heard, { onLine: (line) => speaker.push(line), persona });
+    const r = await desk().turn(heard, {
+      onLine: (line) => speaker.push(line),
+      persona,
+      // Screen actions (public/ui-actions.js) go back to this tab, in this stream; audited.
+      onUi: (ui) => {
+        out.write(ui);
+        db.logLogin(req.ip, req.me.username, "mint-ui", `${ui.action}${Object.keys(ui.args || {}).length ? " " + JSON.stringify(ui.args) : ""} by the voice front desk`);
+      },
+    });
     for (const t of r.asked) out.write({ type: "asked", turn: t });
     const sp = await speaker.done();
     const cat = voiceDesk.categoryOf(r);
@@ -5179,6 +5187,7 @@ function liveConnected(ws, { me, cfg, ip, duplex, noise, route }) {
     },
     persona: () => personaOf(me.id),
     hearPersona: (text) => personaHear({ userId: me.id, username: actor, ip }, text),
+    audit: (line) => db.logLogin(ip, actor, "mint-ui", line),
     speak: voice.speakStream,
     transcribe: voice.transcribeFull,
     summarise: (id, o) => voiceDesk.deskFor(actor, cfg, moniai.call, { log: (m) => console.log(m) }).summarise(id, o),

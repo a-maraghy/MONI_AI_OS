@@ -1,0 +1,177 @@
+/*
+ * What MINT AI's voice may do on the Command Center screen (UI control,
+ * Phase 1: the desk's ui_action tool). One allowlist, required by the server
+ * (lib/voice-live.js, lib/voice-desk.js) and loaded by the page (moni-ai.js),
+ * so both sides refuse the same things. Pure: no DOM, no state.
+ *
+ * Tier 1 only -- harmless, instant, shown with a toast (and an undo where
+ * sensible). Nothing here can approve or deny anything, touch keys, users,
+ * rules, the gate, settings values, restarts or deploys: those have no action
+ * name at all, so nothing can reach them whatever the model is told. A card
+ * can be SHOWN (decision.show); pressing Approve stays a human click. The
+ * microphone can be muted by voice but never unmuted (a hijacked turn must
+ * not turn a muted microphone back on).
+ *
+ *   UiActions.validate(name, args) -> { ok: true, action, args } | { ok: false, why }
+ *   UiActions.toast(action, args)  -> "Mint opened Missions"
+ *   UiActions.tool()               -> the realtime tool definition (ui_action)
+ *   UiActions.limiter()            -> per-turn / per-minute rate limits
+ *
+ * Where an action runs: "server" (the live call itself: end, mute, interrupt)
+ * or "page" (the tab that holds the call, or that sent the relay-desk turn).
+ */
+(function (root, factory) {
+  if (typeof module === "object" && module.exports) module.exports = factory();
+  else root.UiActions = factory();
+})(typeof self !== "undefined" ? self : this, function () {
+  "use strict";
+
+  // The dock's sheets (public/cc-logic.js SHEETS), plus the phone's Everything grid.
+  var SHEETS = {
+    conv: "Conversation", sessions: "Sessions", missions: "Missions", dec: "Decisions",
+    tl: "Timeline", rules: "Rules & watchers", orders: "Standing orders", cost: "Cost & voice usage",
+    machine: "Machine", everything: "Everything",
+  };
+  var CORES = { A: "A", B: "B", C: "C" };
+  var MODES = { ptt: "push to talk", handsfree: "hands-free", live: "live conversation" };
+  var VIEWS = { map: "the map", missions: "Missions" };
+  // settings.open: a fixed list of pages, never a URL from the model.
+  var PAGES = {
+    voice: { url: "/credentials/openai-voice", label: "voice settings" },
+    account: { url: "/account", label: "your account" },
+    "voice-eval": { url: "/mint-ai/voice-eval", label: "the voice evaluation" },
+  };
+
+  function oneOf(map, key) {
+    return function (a) {
+      var v = a && a[key];
+      return typeof v === "string" && Object.prototype.hasOwnProperty.call(map, v) ? (function () { var o = {}; o[key] = v; return o; })() : null;
+    };
+  }
+  function none(a) {
+    return a && typeof a === "object" && Object.keys(a).some(function (k) { return a[k] !== undefined && a[k] !== null && a[k] !== ""; }) ? null : {};
+  }
+
+  var ACTIONS = {
+    "call.end": { tier: 1, where: "server", once: true, args: none, toast: function () { return "Mint ended the call"; } },
+    // Mute only: `on` must be true (or absent). Unmuting is by hand.
+    "call.mute": {
+      tier: 1, where: "server",
+      args: function (a) { var on = a && a.on; return on === undefined || on === null || on === true || on === "true" ? { on: true } : null; },
+      why: "the microphone can be muted by voice, never unmuted -- the administrator unmutes it by hand",
+      toast: function () { return "Mint muted the microphone"; },
+    },
+    "call.interrupt": { tier: 1, where: "server", args: none, toast: function () { return "Mint stopped reading"; } },
+    "voice.mode": { tier: 1, where: "page", args: oneOf(MODES, "mode"), toast: function (a) { return "Mint switched the voice to " + MODES[a.mode]; } },
+    "sheet.open": { tier: 1, where: "page", args: oneOf(SHEETS, "key"), toast: function (a) { return "Mint opened " + SHEETS[a.key]; } },
+    "sheet.close": { tier: 1, where: "page", args: none, toast: function () { return "Mint closed the panel"; } },
+    view: { tier: 1, where: "page", args: oneOf(VIEWS, "name"), toast: function (a) { return "Mint showed " + VIEWS[a.name]; } },
+    "core.set": { tier: 1, where: "page", args: oneOf(CORES, "core"), toast: function (a) { return "Mint switched the core to " + a.core; } },
+    "reply.show": { tier: 1, where: "page", args: none, toast: function () { return "Mint opened the last reply"; } },
+    "reply.read": { tier: 1, where: "page", args: none, toast: function () { return "Mint is reading the last reply"; } },
+    "decision.show": { tier: 1, where: "page", args: none, toast: function () { return "Mint showed the waiting card -- approving it is yours"; } },
+    "settings.open": { tier: 1, where: "page", once: true, args: oneOf(PAGES, "page"), toast: function (a) { return "Mint suggests " + PAGES[a.page].label; } },
+  };
+
+  function names() { return Object.keys(ACTIONS); }
+
+  /** Is this a known action with good arguments? Unknown names are refused, whatever they are. */
+  function validate(name, args) {
+    if (typeof name !== "string" || !Object.prototype.hasOwnProperty.call(ACTIONS, name)) return { ok: false, why: "no such screen action (allowed: " + names().join(", ") + ")" };
+    var a = ACTIONS[name];
+    var clean = a.args(args && typeof args === "object" && !Array.isArray(args) ? args : {});
+    if (!clean) return { ok: false, why: a.why || "bad arguments for " + name };
+    return { ok: true, action: name, args: clean, where: a.where, tier: a.tier, once: !!a.once };
+  }
+
+  function toast(name, args) {
+    var a = ACTIONS[name];
+    return a ? a.toast(args || {}) : "";
+  }
+
+  function pageUrl(page) {
+    return PAGES[page] ? PAGES[page].url : null;
+  }
+
+  /**
+   * The realtime tool. Flat, optional arguments so the model can fill them
+   * without nesting: action, and key / mode / name / core / page as the
+   * action needs.
+   */
+  function tool() {
+    return {
+      type: "function",
+      name: "ui_action",
+      description:
+        "Change what the administrator sees on this Command Center screen, at once: end or mute this call (never unmute), stop reading, " +
+        "switch the voice mode, open or close a panel (" + Object.keys(SHEETS).join(", ") + "), show the map or missions, switch the core (A/B/C), " +
+        "show or read the last reply, show the waiting decision card, or suggest a settings page (voice, account, voice-eval). " +
+        "It cannot approve, deny or confirm anything, change keys, users, rules, settings values, restart or deploy: approving stays the administrator's click. " +
+        "Use it only when the administrator asks for it in this turn.",
+      parameters: {
+        type: "object",
+        properties: {
+          action: { type: "string", enum: names() },
+          key: { type: "string", enum: Object.keys(SHEETS), description: "sheet.open: which panel" },
+          mode: { type: "string", enum: Object.keys(MODES), description: "voice.mode" },
+          name: { type: "string", enum: Object.keys(VIEWS), description: "view" },
+          core: { type: "string", enum: Object.keys(CORES), description: "core.set" },
+          page: { type: "string", enum: Object.keys(PAGES), description: "settings.open" },
+        },
+        required: ["action"],
+        additionalProperties: false,
+      },
+    };
+  }
+
+  /** The tool's flat arguments split into action and args. */
+  function fromTool(args) {
+    var a = args && typeof args === "object" ? args : {};
+    var out = {};
+    ["key", "mode", "name", "core", "page", "on"].forEach(function (k) { if (a[k] !== undefined) out[k] = a[k]; });
+    var extra = Object.keys(a).filter(function (k) { return ["action", "key", "mode", "name", "core", "page", "on"].indexOf(k) < 0; });
+    return { action: a.action, args: out, extra: extra };
+  }
+
+  /**
+   * Rate limits: at most `perTurn` actions per turn and `perMinute` per
+   * minute, and a `once` action (call.end, settings.open) once per turn.
+   */
+  function limiter(opts) {
+    var o = opts || {};
+    var perTurn = o.perTurn || 6, perMinute = o.perMinute || 20;
+    var times = [];
+    var turns = {};
+    return {
+      take: function (turnKey, action, now) {
+        var t = now || Date.now();
+        times = times.filter(function (x) { return t - x < 60000; });
+        var k = String(turnKey || "");
+        var tu = turns[k] || (turns[k] = { n: 0, once: {} });
+        if (times.length >= perMinute) return "too many screen actions this minute";
+        if (tu.n >= perTurn) return "too many screen actions in one turn";
+        if (ACTIONS[action] && ACTIONS[action].once && tu.once[action]) return action + " was already done in this turn";
+        times.push(t);
+        tu.n++;
+        tu.once[action] = true;
+        var keys = Object.keys(turns);
+        if (keys.length > 50) delete turns[keys[0]];
+        return null;
+      },
+    };
+  }
+
+  // What a claim of a screen action sounds like: "I opened Missions", «فتحتلك الـ missions».
+  // (The desk's guard allows it only when a ui_action in this turn returned ok.)
+  var CLAIM_EN = /\b(?:i|i've|ive|i have|i just|i've just)\s+(?:just\s+|now\s+)?(?:opened|closed|muted|ended|switched|showed|shown|brought up|pulled up|put up|hung up|interrupted|stopped reading|set|changed|turned)\b/;
+  var CLAIM_AR = /(?:^|[^ء-ي])[وف]?(?:فتحت|فتحتلك|فتحتهالك|قفلت|قفلتلك|قفلتهالك|كتمت|نهيت|انهيت|غيرت|غيرتلك|حولت|حولتلك|عرضت|عرضتلك|طلعتلك|وقفت\s+القرايه|سكرت)(?:[ء-ي]*)/;
+  function claims(normText) {
+    var t = String(normText || "");
+    return CLAIM_EN.test(t) || CLAIM_AR.test(t);
+  }
+
+  return {
+    ACTIONS: ACTIONS, SHEETS: SHEETS, CORES: CORES, MODES: MODES, VIEWS: VIEWS, PAGES: PAGES,
+    names: names, validate: validate, toast: toast, pageUrl: pageUrl, tool: tool, fromTool: fromTool, limiter: limiter, claims: claims,
+  };
+});
