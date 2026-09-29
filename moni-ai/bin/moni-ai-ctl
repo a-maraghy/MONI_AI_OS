@@ -9,6 +9,9 @@
  *   moni-ai-ctl approve '{"approval_id":3}'
  *   moni-ai-ctl ledger '{"table":"delegations","limit":10}'
  *   moni-ai-ctl events '{"since":0}'        (streams until Ctrl-C)
+ *   moni-ai-ctl fresh '{"reason":"context too large"}'
+ *                     (new conversation: stops the CLI, retires the session id,
+ *                      starts with a new one; refused while busy unless "force":true)
  *
  * Root or a member of the moniai group. The actor recorded in the audit log is
  * $MONI_AI_ACTOR, else the invoking user ("cli:<user>").
@@ -19,7 +22,7 @@ const os = require("os");
 const SOCKET = process.env.MONI_AI_SOCKET || "/run/moni-ai/moni-ai.sock";
 const [op, json] = process.argv.slice(2);
 if (!op || op === "-h" || op === "--help") {
-  console.log("usage: moni-ai-ctl <op> [json-params]\nops: ping status sessions rc-url events ledger send interrupt approve deny rc restart\n     machine missions mission mission-create mission-step-add mission-step-update mission-update mission-request\n     decisions decision-propose decision-update decision-approve decision-dismiss decision-ask watchers watcher-set\n     orders order-runs order-create order-update order-delete order-run order-pause\n     rules rule-test rule-suggest rule-create rule-update rule-delete cost cost-budget session-mirror\n(see lib/protocol.js for each op's params)");
+  console.log("usage: moni-ai-ctl <op> [json-params]\nops: ping status sessions rc-url events ledger send interrupt approve deny rc restart fresh\n     machine missions mission mission-create mission-step-add mission-step-update mission-update mission-request\n     decisions decision-propose decision-update decision-approve decision-dismiss decision-ask watchers watcher-set\n     orders order-runs order-create order-update order-delete order-run order-pause\n     rules rule-test rule-suggest rule-create rule-update rule-delete cost cost-budget session-mirror\n(see lib/protocol.js for each op's params)");
   process.exit(op ? 0 : 2);
 }
 let params = {};

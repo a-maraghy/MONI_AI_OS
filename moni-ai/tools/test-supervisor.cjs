@@ -42,6 +42,7 @@ fs.writeFileSync(
     sessions_poll_s: 1,
     backoff_min_s: 1,
     backoff_max_s: 2,
+    cost_scan_s: 1,
   })
 );
 const SOCK = path.join(tmp, "run", "moni-ai.sock");
@@ -316,6 +317,74 @@ async function until(fn, ms = 10000) {
     await until(async () => (await call("status")).data.process.state === "ready");
     const argvs = fs.readFileSync(path.join(home, "fake-argv.log"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
     check("the restarted process resumes the same session id", argvs.length >= 2 && argvs[argvs.length - 1].includes("--resume") && argvs[argvs.length - 1].includes(argv0[argv0.indexOf("--session-id") + 1]));
+
+    // --- fresh start: a new conversation, never the old id
+    const stateFile = path.join(tmp, "state", "state.json");
+    const readSt = () => JSON.parse(fs.readFileSync(stateFile, "utf8"));
+    const argvLines = () => fs.readFileSync(path.join(home, "fake-argv.log"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    const oldId = readSt().session_id;
+    const selfRefused = await call("fresh", {}, "moni-ai");
+    check("fresh: MONI AI itself may not ask for one", !selfRefused.ok && /administrator/.test(selfRefused.error), selfRefused.error);
+    await call("send", { text: "SLOW 1500" });
+    await until(async () => (await call("status")).data.busy);
+    const busyRefused = await call("fresh", {}, "amaraghy");
+    check("fresh: refused while a turn is running", !busyRefused.ok && /not idle/.test(busyRefused.error), busyRefused.error);
+    await sub.waitFor((e) => e.type === "assistant" && e.text === "slow done", 8000);
+    await until(async () => !(await call("status")).data.busy);
+    // Usage in the old transcript is MONI AI's own: once retired it must not
+    // turn up as another session's estimated spend. A control transcript must.
+    const usageRec = (id) => JSON.stringify({ type: "assistant", timestamp: new Date().toISOString(), message: { id, model: "claude-opus-5-5", usage: { input_tokens: 1000, output_tokens: 200000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } });
+    fs.appendFileSync(path.join(home, ".claude", "projects", "-fake", oldId + ".jsonl"), usageRec("msg_old_self") + "\n");
+    const otherSid = "abcdabcd-1111-4222-8333-444455556666";
+    fs.writeFileSync(path.join(home, ".claude", "projects", "-fake", otherSid + ".jsonl"), usageRec("msg_other") + "\n");
+    const before = argvLines().length;
+    const fr = await call("fresh", { reason: "context too large" }, "amaraghy");
+    check("fresh is accepted and names both ids", fr.ok && fr.data.old_session_id === oldId && fr.data.new_session_id && fr.data.new_session_id !== oldId, JSON.stringify(fr));
+    const frReady = await until(async () => {
+      const r = await call("status");
+      return r.data.process.state === "ready" && r.data.remote_control.enabled && r.data.init && r.data.init.session_id === fr.data.new_session_id ? r : null;
+    });
+    check("the fresh process comes up ready with Remote Control on", !!frReady);
+    const after = argvLines().slice(before);
+    const newId = fr.ok ? fr.data.new_session_id : "";
+    check("the fresh start uses --session-id <new>", after.length >= 1 && after[0].includes("--session-id") && after[0][after[0].indexOf("--session-id") + 1] === newId, JSON.stringify(after));
+    check("and never --resume, nor the old id", after.every((a) => !a.includes("--resume") && !a.includes(oldId)));
+    check("it keeps model, effort, permission mode and MCP config", after[0] && after[0].join(" ").includes("--model claude-opus-5-5") && after[0].includes("--effort") && after[0].join(" ").includes("--permission-mode auto") && after[0].includes("--mcp-config"));
+    const st = readSt();
+    check("state holds the new id and the old one as previous", st.session_id === newId && st.previous_session_id === oldId);
+    const h = (st.session_history || []).slice(-1)[0];
+    check("the old id is in the session history with who, when and why", h && h.session_id === oldId && h.retired_by === "amaraghy" && h.reason === "context too large" && h.next_session_id === newId && Date.parse(h.retired_at) > 0, JSON.stringify(h));
+    check("the old transcript stays on disk", fs.existsSync(path.join(home, ".claude", "projects", "-fake", oldId + ".jsonl")));
+    check("status shows the new id and its init tools", frReady && frReady.data.session_id === newId && frReady.data.previous_session_id === oldId && frReady.data.init.mcp_tools.includes("mcp__moni-ai__status_snapshot"), JSON.stringify(frReady && frReady.data.init));
+    const auditFr = (await call("ledger", { table: "audit", limit: 50 })).data.rows;
+    check("fresh is audited with the panel user", auditFr.some((r) => r.op === "fresh" && r.actor === "amaraghy" && r.ok === 1));
+    check("and the rotation records both ids", auditFr.some((r) => r.op === "session-rotate" && r.actor === "amaraghy" && String(r.detail).includes(oldId) && String(r.detail).includes(newId)), JSON.stringify(auditFr.filter((r) => r.op === "session-rotate")));
+    check("a refused fresh is audited too", auditFr.some((r) => r.op === "fresh" && r.ok === 0));
+    const costRep = await until(async () => {
+      const c = await call("cost");
+      return c.ok && c.data.sessions.some((x) => x.session_id === otherSid) ? c : null;
+    }, 8000);
+    check("the cost scanner still counts other sessions", !!costRep);
+    check("but not MONI AI's retired transcript", costRep && !costRep.data.sessions.some((x) => x.session_id === oldId), JSON.stringify(costRep && costRep.data.sessions));
+    const postTurn = await call("send", { text: "hello after fresh" });
+    const postEnd = await sub.waitFor((e) => e.type === "turn" && e.phase === "end" && e.turn.id === postTurn.data.turn.id);
+    check("the new session answers a turn", postEnd && postEnd.turn.status === "done", JSON.stringify(postEnd));
+    const postRow = (await call("ledger", { table: "turns", limit: 5 })).data.rows.find((r) => r.id === postTurn.data.turn.id);
+    check("its cost starts from the new process's running total", postRow && postRow.cost_usd != null && Math.abs((postRow.cost_delta_usd || 0) - postRow.cost_usd) < 1e-9, JSON.stringify(postRow));
+    const rs2 = await call("restart", {}, "amaraghy");
+    await until(async () => (await call("status")).data.process.state === "ready");
+    const last = argvLines().slice(-1)[0];
+    check("a normal restart after it resumes the NEW id", rs2.ok && last.includes("--resume") && last[last.indexOf("--resume") + 1] === newId && !last.includes(oldId), JSON.stringify(last));
+    // the one-shot flag file
+    fs.writeFileSync(path.join(tmp, "state", "fresh-start"), "flag test\n");
+    await call("restart", {}, "amaraghy");
+    await until(async () => (await call("status")).data.process.state === "ready" && readSt().session_id !== newId);
+    const st2 = readSt();
+    const last2 = argvLines().slice(-1)[0];
+    check("the flag file starts a fresh session once", st2.session_id !== newId && st2.previous_session_id === newId && last2.includes("--session-id") && last2.includes(st2.session_id) && !last2.includes("--resume"), JSON.stringify(last2));
+    check("and is removed after use", !fs.existsSync(path.join(tmp, "state", "fresh-start")));
+    check("the flag rotation is recorded", (st2.session_history || []).some((x) => x.session_id === newId && x.retired_by === "flag-file" && x.reason === "flag test"));
+    check("history keeps both retired ids", (st2.session_history || []).map((x) => x.session_id).join(",") === [oldId, newId].join(","));
 
     // --- single instance
     const second = startSupervisor();

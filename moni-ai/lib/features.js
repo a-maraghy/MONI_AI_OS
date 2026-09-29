@@ -411,7 +411,7 @@ function createFeatures(deps) {
     projectsDir: deps.projectsDir,
     dayOf,
     days: 15,
-    exclude: (sid) => sid === deps.selfSessionId(),
+    exclude: (sid) => (deps.selfSessionIds ? deps.selfSessionIds().has(sid) : sid === deps.selfSessionId()),
   });
 
   function backfillDeltas() {

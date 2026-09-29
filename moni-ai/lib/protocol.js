@@ -72,6 +72,8 @@ const OPS = {
   deny: { mutating: true, params: { approval_id: int(1, Number.MAX_SAFE_INTEGER), note: optText(500) } },
   rc: { mutating: true, params: { enabled: bool() } },
   restart: { mutating: true, params: {} },
+  // Start MONI AI in a new conversation (new session id; the old transcript stays on disk).
+  fresh: { mutating: true, params: { reason: optText(300), force: optBool() } },
 
   /* ---- phase 1 of Command Center v3: reads ---- */
   machine: { mutating: false, params: {} },
