@@ -53,17 +53,30 @@ function watermark(kind) {
  * Colours come from classes (see .seedling in style.css), so the same markup
  * follows the theme.
  */
-function seedling(stage, cls) {
+function seedling(stage, cls, o = {}) {
   const id = nextId("sd");
   const L = M.LEAF;
+  // A failed agent droops: every leaf turns further down and the stem bends.
+  const droop = o.droop ? 34 : 0;
   const leaf = (x, y, s, r) =>
-    `<g transform="translate(${x} ${y}) rotate(${r}) scale(${s}) translate(-50 -116)"><path class="sd-a" d="${L}"/><path class="sd-b" d="${L}" clip-path="url(#${id})"/><path class="sd-vein" d="M50 36V116"/></g>`;
+    `<g transform="translate(${x} ${y}) rotate(${r + (r < 0 ? -droop : droop)}) scale(${s}) translate(-50 -116)"><path class="sd-a" d="${L}"/><path class="sd-b" d="${L}" clip-path="url(#${id})"/><path class="sd-vein" d="M50 36V116"/></g>`;
   const top = stage === 1 ? 52 : stage === 2 ? 44 : 30;
-  let g = `<path class="sd-stem" d="M40 78V${top + 4}"/>`;
-  if (stage === 1) g += leaf(40, top + 6, 0.2, -42) + leaf(40, top + 4, 0.22, 40);
-  else if (stage === 2) g += leaf(40, top + 8, 0.25, -50) + leaf(40, top + 4, 0.28, 46);
-  else g += leaf(40, 58, 0.22, -58) + leaf(40, 50, 0.24, 54) + leaf(40, top + 6, 0.27, -6);
-  return `<svg viewBox="0 0 80 82" class="seedling${cls ? " " + cls : ""}" aria-hidden="true"><defs><clipPath id="${id}"><rect x="50" y="0" width="60" height="130"/></clipPath></defs><ellipse class="sd-soil" cx="40" cy="78.5" rx="17" ry="2.6"/>${g}</svg>`;
+  const bend = o.droop ? 6 : 0;
+  let g = `<path class="sd-stem" d="M40 78C40 ${(top + 78) / 2} ${40 + bend * 0.3} ${top + 10} ${40 + bend} ${top + 4}"/>`;
+  const tx = 40 + bend;
+  if (stage === 1) g += leaf(tx, top + 6, 0.2, -42) + leaf(tx, top + 4, 0.22, 40);
+  else if (stage === 2) g += leaf(tx - bend * 0.3, top + 8, 0.25, -50) + leaf(tx, top + 4, 0.28, 46);
+  else g += leaf(40 + bend * 0.2, 58, 0.22, -58) + leaf(40 + bend * 0.4, 50, 0.24, 54) + leaf(tx, top + 6, 0.27, -6);
+  // Roots under the soil: one per channel, a dashed stub when there is none.
+  let roots = "";
+  if (o.roots) {
+    if (!o.roots.length) roots = `<path class="sd-root none" d="M40 79q-2 6 0 10"/>`;
+    o.roots.forEach((dir) => {
+      roots += `<path class="sd-root" d="M40 79q${dir * 5} 5 ${dir * 13} 10"/><circle class="sd-tip" cx="${40 + dir * 13}" cy="89" r="2"/>`;
+    });
+  }
+  const H = o.roots ? 94 : 82;
+  return `<svg viewBox="0 0 80 ${H}" class="seedling${cls ? " " + cls : ""}" aria-hidden="true"><defs><clipPath id="${id}"><rect x="50" y="0" width="60" height="130"/></clipPath></defs><ellipse class="sd-soil" cx="40" cy="78.5" rx="17" ry="2.6"/>${roots}<g class="${o.sway ? "sway" : ""}">${g}</g></svg>`;
 }
 
 /** A four-point spark, the AI's glyph, for tabs and buttons. */

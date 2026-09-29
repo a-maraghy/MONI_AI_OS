@@ -56,7 +56,7 @@
   }
   function css(c, a) { return "rgba(" + (c[0] | 0) + "," + (c[1] | 0) + "," + (c[2] | 0) + "," + (a == null ? c[3] : a) + ")"; }
   var TOKENS = ["--ink", "--muted", "--accent", "--accent-2", "--warn", "--bad", "--orb-node-bg", "--orb-root-hi",
-    "--dry", "--dry-crack", "--sub-a", "--hypha", "--hypha-faint", "--pulse", "--pulse-glow", "--spore", "--dark-thread"];
+    "--dry", "--dry-crack", "--sub-a", "--hypha", "--hypha-faint", "--pulse", "--pulse-glow", "--spore", "--dark-thread", "--teal-line", "--grid-dot"];
   function readPalette() {
     var cs = getComputedStyle(root);
     pal = { rgb: {} };
@@ -129,13 +129,18 @@
     });
     dirty = true;
   }
+  // A thread: a cubic with horizontal tangents at both knots -- the flat,
+  // structural look of the Mint OS, drawn as sampled points so the pulses can
+  // travel along it. `amp` spreads twin threads apart; `r` is kept for the
+  // call sites (and the deterministic layout they share).
   function hypha(a, b, r, amp) {
-    var n = 28, pts = [], dx = b.x - a.x, dy = b.y - a.y, len = Math.hypot(dx, dy) || 1, nx = -dy / len, ny = dx / len;
-    var p1 = r() * TAU, p2 = r() * TAU, A = Math.min(26, len * .09) * amp * (r() < .5 ? -1 : 1), f2 = 2 + r() * 2;
+    r();
+    var n = 32, pts = [], mx = (a.x + b.x) / 2, off = (1 - amp) * 10;
     for (var i = 0; i <= n; i++) {
-      var t = i / n, env = Math.sin(Math.PI * t);
-      var off = env * (A * Math.sin(Math.PI * t + p1 * .2) + A * .35 * Math.sin(TAU * f2 * t + p2));
-      pts.push([a.x + dx * t + nx * off, a.y + dy * t + ny * off]);
+      var t = i / n, u = 1 - t;
+      var x = u * u * u * a.x + 3 * u * u * t * mx + 3 * u * t * t * mx + t * t * t * b.x;
+      var y = u * u * u * a.y + 3 * u * u * t * a.y + 3 * u * t * t * b.y + t * t * t * b.y + Math.sin(Math.PI * t) * off;
+      pts.push([x, y]);
     }
     var cum = [0]; for (i = 1; i < pts.length; i++) cum.push(cum[i - 1] + Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]));
     return { pts: pts, len: cum, total: cum[cum.length - 1] };
@@ -277,27 +282,13 @@
     if (G.isCut(eff, t.a) || (t.b && G.isCut(eff, t.b))) return "dim";
     return "ok";
   }
-  function stroke(c, pts, w) { c.lineWidth = w; c.beginPath(); c.moveTo(pts[0][0], pts[0][1]); for (var i = 1; i < pts.length; i++) c.lineTo(pts[i][0], pts[i][1]); c.stroke(); }
+  function stroke(c, pts, w) { c.lineWidth = Math.max(.8, w * .75); c.beginPath(); c.moveTo(pts[0][0], pts[0][1]); for (var i = 1; i < pts.length; i++) c.lineTo(pts[i][0], pts[i][1]); c.stroke(); }
   function drawLayer() {
     var c = lctx, P = pal;
     c.clearRect(0, 0, W, H);
-    // substrate: soft glow pools under the living knots, and short fibres feeling out the ground
-    Object.keys(pos).forEach(function (id) {
-      var p = pos[id], g = c.createRadialGradient(p.x, p.y, 2, p.x, p.y, compact ? 70 : 110);
-      g.addColorStop(0, isDead(id) ? "rgba(0,0,0,0)" : P["--sub-a"]); g.addColorStop(1, "rgba(0,0,0,0)");
-      c.fillStyle = g; c.fillRect(p.x - 120, p.y - 120, 240, 240);
-    });
-    var r = rng(5); c.lineWidth = .6;
-    Object.keys(pos).forEach(function (id) {
-      var p = pos[id], n = compact ? 7 : 11;
-      c.strokeStyle = isDead(id) ? P["--dark-thread"] : P["--hypha-faint"];
-      for (var i = 0; i < n; i++) {
-        var a = r() * TAU, len = 14 + r() * (compact ? 26 : 40), x = p.x, y = p.y;
-        c.beginPath(); c.moveTo(x, y);
-        for (var s = 0; s < 5; s++) { a += (r() - .5) * .9; x += Math.cos(a) * len / 5; y += Math.sin(a) * len / 5; c.lineTo(x, y); }
-        c.stroke();
-      }
-    });
+    // substrate: a faint structural dot grid
+    c.fillStyle = P["--grid-dot"] || "rgba(0,230,165,.06)";
+    for (var gx = 12; gx < W; gx += 22) for (var gy = 10; gy < H; gy += 22) c.fillRect(gx, gy, 1.2, 1.2);
     Object.keys(threads).forEach(function (k) {
       var t = threads[k], st = threadState(t), rel = !hiId || t.a === hiId || t.b === hiId;
       var soft = t.kinds.every(function (x) { return x === "soft" || x === "guard"; });
@@ -306,7 +297,7 @@
       c.strokeStyle = col; c.lineCap = "round"; c.lineJoin = "round";
       if (st === "dark") { c.strokeStyle = css(pal.rgb["--dry"], .9); c.setLineDash([2, 5]); stroke(c, t.main.pts, 1.3); c.setLineDash([]); return; }
       stroke(c, t.main.pts, t.w);
-      if (t.twin) { c.globalAlpha = .45; stroke(c, t.twin.pts, Math.max(.5, t.w * .4)); c.globalAlpha = 1; }
+      // twins stay flat: the traffic is in the width, not in a second strand
     });
   }
   function at(h, d, rev) {
@@ -323,14 +314,12 @@
     var still = reduced.matches, i, k;
     for (i = 0; i < pulses.length; i++) {
       var p = pulses[i], h = p.hop, d = Math.min(p.d, h.th.total), pt = at(h.th, d, h.rev);
-      var col = p.ban ? pal["--spore"] : pal["--pulse"], rad = p.faint ? 1.7 : 3.4;
-      if (!p.faint) {
-        ctx.fillStyle = p.ban ? css(pal.rgb["--spore"], .28) : pal["--pulse-glow"]; ctx.beginPath(); ctx.arc(pt[0], pt[1], rad * 3.2, 0, TAU); ctx.fill();
-        ctx.fillStyle = col;
-        for (k = 1; k <= 4; k++) { if (d - k * 7 < 0) break; var tp = at(h.th, d - k * 7, h.rev); ctx.globalAlpha = .5 - k * .1; ctx.beginPath(); ctx.arc(tp[0], tp[1], rad * (1 - k * .15), 0, TAU); ctx.fill(); }
-      }
+      var col = p.ban ? pal["--spore"] : pal["--pulse"], rad = p.faint ? 1.7 : 2.6;
+      // flat square pulses, a short fading trail behind the live ones
+      ctx.fillStyle = col;
+      if (!p.faint) for (k = 1; k <= 3; k++) { if (d - k * 8 < 0) break; var tp = at(h.th, d - k * 8, h.rev); ctx.globalAlpha = .45 - k * .12; ctx.fillRect(tp[0] - rad * .8, tp[1] - rad * .8, rad * 1.6, rad * 1.6); }
       ctx.globalAlpha = p.faint ? .6 : 1;
-      ctx.fillStyle = col; ctx.beginPath(); ctx.arc(pt[0], pt[1], rad, 0, TAU); ctx.fill();
+      ctx.fillRect(pt[0] - rad, pt[1] - rad, rad * 2, rad * 2);
       ctx.globalAlpha = 1;
     }
     ripples.forEach(function (r) {
@@ -355,12 +344,11 @@
         ctx.fill(); ctx.strokeStyle = G.isOwnFault(eff, id) ? pal["--bad"] : pal["--warn"]; ctx.lineWidth = 1.2; ctx.stroke();
         return;
       }
-      ctx.fillStyle = e ? css(pal.rgb["--warn"], .18) : pal["--pulse-glow"]; ctx.globalAlpha = e ? 1 : .55;
-      ctx.beginPath(); ctx.arc(q.x, q.y, 12 * breath, 0, TAU); ctx.fill(); ctx.globalAlpha = 1;
-      ctx.fillStyle = pal["--orb-node-bg"]; ctx.strokeStyle = e ? pal["--warn"] : pal["--orb-root-hi"]; ctx.lineWidth = 1.6;
+      // a flat ring on the surface colour, the mint dot inside; no glow
+      ctx.fillStyle = pal["--orb-node-bg"]; ctx.strokeStyle = e ? pal["--warn"] : pal["--teal-line"]; ctx.lineWidth = 2;
       if (e) ctx.setLineDash([2, 2]);
-      ctx.beginPath(); ctx.arc(q.x, q.y, 6.5, 0, TAU); ctx.fill(); ctx.stroke(); ctx.setLineDash([]);
-      ctx.fillStyle = e ? pal["--warn"] : pal["--accent-2"]; ctx.beginPath(); ctx.arc(q.x, q.y, 3, 0, TAU); ctx.fill();
+      ctx.beginPath(); ctx.arc(q.x, q.y, 8 * (breath > 1.04 ? 1.04 : 1), 0, TAU); ctx.fill(); ctx.stroke(); ctx.setLineDash([]);
+      ctx.fillStyle = e ? pal["--warn"] : pal["--pulse"]; ctx.beginPath(); ctx.arc(q.x, q.y, 3.6, 0, TAU); ctx.fill();
       if (hiId === id) { ctx.strokeStyle = pal["--accent"]; ctx.lineWidth = 1.2; ctx.beginPath(); ctx.arc(q.x, q.y, 11, 0, TAU); ctx.stroke(); }
     });
   }

@@ -196,7 +196,7 @@ section.myc-hero.compact .hero-legend { display: flex; }
 .seed:hover { border-color: var(--line-strong); box-shadow: 0 0 0 1px var(--accent-soft), 0 0 28px -8px var(--glow); }
 .seed.failed { border-color: var(--bad-line); }
 .seed-top { display: grid; grid-template-columns: 62px minmax(0, 1fr) auto; gap: 12px; align-items: center; }
-.seed-art { width: 62px; height: 68px; border-radius: 10px; display: block; border: 1px solid var(--line);
+.seed-art { width: 62px; height: 68px; border-radius: 12px; display: block; border: 1px solid var(--line); padding: 4px 6px 2px;
   background: radial-gradient(70% 60% at 50% 85%, var(--hero-a), transparent 75%); }
 .seed-name { display: block; color: var(--ink); font-weight: 700; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .seed-name:hover { color: var(--accent); text-decoration: none; }
@@ -385,18 +385,23 @@ ul.toc-list { list-style: none; margin: 0; padding: 0; border-left: 1px solid va
 .head-art .seed-art { width: 64px; height: 70px; }
 .page-actions .btn-row.flat { margin: 0; flex-wrap: nowrap; }
 
-/* Seedlings, coloured by state through classes so the theme repaints them. */
-.sd-stem { fill: none; stroke: var(--accent-2); stroke-width: 2.2; stroke-linecap: round; }
-.sd-leaf { fill: var(--accent); opacity: .85; }
-.sd-leaf.b { opacity: .7; }
-.sd-fl { fill: var(--accent); }
-.sd-fl.hi { fill: var(--orb-floret-hi); }
-.sd-soil { stroke: var(--line-strong); stroke-width: 1; }
-.sd-root { fill: none; stroke: var(--accent-2); stroke-width: 1.4; opacity: .75; }
+/* Seedlings, grown from the OS leaf (lib/brand.js) and coloured by state
+   through classes, so the theme repaints them: an active agent in the two
+   leaf tones, a failed one drooping in red, a stopped one grey. */
+.seed-art .sd-a { fill: var(--leaf-a); }
+.seed-art .sd-b { fill: var(--leaf-b); }
+.seed-art .sd-vein { stroke: var(--panel-2); stroke-width: 6; fill: none; }
+.seed-art .sd-stem { fill: none; stroke: var(--leaf-b); stroke-width: 3; stroke-linecap: round; }
+.seed-art .sd-soil { fill: var(--leaf-b); opacity: .4; }
+.sd-root { fill: none; stroke: var(--leaf-b); stroke-width: 1.4; opacity: .7; }
 .sd-root.none { stroke: var(--warn); stroke-dasharray: 2 2; opacity: 1; }
-.sd-tip { fill: var(--accent-2); }
+.sd-tip { fill: var(--leaf-b); }
+.sd-off .sd-a, .sd-off .sd-b { fill: var(--off); opacity: .55; }
+.sd-off .sd-stem, .sd-off .sd-root { stroke: var(--off); }
+.sd-off .sd-soil, .sd-off .sd-tip { fill: var(--off); }
+.sd-failed .sd-a { fill: color-mix(in srgb, var(--bad) 55%, var(--leaf-a)); }
+.sd-failed .sd-b { fill: color-mix(in srgb, var(--bad) 70%, var(--leaf-b)); }
 .sd-failed .sd-stem, .sd-failed .sd-root { stroke: var(--bad); }
-.sd-failed .sd-leaf, .sd-failed .sd-fl { fill: color-mix(in srgb, var(--bad) 70%, var(--off)); }
 .sd-failed .sd-tip { fill: var(--bad); }
 .sd-off .sd-stem, .sd-off .sd-root:not(.none) { stroke: var(--off); }
 .sd-off .sd-leaf, .sd-off .sd-fl, .sd-off .sd-tip { fill: var(--off); }
@@ -427,3 +432,9 @@ pre.logs .t { color: var(--muted); }
 /* Firewall: the blocked list carries six columns, so it takes a little more
    of the width than the other two panels. */
 .split.three.fw-split { grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr) minmax(0, 1fr); }
+
+/* Mint: the Mycelium's knots carry flat chips -- a small mint square, the
+   name in Space Grotesk, the unit in JetBrains Mono. */
+.mc-lbl { border-radius: 5px; background: var(--panel-2); border-color: var(--line-strong); font-family: var(--brand-font); box-shadow: none; }
+.mc-lbl .dot { border-radius: 1px; width: 6px; height: 6px; background: var(--brand); box-shadow: none; }
+.mc-lbl small { font-family: var(--mono); }

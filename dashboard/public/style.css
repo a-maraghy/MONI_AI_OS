@@ -1843,3 +1843,11 @@ h2 { font-weight: 700; }
 .auth-card h2 { font-size: 18px; letter-spacing: 0; text-transform: none; }
 .auth-foot { display: flex; align-items: center; gap: 8px; margin: 14px 0 0; color: var(--muted); font-size: 12.5px; }
 .auth-leaf { right: -8vw; bottom: -30vh; width: min(52vw, 700px); transform: none; opacity: .06; }
+/* The HUD brackets give way to the OS vein. */
+.hud::after { display: none; }
+.hud::before { top: 14px; left: -1px; width: 2px; height: 18px; border: 0; border-radius: 0 2px 2px 0; background: var(--brand); opacity: .85; }
+.seed.new .seedling { width: 56px; height: 58px; display: block; margin: 0 auto; }
+.seed.new .seedling .sd-a { fill: var(--leaf-a); } .seed.new .seedling .sd-b { fill: var(--leaf-b); }
+.seed.new .seedling .sd-vein { stroke: var(--panel); stroke-width: 6; fill: none; }
+.seed.new .seedling .sd-stem { stroke: var(--leaf-b); stroke-width: 3; stroke-linecap: round; fill: none; }
+.seed.new .seedling .sd-soil { fill: var(--leaf-b); opacity: .4; }

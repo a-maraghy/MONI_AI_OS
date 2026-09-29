@@ -19,6 +19,7 @@ const {
 const { byScope } = require("./catalog");
 const { renderAddons } = require("./views-addons");
 const { graphPanel, viewSwitch } = require("./views-memgraph");
+const brand = require("./brand");
 
 const MODELS = [
   ["claude-opus-5", "Opus 5 — most capable"],
@@ -82,41 +83,19 @@ const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"];
  * droops with red tips, an inactive one is grey and still. Colours are classes,
  * so the theme repaints it.
  */
-function seedling(agent, w = 76, h = 84) {
+function seedling(agent) {
   const st = (agent.state && agent.state.active) || "inactive";
   const kind = st === "active" ? "on" : st === "failed" ? "failed" : "off";
   const notes = agent.notes || 0;
-  const cx = w / 2;
-  const soil = h - 18;
-  const H = Math.min(soil - 10, 22 + Math.sqrt(notes) * 3.2);
-  const bend = kind === "failed" ? 14 : 0;
-  const top = { x: cx + bend, y: soil - H + (kind === "failed" ? 10 : 0) };
-  let g = `<path class="sd-stem" d="M${cx} ${soil} C ${cx} ${(soil - H * 0.5).toFixed(1)}, ${(cx + bend * 0.2).toFixed(1)} ${(top.y + 12).toFixed(1)}, ${top.x} ${top.y.toFixed(1)}"/>`;
-  const pairs = Math.max(1, Math.min(4, Math.round(notes / 50)));
-  for (let k = 0; k < pairs; k++) {
-    const f = 0.35 + k * (0.55 / pairs);
-    const y = (soil - H * f).toFixed(1);
-    const x = (cx + bend * f * f).toFixed(1);
-    const L = 9 + k * 1.5 + (kind === "failed" ? -1 : 0);
-    const droop = kind === "failed" ? 8 : -4;
-    g += `<path class="sd-leaf" d="M${x} ${y} q ${-L} ${droop - 4} ${-L - 4} ${droop} q ${(L * 0.6).toFixed(1)} 4 ${L + 4} ${-droop}Z"/>`;
-    g += `<path class="sd-leaf b" d="M${x} ${y} q ${L} ${droop - 4} ${L + 4} ${droop} q ${(-L * 0.6).toFixed(1)} 4 ${-L - 4} ${-droop}Z"/>`;
-  }
-  const golden = Math.PI * (3 - Math.sqrt(5));
-  const florets = kind === "on" ? 13 : 7;
-  for (let k = 0; k < florets; k++) {
-    const rr = 1.3 * Math.sqrt(k);
-    const th = k * golden;
-    g += `<circle class="sd-fl${k < 3 && kind === "on" ? " hi" : ""}" cx="${(top.x + rr * Math.cos(th)).toFixed(2)}" cy="${(top.y + rr * Math.sin(th)).toFixed(2)}" r="1.05"/>`;
-  }
-  let s = `<g class="${kind === "on" ? "sway" : ""}">${g}</g><path class="sd-soil" d="M6 ${soil} H ${w - 6}"/>`;
+  // Grown from the OS leaf: a sprout, then a pair, then a sapling as its
+  // memory fills.
+  const stage = notes < 10 ? 1 : notes < 60 ? 2 : 3;
   const chans = agent.channel ? [agent.channel] : [];
-  if (!chans.length) s += `<path class="sd-root none" d="M${cx} ${soil} q -2 8 0 13"/>`;
-  chans.forEach((c, j) => {
-    const dir = chans.length === 1 ? 0 : j ? 1 : -1;
-    s += `<path class="sd-root" d="M${cx} ${soil} q ${dir * 6} 6 ${dir * 16} 14"/><circle class="sd-tip" cx="${cx + dir * 16}" cy="${soil + 14}" r="2.2"/>`;
+  return brand.seedling(stage, `seed-art sd-${kind}`, {
+    droop: kind === "failed",
+    sway: kind === "on",
+    roots: chans.map((c, j) => (chans.length === 1 ? 0 : j ? 1 : -1)),
   });
-  return `<svg class="seed-art sd-${kind}" viewBox="0 0 ${w} ${h}" aria-hidden="true">${s}</svg>`;
 }
 
 function pips(effort) {
@@ -164,7 +143,7 @@ function seedCard(csrf, user, a) {
 function fleetGrid(csrf, user, agents) {
   return `<div class="fleet" aria-label="Fleet">${agents.map((a) => seedCard(csrf, user, a)).join("")}${
     can(user, "agents.create")
-      ? `<a class="card seed new" href="/agents/new"><span>${icon("plus")}<b>Plant a new agent</b><span class="small">Step 1: the mind · Step 2: its channel</span></span></a>`
+      ? `<a class="card seed new" href="/agents/new"><span>${brand.seedling(2, "seed-new")}<b>Plant a new agent</b><span class="small">Step 1: the mind · Step 2: its channel</span></span></a>`
       : ""
   }</div>`;
 }
@@ -569,7 +548,7 @@ exports.detail = ({ csrf, user, agent, notes = [], journal = null, journalErr = 
       crumbs: agentCrumbs(agent),
       heading: agent.name || agent.slug,
       headingHtml: agentHead(agent),
-      headArt: seedling(agent, 76, 84),
+      headArt: seedling(agent),
       subtitle: `<span class="mono small">${esc(agent.slug)}</span> · ${esc(agent.dir || "")}`,
       actions: `${canLogs ? `<a class="btn" href="/agents/${esc(agent.slug)}/logs">${icon("logs")} Logs</a>` : ""}${
         canControl ? controls(csrf, agent).replace('class="btn-row"', 'class="btn-row flat"').replace(/ small"/g, '"') : ""

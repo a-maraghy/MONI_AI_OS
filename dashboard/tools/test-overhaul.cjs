@@ -125,7 +125,7 @@ const fleet = [
 ];
 const nursery = agentViews.dashboard({ csrf: "c", user, agents: fleet, channels: [{}], probe: null });
 check("the Agents dashboard is The nursery, one screen", /<h1>The nursery<\/h1>/.test(nursery) && /class="content pat-a"/.test(nursery));
-check("every agent is a seedling card", (nursery.match(/class="card seed (hud )?(active|failed|inactive)"/g) || []).length === 2 && /class="seed-art sd-on"/.test(nursery) && /class="seed-art sd-failed"/.test(nursery));
+check("every agent is a seedling card", (nursery.match(/class="card seed (hud )?(active|failed|inactive)"/g) || []).length === 2 && /class="seedling seed-art sd-on"/.test(nursery) && /class="seedling seed-art sd-failed"/.test(nursery));
 check("an agent with no channel gets a dashed root and an add link", /sd-root none/.test(nursery) && /No channel — add one/.test(nursery));
 check("effort shows as pips", /aria-label="effort high"/.test(nursery));
 check("card controls are the existing forms", /action="\/agents\/scout\/action"/.test(nursery) && /name="action" value="restart"/.test(nursery));
