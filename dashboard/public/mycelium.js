@@ -130,7 +130,7 @@
     dirty = true;
   }
   // A thread: a cubic with horizontal tangents at both knots -- the flat,
-  // structural look of the Mint OS, drawn as sampled points so the pulses can
+  // structural look of the Mint OS, drawn as a polyline so the pulses can
   // travel along it. `amp` spreads twin threads apart; `r` is kept for the
   // call sites (and the deterministic layout they share).
   function hypha(a, b, r, amp) {
