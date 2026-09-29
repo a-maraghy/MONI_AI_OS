@@ -10,7 +10,8 @@
  *  - the SVG marks and favicons are current with lib/marks.js (tools/make-brand.cjs);
  *  - the three OFL fonts are self-hosted with their licences, latin woff2 only;
  *  - style.css declares them and holds the approved palette in both themes;
- *  - OS pages carry the OS favicon and MINT [OS] lockup; MINT AI's pages the AI ones;
+ *  - OS pages carry the OS favicon, MINT AI's pages the AI one; every top bar
+ *    (MINT AI's too) carries the same lockup: the OS leaf and MINT, no [OS]/[AI] tag;
  *  - the sign-in page carries the full lockup and the faint leaf;
  *  - the nursery's seedlings are built from the leaf; no style="" anywhere.
  *
@@ -106,11 +107,12 @@ const ui = require(path.join(ROOT, "lib", "ui.js"));
 const brand = require(path.join(ROOT, "lib", "brand.js"));
 const views = require(path.join(ROOT, "lib", "views.js"));
 const osPage = ui.shell("Services", "<p>x</p>", { user: { name: "desk" }, active: "services", csrf: "c" });
-check("an OS page carries the MINT [OS] lockup", /<span class="lockup os brand-text" aria-label="MINT OS">/.test(osPage) && /pill-brand pill-os">\[<b>OS<\/b>\]/.test(osPage));
+const TOP_LOCKUP = /<a class="brand" href="[^"]*" aria-label="Mint OS">\s*<span class="lockup os brand-text" aria-label="MINT"><span class="lk-mk" aria-hidden="true"><svg class="mark mark-os"[\s\S]*?<\/svg><\/span><span class="lk-wm"><span class="lk-row"><span class="lk-mint">MINT<\/span><\/span><\/span><\/span>\s*<\/a>/;
+check("an OS page's top bar is the OS leaf + MINT, no [OS] tag", TOP_LOCKUP.test(osPage) && !/pill-brand/.test(osPage));
 check("an OS page carries the OS favicons (16, 32, any, .ico)", /brand\/favicon-os-16\.svg\?v=/.test(osPage) && /brand\/favicon-os-32\.svg\?v=/.test(osPage) && /\/static\/favicon\.svg\?v=/.test(osPage) && /href="\/favicon\.ico"/.test(osPage));
 check("an OS page's title ends Mint OS", /<title>Services — Mint OS<\/title>/.test(osPage));
 const aiPage = ui.shell("Chat", "<p>x</p>", { user: { name: "desk" }, active: "console", csrf: "c" });
-check("MINT AI's pages carry the MINT [AI] lockup", /<span class="lockup ai brand-text" aria-label="MINT AI">/.test(aiPage) && /pill-brand pill-ai">\[<b>AI<\/b>\]/.test(aiPage));
+check("MINT AI's pages carry the same top-bar lockup (OS leaf + MINT, no [AI] tag)", TOP_LOCKUP.test(aiPage) && !/pill-brand/.test(aiPage) && !/lockup ai/.test(aiPage));
 check("MINT AI's pages carry the AI favicons", /brand\/favicon-ai-16\.svg\?v=/.test(aiPage) && /favicon-ai\.svg\?v=/.test(aiPage) && /favicon-ai\.ico\?v=/.test(aiPage) && !/favicon-os/.test(aiPage));
 check("the MINT AI tab carries the spark", /class="top-tab ai[^"]*"[^>]*>\s*<svg class="ico spark"/.test(osPage));
 check("the fonts are preloaded from the panel", /<link rel="preload" href="\/static\/fonts\/inter-latin-400-normal\.woff2\?v=5\.3\.0" as="font" type="font\/woff2" crossorigin>/.test(osPage));

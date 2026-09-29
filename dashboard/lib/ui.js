@@ -451,8 +451,8 @@ function shell(title, body, opts = {}) {
                      aria-expanded="false" aria-controls="sidebar"
                      data-nav-toggle>${icon("menu", 20)}</button>`
       }
-      <a class="brand" href="${perm ? landing(perm) : "/"}" aria-label="${opts.brand === "ai" ? "MINT AI" : "Mint OS"} home">
-        ${brand.lockup(opts.brand === "ai" ? "ai" : "os", { cls: "brand-text" })}
+      <a class="brand" href="${perm ? landing(perm) : "/"}" aria-label="Mint OS">
+        ${brand.lockup("os", { cls: "brand-text", tag: false })}
       </a>
       <nav class="top-tabs" aria-label="Dashboards">${tabs}</nav>
       <div class="top-right">

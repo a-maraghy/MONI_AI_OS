@@ -30,15 +30,17 @@ function aiMark(o = {}) {
 /**
  * MINT [OS] or MINT [AI]: the mark, the bold wordmark and the pill.
  * `sub` adds the "Operating System" / "Artificial Intelligence" line under it
- * (the sign-in pages); the top bar leaves it off.
+ * (the sign-in pages); the top bar leaves it off. `tag: false` drops the
+ * bracket pill: the top bar of every page, MINT AI's included, is the OS leaf
+ * and the bare MINT wordmark.
  */
 function lockup(kind, o = {}) {
   const ai = kind === "ai";
-  const pill = ai
+  const pill = o.tag === false ? "" : ai
     ? `<span class="pill-brand pill-ai">[<b>AI</b>]</span>`
     : `<span class="pill-brand pill-os">[<b>OS</b>]</span>`;
   const sub = o.sub ? `<span class="lk-sub">${ai ? "Artificial Intelligence" : "Operating System"}</span>` : "";
-  return `<span class="lockup ${ai ? "ai" : "os"}${o.sub ? " full" : ""}${o.cls ? " " + o.cls : ""}" aria-label="MINT ${ai ? "AI" : "OS"}"><span class="lk-mk" aria-hidden="true">${
+  return `<span class="lockup ${ai ? "ai" : "os"}${o.sub ? " full" : ""}${o.cls ? " " + o.cls : ""}" aria-label="MINT${o.tag === false ? "" : ai ? " AI" : " OS"}"><span class="lk-mk" aria-hidden="true">${
     ai ? aiMark() : osMark()
   }</span><span class="lk-wm"><span class="lk-row"><span class="lk-mint">MINT</span>${pill}</span>${sub}</span></span>`;
 }
