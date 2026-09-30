@@ -300,6 +300,71 @@ total (like `total_cost_usd`), so every turn stores its difference
 
 New events: `mission`, `decision`, `watcher`, `order`, `order_run`, `rule`, `machine`.
 
+Mint OS reorganisation (2026-09-30): editable settings, kept in the ledger's
+`settings` table (`lib/settings.js`). Every write is the administrator's only
+(a human actor: never `moni-ai`, a hired `session.*` or the supervisor's own
+jobs) and audited; reads are open to the panel.
+
+| op | params | returns |
+|---|---|---|
+| `hire-limits` | – | `{max_live, per_hour, perm_mode, defaults:{max_live, per_hour, perm_mode}, bounds:{max_live:[1,12], per_hour:[0,10]}, modes:[auto, default, plan], live, hired, updated_by, updated_at}` (`live` / `hired` counted as a hire is checked) |
+| `hire-limits-set` | any of `max_live` (1..12), `per_hour` (0..10; 0 = no hiring), `perm_mode` (auto, default, plan; bypassPermissions refused); `null` = back to the default | the same as `hire-limits`. Keys `hire_max_live`, `hire_per_hour`, `hire_perm_mode`, read at every hire; the mode is written into the hire's record and `bin/mint-session` starts with it |
+| `approval-timeout` | – | `{seconds, default, bounds:[30,3600], updated_by, updated_at}` |
+| `approval-timeout-set` | `seconds` (30..3600, or `null` = the config's) | the same. Key `approval_timeout_s`: every card (MINT AI's and a hired session's) and `status.approval_timeout_s` use it |
+| `token-caps` | – | `{day, warn_pct, default:{cap, at} or null, sessions:[{key, name, kind (self, hired, kept, yours), session_id, cap, at, today:{input, output, cache_read, cache_write, total}, state (none, ok, near, warned, paused, resumed), paused, resumed, warned, can_pause}], held, updated_by, updated_at}` |
+| `token-caps-set` | `key` (`<self>`, `default`, a hire slug, a session id) with `cap` (tokens, or `null` to remove) and/or `at` (warn, pause); and/or `warn_pct` (50..100, the same `budget.warn_pct` as `cost-budget`) | the same as `token-caps`. `at: pause` on a "yours" session is refused |
+| `budget-resume` | `key` or `decision_id` (a cap card) | `{resumed, was_paused, session}`: resumed for the rest of the day |
+| `ui-pages` | – / `pages` (≤ 500 `{key, parent?, kind, label, url, perm?}`) / `reset: true` | `{pages, count, applied, stored, updated_by, updated_at}`; see *The page map*. A read is not audited |
+| `charter` | – | `{path, text, bytes, truncated, modified_at}`: MINT AI's CLAUDE.md (in `cfg.cwd`), at most 64 KB, read-only |
+| `session-link` | `slug` | a hired session's runner only (actor `session.<slug>`): reply `{linked, paused, approval_timeout_s}`, then `{"control": {"op": "budget-pause" or "budget-resume", "reason"}}` lines |
+
+`status` also carries `paused_at_cap` (MINT AI held at its daily token cap) and
+`process.cwd` / `process.tz`. Decisions gain kind `cap` (below). New event:
+`cap` (`{key, state: warned, paused or released}`).
+
+**Token caps per session (build spec §6).** `token_caps` in the ledger:
+`{default:{cap, at}, sessions:{"<self>" | slug | session id: {cap, at}}}`; a new
+hire copies `default`. The cap counts **total** tokens including cache, the
+same figure as "N tok today" (`features.tokensToday`; for MINT AI the per-turn
+figure when a transcript scan has not caught up). Check points: every MINT AI
+turn end and every cost scan tick (`cost_scan_s`), so another session's cap acts
+within that. Past the warn line (`budget.warn_pct`) a session is only `near`.
+Past a `warn` cap: one Decision card per session per Cairo day ("Demo Own
+passed its daily cap", `actions: ["dismiss"]`) and a `notice`. Past a `pause`
+cap: a card "… passed its daily cap — paused" (`actions: ["resume",
+"dismiss"]`: resume = `budget-resume {decision_id}`, dismiss = leave paused) and:
+- **MINT AI:** the supervisor hands the CLI no queued turn (orders, watchers,
+  decisions, the administrator's own messages) until Resume or the day turns; a
+  running turn finishes. A turn the CLI starts on its own (a peer's message,
+  Remote Control) is interrupted; a message is kept and queued (source
+  `cap-held`) when it is released; a cross-session notice is only interrupted.
+- **Hired / kept:** `budget-pause` down the runner's `session-link`.
+  `bin/mint-session` lets the running tool call finish, sends the CLI an
+  `interrupt`, interrupts any turn that starts while paused and holds its own
+  first prompt; a peer's message goes to the CLI directly, so it cannot be held
+  -- it is interrupted and stays in the transcript. Backstop: `hooks/gate.js`
+  denies every tool call ("daily token cap reached") while `token_caps_state`
+  records the session paused today (a catch-all `--cap-only` hook, plus the
+  normal gate).
+- **Yours** (the administrator's own sessions): warn only, never paused.
+
+`token_caps_state` (`{day, sessions:{key:{warned_at, paused_at, resumed_at,
+resumed_by}}, held}`) survives a restart; the first check point of a new day
+clears it, releases what it paused and closes its cards. Resume, raising the cap
+above today's use, removing it or switching it to warn lifts a pause; a
+resumed session is not paused again that day. Cap cards (decisions columns
+`cap_at`, `cap_day`; `subject` = the cap key, also given as `cap_key`) refuse
+`decision-ask` and `decision-approve`. Tests: `tools/test-caps.cjs`.
+
+**The page map (build spec §5).** The dashboard pushes MINT AI's allowed page
+registry with `ui-pages {pages}`; it is stored (`ui_pages`) and handed to
+`UiActions.setPages(pages)` when lib/ui-actions.js has it (`applied`), and
+re-applied at every supervisor start. `reset` removes it (`setPages(null)`).
+Keys `^[a-z0-9][a-z0-9._-]{0,63}$`, unique; `url` site-relative (one leading
+`/`, no scheme, no `//`, no spaces or quotes), labels ≤ 120 characters. The
+`ui_do` / `ui_actions_list` schemas do not change. Keep a push under the
+socket's 64 KB line limit (roughly 400-500 short entries).
+
 ## Command Center v3, phase 1
 
 `lib/features.js` holds everything below and is wired into the supervisor at
@@ -331,14 +396,15 @@ event). All of its state is in the ledger, so a restart loses nothing.
   `session_retire` {name | ref | session_id, note?} → op `session-retire`
   (schemas frozen by test-mcp; no enums). A hire (`lib/hire.js`: at most 7 live
   sessions, cwd under /root/moni or /root and never hidden, a unique normalised
-  name, a sanitised slug, 3 hires an hour) is recorded in the ledger's
+  name, a sanitised slug, 3 hires an hour; the limits and the permission mode
+  are settings since 2026-09-30, op `hire-limits-set`) is recorded in the ledger's
   `hired_sessions`, written to `<state_dir>/sessions/<slug>.json` and started as
   its own systemd unit `mint-session@<slug>.service` (`deploy/mint-session@.service`,
   `enable --now`: it outlives dashboard and MINT AI restarts and reboots).
   `bin/mint-session` runs the same CLI as MINT AI, as root with HOME=/root (root's
   registry, memory MCP and hooks; ListAgents lists it, SendMessage reaches it),
-  `-n <name>`, `--session-id` then `--resume`, permission mode `auto` (or
-  `hired_permission_mode`; never bypassPermissions, never
+  `-n <name>`, `--session-id` then `--resume`, the permission mode set at hire
+  time (the record's `permission_mode`; else `auto` or `hired_permission_mode`; never bypassPermissions, never
   --dangerously-skip-permissions), the gate added with `--settings` under
   `MINT_GATE_SESSION=hired.<slug>` (built-in rules, classifier, deny / ask rules
   -- never MINT AI's always-allow rules), and `--permission-prompt-tool stdio`:
@@ -446,6 +512,7 @@ sudo node moni-ai/tools/test-features.cjs     # all of phase 1 through a real su
 node moni-ai/tools/test-protocol.cjs          # socket validation, peer-text parsing
 node moni-ai/tools/test-mcp.cjs               # the MCP server's status_snapshot, ui_actions_list, ui_do, session_hire and session_retire tools
 node moni-ai/tools/test-hire.cjs              # hire / keep / retire end to end (fake systemctl + fake CLI)
+node moni-ai/tools/test-caps.cjs              # hire limits, approval timeout, token caps, page map, charter
 sudo node moni-ai/tools/test-ui-action.cjs    # ui-action / ui-ack through a real supervisor
 node moni-ai/tools/test-turnqueue.cjs         # queue order: users first, FIFO, no starvation
 sudo node moni-ai/tools/test-queue.cjs        # the queue + status_snapshot through a real supervisor
