@@ -146,7 +146,7 @@ function hasKeyDeep(v, keys) {
       const c = cat && !cat.result.isError && JSON.parse(cat.result.content[0].text);
       check("  it answers from the live allowlist, without the supervisor", c && seen.length === 0 && c.actions.map((a) => a.action).join() === UiActions.names().join(), cat && cat.result.content[0].text.slice(0, 200));
       const po = c && c.actions.find((a) => a.action === "page.open");
-      check("  with tiers, confirms, once, arguments and values (page.open's 21 page keys, each with its permission)", po && po.tier === 1 && po.needs_confirm === false && po.once_per_request === true && Object.keys(po.args.page.values).length === 21 && /needs audit\.view/.test(po.args.page.values["os-audit"]) && c.actions.filter((a) => a.needs_confirm).map((a) => a.action).sort().join() === "persona.set,theme.set,voice.set");
+      check("  with tiers, confirms, once, arguments and values (page.open's page map -- the built-in pages until the panel pushes one -- each with its permission)", po && po.tier === 1 && po.needs_confirm === false && po.once_per_request === true && Object.keys(po.args.page.values).join() === Object.keys(UiActions.BUILTIN_PAGES).join() && Object.keys(po.args.page.values).length === 22 && /needs audit\.view/.test(po.args.page.values["audit"]) && /\[tab\]/.test(po.args.page.values["sessions.live"]) && c.actions.filter((a) => a.needs_confirm).map((a) => a.action).sort().join() === "persona.set,theme.set,voice.set");
       check("  and the rules (own request only, never approve, confirm means nothing changed yet)", c && c.rules.some((r) => /never approves/.test(r)) && c.rules.some((r) => /nothing has changed yet/.test(r)));
       seen.length = 0;
       reply = { status: "ok", done: "Mint opened the audit log" };
