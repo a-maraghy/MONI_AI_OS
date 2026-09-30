@@ -291,3 +291,12 @@ b.ink { color: var(--ink); }
 .seg-radio .seg-opt:has(input:checked) { background: var(--panel); color: var(--accent); box-shadow: var(--shadow-sm), inset 0 0 0 1px var(--line-strong); }
 .seg-radio .seg-opt:has(input:focus-visible) { outline: 2px solid var(--accent-2); outline-offset: 1px; }
 @media (max-width: 640px) { .set-form { justify-content: flex-start; } }
+
+/* ---- Devices (signed-in browsers) and SSH keys ▸ Pair a device ---- */
+.card > p.flush { margin-bottom: 0; }
+.pair-code { font-size: 16px; letter-spacing: .04em; }
+.pair-form { display: flex; flex-wrap: wrap; gap: 10px 12px; align-items: flex-end; margin-top: 12px; }
+.pair-form label { flex: 1 1 200px; margin: 0; }
+.pair-form .btn-row { margin-top: 0; flex: none; }
+#pair .rows { margin-top: 10px; }
+@media (max-width: 640px) { .pair-form .btn-row { flex: 1 1 100%; } }
