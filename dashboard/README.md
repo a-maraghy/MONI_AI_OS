@@ -306,11 +306,13 @@ hands-free, Space held to talk and every "trial" label are gone.
   `live-audio`) -> 308 to the new routes (method and body kept);
   `/credentials/openai-voice/desk` changes nothing and says the desk is gone.
   Credentials shows the voice key as one status line linking here.
-- **The mic**: in the Command Center it starts / ends a live call (hint
-  "click the mic to talk · Esc ends"; during a call Space mutes or interrupts,
-  Esc interrupts, then ends). The dock on any other page goes to
+- **The mic**: in the Command Center it starts a live call (hint "click the
+  mic to talk"); during a call the mic mutes and unmutes it everywhere, Space
+  mutes or interrupts, Esc only interrupts, and **only the red X ends a call**
+  (never within 1.5 s of its start). The dock on any other page goes to
   `/mint-ai?at=<this page>&call=1`: the shell keeps the page on screen in its
-  frame and the call starts; in the shell the dock's mic starts or mutes it.
+  frame and the call starts; in the shell the dock's mic starts or mutes it
+  (muted: the mic amber with a slash, the tag says MUTED).
 - **Sign-out ends that device's call**: the live upgrade records the session
   id with the call, and `endLiveCallsForSession(sid, reason)` (server.js) ends
   every call bound to it -- on logout, on a revoked session, and from the
@@ -561,7 +563,7 @@ leaves the server.
      on the administrator's laptop): while anything is audible and for 300 ms
      after, the server does not relay the mic at all. Interrupt with a tap on
      the bar's text, Space or the mute button (both interrupt while it speaks),
-     or Esc (stops the voice first; a second Esc ends the call). *Headphones
+     or Esc (it only interrupts; the red X ends the call). *Headphones
      mode* (full duplex) is a toggle in the live bar (remembered per browser,
      `localStorage` `mint-live-duplex`) and the default in Settings ▸ Voice >
      *Live conversation audio* (`POST /mint-ai/settings/voice/live-audio`,
@@ -712,6 +714,67 @@ the stop command, the echo guard, usage rows, the persona, the maximum length;
 then the WebSocket route on the real server from a scratch copy that cannot
 reach the helper: auth, CSRF, origin, the mode, one call per user, frame size,
 the evaluation page's API).
+
+### Call reliability (2026-09-30)
+
+The diagnosis of calls that ended on their own (46 endings in 26 h: 26
+"hung-up", 13 "upstream", 5 voice-command, 2 mint-ended) found the upstream
+close reasons thrown away, the firewall seeing OpenAI's IPv6 packets 13-21 s
+after our side's TCP connection had died, a page.open that ended the call, a
+double click on the mic that landed on the red X, Esc ending calls, and every
+guard cut handed to MINT AI. What changed:
+
+- **Why a call ended is logged.** `live: call <id> ended (<why>: <detail>)`:
+  the upstream close code and reason with the socket error's code and the last
+  event OpenAI sent (`upstream lost: code 1011 "..." , after N s, last event
+  ...`); the page's own reason (`{type: "end", why}`: `button`, `mic`, `esc`,
+  `navigate`, `unload`, `track-ended`, `devicechange`, `error:<msg>`; anything
+  else is `unspecified`), also by `navigator.sendBeacon` to `POST
+  /mint-ai/api/live/end` on pagehide; a page socket that just goes away is
+  `page-closed: code <n>` (no longer "hung-up"); a spoken stop logs its phrase.
+  The audit line carries the reason and the number of upstream reconnects.
+- **The upstream leg is kept alive and replaced when it drops.** IPv4 only for
+  the OpenAI WebSocket (`family: 4`; `MONI_OPENAI_IPV4=0` turns it off); a
+  ping every 10 s, and a leg silent for 25 s (no pong, no event) is dropped;
+  an unexpected close reconnects through `swapUpstream()` with a recap of the
+  last six lines heard and said, and the voice says "The line dropped for a
+  second — I'm back." («الخط قطع لثانية، وأنا معاك تاني.» in an Arabic call).
+  At most two a minute: a third ends the call "upstream" with the reason
+  shown. Opening a session is tried twice, 0.8 s apart.
+- **page.open never ends a call.** "command-center" became "cc" in the page
+  map, which the Command Center's special case missed: now `cc` and every
+  `cc.<sheet>` open right here; anything else opens in the shell's frame, and
+  without it (or when the shell refuses a url) a link is shown -- the tab is
+  never moved while a call is on, and the shell toast's Open refuses a
+  whole-tab move during a call. `tools/test-live-reliability.cjs` checks every
+  key of the page map.
+- **The page says why** a call ended (a toast with Reconnect, on the Command
+  Center or on the dock), a start that fails says so, the microphone's track
+  ending or a device change reopens the mic once (else the call ends with that
+  reason).
+- **Screen actions are confirmed by this server.** After the page's `ui-ack`
+  says ok, the server says the fixed line ("Opened Agents & sessions.",
+  «فتحت Agents & sessions.») and the model is not asked for another round; "I'll
+  open the missions" is backed by a ui_action call in the same response (held
+  until the calls are known); "the agents dashboard is open" passes after an ok
+  screen action; "MINT AI OS" (and "MINT AI's OS", "Mint AIOS") is the product.
+  A cut response that called a tool runs its calls and hands nothing to MINT
+  AI; only a cut with no tool call is handed on (still with this server's
+  transcript).
+- **Repeats and late answers.** Every hand-off carries the call id; the
+  supervisor folds a repeat from the same call that is still queued (within
+  `voice_merge_s`, 20 s) into that turn. A result for an older question (newer
+  words since, or 45 s) is introduced: "About your earlier question:".
+- **Restarts.** On SIGTERM every page is told `{type: "restarting"}` before its
+  call ends, and comes back by itself (1, 2, 4, 8, 15 s) with
+  `?resume=restart`, the voice saying "Reconnected.". The open calls are in
+  `$MONI_DATA_DIR/live-calls.json`, which `deploy/deploy-dashboard.sh` and
+  `deploy-moni-ai.sh` read to warn (and pause 10 s; `MONI_DEPLOY_NOWAIT=1`)
+  before restarting anything. At start the dashboard sends the supervisor a
+  `deploy-event` with the commit and time the deploy script stamped in
+  `DEPLOYED`; MINT AI gets it with its next turn.
+
+Tests: `node dashboard/tools/test-live-reliability.cjs`.
 
 ### Screen control by voice (UI control, Phase 1: the desk's `ui_action`)
 

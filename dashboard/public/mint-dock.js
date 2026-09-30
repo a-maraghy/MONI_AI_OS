@@ -288,14 +288,27 @@
     var tag = $("md-live-t");
     if (!tag) return;
     clearInterval(liveT);
-    if (!(SHELL && ext.live)) return;
+    if (!(SHELL && ext.live)) {
+      dock.classList.remove("muted");
+      var m0 = $("md-mic");
+      if (m0 && SHELL) { m0.classList.remove("muted"); m0.removeAttribute("aria-pressed"); m0.title = "Start a live conversation"; m0.setAttribute("aria-label", m0.title); }
+      return;
+    }
     var tick = function () {
       var s = Math.max(0, Math.floor((Date.now() - (ext.liveSince || Date.now())) / 1000));
-      tag.textContent = "LIVE " + String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0");
+      tag.textContent = (ext.muted ? "MUTED " : "LIVE ") + String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0");
     };
     tick();
     liveT = setInterval(tick, 1000);
-    if ($("md-mic")) $("md-mic").classList.toggle("muted", !!ext.muted);
+    // The mic mutes the call (the red button ends it): muted is shown on the mic and on the tag.
+    dock.classList.toggle("muted", !!ext.muted);
+    var mic = $("md-mic");
+    if (mic) {
+      mic.classList.toggle("muted", !!ext.muted);
+      mic.setAttribute("aria-pressed", ext.muted ? "true" : "false");
+      mic.title = ext.muted ? "Unmute the microphone" : "Mute the microphone (the call stays open)";
+      mic.setAttribute("aria-label", mic.title);
+    }
   }
 
   var api_ = { tab: TAB_ID, state: stateNow, toast: toast };

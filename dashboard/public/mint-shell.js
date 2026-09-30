@@ -308,12 +308,14 @@
   });
 
   /* ------------------------------------------------------------ the dock's feed and notes */
+  function liveOn() { var L = window.__mintLive; return !!(L && L.active && L.active()); }
   var lastFeed = null;
   function paintFeed() { if (lastFeed && D() && D().feed) D().feed(lastFeed); }
   function toast(text, undo, link, bad) {
     var d = D();
     if (!d) return;
-    var action = undo ? { label: "Undo", fn: undo } : link ? { label: "Open", fn: function () { open(link) || location.assign(link); } } : null;
+    // "Open" shows the page in the frame; it never moves the whole tab while a live call is on (that would end it).
+    var action = undo ? { label: "Undo", fn: undo } : link ? { label: "Open", fn: function () { if (open(link)) return; if (liveOn()) return d.toast("That page cannot open here during a live call — end the call first.", { bad: true }); location.assign(link); } } : null;
     d.toast(text, { action: action, bad: !!bad });
   }
 

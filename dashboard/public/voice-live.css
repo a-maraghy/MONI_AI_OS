@@ -36,7 +36,10 @@
 .cc-live-duplex[data-duplex="full"] .dx-sp { display: none; }
 .cc-dock.live-on[data-live="speaking"] .cc-vb-text { cursor: pointer; }
 .cc-live-suggest { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; max-width: min(520px, calc(100vw - 32px)); }
-#cc-live-mute[aria-pressed="true"] { color: var(--warn); box-shadow: inset 0 0 0 1px var(--warn); }
+/* Muted, clearly: the mute button filled amber with a slash, and the whole bar outlined. */
+#cc-live-mute[aria-pressed="true"] { position: relative; color: var(--warn); background: color-mix(in srgb, var(--warn) 16%, transparent); box-shadow: inset 0 0 0 2px var(--warn); }
+#cc-live-mute[aria-pressed="true"]::after { content: ""; position: absolute; left: 50%; top: 50%; width: 22px; height: 2px; margin: -1px 0 0 -11px; background: currentColor; transform: rotate(-45deg); border-radius: 1px; }
+.cc-dock[data-live="muted"] .cc-voicebar { box-shadow: inset 0 0 0 2px var(--warn); }
 
 /* The states, on the voice bar (data-live on #cc-dock). */
 .cc-dock[data-live="talking"] .cc-vb-text span,

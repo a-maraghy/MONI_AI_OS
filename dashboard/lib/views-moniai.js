@@ -235,7 +235,7 @@ function page(o) {
         <button type="submit" class="cc-c-send" id="cc-send" title="Send" aria-label="Send">${ic("up")}</button>
       </form>
       <div class="cc-voicebar" id="cc-voicebar">
-        <button type="button" class="cc-c-mic cc-live-end cc-live-only" id="cc-live-end" title="End the conversation (Esc)" aria-label="End conversation" hidden>${ic("close")}</button>
+        <button type="button" class="cc-c-mic cc-live-end cc-live-only" id="cc-live-end" title="End the conversation" aria-label="End conversation" hidden>${ic("close")}</button>
         <div class="cc-vb-text"><b>TALK TO MINT AI</b><span id="cc-vb-text">Listening…</span></div>
         <div class="cc-vb-wave" id="cc-vb-wave" aria-hidden="true"></div>
         <span class="cc-vb-tags"><span class="cc-tag cc-tag-mode" id="cc-vb-mode">Live</span><span class="cc-tag">OpenAI</span><span class="cc-tag" id="cc-voice-tag">${esc(vOk ? String(voice.voice || "voice") : "off")}</span></span>
@@ -244,7 +244,7 @@ function page(o) {
         <button type="button" class="cc-ibtn" id="cc-vb-close" title="Back to typing" aria-label="Back to typing">${ic("close")}</button>
       </div>
       <div class="cc-hint" id="cc-hint"><button type="button" class="cc-vm" id="cc-vm" aria-haspopup="menu" aria-expanded="false" title="Voice and core settings">${ic("voice")}<span id="cc-mic-mode" data-mode="${vOk ? "live" : "off"}">${vOk ? `Live · ${esc(voice.voice || "voice")}` : "Voice"}</span>${ic("chevd")}</button>${
-        vOk ? `<span class="kb" id="cc-kb-space">click the mic to talk · <kbd>Esc</kbd> ends</span><span class="kb cc-live-only" id="cc-kb-live" hidden></span>` : ""
+        vOk ? `<span class="kb" id="cc-kb-space">click the mic to talk</span><span class="kb cc-live-only" id="cc-kb-live" hidden></span>` : ""
       }<span class="kb"><kbd>@</kbd> a session</span><span class="kb"><kbd>Ctrl K</kbd> everything</span><span class="kb cc-guard">destructive steps wait for your approval</span>${voiceOff}</div>
     </div>
   </main>

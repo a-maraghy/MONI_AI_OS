@@ -85,7 +85,11 @@
 .md-dock[data-s="speaking"] .md-state i { background: var(--md-mint); animation: md-blink .6s infinite; }
 .md-end { display: none; border: 0; color: #fff; background: #D64545; }
 .md-dock.live .md-end { display: grid; }
-.md-mic.muted { background: var(--md-line-2); color: var(--md-muted); box-shadow: none; }
+.md-mic.muted { background: var(--md-amber-soft); color: var(--md-amber-ink); box-shadow: inset 0 0 0 2px var(--md-amber); }
+/* Muted, clearly: the mic amber with a slash, the LIVE tag says MUTED. */
+.md-mic.muted::after { content: ""; position: absolute; width: 22px; height: 2px; background: currentColor; transform: rotate(-45deg); border-radius: 1px; }
+.md-mic { position: relative; }
+.md-dock.live.muted .md-live-tag { color: var(--md-amber-ink); background: var(--md-amber-soft); }
 
 /* The shell (M-5 part 2): the Command Center hosts the other pages in a same-origin frame, so its
    live call goes on; the core flies down into the dock and back. Nothing here applies until the

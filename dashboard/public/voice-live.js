@@ -5,7 +5,9 @@
  *
  *   VoiceLive.supported()            the browser can do it (getUserMedia + AudioWorklet + WebSocket)
  *   VoiceLive.start({ csrf, worklet, url?, duplex?, onState, onCaption, onLevel, onEvent }) -> Promise
- *   VoiceLive.stop()                 hang up
+ *   VoiceLive.stop(why?)             hang up; why (logged by the server): button,
+ *                                    esc, mic, navigate, unload, track-ended,
+ *                                    devicechange or error:<message>
  *   VoiceLive.mute(on) / .muted()    a hard mute: the microphone sends nothing
  *   VoiceLive.interrupt()            stop the voice now (a tap, Space or Esc)
  *   VoiceLive.duplex(mode?)          "speakers" (half-duplex: the microphone is
@@ -19,7 +21,17 @@
  *                      "ended" | "error"  ("waiting": working on a request, result pending)
  *   onCaption({who, text, final})   who: "you" | "desk" | "mint"
  *   onLevel({mic, out})             0..1-ish loudness, for the core
- *   onEvent(msg)                    every server message (asked, replied, stop, ended, error)
+ *   onEvent(msg)                    every server message (asked, replied, stop, ended, error,
+ *                                   reconnecting / reconnected: the upstream leg dropped and
+ *                                   came back; restarting: the dashboard is restarting -- the
+ *                                   call ends, and the page may start it again with
+ *                                   {resume: "restart"}; mic-lost / mic-back)
+ *
+ * start({..., resume: "restart", lang: "ar"|"en"}) tells the server the call is
+ * coming back after a restart, so the voice says it is back. The microphone's
+ * track ending (unplugged, taken by another app) or a device change is caught:
+ * the microphone is opened again once, and if that fails the call ends with
+ * that reason. Leaving the page, the end reason also goes by navigator.sendBeacon.
  *
  * The microphone is opened with echo cancellation, noise suppression and
  * automatic gain; an AudioWorklet (voice-live-worklet.js, same origin) turns it
@@ -92,10 +104,11 @@
     diag.duplex = S.duplex;
     paint();
     return navigator.mediaDevices
-      .getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 } })
+      .getUserMedia(MIC_OPTS)
       .then(function (stream) {
         if (me !== S) { stream.getTracks().forEach(function (t) { t.stop(); }); throw new Error("stopped"); }
         me.stream = stream;
+        watchMic(me);
         me.ctx = new AC({ latencyHint: "interactive" });
         return me.ctx.audioWorklet.addModule(o.worklet || "/static/voice-live-worklet.js");
       })
@@ -121,6 +134,44 @@
         if (me === S) fail(e && e.message === "stopped" ? "" : (e && e.name === "NotAllowedError" ? "The microphone was refused." : String((e && e.message) || e)));
         throw e;
       });
+  }
+
+  /* ---- the microphone going away: its track ended (unplugged, taken), or the devices changed ---- */
+
+  var MIC_OPTS = { audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 } };
+  function micLive(me) {
+    var t = me.stream && me.stream.getAudioTracks ? me.stream.getAudioTracks()[0] : null;
+    return !!(t && t.readyState === "live");
+  }
+  function watchMic(me) {
+    (me.stream.getAudioTracks ? me.stream.getAudioTracks() : []).forEach(function (t) {
+      t.onended = function () { if (me === S) micLost(me, "track-ended"); };
+    });
+    if (!me.onDev && navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+      me.onDev = function () { if (me === S && !micLive(me)) micLost(me, "devicechange"); };
+      navigator.mediaDevices.addEventListener("devicechange", me.onDev);
+    }
+  }
+  /** The microphone is opened again, once per loss; if that fails the call ends with the reason. */
+  function micLost(me, why) {
+    if (me.reopening) return;
+    me.reopening = true;
+    diag.errors.push("mic: " + why);
+    emit(me.o.onEvent, { type: "mic-lost", why: why });
+    navigator.mediaDevices.getUserMedia(MIC_OPTS).then(function (stream) {
+      me.reopening = false;
+      if (me !== S || !me.ctx || !me.cap) { stream.getTracks().forEach(function (t) { t.stop(); }); return; }
+      try { if (me.src) me.src.disconnect(); } catch (e) { /* gone */ }
+      if (me.stream) me.stream.getTracks().forEach(function (t) { t.onended = null; t.stop(); });
+      me.stream = stream;
+      me.src = me.ctx.createMediaStreamSource(stream);
+      me.src.connect(me.cap);
+      watchMic(me);
+      emit(me.o.onEvent, { type: "mic-back", why: why });
+    }).catch(function () {
+      me.reopening = false;
+      if (me === S) stop(why);
+    });
   }
 
   /* ---- echo-cancelled playback: player -> MediaStream -> local WebRTC loopback -> <audio> ---- */
@@ -208,26 +259,30 @@
 
   function openSocket(me) {
     var o = me.o;
-    var url = o.url || (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/mint-ai/api/live?csrf=" + encodeURIComponent(o.csrf || "") + "&duplex=" + me.duplex + "&route=" + me.route + (o.tab ? "&tab=" + encodeURIComponent(o.tab) : "");
+    var url = o.url || (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/mint-ai/api/live?csrf=" + encodeURIComponent(o.csrf || "") + "&duplex=" + me.duplex + "&route=" + me.route + (o.tab ? "&tab=" + encodeURIComponent(o.tab) : "") +
+      (o.resume === "restart" ? "&resume=restart&lang=" + (o.lang === "ar" ? "ar" : "en") : "");
     return new Promise(function (resolve, reject) {
       var ws = (me.ws = new WebSocket(url));
       ws.binaryType = "arraybuffer";
-      var opened = false;
+      var opened = false, ready = false;
+      var settle = function (err) { if (ready) return; ready = true; if (err) reject(err); else resolve(); };
       ws.onopen = function () { opened = true; };
       ws.onmessage = function (e) {
         if (me !== S) return;
         if (typeof e.data !== "string") return onAudio(me, e.data);
         var m;
         try { m = JSON.parse(e.data); } catch (_) { return; }
+        if (m.type === "ready") me.callId = m.call || null;
         onMessage(me, m);
-        if (m.type === "ready") resolve();
-        if (m.type === "error" && !opened) reject(new Error(m.error || "refused"));
+        if (m.type === "ready") settle();
+        // Refused, or the server could not open its upstream, before the call was ready: start() fails, with the reason.
+        if ((m.type === "error" || m.type === "ended") && !ready) settle(new Error(m.error || m.text || "The live conversation could not start (" + (m.code || m.why || "refused") + ")."));
       };
-      ws.onerror = function () { if (!opened) reject(new Error("The live conversation could not connect.")); };
+      ws.onerror = function () { if (!opened) settle(new Error("The live conversation could not connect.")); };
       ws.onclose = function (e) {
         if (me !== S) return;
-        if (!opened) reject(new Error("The live conversation was refused (" + (e.code || "closed") + ")."));
-        end(me.endWhy || "closed");
+        if (!ready) settle(new Error(opened ? "The live conversation closed before it was ready (" + (e.code || "closed") + ")." : "The live conversation was refused (" + (e.code || "closed") + ")."));
+        end(me.endWhy || "closed", me.endText);
       };
     });
   }
@@ -312,7 +367,11 @@
         me.endWhy = "voice-command";
         return;
       case "ended":
-        me.endWhy = m.why || "ended";
+        if (me.endWhy !== "restarting") me.endWhy = m.why || "ended";
+        me.endText = m.text || me.endText || "";
+        return;
+      case "restarting":
+        me.endWhy = "restarting";
         return;
       case "error":
         diag.errors.push(m.code || "error");
@@ -334,13 +393,13 @@
     emit(o.onEvent, { type: "error", error: why });
   }
 
-  function end(why) {
+  function end(why, text) {
     if (!S) return;
     var o = S.o;
     S.ended = true;
     paint();
     teardown();
-    emit(o.onEvent, { type: "ended", why: why });
+    emit(o.onEvent, { type: "ended", why: why, text: text || undefined, local: true });
   }
 
   function teardown() {
@@ -358,13 +417,20 @@
     try { if (me.src) me.src.disconnect(); } catch (e) { /* gone */ }
     try { if (me.cap) me.cap.disconnect(); } catch (e) { /* gone */ }
     try { if (me.player) me.player.disconnect(); } catch (e) { /* gone */ }
-    if (me.stream) me.stream.getTracks().forEach(function (t) { t.stop(); });
+    if (me.stream) me.stream.getTracks().forEach(function (t) { t.onended = null; t.stop(); });
+    if (me.onDev && navigator.mediaDevices && navigator.mediaDevices.removeEventListener) navigator.mediaDevices.removeEventListener("devicechange", me.onDev);
     if (me.ctx && me.ctx.close) me.ctx.close().catch(function () {});
   }
 
-  function stop() {
+  var END_WHY = /^(?:button|esc|mic|navigate|unload|track-ended|devicechange|voice-changed|error:.{0,80})$/;
+  function stop(why) {
     if (!S) return;
-    try { if (S.ws && S.ws.readyState === 1) S.ws.send(JSON.stringify({ type: "end" })); } catch (e) { /* closed */ }
+    var w = END_WHY.test(String(why || "")) ? String(why) : "button";
+    try { if (S.ws && S.ws.readyState === 1) S.ws.send(JSON.stringify({ type: "end", why: w })); } catch (e) { /* closed */ }
+    // Leaving the page: the socket may not get its message out, the beacon does (the server logs it).
+    if ((w === "unload" || w === "navigate") && S.callId && navigator.sendBeacon && S.o.csrf) {
+      try { navigator.sendBeacon("/mint-ai/api/live/end", new Blob([JSON.stringify({ _csrf: S.o.csrf, call: S.callId, why: w })], { type: "application/json" })); } catch (e) { /* best effort */ }
+    }
     end("hung-up");
   }
 
@@ -424,6 +490,7 @@
     route: function () { return S ? S.route : ""; },
     muted: function () { return !!(S && S.muted); },
     active: function () { return !!S; },
+    callId: function () { return S ? S.callId || null : null; },
     state: function () { return S ? S.shown : "idle"; },
   };
 })();

@@ -2495,7 +2495,11 @@
          ?call=1 -- the dock on another page comes here with it), the voice
          bar's End and close buttons, and mutes from its mute button;
        - while a call is on: Space mutes (or, in speakers mode while it speaks,
-         interrupts), Esc interrupts or ends; nothing starts on a key;
+         interrupts), Esc only interrupts; nothing starts or ends on a key --
+         only the red X ends a call (and never within 1.5 s of its start: a
+         double click on the mic landed on the X, which sits in the same box);
+       - a call that ends on its own says why (a toast with Reconnect); one the
+         dashboard's restart ended comes back by itself, with backoff;
        - feeds the core and the caption: onState -> the state the core and the
          caption show (listening / thinking / speaking / delegating, with an
          "interrupted" flash on the voice bar), onCaption -> the caption's
@@ -2508,7 +2512,25 @@
     connecting: "Connecting…", listening: "Listening — just talk", talking: "You're talking…", thinking: "Thinking…",
     speaking: "Speaking — talk over it to interrupt", speakingHalf: "Speaking — tap here to interrupt", interrupted: "Interrupted — go ahead", waiting: "Working on it — I'll tell you what I find",
     muted: "Muted — the microphone is off", ended: "Conversation ended", error: "The live conversation stopped", idle: "",
+    reconnecting: "Reconnecting…",
   };
+  var LIVE_END_GUARD_MS = 1500; // an end this soon after the start is a double click, not a hang-up
+  // Why a call ended, for the toast (the server's `why`; "hung-up" is the administrator's own and says nothing).
+  var LIVE_ENDED = {
+    upstream: "The call dropped: the connection to OpenAI was lost.",
+    "max-length": "The call reached its 20-minute limit.",
+    "voice-command": "Stopped listening. The live conversation has ended.",
+    "mint-ended": "Mint ended the call.",
+    "signed-out": "The call ended: this device was signed out.",
+    "settings-changed": "The call ended: the voice settings changed.",
+    disabled: "The call ended: voice was switched off.",
+    refused: "The call was stopped by the server.",
+    restarting: "The dashboard restarted and the call could not come back.",
+    closed: "The call dropped: the connection to the dashboard was lost.",
+    "track-ended": "The call ended: the microphone went away.",
+    devicechange: "The call ended: the microphone was disconnected.",
+  };
+  var LIVE_RETRY_MS = [1000, 2000, 4000, 8000, 15000]; // after a restart: the page comes back by itself
   var LIVE_TIP = "Start a live conversation";
   function liveSelected() { return !!(LiveUI && LiveUI.selected); }
   function paintLiveMode() {
@@ -2546,14 +2568,21 @@
     }
     paintLiveKeys();
     if (on) {
-      if (!(LiveUI.who === "you" && st === "thinking")) $("cc-vb-text").textContent = (st === "speaking" && half ? LIVE_TEXT.speakingHalf : LIVE_TEXT[st]) || st;
+      var line = st === "connecting" && (LiveUI.wasReady || LiveUI.resuming) ? LIVE_TEXT.reconnecting : (st === "speaking" && half ? LIVE_TEXT.speakingHalf : LIVE_TEXT[st]) || st;
+      if (!(LiveUI.who === "you" && st === "thinking")) $("cc-vb-text").textContent = line;
     }
     paintState();
   }
-  function liveStart() {
+  function liveStart(o) {
+    o = o || {};
     if (LiveUI.active || !LIVE_OK) return;
+    clearTimeout(LiveUI.retryT);
+    liveEndedClose();
     LiveUI.active = true;
     LiveUI.who = "";
+    LiveUI.startedAt = Date.now();
+    LiveUI.wasReady = false;
+    LiveUI.resuming = o.resume === "restart";
     Voice.stop(); // a reply being read aloud gives way to the call
     paintLive("connecting");
     paintLiveMode();
@@ -2561,17 +2590,31 @@
       csrf: CSRF,
       tab: TAB_ID,
       duplex: LiveUI.duplex,
+      resume: o.resume,
+      lang: LiveUI.lang,
       worklet: root.getAttribute("data-live-worklet") || undefined,
       onState: function (st) { if (LiveUI.active) paintLive(st); },
       onCaption: function (c) {
         LiveUI.who = c.who;
+        if (c.who === "you" && c.text) LiveUI.lang = /[\u0600-\u06FF]/.test(c.text) ? "ar" : "en";
         LiveUI.caption = c.text;
         if (c.who === "you") $("cc-vb-text").textContent = c.text;
         paintState();
       },
       onLevel: function (l) { LiveUI.mic = l.mic || 0; LiveUI.out = l.out || 0; },
       onEvent: function (m) {
-        if (m.type === "ready") { LiveUI.model = m.model || ""; LiveUI.voice = m.voice || ""; LiveUI.route = window.VoiceLive.route ? window.VoiceLive.route() : ""; paintLive(LiveUI.state); }
+        if (m.type === "ready") {
+          LiveUI.model = m.model || ""; LiveUI.voice = m.voice || ""; LiveUI.route = window.VoiceLive.route ? window.VoiceLive.route() : "";
+          LiveUI.wasReady = true; LiveUI.retry = 0;
+          if (LiveUI.resuming) toast("Reconnected.");
+          LiveUI.resuming = false;
+          paintLive(LiveUI.state);
+        }
+        // The upstream leg dropped and is being replaced; the voice says when it is back.
+        if (m.type === "reconnecting") paintLive("connecting");
+        if (m.type === "reconnected") toast("The line dropped for a second — reconnected.");
+        if (m.type === "mic-lost") toast("The microphone went away — trying it again…", true);
+        if (m.type === "mic-back") toast("The microphone is back.");
         if (m.type === "duplex" && (m.mode === "full" || m.mode === "speakers")) { LiveUI.duplex = m.mode; paintLive(LiveUI.state); }
         if (m.type === "suggest" && m.mode === "speakers" && LiveUI.duplex === "full") liveSuggest();
         if (m.type === "ui") {
@@ -2587,23 +2630,91 @@
         }
         if (m.type === "ui-confirmed" || m.type === "ui-confirm-cancelled") uiConfirmAnswer(m.id, m.type === "ui-confirmed");
         if (m.type === "ui-confirm-expired") uiConfirmExpired(m.id, null);
-        if (m.type === "stop") toast("Stopped listening. The live conversation has ended.");
-        else if (m.type === "error" && m.code === "busy") toast(m.error, true);
         if (m.type === "ended" || m.type === "error") liveEnded(m);
       },
     }).catch(function (e) {
-      toast("Live conversation: " + ((e && e.message) || "could not start"), true);
-      liveEnded({});
+      // Could not start (refused, OpenAI unreachable, no microphone): said, never silent.
+      liveEnded({ type: "error", why: "start", error: (e && e.message) || "could not start" });
     });
   }
-  function liveEnded() {
+  /**
+   * The call is over. Why is shown (a toast with Reconnect) unless the
+   * administrator ended it themselves; one the dashboard's restart ended
+   * comes back by itself (LIVE_RETRY_MS), the voice saying it is back.
+   */
+  function liveEnded(m) {
     if (!LiveUI.active) return;
+    m = m || {};
+    var resuming = LiveUI.resuming;
     LiveUI.active = false;
     LiveUI.caption = "";
+    LiveUI.resuming = false;
     paintLive("idle");
     paintLiveMode();
+    var why = m.why || (m.type === "error" ? "error" : "ended");
+    if (why === "hung-up") return;
+    if (why === "restarting" || resuming) return liveRetry(); // (a failed try while coming back: the next one)
+    if (m.type === "error" && m.code === "busy") return toast(m.error, true);
+    var text = LIVE_ENDED[why] || (m.type === "error" ? "The live conversation could not start" + (m.error ? ": " + m.error : ".") : "The live conversation ended.");
+    if (why === "upstream" && m.text) text = "The call dropped: " + m.text.replace(/^The /, "the ");
+    else if (m.text && !LIVE_ENDED[why]) text = m.text;
+    liveEndedToast(text, why !== "voice-command" && why !== "mint-ended");
   }
-  function liveStop() { if (window.VoiceLive) window.VoiceLive.stop(); liveEnded(); liveSuggestClose(); }
+  /** After a restart: try again, with backoff; after the last try, say so (with Reconnect). */
+  function liveRetry() {
+    var n = LiveUI.retry || 0;
+    if (n >= LIVE_RETRY_MS.length) { LiveUI.retry = 0; return liveEndedToast(LIVE_ENDED.restarting, true); }
+    LiveUI.retry = n + 1;
+    toast("The dashboard is restarting — reconnecting the call…");
+    clearTimeout(LiveUI.retryT);
+    LiveUI.retryT = setTimeout(function () { if (!LiveUI.active) liveStart({ resume: "restart" }); }, LIVE_RETRY_MS[n] + Math.round(Math.random() * 400));
+  }
+  /** Why the call ended, with Reconnect: on the Command Center, or on the dock while a page is up. */
+  function liveEndedToast(text, bad) {
+    liveEndedClose();
+    var again = function () { liveEndedClose(); liveStart(); };
+    if (shellUp() && window.__mintDock && window.__mintDock.toast) return window.__mintDock.toast(text, { bad: !!bad, action: { label: "Reconnect", fn: again } });
+    var old = document.querySelector(".cc-toast");
+    if (old) old.remove();
+    var el = document.createElement("div");
+    el.className = "cc-toast cc-live-ended" + (bad ? " bad" : "");
+    el.setAttribute("role", "status");
+    var t = document.createElement("span");
+    t.textContent = text;
+    el.appendChild(t);
+    if (LIVE_OK) {
+      var b = document.createElement("button");
+      b.type = "button";
+      b.className = "cc-btn sm";
+      b.setAttribute("data-live-reconnect", "");
+      b.textContent = "Reconnect";
+      b.addEventListener("click", again);
+      el.appendChild(b);
+    }
+    document.body.appendChild(el);
+    LiveUI.endedT = setTimeout(liveEndedClose, 12000);
+  }
+  function liveEndedClose() {
+    clearTimeout(LiveUI.endedT);
+    var el = document.querySelector(".cc-live-ended");
+    if (el) el.remove();
+  }
+  /** Hang up: only the red X (why "button"), leaving the page, or a lost microphone. Not within 1.5 s of the start. */
+  function liveStop(why) {
+    why = why || "button";
+    if (why === "button" && LiveUI.active && Date.now() - (LiveUI.startedAt || 0) < LIVE_END_GUARD_MS) return false;
+    clearTimeout(LiveUI.retryT);
+    LiveUI.retry = 0;
+    if (window.VoiceLive) window.VoiceLive.stop(why);
+    liveEnded({ why: "hung-up" });
+    liveSuggestClose();
+    return true;
+  }
+  /** The mic while a call is on: mute and unmute it, everywhere (it never ends the call). */
+  function liveMuteToggle() {
+    if (!LiveUI.active || !window.VoiceLive) return;
+    window.VoiceLive.mute(!window.VoiceLive.muted());
+  }
   /** Speakers or headphones, for this browser (the Settings value is only the default). */
   function liveDuplex(mode) {
     LiveUI.duplex = mode === "full" ? "full" : "speakers";
@@ -2643,22 +2754,24 @@
   // The mic starts and ends a call; the voice bar belongs to the call while one is on.
   window.addEventListener("click", function (e) {
     if (!e.target.closest) return;
-    if (LIVE_OK && e.target.closest("#cc-c-mic")) { e.stopPropagation(); e.preventDefault(); return LiveUI.active ? liveStop() : liveStart(); }
-    if (LiveUI.active && (e.target.closest("#cc-vb-close") || e.target.closest("#cc-live-end"))) { e.stopPropagation(); return liveStop(); }
+    // The mic starts a call; during one it mutes (only the red X ends it).
+    if (LIVE_OK && e.target.closest("#cc-c-mic")) { e.stopPropagation(); e.preventDefault(); return LiveUI.active ? liveMuteToggle() : liveStart(); }
+    if (LiveUI.active && e.target.closest("#cc-live-end")) { e.stopPropagation(); return liveStop("button"); }
+    if (LiveUI.active && e.target.closest("#cc-vb-close")) { e.stopPropagation(); return; }
     var sg = e.target.closest("[data-live-suggest]");
     if (sg) { e.stopPropagation(); return sg.getAttribute("data-live-suggest") === "speakers" ? liveDuplex("speakers") : liveSuggestClose(); }
     if (LiveUI.active && e.target.closest("#cc-live-duplex")) { e.stopPropagation(); return liveDuplex(LiveUI.duplex === "full" ? "speakers" : "full"); }
     if (LiveUI.active && e.target.closest("#cc-live-mute")) {
       e.stopPropagation();
       if (LiveUI.duplex !== "full" && liveSpeaking()) return window.VoiceLive.interrupt();
-      return window.VoiceLive.mute(!window.VoiceLive.muted());
+      return liveMuteToggle();
     }
     // A tap on the bar's text while the voice speaks interrupts it.
     if (LiveUI.active && e.target.closest(".cc-dock.live-on .cc-vb-text") && liveSpeaking()) { e.stopPropagation(); return window.VoiceLive.interrupt(); }
   }, true);
   // Keys while a call is on: Space mutes and unmutes it (in speakers mode, while the voice
-  // speaks, it interrupts); Esc interrupts, then ends it (when nothing else is open for Esc to
-  // close). No key starts a call: the mic does.
+  // speaks, it interrupts); Esc interrupts the voice and nothing else (when nothing else is open
+  // for Esc to close). No key starts or ends a call: the mic starts it, the red X ends it.
   window.addEventListener("keydown", function (e) {
     if (!LiveUI.active || e.repeat || liveTyping(document.activeElement)) return;
     if (e.code === "Space") {
@@ -2668,13 +2781,11 @@
       else window.VoiceLive.mute(!window.VoiceLive.muted());
     } else if (e.key === "Escape" && LiveUI.active && $("cc-pop").hidden && $("cc-reply").hidden && !document.querySelector(".cc-sheet.open") && !document.querySelector(".cc-need:not([hidden])")) {
       e.stopPropagation();
-      // Esc first stops the voice if it is speaking; otherwise it ends the call.
       if (liveSpeaking()) window.VoiceLive.interrupt();
-      else liveStop();
     }
   }, true);
   window.addEventListener("keyup", function (e) { if (LiveUI.active && e.code === "Space" && !liveTyping(document.activeElement)) e.stopPropagation(); }, true);
-  /** The hint under the pill: "click the mic to talk · Esc ends", then what Space and Esc do in a call. */
+  /** The hint under the pill: "click the mic to talk", then what Space and Esc do in a call. */
   function paintLiveKeys() {
     var sp = $("cc-kb-space"), lk = $("cc-kb-live");
     if (!sp || !lk) return;
@@ -2682,11 +2793,12 @@
     lk.hidden = !LiveUI.active;
     var speaking = LiveUI.active && LiveUI.state === "speaking";
     lk.innerHTML = speaking && LiveUI.duplex !== "full" ? "<kbd>Space</kbd> or <kbd>Esc</kbd> interrupt"
-      : speaking ? "<kbd>Space</kbd> mute · <kbd>Esc</kbd> interrupt"
-      : "<kbd>Space</kbd> mute · <kbd>Esc</kbd> end";
+      : "<kbd>Space</kbd> mute · <kbd>Esc</kbd> interrupt";
   }
   function liveTyping(el) { return el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable || el.tagName === "BUTTON"); }
-  window.addEventListener("beforeunload", function () { if (LiveUI.active) window.VoiceLive.stop(); });
+  // Leaving the page ends the call, and says so (the socket's last message, and a beacon).
+  window.addEventListener("pagehide", function () { if (LiveUI.active) window.VoiceLive.stop("unload"); });
+  window.addEventListener("beforeunload", function () { if (LiveUI.active) window.VoiceLive.stop("unload"); });
   paintLiveMode();
   paintLiveKeys();
   /* The dock on another page starts a call by coming here with ?call=1 (and ?at=<that page>,
@@ -2702,7 +2814,8 @@
     setTimeout(liveStart, 0);
   })();
   /** For the dock (mint-dock.js in the shell): the mic there is this one. */
-  window.__mintLive = { ok: function () { return LIVE_OK; }, active: function () { return LiveUI.active; }, toggle: function () { if (!LIVE_OK) return false; if (LiveUI.active) liveStop(); else liveStart(); return true; } };
+  // toggle(): the dock's mic -- it starts a call, and during one it mutes (it never ends it).
+  window.__mintLive = { ok: function () { return LIVE_OK; }, active: function () { return LiveUI.active; }, toggle: function () { if (!LIVE_OK) return false; if (LiveUI.active) liveMuteToggle(); else liveStart(); return true; }, end: function (why) { return liveStop(why || "button"); } };
   /* ---------------------------------------------------------- screen actions
      What MINT AI's voice may change on this screen (UI control Phase 1): the
      shared allowlist public/ui-actions.js, checked again here, run through
@@ -2749,16 +2862,22 @@
         case "page.open": {
           // Another page of Mint OS (M-5): only one this viewer's role may see (the server listed them in data-pages).
           var np = UA.navPage(a.page);
-          if (a.page === "command-center") {
-            if (!shellUp()) { uiToast("You are on the Command Center", null, null); return { ok: true }; }
-            window.MintShell.expand();
+          // The Command Center itself or one of its sheets (the page map's "cc" and "cc.<sheet>", /mint-ai#<sheet>;
+          // validate() already turned the old "command-center" into "cc"): shown right here, never a navigation.
+          var cc = ccTarget(np && np.url);
+          if (cc) {
+            var wasUp = shellUp();
+            if (wasUp) window.MintShell.expand();
+            if (cc.sheet && SHEET_KEYS.indexOf(cc.sheet) >= 0) { var wasS = S.pane; openSheet(cc.sheet); undo = function () { if (wasS) openSheet(wasS); else closeSheet(); }; break; }
+            if (!wasUp) { uiToast("You are on the Command Center", null, null); return { ok: true }; }
             break;
           }
           if ((" " + (root.getAttribute("data-pages") || "") + " ").indexOf(" " + a.page + " ") < 0) return { ok: false, why: "their role cannot open " + np.label + " (it needs " + np.perm + ")" };
           // The shell (M-5 part 2): the page opens in its frame at once and a live call goes on;
-          // Undo is the browser's back. Without it, the old way: the whole tab moves after the sentence.
+          // Undo is the browser's back. Without it, the old way: the whole tab moves after the sentence
+          // -- but never while a call is on (pageOpenSoon).
           if (window.MintShell && window.MintShell.open(np.url)) { undo = function () { window.MintShell.back(); }; break; }
-          pageOpenSoon(a.page, np);
+          if (!pageOpenSoon(a.page, np)) return { ok: false, why: "that page cannot open during a live call from here; a link to it is on screen" };
           break;
         }
         default: return { ok: false, why: "not on this page" };
@@ -2786,12 +2905,23 @@
     if (how === "voice") toast("Undone.");
     return true;
   }
+  /** A page-map url that is the Command Center (or one of its sheets): { sheet } or null. */
+  function ccTarget(url) {
+    var u = String(url || "");
+    if (!/^\/mint-ai\/?(?:[?#]|$)/.test(u)) return null;
+    var m = /#([a-z0-9_-]+)$/.exec(u);
+    return { sheet: m ? m[1] : null };
+  }
   /* page.open: the voice first says its one sentence, then the page opens. The
      destination's dock shows "Mint opened ..." with Undo (back here). Only when
-     the shell (mint-shell.js) is missing: with it the page opens in its frame. */
+     the shell (mint-shell.js) is missing: with it the page opens in its frame.
+     It never ends a live call and never moves the tab while one is on, or while
+     the shell is here (it refused that url): a link is shown instead. Returns
+     false when it did not navigate. */
   var pageOpening = null;
   function pageOpenSoon(key, np) {
-    if (pageOpening) return;
+    if (liveActive() || window.MintShell) { uiToast(np.label + " — open it when you are ready", null, np.url); return false; }
+    if (pageOpening) return true;
     pageOpening = { key: key, at: Date.now() };
     try { window.sessionStorage.setItem("mint-opened", JSON.stringify({ key: key, label: np.label, from: location.pathname, at: Date.now() })); } catch (e) { /* no undo there */ }
     var talking = function () { return !!((liveActive() && window.VoiceLive && window.VoiceLive.speaking()) || (typeof Voice !== "undefined" && Voice.speaking)); };
@@ -2801,9 +2931,10 @@
       if (talking()) started = true;
       var done = started ? !talking() : dt > 2500;
       if (!done && dt < 9000) return setTimeout(wait, 150);
-      if (liveActive() && window.VoiceLive) window.VoiceLive.stop();
+      if (liveActive()) { pageOpening = null; return uiToast(np.label + " — open it when you are ready", null, np.url); } // a call began meanwhile
       window.location.assign(np.url);
     })();
+    return true;
   }
   function uiToast(text, undo, link) {
     if (shellUp()) {
