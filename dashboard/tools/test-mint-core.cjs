@@ -15,8 +15,8 @@
  *  - the saved core is in the served HTML as data-core, before any script runs;
  *  - the quick switch (POST /mint-ai/api/prefs/core) needs moniai.use and CSRF,
  *    refuses anything but A/B/C, saves, and leaves an audit line;
- *  - Account > Appearance shows the three cores to those who can open the
- *    Command Center, and its no-JavaScript form saves the same way;
+ *  - MINT AI ▸ Settings ▸ Appearance shows the three cores to those who can open the
+ *    Command Center (Account only points there), and its no-JavaScript form saves the same way;
  *  - the page swaps the running core in place (no reload).
  */
 const fs = require("fs");
@@ -64,7 +64,7 @@ check("server: the Appearance form needs a session, moniai.use and CSRF", /app\.
 check("server: both validate with isCore and save through one function", (server.match(/mintLogic\.isCore\(core\)/g) || []).length === 2 && (server.match(/  setMintCore\(req, core\);/g) || []).length === 2);
 check("server: the change is audited", /db\.logLogin\(req\.ip, req\.me\.username, "account", `MINT AI core \$\{was\} -> \$\{core\}/.test(server));
 check("server: the page is given the saved core", /moniAiViews\.page\(\{[\s\S]{0,200}core: req\.me\.mint_core/.test(server));
-check("server: /account shows Appearance only with moniai.use", /appearance: req\.perm\.can\("moniai\.use"\) \? moniAiViews\.appearance\(/.test(server));
+check("server: /account points to Settings ▸ Appearance only with moniai.use", /appearance: req\.perm\.can\("moniai\.use"\),/.test(server));
 
 const main = read("public/moni-ai.js"), map = read("public/cc-map.js"), core = read("public/mint-core.js"), settings = read("public/mint-settings.js");
 check("page: the saved core comes from data-core, localStorage only as the fallback", /var c = root\.getAttribute\("data-core"\);\s*if \(!c\) \{ try \{ c = window\.localStorage\.getItem\(CORE_KEY\); \} catch/.test(main));
@@ -202,11 +202,14 @@ const csrfOf = (html) => (/data-csrf="([^"]+)"/.exec(html) || /name="_csrf" valu
     check("stored on the user row", db.getUserByName("coreadmin").mint_core === "A" && db.getUserByName("coreadmin2").mint_core === "");
 
     r = await req("GET", "/account", { cookie: A1.cookie });
-    check("Account shows Appearance with the saved core checked", r.status === 200 && /id="appearance"/.test(r.body) && /value="A" checked/.test(r.body), r.status);
+    check("Account points to MINT AI ▸ Settings ▸ Appearance (the cores moved there)", r.status === 200 && /id="appearance"/.test(r.body) && /href="\/mint-ai\/settings\/appearance"/.test(r.body) && !/name="core"/.test(r.body), r.status);
+    r = await req("GET", "/mint-ai/settings/appearance", { cookie: A1.cookie });
+    check("Settings ▸ Appearance shows the saved core checked", r.status === 200 && /id="a-core"/.test(r.body) && /value="A" checked/.test(r.body), r.status);
     check("…and loads the previews' scripts", /mint-core\.js\?v=/.test(r.body) && /mint-settings\.js\?v=/.test(r.body) && /mint-settings\.css\?v=/.test(r.body));
+    check("…its no-JavaScript form still posts to /account/appearance", /<form method="post" action="\/account\/appearance"/.test(r.body));
     const accTok = csrfOf(r.body);
     r = await req("POST", "/account/appearance", { cookie: A1.cookie, body: new URLSearchParams({ _csrf: accTok, core: "B" }).toString() });
-    check("the no-JavaScript form saves too, and returns to Appearance", r.status === 302 && /^\/account\?msg=.*#appearance$/.test(r.headers.location), r.status + " " + r.headers.location);
+    check("the no-JavaScript form saves too, and returns to Appearance", r.status === 302 && /^\/mint-ai\/settings\/appearance\?msg=.*#a-core$/.test(r.headers.location), r.status + " " + r.headers.location);
     r = await req("GET", "/mint-ai", { cookie: A1.cookie });
     check("…the page then draws B", coreOn(r.body) === "B", coreOn(r.body));
     r = await req("POST", "/account/appearance", { cookie: A1.cookie, body: new URLSearchParams({ _csrf: accTok, core: "Z" }).toString() });
@@ -216,6 +219,8 @@ const csrfOf = (html) => (/data-csrf="([^"]+)"/.exec(html) || /name="_csrf" valu
 
     r = await req("GET", "/account", { cookie: V.cookie });
     check("a viewer's Account has no Appearance card", r.status === 200 && !/id="appearance"/.test(r.body) && !/mint-settings\.js/.test(r.body), r.status);
+    r = await req("GET", "/mint-ai/settings/appearance", { cookie: V.cookie });
+    check("a viewer cannot open Settings ▸ Appearance", r.status === 403 || (r.status === 302 && !/settings/.test(r.headers.location || "")), r.status + " " + r.headers.location);
     r = await req("GET", "/mint-ai", { cookie: V.cookie });
     check("a viewer does not get the Command Center", !coreOn(r.body), r.status);
     const vtok = csrfOf((await req("GET", "/account", { cookie: V.cookie })).body);
