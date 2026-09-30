@@ -169,7 +169,7 @@ check("the event stream and every event type it follows", /new EventSource\("\/m
 }
 const KEEP = [
   ["the composer: send, interrupt, auto-route / @ a session", /\$\("cc-compose"\)\.addEventListener\("submit"/.test(main) && /\$\("cc-stop"\)\.addEventListener\("click"/.test(main) && /function openMenu\(\)/.test(main) && /e\.key === "@" && !input\.value/.test(main)],
-  ["voice is live conversation only: the mic starts a call (no push to talk, hands-free, Space to talk or front desk)", /LIVE_TIP = "Start a live conversation"/.test(main) && /return LiveUI\.active \? liveStop\(\) : liveStart\(\);/.test(main) && !/voiceModeFrom|pttDown|desk\/turn|desk\/summary|MODE_KEY/.test(main)],
+  ["voice is live conversation only: the mic starts a call, and during one mutes it (no push to talk, hands-free, Space to talk or front desk)", /LIVE_TIP = "Start a live conversation"/.test(main) && /return LiveUI\.active \? liveMuteToggle\(\) : liveStart\(\);/.test(main) && !/voiceModeFrom|pttDown|desk\/turn|desk\/summary|MODE_KEY/.test(main)],
   ["streamed reader audio (NDJSON PCM chunks)", /Accept: "application\/x-ndjson"/.test(main) && /function playStream\(st, my\)/.test(main)],
   ["barge-in (the live call's interrupt)", /window\.VoiceLive\.interrupt\(\)/.test(main)],
   ["replies read aloud (toggle, remembered per browser) and the Full reply's Read aloud", /\$\("cc-speak-toggle"\)/.test(main) && /\$\("cc-reply-read"\)\.addEventListener/.test(main) && /READ_KEY = "mint-read-aloud"/.test(main)],

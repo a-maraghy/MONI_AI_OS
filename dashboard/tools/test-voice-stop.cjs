@@ -155,7 +155,7 @@ check("the file is a browser global and a CommonJS module, and pure", /^var Voic
   !/document|window|localStorage|fetch\(/.test(fs.readFileSync(path.join(ROOT, "public", "voice-stop.js"), "utf8").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "")));
 
 const client = fs.readFileSync(path.join(ROOT, "public", "moni-ai.js"), "utf8");
-check("Command Center: no push to talk or front desk left to check; the live call ends on it on the server and the page follows", !/function transcribeAndSend\(|function deskSend\(|isStopCommand/.test(client) && /if \(m\.type === "stop"\) toast\("Stopped listening\. The live conversation has ended\."\)/.test(client));
+check("Command Center: no push to talk or front desk left to check; the live call ends on it on the server and the page follows", !/function transcribeAndSend\(|function deskSend\(|isStopCommand/.test(client) && /"voice-command": "Stopped listening\. The live conversation has ended\.",/.test(client) && /if \(m\.type === "ended" \|\| m\.type === "error"\) liveEnded\(m\);/.test(client));
 
 const chat = fs.readFileSync(path.join(ROOT, "public", "console.js"), "utf8");
 const liveSend = chat.slice(chat.indexOf("function transcribeAndSend(blob)"), chat.indexOf("function recording(want)"));

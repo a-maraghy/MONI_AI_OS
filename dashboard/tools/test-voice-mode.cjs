@@ -40,7 +40,7 @@ const noKey = page({ configured: false, manage: true, on: true, use: true, live:
 /* ---- the frame ---- */
 const mic = (/<button[^>]*id="cc-c-mic"[^>]*>/.exec(on) || [])[0] || "";
 check("voice on: the mic starts a live conversation", /title="Start a live conversation"/.test(mic) && /aria-label="Start a live conversation"/.test(mic));
-check("  the hint: click the mic to talk · Esc ends", /<span class="kb" id="cc-kb-space">click the mic to talk · <kbd>Esc<\/kbd> ends<\/span>/.test(on));
+check("  the hint: click the mic to talk (Esc no longer ends a call; only the red X does)", /<span class="kb" id="cc-kb-space">click the mic to talk<\/span>/.test(on) && !/<kbd>Esc<\/kbd> ends/.test(on));
 check("  the voice menu button says Live · the voice", /<span id="cc-mic-mode" data-mode="live">Live · marin<\/span>/.test(on));
 check("  the voice bar's tag says Live; no Direct / Front desk tag, no trial", /id="cc-vb-mode">Live</.test(on) && !/cc-voice-mode|Front desk|Direct · MINT AI|trial/i.test(on));
 check("  read-aloud is there: the toggle and the reply's Read aloud", /id="cc-speak-toggle"/.test(on) && /id="cc-reply-read"/.test(on));
@@ -66,7 +66,7 @@ check("  and is not there when voice is off for the viewer", !/id="md-mic"/.test
 /* ---- the client ---- */
 const client = fs.readFileSync(path.join(ROOT, "public", "moni-ai.js"), "utf8");
 check("no voice mode left: no MODE_KEY, voiceModeFrom, push to talk, hands-free, desk", !/MODE_KEY|voiceModeFrom|pttDown|pttUp|handsfree|data-vmode|desk\/turn|desk\/summary|deskTurns|DESK\b/.test(client));
-check("the mic starts and ends a live call", /if \(LIVE_OK && e\.target\.closest\("#cc-c-mic"\)\) \{ e\.stopPropagation\(\); e\.preventDefault\(\); return LiveUI\.active \? liveStop\(\) : liveStart\(\); \}/.test(client));
+check("the mic starts a live call and, during one, mutes it (only the red X ends it)", /if \(LIVE_OK && e\.target\.closest\("#cc-c-mic"\)\) \{ e\.stopPropagation\(\); e\.preventDefault\(\); return LiveUI\.active \? liveMuteToggle\(\) : liveStart\(\); \}/.test(client) && /if \(LiveUI\.active && e\.target\.closest\("#cc-live-end"\)\) \{ e\.stopPropagation\(\); return liveStop\("button"\); \}/.test(client));
 check("no key starts a call: Space and Esc act only while one is on", /if \(!LiveUI\.active \|\| e\.repeat \|\| liveTyping\(document\.activeElement\)\) return;/.test(client));
 check("the voice menu: Live · voice, Speakers / Headphones, Read replies aloud, Voice settings, the core, Voice usage", /"<span>Live · " \+ esc\(VOICE \|\| "voice"\)/.test(client) && /data-dx="speakers"/.test(client) && /data-dx="full"/.test(client) && /data-vread/.test(client) && /href="\/mint-ai\/settings\/voice">Voice settings</.test(client) && /data-core-set=/.test(client) && /Voice usage/.test(client));
 check("  with voice off it says so, and keeps the core and the spend", /"Voice is off\."/.test(client));

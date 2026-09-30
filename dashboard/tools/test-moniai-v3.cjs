@@ -75,7 +75,7 @@ check("the Machine sheet has the core grid's eight cells", ["core", "sessions", 
 check("the core sits in the centre: one canvas, the orbit, the spark, the caption", /<canvas class="cc-core" id="cc-core"/.test(html) && /id="cc-orbit"/.test(html) && /id="cc-spark"/.test(html) && /id="cc-cap-state"/.test(html) && /id="cc-cap" aria-live="polite"/.test(html));
 check("the missions board is a sheet (tabs, head, lanes)", /id="cc-pane-missions"[\s\S]*id="cc-mis-tabs"[\s\S]*id="cc-mis-head"[\s\S]*id="cc-lanes"/.test(html));
 check("the event log lives under Decisions", /id="cc-pane-dec"[\s\S]*id="cc-evlog"[\s\S]*id="cc-feed"[\s\S]*id="cc-pane-tl"/.test(html));
-check("the composer keeps the mic (a live call), the voice bar and its hint", /id="cc-c-mic"/.test(html) && /id="cc-voicebar"/.test(html) && /click the mic to talk · <kbd>Esc<\/kbd> ends/.test(html));
+check("the composer keeps the mic (a live call), the voice bar and its hint", /id="cc-c-mic"/.test(html) && /id="cc-voicebar"/.test(html) && /id="cc-kb-space">click the mic to talk<\/span>/.test(html) && !/<kbd>Esc<\/kbd> ends/.test(html));
 check("replies-aloud toggle is in the Conversation sheet's head", /id="cc-pane-conv"[\s\S]{0,900}id="cc-speak-toggle"/.test(html));
 check("without a key: no toggle, no mic, the note links to Settings ▸ Voice", !/id="cc-speak-toggle"/.test(noKey) && !/id="cc-c-mic"/.test(noKey) && /href="\/mint-ai\/settings\/voice"/.test(noKey));
 check("the palette button is in the dock, with its shortcut", /id="cc-kbtn"[^>]*aria-keyshortcuts="Control\+K"/.test(html));
