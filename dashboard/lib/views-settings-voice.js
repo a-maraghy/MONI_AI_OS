@@ -102,9 +102,9 @@ function body(o) {
   const listen = o.transcribe || "gpt-4o-mini-transcribe";
   const modelRow = V.row(
     "Voice model",
-    `One model for the whole voice: it holds the live conversation and reads MINT AI's replies aloud, word for word. <span class="muted" id="voice-listen-note">Your words are written down by <b>${esc(
+    `One model for the whole voice: it holds the live conversation and reads MINT AI's replies aloud, word for word. <span class="muted" id="voice-listen-note">Your words are written down by <code>${esc(
       listen
-    )}</b>, paired with it: MINT AI always works from that transcript, never from the voice model's retelling. It is not a setting.</span>`,
+    )}</code>, paired with it: MINT AI always works from that transcript, never from the voice model's retelling. It is not a setting.</span>`,
     V.form(
       `${BASE}/options`,
       csrf,
