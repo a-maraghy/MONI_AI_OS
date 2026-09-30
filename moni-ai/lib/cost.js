@@ -5,10 +5,16 @@
  * MINT AI's own cost comes from its ledger. The CLI's `total_cost_usd` on each
  * result is the running total of the PROCESS, not the cost of that turn: summing
  * it overstates badly (fact: 9.12 at 08:52 on 28 Sep after 6.08 the evening
- * before). A turn's cost is the difference from the previous turn of the same
- * process. A new process starts again from zero; it is recognised by the
- * process start stamp stored with each turn, and for rows written before that
- * column existed, by the running total going down.
+ * before). A turn's cost is the difference from the previous turn.
+ *
+ * A new process (another process start stamp) usually RESUMES the same
+ * session, and the CLI then carries the session's running total on: the first
+ * turn after a supervisor restart reported $51.75 of which $0.23 was its own
+ * (fact, 2026-09-30). So a new process whose total is at or above the
+ * previous one is a resumed session and gets the difference too. A process
+ * that started a NEW session (its stamp ends "#new": the supervisor's fresh
+ * start, or a first start) starts again from zero, and so does a running
+ * total that went down (rows written before either stamp existed).
  *
  * Every other session is estimated from its transcript: the token usage the
  * API reported on each assistant message, priced at API list prices. Those
@@ -37,14 +43,49 @@ function turnDeltas(rows) {
     const proc = r.proc_start || null;
     let delta;
     if (prevTotal === null) delta = total;
-    else if (proc && prevProc && proc !== prevProc) delta = total; // a new process
-    else if (total < prevTotal - 1e-9) delta = total; // the total went down: restarted
-    else delta = total - prevTotal;
+    else if (proc && proc !== prevProc && /#new$/.test(proc)) delta = total; // a new session starts from zero
+    else if (total < prevTotal - 1e-9) delta = total; // the total went down: a fresh session starts from zero
+    else delta = total - prevTotal; // the same process, or a new one that resumed the session (its total carried on)
     out.set(r.id, Math.max(0, delta));
     prevTotal = total;
     prevProc = proc || prevProc;
   }
   return out;
+}
+
+/**
+ * Every turn's cost_delta_usd, recomputed from cost_usd (kept as the CLI
+ * reported it) with turnDeltas(). Run at each supervisor start; it is also the
+ * migration that corrects the rows written before 2026-09-30, when the first
+ * turn after a supervisor restart recorded the session's whole running total
+ * as its own cost. It only ever rewrites cost_delta_usd, and only where it
+ * differs, so a second run changes nothing. db: node:sqlite DatabaseSync.
+ * Returns { changed, before, after } (the changed rows' sums, USD).
+ */
+function recomputeTurnDeltas(db) {
+  const rows = db.prepare("SELECT id, cost_usd, proc_start, cost_delta_usd FROM turns WHERE cost_usd IS NOT NULL ORDER BY id").all();
+  const d = turnDeltas(rows);
+  const was = new Map(rows.map((r) => [r.id, r.cost_delta_usd]));
+  const up = db.prepare("UPDATE turns SET cost_delta_usd = ? WHERE id = ?");
+  let changed = 0;
+  let before = 0;
+  let after = 0;
+  db.exec("BEGIN");
+  try {
+    for (const [id, v] of d) {
+      const old = was.get(id);
+      if (old != null && Math.abs(old - v) < 1e-9) continue;
+      up.run(v, id);
+      changed++;
+      before += Number(old) || 0;
+      after += v;
+    }
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+  return { changed, before, after };
 }
 
 /* --------------------------------------------------------------- prices --- */
@@ -348,4 +389,4 @@ function turnTokenDelta(usage, procStart, prev) {
   return { cum, delta };
 }
 
-module.exports = { turnDeltas, priceOf, usageCost, parseUsage, Scanner, PRICES, tokenReport, turnTokenDelta, TOKEN_KEYS };
+module.exports = { turnDeltas, recomputeTurnDeltas, priceOf, usageCost, parseUsage, Scanner, PRICES, tokenReport, turnTokenDelta, TOKEN_KEYS };

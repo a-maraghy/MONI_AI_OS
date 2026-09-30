@@ -209,8 +209,10 @@ async function until(fn, ms = 10000) {
     // --- a plain turn
     const sent = await call("send", { text: "hello there" });
     check("send is accepted and queued", sent.ok && sent.data.turn.status === "queued" && sent.data.turn.actor === "tester");
-    const echo = await sub.waitFor((e) => e.type === "assistant" && e.text === "echo: hello there");
+    const echo = await sub.waitFor((e) => e.type === "assistant" && /^echo: hello there/.test(e.text));
     check("the reply streams back as an event", !!echo);
+    // The first turn after the supervisor started carries, after the turn's own words, the note that it (re)started.
+    check("the first turn after a start tells MINT AI the supervisor (re)started, once, after the turn's own words", !!echo && /^echo: hello there\n\n\[System note from the supervisor, not the administrator: your supervisor \(moni-ai\) \(re\)started at /.test(echo.text) && /Check the journal/.test(echo.text), echo && echo.text.slice(0, 300));
     const ended = await sub.waitFor((e) => e.type === "turn" && e.phase === "end" && e.turn.id === sent.data.turn.id);
     check("the turn ends done", ended && ended.turn.status === "done", JSON.stringify(ended));
 
@@ -233,6 +235,22 @@ async function until(fn, ms = 10000) {
     const other = await call("snapshot", { turns: [desk.data.turn.id] }, "someone-else");
     check("another panel user cannot read the desk's turns", other.ok && other.data.requests_to_moni_ai.length === 0);
     check("snapshot figures are in human units", snap.ok && typeof snap.data.machine.memory.used_percent === "number" && typeof snap.data.machine.disk.free_gb === "number");
+    const ck = snap.data && snap.data.clock;
+    check("the snapshot carries the time in UTC, the administrator's zone (Cairo) and the server's, with offsets", ck && / UTC$/.test(ck.utc) && ck.admin.zone === "Africa/Cairo" && /^UTC[+-]\d\d:\d\d$/.test(ck.admin.offset) && ck.server.zone && /^UTC[+-]\d\d:\d\d$/.test(ck.server.offset) && /^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d$/.test(ck.admin.time), JSON.stringify(ck));
+    check("  and the supervisor's own last start", snap.ok && (snap.data.restarts || []).some((r) => r.component === "Moni-ai" || r.component === "moni-ai"), JSON.stringify(snap.data.restarts));
+    // The dashboard (re)started: told to MINT AI with its next turn, once, and kept for the snapshot.
+    const dep = await call("deploy-event", { component: "dashboard", started_at: "2026-09-30T14:00:02.000Z", commit: "abc1234", deployed_at: "2026-09-30T13:59:40Z" }, "moni-dashboard");
+    check("deploy-event is accepted from the dashboard", dep.ok, JSON.stringify(dep));
+    const afterDep = await call("send", { text: "after the deploy" });
+    const depEcho = await sub.waitFor((e) => e.type === "assistant" && /^echo: after the deploy/.test(e.text));
+    check("  MINT AI's next turn says the dashboard restarted, with the commit, and to check the journal", !!depEcho && /the Mint OS dashboard \(moni-dashboard\) \(re\)started at 2026-09-30T14:00:02\.000Z UTC, running commit abc1234 deployed at 2026-09-30T13:59:40Z/.test(depEcho.text), depEcho && depEcho.text);
+    await sub.waitFor((e) => e.type === "turn" && e.phase === "end" && e.turn.id === afterDep.data.turn.id);
+    const onceMore = await call("send", { text: "and once more" });
+    const againEcho = await sub.waitFor((e) => e.type === "assistant" && /^echo: and once more/.test(e.text));
+    check("  only once", !!againEcho && !/System note/.test(againEcho.text), againEcho && againEcho.text);
+    await sub.waitFor((e) => e.type === "turn" && e.phase === "end" && e.turn.id === onceMore.data.turn.id);
+    const snap2 = await call("snapshot", {}, "amaraghy");
+    check("  and the snapshot lists it", snap2.ok && (snap2.data.restarts || []).some((r) => r.commit === "abc1234"), JSON.stringify(snap2.data && snap2.data.restarts));
 
     // --- approval: deny
     await call("send", { text: "DESTROY one" });

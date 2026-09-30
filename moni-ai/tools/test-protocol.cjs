@@ -44,6 +44,14 @@ check("send with a target", good({ op: "send", text: "hi", target: "Odoo 19 VPS 
 check("send with target auto", good({ op: "send", text: "hi", target: "auto" }).ok);
 check("send via the voice front desk", good({ op: "send", text: "hi", via: "voice-desk" }).ok && good({ op: "send", text: "hi", via: "voice-desk" }).req.params.via === "voice-desk");
 refuseLater.push(["send via anything else", { op: "send", text: "hi", via: "telegram" }, "via must be one of"]);
+check("send carries the live call's id (a repeat still queued is folded into its turn)", good({ op: "send", text: "hi", via: "voice-desk", call: "lv1abc2" }).ok && good({ op: "send", text: "hi", via: "voice-desk", call: "lv1abc2" }).req.params.call === "lv1abc2");
+refuseLater.push(["send with a call id that is not one", { op: "send", text: "hi", via: "voice-desk", call: "../etc" }, "call"]);
+{
+  const r = good({ op: "deploy-event", component: "dashboard", started_at: "2026-09-30T14:00:02.123Z", commit: "e03b037", deployed_at: "2026-09-30T13:59:40Z" });
+  check("deploy-event (the dashboard started, with what was deployed) is accepted and audited as a write", r.ok && r.req.mutating === true && r.req.params.commit === "e03b037");
+  refuseLater.push(["deploy-event for anything but the dashboard", { op: "deploy-event", component: "odoo" }, "component must be one of"]);
+  refuseLater.push(["deploy-event with a commit that is not one", { op: "deploy-event", component: "dashboard", commit: "HEAD; rm -rf /" }, "commit"]);
+}
 {
   const r = good({ op: "snapshot" });
   check("snapshot is a read", r.ok && r.req.mutating === false);

@@ -429,18 +429,14 @@ function createFeatures(deps) {
     return deps.selfSessionIds ? deps.selfSessionIds() : new Set([deps.selfSessionId()].filter(Boolean));
   }
 
+  /**
+   * Every turn's cost_delta_usd, recomputed at each start (cost.recomputeTurnDeltas):
+   * also the idempotent migration of the rows the resumed-session bug inflated.
+   */
   function backfillDeltas() {
-    const rows = db.prepare("SELECT id, cost_usd, proc_start FROM turns WHERE cost_usd IS NOT NULL ORDER BY id").all();
-    const d = cost.turnDeltas(rows);
-    const up = db.prepare("UPDATE turns SET cost_delta_usd = ? WHERE id = ?");
-    db.exec("BEGIN");
-    try {
-      for (const [id, v] of d) up.run(v, id);
-      db.exec("COMMIT");
-    } catch (e) {
-      db.exec("ROLLBACK");
-      throw e;
-    }
+    const r = cost.recomputeTurnDeltas(db);
+    if (r.changed) log(`cost: recomputed cost_delta_usd on ${r.changed} turn(s): $${r.before.toFixed(2)} -> $${r.after.toFixed(2)} (a resumed session no longer counts its carried-over total)`);
+    return r;
   }
 
   /** Called on every result: the turn's own cost from the running total. */

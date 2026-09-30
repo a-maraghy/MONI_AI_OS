@@ -36,6 +36,12 @@ check("decision (approve / ask) is a user turn", q.classOf({ source: "decision" 
 check("watcher is background", q.classOf({ source: "watcher", actor: "watcher" }) === "background");
 check("a scheduled standing order is background", q.classOf({ source: "order", actor: "scheduler" }) === "background");
 check("a standing order run by hand is the user's", q.classOf({ source: "order", actor: "amaraghy" }) === "user");
+// 2026-09-30: peer turns were classed as the administrator's, and a spoken request waited behind them.
+check("a peer session's message is background", q.classOf({ source: "peer", actor: "Giza Odoo" }) === "background");
+check("  so are cross-session idle / delivery notices and system turns", ["idle", "delivery", "system"].every((x) => q.classOf({ source: x }) === "background"));
+check("  a peer message held at the token cap is background; one from Remote Control (the administrator) is the user's", q.classOf({ source: "cap-held", actor: "Giza Odoo" }) === "background" && q.classOf({ source: "cap-held", actor: "remote" }) === "user");
+check("a voice turn overtakes an earlier held peer message", q.pickNext([t(70, "cap-held", 20, "Giza Odoo"), t(71, "voice-desk", 2)], NOW, MAX) === 1);
+check("  and the peer message still runs, promoted once it has waited too long (no starvation)", q.pickNext([t(70, "cap-held", 700, "Giza Odoo"), t(71, "voice-desk", 2)], NOW, MAX) === 0);
 
 // the reported case: a voice turn (L61) queued behind a watcher turn (L60)
 check("a user turn overtakes an earlier background turn", q.pickNext([t(60, "watcher", 30, "watcher"), t(61, "voice-desk", 5)], NOW, MAX) === 1);

@@ -11,8 +11,11 @@
  *   1. user turns -- whatever a panel user started: typed or spoken in the
  *      Command Center, the voice desk's hand-offs, mission requests, decision
  *      approvals and questions, a standing order run by hand;
- *   2. background turns -- watcher investigations and scheduled standing
- *      orders -- only when no user turn is waiting;
+ *   2. background turns -- watcher investigations, scheduled standing
+ *      orders, and what other sessions send (peer messages, their idle and
+ *      delivery notices, a peer message held at the token cap) -- only when no
+ *      user turn is waiting (2026-09-30: peer turns were classed as the
+ *      administrator's, and a spoken request waited 22 s behind them);
  *
  * first-in first-out within each class (by ledger id, which is arrival
  * order, so re-queued turns keep their place).
@@ -25,13 +28,18 @@
  * running turn may be holding an approval card. The user turn goes next.
  */
 
-const BACKGROUND_SOURCES = new Set(["watcher", "order"]);
+const BACKGROUND_SOURCES = new Set(["watcher", "order", "peer", "idle", "delivery", "system"]);
 
-/** "user" or "background". A standing order run by hand is the user's. */
+/**
+ * "user" or "background". A standing order run by hand is the user's; a
+ * message held at the token cap is a peer's (background) unless it came
+ * through Remote Control (the administrator: actor "remote").
+ */
 function classOf(row) {
   if (!row) return "user";
   if (row.source === "watcher") return "background";
   if (row.source === "order") return row.actor && row.actor !== "scheduler" ? "user" : "background";
+  if (row.source === "cap-held") return row.actor === "remote" ? "user" : "background";
   return BACKGROUND_SOURCES.has(row.source) ? "background" : "user";
 }
 

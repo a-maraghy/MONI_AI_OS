@@ -92,6 +92,7 @@ const DEFAULTS = {
   queue_background_max_wait_s: 600, // a background turn waiting this long ranks with user turns
   queue_requeue_max_age_s: 21600, // after a supervisor restart, re-queue unsent turns younger than this
   queue_start_timeout_s: 120, // a handed-over turn that has not started by then, with nothing running, frees the queue
+  voice_merge_s: 20, // a live call's request said again within this, while the first still waits in the queue: one turn
   cli_extra_args: [], // tests only, e.g. ["--setting-sources", "project"]
   // Hired sessions (M-6): each runs as mint-session@<slug>.service (deploy/mint-session@.service).
   systemctl: "/usr/bin/systemctl",
@@ -489,6 +490,7 @@ async function start() {
     return scheduleRestart(true);
   }
   const resume = transcriptExists(id);
+  proc.newSession = !resume; // a resumed session carries its running cost on; a new one starts from zero (lib/cost.js)
   const argv = [
     "-p",
     "--input-format", "stream-json",
@@ -677,17 +679,87 @@ const OUR_SOURCES = new Set(["dashboard", "voice-desk", "order", "watcher", "mis
  * one turn at a time, user turns before background ones (lib/turnqueue.js).
  * Nothing here ever interrupts a running turn.
  */
-function queueTurn({ source, actor, text, target, order_id, mission_id, decision_id, ut }) {
+function queueTurn({ source, actor, text, target, order_id, mission_id, decision_id, ut, call }) {
+  const merged = call ? mergeVoiceTurn({ actor, text, target, ut, call }) : null;
+  if (merged) return merged;
   const row = ledger.addTurn({ uuid: crypto.randomUUID(), source, actor, text, target: target || null, status: "queued", order_id, mission_id, decision_id });
   // The ui token lives here only (memory): never in the ledger, the events or the audit.
   if (ut && (source === "dashboard" || source === "voice-desk") && !UI_REFUSED_ACTORS.has(actor)) {
     uiTokens.set(row.id, { ut, actor, source });
     if (uiTokens.size > 200) uiTokens.delete(uiTokens.keys().next().value);
   }
-  turns.pending.push({ row, message: userMessage(row) });
+  turns.pending.push({ row, message: userMessage(row), call: call || null, lastAt: Date.now() });
   emit("turn", { phase: "queued", turn: publicTurn(row) });
   pump();
   return publicTurn(row);
+}
+
+/**
+ * A live call's request said again (or added to) while its first one is still
+ * waiting in the queue -- not yet handed to the CLI -- within voice_merge_s of
+ * the last: folded into that turn, so MINT AI answers once and the voice does
+ * not read two answers back to back. Returns the turn (merged: true), or null.
+ */
+function mergeVoiceTurn({ actor, text, target, ut, call }) {
+  const within = (cfg.voice_merge_s || 0) * 1000;
+  if (!within) return null;
+  const p = turns.pending.find((q) => q.call === call && q.row.source === "voice-desk" && q.row.actor === actor && (q.row.target || null) === (target || null) && Date.now() - q.lastAt <= within);
+  if (!p) return null;
+  const joined = clip(p.row.text + "\n\n[Said again while this was waiting:] " + text, 20000);
+  p.row = ledger.updateTurn(p.row.id, { text: joined });
+  p.message = userMessage(p.row);
+  p.lastAt = Date.now();
+  p.merges = (p.merges || 0) + 1;
+  if (ut && !uiTokens.has(p.row.id) && !UI_REFUSED_ACTORS.has(actor)) uiTokens.set(p.row.id, { ut, actor, source: "voice-desk" });
+  log(`queue: a repeat from live call ${call} folded into queued turn #${p.row.id} (${p.merges} so far)`);
+  emit("turn", { phase: "merged", turn: publicTurn(p.row) });
+  return { ...publicTurn(p.row), merged: true };
+}
+
+/* ---- deploy events: MINT AI hears about restarts with its next turn ---- */
+
+const deploys = []; // [{component, started_at, commit, deployed_at}] (the last few, for the snapshot)
+// This server's own time zone (the journal's), for the snapshot's clock; the CLI's TZ is cfg.tz.
+const SERVER_TZ = (() => {
+  try {
+    const m = /zoneinfo\/(.+)$/.exec(fs.readlinkSync("/etc/localtime"));
+    if (m) return m[1];
+  } catch (_) {
+    /* not a link */
+  }
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+})();
+let deployNotes = []; // not yet told to MINT AI
+
+/** The DEPLOYED stamp a deploy script wrote next to the code (commit=..., deployed_at=...). */
+function deployedStamp(file) {
+  const out = {};
+  try {
+    for (const line of fs.readFileSync(file, "utf8").split("\n")) {
+      const m = /^([a-z_]+)=([^\s]{1,80})$/.exec(line.trim());
+      if (m) out[m[1]] = m[2];
+    }
+  } catch (_) {
+    /* no stamp: a start from the repo */
+  }
+  return out;
+}
+function noteDeploy(e, actor) {
+  const d = { component: e.component, started_at: e.started_at || now(), commit: e.commit || null, deployed_at: e.deployed_at || null };
+  deploys.push(d);
+  while (deploys.length > 8) deploys.shift();
+  deployNotes.push(d);
+  while (deployNotes.length > 4) deployNotes.shift();
+  log(`deploy event: ${d.component} started ${d.started_at}${d.commit ? `, commit ${d.commit}` : ""}${d.deployed_at ? `, deployed ${d.deployed_at}` : ""} (${actor})`);
+  emit("deploy", d);
+  return d;
+}
+/** The note MINT AI gets with its next turn, once. */
+function deployNoteText(list) {
+  const what = list
+    .map((d) => `${d.component === "moni-ai" ? "your supervisor (moni-ai)" : "the Mint OS dashboard (moni-dashboard)"} (re)started at ${d.started_at} UTC${d.commit ? `, running commit ${d.commit}` : ""}${d.deployed_at ? ` deployed at ${d.deployed_at}` : ""}`)
+    .join("; ");
+  return `[System note from the supervisor, not the administrator: ${what}. Check the journal (journalctl -u moni-dashboard / -u moni-ai, server time) before you say what changed or why; cite what you find.]`;
 }
 
 /**
@@ -703,7 +775,11 @@ function pump() {
   const i = turnQueue.pickNext(turns.pending, Date.now(), cfg.queue_background_max_wait_s * 1000);
   if (i < 0) return;
   const { row, message } = turns.pending[i];
-  if (!writeChild(message)) return;
+  const notes = deployNotes;
+  // (After the turn's own words: what was asked stays first.)
+  const msg = notes.length && typeof message.message.content === "string" ? { ...message, message: { ...message.message, content: message.message.content + "\n\n" + deployNoteText(notes) } } : message;
+  if (!writeChild(msg)) return;
+  if (msg !== message) deployNotes = [];
   turns.pending.splice(i, 1);
   turns.byUuid.set(row.uuid, row.id);
   ledger.updateTurn(row.id, { sent_at: now() });
@@ -1059,7 +1135,8 @@ function onResult(ev) {
       result_text: clip(ev.result || "", 20000),
       error: ev.is_error ? clip(ev.result || ev.subtype || "error", 2000) : null,
     });
-    features.hooks.onResult(row, ev, proc.startedAt);
+    // The process stamp; "#new" marks a process that started a new session (its running total starts from zero).
+    features.hooks.onResult(row, ev, proc.startedAt + (proc.newSession ? "#new" : ""));
     emit("result", { turn: publicTurn(ledger.get("turns", row.id)), is_error: !!ev.is_error, subtype: ev.subtype });
   } else {
     emit("result", { is_error: !!ev.is_error, subtype: ev.subtype, cost_usd: ev.total_cost_usd, text: clip(ev.result || "", 4000) });
@@ -2236,6 +2313,9 @@ function snapshotFor(actor, turnIds) {
   }
   return buildSnapshot({
     now: now(),
+    tz: cfg.tz,
+    serverTz: SERVER_TZ,
+    deploys,
     host: m.host,
     vitals: vitalsCache,
     services: features.serviceList(),
@@ -2290,7 +2370,11 @@ async function handle(req, sock) {
         const live = (sessionsCache.list || []).some((s) => s.name === target && !s.self);
         if (!live) throw new Error(`no live session is named "${target}"`);
       }
-      const turn = queueTurn({ source: p.via === "voice-desk" ? "voice-desk" : "dashboard", actor: req.actor, text: p.text, target: target !== "auto" ? target : null, ut: p.ut });
+      const turn = queueTurn({ source: p.via === "voice-desk" ? "voice-desk" : "dashboard", actor: req.actor, text: p.text, target: target !== "auto" ? target : null, ut: p.ut, call: p.via === "voice-desk" ? p.call : null });
+      if (turn.merged) {
+        delete turn.merged;
+        return { turn, merged: true, process: proc.state, queued_behind: 0 };
+      }
       // How many turns go before this one: whatever is running or handed
       // over, plus the user turns queued ahead of it (background ones wait).
       const ahead = turnQueue.order(turns.pending, Date.now(), cfg.queue_background_max_wait_s * 1000).findIndex((q) => q.row.id === turn.id);
@@ -2355,6 +2439,9 @@ async function handle(req, sock) {
       return uiPages(req.actor, p);
     case "charter":
       return charter();
+    case "deploy-event":
+      // The dashboard (re)started (server.js announceStart): remembered for the snapshot, told to MINT AI once.
+      return { noted: noteDeploy(p, req.actor) };
     case "ui-ack": {
       const w = uiWaiting.get(p.nonce);
       if (!w) throw new Error("no such screen action is waiting (or it was answered already)");
@@ -2643,6 +2730,9 @@ async function main() {
 
   features.start();
   loadPages();
+  // MINT AI hears of this start (and what was deployed) with its next turn.
+  const own = deployedStamp(path.join(__dirname, "DEPLOYED"));
+  noteDeploy({ component: "moni-ai", started_at: now(), commit: /^[0-9a-f]{7,40}$/.test(own.commit || "") ? own.commit : null, deployed_at: own.deployed_at || null }, "supervisor");
   await start();
 
   let stopping = false;

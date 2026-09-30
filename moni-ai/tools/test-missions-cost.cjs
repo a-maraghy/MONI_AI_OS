@@ -123,8 +123,40 @@ check("at most 50 steps", throws(() => M.create({ title: "big", steps: Array.fro
     { id: 2, cost_usd: 6.0, proc_start: "B" }, // new process that spent MORE before its first turn
     { id: 3, cost_usd: 6.5, proc_start: "B" },
   ]);
-  check("a new process stamp starts over even when its total is higher", e.get(2) === 6.0 && Math.abs(e.get(3) - 0.5) < 1e-9);
+  // (Until 2026-09-30 a new stamp started over; but a new process RESUMES the session and the CLI carries its total on.)
+  check("a new process whose total is higher resumed the session: its first turn costs the difference", Math.abs(e.get(2) - 1.0) < 1e-9 && Math.abs(e.get(3) - 0.5) < 1e-9);
+  const f = cost.turnDeltas([
+    { id: 261, cost_usd: 51.231, proc_start: "2026-09-30T08:25:29.882Z" },
+    { id: 262, cost_usd: 51.75, proc_start: "2026-09-30T13:59:25.622Z" }, // the first turn after a supervisor restart
+    { id: 263, cost_usd: 51.979, proc_start: "2026-09-30T13:59:25.622Z" },
+  ]);
+  check("the fact from 30 Sep: 51.231 then, after a restart, 51.75 is 0.519 (not 51.75)", Math.abs(f.get(262) - 0.519) < 1e-9 && Math.abs(f.get(263) - 0.229) < 1e-9);
+  const g = cost.turnDeltas([{ id: 1, cost_usd: 40, proc_start: "A" }, { id: 2, cost_usd: 0.4, proc_start: "B" }]);
+  check("a fresh session (the total went down) still starts from zero", Math.abs(g.get(2) - 0.4) < 1e-9);
+  const h = cost.turnDeltas([{ id: 1, cost_usd: 0.3, proc_start: "A" }, { id: 2, cost_usd: 0.5, proc_start: "B#new" }, { id: 3, cost_usd: 0.7, proc_start: "B#new" }]);
+  check("a process that started a new session (#new) starts from zero even when its total is higher", Math.abs(h.get(2) - 0.5) < 1e-9 && Math.abs(h.get(3) - 0.2) < 1e-9);
   check("the fact from 28 Sep: 6.08 then 9.12 in one process is 3.04", Math.abs(cost.turnDeltas([{ id: 1, cost_usd: 6.08, proc_start: "P" }, { id: 2, cost_usd: 9.12, proc_start: "P" }]).get(2) - 3.04) < 1e-9);
+}
+
+/* ---------------------------------- the migration of the inflated rows --- */
+{
+  const db = ledger.db;
+  const add = (cost_usd, proc_start, delta) => {
+    const r = ledger.addTurn({ uuid: "mig-" + Math.random().toString(36).slice(2), source: "dashboard", actor: "t", text: "x", status: "done" });
+    db.prepare("UPDATE turns SET cost_usd = ?, proc_start = ?, cost_delta_usd = ? WHERE id = ?").run(cost_usd, proc_start, delta, r.id);
+    return r.id;
+  };
+  db.exec("DELETE FROM turns");
+  const a = add(51.231, "P1", 51.231); // the first row costs its whole total
+  const b = add(51.75, "P2", 51.75); // written by the old code: the whole running total
+  const c = add(51.979, "P2", 0.229);
+  const r1 = cost.recomputeTurnDeltas(db);
+  const val = (id) => db.prepare("SELECT cost_delta_usd AS v FROM turns WHERE id = ?").get(id).v;
+  check("the start-up recompute corrects the inflated row (51.75 -> 0.519) and reports it", r1.changed === 1 && Math.abs(val(b) - 0.519) < 1e-9 && Math.abs(r1.before - 51.75) < 1e-9 && Math.abs(r1.after - 0.519) < 1e-9, JSON.stringify(r1));
+  check("  the other rows are untouched, cost_usd (the CLI's own figure) too", Math.abs(val(a) - 51.231) < 1e-9 && Math.abs(val(c) - 0.229) < 1e-9 && db.prepare("SELECT cost_usd AS v FROM turns WHERE id = ?").get(b).v === 51.75);
+  const r2 = cost.recomputeTurnDeltas(db);
+  check("  idempotent: a second run changes nothing", r2.changed === 0);
+  db.exec("DELETE FROM turns");
 }
 
 /* ------------------------------------------------ MINT AI's tokens per turn --- */

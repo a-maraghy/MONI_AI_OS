@@ -260,6 +260,33 @@ function mcpClient() {
     check("the turn that was running at the restart finished before it (not replayed)", slowRow.status === "done", JSON.stringify(slowRow));
     sub2.close();
 
+    // --- 3b. a live call's repeat, still queued, is folded into its turn (one turn, one answer)
+    const sub3 = subscribe();
+    const slow2 = await call("send", { text: "SLOW 2000" });
+    await until(async () => (await call("status")).data.busy, 5000);
+    const v1 = await call("send", { text: "restart the odoo service", via: "voice-desk", call: "lvcall1" }, "amaraghy");
+    const v2 = await call("send", { text: "restart odoo please", via: "voice-desk", call: "lvcall1" }, "amaraghy");
+    const v3 = await call("send", { text: "restart odoo please", via: "voice-desk", call: "lvcall2" }, "amaraghy");
+    const d1 = await call("send", { text: "restart odoo please" }, "amaraghy");
+    check("a repeat from the same call while the first waits: the same turn, marked merged", v1.ok && v2.ok && v2.data.merged === true && v2.data.turn.id === v1.data.turn.id, JSON.stringify(v2.data));
+    check("  another call's, or a typed one, is its own turn", v3.ok && !v3.data.merged && v3.data.turn.id !== v1.data.turn.id && d1.ok && d1.data.turn.id !== v1.data.turn.id);
+    const vrow = await turnRow(v1.data.turn.id);
+    check("  the turn holds both, the repeat marked as said again", vrow && /^restart the odoo service\n\n\[Said again while this was waiting:\] restart odoo please/.test(vrow.text), vrow && vrow.text);
+    check("  the queue has one turn for the two", (await call("status")).data.queued.filter((q) => q.id === v1.data.turn.id).length === 1 && (await call("status")).data.queued.length === 3);
+    const merged = await until(async () => {
+      const r = await turnRow(v1.data.turn.id);
+      return r && r.status === "done" ? r : null;
+    }, 20000);
+    check("  and MINT AI answers it once, with both in its words", !!merged && sub3.events.filter((e) => e.phase === "start" && e.turn.id === v1.data.turn.id).length === 1);
+    const late = await call("send", { text: "restart odoo please", via: "voice-desk", call: "lvcall1" }, "amaraghy");
+    check("  once it has been handed to MINT AI, a repeat is a new turn", late.ok && !late.data.merged && late.data.turn.id !== v1.data.turn.id);
+    await until(async () => {
+      const r = await turnRow(late.data.turn.id);
+      return r && r.status === "done";
+    }, 20000);
+    void slow2;
+    sub3.close();
+
     // --- 4. MINT AI's MCP server: status_snapshot against this supervisor
     const m = mcpClient();
     const init = await m.req("initialize", { protocolVersion: "2025-06-18" });

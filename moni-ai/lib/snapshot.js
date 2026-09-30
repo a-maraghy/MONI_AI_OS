@@ -46,8 +46,43 @@ function serviceState(active) {
 }
 
 /**
+ * The time now in the three zones that get mixed up (2026-09-30: MINT AI read
+ * Cairo time, the journal's server time and the ledger's UTC as one): UTC,
+ * the administrator's (Africa/Cairo by default) and this server's own zone,
+ * each with its offset. { utc, admin: {zone, time, offset}, server: {...} }.
+ */
+function offsetOf(date, zone) {
+  try {
+    const p = new Intl.DateTimeFormat("en-GB", { timeZone: zone, timeZoneName: "longOffset" }).formatToParts(date).find((x) => x.type === "timeZoneName");
+    const v = p ? p.value.replace(/^GMT/, "UTC") : "UTC";
+    return v === "UTC" ? "UTC+00:00" : v;
+  } catch (_) {
+    return null;
+  }
+}
+function localTime(date, zone) {
+  try {
+    const f = new Intl.DateTimeFormat("en-CA", { timeZone: zone, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23" }).formatToParts(date);
+    const g = (t) => (f.find((x) => x.type === t) || {}).value;
+    return `${g("year")}-${g("month")}-${g("day")} ${g("hour")}:${g("minute")}:${g("second")}`;
+  } catch (_) {
+    return null;
+  }
+}
+function clockOf(iso, adminTz, serverTz) {
+  const d = new Date(iso || Date.now());
+  const zone = (z) => ({ zone: z, time: localTime(d, z), offset: offsetOf(d, z) });
+  return {
+    utc: d.toISOString().replace("T", " ").replace(/\.\d+Z$/, " UTC"),
+    admin: zone(adminTz || "Africa/Cairo"),
+    server: zone(serverTz || "UTC"),
+    note: "The ledger and the supervisor's stamps are UTC; the journal and log files are in the server's zone; the administrator reads Cairo time.",
+  };
+}
+
+/**
  * @param src {
- *   now: ISO string,
+ *   now: ISO string, tz: the administrator's zone, serverTz: this server's zone,
  *   host, vitals, services: [{unit, active}], servicesAt, servicesError,
  *   sessions: [{name, status, self}], process: {state, busy, queued},
  *   missions: [mission view], decisions: [{title, status}],
@@ -64,6 +99,7 @@ function buildSnapshot(src) {
 
   const out = {
     taken_at: src.now || new Date().toISOString(),
+    clock: clockOf(src.now, src.tz, src.serverTz),
     machine: {
       host: title(src.host || v.host || ""),
       cpu_used_percent: typeof v.cpu_pct === "number" ? v.cpu_pct : null,
@@ -113,6 +149,10 @@ function buildSnapshot(src) {
       titles: approvals.slice(0, MAX_LIST).map((a) => title((a.label || "Needs permission") + " (" + (a.tool || "tool") + ")")),
     },
   };
+  // The last (re)starts of the dashboard and of this supervisor, with what was deployed (deploy-event).
+  if (Array.isArray(src.deploys) && src.deploys.length) {
+    out.restarts = src.deploys.slice(-4).map((d) => ({ component: title(d.component), started_at: d.started_at || null, commit: d.commit || null, deployed_at: d.deployed_at || null }));
+  }
   if (src.requests) {
     out.requests_to_moni_ai = src.requests.map((r) => ({
       id: r.id,
@@ -127,4 +167,4 @@ function buildSnapshot(src) {
 /** Keys that must never appear in a snapshot, checked by the tests and the dashboard. */
 const FORBIDDEN_KEYS = ["command", "fix_command", "evidence", "input", "input_json", "summary", "proposal", "detail", "key", "token", "password"];
 
-module.exports = { buildSnapshot, serviceState, FORBIDDEN_KEYS };
+module.exports = { buildSnapshot, serviceState, clockOf, FORBIDDEN_KEYS };

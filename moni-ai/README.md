@@ -81,8 +81,11 @@ CLI itself would run whatever it was given strictly in arrival order).
 - **user turns first** -- typed or spoken in the Command Center, the voice
   desk's hand-offs, mission requests, decision approvals and questions, a
   standing order run by hand;
-- **background turns** -- watcher investigations and scheduled standing orders
-  -- only when no user turn is waiting;
+- **background turns** -- watcher investigations, scheduled standing orders,
+  and what other sessions send (peer messages, idle / delivery notices, a peer
+  message held at the token cap; one held from Remote Control is the user's)
+  -- only when no user turn is waiting (2026-09-30: peer turns counted as the
+  administrator's and a spoken request waited behind them);
 - first in, first out within each class; nothing is dropped. A background turn
   that has waited `queue_background_max_wait_s` (600) ranks with user turns by
   arrival, so it cannot starve.
@@ -94,6 +97,20 @@ are not ours to hold; the queue waits for them to end. A turn handed over that
 has not started within `queue_start_timeout_s` (120) while nothing is running
 frees the queue. `status.queued` lists the queue in run order with each turn's
 `priority`; `send` returns `queued_behind`, the turns ahead of it.
+
+**A live call's repeats are one turn.** A `voice-desk` send carries the live
+call's id (`call`). Said again while its first is still waiting in the queue
+(not handed to the CLI yet), within `voice_merge_s` (20 s) of the last, it is
+folded into that turn (`[Said again while this was waiting:] ...`); `send`
+answers with the same turn and `merged: true`, and MINT AI answers once.
+
+**Restarts are told.** At start the supervisor notes its own (re)start, with
+the commit and time `deploy/deploy-moni-ai.sh` stamped in `/opt/moni-ai/DEPLOYED`,
+and the dashboard sends `deploy-event` when it starts; the next turn handed to
+the CLI carries, after its own words, a one-time system note of both ("check
+the journal before you say what changed"), and `snapshot` lists the last few
+under `restarts`. `snapshot.clock` gives the time in UTC, the administrator's
+zone (`tz`, Africa/Cairo) and the server's, with their offsets.
 
 The queue survives a supervisor restart: a turn still queued and never handed
 over (`turns.sent_at` empty) is re-queued in its old place if younger than
@@ -237,7 +254,8 @@ every call; unknown fields are refused. `lib/protocol.js` is the definition.
 | `ping`, `status`, `sessions`, `rc-url` | – | read |
 | `events` | `since?` | reply, then `{"event": …}` lines until closed |
 | `ledger` | `table` (delegations, inbound, approvals, turns, audit), `limit?`, `before_id?`, `status?` | read |
-| `send` | `text`, `target?` (a live session's name, or `auto`), `via?` (`voice-desk`: recorded as the turn's source) | audited |
+| `send` | `text`, `target?` (a live session's name, or `auto`), `via?` (`voice-desk`: recorded as the turn's source), `call?` (the live call's id: a queued repeat is folded in) | audited |
+| `deploy-event` | `component` (`dashboard`), `started_at?`, `commit?`, `deployed_at?` | audited |
 | `snapshot` | `turns?` (the voice front desk's own earlier turns) | read: counts, titles and human-unit figures for the voice front desk, never a command (`lib/snapshot.js`) |
 | `interrupt` | – | audited |
 | `approve`, `deny` | `approval_id`, `note?` | audited |
@@ -488,10 +506,14 @@ event). All of its state is in the ledger, so a restart loses nothing.
   settings.
 - **Cost** (`lib/cost.js`, tables `cost_daily`, `cost_files`, `cost_names`,
   `settings`). **Trap:** `turns.cost_usd` is the CLI's running total for the
-  process. Each result now stores `proc_start` and `cost_delta_usd` (difference
-  from the previous turn of the same process; a new process — by stamp, or the
-  total going down — starts from its own total); old rows are backfilled at
-  start. Other sessions: token usage from their transcripts (sub-agents
+  process — and a restarted process that RESUMES the session carries the
+  session's total on (2026-09-30: the first turn after a restart recorded
+  $51.75, of which $0.52 was its own). Each result stores `proc_start` and
+  `cost_delta_usd`, the difference from the previous turn; only a process that
+  started a new session (stamp ending `#new`) or a total that went down starts
+  from its own total. Every row is recomputed at start
+  (`cost.recomputeTurnDeltas`, idempotent; it also corrected the rows the old
+  rule inflated: 11 rows, $343.29 -> $9.77 on the live ledger's copy). Other sessions: token usage from their transcripts (sub-agents
   included, once per message id) × list prices, scanned incrementally with
   offsets in the ledger — "estimated API-equivalent". Optional daily budget with
   a warn percentage.

@@ -140,6 +140,26 @@ Built-in rules deny force pushes and pushes to the client repository, and
 always ask before anything that touches live Odoo. A command a rule denies is
 not to be retried or routed around, exactly like a denied card.
 
+## Verify before you assert
+
+Say what the machine shows, not what you expect. Before you state **what is
+deployed or running** (a commit, a version, whether a change is live) or **why
+something happened** (a call dropped, a service restarted, a turn failed),
+check it — the journal (`journalctl -u moni-dashboard`, `-u moni-ai`), the
+deployed tree (`/opt/moni-dashboard`, `/opt/moni-ai`, their `DEPLOYED` stamps),
+the ledger — and **cite what you found** in a few words ("the journal at
+17:12 server time shows …"). If you have not checked, say so and offer to.
+A system note that the dashboard or your supervisor restarted tells you that
+it happened, not what changed: look before you say.
+
+**Times.** Three clocks meet here, and mixing them has misled the
+administrator: the ledger, the supervisor's stamps and `status_snapshot`'s
+`taken_at` are **UTC**; the journal and log files are in **the server's zone**
+(Europe/Berlin, CEST in summer); the administrator reads **Cairo time**
+(Africa/Cairo) and your own shell runs with TZ=Africa/Cairo. The snapshot's
+`clock` gives all three with their offsets. When you give a time, give it in
+Cairo time and say so, and convert anything you read in another zone first.
+
 ## Keep the administrator informed
 
 Say what you are about to do before a delegation, one line: *"Sending this to

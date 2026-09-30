@@ -69,6 +69,19 @@ const OPS = {
       // control Phase 2): lets MINT AI's ui_action reach the tab that asked,
       // during this turn only. Kept in memory, never in the ledger or events.
       ut: optString(40, /^[A-Za-z0-9_-]{16,40}$/),
+      // The live call a voice-desk send comes from (the dashboard's call id): a repeat of a
+      // request still waiting in the queue is folded into that turn (supervisor mergeVoiceTurn).
+      call: optString(42, /^lv[a-z0-9]{1,40}$/),
+    },
+  },
+  // The dashboard (re)started: what it runs now, for MINT AI's next turn and the snapshot.
+  "deploy-event": {
+    mutating: true,
+    params: {
+      component: enumOf(["dashboard"]),
+      started_at: optString(30, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z$/),
+      deployed_at: optString(30, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?Z$/),
+      commit: optString(40, /^[0-9a-f]{7,40}$/),
     },
   },
   // MINT AI's ui_action (its MCP tool): change what the administrator sees in
