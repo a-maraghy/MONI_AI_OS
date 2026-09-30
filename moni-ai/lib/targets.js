@@ -131,4 +131,18 @@ function mayFail(d) {
   return !!(d.target_session || d.target_pid); // rows from before target_kind: pinned ones only
 }
 
-module.exports = { norm, refOf, parseListAgents, findTarget, kindFor, openTarget, mayFail, looksLikeSubagent };
+/*
+ * Mint OS's own throwaway CLIs (today: the Usage sheet's get_usage probe, run
+ * when MINT AI is not up) register in root's session registry like any Claude
+ * Code process; left alone they get a name derived from their cwd ("tmp-9c")
+ * and flash up as a session for a few seconds. They are started with
+ * CLAUDE_CODE_SESSION_NAME=mint-internal-<what>, and this is the one rule that
+ * hides them: that exact prefix, nothing else -- a real session, whatever its
+ * name or cwd, is never hidden.
+ */
+const INTERNAL_PREFIX = "mint-internal-";
+function isInternal(s) {
+  return !!s && typeof s.name === "string" && s.name.startsWith(INTERNAL_PREFIX);
+}
+
+module.exports = { norm, refOf, parseListAgents, findTarget, kindFor, openTarget, mayFail, looksLikeSubagent, INTERNAL_PREFIX, isInternal };

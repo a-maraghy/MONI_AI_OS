@@ -42,6 +42,7 @@ console.log("lib/hire.js");
     /already running/.test(bad({ name: "demo-own" })) && /MINT AI's own/.test(bad({ name: "MINT AI" })) && /already exists/.test(bad({}, { hired: [{ name: "session birth", slug: "session-birth" }] })) && /purpose/.test(bad({ purpose: "short" })) && /model/.test(bad({ model: "gpt-5" })));
   const seven = Array.from({ length: 7 }, (_, i) => ({ name: "Demo " + i, session_id: "d" + i }));
   check("  at most 7 sessions in the spheres view (hires still starting count)", /already 7/.test(bad({}, { live: seven })) && /already 7/.test(bad({}, { live: seven.slice(0, 6), hired: [{ name: "Starting", slug: "starting", session_id: "zz" }] })));
+  check("  a mint-internal- name is refused (it would be hidden)", /reserved/.test(bad({ name: "Mint-Internal-Worker" })));
   check("  at most 3 hires an hour", /3 hires an hour/.test(bad({}, { recent: 3 })));
   const hired = [{ slug: "a", name: "Alpha", session_id: "s-a", kept: 0, status: "hired" }, { slug: "b", name: "Beta", session_id: "s-b", kept: 1, status: "hired" }];
   check("findHired / retireRefusal: only hired sessions, never kept ones, never the administrator's own",

@@ -128,10 +128,14 @@ const REAL = {
   /* ------------------------------------------------------------- probe --- */
   {
     const fake = path.join(__dirname, "fake-claude.cjs");
-    const spawnFn = (cmd, args, opts) => spawn(process.execPath, [fake, ...args], opts);
+    let seenArgs = null, seenEnv = null;
+    const spawnFn = (cmd, args, opts) => { seenArgs = args; seenEnv = opts.env; return spawn(process.execPath, [fake, ...args], opts); };
     const raw = await usage.probe("fake", { spawnFn, timeoutMs: 15000, env: { ...process.env, HOME: require("os").tmpdir() } }).catch((e) => ({ err: e.message }));
     const p = usage.shapePlan(raw);
     check("probe: initialize then get_usage against the fake CLI", p.rows.length === 3 && p.rows[1].utilization === 39.6, JSON.stringify(raw).slice(0, 300));
+    check("probe: it registers as Mint OS's own (named mint-internal-usage-probe, never \"tmp-9c\"), so the supervisor hides it",
+      seenArgs.includes("-n") && seenArgs[seenArgs.indexOf("-n") + 1] === "mint-internal-usage-probe" && seenEnv.CLAUDE_CODE_SESSION_NAME === "mint-internal-usage-probe" && seenEnv.MINT_INTERNAL === "1" &&
+      require(path.join(__dirname, "..", "lib", "targets.js")).isInternal({ name: usage.PROBE_NAME }));
     const bad = await usage.probe("/nonexistent/claude", { timeoutMs: 5000 }).then(() => "resolved", (e) => e.message);
     check("probe: a missing CLI is an error, not a hang", bad !== "resolved", bad);
   }

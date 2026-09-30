@@ -83,11 +83,13 @@ function shapePlan(resp, at) {
  * Ask a throwaway CLI for get_usage. Resolves with the raw answer. The child
  * gets no prompt, so there is no model turn and no transcript.
  */
+const PROBE_NAME = "mint-internal-usage-probe"; // lib/targets.js isInternal: never shown as a session
 function probe(cliPath, { timeoutMs = 25000, cwd = os.tmpdir(), env = process.env, spawnFn = spawn } = {}) {
   return new Promise((resolve, reject) => {
     let child;
     try {
-      child = spawnFn(cliPath, ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"], { cwd, env, stdio: ["pipe", "pipe", "ignore"] });
+      // Named, so the session registry lists it as Mint OS's own (not "tmp-9c", derived from the cwd), and hidden by the supervisor.
+      child = spawnFn(cliPath, ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "-n", PROBE_NAME], { cwd, env: { ...env, CLAUDE_CODE_SESSION_NAME: PROBE_NAME, MINT_INTERNAL: "1" }, stdio: ["pipe", "pipe", "ignore"] });
     } catch (e) {
       return reject(e);
     }
@@ -208,4 +210,4 @@ function createPlanUsage({ live, fallback, ttlMs = 50000, fallbackTtlMs = 120000
   return { get, view };
 }
 
-module.exports = { shapePlan, probe, createPlanUsage };
+module.exports = { shapePlan, probe, createPlanUsage, PROBE_NAME };

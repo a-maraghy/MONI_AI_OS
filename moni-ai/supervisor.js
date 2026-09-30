@@ -1760,6 +1760,8 @@ function refreshSessions(then) {
     }
     const reg = readRegistry();
     const ours = readState().session_id;
+    // Mint OS's own throwaway CLIs (the usage probe) are not sessions: never listed, never a sphere.
+    list = list.filter((a) => !targets.isInternal(a));
     const merged = list.map((a) => {
       const r = reg.get(a.pid);
       return {

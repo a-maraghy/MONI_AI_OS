@@ -26,6 +26,11 @@ function check(name, ok, detail) {
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// Mint OS's own throwaway CLIs (the usage probe) are hidden by one narrow rule: the mint-internal- name prefix.
+check("isInternal: only the mint-internal- prefix; tmp-9c, a real session in /tmp, MINT AI and near misses stay",
+  T.isInternal({ name: "mint-internal-usage-probe" }) && !T.isInternal({ name: "tmp-9c" }) && !T.isInternal({ name: "MINT AI" }) && !T.isInternal({ name: "Mint internal notes" }) &&
+  !T.isInternal({ name: "my-mint-internal-x" }) && !T.isInternal({ name: null }) && !T.isInternal(null));
+
 // The ListAgents text as Claude Code 2.1.28x prints it (demo names).
 const LIST = [
   "This session is MINT AI [9733c9] — the name other sessions use to message it (it is not listed below; a message to it would be a message to yourself).",
@@ -146,6 +151,18 @@ async function send(text) { await idle(); await call("send", { text }); await sl
     check("after a restart (new pid, same session id) the session keeps its last delegation and its count", after && after.last_delegation && after.last_delegation.id === rn.id && after.delegations_today >= 1 && after.open_delegations >= 1, JSON.stringify(after && { pid: after.pid, last: after.last_delegation && after.last_delegation.id, today: after.delegations_today, open: after.open_delegations }));
     const still = (await call("ledger", { table: "delegations", limit: 10 })).data.rows.find((r) => r.id === rn.id);
     check("  and that delegation is not failed as 'no longer running' (found by session id)", still && still.status !== "failed", JSON.stringify(still));
+
+    // A usage probe (named mint-internal-usage-probe) and a real session someone started in /tmp ("tmp-9c").
+    agents([
+      { pid: 61011, sid: "demo-builder", name: "Demo Builder v2" },
+      { pid: 61002, sid: "demo-twin-1", name: "Twin" },
+      { pid: 61003, sid: "demo-twin-2", name: "Twin" },
+      { pid: 61020, sid: "demo-probe-1", name: "mint-internal-usage-probe", status: "busy" },
+      { pid: 61021, sid: "demo-tmp-1", name: "tmp-9c", status: "busy" },
+    ]);
+    let seen = null;
+    for (let i = 0; i < 40; i++) { const s = await call("sessions"); seen = s.data.sessions; if (seen.some((x) => x.name === "tmp-9c")) break; await sleep(150); }
+    check("the usage probe is never listed (no sphere); a real session in /tmp still is", seen && !seen.some((x) => x.name === "mint-internal-usage-probe" || x.session_id === "demo-probe-1") && seen.some((x) => x.name === "tmp-9c"), JSON.stringify(seen && seen.map((x) => x.name)));
 
     await sleep(2500); // a few sessions polls
     const rows = (await call("ledger", { table: "delegations", limit: 10 })).data.rows;

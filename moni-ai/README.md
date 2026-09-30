@@ -277,7 +277,13 @@ band in ~0.1 s even mid-turn, it does not touch the turn). The CLI answers from 
 claude.ai usage endpoint with its own login: the same data as its `/usage` dialog.
 No credential is read, held or passed by the supervisor. When MINT AI is not running,
 a throwaway CLI is started for the question (initialize + get_usage, no prompt, no
-model turn, no transcript) with the `MONI_AI_*` variables stripped. Only `/usage`'s
+model turn, no transcript) with the `MONI_AI_*` variables stripped. Like any
+Claude Code process it registers in root's session registry for its few seconds;
+unnamed, it got a name derived from its cwd ("tmp-9c") and flashed up as a working
+sphere. It is now named `mint-internal-usage-probe` (`-n` and
+`CLAUDE_CODE_SESSION_NAME`, plus `MINT_INTERNAL=1`), and the supervisor drops
+every registry entry whose name starts `mint-internal-` (`targets.isInternal`, the
+one narrow rule; hires may not use the prefix). Only `/usage`'s
 rows go on, with its labels and order: Current session (five_hour), Current week (all
 models) (seven_day), Current week (Sonnet only) for max/team plans, Current week
 (<model>) per `model_scoped`; a window with no utilization is skipped. Answers are

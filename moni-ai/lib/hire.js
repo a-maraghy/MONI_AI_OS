@@ -67,6 +67,7 @@ function checkHire({ name, cwd, purpose, model }, { live, hired, recent, cwdOpts
   const nm = String(name || "").trim().replace(/\s+/g, " ");
   if (!NAME_RE.test(nm)) return { error: "name must be 1-48 letters, digits, spaces and . _ ' ( ) & -" };
   if (names.isSelfName(nm)) return { error: "that name is MINT AI's own" };
+  if (targets.isInternal({ name: nm.toLowerCase() })) return { error: "names starting mint-internal- are reserved for Mint OS's own processes" };
   const slug = slugOf(nm);
   if (!slug) return { error: "that name has no letters or digits to make a slug from" };
   const n = targets.norm(nm);
