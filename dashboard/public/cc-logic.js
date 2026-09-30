@@ -291,7 +291,15 @@
     if (d.fix_command) meta.push("$ " + oneLine(d.fix_command, 80));
     var why = d.proposal || d.detail || (d.status === "investigating" ? "MINT AI is investigating…" : "");
     var out = { kind: retire ? "Retire" : d.kind === "watcher" ? "Watcher" : "Decision", icon: retire ? "stop" : "alert", title: oneLine(d.title || "A decision", 140), meta: meta.join(" · "), why: oneLine(why, 280), actions: [] };
-    if (retire && (d.status === "proposed" || d.status === "open")) {
+    if (d.kind === "cap") {
+      // A session at its daily token cap: Resume for today (the supervisor's budget-resume), or leave it
+      // paused -- as the Decisions sheet offers (cc-panels.js). Never "Investigate": MINT AI may be the one paused.
+      out.kind = "Daily token cap";
+      out.icon = "gauge";
+      var canResume = (d.actions || []).indexOf("resume") >= 0;
+      out.actions = (canResume ? [{ act: "resume", label: "Resume for today", primary: true, path: "decisions/" + id + "/resume", body: {} }] : [])
+        .concat([{ act: "dismiss", label: canResume ? "Leave paused" : "Dismiss", path: "decisions/" + id + "/dismiss", body: {} }, later]);
+    } else if (retire && (d.status === "proposed" || d.status === "open")) {
       out.actions = [
         { act: "approve", label: "Retire", primary: true, path: "decisions/" + id + "/approve", body: {} },
         { act: "dismiss", label: "Keep", path: "decisions/" + id + "/dismiss", body: {} },
@@ -317,7 +325,7 @@
 
   /** What the card says once a choice went through. */
   function doneText(act) {
-    return { approve: "Approved", deny: "Denied", dismiss: "Dismissed", investigate: "Asked MINT AI to investigate" }[act] || "Done";
+    return { approve: "Approved", deny: "Denied", dismiss: "Dismissed", investigate: "Asked MINT AI to investigate", resume: "Resumed for today" }[act] || "Done";
   }
 
   /* ------------------------------------------------------------ the dock */
