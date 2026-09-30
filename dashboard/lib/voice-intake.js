@@ -1,9 +1,10 @@
 "use strict";
 /**
- * A recording in, what was said out -- or nothing. Shared by the Command
- * Center's direct path (/mint-ai/api/transcribe), the front desk
- * (/mint-ai/api/desk/turn) and the console's dictation, so none of them can
- * send a transcript the others would drop. See lib/voice-guard.js for why.
+ * A recording in, what was said out -- or nothing. Used by the console's
+ * dictation (/console/:id/transcribe); until 2026-09-30 also by the Command
+ * Center's push to talk and the front desk, both removed (voice is live
+ * conversation only, and the live call has its own guards in
+ * lib/voice-live.js). See lib/voice-guard.js for why.
  *
  *   before OpenAI: a clip smaller than MIN_AUDIO_BYTES is not speech (a webm
  *                  header and a few frames); a clip the page measured as

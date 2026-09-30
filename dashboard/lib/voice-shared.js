@@ -1,106 +1,53 @@
 "use strict";
 /**
- * The voice front desk (TRIAL, off by default): a GPT realtime model that
- * holds the spoken conversation, so a simple question gets a quick answer
- * instead of a full MINT AI turn.
+ * What the live voice shares with the rest of the voice code: the output
+ * guard, the fixed lines, the supervisor door, the snapshot filter, and the
+ * guarded summary of MINT AI's replies.
  *
- * The administrator's standing choice is "voice only, Claude thinks", and this
- * does not change who thinks. The desk may do exactly two things:
+ * Until 2026-09-30 this was lib/voice-desk.js, the relay "front desk". The
+ * desk was removed when voice became live conversation only (Mint OS
+ * reorganisation); what the live call (lib/voice-live.js) still relies on
+ * stayed here:
  *
- *   read_status()   read a snapshot of this VPS (the supervisor's read-only
- *                   `snapshot` op: services, disk, memory, sessions, active
- *                   missions and steps, open decisions and pending approvals as
- *                   counts and titles -- never a command; no live Odoo)
- *   ask_moni(text)  hand the request to MINT AI as an ordinary `send` turn,
- *                   attributed to the panel user and marked via "voice-desk"
+ *   voiceOps(call, actor)  the only door to the supervisor: `snapshot` (read)
+ *                          and `send` (via "voice-desk", the supervisor's
+ *                          existing name for a voice hand-off) -- never
+ *                          approve, deny, interrupt, rules or decisions; and
+ *                          `send` refuses text that is an echo of a prompt
+ *                          (lib/voice-guard.js);
+ *   forModel(snap)         the read_status payload: counts and titles, no
+ *                          command-like field, secrets redacted again;
+ *   judge / guard / Releaser
+ *                          the output guard. It cuts a claim that something
+ *                          was done, deleted, restarted, pushed or approved (or
+ *                          is being); a promise of one; a figure found neither
+ *                          in the snapshot, nor in MINT AI's replies, nor in
+ *                          what the administrator said; a status claim with no
+ *                          snapshot behind it; "MINT AI said ..." (the voice IS
+ *                          MINT AI, first person); "I'm checking" with nothing
+ *                          being worked on. A summary is held to MINT AI's
+ *                          reply: a figure changed, a negation flipped, a
+ *                          recommendation it did not make, "I'll ask" turned
+ *                          into "done", a name or a path it did not give -- each
+ *                          is cut, and a pending approval that the summary left
+ *                          out is said anyway. Every rule holds in Egyptian and
+ *                          Modern Standard Arabic and in mixed sentences
+ *                          (lib/voice-arabic.js), and fails closed;
+ *   Summariser             a short spoken summary of one of MINT AI's replies,
+ *                          written by a text-only realtime response
+ *                          (SUMMARY_MODEL) and released sentence by sentence
+ *                          through the guard; a short plain reply is read word
+ *                          for word instead;
+ *   linesFor / langOf      the fixed lines (first person, in the language of
+ *                          the cut sentence, feminine / masculine / neutral in
+ *                          Arabic after the persona).
  *
- * and it talks: a short acknowledgement, a brief bit of small talk, an answer
- * from the snapshot -- and, when MINT AI's answer arrives, a short spoken
- * SUMMARY of it (the administrator's decision of 2026-09-29; the full text
- * stays on screen in the Command Center exactly as before). A reply that is
- * already one or two plain sentences is read word for word instead: there is
- * nothing to shorten.
+ * Cost: every summary's `usage` is priced (lib/voice-usage.js) and recorded by
+ * the caller under the usage part "desk" (the summariser's text model; the
+ * name is kept so older rows still add up).
  *
- * Enforcement, in layers (each holds without the others):
- *
- *   1. the realtime session is configured with only these two tools;
- *   2. a function call by any other name is refused here and never runs;
- *   3. deskOps() is the only door to the supervisor, and it opens for two ops:
- *      `snapshot` (read) and `send` (with via "voice-desk") -- never approve,
- *      deny, interrupt, rules or decisions; and `send` refuses text that is an
- *      echo of a prompt (the transcription prompt, these instructions, a tool
- *      description -- lib/voice-guard.js), as does ask_moni, which also needs
- *      a real transcript for this turn that passed the transcript guard --
- *      and what ask_moni sends is that transcript, the administrator's own
- *      words, never the model's `text` (a paraphrase can change the meaning);
- *   4. the output guard reads the desk's words. The desk answers in TEXT; a
- *      sentence is spoken (by the ordinary verbatim reader, lib/voice.js) only
- *      once the guard has passed it, so what is heard is exactly what was
- *      checked. It cuts a claim that something was done, deleted, restarted,
- *      pushed or approved (or is being); a promise of one; a figure found
- *      neither in the snapshot, nor in MINT AI's replies, nor in what the
- *      administrator said; a status claim with no snapshot behind it; "MINT AI
- *      said ..." before MINT AI has replied; "I've passed that on" with no
- *      ask_moni call behind it. A summary is held to MINT AI's reply: a figure
- *      changed or rounded wrongly, a negation flipped, a recommendation MINT AI
- *      did not make, "I'll ask the administrator" turned into "done", a name or
- *      a path it did not give -- each is cut, and a pending approval that the
- *      summary left out is said anyway.
- *
- * Arabic (M-3 Phase 0, 2026-09-29). Every rule above holds in Egyptian and
- * Modern Standard Arabic and in mixed sentences (lib/voice-arabic.js): figures
- * in Arabic-Indic or Eastern digits or in Arabic words, the Arabic claim,
- * promise, approval, negation and hedge words with their clitics, and \b / \w
- * that see Arabic letters. It fails closed: a sentence in a script it cannot
- * read, or an Arabic past-tense result verb it does not know, is not spoken.
- * The fixed lines are said in the cut sentence's language.
- *
- * Language (2026-09-29, the administrator's choice: "replies in my language
- * and saves the persona based on how I speak"): the desk answers in the
- * language of the administrator's last utterance (replyLanguage, sent with
- * every response as instructionsFor). Arabic, or Arabic mixed with English,
- * gets Arabic in the register the administrator uses (Egyptian or MSA), with
- * English technical terms in Latin script; the voice's own grammatical gender
- * follows how the administrator addresses it, gender-neutral until that is
- * known (lib/voice-persona.js, saved per user). Summaries and fixed lines
- * follow the same rule. The guard reads feminine and masculine Egyptian forms
- * («أنا عاملة ده», «مشغّلاه», «أنا عامله»: lib/voice-arabic.js participles).
- *
- * Sentence by sentence. A sentence is released as soon as the guard has
- * checked it, instead of holding the whole reply. That must not let a later
- * sentence change the meaning of one already heard ("Restarting Odoo." ...
- * "Done."). So the guard judges every sentence with the ones before it (a
- * confirmation after an action sentence is a claim about THAT sentence; "it"
- * borrows its subject from the sentence before), and a sentence that cannot be
- * judged alone -- one that mentions an action, a fragment, a hand-off whose
- * ask_moni call is not known yet -- is held until the next one (or the end)
- * arrives. What is released has passed the guard in the context that decides
- * it; whatever comes later can only cut itself.
- *
- * Cost. Every response's `usage` is priced (lib/voice-usage.js, the official
- * list read 2026-09-29) and recorded, with the speech of what the desk says,
- * per voice turn and per kind of turn (small talk, snapshot answer, hand-off).
- * There is no cap: the Command Center shows the spend instead (the
- * administrator's decision of 2026-09-29).
- *
- * Speech is streamed (createSpeaker): each released line is read at once by
- * the verbatim reader and its audio goes to the page as it arrives, strictly
- * in line order.
- *
- * One identity (the administrator, 2026-09-29: "you are MINT AI; don't say you
- * delegate to MINT AI; talk to me as MINT AI; you can take time to think, and
- * while you think build a report with me or just talk"). The voice speaks AS
- * MINT AI, in the first person: ask_moni is its own thinking and doing (the
- * supervisor still does the work), a pending request is "give me a moment,
- * I'm checking" / «ثانية أشوفلك», and a result is spoken as "I found..." /
- * «لقيت إن...». The guard holds that honest: "I'm checking" only while a
- * request really is being worked on, "I found" and "I did" only from a real
- * result, and never "I passed that to MINT AI" or "MINT AI says" (third-person).
- * While waiting it may keep talking -- acknowledge, clarify, small talk, help
- * draft a report -- but no progress, finding or result is invented.
- *
- * Everything runs on the server, like the rest of the voice: the browser never
- * talks to OpenAI and never sees the key.
+ * Everything runs on the server: the browser never talks to OpenAI and never
+ * sees the key.
  */
 
 const WebSocket = require("ws");
@@ -114,24 +61,13 @@ const UiActions = require("../public/ui-actions");
 const uni = arabic.uni; // \b and \w that see Arabic letters as letters (lib/voice-arabic.js)
 
 const WS_BASE = process.env.MONI_OPENAI_WS || "wss://api.openai.com/v1";
-const DESK_MODEL = "gpt-realtime-mini";
+// The summariser's text model (a text-only realtime response; its tokens are
+// recorded under the usage part "desk").
+const SUMMARY_MODEL = "gpt-realtime-mini";
 const RATE = 24000;
 const RESPONSE_TIMEOUT_MS = 20000;
-const MAX_ROUNDS = 4; // tool call -> answer, at most a few times per utterance
-// One hand-off per utterance: what reaches MINT AI is the administrator's own
-// words (see runTool), and the same words twice would be the same request twice.
-const MAX_ASKS_PER_TURN = 1;
-const MAX_ASK_CHARS = 2000;
 const IDLE_MS = 10 * 60 * 1000;
 const MAX_AGE_MS = 25 * 60 * 1000;
-const GROUNDED_MS = 5 * 60 * 1000; // a snapshot this old still counts as read
-// The conversation a kept session carries is re-read (mostly from the prompt
-// cache) on every response. Past either limit the next utterance starts a
-// fresh session; unanswered requests carry over. See the README for the
-// trade-off measured on the real model.
-const MAX_TURNS_PER_SESSION = 12;
-const MAX_CONTEXT_TOKENS = 12000;
-const REPLY_IN_CONTEXT_CHARS = 1500;
 const SUMMARY_MAX_TOKENS = 220;
 const VERBATIM_MAX_CHARS = 220; // a reply this short, in plain prose, is read as it is
 
@@ -214,70 +150,8 @@ const PRICES = usageLib.PRICES;
 const tokensOf = usageLib.realtimeTokens;
 const addTokens = usageLib.addTokens;
 function costOf(tokens, model) {
-  return usageLib.costOf(tokens, PRICES[model] ? model : DESK_MODEL);
+  return usageLib.costOf(tokens, PRICES[model] ? model : SUMMARY_MODEL);
 }
-
-/* --------------------------------------------------------------- tools -- */
-
-const TOOLS = [
-  {
-    type: "function",
-    name: "read_status",
-    description:
-      "Read a fresh, read-only snapshot of this VPS: services and their state, disk, memory, CPU and load, the live Claude sessions, " +
-      "your own state, active missions with their steps, open decisions and pending approvals (counts and titles only). " +
-      "Call it before answering any question about the machine. It knows nothing else: not Odoo's data, not backups, not logs, not files.",
-    parameters: { type: "object", properties: {}, additionalProperties: false },
-  },
-  {
-    type: "function",
-    name: "ask_moni",
-    description:
-      "Your own thinking and doing: work on the administrator's request properly (look into it, reason about it, act on it) -- it takes " +
-      "a while, and your result arrives later. Use it for anything that is not answered by the snapshot, for every action or change of any " +
-      "kind (delete, restart, push, deploy, approve, deny, fix, run, send), and whenever you are unsure. When the result arrives, a short " +
-      "spoken summary of it is read to the administrator in your voice.",
-    parameters: {
-      type: "object",
-      properties: { text: { type: "string", description: "The request, in the administrator's own words as closely as possible." } },
-      required: ["text"],
-      additionalProperties: false,
-    },
-  },
-];
-// Screen control (UI control Phase 1, 2026-09-29): the page-side actions of the shared allowlist.
-TOOLS.push(UiActions.tool());
-Object.freeze(TOOLS);
-const TOOL_NAMES = new Set(TOOLS.map((t) => t.name));
-
-const INSTRUCTIONS = [
-  "You are the voice of MINT AI, the assistant that runs this VPS. The administrator is speaking to you; your words are read aloud. You speak as MINT AI, in the first person (\"I\"): one identity.",
-  "You never work anything out yourself and you never act. You do exactly three things:",
-  "1. Answer questions about the machine's current state, but ONLY from the read_status tool. Call read_status first, then answer from it and nothing else. Quote figures exactly as the snapshot gives them.",
-  "2. Hand everything else to your own deeper work by CALLING the ask_moni tool first; its output tells you what to say.",
-  "3. Small talk: a greeting, thanks, \"how are you\", \"can you hear me\" get one short, friendly, honest sentence. Small talk never includes the state of the machine, a service, a task or a request: for those, use read_status or ask_moni first.",
-  "Only an ask_moni call starts any checking: never say you are checking or looking into something unless you called it (or a request is still being worked on).",
-  "Hard rules:",
-  "- If the answer is not in the snapshot, do not guess and do not answer from general knowledge: call ask_moni right away, in the same response. Do not merely say you will look.",
-  "- Every request to do or change something (delete, restart, stop, start, push, deploy, approve, deny, fix, run, install, send a message) goes to ask_moni. You cannot do these yourself.",
-  "- Never say that anything was done, deleted, restarted, pushed, approved or fixed, or that it is being done, and never promise that it will be -- unless your result says so.",
-  "- Never invent your result. Your results reach you as system messages beginning \"Your result for request\". Until one has, say you are still checking; then say what you found (\"I found...\"), and only what it says.",
-  "- Never say you passed, sent, forwarded or delegated anything, and never speak of MINT AI as someone else.",
-  "- Never quote a number that is not in the snapshot or in your results.",
-  "- Approvals and decisions are for the administrator to decide in the Command Center; you cannot approve or deny anything.",
-  "- The screen: when the administrator asks you to change what they see on this Command Center (open or close a panel, show the missions, the last reply or the waiting card, switch the core or the voice mode), call ui_action. " +
-    "Say what you did only after it returns ok (\"I opened Missions.\"). It cannot approve, deny or change settings. " +
-    "Closing a panel (\"close the missions\", «اقفلي المهام», «اقفل الميشنز») is sheet.close, never ending the call; the panel names in Arabic are in the tool's description. " +
-    "Opening another page of Mint OS (\"open the OS dashboard\", \"the agents dashboard\", \"users\") is ui_action page.open with its page key; it opens in the Command Center's frame. " +
-    "Changing the theme (theme.set), the Arabic voice persona (persona.set) or the voice's sound (voice.set) also goes through ui_action, but it only ASKS: the result is status confirm and nothing has changed. " +
-    "Then say only the waiting line (below): \"Waiting for your confirmation.\" Never tell them to say yes, never say you set, changed or switched it.",
-  "While a request is being worked on you may keep talking naturally: acknowledge, say in general terms what you are looking at, ask a clarifying question, make small talk, or help the administrator draft or structure a report from what they tell you -- without inventing progress or results.",
-  "Language: reply in the language of the administrator's LAST utterance: English gets English; Arabic, or Arabic mixed with English, gets Arabic in the register the administrator used " +
-    "(Egyptian colloquial if they speak Egyptian, Modern Standard Arabic if they speak MSA), with technical terms kept in English in Latin script (Odoo, disk, restart, dashboard). " +
-    "A note at the end says which, and how to refer to yourself.",
-  "You are MINT AI's voice, not a person: you never claim to be human.",
-  "Style: one or two short spoken sentences, no lists, no markdown.",
-].join("\n");
 
 /**
  * The language to answer in: that of the administrator's last utterance.
@@ -288,17 +162,6 @@ const INSTRUCTIONS = [
 function replyLanguage(utterance) {
   return arabic.isArabic(String(utterance || "")) ? "ar" : "en";
 }
-/**
- * The desk's instructions for one response: the language of this utterance,
- * and for Arabic the register and the voice's own gender, from how the
- * administrator speaks (lib/voice-persona.js). `utterance` is the text heard;
- * `persona` the saved one (already merged with this utterance).
- */
-function instructionsFor(utterance, persona) {
-  const w = personaLib.waitingLine(persona);
-  return INSTRUCTIONS + "\nThe waiting line, after a confirm is asked: \"" + w.en + "\" (only if they speak Arabic: «" + w.ar + "»)." + "\n" + personaLib.noteFor(personaLib.detect(utterance), persona);
-}
-
 const SUMMARY_INSTRUCTIONS = [
   "You are MINT AI. The text below is your own finished work on the administrator's request, written by you. Turn it into a short spoken summary for the administrator, who can see the full text on screen.",
   "Rules:",
@@ -324,10 +187,10 @@ function summaryLanguage(utterance, persona) {
 
 /* ------------------------------------------------ the supervisor door -- */
 
-/** The only supervisor ops the desk may ever reach, and how. */
-const DESK_OPS = Object.freeze({ snapshot: "read", send: "write" });
+/** The only supervisor ops the voice may ever reach, and how. */
+const VOICE_OPS = Object.freeze({ snapshot: "read", send: "write" });
 
-class DeskError extends Error {
+class OpsError extends Error {
   constructor(message, code) {
     super(message);
     this.code = code || "error";
@@ -335,12 +198,15 @@ class DeskError extends Error {
 }
 
 /**
- * `call(op, params, actor)` is moniai.call. Everything the desk does to the
+ * `call(op, params, actor)` is moniai.call. Everything the voice does to the
  * supervisor goes through here, and here only `snapshot` and `send` pass.
+ * A hand-off is sent `via: "voice-desk"`, the supervisor's name for a turn
+ * the voice passed on (moni-ai/lib/protocol.js; kept so the MCP side is
+ * unchanged).
  */
-function deskOps(call, actor) {
+function voiceOps(call, actor) {
   const gate = (op, params) => {
-    if (!Object.prototype.hasOwnProperty.call(DESK_OPS, op)) throw new DeskError("the voice front desk may not call " + String(op).slice(0, 40), "refused");
+    if (!Object.prototype.hasOwnProperty.call(VOICE_OPS, op)) throw new OpsError("the voice may not call " + String(op).slice(0, 40), "refused");
     return call(op, params, actor);
   };
   return {
@@ -349,23 +215,13 @@ function deskOps(call, actor) {
     // extra.ut: the one-time ui token this server minted for the tab (UI control Phase 2).
     ask: (text, extra) => {
       const t = String(text || "").trim();
-      if (!t) throw new DeskError("nothing to pass on", "invalid");
+      if (!t) throw new OpsError("nothing to pass on", "invalid");
       const door = voiceGuard.refuseAtDoor(t);
-      if (door) throw new DeskError(`refused: that reads as ${door.source || "a prompt"}, not as something the administrator said`, "refused");
+      if (door) throw new OpsError(`refused: that reads as ${door.source || "a prompt"}, not as something the administrator said`, "refused");
       const ut = extra && typeof extra.ut === "string" ? extra.ut : null;
       return gate("send", { text: t.slice(0, 20000), via: "voice-desk", ...(ut ? { ut } : {}) });
     },
   };
-}
-
-/** A hand-off's ui token, minted by the server for the tab that spoke (or nothing). */
-function uiExtra(turn) {
-  try {
-    const ut = turn && typeof turn.uiTicket === "function" ? turn.uiTicket() : null;
-    return ut ? { ut } : undefined;
-  } catch (_) {
-    return undefined;
-  }
 }
 
 /* ------------------------------------------------ what the model sees -- */
@@ -385,7 +241,7 @@ function strip(v) {
 /**
  * The read_status payload. The supervisor's snapshot is already counts and
  * titles; this is the second lock -- no command-like field survives it, secrets
- * are redacted again, and the desk's own requests appear as answered or not
+ * are redacted again, and the voice's own requests appear as answered or not
  * (their replies reach the model as system messages instead).
  */
 function forModel(snap) {
@@ -517,7 +373,7 @@ function numbersIn(text) {
   return out;
 }
 
-/** Every figure the desk may say, with their plain roundings. */
+/** Every figure the voice may say, with their plain roundings. */
 function numberSet(texts) {
   const s = new Set();
   for (const t of texts) {
@@ -955,7 +811,7 @@ function withAnchors(list) {
 /**
  * Judge sentences in order, each with the ones before it.
  *
- * @param sentences  the desk's sentences (sentencesOf)
+ * @param sentences  the voice's sentences (sentencesOf)
  * @param ctx   { numbers: Set, replyText, snapshotText, heardText, replied,
  *                grounded, summary: bool (the words are a summary of replyText) }
  * @returns { ok: true } or { ok: false, rule, match, at } -- `at` is the index
@@ -1098,7 +954,7 @@ function replyDoing(reply, word) {
 }
 
 /**
- * The Arabic rules at the desk, for one clause (normalized, hand-off removed):
+ * The Arabic rules for the voice's own words, for one clause (normalized, hand-off removed):
  * the same claims the English rules cut, read with the Arabic lexicon.
  *   I did / we did / I am doing it        → action-claim   (CLAIM_FIRST, PROGRESSIVE_FIRST)
  *   done / it was done / it is being done → action-claim, unless MINT AI's
@@ -1164,7 +1020,7 @@ function arabicSummaryRule(cl, replyDid) {
 }
 
 /**
- * Check the desk's own words (all of them, as one text).
+ * Check the voice's own words (all of them, as one text).
  * @returns { ok: true } or { ok: false, rule, match, at }
  */
 function guard(text, ctx) {
@@ -1291,19 +1147,21 @@ class Releaser {
   }
 }
 
-/* ------------------------------------------------------ the session -- */
+/* ------------------------------------------------------ the summariser -- */
 
 let seq = 0;
 
 /**
- * One realtime conversation, for one panel user. `ops` is deskOps(). The desk
- * answers in text; its sentences are spoken, once released, by the caller.
+ * Short spoken summaries of MINT AI's replies, for one panel user: one
+ * realtime session answering in text only, with no tools and no conversation
+ * of its own (every summary is an out-of-band response). `ops` is voiceOps();
+ * its sentences are spoken, once released, by the caller.
  */
-class DeskSession {
-  constructor({ key, voice, model, ops, wsBase, log, sayId }) {
+class Summariser {
+  constructor({ key, voice, model, ops, wsBase, log }) {
     this.key = key;
     this.voice = voice || "marin";
-    this.model = model || DESK_MODEL;
+    this.model = model || SUMMARY_MODEL;
     this.ops = ops;
     this.wsBase = wsBase || WS_BASE;
     this.log = log || (() => {});
@@ -1314,25 +1172,14 @@ class DeskSession {
     this.ready = null;
     this.handler = null;
     this.queue = Promise.resolve();
-    this.requests = new Map(); // turn id -> { text, answered, reply }
-    this.replies = []; // MINT AI's replies the desk has been given
-    this.heard = []; // what the administrator said
-    this.snapshotText = "";
-    this.groundedAt = 0;
-    this.lastInputTokens = 0;
     this.inflight = 0;
     this.usage = {}; // billable tokens, whole session
-    this.stats = { rejected: 0, trips: 0, turns: 0, summaries: 0, refusedAsks: 0, refusedHeard: 0 };
-    this.id = sayId || "desk" + ++seq;
+    this.stats = { trips: 0, summaries: 0 };
+    this.id = "sum" + ++seq;
   }
 
   usable() {
     return !this.dead && Date.now() - this.bornAt < MAX_AGE_MS && (!this.ws || this.ws.readyState <= WebSocket.OPEN);
-  }
-
-  /** Has this conversation grown past what is worth carrying? */
-  full() {
-    return this.stats.turns >= MAX_TURNS_PER_SESSION || this.lastInputTokens >= MAX_CONTEXT_TOKENS;
   }
 
   open() {
@@ -1354,14 +1201,14 @@ class DeskSession {
         res.on("data", (d) => {
           if (body.length < 4096) body += d;
         });
-        res.on("end", () => fail(new DeskError("OpenAI refused the front desk (" + res.statusCode + "): " + scrub(body), res.statusCode === 401 ? "auth" : "upstream")));
+        res.on("end", () => fail(new OpsError("OpenAI refused the summary session (" + res.statusCode + "): " + scrub(body), res.statusCode === 401 ? "auth" : "upstream")));
       });
-      ws.on("error", (e) => fail(new DeskError("Could not reach OpenAI: " + scrub(e.message), "network")));
-      ws.on("close", () => fail(new DeskError("OpenAI closed the front desk's connection", "upstream")));
+      ws.on("error", (e) => fail(new OpsError("Could not reach OpenAI: " + scrub(e.message), "network")));
+      ws.on("close", () => fail(new OpsError("OpenAI closed the summary session's connection", "upstream")));
       ws.on("open", () => {
         this.send({
           type: "session.update",
-          session: { type: "realtime", instructions: INSTRUCTIONS, output_modalities: ["text"], tools: TOOLS, tool_choice: "auto", max_output_tokens: 400 },
+          session: { type: "realtime", instructions: SUMMARY_INSTRUCTIONS, output_modalities: ["text"], tools: [], tool_choice: "none", max_output_tokens: 400 },
         });
       });
       ws.on("message", (data) => {
@@ -1376,7 +1223,7 @@ class DeskSession {
             opened = true;
             return resolve(this);
           }
-          if (ev.type === "error") return fail(new DeskError(scrub((ev.error && ev.error.message) || "OpenAI error"), "upstream"));
+          if (ev.type === "error") return fail(new OpsError(scrub((ev.error && ev.error.message) || "OpenAI error"), "upstream"));
           return;
         }
         if (this.handler) this.handler(ev);
@@ -1400,62 +1247,16 @@ class DeskSession {
     }
   }
 
-  /** Guard context from everything the desk has been given so far. */
-  context(extraHeard) {
-    const heard = extraHeard ? [...this.heard, extraHeard] : this.heard;
-    const ids = [...this.requests.keys()].map(String);
-    return {
-      numbers: numberSet([this.snapshotText, ...this.replies, ...heard, ...ids]),
-      replyText: this.replies.join("\n"),
-      snapshotText: this.snapshotText,
-      replied: this.replies.length > 0,
-      grounded: Date.now() - this.groundedAt < GROUNDED_MS,
-      uiOk: !!(this.curTurn && this.curTurn.uiOk), // "I opened Missions": only after an ok ui_action this turn
-    };
-  }
-
-  /** Tell the model about a reply (clipped: the conversation is re-read every response). */
-  noteReply(id, reply, spoken) {
-    const clipped = reply.length > REPLY_IN_CONTEXT_CHARS ? reply.slice(0, REPLY_IN_CONTEXT_CHARS) + " [...the rest is on the administrator's screen]" : reply;
-    const how = spoken ? `the administrator heard this summary of it: "${spoken}", and has the full text on screen` : "the administrator has it on screen";
-    this.send({
-      type: "conversation.item.create",
-      item: { type: "message", role: "system", content: [{ type: "input_text", text: `Your result for request ${id} (${how}):\n${clipped}` }] },
-    });
-  }
-
-  /** Learn the replies to earlier requests, and tell the model about them. */
-  async refreshReplies() {
-    const pending = [...this.requests.entries()].filter(([, r]) => !r.answered).map(([id]) => id);
-    if (!pending.length) return;
-    let snap;
-    try {
-      snap = await this.ops.snapshot(pending);
-    } catch (e) {
-      this.log("desk: could not refresh replies: " + e.message);
-      return;
-    }
-    for (const r of snap.requests_to_moni_ai || []) {
-      const mine = this.requests.get(r.id);
-      if (!mine || mine.answered || !r.answered) continue;
-      mine.answered = true;
-      mine.reply = String(r.reply || "");
-      this.replies.push(mine.reply);
-      this.noteReply(r.id, mine.reply, null);
-    }
-  }
-
   /**
-   * One realtime response: text and function calls, released sentence by
-   * sentence through `rel`. `create` is the response.create payload (an
-   * out-of-band summary passes its own).
+   * One realtime response, released sentence by sentence through `rel`.
+   * `create` is the response.create payload.
    */
   respond(t0, timings, rel, info, create) {
     return new Promise((resolve, reject) => {
-      const st = { text: "", calls: [], itemIds: [], status: null, usage: null };
+      const st = { text: "", itemIds: [], status: null, usage: null };
       const timer = setTimeout(() => {
         this.handler = null;
-        reject(new DeskError("the front desk took too long to answer", "timeout"));
+        reject(new OpsError("the summary took too long", "timeout"));
       }, RESPONSE_TIMEOUT_MS);
       let cancelled = false;
       const check = (final) => {
@@ -1478,16 +1279,13 @@ class DeskSession {
             if (ev.error && /no active response|cancel/i.test(String(ev.error.message || ev.error.code || ""))) return;
             clearTimeout(timer);
             this.handler = null;
-            return reject(new DeskError(scrub((ev.error && ev.error.message) || "OpenAI error"), "upstream"));
+            return reject(new OpsError(scrub((ev.error && ev.error.message) || "OpenAI error"), "upstream"));
           case "response.output_text.delta":
           case "response.output_audio_transcript.delta":
           case "response.audio_transcript.delta":
             if (!timings.firstText) timings.firstText = Date.now() - t0;
             st.text += ev.delta || "";
             if (!rel.trip) check(false);
-            break;
-          case "response.output_item.added":
-            if (ev.item && ev.item.type === "message" && ev.item.id) st.itemIds.push(ev.item.id);
             break;
           case "response.done": {
             clearTimeout(timer);
@@ -1496,9 +1294,7 @@ class DeskSession {
             st.status = r.status || "completed";
             st.usage = r.usage || null;
             for (const o of r.output || []) {
-              if (o.type === "function_call") st.calls.push({ name: o.name, call_id: o.call_id, arguments: o.arguments });
               if (o.type === "message") {
-                if (o.id && !st.itemIds.includes(o.id)) st.itemIds.push(o.id);
                 // The finished text is authoritative (deltas can be missed on a cancel).
                 const full = (o.content || []).map((p) => p.transcript || p.text || "").join("");
                 if (full && !rel.trip) st.text = full;
@@ -1506,7 +1302,7 @@ class DeskSession {
             }
             if (r.status === "failed") {
               const d = r.status_details || {};
-              return reject(new DeskError("OpenAI did not finish: " + scrub((d.error && d.error.message) || d.reason || "failed"), "upstream"));
+              return reject(new OpsError("OpenAI did not finish: " + scrub((d.error && d.error.message) || d.reason || "failed"), "upstream"));
             }
             if (!rel.trip) check(true);
             return resolve(st);
@@ -1515,26 +1311,21 @@ class DeskSession {
             break;
         }
       };
-      // The calls of this very response back a hand-off said in it.
-      const askedNow = info.askedNow;
-      info.askedNow = () => askedNow() || st.calls.some((c) => c.name === "ask_moni");
-      info.lookedNow = () => st.calls.some((c) => c.name === "read_status");
-      this.send(create || { type: "response.create" });
+      this.send(create);
     });
   }
 
   /**
    * respond(), retried once when OpenAI reports a transient server error and
-   * nothing of the response was released (seen once in ~70 real calls on
-   * 2026-09-29: "The server had an error while processing your request").
+   * nothing of the response was released.
    */
   async respondOnce(t0, timings, relFn, info, create) {
     let rel = relFn();
     try {
       return { st: await this.respond(t0, timings, rel, info, create), rel };
     } catch (e) {
-      if (!(e instanceof DeskError) || e.code !== "upstream" || !/server had an error|server_error|try again|retry/i.test(e.message) || rel.released) throw e;
-      this.log("desk: OpenAI server error, retrying once: " + e.message.slice(0, 120));
+      if (!(e instanceof OpsError) || e.code !== "upstream" || !/server had an error|server_error|try again|retry/i.test(e.message) || rel.released) throw e;
+      this.log("summary: OpenAI server error, retrying once: " + e.message.slice(0, 120));
       rel = relFn();
       return { st: await this.respond(t0, timings, rel, info, create), rel };
     }
@@ -1546,123 +1337,9 @@ class DeskSession {
     const t = tokensOf(st.usage);
     turn.tokens = addTokens(turn.tokens, t);
     this.usage = addTokens(this.usage, t);
-    this.lastInputTokens = (st.usage.input_tokens || 0);
   }
 
-  /**
-   * ui_action in the relay desk: the page-side actions of the allowlist
-   * (public/ui-actions.js), sent back in this turn's stream to the tab that
-   * sent the audio (opts.onUi). There is no live call here, so call.* is
-   * refused. The page checks the same allowlist before it acts.
-   */
-  uiAction(args, turn) {
-    const refuse = (why) => {
-      turn.rejected.push("ui_action:" + String(why).slice(0, 40));
-      this.log(`desk: refused a ui_action (${String(why).slice(0, 80)})`);
-      return JSON.stringify({ error: "refused: " + why + ". Tell the administrator plainly that you could not do it." });
-    };
-    if (!turn.grounded || !turn.heard || !turn.onUi) return refuse("only when the administrator asked in this turn, from the Command Center");
-    const f = UiActions.fromTool(args);
-    if (f.extra.length) return refuse("unknown arguments");
-    const v = UiActions.validate(f.action, f.args);
-    if (!v.ok) return refuse(v.why);
-    if (v.where !== "page") return refuse("there is no live call in this voice mode");
-    if (!this.uiLimit) this.uiLimit = UiActions.limiter();
-    const lim = this.uiLimit.take(this.stats.turns, v.action, Date.now());
-    if (lim) return refuse(lim);
-    const toast = UiActions.toast(v.action, v.args);
-    if (v.tier === 2) {
-      // A preference (theme / persona / voice): the page asks, the server checks the answer.
-      const o = turn.openConfirm ? turn.openConfirm(v) : { error: "a preference cannot be changed from here" };
-      if (!o || o.error) return refuse((o && o.error) || "not now");
-      try {
-        turn.onUi({ type: "ui", nonce: Math.random().toString(36).slice(2, 12), action: v.action, args: v.args, toast: o.question, confirm: o.id });
-      } catch (e) {
-        return refuse("the screen could not be reached");
-      }
-      turn.ui.push(v.action + ":confirm");
-      turn.tools.push("ui_action");
-      return JSON.stringify({ status: "confirm", asked: o.question, note: "Nothing has changed yet: the screen asks the administrator to confirm. Say only the waiting line from your instructions (\"Waiting for your confirmation.\", or its Arabic there). Never tell them to say yes, and never say it is done, set or switched." });
-    }
-    try {
-      turn.onUi({ type: "ui", nonce: Math.random().toString(36).slice(2, 12), action: v.action, args: v.args, toast });
-    } catch (e) {
-      return refuse("the screen could not be reached");
-    }
-    turn.uiOk = true;
-    turn.ui.push(v.action);
-    turn.tools.push("ui_action");
-    return JSON.stringify({ status: "ok", done: toast, note: "Say in one short first-person sentence what you did." });
-  }
-
-  /** Run one tool call. Returns the output string for the model. */
-  async runTool(call, turn) {
-    if (!TOOL_NAMES.has(call.name)) {
-      this.stats.rejected++;
-      turn.rejected.push(String(call.name).slice(0, 60));
-      this.log(`desk: refused a call to an unknown tool ${JSON.stringify(String(call.name).slice(0, 60))}`);
-      return JSON.stringify({ error: "refused: that tool does not exist. You have read_status, ask_moni and ui_action only." });
-    }
-    let args = {};
-    try {
-      args = call.arguments ? JSON.parse(call.arguments) : {};
-    } catch (_) {
-      return JSON.stringify({ error: "the arguments were not valid JSON" });
-    }
-    if (!args || typeof args !== "object" || Array.isArray(args)) args = {};
-    if (call.name === "ui_action") return this.uiAction(args, turn);
-    if (call.name === "read_status") {
-      if (Object.keys(args).length) return JSON.stringify({ error: "read_status takes no arguments" });
-      const snap = forModel(await this.ops.snapshot());
-      const json = JSON.stringify(snap);
-      this.snapshotText = json.toLowerCase();
-      this.groundedAt = Date.now();
-      turn.tools.push("read_status");
-      turn.snapshotChars = json.length;
-      return json;
-    }
-    // ask_moni
-    const text = typeof args.text === "string" ? args.text.trim() : "";
-    const extra = Object.keys(args).filter((k) => k !== "text");
-    if (!text || text.length > MAX_ASK_CHARS || extra.length) return JSON.stringify({ error: "ask_moni takes one field, text, of 1 to " + MAX_ASK_CHARS + " characters" });
-    if (turn.asked.length >= MAX_ASKS_PER_TURN) return JSON.stringify({ error: "you are already working on this request; do not call ask_moni again" });
-    // What MINT AI receives is this server's own transcript of the turn -- the
-    // administrator's words, grounded by the intake -- never the model's `text`,
-    // which can be a paraphrase that changes the meaning ("restart" heard,
-    // "restore" asked). The model's text is not sent at all, not even as a
-    // note; it is only checked, so a prompt echoed into it still refuses the
-    // call. No grounded transcript, no hand-off.
-    const request = String(turn.heard || "").trim();
-    const why = !turn.grounded || !request ? "ungrounded" : voiceGuard.refuseAtDoor(text) || voiceGuard.refuseAtDoor(request) ? "echo" : null;
-    if (why) {
-      this.stats.refusedAsks = (this.stats.refusedAsks || 0) + 1;
-      turn.rejected.push("ask_moni:" + why);
-      this.log(`desk: refused an ask_moni (${why})`);
-      return JSON.stringify({ error: "refused: ask_moni works only on what the administrator said in this turn. Say you did not catch that." });
-    }
-    if (norm(text).replace(/[^\p{L}\p{N}]/gu, "") !== norm(request).replace(/[^\p{L}\p{N}]/gu, "")) turn.paraphrased = true; // counted, never logged in words
-    const r = await this.ops.ask(request, uiExtra(turn));
-    const t = r && r.turn;
-    if (t && t.id) this.requests.set(t.id, { text: request, answered: false, reply: null });
-    turn.asked.push(t || null);
-    turn.tools.push("ask_moni");
-    return JSON.stringify({
-      status: "working on it",
-      request: t ? t.id : null,
-      queued_behind_other_work: !!(r && r.queued_behind),
-      note: "Your result is NOT ready yet. Say one short first-person line that you are on it (\"Give me a moment, I'm checking.\"); state no finding, progress or result. Its summary is read aloud in your voice when it arrives.",
-    });
-  }
-
-  /**
-   * One utterance in; what to say out. `opts.onLine(line)` is called for each
-   * line as soon as it may be spoken ({text, safe}). Serialised per session.
-   */
-  turn(heard, opts) {
-    return this.serial(() => this._turn(heard, opts || {}));
-  }
-
-  /** One thing at a time per conversation; `inflight` keeps deskFor from replacing a busy desk. */
+  /** One summary at a time; `inflight` keeps summariserFor from replacing a busy one. */
   serial(fn) {
     this.inflight++;
     const run = this.queue.then(fn);
@@ -1674,122 +1351,14 @@ class DeskSession {
     return run;
   }
 
-  async _turn(heard, opts) {
-    await this.open();
-    this.usedAt = Date.now();
-    this.stats.turns++;
-    const said = String(heard || "").trim().slice(0, 4000);
-    if (!said) throw new DeskError("nothing heard", "invalid");
-    const timings = {};
-    const t0 = Date.now();
-    // What was "heard" must be words, not a prompt echoed back by the
-    // transcription model (the route has checked it already; this holds
-    // without it). Nothing reaches the model or MINT AI.
-    const echo = voiceGuard.refuseAtDoor(said);
-    if (echo) {
-      this.stats.refusedHeard = (this.stats.refusedHeard || 0) + 1;
-      this.log(`desk: dropped an utterance that reads as ${echo.source || "a prompt"} (${echo.rule})`);
-      const empty = { kind: "turn", heard: "", asked: [], tools: [], rejected: ["heard:" + echo.rule], lines: [], trip: null, tokens: {}, responses: 0, dropped: echo.rule };
-      timings.done = Date.now() - t0;
-      return this.result(empty, timings);
-    }
-    await this.refreshReplies();
-    this.heard.push(said);
-    const turn = { kind: "turn", heard: said, grounded: true, asked: [], tools: [], rejected: [], lines: [], trip: null, tokens: {}, responses: 0, ui: [], onUi: opts.onUi, uiTicket: opts.uiTicket, openConfirm: opts.openConfirm };
-    this.curTurn = turn;
-    const emit = (line) => {
-      turn.lines.push(line);
-      if (!timings.firstLine) timings.firstLine = Date.now() - t0;
-      if (opts.onLine) opts.onLine(line, Date.now() - t0);
-    };
-    this.send({ type: "conversation.item.create", item: { type: "message", role: "user", content: [{ type: "input_text", text: said }] } });
-    let heardThisResponse = "";
-    // Answer in the language of this utterance (Egyptian Arabic for Arabic).
-    const lang = replyLanguage(said);
-    turn.lang = lang;
-    const persona = personaLib.clean(opts.persona);
-    this.gender = persona.gender;
-    const create = { type: "response.create", response: { instructions: instructionsFor(said, persona) } };
-    for (let round = 0; round < MAX_ROUNDS; round++) {
-      const rt0 = Date.now();
-      const rtim = {};
-      const info = { askedNow: () => turn.asked.length > 0, pending: () => [...this.requests.values()].some((r) => !r.answered) };
-      const askedBefore = info.askedNow;
-      const { st, rel } = await this.respondOnce(rt0, rtim, () => ((info.askedNow = askedBefore), new Releaser(() => this.context(), (text) => emit({ text, safe: false }))), info, create);
-      turn.responses++;
-      this.account(st, turn);
-      if (!timings.firstText && rtim.firstText) timings.firstText = rt0 - t0 + rtim.firstText;
-      if (turn.asked.length && !timings.ackFirst && rtim.firstLine) timings.ackFirst = rtim.firstLine;
-      if (rel.trip) {
-        turn.trip = { ...rel.trip, said: st.text.slice(0, 400), released: rel.released, sentence: rel.trip.sentence || rel.sentences[rel.trip.at] || "" };
-        turn.tripUnspoken = rel.sentences.slice(rel.released);
-        heardThisResponse = rel.heardText();
-        this.stats.trips++;
-        this.log(`desk: guard cut a reply (${rel.trip.rule}): ${JSON.stringify(rel.trip.match).slice(0, 160)}`);
-        for (const id of st.itemIds) this.send({ type: "conversation.item.delete", item_id: id });
-        break;
-      }
-      if (!st.calls.length) break;
-      for (const call of st.calls) {
-        let output;
-        try {
-          output = await this.runTool(call, turn);
-        } catch (e) {
-          output = JSON.stringify({ error: "that did not work: " + scrub(e.message) });
-        }
-        this.send({ type: "conversation.item.create", item: { type: "function_call_output", call_id: call.call_id, output } });
-      }
-      if (round === MAX_ROUNDS - 1) turn.trip = { ok: false, rule: "too-many-rounds", match: "", said: "" };
-    }
-    if (turn.trip) {
-      // Say the safe line, and make it true: pass the request on if the desk
-      // had not. The words the guard stopped are out of the conversation; what
-      // was heard and the safe line go in, so the model's memory matches.
-      // The line is in the cut sentence's language (Arabic or English), or in
-      // the administrator's when that sentence is in a script we cannot read.
-      const L = linesFor(langOf(turn.trip.sentence, said), persona.gender);
-      if (!turn.asked.length) {
-        try {
-          const r = await this.ops.ask(said, uiExtra(turn));
-          const t = r && r.turn;
-          if (t && t.id) this.requests.set(t.id, { text: said, answered: false, reply: null });
-          turn.asked.push(t || null);
-          turn.autoAsked = true;
-        } catch (e) {
-          this.log("desk: could not pass the request on after the guard: " + e.message);
-          emit({ text: L.unreachable, safe: true });
-          timings.done = Date.now() - t0;
-          return this.result(turn, timings);
-        }
-      }
-      // The model said "I'm checking" without the call (gpt-realtime-mini does, as MINT AI):
-      // the request is now really being worked on, so its own words are true -- say them,
-      // if nothing else in them fails the guard, instead of the fixed line.
-      const rest = turn.trip.rule === "unbacked-checking" && turn.autoAsked ? turn.tripUnspoken || [] : [];
-      const backed = rest.length && judge(rest, { ...this.context(), askedNow: true }).ok && !unbackedChecking(rest.join(" "), { askedNow: true });
-      if (backed) {
-        turn.backedByServer = true;
-        this.send({ type: "conversation.item.create", item: { type: "message", role: "assistant", content: [{ type: "output_text", text: [heardThisResponse, ...rest].filter(Boolean).join(" ") }] } });
-        this.send({ type: "conversation.item.create", item: { type: "message", role: "system", content: [{ type: "input_text", text: "(You are now working on that request; its result will reach you as \"Your result for request ...\".)" }] } });
-        for (const sent of rest) emit({ text: sent, safe: false });
-      } else {
-        const saidChecking = turn.lines.some((l) => !l.safe && mentionsChecking(l.text));
-        const line = turn.autoAsked ? L.safe : saidChecking ? L.tail : L.asked;
-        const text = (heardThisResponse ? heardThisResponse + " " : "") + line;
-        this.send({ type: "conversation.item.create", item: { type: "message", role: "assistant", content: [{ type: "output_text", text }] } });
-        emit({ text: line, safe: true });
-      }
-    }
-    timings.done = Date.now() - t0;
-    return this.result(turn, timings);
-  }
-
   /**
-   * A short spoken summary of MINT AI's reply to one of this user's desk
-   * requests. `opts.onLine` as for turn(). Resolves with
-   * { fallback: "verbatim" } when the reply should simply be read as written
-   * (short and plain, or the summary was cut before a word was said), or
-   * { pending: true } when MINT AI has not answered yet.
+   * A short spoken summary of MINT AI's reply to one of this user's voice
+   * requests. `opts.onLine(line)` is called for each line as soon as it may
+   * be spoken ({text, safe}); `opts.persona` the saved persona;
+   * `opts.request` what the administrator asked (their words, as heard).
+   * Resolves with { fallback: "verbatim" } when the reply should simply be read
+   * as written (short and plain, or the summary was cut before a word was
+   * said), or { pending: true } when MINT AI has not answered yet.
    */
   summarise(turnId, opts) {
     return this.serial(() => this._summarise(turnId, opts || {}));
@@ -1797,10 +1366,10 @@ class DeskSession {
 
   async _summarise(turnId, opts) {
     const id = Number(turnId);
-    if (!Number.isInteger(id) || id <= 0) throw new DeskError("no such request", "invalid");
+    if (!Number.isInteger(id) || id <= 0) throw new OpsError("no such request", "invalid");
     const t0 = Date.now();
     const timings = {};
-    const turn = { kind: "summary", heard: "", asked: [], tools: [], rejected: [], lines: [], trip: null, tokens: {}, responses: 0 };
+    const turn = { kind: "summary", lines: [], trip: null, tokens: {}, responses: 0 };
     let r = null;
     for (let attempt = 0; attempt < 6; attempt++) {
       const snap = await this.ops.snapshot([id]);
@@ -1808,27 +1377,18 @@ class DeskSession {
       if (!r || r.answered) break;
       await new Promise((res) => setTimeout(res, 400)); // the page heard the end a moment before the ledger shows it
     }
-    if (!r) throw new DeskError("that is not one of your front desk requests", "invalid");
+    if (!r) throw new OpsError("that is not one of your voice requests", "invalid");
     if (!r.answered) return { ...this.result(turn, timings), pending: true };
     const reply = String(r.reply || "").trim();
-    const mine = this.requests.get(id) || { text: "", answered: false, reply: null };
-    this.requests.set(id, mine);
+    const asked = String(opts.request || "");
     const shape = replyShape(reply);
     turn.shape = shape;
-    const finish = (spoken, fallback) => {
-      // Tell the conversation (if one is open; otherwise the next turn's
-      // refreshReplies will), so "what did MINT AI say?" has its answer.
-      if (!mine.answered && this.ready && !this.dead) {
-        mine.answered = true;
-        mine.reply = reply;
-        this.replies.push(reply);
-        this.noteReply(id, reply, spoken);
-      }
+    const finish = (fallback) => {
       timings.done = Date.now() - t0;
       return { ...this.result(turn, timings), fallback: fallback || null, shape };
     };
-    if (!reply) return finish("", "verbatim");
-    if (shape.plain && reply.length <= VERBATIM_MAX_CHARS && shape.sentences <= 2) return finish("", "verbatim"); // nothing to shorten
+    if (!reply) return finish("verbatim");
+    if (shape.plain && reply.length <= VERBATIM_MAX_CHARS && shape.sentences <= 2) return finish("verbatim"); // nothing to shorten
     await this.open();
     this.usedAt = Date.now();
     this.stats.summaries++;
@@ -1842,17 +1402,17 @@ class DeskSession {
       summary: true,
       replyText: reply,
       replyModel: model,
-      heardText: mine.text || "",
+      heardText: asked,
       snapshotText: "",
-      numbers: strictNumberSet([reply, mine.text || ""]),
+      numbers: strictNumberSet([reply, asked]),
       replied: true,
       grounded: true,
     };
-    // The language of the administrator's last utterance (else the request's, else the reply's).
-    const lastSaid = this.heard.length ? this.heard[this.heard.length - 1] : mine.text || "";
+    // The language of the administrator's last words (else the reply's).
+    const lastSaid = String(opts.lastSaid || asked || "");
     const sumLang = replyLanguage(lastSaid || reply);
     turn.lang = sumLang;
-    const sumPersona = personaLib.clean(opts.persona || { gender: this.gender });
+    const sumPersona = personaLib.clean(opts.persona);
     const quoted = reply.replace(/"""/g, '"');
     const create = {
       type: "response.create",
@@ -1872,7 +1432,7 @@ class DeskSession {
               {
                 type: "input_text",
                 text:
-                  (mine.text ? `The administrator asked: "${mine.text.slice(0, 500)}"\n\n` : "") +
+                  (asked ? `The administrator asked: "${asked.slice(0, 500)}"\n\n` : "") +
                   `Your finished work (your reply), between the triple quotes:\n"""\n${quoted}\n"""\n` +
                   (shape.list || shape.code || shape.paths ? "It has lists, code or paths: do not read them, say the details are on screen.\n" : "") +
                   summaryLanguage(lastSaid || reply, sumPersona),
@@ -1885,17 +1445,16 @@ class DeskSession {
     const { st, rel } = await this.respondOnce(t0, timings, () => new Releaser(() => ctx, (text) => emit({ text, safe: false }), { summary: true }), { askedNow: () => true, pending: () => false }, create);
     turn.responses++;
     this.account(st, turn);
-      const convLang = sumLang;
     if (rel.trip) {
       turn.trip = { ...rel.trip, said: st.text.slice(0, 400), released: rel.released };
       this.stats.trips++;
-      this.log(`desk: guard cut a summary (${rel.trip.rule}): ${JSON.stringify(rel.trip.match).slice(0, 160)}`);
-      if (!rel.released && reply.length <= VERBATIM_MAX_CHARS * 2 && shape.plain) return finish("", "verbatim");
-      const L = linesFor(langOf(rel.trip.sentence || rel.sentences[rel.trip.at], mine.text || reply), sumPersona.gender);
+      this.log(`summary: guard cut a summary (${rel.trip.rule}): ${JSON.stringify(rel.trip.match).slice(0, 160)}`);
+      if (!rel.released && reply.length <= VERBATIM_MAX_CHARS * 2 && shape.plain) return finish("verbatim");
+      const L = linesFor(langOf(rel.trip.sentence || rel.sentences[rel.trip.at], asked || reply), sumPersona.gender);
       emit({ text: rel.released ? L.summaryCut : L.summaryNone, safe: true });
     }
     const spoken = turn.lines.map((l) => l.text).join(" ");
-    const C = linesFor(convLang, sumPersona.gender);
+    const C = linesFor(sumLang, sumPersona.gender);
     // A pending approval or question must survive the summary.
     if (REPLY_NEEDS_APPROVAL.test(norm(reply)) && !SUMMARY_MENTIONS_APPROVAL.test(norm(spoken))) {
       turn.approvalAdded = true;
@@ -1904,27 +1463,17 @@ class DeskSession {
     } else if (!turn.trip && (shape.list || shape.code || shape.paths || reply.length > 600) && !SCREEN.test(norm(spoken))) {
       emit({ text: C.details, safe: true });
     }
-    return finish(turn.lines.map((l) => l.text).join(" "));
+    return finish(null);
   }
 
   result(turn, timings) {
     return {
       kind: turn.kind,
-      heard: turn.heard,
       lines: turn.lines,
-      asked: turn.asked.filter(Boolean),
-      autoAsked: !!turn.autoAsked,
-      ui: turn.ui || [],
-      backedByServer: !!turn.backedByServer,
-      tools: turn.tools,
-      rejected: turn.rejected,
       trip: turn.trip ? { rule: turn.trip.rule, match: String(turn.trip.match || "").slice(0, 200), said: turn.trip.said, released: turn.trip.released || 0 } : null,
-      paraphrased: !!turn.paraphrased,
       tokens: turn.tokens,
       cost_usd: costOf(turn.tokens, this.model),
       responses: turn.responses,
-      snapshot_chars: turn.snapshotChars || 0,
-      dropped: turn.dropped || null,
       timings,
     };
   }
@@ -1947,167 +1496,52 @@ function scrub(text) {
     .slice(0, 300);
 }
 
-/* ------------------------------------------------ speaking, streamed -- */
+/* ------------------------------------------- one summariser per user -- */
+
+const summarisers = new Map(); // actor -> Summariser
 
 /**
- * What kind of turn this was, for the usage figures: a request passed to MINT
- * AI (and, later, its summary) is a hand-off; an answer that read the snapshot
- * is a snapshot answer; anything else is small talk.
+ * The summariser for this panel user, opened on first use and reused while
+ * fresh (same key and voice, not idle, not too old). `call` is moniai.call;
+ * it is only ever reached through voiceOps().
  */
-function categoryOf(result) {
-  const r = result || {};
-  if (r.kind === "summary") return "handoff";
-  if ((r.asked || []).length) return "handoff";
-  if ((r.tools || []).includes("read_status")) return "snapshot";
-  return "small_talk";
-}
-
-/**
- * Speak the desk's lines as they are released, streamed and in order.
- *
- * `speak(text, cfg, sink)` is voice.speakStream. Each line's reading starts
- * the moment the line is pushed (the reader runs a few at a time), and every
- * event of it goes to `write` as NDJSON-ready objects:
- *
- *   {type:"line", i, text, safe}   at once, in order: the page queues it
- *   {type:"start", i, engine}      a reading of line i begins
- *   {type:"audio", i, pcm}         PCM16 mono 24 kHz, base64, as it arrives
- *   {type:"cut", i, why}           drop what was sent of line i since its
- *                                  last start: that reading failed the check
- *   {type:"end", i, engine|skipped}  line i is complete (or was not spoken)
- *
- * The start/audio/cut/end of line i+1 are held here until line i has ended,
- * so the wire carries each sentence whole and in order -- and a sentence
- * that is read faster than the one before it waits its turn.
- */
-function createSpeaker({ speak, cfg, write, t0 }) {
-  const slots = [];
-  let head = 0;
-  let firstAudio = null;
-  const billing = [];
-  const late = [];
-  const spoken = [];
-  const out = (ev) => {
-    if (ev.type === "audio" && firstAudio === null) firstAudio = Date.now() - (t0 || Date.now());
-    write(ev);
-  };
-  const emit = (i, ev) => {
-    if (i === head) out(ev);
-    else slots[i].buf.push(ev);
-  };
-  const advance = () => {
-    while (head < slots.length && slots[head].done) {
-      head++;
-      if (head < slots.length) slots[head].buf.splice(0).forEach(out);
-    }
-  };
-  return {
-    push(line) {
-      const i = slots.length;
-      const sl = { buf: [], done: false, bytes: 0 };
-      slots.push(sl);
-      write({ type: "line", i, text: line.text, safe: !!line.safe });
-      const sink = {
-        start: ({ engine }) => {
-          sl.bytes = 0;
-          emit(i, { type: "start", i, engine });
-        },
-        audio: (b) => {
-          sl.bytes += b.length;
-          emit(i, { type: "audio", i, pcm: b.toString("base64") });
-        },
-        cut: ({ why }) => {
-          sl.bytes = 0;
-          emit(i, { type: "cut", i, why });
-        },
-      };
-      sl.promise = Promise.resolve()
-        .then(() => speak(line.text, cfg, sink))
-        .then(
-          (res) => {
-            billing.push(...(res.billing || []));
-            if (res.lateBilling) late.push(res.lateBilling);
-            emit(i, { type: "end", i, engine: res.cached ? "cache" : res.engine, fallback: !!res.fallback });
-            spoken.push({ text: line.text, safe: !!line.safe, audio_s: Math.round((sl.bytes / (RATE * 2)) * 100) / 100 });
-          },
-          (err) => {
-            if (err && err.billing) billing.push(...err.billing);
-            if (err && err.lateBilling) late.push(err.lateBilling);
-            emit(i, { type: "end", i, skipped: (err && err.code) || "error" });
-            spoken.push({ text: line.text, safe: !!line.safe, audio_s: 0, skipped: true });
-          }
-        )
-        .then(() => {
-          sl.done = true;
-          if (i === head) advance();
-        });
-    },
-    /** Every line spoken (or skipped): {firstAudio, billing, lateBilling, spoken}. */
-    async done() {
-      let n = -1;
-      while (n !== slots.length) {
-        n = slots.length;
-        await Promise.all(slots.map((s) => s.promise));
-      }
-      return { firstAudio, billing, lateBilling: Promise.all(late).then((xs) => xs.flat()), spoken };
-    },
-  };
-}
-
-/* ------------------------------------------- one desk per panel user -- */
-
-const desks = new Map(); // actor -> DeskSession
-
-/**
- * The desk for this panel user, opened on first use and reused while fresh.
- * `call` is moniai.call; the desk only ever reaches it through deskOps(). A
- * conversation that has grown past MAX_TURNS_PER_SESSION or
- * MAX_CONTEXT_TOKENS is replaced by a fresh one; unanswered requests carry over.
- */
-function deskFor(actor, cfg, call, opts) {
+function summariserFor(actor, cfg, call, opts) {
   const o = opts || {};
   const id = String(actor) + "|" + String(cfg.key).slice(-6) + "|" + (cfg.voice || "");
-  let d = desks.get(actor);
-  let carry = null;
-  if (d && (!d.usable() || d.cfgId !== id || Date.now() - d.usedAt > IDLE_MS || (d.full() && !d.inflight))) {
-    if (d.cfgId === id) carry = [...d.requests.entries()].filter(([, r]) => !r.answered);
-    d.close();
-    d = null;
+  let s = summarisers.get(actor);
+  if (s && (!s.usable() || s.cfgId !== id || (Date.now() - s.usedAt > IDLE_MS && !s.inflight))) {
+    s.close();
+    s = null;
   }
-  if (!d) {
-    d = new DeskSession({ key: cfg.key, voice: cfg.voice, model: cfg.desk_model || DESK_MODEL, ops: deskOps(call, actor), wsBase: cfg.wsBase, log: o.log });
-    d.cfgId = id;
-    if (carry) for (const [k, v] of carry) d.requests.set(k, v);
-    desks.set(actor, d);
+  if (!s) {
+    s = new Summariser({ key: cfg.key, voice: cfg.voice, model: cfg.summary_model || SUMMARY_MODEL, ops: voiceOps(call, actor), wsBase: cfg.wsBase, log: o.log });
+    s.cfgId = id;
+    summarisers.set(actor, s);
   }
-  return d;
+  return s;
 }
 
 function closeAll() {
-  for (const d of desks.values()) d.close();
-  desks.clear();
+  for (const s of summarisers.values()) s.close();
+  summarisers.clear();
 }
 
 const sweeper = setInterval(() => {
-  for (const [k, d] of desks) {
-    if (!d.usable() || Date.now() - d.usedAt > IDLE_MS) {
-      d.close();
-      desks.delete(k);
+  for (const [k, s] of summarisers) {
+    if (!s.usable() || (Date.now() - s.usedAt > IDLE_MS && !s.inflight)) {
+      s.close();
+      summarisers.delete(k);
     }
   }
 }, 60000);
 if (sweeper.unref) sweeper.unref();
 
 module.exports = {
-  TOOLS,
-  TOOL_NAMES,
-  INSTRUCTIONS,
   SUMMARY_INSTRUCTIONS,
   summaryLanguage,
   replyLanguage,
-  instructionsFor,
-  DESK_OPS,
-  DESK_MODEL,
+  VOICE_OPS,
+  SUMMARY_MODEL,
   SAFE_LINE,
   SAFE_LINE_ASKED,
   SAFE_LINE_TAIL,
@@ -2118,14 +1552,12 @@ module.exports = {
   SUMMARY_NONE_LINE,
   FORBIDDEN_KEYS,
   PRICES,
-  MAX_TURNS_PER_SESSION,
-  MAX_CONTEXT_TOKENS,
   VERBATIM_MAX_CHARS,
-  DeskSession,
-  DeskError,
+  Summariser,
+  OpsError,
   Releaser,
-  deskOps,
-  deskFor,
+  voiceOps,
+  summariserFor,
   closeAll,
   forModel,
   guard,
@@ -2157,7 +1589,5 @@ module.exports = {
   tokensOf,
   addTokens,
   costOf,
-  categoryOf,
-  createSpeaker,
   RATE,
 };

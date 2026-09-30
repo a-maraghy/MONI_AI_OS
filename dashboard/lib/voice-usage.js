@@ -9,13 +9,12 @@
  * list below and written to the panel's database as one row, tagged with the
  * voice turn it belongs to and what kind of turn that was:
  *
- *   small_talk   the front desk's small talk
- *   snapshot     the front desk answering from the read-only snapshot
- *   handoff      the front desk passing a request to MINT AI, and later the
- *                spoken summary of MINT AI's answer
- *   direct       the direct path (front desk off): MINT AI's reply read aloud
- *                word for word
- *   live         the live conversation (trial, lib/voice-live.js): the
+ *   direct       read-aloud: MINT AI's reply read aloud word for word (the
+ *                "Read replies aloud" switch and the reply's Read aloud)
+ *   small_talk, snapshot, handoff
+ *                the relay front desk's turns, removed 2026-09-30 (voice is
+ *                live conversation only); kept so older rows still add up
+ *   live         the live conversation (lib/voice-live.js): the
  *                realtime speech-to-speech model's audio in and out and its
  *                text tokens (part "realtime"), and the safe lines and MINT
  *                AI's summaries read into the same call (part "speech")

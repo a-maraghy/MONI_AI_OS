@@ -26,7 +26,7 @@
  */
 
 const live = require("./voice-live");
-const desk = require("./voice-desk");
+const desk = require("./voice-shared");
 const usage = require("./voice-usage");
 const arabic = require("./voice-arabic");
 const persona = require("./voice-persona");
@@ -118,7 +118,7 @@ async function runClip({ pcm, phrase, model, voice, deps }) {
   const c = new live.LiveCall({
     cfg: { key: d.key, voice, model: "gpt-realtime-mini", transcribe_model: "gpt-4o-mini-transcribe", live_model: model, wsBase: d.wsBase },
     actor: "voice-eval",
-    ops: desk.deskOps(call, "voice-eval"),
+    ops: desk.voiceOps(call, "voice-eval"),
     client: {
       json: (m) => {
         if (m.type === "stop") stopped = true;

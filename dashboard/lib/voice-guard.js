@@ -1,7 +1,7 @@
 "use strict";
 /**
  * What a transcript must pass before it may become anything: a MINT AI turn, a
- * front desk turn, an ask_moni hand-off, or words dropped into a console.
+ * live call's hand-off (look_into), or words dropped into a console.
  *
  * Why (2026-09-29, turn 92 in MONI AI's ledger): a push-to-talk press with
  * nothing said sent 1.7 s of near-silence to gpt-4o-mini-transcribe, which
@@ -18,16 +18,17 @@
  *      measures it; the server refuses a clip too small or too short, and one
  *      the page says was quiet) -- lib/voice-intake.js;
  *   2. a transcript is dropped when it is an echo of the transcription prompt,
- *      of the front desk's instructions or tool descriptions, or of the reader's
- *      instructions; when it has more words than the audio could hold; or when
+ *      of the voice's instructions or tool descriptions (the live call adds its
+ *      own: lib/voice-live.js liveSources), or of the reader's instructions; when it has more words than the audio could hold; or when
  *      it is one of the stock phrases these models invent for silence ("Thank
  *      you.", "you", subtitle credits) and the clip was short or quiet;
- *   3. the doors to MINT AI -- the desk's ask_moni and the direct voice send --
- *      refuse prompt-like text themselves, and the direct voice send must match
- *      a transcript this server produced, for this user, for this voice turn.
+ *   3. the doors to MINT AI -- the live call's hand-off (lib/voice-shared.js
+ *      voiceOps) and a voice send -- refuse prompt-like text themselves, and a
+ *      voice send must match a transcript this server produced, for this user,
+ *      for this voice turn.
  *
- * Pure: no I/O. The prompt texts are pulled from their modules lazily (the
- * desk requires this file).
+ * Pure: no I/O. The prompt texts are pulled from their modules lazily
+ * (lib/voice-shared.js requires this file).
  *
  * Arabic (2026-09-29): words are counted in any script (de1b247) and compared
  * in one spelling (lib/voice-arabic.js normalize: digits, alef/hamza, yaa,
@@ -109,15 +110,8 @@ function promptSources() {
     /* not loadable here: the legacy prompt still guards */
   }
   try {
-    const desk = require("./voice-desk");
-    if (desk.INSTRUCTIONS) out.push({ name: "desk instructions", kind: "prose", text: desk.INSTRUCTIONS });
-    if (desk.SUMMARY_INSTRUCTIONS) out.push({ name: "desk summary instructions", kind: "prose", text: desk.SUMMARY_INSTRUCTIONS });
-    for (const t of desk.TOOLS || []) {
-      out.push({ name: `desk tool ${t.name}`, kind: "prose", text: t.description });
-      for (const [k, p] of Object.entries((t.parameters && t.parameters.properties) || {})) {
-        if (p && p.description) out.push({ name: `desk tool ${t.name}.${k}`, kind: "prose", text: p.description });
-      }
-    }
+    const shared = require("./voice-shared");
+    if (shared.SUMMARY_INSTRUCTIONS) out.push({ name: "summary instructions", kind: "prose", text: shared.SUMMARY_INSTRUCTIONS });
   } catch (_) {
     /* ditto */
   }

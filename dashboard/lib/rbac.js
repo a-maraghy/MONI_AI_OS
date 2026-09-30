@@ -116,6 +116,11 @@ const PERMISSION_GROUPS = [
         label: "Command MINT AI",
         hint: "Talk to it, see every session, approve or deny its destructive steps. Root reach over all sessions.",
       },
+      {
+        key: "voice.use",
+        label: "Talk with MINT AI by voice",
+        hint: "Live conversation and read-aloud, when voice is on in MINT AI's Settings. Spends money on OpenAI; administrators only by default.",
+      },
     ],
   },
   {
@@ -180,6 +185,7 @@ const IMPLIES = {
   "firewall.manage": ["firewall.view", "os.view"],
   "credentials.edit": ["credentials.view"],
   "voice.manage": ["credentials.view"],
+  "voice.use": ["moniai.use"],
   "keys.manage": ["keys.view"],
   "devices.manage": ["devices.view"],
   "users.manage": ["users.view", "roles.view"],
