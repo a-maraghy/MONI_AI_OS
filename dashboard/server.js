@@ -2620,6 +2620,14 @@ app.get("/addons", requireAuth, requirePerm("addons.view"), async (req, res) => 
 
 /* -------------------------------------------------------------- console --- */
 
+/*
+ * Classic chat is hidden (the 2026-09-30 reorganisation): every /console URL
+ * goes to the Command Center. Its data (console_sessions, console_messages) is
+ * kept, and so are the handlers below, unreachable, for one release -- per-chat
+ * root mode and file upload have no other home yet.
+ */
+app.all(/^\/console(?:\/|$)/, (req, res) => res.redirect(302, "/mint-ai"));
+
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 // How long a chat's process is kept alive with nobody talking to it. Long
 // enough to step away and come back mid-thought; short enough that an idle tab
