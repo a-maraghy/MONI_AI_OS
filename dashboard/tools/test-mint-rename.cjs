@@ -105,7 +105,7 @@ console.log("guide and settings");
   const voiceLib = lib("voice");
   const voicePage = lib("views-settings-voice").body({
     csrf: "c", on: true, status: { configured: true }, model: "gpt-realtime-2.1-mini", models: voiceLib.VOICE_MODELS, voice: "marin", voices: voiceLib.VOICES, meta: voiceLib.VOICE_META,
-    transcribe: "gpt-4o-mini-transcribe", transcribeModels: voiceLib.TRANSCRIBE_MODELS, persona: { mode: "learned", choice: "Learn from how I speak" }, liveAudio: {}, usage: null, test: null,
+    transcribe: "gpt-4o-mini-transcribe", persona: { mode: "learned", choice: "Learn from how I speak" }, liveAudio: {}, usage: null, test: null,
   });
   check("Settings › Voice speaks of MINT AI", /MINT AI/.test(voicePage) && !OLD_NAME.test(visible(voicePage)), (visible(voicePage).match(/.{0,40}\bMONI\b.{0,40}/) || [])[0]);
   const perms = rbac.GROUPS || rbac.PERMISSION_GROUPS || null;

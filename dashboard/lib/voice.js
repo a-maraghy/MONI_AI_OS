@@ -15,17 +15,18 @@
  * session was dropped for exactly that reason.)
  *
  *   hearing   POST {http}/audio/transcriptions with the browser's webm/opus,
- *             model gpt-4o-mini-transcribe by default. The endpoint takes the
+ *             model gpt-4o-mini-transcribe (fixed: listenModelFor). The endpoint takes the
  *             recording as it is, so nothing has to decode audio here.
  *
- *   speaking  - gpt-realtime-mini / gpt-realtime on {ws}/realtime?model=...,
+ *   speaking  - the voice model (gpt-realtime-2.1-mini) on {ws}/realtime?model=...,
  *               over warm sockets reused sentence after sentence: one
  *               session.update per socket, then per sentence an out-of-band
  *               response.create (conversation "none", the text quoted in its
  *               instructions); audio arrives as response.output_audio.delta,
  *               the model's own transcript as ..._transcript.delta. See the
  *               note above RealtimeConn for why it must be out of band. Or
- *             - gpt-live-1 on {ws}/live/sessions, one socket per sentence,
+ *             - gpt-live-1 on {ws}/live/sessions (no longer offered; kept for
+ *               the record), one socket per sentence,
  *               driven the way the Odoo
  *               walkthrough learned by testing: no Origin header,
  *               session.commentary.append with delegation_id: null, and a
@@ -85,31 +86,54 @@ const MAX_AUDIO_BYTES = 25 * 1024 * 1024; // the transcription endpoint's own ca
 const AUDIO_TOKENS_PER_SECOND = 20;
 
 /*
- * The voice model (MINT AI ▸ Settings ▸ Voice): one selector since voice became
- * live conversation only (2026-09-30). It is the live call's realtime model
- * (lib/voice-live.js), and the model that reads replies aloud -- but only a
- * model the reader is verified with reads aloud (READER_MODELS: the out-of-band
- * response protocol above and its verbatim check were measured on
- * gpt-realtime-mini; gpt-realtime speaks the same protocol). Any other voice
- * model reads aloud with gpt-realtime-mini, silently (readerModelFor): a
- * reading that fails the verbatim check falls back to gpt-4o-mini-tts anyway.
- * gpt-live-1 (the other protocol, readLive) is no longer offered.
+ * The voice model (MINT AI ▸ Settings ▸ Voice): ONE model for the voice since
+ * 2026-09-30 -- it holds the live conversation (lib/voice-live.js) and reads
+ * MINT AI's replies aloud. Only a model that does both passed the feasibility
+ * run of 2026-09-30 (real API, the panel's own key):
+ *
+ *   gpt-realtime-2.1-mini   live Arabic/English 3/3 in the right language,
+ *                           read-aloud word for word 18/18 (English, Egyptian,
+ *                           and the sentences that tempt a model to answer).
+ *   gpt-realtime-mini       live, but answered Arabic in English (2 of 2); read
+ *                           aloud 14/18 -- it answers "Done." or "Tell me a
+ *                           joke" instead of reading them; retiring Jan 20 2027.
+ *   gpt-4o-mini-realtime-preview  no longer served to this key ("does not exist").
+ *   gpt-live-1              another protocol ({ws}/live/sessions) with no tools,
+ *                           no input transcription setting, and it paraphrases
+ *                           by design: read aloud 5/6 English, 0/4 Arabic (it
+ *                           translated Arabic into English).
+ *
+ * So the list holds one model. READER_MODELS is what passed the verbatim check;
+ * readerModelFor() keeps any other value off the reader.
+ *
+ * Listening is not a setting. No realtime model can write down what it heard:
+ * OpenAI refuses a realtime model as the session's transcription model ("does
+ * not exist") and on /audio/transcriptions ("Invalid URL"). A hand-off to MINT
+ * AI must carry the server's own transcript, never the speech model's
+ * paraphrase, so a transcription model stays -- fixed, paired with the voice
+ * model (LISTEN_PAIRING), not chosen. gpt-4o-mini-transcribe keeps the English
+ * words of a mixed Egyptian sentence in Latin script ("restart للـ dashboard"),
+ * which is what lib/voice-arabic.js and the guards were tuned on; gpt-transcribe
+ * (its successor) writes them in Arabic script ("ريستارت للداشبورد").
+ * gpt-4o-mini-transcribe retires Feb 26 2027 -- move the pairing to
+ * gpt-transcribe before then, after the guards are checked against it (the
+ * helper's VOICE_TRANSCRIBE_RE must allow it too).
  */
-const VOICE_MODELS = Object.freeze([
-  { id: "gpt-realtime-2.1-mini", label: "GPT Realtime 2.1 mini" },
-  { id: "gpt-realtime-mini", label: "GPT Realtime mini" },
-  { id: "gpt-realtime", label: "GPT Realtime" },
-]);
-const READER_MODELS = Object.freeze(["gpt-realtime-mini", "gpt-realtime"]);
-/** The model that reads replies aloud for a given voice model. */
+const VOICE_MODELS = Object.freeze([{ id: "gpt-realtime-2.1-mini", label: "GPT Realtime 2.1 mini" }]);
+const VOICE_MODEL_DEFAULT = VOICE_MODELS[0].id;
+const READER_MODELS = Object.freeze(["gpt-realtime-2.1-mini"]);
+/** The model that reads replies aloud for a given voice model: itself, when it passed the verbatim check. */
 function readerModelFor(model) {
-  return READER_MODELS.includes(model) ? model : "gpt-realtime-mini";
+  return READER_MODELS.includes(model) ? model : VOICE_MODEL_DEFAULT;
 }
 /** The reader's models (as the helper stores them). */
-const MODELS = [
-  { id: "gpt-realtime-mini", label: "GPT Realtime mini", protocol: "realtime" },
-  { id: "gpt-realtime", label: "GPT Realtime", protocol: "realtime" },
-];
+const MODELS = [{ id: "gpt-realtime-2.1-mini", label: "GPT Realtime 2.1 mini", protocol: "realtime" }];
+const LISTEN_MODEL = "gpt-4o-mini-transcribe";
+const LISTEN_PAIRING = Object.freeze({ "gpt-realtime-2.1-mini": "gpt-4o-mini-transcribe" });
+/** The transcription model that writes down what the administrator said, for a voice model. Fixed, not a setting. */
+function listenModelFor(model) {
+  return LISTEN_PAIRING[model] || LISTEN_MODEL;
+}
 const VOICES = ["marin", "cedar", "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse"];
 /**
  * How each voice presents, for the voice cards: gender as the voice sounds in
@@ -130,10 +154,6 @@ const VOICE_META = Object.freeze({
   shimmer: { gender: "female", note: "light · airy" },
   verse: { gender: "male", note: "bright · quick" },
 });
-const TRANSCRIBE_MODELS = [
-  { id: "gpt-4o-mini-transcribe", label: "GPT-4o mini transcribe" },
-  { id: "gpt-4o-transcribe", label: "GPT-4o transcribe" },
-];
 // A vocabulary list, not a sentence. The sentence used until 2026-09-29
 // ("Someone talking to MONI AI, the assistant that runs their VPS: ...") was
 // echoed word for word on silence and reached MONI AI as a turn the
@@ -147,7 +167,7 @@ const TRANSCRIBE_MODELS = [
 // the assistant and the OS as the administrator now says them: MINT AI, Mint.
 const TRANSCRIBE_PROMPT = "MINT AI, Mint, Odoo, Giza, PMO, Claude, VPS, sub-agents";
 const TRANSCRIBE_PROMPT_KIND = "list";
-const DEFAULTS = { model: "gpt-realtime-mini", voice: "marin", transcribe_model: "gpt-4o-mini-transcribe" };
+const DEFAULTS = { model: VOICE_MODEL_DEFAULT, voice: "marin", transcribe_model: LISTEN_MODEL };
 
 const INSTRUCTIONS =
   "You are a text-to-speech engine, not an assistant. Every message you receive is a passage " +
@@ -1172,11 +1192,14 @@ module.exports = {
   VoiceError,
   MODELS,
   VOICE_MODELS,
+  VOICE_MODEL_DEFAULT,
   READER_MODELS,
   readerModelFor,
   VOICES,
   VOICE_META,
-  TRANSCRIBE_MODELS,
+  LISTEN_MODEL,
+  LISTEN_PAIRING,
+  listenModelFor,
   TRANSCRIBE_PROMPT,
   TRANSCRIBE_PROMPT_KIND,
   DEFAULTS,
