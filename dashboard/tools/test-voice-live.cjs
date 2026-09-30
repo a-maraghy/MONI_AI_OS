@@ -23,7 +23,7 @@ const { WebSocketServer } = WebSocket;
 
 const ROOT = path.join(__dirname, "..");
 const live = require(path.join(ROOT, "lib", "voice-live.js"));
-const desk = require(path.join(ROOT, "lib", "voice-desk.js"));
+const desk = require(path.join(ROOT, "lib", "voice-shared.js")); // was voice-desk.js
 const usage = require(path.join(ROOT, "lib", "voice-usage.js"));
 const VoiceStop = require(path.join(ROOT, "public", "voice-stop.js"));
 const Detect = require(path.join(ROOT, "public", "voice-live-detect.js"));
@@ -218,7 +218,7 @@ function makeCall(extra) {
   const c = new live.LiveCall({
     cfg: { key: KEY, voice: "marin", model: "gpt-realtime-mini", transcribe_model: "gpt-4o-mini-transcribe", wsBase: WS_BASE },
     actor: "amaraghy",
-    ops: desk.deskOps(call, "amaraghy"),
+    ops: desk.voiceOps(call, "amaraghy"),
     client: {
       json: (o) => client.json.push(o),
       audio: (seg, buf) => client.audio.push({ seg, bytes: buf.length, at: Date.now() }),
@@ -439,14 +439,14 @@ let WS_BASE;
     await respond(s, null, { calls: [{ name: "read_status", args: { path: "/etc" } }] });
     await sleep(30);
     check("read_status with arguments is refused", /takes no arguments/.test(s.of("conversation.item.create").filter((e) => e.item.type === "function_call_output").pop().item.output));
-    const d = desk.deskOps(() => Promise.resolve({}), "x");
+    const d = desk.voiceOps(() => Promise.resolve({}), "x");
     let refused = false;
     try {
       await d.gate("approve", { approval_id: 1 });
     } catch (e) {
       refused = e.code === "refused";
     }
-    check("the only door (deskOps) refuses anything but snapshot and send", refused && Object.keys(desk.DESK_OPS).join() === "snapshot,send");
+    check("the only door (voiceOps) refuses anything but snapshot and send", refused && Object.keys(desk.VOICE_OPS).join() === "snapshot,send");
     c.close("test");
   }
 
@@ -1180,11 +1180,11 @@ let WS_BASE;
     check("the page talks only to this server's /mint-ai/api/live, with the CSRF token", /\/mint-ai\/api\/live\?csrf=/.test(src) && !/openai/i.test(src.replace(/Nothing here talks to OpenAI/, "")));
     check("the API: start, stop, mute, muted, active, state, supported", /window\.VoiceLive = \{[\s\S]*supported[\s\S]*start[\s\S]*stop[\s\S]*mute[\s\S]*muted[\s\S]*active[\s\S]*state/.test(src));
     check("the states the brief asks for are all produced", ["listening", "talking", "thinking", "speaking", "interrupted", "waiting", "muted"].every((st) => src.includes('"' + st + '"')));
-    const block = page.slice(page.indexOf("LIVE CONVERSATION (trial)"), page.indexOf("end of the live integration block"));
-    check("moni-ai.js has one clearly marked integration block", block.length > 500 && (page.match(/LIVE CONVERSATION \(trial\)/g) || []).length === 1);
+    const block = page.slice(page.indexOf("= LIVE CONVERSATION\n"), page.indexOf("end of the live integration block"));
+    check("moni-ai.js has one clearly marked integration block (no longer a trial)", block.length > 500 && (page.match(/= LIVE CONVERSATION$/gm) || []).length === 1 && !/LIVE CONVERSATION \(trial\)/.test(page));
     check("  it feeds the core and the caption from onState, onCaption and onLevel", /onState: function/.test(block) && /onCaption: function/.test(block) && /onLevel: function/.test(block) && /function liveSnapshot/.test(block));
     check("  the mode is offered only when the server says so (data-voice-live), and remembered per browser in a guarded way", /data-voice-live/.test(block) && block.split("\n").filter((l) => /localStorage/.test(l)).every((l) => /try \{[^}]*localStorage[^}]*\} catch/.test(l)));
-    check("  the tooltip explains speakers and headphones modes", /In speakers mode \(the default\) the microphone pauses while the voice speaks/.test(block) && /headphones mode and just talk over it/.test(block));
+    check("  the mic says what it does: it starts a live conversation (no push to talk, no mode to pick)", /LIVE_TIP = "Start a live conversation"/.test(block) && !/liveSelect\(|data-vmode|LIVE_KEY/.test(page));
     // Self-hearing, page side.
     check("playback goes through a local WebRTC loopback into an <audio> element (the echo canceller covers it), with a direct fallback", /createMediaStreamDestination\(\)/.test(src) && /new RTCPeerConnection\(\)/.test(src) && /createElement\("audio"\)/.test(src) && /if \(!ok\) me\.player\.connect\(me\.ctx\.destination\)/.test(src));
     check("  the loopback's delay is measured and taken off the played milliseconds", /jitterBufferDelay/.test(src) && /function heardMs/.test(src) && /ms: heardMs\(me, m\.ms\)/.test(src));
@@ -1250,23 +1250,21 @@ let WS_BASE;
     const O = await s.signIn("liveop");
     const page = await s.req("GET", "/mint-ai", { cookie: A.cookie });
     const tok = s.csrfOf(page.body);
-    check("mode off by default: the page does not offer live", /data-voice-live=""/.test(page.body) && db.getSetting("voice_desk", "0") === "0");
+    check("voice off by default: the page does not offer live, and has no mic", /data-voice-live=""/.test(page.body) && !/id="cc-c-mic"/.test(page.body) && db.getSetting("voice_desk", null) === null);
     let r = await open(A.cookie, "?csrf=" + tok);
-    check("mode off: the upgrade is refused (409)", r.status === 409, r.status);
-    // Switch it on in the SCRATCH database, through the Settings form.
-    const set = await s.req("GET", "/credentials/openai-voice", { cookie: A.cookie });
-    check("Settings offers the third mode, off by default", /id="voice-live-toggle"/.test(set.body) && /Switch to live conversation \(trial\)/.test(set.body) && /microphone pauses while the voice speaks \(speakers mode\)/.test(set.body));
-    check("  and the live audio choices: speakers mode and far-field noise reduction checked by default", /id="voice-live-audio"/.test(set.body) && /name="duplex" value="speakers" checked/.test(set.body) && /name="noise" value="far_field" checked/.test(set.body));
+    check("voice off: the upgrade is refused (403)", r.status === 403, r.status);
+    // Switch it on in the SCRATCH database, through Settings ▸ Voice.
+    const set = await s.req("GET", "/mint-ai/settings/voice", { cookie: A.cookie });
+    check("Settings ▸ Voice has the one switch, off", /id="voice-master"/.test(set.body) && /class="set-sec voice-off"/.test(set.body) && /Voice is disabled/.test(set.body));
+    check("  and the live audio choices: speakers mode and far-field noise reduction by default", /name="duplex" value="speakers" checked/.test(set.body) && /<option value="far_field" selected>/.test(set.body));
     const stok = s.csrfOf(set.body);
-    r = await s.req("POST", "/credentials/openai-voice/desk", { cookie: A.cookie, body: new URLSearchParams({ _csrf: stok, mode: "live" }).toString() });
-    check("the form sets mode=live (scratch db)", r.status === 302 && db.getSetting("voice_desk") === "live", r.status);
-    check("  audited", db.recentLogins(20).some((x) => /live conversation \(trial\) on/.test(x.detail || "")));
-    r = await s.req("POST", "/credentials/openai-voice/desk", { cookie: A.cookie, body: new URLSearchParams({ _csrf: stok, mode: "robot" }).toString() });
-    check("an unknown mode is refused", /err=/.test(r.headers.location || "") && db.getSetting("voice_desk") === "live");
+    r = await s.req("POST", "/mint-ai/settings/voice/enabled", { cookie: A.cookie, body: new URLSearchParams({ _csrf: stok, enabled: "1" }).toString() });
+    check("the switch turns voice on (scratch db)", r.status === 303 && db.getSetting("voice_desk") === "on", r.status + " " + db.getSetting("voice_desk"));
+    check("  audited", db.recentLogins(20).some((x) => /voice enabled for everyone/.test(x.detail || "")));
     const page2 = await s.req("GET", "/mint-ai", { cookie: A.cookie });
     check("an administrator's page now offers it, with the stamped worklet", /data-voice-live="1"/.test(page2.body) && /data-live-worklet="\/static\/voice-live-worklet\.js\?v=/.test(page2.body) && /voice-live\.js\?v=/.test(page2.body) && /voice-live\.css\?v=/.test(page2.body));
     const pageO = await s.req("GET", "/mint-ai", { cookie: O.cookie });
-    check("a non-administrator's page does not (they keep the relay desk)", /data-voice-live=""/.test(pageO.body) && /data-voice-desk="1"/.test(pageO.body), pageO.status);
+    check("someone without voice.use gets no live and no mic", /data-voice-live=""/.test(pageO.body) && !/id="cc-c-mic"/.test(pageO.body), pageO.status);
 
     r = await open("", "?csrf=" + tok);
     check("no session: 401", r.status === 401, r.status);
@@ -1280,7 +1278,7 @@ let WS_BASE;
     check("no origin: 403", r.status === 403, r.status);
     const otok = s.csrfOf(pageO.body);
     r = await open(O.cookie, "?csrf=" + otok);
-    check("moniai.use without voice.manage: 403 (administrators only)", r.status === 403, r.status);
+    check("moniai.use without voice.use: 403 (administrators only)", r.status === 403, r.status);
     const bad = await new Promise((resolve) => {
       const x = new WebSocket("ws://127.0.0.1:" + port + "/mint-ai/api/other", { headers: { Cookie: A.cookie, Origin: origin } });
       x.on("unexpected-response", (q, res) => resolve(res.statusCode));
@@ -1292,29 +1290,30 @@ let WS_BASE;
     KEYS.add(scratch.FAKE_KEY);
     r = await open(A.cookie, "?csrf=" + tok);
     const first = r.ws;
-    check("an administrator, the right token and origin, mode live: connected", r.status === 101 && first);
+    check("an administrator, the right token and origin, voice on: connected", r.status === 101 && first);
     await until(() => r.got.some((m) => m.type === "ready"), 3000, "ready");
     check("  the server opened the upstream session and says ready", r.got.some((m) => m.type === "ready" && m.model === "gpt-realtime-2.1-mini" && m.max_s === 1200), JSON.stringify(r.got));
     check("  in speakers mode (the default), far-field noise reduction upstream", r.got.some((m) => m.type === "ready" && m.duplex === "speakers" && m.noise === "far_field") && lastSession().session.audio.input.noise_reduction.type === "far_field");
-    check("  the start is audited with the mode and the playback route", db.recentLogins(30).some((x) => /live conversation \(trial\) started \(speakers mode, playback unknown, noise reduction far_field\)/.test(x.detail || "")));
+    check("  the start is audited with the mode and the playback route", db.recentLogins(30).some((x) => /live conversation started \(speakers mode, playback unknown, noise reduction far_field\)/.test(x.detail || "")));
     const r2 = await open(A.cookie, "?csrf=" + tok);
     await until(() => r2.closed != null, 2000, "the busy close");
     const closed2 = r2.closed;
     check("one live call per user: a second is told busy and closed (4409)", r2.got.some((m) => m.type === "error" && m.code === "busy") && closed2 === 4409, JSON.stringify(r2.got) + " " + closed2);
     first.send(Buffer.alloc(voiceLiveRate() * 2)); // one second in one frame: too large
     check("a frame over half a second of audio ends the call", await until(() => r.closed != null, 2000));
-    check("  and the call is audited, start and end", db.recentLogins(30).some((x) => /live conversation \(trial\) started/.test(x.detail || "")) && (await until(() => db.recentLogins(30).some((x) => /live conversation \(trial\) ended/.test(x.detail || "")), 1000)));
-    // The live audio setting, through its Settings form (scratch db).
-    const set2 = await s.req("GET", "/credentials/openai-voice", { cookie: A.cookie });
+    check("  and the call is audited, start and end", db.recentLogins(30).some((x) => /live conversation started/.test(x.detail || "")) && (await until(() => db.recentLogins(30).some((x) => /live conversation ended/.test(x.detail || "")), 1000)));
+    // The live audio setting, through its Settings row (scratch db).
+    const set2 = await s.req("GET", "/mint-ai/settings/voice", { cookie: A.cookie });
     const stok2 = s.csrfOf(set2.body);
-    r = await s.req("POST", "/credentials/openai-voice/live-audio", { cookie: A.cookie, body: new URLSearchParams({ _csrf: "bad", duplex: "full", noise: "near_field" }).toString() });
+    r = await s.req("POST", "/mint-ai/settings/voice/live-audio", { cookie: A.cookie, body: new URLSearchParams({ _csrf: "bad", duplex: "full", noise: "near_field" }).toString() });
     check("the live audio form needs the CSRF token", r.status === 403);
-    r = await s.req("POST", "/credentials/openai-voice/live-audio", { cookie: A.cookie, body: new URLSearchParams({ _csrf: stok2, duplex: "loud", noise: "near_field" }).toString() });
+    r = await s.req("POST", "/mint-ai/settings/voice/live-audio", { cookie: A.cookie, body: new URLSearchParams({ _csrf: stok2, duplex: "loud", noise: "near_field" }).toString() });
     check("  an unknown mode is refused", /err=/.test(r.headers.location || "") && !db.getSetting("voice_live_audio"));
-    r = await s.req("POST", "/credentials/openai-voice/live-audio", { cookie: O.cookie, body: new URLSearchParams({ _csrf: otok, duplex: "full", noise: "off" }).toString() });
-    check("  a non-administrator cannot set it", r.status === 403 || (r.status === 302 && !db.getSetting("voice_live_audio")), r.status);
-    r = await s.req("POST", "/credentials/openai-voice/live-audio", { cookie: A.cookie, body: new URLSearchParams({ _csrf: stok2, duplex: "full", noise: "near_field" }).toString() });
-    check("  headphones mode, near field: saved (scratch db) and audited", JSON.parse(db.getSetting("voice_live_audio")).duplex === "full" && db.recentLogins(30).some((x) => /live conversation audio: headphones mode, noise reduction near_field \(was speakers, far_field\)/.test(x.detail || "")));
+    r = await s.req("POST", "/mint-ai/settings/voice/live-audio", { cookie: O.cookie, body: new URLSearchParams({ _csrf: otok, duplex: "full", noise: "off" }).toString() });
+    check("  a non-administrator cannot set it", r.status === 403 && !db.getSetting("voice_live_audio"), r.status);
+    r = await s.req("POST", "/mint-ai/settings/voice/live-audio", { cookie: A.cookie, body: new URLSearchParams({ _csrf: stok2, duplex: "full" }).toString() });
+    r = await s.req("POST", "/mint-ai/settings/voice/live-audio", { cookie: A.cookie, body: new URLSearchParams({ _csrf: stok2, noise: "near_field" }).toString() });
+    check("  headphones mode, then near field (each row its own field): saved (scratch db) and audited", JSON.parse(db.getSetting("voice_live_audio")).duplex === "full" && JSON.parse(db.getSetting("voice_live_audio")).noise === "near_field" && db.recentLogins(30).some((x) => /live conversation audio: headphones mode, noise reduction near_field \(was full, far_field\)/.test(x.detail || "")));
     const page3 = await s.req("GET", "/mint-ai", { cookie: A.cookie });
     check("  the page gets the new default", /data-live-duplex="full"/.test(page3.body) && /voice-live-detect\.js\?v=/.test(page3.body));
     r = await open(A.cookie, "?csrf=" + tok + "&duplex=speakers&route=loopback");
@@ -1339,10 +1338,11 @@ let WS_BASE;
     const runBad = await s.req("POST", "/mint-ai/api/voice-eval/run", { cookie: A.cookie, headers: { "X-CSRF-Token": tok, Accept: "application/json" }, body: { models: ["gpt-5"], voices: ["marin"] } });
     check("  a run with an unknown model is refused", runBad.status === 400);
 
-    r = await s.req("POST", "/credentials/openai-voice/desk", { cookie: A.cookie, body: new URLSearchParams({ _csrf: stok, mode: "desk" }).toString() });
-    check("back to the relay desk: the old value '1' is written (compatible)", db.getSetting("voice_desk") === "1");
-    r = await s.req("POST", "/credentials/openai-voice/desk", { cookie: A.cookie, body: new URLSearchParams({ _csrf: stok, enabled: "0" }).toString() });
-    check("the older enabled=0 form still switches it off", db.getSetting("voice_desk") === "0");
+    r = await open(A.cookie, "?csrf=" + tok);
+    await until(() => r.got.some((m) => m.type === "ready"), 3000);
+    const set3 = await s.req("GET", "/mint-ai/settings/voice", { cookie: A.cookie });
+    await s.req("POST", "/mint-ai/settings/voice/enabled", { cookie: A.cookie, body: new URLSearchParams({ _csrf: s.csrfOf(set3.body) }).toString() });
+    check("switching voice off ends the open call and stores off", (await until(() => r.closed != null, 2000)) && db.getSetting("voice_desk") === "off");
   } catch (e) {
     check("the route run completed", false, e.stack + "\n" + s.out());
   } finally {

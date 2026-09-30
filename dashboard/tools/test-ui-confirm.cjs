@@ -6,7 +6,7 @@
  *
  * lib/ui-confirm.js (one pending confirm per user, 30 s; a click, or the next
  * utterance this server heard being a whole "yes"; anything else drops it),
- * and the wiring in server.js, the voice desk, the live call and the page:
+ * and the wiring in server.js, the live call and the page:
  * nothing is changed by the model, the page applies it through the existing
  * CSRF'd routes, voice.set never with a call open.
  */
@@ -57,7 +57,7 @@ console.log("expiry is not silent, and the window starts when the voice has fini
   check("server: an expiry is audited \"expired, nothing changed\", the chip is told on the event stream, and the live call too", /createConfirms\(\{ onExpire: \(actor, e\) => uiConfirmExpired\(actor, e\) \}\)/.test(src) && /expired, nothing changed/.test(src) && /event: ui-confirm/.test(src) && /call\.confirmExpired\(e\)/.test(src));
   check("  the live call arms the window and may answer a whole yes/no just after the voice", /armConfirm: \(id\) => uiConfirms\.arm\(actor, id\)/.test(src) && /isYesNo: \(text\) => voiceStop\.yes\(text\) \|\| voiceStop\.no\(text\)/.test(src));
   const page = fs.readFileSync(path.join(ROOT, "public", "moni-ai.js"), "utf8");
-  check("page: the chip shows 'Expired: nothing was changed.' (event stream or live call); the desk voice says it", /function uiConfirmExpired\(id, line\)/.test(page) && /Expired: nothing was changed\./.test(page) && /"ui-confirm-expired"/.test(page) && /Voice\.say\(line\.en\)/.test(page));
+  check("page: the chip shows 'Expired: nothing was changed.' (event stream or live call; the live call says it)", /function uiConfirmExpired\(id, line\)/.test(page) && /Expired: nothing was changed\./.test(page) && /"ui-confirm-expired"/.test(page));
   check("  a Tier-2 ask while a page is up in the shell: Confirm / Cancel on the dock, no pulling back", /v\.tier !== 2 && \["call\.end"/.test(page) && /window\.MintShell\.confirm\(question/.test(page));
 }
 
@@ -95,22 +95,22 @@ check("open: persona/voice need voice.manage; one voice.set confirm at a time (t
 const route = s.slice(s.indexOf('app.post("/mint-ai/api/ui/confirm"'), s.indexOf('app.post("/mint-ai/api/ui/ack"'));
 check("/ui/confirm: CSRF'd, strict body, only the user's pending id, re-checks the permission; a voice.set marks this user's call to greet in the new voice", /\.\.\.moniAiWrite/.test(route) && /uiConfirms\.take\(req\.me\.username, b\.id, b\.decision\)/.test(route) && /req\.perm\.can\("voice\.manage"\)/.test(route) && /voiceGreet\.set\(req\.me\.username, Date\.now\(\) \+ 20000\)/.test(route) && !/activeCount/.test(route));
 {
-  const opt = s.slice(s.indexOf('app.post("/credentials/openai-voice/options"'), s.indexOf("app.post(\"/credentials/openai-voice/persona\""));
+  const opt = s.slice(s.indexOf('app.post("/mint-ai/settings/voice/options"'), s.indexOf('app.post("/mint-ai/settings/voice/persona"'));
   check("the options route: locked while a voice.set waits for a confirm; after saving, open calls RECONNECT (voiceForget(\"reconnect\") + voiceReconnect), greeting only the confirmer", /const lock = uiConfirmsVoicePending\(\);/.test(opt) && /voiceForget\("reconnect"\);/.test(opt) && /voiceReconnect\(greet\)/.test(opt) && !/voiceForget\(\);/.test(opt));
   const fg = s.slice(s.indexOf("function voiceForget("), s.indexOf("async function voiceReconnect("));
   check("voiceForget closes live calls only when told to (the key was removed); the key test keeps them; a new key reconnects them", /if \(live === "close"\) voiceLive\.closeAll/.test(fg) && /voiceKeyClear\(\);\s*voiceForget\("close"\);/.test(s) && /voiceForget\("keep"\); \/\/ test/.test(s) && /voiceKeySet\(value\);\s*voiceForget\("reconnect"\);\s*voiceReconnect\(null\)/.test(s) && !/voiceForget\(\)/.test(s.replace(/function voiceForget\(live\)/, "")));
 }
-check("  it writes no setting itself: it hands the page the form for the existing route", !/setVoicePersona|voiceOptionsSet|setSetting/.test(route) && /form = \{ model: cfg\.model, voice: t\.args\.voice, transcribe_model: cfg\.transcribe_model \}/.test(route));
+check("  it writes no setting itself: it hands the page the form for the existing route", !/setVoicePersona|voiceOptionsSet|setSetting/.test(route) && /form = \{ voice: t\.args\.voice \}/.test(route));
 const send = s.slice(s.indexOf('app.post("/mint-ai/api/send"'), s.indexOf('app.post("/mint-ai/api/interrupt"'));
 check("/send: a whole yes/no answers a pending confirm and goes nowhere else", /const conf = uiConfirmHeard\(/.test(send) && send.indexOf("uiConfirmHeard") < send.indexOf('moniai.call("send"') && /return res\.json\(\{ confirm:/.test(send));
-const desk = s.slice(s.indexOf('app.post("/mint-ai/api/desk/turn"'), s.indexOf('app.post("/mint-ai/api/desk/summary"'));
-check("the desk: answered before the desk model ever hears it; openConfirm for the turn", /if \(answered\) \{[\s\S]*?return out\.end\(\);/.test(desk) && desk.indexOf("uiConfirmHeard") < desk.indexOf("desk().turn(") && /openConfirm: \(v\) => uiConfirmOpen\(/.test(desk));
+check("the front desk and its routes are gone", !/\/mint-ai\/api\/desk\//.test(s.replace(/\/\*[\s\S]*?\*\//g, "")));
+check("voice.set and call.* are refused while voice is off: opening a confirm, MINT AI's own, and the confirm itself", /if \(uiVoiceOff\(v\.action\)\) return \{ error: "voice is off" \};/.test(s) && /if \(uiVoiceOff\(v\.action\)\) return void ack\(false, "voice is off"\);/.test(s) && /if \(uiVoiceOff\(t\.action\)\) return res\.status\(409\)/.test(s));
 check("the live call: openConfirm and confirmHeard", /openConfirm: \(v\) => uiConfirmOpen\(\{ username: actor, ip, canVoice \}, v, tab, "the live voice"\)/.test(s) && /confirmHeard: \(text\) => uiConfirmHeard\(/.test(s));
 const del = s.slice(s.indexOf("function uiDeliver("), s.indexOf('app.post("/mint-ai/api/ui/confirm"'));
 check("MINT AI's own (Phase 2): tier 2 opens a confirm, tells the tab, answers pending", /if \(v\.tier === 2\) \{[\s\S]*?uiConfirmOpen\([\s\S]*?confirm: o\.id[\s\S]*?pending: true/.test(del));
 
 console.log("\nthe voice never says it is done");
-for (const f of ["voice-desk.js", "voice-live.js"]) {
+for (const f of ["voice-live.js"]) { // (the front desk, voice-desk.js, is gone)
   const src = fs.readFileSync(path.join(ROOT, "lib", f), "utf8");
   check(`lib/${f}: tier 2 returns status confirm and never sets uiOk`, /if \(v\.tier === 2\) \{[\s\S]*?status: "confirm"[\s\S]*?\}\n/.test(src) && !/if \(v\.tier === 2\) \{[^}]*uiOk = true/.test(src));
 }
@@ -118,8 +118,8 @@ for (const f of ["voice-desk.js", "voice-live.js"]) {
 console.log("\nthe page");
 const pg = fs.readFileSync(path.join(ROOT, "public", "moni-ai.js"), "utf8");
 check("tier 2 only asks (Confirm / Cancel chip); applied after the server's /ui/confirm", /if \(v\.tier === 2\) return uiConfirmAsk\(ev, v\);/.test(pg) && /api\("ui\/confirm", \{ body: \{ id: id, decision: decision \} \}\)/.test(pg));
-check("  through the existing CSRF'd routes (persona, options) or the theme switch itself", /"\/credentials\/openai-voice\/persona"/.test(pg) && /"\/credentials\/openai-voice\/options"/.test(pg) && /body\.set\("_csrf", CSRF\)/.test(pg) && /\.topbar \[data-theme-opt="' \+ r\.args\.theme/.test(pg));
-check("  the server's heard yes/no reaches it from the desk, the live call and /send", /if \(ev\.confirm && typeof uiConfirmAnswer === "function"\)/.test(pg) && /m\.type === "ui-confirmed" \|\| m\.type === "ui-confirm-cancelled"/.test(pg) && /if \(r && r\.confirm && typeof uiConfirmAnswer === "function"\)/.test(pg));
+check("  through the existing CSRF'd routes (persona, options) or the theme switch itself", /"\/mint-ai\/settings\/voice\/persona"/.test(pg) && /"\/mint-ai\/settings\/voice\/options"/.test(pg) && /body\.set\("_csrf", CSRF\)/.test(pg) && /\.topbar \[data-theme-opt="' \+ r\.args\.theme/.test(pg));
+check("  the server's heard yes/no reaches it from the live call and /send", /m\.type === "ui-confirmed" \|\| m\.type === "ui-confirm-cancelled"/.test(pg) && /if \(r && r\.confirm && typeof uiConfirmAnswer === "function"\)/.test(pg));
 
 console.log(`\n${passes} passed, ${failures} failed`);
 process.exit(failures ? 1 : 0);

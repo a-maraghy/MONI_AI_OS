@@ -17,7 +17,7 @@ const path = require("path");
 
 const ROOT = path.join(__dirname, "..");
 const ar = require(path.join(ROOT, "lib", "voice-arabic.js"));
-const desk = require(path.join(ROOT, "lib", "voice-desk.js"));
+const desk = require(path.join(ROOT, "lib", "voice-shared.js")); // was voice-desk.js (the guard and the fixed lines)
 const guard = require(path.join(ROOT, "lib", "voice-guard.js"));
 
 let passed = 0;
@@ -369,7 +369,7 @@ check("both genders at once → unknown", D("إنتِ جاهز يا باشا").g
 
 section("a CHOSEN persona (Settings only): Cairene Egyptian feminine, and the others");
 {
-  const I = (t, p) => desk.instructionsFor(t, p).split("\n").pop();
+  const I = (t, p) => P.noteFor(P.detect(t), p); // the per-utterance language note (the desk's instructionsFor ended with it)
   const f = P.choose("cairene_f", "2026-09-29T20:00:00Z");
   check("the presets: Cairene feminine, Cairene masculine, MSA neutral -- and learning", Object.keys(P.PRESETS).join() === "cairene_f,cairene_m,msa_n" && P.choose("learned").mode === "learned");
   check("a choice is explicit, and stores only the preset", f.mode === "explicit" && f.preset === "cairene_f" && f.dialect === "egyptian" && f.gender === "f");
@@ -397,12 +397,12 @@ section("a CHOSEN persona (Settings only): Cairene Egyptian feminine, and the ot
   pass("أنا صوت MINT AI، مش إنسانة، بس جاهزة أساعدك."); // "I'm MINT AI's voice, not a person"
 }
 
-section("the language and the persona reach the desk's instructions");
-check("English → English", desk.replyLanguage("Is Odoo running?") === "en" && desk.instructionsFor("Is Odoo running?", {}).endsWith("answer in plain English."));
+section("the language and the persona: the per-utterance note");
+const I = (t, p) => P.noteFor(P.detect(t), p); // the per-utterance language note (the desk's instructionsFor ended with it)
+check("English → English", desk.replyLanguage("Is Odoo running?") === "en" && I("Is Odoo running?", {}).endsWith("answer in plain English."));
 check("Arabic → Arabic", desk.replyLanguage("أودو شغال ولا لأ؟") === "ar");
-check("mixed → Arabic with English terms", desk.replyLanguage("عايزك تعمل restart للـ dashboard") === "ar" && /Latin script/.test(desk.instructionsFor("عايزك تعمل restart للـ dashboard", {})));
+check("mixed → Arabic with English terms", desk.replyLanguage("عايزك تعمل restart للـ dashboard") === "ar" && /Latin script/.test(I("عايزك تعمل restart للـ dashboard", {})));
 check("mostly English with one Arabic word → English", desk.replyLanguage("please restart the dashboard and check the disk usage يا MINT") === "en");
-const I = (t, p) => desk.instructionsFor(t, p).split("\n").pop();
 check("Egyptian speech → Egyptian colloquial", /Egyptian colloquial Arabic \(not Modern Standard Arabic\)/.test(I("إزيك؟ عايز أعرف أودو شغال ولا لأ؟", {})));
 check("MSA speech → MSA", /answer in Modern Standard Arabic/.test(I("هل يمكنك أن تخبرني ما هي حالة الخادم الآن؟", {})));
 check("an unclear utterance uses the saved register", /Modern Standard Arabic, as they speak it/.test(I("أودو؟", { dialect: "msa" })));
@@ -410,8 +410,7 @@ check("no saved register: match theirs", /same register they used/.test(I("أو�
 check("saved feminine → feminine forms for itself", /feminine forms for yourself/.test(I("أودو شغال؟", { gender: "f" })));
 check("saved masculine → masculine forms", /masculine forms for yourself/.test(I("أودو شغال؟", { gender: "m" })));
 check("unknown → gender-neutral phrasing", /gender-neutral phrasing/.test(I("أودو شغال؟", {})));
-check("always MINT AI's voice, never a person; no fixed persona", /never claim to be human/.test(desk.INSTRUCTIONS) && /never a person/.test(I("أودو؟", { gender: "f" })) && !/100%|Egyptian woman/.test(desk.INSTRUCTIONS + I("أودو؟", { gender: "f" })));
-check("the instructions no longer say plain English only", !/plain English, no lists/.test(desk.INSTRUCTIONS) && /LAST utterance/.test(desk.INSTRUCTIONS));
+check("always MINT AI's voice, never a person; no fixed persona", /never a person/.test(I("أودو؟", { gender: "f" })) && !/100%|Egyptian woman/.test(I("أودو؟", { gender: "f" })));
 check("the summary is asked for in the register of the last utterance", desk.summaryLanguage("Is Odoo up?", {}) === "Speak in: English." && /Egyptian/.test(desk.summaryLanguage("إزيك؟ عايز أعرف أودو شغال ولا لأ؟", {})) && /Modern Standard/.test(desk.summaryLanguage("أودو؟", { dialect: "msa" })));
 
 section("one identity: no hand-off to MINT AI, in the passive or otherwise, with or without a call");

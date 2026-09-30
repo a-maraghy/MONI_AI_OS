@@ -104,7 +104,7 @@ check("the card counts down an approval's expiry", /data-need-timer/.test(main) 
 
 /* ------------------------------------------------------ the dock's sheets */
 section("the dock's sheets and their data");
-const html = views.page({ csrf: "t", user: { name: "a", perm: rbac.actor({ permissions: ["*"] }) }, voice: { configured: true, voice: "marin", manage: true } });
+const html = views.page({ csrf: "t", user: { name: "a", perm: rbac.actor({ permissions: ["*"] }) }, voice: { configured: true, voice: "marin", manage: true, on: true, use: true, live: true } });
 const paneOf = (k) => {
   const i = html.indexOf(`id="cc-pane-${k}"`);
   const n = html.indexOf('<section class="cc-pane"', i + 10);
@@ -139,8 +139,9 @@ section("nothing lost from v3");
 // 2026-09-30: "cost" and "cost/budget" gave way to "usage" -- the administrator asked for the sheet to
 // show Claude plan usage and tokens, not money; the (never set) dollar budget went with it.
 const API = [
-  "ledger/turns", "ledger/approvals", "ledger/delegations", "ledger/inbound", "overview", "status", "send", "interrupt", "rc", "transcribe", "speak",
-  "desk/turn", "desk/summary", "voice/usage", "missions", "missions/request", "decisions", "watchers", "rules", "rules/test", "orders", "usage",
+  // 2026-09-30: "transcribe" (push to talk) and "desk/turn", "desk/summary" (the front desk) went: voice is live conversation only.
+  "ledger/turns", "ledger/approvals", "ledger/delegations", "ledger/inbound", "overview", "status", "send", "interrupt", "rc", "speak",
+  "voice/usage", "missions", "missions/request", "decisions", "watchers", "rules", "rules/test", "orders", "usage",
   "sessions/", "rule-suggestion", "approvals/",
 ];
 const missingApi = API.filter((a) => !new RegExp(`["'/]${a.replace(/[/?]/g, "\\$&")}`).test(client) && !client.includes('"' + a));
@@ -157,14 +158,10 @@ check("the event stream and every event type it follows", /new EventSource\("\/m
 }
 const KEEP = [
   ["the composer: send, interrupt, auto-route / @ a session", /\$\("cc-compose"\)\.addEventListener\("submit"/.test(main) && /\$\("cc-stop"\)\.addEventListener\("click"/.test(main) && /function openMenu\(\)/.test(main) && /e\.key === "@" && !input\.value/.test(main)],
-  ["push to talk (the default) and hands-free", /function voiceModeFrom\(stored\) \{\s*return stored === "handsfree" \? "handsfree" : "ptt";/.test(main) && /cMic\.addEventListener\("pointerdown"/.test(main) && /api_\.on \? stop\(\) : start\(\);/.test(main)],
-  ["Space hold-to-talk", /pttDown\("Listening — release Space to send"\)/.test(main)],
-  ["\"On it.\" the moment a recording ends", /enqueue\("On it\."\)/.test(main)],
+  ["voice is live conversation only: the mic starts a call (no push to talk, hands-free, Space to talk or front desk)", /LIVE_TIP = "Start a live conversation"/.test(main) && /return LiveUI\.active \? liveStop\(\) : liveStart\(\);/.test(main) && !/voiceModeFrom|pttDown|desk\/turn|desk\/summary|MODE_KEY/.test(main)],
   ["streamed reader audio (NDJSON PCM chunks)", /Accept: "application\/x-ndjson"/.test(main) && /function playStream\(st, my\)/.test(main)],
-  ["barge-in", /function bargeIn\(\)/.test(main) && /if \(loudFor >= BARGE_MS\) bargeIn\(\);/.test(main)],
-  ["the front desk (and its fallback to the direct path)", /apiStream\("desk\/turn"/.test(main) && /apiStream\("desk\/summary"/.test(main) && /e\.code === "desk-off"/.test(main)],
-  ["the voice guards: silence is never uploaded (SPEECH_MS), voice turns carry their vt", /var loudMs = 0, peak = 0, SPEECH_MS = 150;/.test(main) && /if \(opts\.voice && opts\.vt\) body\.vt = opts\.vt;/.test(main)],
-  ["replies read aloud (toggle) and the Full reply's Read aloud", /\$\("cc-speak-toggle"\)/.test(main) && /\$\("cc-reply-read"\)\.addEventListener/.test(main)],
+  ["barge-in (the live call's interrupt)", /window\.VoiceLive\.interrupt\(\)/.test(main)],
+  ["replies read aloud (toggle, remembered per browser) and the Full reply's Read aloud", /\$\("cc-speak-toggle"\)/.test(main) && /\$\("cc-reply-read"\)\.addEventListener/.test(main) && /READ_KEY = "mint-read-aloud"/.test(main)],
   ["Remote Control link (claude.ai only) and Interrupt", /function openRemoteControl\(\)/.test(main) && /function interrupt\(btn\)/.test(main)],
   ["the Ctrl+K palette", /String\(e\.key\)\.toLowerCase\(\) === "k"/.test(panels) && /function openPalette\(q\)/.test(panels)],
   ["the session deep view (5 s refresh, Interrupt / Open in Claude for MINT AI only)", /function openDeep\(key\)/.test(panels) && /data-deep="interrupt"/.test(panels)],
@@ -201,7 +198,7 @@ KEEP.forEach(([name, ok]) => check("kept: " + name, !!ok));
     /document\.addEventListener\("mint-shell-full", function \(\) \{ S\.liveReplies\.clear\(\); paintState\(\); \}\);/.test(main) &&
     /document\.dispatchEvent\(new CustomEvent\("mint-shell-full"\)\)/.test(read("public/mint-shell.js")) && /rest \|\| !o\.hasReply \? "See last reply" : "Full reply"/.test(main));
   check("replayed turns never speak: voice read-aloud only for turns this page sent, and only when not a replay",
-    /if \(!replay && voiceTurns\.has\(row\.id\)\) \{ Voice\.flush/.test(main) && /else if \(!replay && deskTurns\.has\(row\.id\)\)/.test(main) && /if \(!replay && voiceTurns\.has\(ta\.id\)\) Voice\.feed/.test(main));
+    /if \(!replay && voiceTurns\.has\(row\.id\)\) \{ Voice\.flush/.test(main) && /if \(!replay && voiceTurns\.has\(ta\.id\)\) Voice\.feed/.test(main));
 }
 
 // The last reply rests after 15 s of quiet (the administrator's ask, 2026-09-30).

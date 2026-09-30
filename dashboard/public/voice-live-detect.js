@@ -1,5 +1,5 @@
 /*
- * Live conversation (trial): is the administrator REALLY talking over the
+ * Live conversation: is the administrator REALLY talking over the
  * voice, or is the microphone only hearing the speaker? Pure, no DOM, no
  * audio APIs: public/voice-live.js feeds it the microphone's level (20 ms
  * frames, after the browser's echo cancelling) and the player's output level,

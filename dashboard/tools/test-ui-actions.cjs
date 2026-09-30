@@ -57,7 +57,7 @@ check("  its toast names it", UA.toast("sheet.close", { key: "missions" }) === "
 {
   const page = fs.readFileSync(path.join(ROOT, "public", "moni-ai.js"), "utf8");
   check("the page closes a named panel only if it is the one open", /if \(a\.key && a\.key !== wasC && a\.key !== "everything"\) return \{ ok: false, why: "that panel is not the one open" \};/.test(page));
-  for (const f of ["voice-live.js", "voice-desk.js"]) {
+  for (const f of ["voice-live.js"]) { // the front desk (voice-desk.js) is gone
     const src = fs.readFileSync(path.join(ROOT, "lib", f), "utf8");
     check(`lib/${f}: the instructions say closing a panel is sheet.close, never ending the call`, /Closing a panel \(\\"close the missions\\", «اقفلي المهام», «اقفل الميشنز»\) is sheet\.close, never ending the call/.test(src));
   }
@@ -95,7 +95,7 @@ console.log("\npage.open (M-5): another page of Mint OS, by a fixed key");
   const page = fs.readFileSync(path.join(ROOT, "public", "moni-ai.js"), "utf8");
   check("the Command Center checks the role (data-pages) before moving", /case "page\.open"/.test(page) && /data-pages|dataset\.pages/.test(page));
   check("the Command Center page carries data-pages", /data-pages=/.test(fs.readFileSync(path.join(ROOT, "lib", "views-moniai.js"), "utf8")));
-  for (const f of ["voice-live.js", "voice-desk.js"]) check(`lib/${f} tells the voice about page.open`, /page\.open/.test(fs.readFileSync(path.join(ROOT, "lib", f), "utf8")));
+  for (const f of ["voice-live.js"]) check(`lib/${f} tells the voice about page.open`, /page\.open/.test(fs.readFileSync(path.join(ROOT, "lib", f), "utf8")));
   check("the supervisor's copy is byte-identical", fs.readFileSync(path.join(ROOT, "public", "ui-actions.js"), "utf8") === fs.readFileSync(path.join(ROOT, "..", "moni-ai", "lib", "ui-actions.js"), "utf8"));
 }
 

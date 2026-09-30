@@ -207,8 +207,8 @@ async function makeUser(username, roleName) {
       check(`POST ${pfx}/api/speak without CSRF -> 403`, r.status === 403, r.status);
       r = await req("GET", pfx + "/api/voice/usage", { cookie: a.cookie });
       check(`GET ${pfx}/api/voice/usage -> 200 JSON`, r.status === 200 && /^\{/.test(r.body), r.status + " " + r.body);
-      r = await req("POST", pfx + "/api/transcribe", { cookie: a.cookie, headers: { "X-CSRF-Token": a.csrf }, body: { data: "x".repeat(100 * 1024) } });
-      check(`POST ${pfx}/api/transcribe takes a body over 64 KB (the large parser, not 413)`, r.status !== 413, r.status + " " + r.body);
+      r = await req("POST", pfx + "/api/transcribe", { cookie: a.cookie, headers: { "X-CSRF-Token": a.csrf }, body: { data: "x" } });
+      check(`POST ${pfx}/api/transcribe is gone (push to talk went with it)`, r.status === 404, r.status + " " + r.body.slice(0, 80));
       r = await req("GET", pfx + "/api/events", { cookie: a.cookie });
       check(`GET ${pfx}/api/events streams (SSE, no redirect)`, r.status === 200 && /text\/event-stream/.test(r.headers["content-type"] || ""), r.status + " " + r.headers["content-type"]);
     }

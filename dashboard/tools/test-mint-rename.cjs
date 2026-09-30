@@ -78,13 +78,13 @@ console.log("the Command Center");
   const cc = lib("views-moniai").page({
     csrf: "c",
     user: { name: "Ann", roleLabel: "Administrator", perm: admin, dash: "console" },
-    voice: { configured: true, voice: "marin", model: "gpt-realtime-mini", manage: true, desk: true },
+    voice: { configured: true, voice: "marin", model: "gpt-realtime-2.1-mini", manage: true, on: true, use: true, live: true },
   });
   check("its title is MINT AI (the AI brand names itself once)", titleOf(cc) === "MINT AI", titleOf(cc));
   check("the Machine sheet's core grid is headed MINT AI core", /class="cc-sec-t">MINT AI core</.test(cc));
   check("the conversation sheet is MINT AI's session", /id="cc-dr-sub">the MINT AI session</.test(cc));
   check("the composer says Ask MINT AI…", /placeholder="Ask MINT AI…"/.test(cc));
-  check("the voice bar says TALK TO MINT AI", /TALK TO MINT AI/.test(cc) && /aria-label="Talk to MINT AI"/.test(cc));
+  check("the voice bar says TALK TO MINT AI", /TALK TO MINT AI/.test(cc) && /aria-label="Message MINT AI"/.test(cc));
   check("no old name in the Command Center", !OLD_NAME.test(visible(cc)) && !/MONI/.test(cc.replace(/moni-ai|MoniMap|MoniPanels/g, "")), (cc.match(/.{0,40}MONI.{0,40}/) || [])[0]);
 
   const pub = (f) => fs.readFileSync(path.join(ROOT, "public", f), "utf8");
@@ -101,11 +101,12 @@ console.log("guide and settings");
 {
   const guide = lib("views-guide").guide({ csrf: "c", user, publicHost: "h", publicPort: 1, sshHost: "h" });
   check("the guide shows no old name", !OLD_NAME.test(visible(guide)), (visible(guide).match(/.{0,40}\bMONI\b.{0,40}/) || [])[0]);
-  const voicePage = lib("views-credentials").voice({
-    csrf: "c", user, credentials: [], voice: { configured: true, last4: "abcd", model: "gpt-realtime-mini", voice: "marin", transcribe_model: "gpt-4o-mini-transcribe" },
-    desk: { enabled: true }, models: [], voices: [], transcribeModels: [], test: null,
+  const voiceLib = lib("voice");
+  const voicePage = lib("views-settings-voice").body({
+    csrf: "c", on: true, status: { configured: true }, model: "gpt-realtime-2.1-mini", models: voiceLib.VOICE_MODELS, voice: "marin", voices: voiceLib.VOICES, meta: voiceLib.VOICE_META,
+    transcribe: "gpt-4o-mini-transcribe", transcribeModels: voiceLib.TRANSCRIBE_MODELS, persona: { mode: "learned", choice: "Learn from how I speak" }, liveAudio: {}, usage: null, test: null,
   });
-  check("Settings › OpenAI voice speaks of MINT AI", /MINT AI/.test(voicePage) && !OLD_NAME.test(visible(voicePage)), (visible(voicePage).match(/.{0,40}\bMONI\b.{0,40}/) || [])[0]);
+  check("Settings › Voice speaks of MINT AI", /MINT AI/.test(voicePage) && !OLD_NAME.test(visible(voicePage)), (visible(voicePage).match(/.{0,40}\bMONI\b.{0,40}/) || [])[0]);
   const perms = rbac.GROUPS || rbac.PERMISSION_GROUPS || null;
   const rbacSrc = fs.readFileSync(path.join(ROOT, "lib", "rbac.js"), "utf8");
   check("the permission labels say MINT AI", /label: "MINT AI"/.test(rbacSrc) && /Command MINT AI/.test(rbacSrc) && !/MONI AI/.test(rbacSrc), perms && "");
@@ -114,12 +115,13 @@ console.log("guide and settings");
 console.log("voice");
 {
   const voice = lib("voice");
-  const desk = lib("voice-desk");
+  const desk = lib("voice-shared"); // the fixed lines and the guard (was voice-desk)
+  const live = lib("voice-live");
   check("the transcription vocabulary names Mint and MINT AI", /Mint/.test(voice.TRANSCRIBE_PROMPT) && /MINT AI/.test(voice.TRANSCRIBE_PROMPT), voice.TRANSCRIBE_PROMPT);
   check("the transcription vocabulary no longer says MONI", !/MONI/.test(voice.TRANSCRIBE_PROMPT), voice.TRANSCRIBE_PROMPT);
-  const instr = [desk.INSTRUCTIONS, desk.SUMMARY_INSTRUCTIONS, JSON.stringify(desk.TOOLS)].join("\n");
-  check("the front desk's instructions name MINT AI (the voice IS MINT AI, 2026-09-29)", /^You are the voice of MINT AI\b/.test(desk.INSTRUCTIONS) && /You speak as MINT AI, in the first person/.test(desk.INSTRUCTIONS), desk.INSTRUCTIONS.slice(0, 200));
-  check("no MONI in the desk's instructions or tool descriptions", !/MONI/.test(instr), (instr.match(/.{0,40}MONI.{0,40}/) || [])[0]);
+  const instr = [live.INSTRUCTIONS, desk.SUMMARY_INSTRUCTIONS, JSON.stringify(live.TOOLS)].join("\n");
+  check("the live voice's instructions name MINT AI (the voice IS MINT AI, 2026-09-29)", /MINT AI/.test(live.INSTRUCTIONS) && /first person/.test(live.INSTRUCTIONS), live.INSTRUCTIONS.slice(0, 200));
+  check("no MONI in the voice's instructions or tool descriptions", !/MONI/.test(instr), (instr.match(/.{0,40}MONI.{0,40}/) || [])[0]);
   const lines = [desk.SAFE_LINE, desk.SAFE_LINE_ASKED, desk.SAFE_LINE_TAIL, desk.APPROVAL_LINE, desk.APPROVAL_LINE_SHORT, desk.DETAILS_LINE, desk.SUMMARY_CUT_LINE, desk.SUMMARY_NONE_LINE];
   check("every fixed spoken line is free of MONI", lines.every((l) => !/MONI/i.test(String(l || ""))), lines.join(" | "));
   check("no fixed line names the assistant at all: they are in its own voice, first person", lines.every((l) => !/MINT|MONI/i.test(String(l || ""))) && /^Give me a moment, I'm/.test(desk.SAFE_LINE));

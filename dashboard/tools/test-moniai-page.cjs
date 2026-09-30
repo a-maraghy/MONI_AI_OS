@@ -44,7 +44,7 @@ const admin = rbac.actor({ permissions: ["*"] });
 const html = views.page({
   csrf: `tok"en<`,
   user: { name: EVIL, roleLabel: "Administrator", perm: admin, dash: "console" },
-  voice: { configured: true, voice: `v-${EVIL}`, model: "gpt-realtime-mini", manage: true },
+  voice: { configured: true, voice: `v-${EVIL}`, model: "gpt-realtime-2.1-mini", manage: true, on: true, use: true, live: true },
 });
 
 check("renders a whole page", html.startsWith("<!doctype html>") && html.includes("</html>"));
@@ -80,9 +80,9 @@ check("every id is unique", (() => {
   const ids = [...html.matchAll(/\sid="([^"]+)"/g)].map((m) => m[1]);
   return ids.length === new Set(ids).size;
 })());
-check("a page without an OpenAI key says so and points to Settings", (() => {
-  const p = views.page({ csrf: "t", user: { name: "a", perm: admin }, voice: { configured: false, manage: true } });
-  return p.includes(">no key<") && p.includes("Add an OpenAI key in Settings") && /id="cc-c-mic"[^>]*disabled/.test(p);
+check("a page without an OpenAI key (voice on) has no mic, and points a manager to Settings ▸ Voice", (() => {
+  const p = views.page({ csrf: "t", user: { name: "a", perm: admin }, voice: { configured: false, manage: true, on: true, use: true, live: false } });
+  return !/id="cc-c-mic"/.test(p) && /add a token in Settings ▸ Voice/.test(p) && /href="\/mint-ai\/settings\/voice"/.test(p);
 })());
 
 /* ----------------------------------------------------------- the shell --- */
@@ -110,14 +110,13 @@ const server = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
 {
   const m = /const PAYLOAD_ROUTES = (\/.*\/);/.exec(server);
   const re = m && vm.runInNewContext(m[1]);
-  check("the transcribe route gets the large body parser", !!re && re.test("/mint-ai/api/transcribe"));
+  check("the Command Center's transcribe route is gone, and so is its large body parser", !!re && !re.test("/mint-ai/api/transcribe") && !/app\.post\("\/mint-ai\/api\/transcribe"/.test(server));
   check("the console's payload routes are still covered", !!re && re.test("/console/12/upload") && re.test("/console/3/transcribe"));
   check("nothing else gets the large parser", !!re && !re.test("/mint-ai/api/send") && !re.test("/mint-ai/api/transcribe/x"));
 }
 check("/mint-ai is behind requireAuth", /app\.get\("\/mint-ai", requireAuth,/.test(server));
 check("/mint-ai checks moniai.use", /app\.get\("\/mint-ai"[\s\S]{0,400}can\("moniai\.use"\)/.test(server));
-check("speak needs the permission and CSRF", /app\.post\("\/mint-ai\/api\/speak", \.\.\.moniAiWrite,/.test(server));
-check("transcribe checks permission before parsing and CSRF after", /app\.post\("\/mint-ai\/api\/transcribe", requireApiPerm\("moniai\.use"\), moniAiAudioBody, requireApiCsrf,/.test(server));
+check("speak needs the permission (moniai.use and voice.use) and CSRF", /app\.post\("\/mint-ai\/api\/speak", \.\.\.moniAiWrite, requireApiPerm\("voice\.use"\),/.test(server));
 check("/console still has its route", /app\.get\("\/console", requireAuth, requirePerm\("console\.use"\)/.test(server));
 
 /* ------------------------------------------------ client helpers (source) --- */

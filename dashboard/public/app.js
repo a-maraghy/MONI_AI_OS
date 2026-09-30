@@ -379,8 +379,9 @@ document.addEventListener("submit", function (ev) {
 /*
  * The bridge to the Command Center's shell (M-5 part 2) -- only when this page
  * is inside its frame (same origin, a parent that is the shell). It tells the
- * shell where it is and its title, forwards Space held to talk (outside text
- * fields), and keeps the theme in step both ways. A signed-out page (login,
+ * shell where it is and its title, and keeps the theme in step both ways.
+ * (Space held to talk went with push to talk: voice is live conversation,
+ * started from the dock's mic.) A signed-out page (login,
  * an expired session), a logout and the Command Center itself leave the frame.
  * Messages go to this origin only, and are taken only from the parent.
  */
@@ -415,23 +416,6 @@ document.addEventListener("submit", function (ev) {
   var nav = function () { send({ mint: "nav" }); };
   window.addEventListener("hashchange", nav);
   window.addEventListener("popstate", nav);
-  // Space held outside a text field talks to MINT AI, as in the Command Center.
-  var typing = function (el) { return !!(el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT|BUTTON)$/.test(el.tagName || "") || el.getAttribute("role") === "radio")); };
-  var down = false;
-  document.addEventListener("keydown", function (e) {
-    if (e.code !== "Space" || e.ctrlKey || e.metaKey || e.altKey || typing(document.activeElement)) return;
-    e.preventDefault();
-    if (e.repeat || down) return;
-    down = true;
-    send({ mint: "space", down: true });
-  }, true);
-  document.addEventListener("keyup", function (e) {
-    if (e.code !== "Space" || !down) return;
-    e.preventDefault();
-    down = false;
-    send({ mint: "space", down: false });
-  }, true);
-  window.addEventListener("blur", function () { if (down) { down = false; send({ mint: "space", down: false }); } });
   // The theme, both ways (the switch here, or the shell's).
   document.addEventListener("moni-theme", function (e) { send({ mint: "theme", theme: (e.detail && e.detail.theme) || "system" }); });
   window.addEventListener("message", function (e) {

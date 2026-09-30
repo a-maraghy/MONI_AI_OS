@@ -1,7 +1,7 @@
 "use strict";
 /**
- * Live conversation (TRIAL, M-3 Phase 1, option C of the full-duplex
- * proposal): the administrator talks and the voice answers at once, and can be
+ * Live conversation (M-3 Phase 1, option C of the full-duplex proposal;
+ * since 2026-09-30 the only voice there is): the administrator talks and the voice answers at once, and can be
  * interrupted. The voice speaks AS MINT AI, in the first person (the
  * administrator, 2026-09-29: "you are MINT AI; don't say you delegate to MINT
  * AI"); its thinking and doing are the look_into call -- the supervisor --
@@ -21,16 +21,16 @@
  *   - exactly two tools, read_status and look_into (it was ask_mint_ai until
  *     2026-09-29: speaking AS MINT AI, the audio model read that name aloud as
  *     «هسأل MINT»); any other name is refused
- *     here and never runs, and both go through deskOps() (lib/voice-desk.js):
+ *     here and never runs, and both go through voiceOps() (lib/voice-shared.js):
  *     `snapshot` and `send` only;
- *   - the instructions: the desk's rules, spoken, plus the language and persona
+ *   - the instructions: the voice's rules, spoken, plus the language and persona
  *     line learned from how the administrator speaks (lib/voice-persona.js).
  *
  * Guard before sound. The model's audio arrives with its own transcript, a
  * little ahead of it (40-360 ms, measured 2026-09-29). Every audio chunk is
  * tagged with the sentence the transcript was in when the chunk arrived --
  * that sentence or a later one, since the transcript leads -- and is HELD here
- * until that sentence has passed the desk's guard (Releaser / judge(), with
+ * until that sentence has passed the output guard (Releaser / judge(), with
  * the sentences before it, the Arabic rules, and fail-closed). On a cut, the
  * held audio is dropped, the response is cancelled, the item is truncated at
  * what was sent, and the safe line is read (in the cut sentence's language)
@@ -39,7 +39,7 @@
  * of its audio, not the audio itself (see the README).
  *
  * MINT AI's answers never come from the speech model. When MINT AI answers a
- * request passed on here, the reply goes through the desk's guarded summary
+ * request passed on here, the reply goes through the guarded summary
  * (SUMMARY_INSTRUCTIONS -> judge()) and the verbatim reader, and is played into
  * the same stream; the realtime conversation is then told what was said.
  *
@@ -80,7 +80,7 @@
  */
 
 const WebSocket = require("ws");
-const desk = require("./voice-desk");
+const desk = require("./voice-shared"); // the guard, the fixed lines, the supervisor door (was voice-desk.js)
 const voiceGuard = require("./voice-guard");
 const personaLib = require("./voice-persona");
 const usageLib = require("./voice-usage");
@@ -247,12 +247,13 @@ let callSeq = 0;
  * deps:
  *   cfg        { key, voice, model (the reader's), transcribe_model, live_model?, wsBase? }
  *   actor      the panel user (username); userId for the persona
- *   ops        voiceDesk.deskOps(moniai.call, actor) -- the only supervisor door
+ *   ops        voiceShared.voiceOps(moniai.call, actor) -- the only supervisor door
  *   client     { json(obj), audio(seg, pcmBuffer), close(code, why) } -- the browser
  *   persona()  the saved persona; hearPersona(text) -> the persona after that utterance
  *   speak      voice.speakStream (the verbatim reader)
  *   transcribe voice.transcribeFull(audio, cfg, mime)
- *   summarise  (turnId, {onLine, persona}) -> the desk's guarded summary
+ *   summarise  (turnId, {onLine, persona, request, lastSaid}) -> the guarded summary
+ *              (voiceShared.summariserFor(...).summarise)
  *   record     ({vt, cat, part, model, tokens}) -> usd
  *   isStop     (text) -> the spoken stop command (public/voice-stop.js)
  *   isUndo     (text) -> the spoken undo command (the same file); acted on
@@ -363,6 +364,7 @@ class LiveCall {
     const t0 = this.now();
     const was = this.cfg.voice;
     this.cfg = { ...this.cfg, ...(patch || {}) };
+    this.model = this.cfg.live_model || LIVE_MODEL; // the voice model may have changed too
     this.speechGen++;
     this.toClient({ type: "flush", at: this.now() });
     for (const s of this.segs.values()) s.over = true;
@@ -1481,6 +1483,10 @@ class LiveCall {
             this.say([l], "mint", null, vt);
           },
           persona: this.persona,
+          // What was asked (the server's own transcript) and the last words heard: the
+          // summary may use their figures, and speaks in the administrator's language.
+          request: String((mine && mine.text) || (typeof request === "string" ? request : "") || ""),
+          lastSaid: this.heard.length ? this.heard[this.heard.length - 1] : "",
         });
         if (out && out.tokens) deskTokens = out.tokens;
         if (out && (out.fallback === "verbatim" || out.pending) && !lines.length) fallback = true;
@@ -1489,7 +1495,7 @@ class LiveCall {
         if (!lines.length) fallback = true;
       }
     }
-    if (deskTokens) this.record({ vt, part: "desk", model: desk.DESK_MODEL, tokens: deskTokens });
+    if (deskTokens) this.record({ vt, part: "desk", model: desk.SUMMARY_MODEL, tokens: deskTokens }); // "desk": the summariser's usage part
     if (fallback) {
       const sents = speakableSentences(reply);
       for (const s of sents.slice(0, VERBATIM_MAX_SENTENCES)) lines.push({ text: s, safe: false });
@@ -1623,6 +1629,10 @@ async function swapAll(patch, greetActor) {
   }
   return out;
 }
+/** Every open call (server.js endLiveCallsForSession reads each call's `sid`). */
+function all() {
+  return [...calls.values()].filter((c) => !c.closed);
+}
 function activeCount() {
   return [...calls.values()].filter((c) => !c.closed).length;
 }
@@ -1651,5 +1661,6 @@ module.exports = {
   swapAll,
   voiceChangedLine,
   activeCount,
+  all,
   liveSources,
 };

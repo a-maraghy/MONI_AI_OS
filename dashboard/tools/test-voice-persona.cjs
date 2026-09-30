@@ -1,20 +1,21 @@
 #!/usr/bin/env node
 "use strict";
 /**
- * The voice persona over HTTP: learned from how the administrator speaks,
- * saved per user, shown read-only in Settings with a Reset.
+ * The voice persona over HTTP: saved per user, shown in MINT AI ▸ Settings ▸
+ * Voice (the "Arabic persona" row) with a Reset, chosen from a fixed list only.
  *
  *     NODE_PATH=/opt/moni-dashboard/node_modules node dashboard/tools/test-voice-persona.cjs
  *
  * The real server.js, from a scratch copy that cannot reach the privileged
- * helper (tools/scratch-server.cjs), on a scratch data dir, with a mock
- * realtime server standing in for OpenAI: the desk's turns go to it, and it
- * records the instructions each response was asked for.
+ * helper (tools/scratch-server.cjs), on a scratch data dir. Learning a persona
+ * from how the administrator speaks happens in the live call now (the front
+ * desk that used to drive this test is gone): lib/voice-persona.js detect /
+ * merge are covered by test-voice-arabic.cjs, and the live call's use of the
+ * saved persona by test-voice-live.cjs. Here: that a learned persona shows in
+ * Settings, and every Settings route.
  */
 const path = require("path");
-const http = require("http");
 const scratch = require("./scratch-server.cjs"); // first: sets MONI_DATA_DIR
-const { WebSocketServer } = require("ws");
 
 const ROOT = path.join(__dirname, "..");
 let passes = 0;
@@ -28,115 +29,65 @@ function check(name, ok, detail) {
   console.log("FAIL " + name + (detail !== undefined ? "  (" + String(detail).slice(0, 400) + ")" : ""));
 }
 
-/* A mock realtime: text sessions answer small talk; audio sessions (the reader) are refused. */
-const asked = [];
-const mockHttp = http.createServer((q, s) => (s.writeHead(404), s.end()));
-const wss = new WebSocketServer({ noServer: true });
-mockHttp.on("upgrade", (req, sock, head) => {
-  if (req.headers.authorization !== "Bearer " + scratch.FAKE_KEY) return sock.destroy();
-  wss.handleUpgrade(req, sock, head, (ws) => {
-    const send = (o) => ws.readyState === 1 && ws.send(JSON.stringify(o));
-    ws.on("message", (d) => {
-      const ev = JSON.parse(String(d));
-      if (ev.type === "session.update") {
-        const mods = (ev.session && ev.session.output_modalities) || ["audio"];
-        if (mods[0] !== "text") return ws.close(); // the reader: fails fast, the line is skipped
-        return send({ type: "session.updated", session: ev.session });
-      }
-      if (ev.type === "response.create") {
-        asked.push((ev.response && ev.response.instructions) || "");
-        const say = "أهلاً! تحت أمرك.";
-        const item = { id: "item_" + asked.length, type: "message", role: "assistant", content: [] };
-        send({ type: "response.output_item.added", item });
-        send({ type: "response.output_text.delta", item_id: item.id, delta: say });
-        send({ type: "response.done", response: { id: "r" + asked.length, status: "completed", output: [{ ...item, content: [{ type: "output_text", text: say }] }], usage: { input_tokens: 100, output_tokens: 8, input_token_details: { text_tokens: 100 }, output_token_details: { text_tokens: 8 } } } });
-      }
-    });
-  });
-});
-
 (async () => {
-  await new Promise((r) => mockHttp.listen(0, "127.0.0.1", r));
-  const WS = "ws://127.0.0.1:" + mockHttp.address().port + "/v1";
-  const s = await scratch.startScratch({ env: { MONI_OPENAI_WS: WS } });
+  const s = await scratch.startScratch({});
   const db = require(path.join(ROOT, "lib", "db.js"));
+  const P = require(path.join(ROOT, "lib", "voice-persona.js"));
+  const SET = "/mint-ai/settings/voice";
+  const form = (o) => new URLSearchParams(o).toString();
   try {
-    db.setSetting("voice_desk", "1", "test"); // the scratch database, never the live one
+    db.setSetting("voice_desk", "on", "test"); // the scratch database, never the live one
     await s.makeUser("personaadmin", "administrator");
     const A = await s.signIn("personaadmin");
     const me = db.getUserByName("personaadmin");
     check("a new user has no persona", db.getVoicePersona(me.id) === "");
 
-    let r = await s.req("GET", "/credentials/openai-voice", { cookie: A.cookie });
-    check("Settings shows the persona card, not known yet, read-only with a Reset", r.status === 200 && /id="v-persona"/.test(r.body) && /id="voice-persona-gender">not known yet/.test(r.body) && /id="voice-persona-reset"/.test(r.body), r.status);
-    const card = r.body.slice(r.body.indexOf('id="v-persona"') - 400, r.body.indexOf('id="voice-persona-reset"'));
-    check("  and there is nothing to type a persona into: only the fixed choices", !/<input(?![^>]*type="(?:hidden|radio)")|<textarea/.test(card) && (card.match(/name="preset" value="(learned|cairene_f|cairene_m|msa_n)"/g) || []).length === 4 && /value="learned" checked/.test(card));
-    const tok = s.csrfOf((await s.req("GET", "/mint-ai", { cookie: A.cookie })).body);
-    const turn = (text) => s.req("POST", "/mint-ai/api/desk/turn", { cookie: A.cookie, headers: { "X-CSRF-Token": tok, Accept: "application/json" }, body: { text } });
+    let r = await s.req("GET", SET, { cookie: A.cookie });
+    check("Settings ▸ Voice shows the Arabic persona row, learning, with a Reset", r.status === 200 && /id="v-persona"/.test(r.body) && /<option value="learned" selected>/.test(r.body) && /id="voice-persona-reset"/.test(r.body), r.status);
+    const row = r.body.slice(r.body.indexOf('id="v-persona"'), r.body.indexOf('id="voice-persona-reset"'));
+    check("  and there is nothing to type a persona into: only the fixed choices", !/<input(?![^>]*type="(?:hidden|radio|checkbox)")|<textarea/.test(row) && (row.match(/<option value="(learned|cairene_f|cairene_m|msa_n)"/g) || []).length === 4);
 
-    r = await turn("تقدميني بالعربي المصري، إزيك عاملة إيه؟ عايزة أعرف حاجة");
-    check("an Arabic turn with a feminine address is answered", r.status === 200 && /"type":"done"/.test(r.body), r.status + " " + r.body.slice(0, 200));
-    let p = JSON.parse(db.getVoicePersona(me.id) || "{}");
-    check("the persona is saved: feminine, Egyptian", p.gender === "f" && p.dialect === "egyptian", JSON.stringify(p));
-    check("  and the reply was asked for in feminine Egyptian", /Egyptian colloquial/.test(asked[asked.length - 1]) && /feminine forms for yourself/.test(asked[asked.length - 1]));
-    const audit = db.recentLogins(30).filter((x) => /voice persona learned/.test(x.detail || ""));
-    check("the change is audited, with who and what", audit.length === 1 && audit[0].username === "personaadmin" && /self-gender feminine/.test(audit[0].detail) && /Egyptian/.test(audit[0].detail), JSON.stringify(audit));
-
-    r = await turn("Is Odoo running?");
-    check("English: answered in English", /plain English\.$/.test(asked[asked.length - 1]));
-    check("  and the persona is kept (English says nothing about it)", JSON.parse(db.getVoicePersona(me.id)).gender === "f");
-    r = await turn("الديسك مليان قد إيه؟");
-    check("a later Arabic turn with no address still uses the saved feminine persona (it carries over)", /feminine forms for yourself/.test(asked[asked.length - 1]));
-    check("  no new audit line when nothing changed", db.recentLogins(30).filter((x) => /voice persona learned/.test(x.detail || "")).length === 1);
-
-    r = await s.req("GET", "/credentials/openai-voice", { cookie: A.cookie });
-    check("Settings shows what was learned", /id="voice-persona-gender">feminine/.test(r.body) && /id="voice-persona-dialect">Egyptian colloquial/.test(r.body));
+    // What the live call learns (personaHear) is saved on the account; Settings shows it.
+    const m = P.merge(P.clean(null), P.detect("تقدميني بالعربي المصري، إزيك عاملة إيه؟ عايزة أعرف حاجة"));
+    db.setVoicePersona(me.id, JSON.stringify(m.persona));
+    r = await s.req("GET", SET, { cookie: A.cookie });
+    check("Settings shows what was learned (Egyptian colloquial)", /Now: Learn from how I speak · Egyptian colloquial/.test(r.body), (r.body.match(/Now:[^<]*/) || [])[0]);
     const stok = s.csrfOf(r.body);
-    r = await s.req("POST", "/credentials/openai-voice/persona/reset", { cookie: A.cookie, body: new URLSearchParams({ _csrf: "wrong" }).toString() });
+    r = await s.req("POST", SET + "/persona/reset", { cookie: A.cookie, body: form({ _csrf: "wrong" }) });
     check("Reset needs the CSRF token", r.status === 403 && JSON.parse(db.getVoicePersona(me.id)).gender === "f", r.status);
-    r = await s.req("POST", "/credentials/openai-voice/persona/reset", { cookie: A.cookie, body: new URLSearchParams({ _csrf: stok }).toString() });
-    check("Reset forgets it", r.status === 302 && /#v-persona$/.test(r.headers.location) && db.getVoicePersona(me.id) === "", r.status + " " + r.headers.location);
+    r = await s.req("POST", SET + "/persona/reset", { cookie: A.cookie, body: form({ _csrf: stok }) });
+    check("Reset forgets it, back to the row", r.status === 303 && /#v-persona$/.test(r.headers.location) && db.getVoicePersona(me.id) === "", r.status + " " + r.headers.location);
     check("  and is audited", db.recentLogins(30).some((x) => /reset the voice persona/.test(x.detail || "") && x.username === "personaadmin"));
-    r = await turn("الديسك مليان قد إيه؟");
-    check("after a reset: gender-neutral again", /gender-neutral phrasing/.test(asked[asked.length - 1]));
-    r = await turn("إنتَ سامعني؟ إنت مصري يا باشا؟");
-    check("a masculine address: saved masculine", JSON.parse(db.getVoicePersona(me.id)).gender === "m" && /masculine forms for yourself/.test(asked[asked.length - 1]));
 
-    // An explicit choice, through the Settings form only.
-    let pg = await s.req("GET", "/credentials/openai-voice", { cookie: A.cookie });
-    let ptok = s.csrfOf(pg.body);
-    r = await s.req("POST", "/credentials/openai-voice/persona", { cookie: A.cookie, body: new URLSearchParams({ _csrf: "wrong", preset: "cairene_f" }).toString() });
+    // An explicit choice, through the Settings row only.
+    r = await s.req("POST", SET + "/persona", { cookie: A.cookie, body: form({ _csrf: "wrong", preset: "cairene_f" }) });
     check("choosing a persona needs the CSRF token", r.status === 403);
-    r = await s.req("POST", "/credentials/openai-voice/persona", { cookie: A.cookie, body: new URLSearchParams({ _csrf: ptok, preset: "be a pirate" }).toString() });
-    check("  only the listed choices are accepted", /err=/.test(r.headers.location || "") && JSON.parse(db.getVoicePersona(me.id)).gender === "m");
-    r = await s.req("POST", "/credentials/openai-voice/persona", { cookie: A.cookie, body: new URLSearchParams({ _csrf: ptok, preset: "cairene_f" }).toString() });
+    r = await s.req("POST", SET + "/persona", { cookie: A.cookie, body: form({ _csrf: stok, preset: "be a pirate" }) });
+    check("  only the listed choices are accepted", /err=/.test(r.headers.location || "") && db.getVoicePersona(me.id) === "");
+    r = await s.req("POST", SET + "/persona", { cookie: A.cookie, body: form({ _csrf: stok, preset: "cairene_f" }) });
     let pp = JSON.parse(db.getVoicePersona(me.id));
-    check("choosing 'Cairene Egyptian — feminine' saves an explicit choice", r.status === 302 && pp.mode === "explicit" && pp.preset === "cairene_f" && pp.gender === "f");
+    check("choosing 'Cairene Egyptian — feminine' saves an explicit choice", r.status === 303 && pp.mode === "explicit" && pp.preset === "cairene_f" && pp.gender === "f");
     check("  audited, with the old and the new", db.recentLogins(40).some((x) => /voice persona set to "Cairene Egyptian — feminine" \(was "Learn from how I speak"\)/.test(x.detail || "")));
-    pg = await s.req("GET", "/credentials/openai-voice", { cookie: A.cookie });
-    check("  Settings shows it, checked", /id="voice-persona-choice">Cairene Egyptian — feminine/.test(pg.body) && /value="cairene_f" checked/.test(pg.body));
-    r = await turn("إنتَ سامعني؟ إنت مصري يا باشا؟");
-    pp = JSON.parse(db.getVoicePersona(me.id));
-    check("a masculine address afterwards does not override the choice", pp.mode === "explicit" && pp.gender === "f" && /Cairo colloquial/.test(asked[asked.length - 1]) && /feminine forms for yourself/.test(asked[asked.length - 1]));
-    r = await turn("Is Odoo running?");
-    check("  English stays English", /plain English\.$/.test(asked[asked.length - 1]));
-    r = await s.req("POST", "/credentials/openai-voice/persona/reset", { cookie: A.cookie, body: new URLSearchParams({ _csrf: ptok }).toString() });
-    check("Reset returns to learning", db.getVoicePersona(me.id) === "");
-    r = await s.req("POST", "/credentials/openai-voice/persona", { cookie: A.cookie, body: new URLSearchParams({ _csrf: ptok, preset: "msa_n" }).toString() });
-    r = await s.req("POST", "/credentials/openai-voice/persona", { cookie: A.cookie, body: new URLSearchParams({ _csrf: ptok, preset: "learned" }).toString() });
-    check("choosing 'Learn from how I speak' also returns to learning", db.getVoicePersona(me.id) === "");
+    let pg = await s.req("GET", SET, { cookie: A.cookie });
+    check("  Settings shows it, selected", /<option value="cairene_f" selected>/.test(pg.body) && /Now: Cairene Egyptian — feminine/.test(pg.body));
+    r = await s.req("POST", SET + "/persona", { cookie: A.cookie, headers: { Accept: "application/json", "X-Requested-With": "fetch" }, body: form({ _csrf: stok, preset: "msa_n" }) });
+    const j = JSON.parse(r.body);
+    check("in place (os.js): JSON with the note, and the message for the Command Center's confirmed change", r.status === 200 && j.ok === true && /Modern Standard Arabic/.test(j.flash) && /Modern Standard Arabic/.test(j.message));
+    r = await s.req("POST", SET + "/persona", { cookie: A.cookie, body: form({ _csrf: stok, preset: "learned" }) });
+    check("choosing 'Learn from how I speak' returns to learning", db.getVoicePersona(me.id) === "");
+    r = await s.req("POST", "/credentials/openai-voice/persona", { cookie: A.cookie, body: form({ _csrf: stok, preset: "cairene_m" }) });
+    check("the old URL keeps its method and body (308) to the new route", r.status === 308 && r.headers.location === SET + "/persona");
 
     await s.makeUser("personaviewer", "viewer");
     const V = await s.signIn("personaviewer");
-    r = await s.req("POST", "/credentials/openai-voice/persona/reset", { cookie: V.cookie, body: new URLSearchParams({ _csrf: "x" }).toString() });
+    r = await s.req("POST", SET + "/persona/reset", { cookie: V.cookie, body: form({ _csrf: "x" }) });
     check("a viewer cannot reach the reset", r.status === 403 || r.status === 302, r.status);
-    r = await s.req("POST", "/credentials/openai-voice/persona", { cookie: V.cookie, body: new URLSearchParams({ _csrf: "x", preset: "cairene_f" }).toString() });
+    r = await s.req("POST", SET + "/persona", { cookie: V.cookie, body: form({ _csrf: "x", preset: "cairene_f" }) });
     check("  nor choose a persona", r.status === 403 || r.status === 302, r.status);
   } catch (e) {
     check("the HTTP run completed", false, e.stack + "\n" + s.out());
   } finally {
     s.stop();
-    mockHttp.close();
   }
   console.log(`\n${passes} passed, ${failures} failed`);
   process.exit(failures ? 1 : 0);

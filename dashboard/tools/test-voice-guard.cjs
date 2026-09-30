@@ -27,7 +27,7 @@
  *   - the page: a silent push-to-talk press uploads nothing; a click does not
  *     count as speech; speech is uploaded with its level;
  *   - server.js routes use all of it.
- * The desk path's regression is in test-voice-desk.cjs (it has the realtime mock).
+ * (The front desk and its regression tests are gone: voice is live conversation only.)
  */
 
 const fs = require("fs");
@@ -38,7 +38,7 @@ const ROOT = path.join(__dirname, "..");
 const guard = require(path.join(ROOT, "lib", "voice-guard.js"));
 const intakeLib = require(path.join(ROOT, "lib", "voice-intake.js"));
 const voice = require(path.join(ROOT, "lib", "voice.js"));
-const desk = require(path.join(ROOT, "lib", "voice-desk.js"));
+const shared = require(path.join(ROOT, "lib", "voice-shared.js")); // (was voice-desk.js; the front desk is gone)
 
 let passed = 0;
 let failed = 0;
@@ -111,11 +111,9 @@ const REAL_SPEECH = [
     check(`real speech passes: ${JSON.stringify(s.slice(0, 60))}`, r.ok, JSON.stringify(r));
   }
   {
-    const ins = desk.INSTRUCTIONS.split("\n");
-    check("a line of the desk's instructions is an echo", ins.slice(0, 5).every((l) => guard.echoOf(l)), ins.slice(0, 5).filter((l) => !guard.echoOf(l)).join(" | "));
-    check("the whole desk instructions are an echo", !!guard.echoOf(desk.INSTRUCTIONS));
-    check("every desk tool description is an echo", desk.TOOLS.every((t) => guard.echoOf(t.description)));
-    check("the summary instructions are an echo", !!guard.echoOf(desk.SUMMARY_INSTRUCTIONS));
+    const ins = shared.SUMMARY_INSTRUCTIONS.split("\n").filter((l) => l.split(/\s+/).length >= 8);
+    check("a (long enough) line of the summary instructions is an echo", ins.slice(0, 3).every((l) => guard.echoOf(l)), ins.slice(0, 3).filter((l) => !guard.echoOf(l)).join(" | "));
+    check("the summary instructions are an echo", !!guard.echoOf(shared.SUMMARY_INSTRUCTIONS));
     check("the reader's instructions are an echo", !!guard.echoOf(voice.INSTRUCTIONS));
     check("a partial echo inside a few extra words is still one", !!guard.echoOf("Okay. " + TURN_92.slice(0, 90)));
     check("a sentence quoting four prompt words in a row is not", !guard.echoOf("Please check the MONI dashboard, Odoo and nothing else today."));
@@ -124,7 +122,7 @@ const REAL_SPEECH = [
   check("thresholds as documented", guard.RUN_ALONE === 8 && guard.RUN_WITH_OVERLAP === 5 && guard.OVERLAP === 0.6);
   check("the transcription prompt is a vocabulary list now, not a sentence", voice.TRANSCRIBE_PROMPT_KIND === "list" && !/Someone talking/.test(voice.TRANSCRIBE_PROMPT) && /MINT AI/.test(voice.TRANSCRIBE_PROMPT) && /Mint\b/.test(voice.TRANSCRIBE_PROMPT) && !/MONI/.test(voice.TRANSCRIBE_PROMPT) && /Odoo/.test(voice.TRANSCRIBE_PROMPT));
   check("the echo guard compares against the prompt in use (Mint)", guard.promptSources().some((s) => s.name === "transcription prompt" && s.text === voice.TRANSCRIBE_PROMPT && /MINT AI/.test(s.text)));
-  check("and against the desk's instructions in use (MINT AI)", guard.promptSources().some((s) => s.name === "desk instructions" && s.text === desk.INSTRUCTIONS && /MINT AI/.test(s.text)));
+  check("and against the summary instructions in use (MINT AI); the desk's are gone", guard.promptSources().some((s) => s.name === "summary instructions" && s.text === shared.SUMMARY_INSTRUCTIONS && /MINT AI/.test(s.text)) && !guard.promptSources().some((s) => /desk/.test(s.name)));
   check("the old sentence prompt stays a guarded source", guard.promptSources().some((s) => s.text === guard.LEGACY_TRANSCRIBE_PROMPT));
 
   section("silence phrases and physics");
@@ -214,134 +212,10 @@ const REAL_SPEECH = [
     check("a transcript expires", !gr.take(actor, "vold1234567", "Hello there."));
   }
 
-  section("the page: a silent push to talk sends nothing");
+  section("the page records nothing itself");
   {
     const SRC = fs.readFileSync(path.join(ROOT, "public", "moni-ai.js"), "utf8");
-    const start = SRC.indexOf("  var Voice = (function () {");
-    const endMark = "    return api_;\n  })();";
-    const end = SRC.indexOf(endMark, start);
-    const helperStart = SRC.indexOf("  function voiceModeFrom(");
-    const helperEnd = SRC.indexOf("\n  }\n", helperStart);
-    const VOICE_SRC = SRC.slice(helperStart, helperEnd + 4) + "\n" + SRC.slice(start, end + endMark.length);
-
-    function boot() {
-      const mic = { level: 0 }; // what the microphone hears, as an RMS
-      const els = {};
-      const docL = {};
-      const apiCalls = [];
-      const streamCalls = [];
-      let tickFn = null;
-      const fakeEl = (id) => {
-        const cls = new Set();
-        return {
-          id, disabled: false, hidden: false, title: "", textContent: "", innerHTML: "", style: {}, attrs: {}, listeners: {},
-          classList: { toggle: (c, on) => (on === undefined ? (cls.has(c) ? cls.delete(c) : cls.add(c)) : on ? cls.add(c) : cls.delete(c)), add: (c) => cls.add(c), remove: (c) => cls.delete(c), contains: (c) => cls.has(c) },
-          setAttribute(k, v) { this.attrs[k] = String(v); },
-          getAttribute(k) { return this.attrs[k] == null ? null : this.attrs[k]; },
-          addEventListener(t, fn) { (this.listeners[t] = this.listeners[t] || []).push(fn); },
-          querySelectorAll: () => Array.from({ length: 44 }, () => ({ style: {} })),
-        };
-      };
-      class FakeAC {
-        constructor() { this.currentTime = 0; this.state = "running"; this.destination = {}; }
-        resume() { return Promise.resolve(); }
-        close() {}
-        createAnalyser() {
-          return { fftSize: 1024, connect() {}, getByteTimeDomainData(buf) { const a = Math.round(mic.level * 128); for (let i = 0; i < buf.length; i++) buf[i] = 128 + (i % 2 ? a : -a); } };
-        }
-        createGain() { return { gain: { value: 1, cancelScheduledValues() {}, setValueAtTime() {}, linearRampToValueAtTime() {} }, connect() {}, disconnect() {} }; }
-        createBuffer(ch, len, rate) { const d = new Float32Array(len); return { duration: len / rate, length: len, getChannelData: () => d }; }
-        createBufferSource() { return { connect() {}, start() {}, stop() {} }; }
-        createMediaStreamSource() { return { connect() {} }; }
-      }
-      class FakeRecorder {
-        constructor() { this.state = "inactive"; this.mimeType = "audio/webm"; }
-        start() { this.state = "recording"; }
-        stop() { this.state = "inactive"; if (this.ondataavailable) this.ondataavailable({ data: { size: 5078 } }); if (this.onstop) this.onstop(); }
-      }
-      class FakeReader {
-        readAsDataURL() { this.result = "data:audio/webm;base64,QUFBQQ=="; setImmediate(() => this.onload && this.onload()); }
-      }
-      const sandbox = {
-        console: { log() {}, info() {}, warn() {}, error: console.error },
-        setTimeout, clearTimeout,
-        setInterval: (fn) => ((tickFn = fn), 1),
-        clearInterval() {},
-        atob: (s) => Buffer.from(s, "base64").toString("latin1"),
-        Float32Array, Uint8Array, TextDecoder, Promise, Map, Set, JSON, Math, Date, String, Number, Array, Object, Error,
-        Blob: class { constructor(parts, o) { this.type = (o && o.type) || ""; } },
-        FileReader: FakeReader,
-        AbortController,
-        fetch: () => new Promise(() => {}),
-        navigator: { mediaDevices: { getUserMedia: () => Promise.resolve({ getTracks: () => [{ stop() {} }] }) } },
-        document: {
-          activeElement: { tagName: "BODY", isContentEditable: false, getAttribute: () => null },
-          addEventListener(t, fn) { (docL[t] = docL[t] || []).push(fn); },
-          removeEventListener(t, fn) { docL[t] = (docL[t] || []).filter((x) => x !== fn); },
-        },
-        $: (id) => (els[id] = els[id] || fakeEl(id)),
-        READY: true, VOICE: "marin", DESK: false, CSRF: "tok",
-        S: { status: { busy: false } },
-        Orb: { micSource() {}, outSource() {} },
-        toast() {},
-        clip: (s, n) => String(s).slice(0, n),
-        ic: () => "",
-        api: (p, o) => (apiCalls.push({ path: p, body: o && o.body }), Promise.resolve({ text: "" })),
-        apiStream: (p, body) => (streamCalls.push({ path: p, body }), new Promise(() => {})),
-        send: () => Promise.resolve(null),
-        upsertTurn: (t) => t, aiText: () => "", showPane() {}, deskTurns: new Set(), renderRail() {}, paintState() {},
-        P: { loadVoiceUsage() {}, setVoiceUsage() {} },
-      };
-      sandbox.window = { AudioContext: FakeAC, MediaRecorder: FakeRecorder, AbortController, __moniVoice: null, localStorage: { getItem: () => null, setItem() {} } };
-      sandbox.MediaRecorder = FakeRecorder;
-      vm.createContext(sandbox);
-      vm.runInContext(VOICE_SRC + "\nthis.Voice = Voice;", sandbox);
-      const key = (type) => (docL[type] || []).forEach((fn) => fn({ code: "Space", repeat: false, preventDefault() {} }));
-      return {
-        mic, apiCalls, streamCalls, els,
-        diag: () => sandbox.window.__moniVoice,
-        down: () => key("keydown"),
-        up: () => key("keyup"),
-        tick: (n) => { for (let i = 0; i < n; i++) tickFn && tickFn(); },
-      };
-    }
-
-    async function press(t, pattern, holdMs) {
-      t.down();
-      await settle();
-      for (const [level, n] of pattern) {
-        t.mic.level = level;
-        t.tick(n);
-      }
-      await sleep(holdMs || 400);
-      t.up();
-      await sleep(300); // the 250 ms tail
-      await settle();
-    }
-
-    const t1 = boot();
-    await press(t1, [[0.001, 30]]);
-    check("a silent push to talk uploads nothing (no transcribe, no desk turn)", t1.apiCalls.length === 0 && t1.streamCalls.length === 0, JSON.stringify(t1.apiCalls));
-    check("  it is counted, and the voice bar says nothing was heard", t1.diag().silentDrops === 1 && t1.diag().uploads === 0 && /didn't hear/i.test(t1.els["cc-vb-text"] ? t1.els["cc-vb-text"].textContent : ""), JSON.stringify(t1.diag()));
-
-    const t2 = boot();
-    await press(t2, [[0.001, 5], [0.3, 1], [0.001, 20]]);
-    check("a click (50 ms above the threshold) is not speech: nothing uploaded", t2.apiCalls.length === 0 && t2.diag().silentDrops === 1);
-
-    const t3 = boot();
-    await press(t3, [[0.001, 3], [0.12, 16], [0.001, 4]]);
-    const up = t3.apiCalls.find((c) => c.path === "transcribe");
-    check("speech is uploaded, with its level and a voice-turn id", !!up && up.body.level && up.body.level.loud_ms >= 150 && up.body.level.ms >= 300 && up.body.level.peak > 0.05 && /^v[a-z0-9]+$/.test(up.body.vt), JSON.stringify(t3.apiCalls));
-
-    const t4 = boot();
-    t4.down();
-    await settle();
-    t4.mic.level = 0.2;
-    t4.tick(10);
-    t4.up();
-    await sleep(300);
-    await settle();
-    check("a press released within 300 ms is not uploaded", t4.apiCalls.length === 0 && t4.diag().silentDrops === 1);
+    check("no push to talk: no recorder, no transcribe upload, no desk turn (voice is live conversation, public/voice-live.js)", !/MediaRecorder|api\("transcribe"|desk\/turn|getUserMedia/.test(SRC));
   }
 
   section("server.js uses all of it");
@@ -355,17 +229,13 @@ const REAL_SPEECH = [
     check("the transcribe route goes through the intake (and remembers the transcript)", /voiceIntake\.transcribeTurn\(/.test(tr) && /grounds: voiceGrounds/.test(tr) && !/voice\.transcribeFull\(audio/.test(tr));
     check("  a drop answers as for silence, with no text", /if \(got\.dropped\) return res\.json\(\{ text: "", dropped: got\.dropped \}\)/.test(tr));
     check("  and logs the rule, never the words", /dropped: got\.dropped \|\| undefined/.test(tr) && !/text: text|said:/.test(tr.slice(tr.indexOf("voiceLog"), tr.indexOf("voiceLog") + 600)));
-    const dt = route('app.post("/mint-ai/api/desk/turn"');
-    check("the desk route goes through the intake too", /voiceHear\(audio, mime, body\.level, cfg\)/.test(dt) && !/voice\.transcribeFull\(/.test(dt));
-    check("  typed text to the desk is held at the door", /voiceGuard\.refuseAtDoor\(heard\)/.test(dt));
-    check("  and nothing heard means no desk turn", /if \(!heard \|\| \/\^\[\\\[\(\]\/\.test\(heard\)\)/.test(dt));
+    check("the desk route and the Command Center's transcribe route are gone", !route('app.post("/mint-ai/api/desk/turn"') && !route('app.post("/mint-ai/api/transcribe"'));
     const sd = route('app.post("/mint-ai/api/send"');
     check("the send route refuses an ungrounded or prompt-like voice turn before calling MONI AI", /voiceIntake\.sendRefusal\(/.test(sd) && sd.indexOf("sendRefusal") < sd.indexOf('moniai.call("send"') && /status\(422\)/.test(sd));
     check("  and logs the refusal (rule only)", /voiceLog\("send", "refused", \{ rule: refusal\.rule/.test(sd));
     check("the console's dictation shares the transcribe route (and the guard)", /app\.post\("\/console\/:id\/transcribe"[\s\S]{0,400}return voiceTranscribeRoute\(req, res\)/.test(server));
     const js = fs.readFileSync(path.join(ROOT, "public", "moni-ai.js"), "utf8");
     check("the page sends its voice-turn id with a voice send", /if \(opts\.voice && opts\.vt\) body\.vt = opts\.vt;/.test(js));
-    check("the page no longer uploads a push to talk just because it was one", !/blob && \(heard \|\| ptt\)/.test(js) && /var spoke = enough && heard && loudMs >= SPEECH_MS;/.test(js));
   }
 
   console.log(`\n${passed} passed, ${failed} failed`);

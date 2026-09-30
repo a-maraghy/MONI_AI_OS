@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 "use strict";
 /**
- * Tests for the Command Center's streamed voice playback: the Voice module of
- * public/moni-ai.js, cut out of the file that ships and run here in a sandbox
- * with a fake Web Audio clock, a fake fetch whose NDJSON body the test feeds a
- * line at a time, and a fake desk stream.
+ * Tests for the Command Center's streamed read-aloud: the Voice module of
+ * public/moni-ai.js (read-aloud only since 2026-09-30: voice is live
+ * conversation, and the page records nothing itself), cut out of the file that
+ * ships and run here in a sandbox with a fake Web Audio clock and a fake fetch
+ * whose NDJSON body the test feeds a line at a time.
  *
  *   node dashboard/tools/test-voice-stream.cjs
  *
@@ -14,9 +15,8 @@
  *   - a cut (the reading failed the verbatim check mid-way) stops what is
  *     playing at once -- a short fade, every scheduled chunk stopped -- and the
  *     fallback's reading plays after it, from a fresh start;
- *   - talking over it (barge-in) stops the stream playing, aborts the ones
- *     fetched, and nothing more of them plays;
- *   - the front desk's lines, streamed in its own response, play in line order;
+ *   - switching read-aloud off stops the stream playing, aborts the ones
+ *     fetched, and nothing more of them plays; the choice is remembered;
  *   - the orb's speaking level is the analyser's real output level;
  *   - every sentence carries its voice turn and kind, for the usage figures.
  *
@@ -57,17 +57,7 @@ if (start < 0 || end < 0) {
   console.log("  FAIL could not find the Voice module in moni-ai.js");
   process.exit(1);
 }
-// The mic-mode and stop-command helpers live with the page's other helpers,
-// outside the Voice module, so they are carried into the sandbox alongside it.
-const helperStart = SRC.indexOf("  function voiceModeFrom(");
-const helperEnd = SRC.indexOf("\n  }\n", SRC.indexOf("  function isStopCommand(", helperStart));
-if (helperStart < 0 || helperEnd < 0 || SRC.indexOf("  function isStopCommand(", helperStart) < 0) {
-  console.log("  FAIL could not find voiceModeFrom and isStopCommand in moni-ai.js");
-  process.exit(1);
-}
-// What the browser loads before moni-ai.js: window.VoiceStop.
-const VoiceStop = require(path.join(ROOT, "public", "voice-stop.js"));
-const VOICE_SRC = SRC.slice(helperStart, helperEnd + 4) + "\n" + SRC.slice(start, end + endMark.length);
+const VOICE_SRC = SRC.slice(start, end + endMark.length);
 
 /* ---------------------------------------------------------------- fakes --- */
 
@@ -302,7 +292,10 @@ function boot(opts) {
       if (this.onstop) this.onstop();
     }
   }
-  sandbox.window = { AudioContext: FakeAC, MediaRecorder: FakeRecorder, AbortController, __moniVoice: null };
+  const store = {};
+  sandbox.window = { AudioContext: FakeAC, MediaRecorder: FakeRecorder, AbortController, __moniVoice: null, localStorage: { getItem: (k) => (k in store ? store[k] : null), setItem: (k, v) => (store[k] = String(v)) } };
+  if (o.readAloud) store["mint-read-aloud"] = "1";
+  sandbox.store = store;
   sandbox.MediaRecorder = sandbox.window.MediaRecorder;
   vm.createContext(sandbox);
   vm.runInContext(VOICE_SRC + "\nthis.Voice = Voice;", sandbox);
@@ -318,64 +311,10 @@ function boot(opts) {
   };
 }
 
-/**
- * The microphone end of the page, for the spoken stop command: the level
- * meter's tick driven by hand, recorders counted, the upload and the
- * transcription faked, and whatever would be sent to MINT AI recorded.
- */
-function micRig(t, transcript) {
-  const sb = t.sandbox;
-  const rig = { sent: [], asked: [], recs: [], tracks: [{ stopped: false, stop() { this.stopped = true; } }], tick: null };
-  sb.window.VoiceStop = VoiceStop;
-  sb.setInterval = (fn) => ((rig.tick = fn), 1);
-  const Base = sb.window.MediaRecorder;
-  sb.MediaRecorder = sb.window.MediaRecorder = class extends Base {
-    constructor(st, o) {
-      super(st, o);
-      rig.recs.push(this);
-    }
-  };
-  sb.navigator.mediaDevices.getUserMedia = () => Promise.resolve({ getTracks: () => rig.tracks });
-  sb.FileReader = class {
-    readAsDataURL() {
-      this.result = "data:audio/webm;base64,AAAA";
-      this.onload();
-    }
-  };
-  sb.Blob = class {
-    constructor(parts, o) {
-      this.type = (o && o.type) || "";
-    }
-  };
-  sb.send = (text) => (rig.sent.push(text), Promise.resolve(null));
-  sb.api = (p) => (rig.asked.push(p), Promise.resolve(p === "transcribe" ? { text: transcript } : {}));
-  /** Say something: loud for a while, with audio recorded, long enough to count. */
-  rig.speak = async () => {
-    const mic = t.ctx();
-    for (let i = 0; i < 8; i++) rig.tick(); // hands-free calibrates first; push to talk does not
-    mic.micLoud = true;
-    for (let i = 0; i < 6; i++) rig.tick();
-    rig.recs[rig.recs.length - 1].ondataavailable({ data: { size: 100 } });
-    await new Promise((r) => setTimeout(r, 330)); // longer than MIN_MS
-    mic.micLoud = false;
-  };
-  /** Then a pause, which sends it in hands-free (END_MS of quiet). */
-  rig.pause = async () => {
-    for (let i = 0; i < 30; i++) rig.tick();
-    await settle(10);
-  };
-  rig.handsFree = async () => {
-    t.Voice.setMode("handsfree"); // the voice menu's switch: push to talk -> hands-free
-    sb.$("cc-c-mic").listeners.click[0](); // the mic button: start listening
-    await settle();
-  };
-  return rig;
-}
-
 /* ----------------------------------------------------------------- tests --- */
 
 (async () => {
-  section("direct path: a sentence plays from its first chunk");
+  section("read-aloud: a sentence plays from its first chunk");
   {
     const t = boot();
     t.Voice.unlock(); // the first click: the AudioContext exists
@@ -501,9 +440,10 @@ function micRig(t, transcript) {
     check("cut and then skipped: stopped, and the skip is said once (the words are on screen)", ctx.sources[5] && ctx.sources[5].stoppedAt != null && t.toasts.some((m) => /not read aloud/.test(m)) && t.Voice.speaking === false, t.toasts.join("|"));
   }
 
-  section("barge-in during a stream");
+  section("switching read-aloud off during a stream");
   {
-    const t = boot();
+    const t = boot({ readAloud: true });
+    check("the choice is this browser's, remembered (mint-read-aloud)", t.Voice.speakAll === true && t.sandbox.$("cc-speak-toggle").attrs["aria-pressed"] === "true");
     t.Voice.unlock();
     t.Voice.say("A long answer starts here.");
     t.Voice.say("And it goes on.");
@@ -518,10 +458,11 @@ function micRig(t, transcript) {
     const ctx = t.ctx();
     ctx.advance(0.1);
     check("speaking the first", t.Voice.speaking === true && ctx.sources.length === 1);
-    t.keydown("Space"); // hold to talk over it
+    t.sandbox.$("cc-speak-toggle").listeners.click[0](); // the speaker button: read-aloud off
     await settle();
-    check("talking over it stops what is playing at once", ctx.sources[0].stoppedAt != null && t.Voice.speaking === false && t.diag().bargeIns === 1);
+    check("switching it off stops what is playing at once", ctx.sources[0].stoppedAt != null && t.Voice.speaking === false && t.Voice.speakAll === false);
     check("  and aborts every sentence fetched ahead", a.aborted && b.aborted && c.aborted);
+    check("  and is remembered", t.sandbox.store["mint-read-aloud"] === "0");
     a.push({ type: "audio", pcm: pcm(0.25, 100) });
     await settle();
     ctx.advance(1);
@@ -529,151 +470,13 @@ function micRig(t, transcript) {
     check("  nothing more of them plays", ctx.sources.length === 1, ctx.sources.length);
   }
 
-  section("front desk: its lines stream in its own response, and play in line order");
-  {
-    const t = boot({ desk: true });
-    t.Voice.unlock();
-    t.Voice.tag(77, { vt: "vdesk77", cat: "handoff" });
-    t.Voice.summary(77, "MINT AI's full answer, on screen.");
-    await settle();
-    check("the summary is asked for with the hand-off's voice turn", deskCalls.length === 1 && deskCalls[0].path === "desk/summary" && deskCalls[0].body.turn === 77 && deskCalls[0].body.vt === "vdesk77", JSON.stringify(deskCalls[0] && deskCalls[0].body));
-    const on = deskCalls[0].onEvent;
-    on({ type: "line", i: 0, text: "The server is healthy.", safe: false });
-    on({ type: "line", i: 1, text: "Nothing needs doing.", safe: false });
-    // Line 1's audio shows up first (the page copes even if the wire did not order it).
-    on({ type: "start", i: 1, engine: "gpt-realtime-mini" });
-    on({ type: "audio", i: 1, pcm: pcm(0.5, 100) });
-    on({ type: "end", i: 1, engine: "gpt-realtime-mini" });
-    await settle();
-    const ctx = t.ctx();
-    check("no direct fetches: the desk's audio comes in its own stream", fetches.length === 0);
-    check("line 1 does not play before line 0", ctx.sources.length === 0);
-    on({ type: "start", i: 0, engine: "gpt-realtime-mini" });
-    on({ type: "audio", i: 0, pcm: pcm(0.25, 100) });
-    await settle();
-    check("line 0 plays from its first chunk", ctx.sources.length === 1 && Math.abs(ctx.sources[0].value() - 0.25) < 1e-4);
-    on({ type: "cut", i: 0, why: "unfaithful" });
-    on({ type: "start", i: 0, engine: "gpt-4o-mini-tts" });
-    on({ type: "audio", i: 0, pcm: pcm(0.75, 100) });
-    on({ type: "end", i: 0, engine: "gpt-4o-mini-tts" });
-    await settle();
-    check("a cut in the desk's stream stops line 0 and plays its fallback", ctx.sources[0].stoppedAt != null && ctx.sources.length === 2 && Math.abs(ctx.sources[1].value() - 0.75) < 1e-4);
-    ctx.advance(0.3);
-    await settle();
-    check("then line 1", ctx.sources.length === 3 && Math.abs(ctx.sources[2].value() - 0.5) < 1e-4, ctx.sources.map((s) => s.value().toFixed(2)).join());
-    deskCalls[0].resolve({ type: "done", fallback: null, usage: { today: { total: 0.01 } } });
-    await settle();
-    check("the done event's usage figures go straight to the Cost card", t.sandbox.usageSet.length === 1 && t.sandbox.usageSet[0].today.total === 0.01);
-
-    // Talked over mid-desk-stream: later lines of that stream are not queued.
-    t.Voice.summary(77, "again");
-    await settle();
-    const on2 = deskCalls[1].onEvent;
-    on2({ type: "line", i: 0, text: "First line.", safe: false });
-    on2({ type: "start", i: 0, engine: "gpt-realtime-mini" });
-    on2({ type: "audio", i: 0, pcm: pcm(0.25, 300) });
-    await settle();
-    const n = ctx.sources.length;
-    t.keydown("Space");
-    on2({ type: "line", i: 1, text: "Second line.", safe: false });
-    on2({ type: "start", i: 1, engine: "gpt-realtime-mini" });
-    on2({ type: "audio", i: 1, pcm: pcm(0.5, 100) });
-    await settle();
-    ctx.advance(1);
-    await settle();
-    check("barge-in during the desk's stream: what plays stops, and its later lines are not read", ctx.sources[n - 1].stoppedAt != null && ctx.sources.length === n, `${n} ${ctx.sources.length}`);
-  }
-
-  section("the stop command said aloud, hands-free: listening stops, nothing is sent");
+  section("nothing of the old voice paths is left in the module");
+  check("no recorder, no push to talk, no hands-free, no desk lines, no barge-in by the mic", !/MediaRecorder|getUserMedia|pttDown|handsfree|deskLines|enqueueRemote|bargeIn|transcribe/.test(VOICE_SRC));
   {
     const t = boot();
-    const rig = micRig(t, "Stop listening.");
-    await rig.handsFree();
-    check("hands-free is on and listening", t.Voice.on === true && t.Voice.listening === true && rig.recs.length === 1);
-    await rig.speak();
-    await rig.pause();
-    check("the pause sent the recording to be transcribed", rig.asked.indexOf("transcribe") >= 0 && t.diag().uploads === 1, rig.asked.join());
-    check("  the words were not sent to MINT AI", rig.sent.length === 0, rig.sent.join(" | "));
-    check("  listening is off, as if the mic button were clicked", t.Voice.on === false && t.Voice.listening === false && t.sandbox.$("cc-c-mic").attrs["aria-pressed"] === "false");
-    check("  and the microphone is released", rig.tracks[0].stopped === true);
-    check("  a note says so", t.toasts.indexOf("Stopped listening.") >= 0 && t.sandbox.$("cc-vb-text").textContent === "Stopped listening.", t.toasts.join(" | "));
-    check("  nothing is said about it (no \"didn't catch that\")", !t.diag().said.some((x) => /catch that/.test(x)) && t.diag().voiceStops === 1, t.diag().said.join(" | "));
-    check("  no new recorder was opened after it", rig.recs.length === 1 && rig.recs[0].state === "inactive");
-  }
-
-  section("a sentence that merely contains the words is sent as usual");
-  {
-    const t = boot();
-    const rig = micRig(t, "Why did the service stop listening on port 80?");
-    await rig.handsFree();
-    await rig.speak();
-    await rig.pause();
-    check("it is sent to MINT AI, word for word", rig.sent.length === 1 && rig.sent[0] === "Why did the service stop listening on port 80?", rig.sent.join(" | "));
-    check("  and hands-free stays on", t.Voice.on === true && rig.tracks[0].stopped === false && t.toasts.indexOf("Stopped listening.") < 0);
-  }
-
-  section("the stop command in Arabic, through the front desk");
-  {
-    const t = boot({ desk: true });
-    const rig = micRig(t, "");
-    await rig.handsFree();
-    await rig.speak();
-    await rig.pause();
-    check("the recording went to the desk", deskCalls.length === 1 && deskCalls[0].path === "desk/turn" && rig.asked.indexOf("transcribe") < 0);
-    deskCalls[0].onEvent({ type: "heard", text: "وقف الاستماع", stop: true });
-    deskCalls[0].resolve({ type: "done", asked: [], lines: 0, stop: true });
+    t.Voice.say("Anything.");
     await settle();
-    check("the desk's stop flag closes the mic, and nothing is sent", t.Voice.on === false && rig.tracks[0].stopped === true && rig.sent.length === 0 && t.toasts.indexOf("Stopped listening.") >= 0);
-    check("  and hands-free does not start listening again when the desk is done", t.Voice.listening === false && rig.recs.length === 1);
-
-    // A desk that predates the flag: the page reads the words itself.
-    const t2 = boot({ desk: true });
-    const rig2 = micRig(t2, "");
-    await rig2.handsFree();
-    await rig2.speak();
-    await rig2.pause();
-    deskCalls[0].onEvent({ type: "heard", text: "اقفل ال live session" });
-    deskCalls[0].resolve({ type: "done", asked: [], lines: 0 });
-    await settle();
-    check("  without the flag, the words alone stop it too", t2.Voice.on === false && rig2.tracks[0].stopped === true && t2.toasts.indexOf("Stopped listening.") >= 0);
-  }
-
-  section("the stop command in push to talk: not sent, and the mic kept open for the next press is released");
-  {
-    const t = boot();
-    const rig = micRig(t, "Okay, stop listening, please.");
-    t.keydown("Space");
-    await settle();
-    check("holding Space records", rig.recs.length === 1 && rig.recs[0].state === "recording");
-    const mic = t.ctx();
-    mic.micLoud = true;
-    for (let i = 0; i < 6; i++) rig.tick();
-    rig.recs[0].ondataavailable({ data: { size: 100 } });
-    await new Promise((r) => setTimeout(r, 330));
-    mic.micLoud = false;
-    t.keyup("Space");
-    await new Promise((r) => setTimeout(r, 300)); // the release's short tail
-    await settle(10);
-    check("it was transcribed and not sent", rig.asked.indexOf("transcribe") >= 0 && rig.sent.length === 0, rig.asked.join() + " / " + rig.sent.join());
-    check("  the microphone is released at once, not kept for a minute", rig.tracks[0].stopped === true && t.Voice.on === false && t.toasts.indexOf("Stopped listening.") >= 0);
-  }
-
-  section("Arabic on the direct path (the simple Command Center): a sentence is sent, the command stops");
-  {
-    const t = boot();
-    const rig = micRig(t, "ما هي حالة الخدمات على هذا الخادم؟");
-    await rig.handsFree();
-    await rig.speak();
-    await rig.pause();
-    check("an Arabic sentence is sent to MINT AI word for word", rig.sent.length === 1 && rig.sent[0] === "ما هي حالة الخدمات على هذا الخادم؟", rig.sent.join(" | "));
-    check("  and hands-free stays on", t.Voice.on === true && t.toasts.indexOf("Stopped listening.") < 0);
-
-    const t2 = boot();
-    const rig2 = micRig(t2, "ممكن توقف الاستماع");
-    await rig2.handsFree();
-    await rig2.speak();
-    await rig2.pause();
-    check("the Arabic stop command, asked politely, closes the mic and sends nothing", rig2.sent.length === 0 && t2.Voice.on === false && rig2.tracks[0].stopped === true && t2.toasts.indexOf("Stopped listening.") >= 0, rig2.sent.join(" | "));
+    check("without the switch (a fresh browser) replies are silent unless asked", t.Voice.speakAll === false);
   }
 
   console.log(`\n${passed} passed, ${failed} failed`);

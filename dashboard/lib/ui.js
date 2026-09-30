@@ -411,7 +411,7 @@ function shell(title, body, opts = {}) {
         ${head}
         ${bare ? body : `<div class="frame-body${opts.fill ? " stretch" : ""}">${body}</div>`}
       </main>
-    </div>${withDock ? `<div class="dock-band" aria-hidden="true"></div>` + dockMarkup(opts.csrf, perm) : ""}`,
+    </div>${withDock ? `<div class="dock-band" aria-hidden="true"></div>` + dockMarkup(opts.csrf, perm, { noVoice: !who.voice }) : ""}`,
     Object.assign({}, opts, { pageClass })
   );
 }
@@ -440,8 +440,10 @@ function pageMapFor(perm) {
 
 /**
  * MINT AI's dock on a page that is not the Command Center: its small core,
- * state and the last thing it said, push to talk (the mic, or hold Space),
- * and a way back to the Command Center. Everything else is public/mint-dock.js.
+ * state and the last thing it said, the mic (it starts a live call: the
+ * Command Center opens with this page in its frame and the call starts), and
+ * a way back to the Command Center. `opts.noVoice`: voice is off, no key, or
+ * this viewer has no voice.use -- then there is no mic at all. Everything else is public/mint-dock.js.
  * data-pages: the page.open keys this viewer's role may use (checked there
  * before moving).
  */
@@ -458,14 +460,14 @@ function dockMarkup(csrf, perm, opts = {}) {
   return `
 <div class="md-root${opts.shell ? " md-shell" : ""}" id="mint-dock-root" data-csrf="${esc(csrf)}" data-pages="${esc(keys)}" data-page-map="${esc(map)}"${opts.shell ? ' data-shell="1"' : ""} hidden>${shellParts}
   <div class="md-bubble" id="md-bubble" aria-hidden="true" data-s="idle"><div class="b-top">MINT AI · <b id="md-b-state">READY</b><span id="md-b-at">now</span></div><div class="b-you" id="md-b-you"></div><div class="b-cap" id="md-b-cap">Ready when you are.</div><div class="b-ask" id="md-b-ask" hidden></div>
-    <div class="b-hint"><span>Click to open the Command Center</span>${opts.noVoice ? "" : `<span><kbd>Space</kbd> hold to talk</span>`}</div></div>
+    <div class="b-hint"><span>Click to open the Command Center</span>${opts.noVoice ? "" : `<span>the mic starts a live call</span>`}</div></div>
   <div class="md-toast" id="md-toast" role="status"><span class="t-ic" aria-hidden="true"></span><span id="md-t-txt"></span><button type="button" id="md-t-act" hidden>Undo</button><button type="button" id="md-t-no" hidden>Cancel</button></div>
   <div class="md-dock${opts.shell ? " off" : ""}" id="md-dock" data-s="idle" role="region" aria-label="MINT AI">
     <a class="md-orb" id="md-orb" href="/mint-ai" aria-label="Open the Command Center"><canvas id="md-orb-c" aria-hidden="true"></canvas></a>
     <a class="md-txt" id="md-txt" href="/mint-ai"><span class="md-name">MINT AI <span class="md-live-tag" id="md-live-t">LIVE</span><span class="md-need-n" id="md-need-n" hidden>1 needs you</span></span>
       <span class="md-state"><i></i><span id="md-state-t">Ready</span></span></a>
     <div class="md-btns">
-      <button type="button" class="md-btn md-mic" id="md-mic" aria-label="Hold to talk to MINT AI" title="Hold to talk (or hold Space)">${svg('<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/>')}</button>
+      ${opts.noVoice ? "" : `<button type="button" class="md-btn md-mic" id="md-mic" aria-label="Start a live conversation" title="Start a live conversation">${svg('<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/>')}</button>`}
       ${opts.shell ? `<button type="button" class="md-btn md-end" id="md-end" aria-label="End the live call" title="End the live call">${svg('<path d="M3.5 14.5c4.7-4 12.3-4 17 0l-1.8 2.6-3.4-1.2-.4-2.4a11 11 0 0 0-5.8 0l-.4 2.4-3.4 1.2z"/>')}</button>` : ""}
       <a class="md-btn md-exp" id="md-exp" href="/mint-ai" aria-label="Open the Command Center" title="Open the Command Center">${svg('<path d="M14 4h6v6M10 20H4v-6M20 4l-7 7M4 20l7-7"/>')}</a>
     </div>

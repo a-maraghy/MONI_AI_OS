@@ -1,6 +1,6 @@
 /**
  * UI control Phase 2 in the dashboard: lib/ui-relay.js (the ui tokens this
- * server mints) and how server.js, the voice desk, the live call and the page
+ * server mints) and how server.js, the live call and the page
  * use it.
  *
  *     node dashboard/tools/test-ui-relay.cjs
@@ -60,11 +60,11 @@ console.log("the relay");
   check("the raw token is never in an event it builds (only the tag is compared)", !JSON.stringify(d).includes(ut));
 }
 
-console.log("\nthe desk and the live call hand the token on");
+console.log("\nthe live call hands the token on");
 {
-  const desk = require(path.join(ROOT, "lib", "voice-desk.js"));
+  const shared = require(path.join(ROOT, "lib", "voice-shared.js")); // the supervisor door (was voice-desk.js)
   const seen = [];
-  const ops = desk.deskOps(async (op, params, actor) => (seen.push({ op, params, actor }), { turn: { id: 1 } }), "admin");
+  const ops = shared.voiceOps(async (op, params, actor) => (seen.push({ op, params, actor }), { turn: { id: 1 } }), "admin");
   const run = async () => {
     await ops.ask("restart odoo please", { ut: "UtUtUtUtUtUtUtUtUtUtUt01" });
     await ops.ask("and the disk");
@@ -75,10 +75,8 @@ console.log("\nthe desk and the live call hand the token on");
 
 (async () => {
   const seen = await module.exports.run();
-  check("deskOps.ask(text, {ut}) sends the token with the voice-desk send", seen[0].op === "send" && seen[0].params.ut === "UtUtUtUtUtUtUtUtUtUtUt01" && seen[0].params.via === "voice-desk");
+  check("voiceOps.ask(text, {ut}) sends the token with the voice's send (via voice-desk)", seen[0].op === "send" && seen[0].params.ut === "UtUtUtUtUtUtUtUtUtUtUt01" && seen[0].params.via === "voice-desk");
   check("  and without one sends none", seen[1].op === "send" && !("ut" in seen[1].params));
-  const deskSrc = fs.readFileSync(path.join(ROOT, "lib", "voice-desk.js"), "utf8");
-  check("the relay desk's both hand-offs (ask_moni, and the one after a cut) carry the turn's ticket", (deskSrc.match(/this\.ops\.ask\([^)]*, uiExtra\(turn\)\)/g) || []).length === 2 && /uiTicket: opts\.uiTicket/.test(deskSrc));
   const liveSrc = fs.readFileSync(path.join(ROOT, "lib", "voice-live.js"), "utf8");
   check("the live call's hand-off carries its ticket", /ut = this\.d\.uiTicket \? this\.d\.uiTicket\(\) : null;[\s\S]{0,300}this\.d\.ops\.ask\(request, ut \? \{ ut \} : undefined\)/.test(liveSrc));
   check("the live call does MINT AI's call.* itself (deepUi), nothing else", /deepUi\(v\) \{[\s\S]*?else return \{ ok: false, why: "not a call action" \};/.test(liveSrc));
@@ -95,12 +93,12 @@ console.log("\nthe desk and the live call hand the token on");
   check("  re-validates against the allowlist; call.* go to the live call, else refused", /UiActions\.validate\(ev\.action, ev\.args \|\| \{\}\)/.test(del) && /voiceLive\.callFor\(actor\)[\s\S]*?"no voice call is open"[\s\S]*?call\.deepUi\(v\)/.test(del));
   const ack = s.slice(s.indexOf('app.post("/mint-ai/api/ui/ack"'), s.indexOf('app.post("/mint-ai/api/send"'));
   check("/ui/ack: CSRF'd, strict body, only a nonce delivered to this user", /\.\.\.moniAiWrite/.test(ack) && /uiRelay\.takeAck\(b\.nonce, req\.me\.username\)/.test(ack) && /typeof b\.ok !== "boolean"/.test(ack));
-  check("/send binds the token to the turn the supervisor started; the desk and the live call do too (moniCall)", /if \(ut && sent && sent\.turn\) uiRelay\.bind\(ut, sent\.turn\.id\);/.test(send) && /if \(op === "send" && params && params\.ut && r && r\.turn\) uiRelay\.bind\(params\.ut, r\.turn\.id\);/.test(s) && /ops: voiceDesk\.deskOps\(moniCall, actor\)/.test(s) && !/deskFor\([^)]*moniai\.call/.test(s));
-  check("the desk and the live call get tickets for their tab", /uiTicket: \(\) => uiRelay\.mint\(\{ actor, tab: body\.tab, via: "page" \}\)/.test(s) && /uiTicket: \(\) => uiRelay\.mint\(\{ actor, tab, via: "live", callId: call\.id \}\)/.test(s));
+  check("/send binds the token to the turn the supervisor started; the live call does too (moniCall)", /if \(ut && sent && sent\.turn\) uiRelay\.bind\(ut, sent\.turn\.id\);/.test(send) && /if \(op === "send" && params && params\.ut && r && r\.turn\) uiRelay\.bind\(params\.ut, r\.turn\.id\);/.test(s) && /ops: voiceShared\.voiceOps\(moniCall, actor\)/.test(s) && !/summariserFor\([^)]*moniai\.call/.test(s));
+  check("the live call gets tickets for its tab", /uiTicket: \(\) => uiRelay\.mint\(\{ actor, tab, via: "live", callId: call\.id \}\)/.test(s));
 
   console.log("\nthe page");
   const pg = fs.readFileSync(path.join(ROOT, "public", "moni-ai.js"), "utf8");
-  check("a per-tab id in sessionStorage, sent with every send, desk turn, live call and on the event stream", /sessionStorage\.getItem\("mint-tab"\)/.test(pg) && /var body = \{ text: text, tab: TAB_ID \};/.test(pg) && /tab: TAB_ID, undoable:/.test(pg) && /csrf: CSRF,\s*tab: TAB_ID,/.test(pg) && /\/mint-ai\/api\/events\?tab=" \+ encodeURIComponent\(TAB_ID\)/.test(pg));
+  check("a per-tab id in sessionStorage, sent with every send, live call and on the event stream", /sessionStorage\.getItem\("mint-tab"\)/.test(pg) && /var body = \{ text: text, tab: TAB_ID \};/.test(pg) && /csrf: CSRF,\s*tab: TAB_ID,/.test(pg) && /\/mint-ai\/api\/events\?tab=" \+ encodeURIComponent\(TAB_ID\)/.test(pg));
   check("\"ui\" is listened for, run through runUiAction and answered through ui/ack", /"machine", "ui", "ui-confirm"\]/.test(pg) && /if \(type === "ui"\) \{[\s\S]*?runUiAction\(ev\)[\s\S]*?api\("ui\/ack"/.test(pg));
   const vl = fs.readFileSync(path.join(ROOT, "public", "voice-live.js"), "utf8");
   check("the live socket carries the tab", /\(o\.tab \? "&tab=" \+ encodeURIComponent\(o\.tab\) : ""\)/.test(vl));

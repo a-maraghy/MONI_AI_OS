@@ -26,11 +26,12 @@
  * orders, the cost view, the session deep view and the Ctrl+K palette are
  * cc-panels.js, handed this file's helpers and state (the CC object below).
  *
- * Voice goes through OpenAI, on the server only: the page posts its recording
- * to /mint-ai/api/transcribe and each sentence of a reply to /mint-ai/api/speak,
- * whose audio streams back as PCM chunks (NDJSON) and starts playing with the
- * first one, with the same end-of-utterance detection and barge-in.
- * No key set, no voice: the controls say where to add one.
+ * Voice goes through OpenAI, on the server only, and is live conversation
+ * (public/voice-live.js, the live block below): the mic starts a call. Replies
+ * can also be read aloud: each sentence is posted to /mint-ai/api/speak, whose
+ * audio streams back as PCM chunks (NDJSON) and starts playing with the first
+ * one. With voice off in Settings, no key, or no voice.use, the page carries
+ * no mic and no read-aloud at all.
  *
  * Only this VPS is shown. The live Odoo server appears nowhere on this page.
  *
@@ -42,19 +43,13 @@
 
   var CSRF = root.getAttribute("data-csrf") || "";
   var VIEWER = root.getAttribute("data-viewer") || "you";
-  var READY = root.getAttribute("data-voice-ready") === "1";   // an OpenAI key is set
+  // Voice works for this viewer: switched on in Settings ▸ Voice, a key set, and voice.use.
+  var READY = root.getAttribute("data-voice-ready") === "1";
   var VOICE = root.getAttribute("data-voice") || "";
-  // The voice front desk (GPT, trial): switched on by an administrator in
-  // Settings. When off -- the default -- nothing below changes behaviour.
-  var DESK = READY && root.getAttribute("data-voice-desk") === "1";
 
   /* ================================================================ helpers */
 
   function $(id) { return document.getElementById(id); }
-  /** The mic's mode from what this browser remembered: push to talk unless it chose hands-free. */
-  function voiceModeFrom(stored) {
-    return stored === "handsfree" ? "handsfree" : "ptt";
-  }
   /** A live conversation is on (the live integration block, further down; never in a sandbox without it). */
   function liveActive() { return typeof LiveUI !== "undefined" && !!(LiveUI && LiveUI.active); }
   /** The live call's microphone or speaker loudness, for the core. */
@@ -69,14 +64,8 @@
       return t;
     } catch (e) { return fresh; }
   })();
-  /** What was said is only "undo" or the like, and a screen action in this tab can still be undone. */
-  function isUndoCommand(said) {
-    return !!(window.VoiceStop && window.VoiceStop.undo && typeof uiUndoable === "function" && uiUndoable() && window.VoiceStop.undo(said));
-  }
-  /** What was said is only "stop listening" or the like (public/voice-stop.js; without it, never). */
-  function isStopCommand(said) {
-    return !!(window.VoiceStop && window.VoiceStop.heard(said));
-  }
+  // ("Stop listening" and "undo" said aloud are caught by the server in the live call:
+  // public/voice-stop.js there, and the call sends "stop" / "ui-undo".)
 
   function esc(s) {
     return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
@@ -617,7 +606,7 @@
     if (c.rules_user != null || c.rules_builtin != null) setCore("rules", String((c.rules_user || 0) + (c.rules_builtin || 0)), "", (c.rules_user || 0) + " of yours · " + (c.rules_builtin || 0) + " built in");
     else setCore("rules", "—", "off", "");
 
-    setCore("voice", Voice.listening ? "live" : READY ? "ready" : "no key", Voice.listening ? "warn" : READY ? "ok" : "off", READY ? "OpenAI · " + (VOICE || "voice") + (DESK ? " · front desk (GPT, trial)" : "") : "Add an OpenAI key in Settings to use voice");
+    setCore("voice", liveActive() ? "live" : READY ? "ready" : "off", liveActive() ? "warn" : READY ? "ok" : "off", READY ? "Live conversation · OpenAI · " + (VOICE || "voice") : "Voice is off (Settings ▸ Voice)");
 
     var pend = pendingApprovals().length;
     var mins = Math.round((st.approval_timeout_s || 300) / 60);
@@ -971,7 +960,6 @@
   }
 
   var voiceTurns = new Set();    // turns whose reply is read aloud
-  var deskTurns = new Set();     // turns the front desk passed on: their reply is summarised aloud
   var sending = false;
   function send(text, opts) {
     opts = opts || {};
@@ -1089,7 +1077,7 @@
 
   var chat = $("cc-chat");
   var TURN_SRC = {
-    dashboard: "You", "voice-desk": "You · via the voice front desk", remote: "You · Remote Control", peer: "Message from a session",
+    dashboard: "You", "voice-desk": "You · by voice", remote: "You · Remote Control", peer: "Message from a session",
     idle: "Idle notice", delivery: "Delivery notice", system: "System", unknown: "Turn",
     watcher: "Watcher", order: "Standing order", "mission-request": "New mission", decision: "Decision",
   };
@@ -1150,7 +1138,7 @@
     var text = tr.text || "";
     if (isOrderTurn(tr)) return "";
     if (tr.source === "dashboard" || tr.source === "voice-desk" || tr.source === "remote" || tr.source === "mission-request") {
-      var name = tr.source === "remote" ? "You · via Remote Control" : tr.source === "voice-desk" ? (tr.actor && tr.actor !== VIEWER ? esc(tr.actor) : "You") + " · via the voice front desk" : tr.actor && tr.actor !== VIEWER ? esc(tr.actor) : "You";
+      var name = tr.source === "remote" ? "You · via Remote Control" : tr.source === "voice-desk" ? (tr.actor && tr.actor !== VIEWER ? esc(tr.actor) : "You") + " · by voice" : tr.actor && tr.actor !== VIEWER ? esc(tr.actor) : "You";
       var tag = tr.source === "mission-request" ? ' · <span class="cc-badge b-mis">' + ic("flag") + "new mission</span>" : "";
       return '<div class="cc-msg me"><div class="who"><b>' + name + "</b> · " + esc(when) + tag + (tr.target ? " · → " + esc(clip(tr.target, 30)) : "") + '</div><div class="cc-bubble">' + esc(text) + "</div></div>";
     }
@@ -1367,7 +1355,7 @@
   $("cc-cap-more").addEventListener("click", function () { if ($("cc-reply").hidden) openReply(); else closeReply(); });
   $("cc-reply-x").addEventListener("click", closeReply);
   $("cc-reply").addEventListener("click", function (e) { if (e.target.closest("[data-sheet]")) closeReply(); });
-  $("cc-reply-read").addEventListener("click", function () {
+  if ($("cc-reply-read")) $("cc-reply-read").addEventListener("click", function () {
     var last = lastReplyTurn();
     if (!last) return;
     Voice.unlock();
@@ -1550,9 +1538,10 @@
   $("cc-needpill").addEventListener("click", function () { Need.idx = 0; openNeed(); });
 
   /* ---------------------------------------------------------- the voice menu
-     Under the composer, "Push to talk ▾": the mic's mode, replies read aloud,
-     which voice path is on (the front desk is switched in Settings), the MINT
-     AI core (a quick switch, saved for you), and the voice's spend. */
+     Under the composer: the live call (voice is live conversation only),
+     speakers or headphones for this browser, replies read aloud, the way to
+     Settings ▸ Voice, the MINT AI core (a quick switch, saved for you), and
+     the voice's spend. With voice off only the note, the core and the spend. */
 
   function closePop() {
     var p = $("cc-pop");
@@ -1562,15 +1551,16 @@
     $("cc-vm").setAttribute("aria-expanded", "false");
   }
   function openVoiceMenu() {
-    var p = $("cc-pop"), mode = liveSelected() ? "live" : Voice.mode(), ready = READY;
+    var p = $("cc-pop"), manage = root.getAttribute("data-voice-manage") === "1";
+    var dx = LiveUI && LiveUI.duplex === "full" ? "full" : "speakers";
     var h = '<div class="grp">Voice</div>' +
-      '<button type="button" role="menuitemradio" data-vmode="ptt" aria-checked="' + (mode === "ptt") + '"' + (ready ? "" : " disabled") + '><span class="chk"></span>Push to talk<small>hold the mic or Space</small></button>' +
-      '<button type="button" role="menuitemradio" data-vmode="handsfree" aria-checked="' + (mode === "handsfree") + '"' + (ready ? "" : " disabled") + '><span class="chk"></span>Hands-free<small>a pause sends</small></button>' +
-      liveMenuItem(mode) +
-      '<button type="button" role="menuitemcheckbox" data-vread aria-checked="' + Voice.speakAll + '"' + (ready ? "" : " disabled") + '><span class="chk"></span>Read replies aloud<small>streamed</small></button>' +
-      '<div class="line">' + ic("route") + "<span>" + (DESK ? "Front desk · GPT (trial)" : "Direct to MINT AI") + "</span>" +
-      (root.getAttribute("data-voice-manage") === "1" ? '<a href="/credentials/openai-voice#v-desk">Settings</a>' : "<small>set in Settings</small>") + "</div>" +
-      (ready ? "" : '<div class="line">' + ic("info") + "<span>Voice is off until an OpenAI key is added.</span></div>") +
+      (LIVE_OK
+        ? '<div class="line">' + ic("voice") + "<span>Live · " + esc(VOICE || "voice") + "</span></div>" +
+          '<button type="button" role="menuitemradio" data-dx="speakers" aria-checked="' + (dx === "speakers") + '"><span class="chk"></span>Speakers mode<small>mic pauses while it speaks</small></button>' +
+          '<button type="button" role="menuitemradio" data-dx="full" aria-checked="' + (dx === "full") + '"><span class="chk"></span>Headphones mode<small>talk over it</small></button>' +
+          '<button type="button" role="menuitemcheckbox" data-vread aria-checked="' + Voice.speakAll + '"><span class="chk"></span>Read replies aloud<small>streamed</small></button>'
+        : '<div class="line">' + ic("info") + "<span>" + (READY ? "Live conversation is not supported in this browser." : "Voice is off.") + "</span></div>") +
+      (manage ? '<div class="line">' + ic("route") + '<span>Settings</span><a href="/mint-ai/settings/voice">Voice settings</a></div>' : "") +
       "<hr>" + '<div class="grp">MINT AI core</div>' +
       '<div class="cc-core-seg" role="radiogroup" aria-label="MINT AI core">' + Object.keys(ML.CORES).map(function (k) {
         return '<button type="button" role="radio" data-core-set="' + k + '" aria-checked="' + (k === coreNow()) + '"><b>' + k + "</b><span>" + esc(ML.CORES[k]) + "</span></button>";
@@ -1590,10 +1580,10 @@
   });
   $("cc-pop").addEventListener("click", function (e) {
     e.stopPropagation();
-    var m = e.target.closest("[data-vmode]");
-    if (m && !m.disabled) { var vm = m.getAttribute("data-vmode"); if (vm === "live") liveSelect(true); else { liveSelect(false); Voice.setMode(vm); } openVoiceMenu(); return; }
+    var dxb = e.target.closest("[data-dx]");
+    if (dxb) { liveDuplex(dxb.getAttribute("data-dx")); openVoiceMenu(); return; }
     var rd = e.target.closest("[data-vread]");
-    if (rd && !rd.disabled) { $("cc-speak-toggle").click(); openVoiceMenu(); return; }
+    if (rd && !rd.disabled && $("cc-speak-toggle")) { $("cc-speak-toggle").click(); openVoiceMenu(); return; }
     var cs = e.target.closest("[data-core-set]");
     if (cs) { setCoreChoice(cs.getAttribute("data-core-set")); openVoiceMenu(); return; }
     if (e.target.closest("[data-sheet]")) { var k = e.target.closest("[data-sheet]").getAttribute("data-sheet"); closePop(); openSheet(k); }
@@ -1946,7 +1936,6 @@
             tr.partial = "";
             if (!replay) S.liveReplies.add(row.id);
             if (!replay && voiceTurns.has(row.id)) { Voice.flush(row.id, aiText(tr)); voiceTurns.delete(row.id); }
-            else if (!replay && deskTurns.has(row.id)) { deskTurns.delete(row.id); Voice.summary(row.id, aiText(tr)); }
           }
           if (!replay && row.status === "error") feedPush({ key: "t" + row.id + "err", ts: ev.ts, kind: "error", html: "<b>Turn ended with an error</b> · " + esc(clip(row.error || "", 140)) });
           refreshCounts();
@@ -2079,62 +2068,35 @@
   setInterval(function () { if (!document.hidden && S.online) refreshCounts(); }, 30000);
   setInterval(function () { if (!document.hidden) renderSessions(true); }, 30000);
 
-  /* ================================================================ voice
-     Record, notice the end of an utterance from the level, have the server
-     transcribe it with OpenAI, send; read the reply back sentence by sentence
-     as it streams (each sentence spoken by OpenAI's realtime voice on the
-     server, its audio streamed back and played from the first chunk, the
-     next ones fetched while this one plays);
-     and stop talking the moment you talk over it. The browser only ever talks
-     to this panel. Without a key the controls stay off and say so. */
+  /* ================================================================ voice: read-aloud
+     Live conversation is the only way to talk to MINT AI by voice (the live
+     block below). This is the other half: MINT AI's replies read aloud --
+     "Read replies aloud" (this browser's choice, kept as mint-read-aloud,
+     the same switch as in Settings ▸ Voice) and a reply's Read aloud. Each
+     sentence is read by OpenAI on the server (/mint-ai/api/speak, verbatim-
+     checked), its audio streamed back and played from the first chunk, the
+     next ones fetched while this one plays. With voice off, or without
+     voice.use, none of its controls are on the page (READY is false) and
+     nothing here speaks. The browser only ever talks to this panel. */
 
   var Voice = (function () {
-    var cMic = $("cc-c-mic"), dock = $("cc-dock"), vbText = $("cc-vb-text"), wave = $("cc-vb-wave");
     var speakBtn = $("cc-speak-toggle");
     var api_ = {
       on: false, listening: false, speaking: false, speakAll: false,
-      say: function () {}, feed: function () {}, flush: function () {}, unlock: function () {}, summary: function () {}, tag: function () {},
+      say: function () {}, feed: function () {}, flush: function () {}, unlock: function () {}, tag: function () {}, stop: function () {},
     };
     // (Whether a live conversation holds the voice bar; false where the live block is absent, as in the tests' sandbox.)
     function liveOn() { return typeof liveActive === "function" && liveActive(); }
     var AC = window.AudioContext || window.webkitAudioContext;
-    var canRecord = !!(navigator.mediaDevices && window.MediaRecorder && AC);
-    var supported = canRecord && READY;
-    if (!READY) {
-      // The server rendered the "Add an OpenAI key in Settings" state; keep it.
-      cMic.disabled = true;
-    } else if (!canRecord) {
-      cMic.disabled = true;
-      cMic.title = "Voice unavailable: this browser cannot record audio here.";
-    }
-
-    var stream = null, ac = null, analyser = null, rec = null, chunks = [], poll = 0;
-    var heard = false, quietFor = 0, floor = 0.006, calibrating = 0, lastRms = 0;
-    // What this recording held: time above the speech threshold, and its peak.
-    // A recording with less than SPEECH_MS of it is never uploaded: silence
-    // sent to the transcription model comes back as its prompt (2026-09-29,
-    // a push-to-talk press with nothing said reached MINT AI as a turn).
-    var loudMs = 0, peak = 0, SPEECH_MS = 150;
-    var ptt = false;
-    // END_MS: how long a pause ends what you are saying. 700 ms cut the
-    // administrator off mid-thought ("...when I ask you to delegate," went as
-    // a whole turn); 1200 ms lets a sentence breathe.
-    var SAMPLE_MS = 50, END_MS = 1200, RESET_MS = 8000, MIN_MS = 300, BARGE_MS = 450, BARGE_GRACE_MS = 700, AHEAD = 3;
-    var PTT_TAIL_MS = 250, PTT_KEEP_MS = 60000, keepTimer = 0;
-    var spoken = 0, queue = [], busy = false, loudFor = 0, gen = 0, clipAt = 0, lastSkipToast = 0;
+    var READ_KEY = "mint-read-aloud";
+    try { api_.speakAll = READY && window.localStorage.getItem(READ_KEY) === "1"; } catch (e) { /* storage blocked: silent */ }
+    var AHEAD = 3; // sentences fetched ahead of the one playing
+    var spoken = 0, queue = [], busy = false, gen = 0, clipAt = 0, lastSkipToast = 0;
     // What the voice did, for the console and for tests: window.__moniVoice.
     // items: one record per sentence played -- when it was asked for, when its
     // first chunk arrived, when it started playing, when its stream ended.
-    var diag = window.__moniVoice = { fetched: 0, played: 0, playedSeconds: 0, skipped: 0, blocked: 0, bargeIns: 0, cuts: 0, silentDrops: 0, voiceStops: 0, uploads: 0, engines: [], said: [], items: [], cutAt: [] };
+    var diag = window.__moniVoice = { fetched: 0, played: 0, playedSeconds: 0, skipped: 0, blocked: 0, cuts: 0, engines: [], said: [], items: [], cutAt: [] };
 
-    // Wave bars for the voice bar, driven by the real level.
-    var BARS = 44;
-    wave.innerHTML = new Array(BARS + 1).join("<i></i>");
-    var barEls = wave.querySelectorAll("i");
-
-    function recorderFor(s) {
-      try { return new MediaRecorder(s, { audioBitsPerSecond: 24000 }); } catch (e) { return new MediaRecorder(s); }
-    }
     function speakable(text) {
       return String(text)
         .replace(/```[\s\S]*?```/g, " (code) ")
@@ -2184,15 +2146,7 @@
       }
       return { list: out, consumed: at };
     }
-    function level() {
-      if (!analyser) return 0;
-      var buf = new Uint8Array(analyser.fftSize);
-      analyser.getByteTimeDomainData(buf);
-      var sum = 0;
-      for (var i = 0; i < buf.length; i++) { var v = (buf[i] - 128) / 128; sum += v * v; }
-      return Math.sqrt(sum / buf.length);
-    }
-    Orb.micSource(function () { return liveOn() ? liveLevel("mic") : api_.listening && !api_.speaking ? lastRms : 0; });
+    Orb.micSource(function () { return liveOn() ? liveLevel("mic") : 0; });
 
     /* ---- the speaker: one AudioContext, an analyser in front of it, so the
        seed core pulses with the reply's real loudness ---- */
@@ -2221,12 +2175,6 @@
     Orb.outSource(outLevel);
 
     function setUi() {
-      if (!READY) return;
-      var live = api_.on || ptt || liveOn();
-      dock.classList.toggle("voice-on", live);
-      cMic.classList.toggle("live", live);
-      cMic.setAttribute("aria-pressed", live ? "true" : "false");
-      if (live && api_.speaking) vbText.textContent = "Speaking… talk over it to cut in";
       paintState();
       renderRail();
     }
@@ -2306,7 +2254,7 @@
       }
       return pump();
     }
-    /* The direct path: one POST per sentence, its audio streamed back. */
+    /* One POST per sentence, its audio streamed back. */
     function fetchClip(st) {
       var ctrl = window.AbortController ? new AbortController() : null;
       st.ctrl = ctrl;
@@ -2322,7 +2270,8 @@
       }).then(function (r) {
         if (!r.ok) {
           return r.json().catch(function () { return {}; }).then(function (j) {
-            if (j.code === "no-key") toast("Voice needs an OpenAI key. Add one in Settings.", true);
+            if (j.code === "no-key") toast("Voice needs an OpenAI key. Add one in Settings ▸ Voice.", true);
+            if (j.code === "voice-off") { toast("Voice is off. Replies are not read aloud.", true); READY = false; }
             streamEvent(st, { type: "error", code: j.code || "error" });
           });
         }
@@ -2334,20 +2283,8 @@
     }
     function prefetch() {
       for (var i = 0; i < queue.length && i < AHEAD; i++) {
-        if (!queue[i].fetched && !queue[i].remote) { queue[i].fetched = true; fetchClip(queue[i]); }
+        if (!queue[i].fetched) { queue[i].fetched = true; fetchClip(queue[i]); }
       }
-    }
-    /* A line the front desk is speaking on the server: its audio arrives in
-       the desk's own stream (deskLine), so it joins the queue as it is. */
-    function enqueueRemote(text) {
-      var st = newStream(String(text || ""));
-      st.remote = true;
-      if (!READY) return st;
-      diag.said.push(st.text.slice(0, 780));
-      queue.push(st);
-      prefetch();
-      pump();
-      return st;
     }
     function enqueue(piece, meta) {
       if (!READY) return;
@@ -2471,8 +2408,6 @@
       if (busy || !queue.length) return;
       busy = true;
       api_.speaking = true;
-      loudFor = 0;
-      if (api_.on) { recording(false); if (!poll) poll = setInterval(tick, SAMPLE_MS); }
       setUi();
       var item = queue.shift(), my = gen;
       prefetch();
@@ -2481,8 +2416,6 @@
         busy = false;
         if (queue.length) return pump();
         api_.speaking = false;
-        loudFor = 0;
-        if (api_.on && !(S.status && S.status.busy)) listen(true);
         setUi();
         usageSoon();
       });
@@ -2496,7 +2429,6 @@
       source = null;
       busy = false;
       api_.speaking = false;
-      loudFor = 0;
     }
     /* The usage figures follow a voice turn, once its speech is done. */
     var usageTimer = 0;
@@ -2505,427 +2437,30 @@
       usageTimer = setTimeout(function () { if (P && P.loadVoiceUsage) P.loadVoiceUsage(); }, 900);
     }
 
-    function bargeIn() {
-      if (!api_.speaking) return;
-      diag.bargeIns++;
-      console.info("[voice] cut in: you spoke over the reply, so the rest of it is not read");
-      silence();
-      // Hold-to-talk opens the microphone itself; a reply read aloud to typed
-      // text may have none open yet (MediaRecorder would throw on no stream).
-      if (stream) recording(true);
-      vbText.textContent = "Listening…";
-      setUi();
-    }
-
-    function tick() {
-      if (!analyser) return;
-      var rms = level();
-      lastRms = rms;
-      for (var i = 0; i < barEls.length; i++) {
-        var h = Math.min(100, 22 + 10 * Math.abs(Math.sin(i * 0.7 + Date.now() / 260)) + rms * 900 * (0.5 + 0.5 * Math.abs(Math.sin(i * 0.9 + Date.now() / 140))));
-        barEls[i].style.height = h.toFixed(0) + "%";
-      }
-      if (calibrating > 0) { calibrating--; floor = Math.max(floor * 0.8 + rms * 0.2, 0.004); return; }
-      if (ptt) {
-        if (rec && rec.state === "recording") {
-          if (rms > peak) peak = rms;
-          if (rms > floor * 3 + 0.004) loudMs += SAMPLE_MS;
-          heard = loudMs >= SPEECH_MS;
-        }
-        return;
-      }
-      if (api_.speaking) {
-        // The first moments of a clip are when echo cancelling has not caught
-        // up yet, and the speaker leaks into the microphone: do not count them,
-        // or MINT cuts itself off and the rest of the reply is dropped.
-        if (!source || Date.now() - clipAt < BARGE_GRACE_MS) { loudFor = 0; return; }
-        loudFor = rms > floor * 6 + 0.01 ? loudFor + SAMPLE_MS : 0;
-        if (loudFor >= BARGE_MS) bargeIn();
-        return;
-      }
-      if (rms > peak) peak = rms;
-      if (rms > floor * 3 + 0.004) { heard = true; loudMs += SAMPLE_MS; quietFor = 0; vbText.textContent = "Listening…"; }
-      else {
-        quietFor += SAMPLE_MS;
-        if (heard && quietFor >= END_MS) { if (rec && rec.state !== "inactive") rec.stop(); return; }
-        if (!heard && quietFor >= RESET_MS) { quietFor = 0; heard = false; if (rec && rec.state !== "inactive") rec.stop(); }
-      }
-    }
-
-    function newRecorder() {
-      chunks = []; heard = false; quietFor = 0; loudMs = 0; peak = 0;
-      var started = Date.now();
-      var r = rec = recorderFor(stream);
-      r.ondataavailable = function (e) { if (e.data && e.data.size) chunks.push(e.data); };
-      r.onstop = function () {
-        var ms = Date.now() - started;
-        var level = { ms: ms, loud_ms: loudMs, peak: Math.round(peak * 10000) / 10000 };
-        var enough = ms > MIN_MS && chunks.length;
-        var type = String(r.mimeType || "audio/webm").split(";")[0];
-        // Speech, not just sound: long enough, and above the threshold for
-        // long enough -- in both modes. Push to talk used to send whatever it
-        // recorded, silence included.
-        var spoke = enough && heard && loudMs >= SPEECH_MS;
-        var blob = spoke ? new Blob(chunks, { type: type }) : null;
-        if (blob) { ack(); transcribeAndSend(blob, undefined, level); }
-        else if (ptt) nothingHeard();
-        else if (api_.on) newRecorder();
-      };
-      r.start();
-      api_.listening = true;
-      setUi();
-    }
-    /* A push to talk with nothing said: nothing is uploaded, nothing is sent. */
-    function nothingHeard() {
-      diag.silentDrops++;
-      console.info("[voice] nothing heard, so nothing was sent");
-      ptt = false;
-      listen(false);
-      vbText.textContent = "I didn't hear anything.";
-      if (!api_.on) keepStream();
-      setUi();
-    }
-    /* "Stop listening" said aloud: the mic closes exactly as if its button
-       were clicked, and the words go nowhere -- not to MINT AI, not to the
-       desk. A note says so; nothing is spoken. */
-    /* "Undo" said aloud while a screen action can still be undone: the
-       toast's Undo, and the words go nowhere else. */
-    function undoneByVoice(said) {
-      console.info("[voice] \"" + clip(said, 60) + "\" is the undo command: the last screen action was undone, nothing sent");
-      var did = uiUndoNow("voice");
-      vbText.textContent = did ? "Undone." : "Nothing to undo.";
-      if (api_.on) listen(true);
-    }
-    function stoppedByVoice(said) {
-      diag.voiceStops++;
-      console.info("[voice] \"" + clip(said, 60) + "\" is the stop command: listening stopped, nothing sent");
-      stop();
-      vbText.textContent = "Stopped listening.";
-      toast("Stopped listening.");
-    }
-    function recording(want) {
-      if (want) { if (rec && rec.state === "recording") return; newRecorder(); }
-      else {
-        if (rec && rec.state !== "inactive") { rec.onstop = null; rec.stop(); }
-        rec = null;
-        api_.listening = false;
-      }
-    }
-    function listen(want) {
-      if (want) {
-        if (rec && rec.state === "recording") return;
-        calibrating = 8;
-        recording(true);
-        if (!poll) poll = setInterval(tick, SAMPLE_MS);
-        vbText.textContent = "Listening…";
-      } else {
-        if (poll && !api_.speaking) { clearInterval(poll); poll = 0; }
-        recording(false);
-      }
-      setUi();
-    }
-
-    /* Front desk mode: the recording goes to the desk, which answers from the
-       snapshot, makes small talk, or passes the request to MINT AI. Its
-       sentences arrive one by one, each already checked, and their audio is
-       streamed in the same response as it is read on the server -- each
-       sentence starts playing with its first chunk. MINT AI's answer is later
-       summarised aloud (deskSummary); its full text is on screen as always. */
-    function deskLines(my) {
-      var lines = {};
-      return {
-        count: 0,
-        take: function (ev) {
-          if (ev.type === "line") {
-            if (my !== gen) return false; // talked over: the rest is not read
-            this.count++;
-            lines[ev.i] = enqueueRemote(ev.text);
-            return true;
-          }
-          if (ev.i != null && lines[ev.i]) streamEvent(lines[ev.i], ev);
-          return false;
-        },
-      };
-    }
-    function deskSend(blob, data, wasPtt, vt, level) {
-      var dl = deskLines(gen);
-      // undoable: a spoken "undo" would reverse the last screen action here, so the desk does not answer it.
-      apiStream("desk/turn", { data: data, mime: blob.type, vt: vt, level: level, tab: TAB_ID, undoable: (typeof uiUndoable === "function" && uiUndoable()) || undefined }, function (ev) {
-        if (ev.type === "heard") {
-          // The desk does not answer the stop command (ev.stop); a desk that
-          // predates it would, so the page checks the words as well.
-          if (ev.stop || (ev.text && isStopCommand(ev.text))) return stoppedByVoice(ev.text || "");
-          if (ev.undo) return undoneByVoice(ev.text || "");
-          if (ev.confirm && typeof uiConfirmAnswer === "function") { uiConfirmAnswer(ev.confirm.id, ev.confirm.ok); if (api_.on) listen(true); return; }
-          if (ev.text) vbText.textContent = "“" + clip(ev.text, 80) + "”";
-        } else if (ev.type === "ui") {
-          if (typeof runUiAction === "function") runUiAction(ev);
-        } else if (ev.type === "asked" && ev.turn) {
-          var t = ev.turn, tr = upsertTurn(t);
-          tags.set(t.id, { vt: vt, cat: "handoff" });
-          if (tr && tr.ended_at && aiText(tr)) deskSummary(tr.id, aiText(tr));
-          else deskTurns.add(t.id);
-          paintState();
-        } else dl.take(ev);
-      }).then(function (d) {
-        if (d.guard) console.info("[voice] the front desk's guard replaced a reply (" + d.guard.rule + ")");
-        if (d.usage && P && P.setVoiceUsage) P.setVoiceUsage(d.usage);
-        if (!dl.count && api_.on && !busy) listen(true);
-      }).catch(function (e) {
-        if (e.code === "desk-off") {
-          // Switched off in Settings: go direct.
-          DESK = false; paintMode();
-          return transcribeAndSend(blob, wasPtt, level);
-        }
-        if (e.message !== "nothing said") toast("The front desk could not answer: " + e.message, true);
-        if (!dl.count) enqueue("Sorry, I didn't catch that.");
-        if (api_.on) listen(true);
-      }).then(function () {
-        if (!api_.on && wasPtt) keepStream();
-        setUi();
-      });
-    }
-    /* MINT AI's answer to a request the desk passed on: a short summary,
-       spoken sentence by sentence as it streams. Read word for word instead
-       when the desk says so (a short, plain reply), and whenever the desk
-       cannot: switched off, or failing -- the direct path, as before. */
-    function deskSummary(id, text) {
-      var meta = tags.get(id) || { cat: "handoff" };
-      if (!DESK) return api_.flush(id, text);
-      var dl = deskLines(gen);
-      apiStream("desk/summary", { turn: id, vt: meta.vt }, function (ev) { dl.take(ev); }).then(function (d) {
-        if (d.usage && P && P.setVoiceUsage) P.setVoiceUsage(d.usage);
-        if (d.fallback === "verbatim" || d.pending || !dl.count) return api_.flush(id, text);
-        if (api_.on && !busy && !queue.length) listen(true);
-      }).catch(function (e) {
-        if (e.code === "desk-off") { DESK = false; paintMode(); }
-        else console.warn("[voice] the front desk could not summarise; reading the answer as written:", e.message);
-        if (!dl.count) api_.flush(id, text);
-      });
-    }
-    function paintMode() {
-      var tag = $("cc-voice-mode");
-      if (!tag) return;
-      tag.textContent = DESK ? "Front desk · GPT" : "Direct · MINT AI";
-      tag.classList.toggle("desk", DESK);
-      renderRail();
-    }
-    /* A voice turn's id, for the usage figures: sent with its transcription,
-       its desk turn and every sentence spoken for it. */
-    function newVt() { return "v" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
-
-    function transcribeAndSend(blob, wasPttAgain, level) {
-      var wasPtt = wasPttAgain === undefined ? ptt : wasPttAgain;
-      var vt = newVt();
-      ptt = false;
-      listen(false);
-      vbText.textContent = "Transcribing…";
-      diag.uploads++;
-      setUi();
-      var reader = new FileReader();
-      reader.onload = function () {
-        if (DESK) return deskSend(blob, String(reader.result).split(",")[1] || "", wasPtt, vt, level);
-        api("transcribe", { body: { data: String(reader.result).split(",")[1] || "", mime: blob.type, vt: vt, level: level } }).then(function (d) {
-          var said = String(d.text || "").trim();
-          if (!said || /^[\[(]/.test(said)) throw new Error("nothing said");
-          if (isStopCommand(said)) return stoppedByVoice(said);
-          if (isUndoCommand(said)) return undoneByVoice(said);
-          vbText.textContent = "“" + clip(said, 80) + "”";
-          return send(said, { voice: true, acked: true, vt: vt });
-        }).catch(function (e) {
-          if (e.message !== "nothing said") toast("Could not transcribe that: " + e.message, true);
-          enqueue("Sorry, I didn't catch that.");
-          if (api_.on) listen(true);
-        }).then(function () {
-          if (!api_.on && wasPtt) keepStream();
-          setUi();
-        });
-      };
-      reader.readAsDataURL(blob);
-    }
-
-    function openStream() {
-      if (stream) return Promise.resolve();
-      return navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }).then(function (s) {
-        stream = s;
-        ac = new AC();
-        analyser = ac.createAnalyser();
-        analyser.fftSize = 1024;
-        ac.createMediaStreamSource(stream).connect(analyser);
-      });
-    }
-    /* After a push-to-talk, the microphone stays open for a minute: opening it
-       takes a moment, and whatever is said in that moment was never recorded
-       (the first word went missing). The browser's mic indicator shows it. */
-    function keepStream() {
-      clearTimeout(keepTimer);
-      keepTimer = setTimeout(function () { if (!api_.on && !ptt) { closeStream(); setUi(); } }, PTT_KEEP_MS);
-    }
-    function closeStream() {
-      clearTimeout(keepTimer);
-      if (poll) { clearInterval(poll); poll = 0; }
-      recording(false);
-      if (stream) stream.getTracks().forEach(function (tr) { tr.stop(); });
-      stream = null;
-      if (ac) { try { ac.close(); } catch (e) { /* closed */ } ac = null; }
-      analyser = null;
-      lastRms = 0;
-    }
-
-    // "On it." should play the instant a spoken turn is sent; asking for it
-    // once here puts it in the server's cache before it is needed.
-    var warmed = false;
-    function warm() { if (!warmed && READY) { warmed = true; fetchClip(newStream("On it.")); } }
-
-    /* "On it." the moment the recording ends: it is cached on the server, so it
-       plays while the words are still being transcribed. */
-    function ack() {
-      outContext();
-      if (DESK) return; // the front desk answers for itself, in well under a second
-      enqueue("On it.");
-    }
-
-    function start() {
-      if (!supported) return;
-      clearTimeout(keepTimer);
-      outContext();
-      warm();
-      openStream().then(function () {
-        api_.on = true;
-        listen(true);
-      }).catch(function () { toast("Talking to MINT needs the microphone, and it was refused.", true); });
-    }
-    function stop() {
-      api_.on = false;
-      silence();
-      closeStream();
-      setUi();
-    }
-
-    /* ---- the mic's mode: push to talk (the default) or hands-free ----
-       Push to talk: hold the mic (or Space) and release to send; a quick tap
-       keeps it listening until the mic in the voice bar, or Space, sends it.
-       Hands-free: the mic stays open and a pause sends (the quiet window).
-       The choice is remembered per browser. */
-    var MODE_KEY = "moni-voice-mode", TAP_MS = 350;
-    var mode = voiceModeFrom(null), modeBtn = $("cc-mic-mode"), vbMode = $("cc-vb-mode"), downAt = 0, pttLabel = "";
-    try { mode = voiceModeFrom(window.localStorage.getItem(MODE_KEY)); } catch (e) { /* storage blocked: the default */ }
-    function paintVoiceMode() {
-      var ptt_ = mode === "ptt";
-      cMic.title = !READY ? cMic.title : !canRecord ? cMic.title
-        : ptt_ ? "Push to talk: hold to talk, release to send (a quick tap keeps listening). Or hold Space."
-        : "Hands-free: click to start listening; a pause sends what you said. Click again to stop.";
-      cMic.setAttribute("data-mode", mode);
-      if (modeBtn) {
-        modeBtn.textContent = ptt_ ? "Push to talk" : "Hands-free";
-        modeBtn.setAttribute("data-mode", mode);
-        var vmBtn = $("cc-vm");
-        if (vmBtn) vmBtn.title = ptt_ ? "Voice mode: push to talk — hold the mic or Space to talk. Open for hands-free, read-aloud and the core." : "Voice mode: hands-free — the mic listens and a pause sends. Open for push to talk, read-aloud and the core.";
-      }
-      if (vbMode) vbMode.textContent = ptt_ ? "Push to talk" : "Hands-free";
-    }
-    function setVoiceMode(m) {
-      mode = voiceModeFrom(m);
-      try { window.localStorage.setItem(MODE_KEY, mode); } catch (e) { /* not remembered; still switched */ }
-      if (mode === "ptt" && api_.on) stop();
-      paintVoiceMode();
-    }
-    // The switch itself is the voice menu under the composer (openVoiceMenu).
-    api_.setMode = setVoiceMode;
-    api_.mode = function () { return mode; };
-    paintVoiceMode();
-
-    /** Start a push-to-talk recording (Space or the mic held). */
-    function pttDown(label) {
-      if (!supported || api_.on || ptt) return false;
-      ptt = true;
-      pttLabel = label;
-      outContext();
-      warm();
-      if (api_.speaking) bargeIn();
-      clearTimeout(keepTimer);
-      openStream().then(function () {
-        if (!ptt) return keepStream();
-        calibrating = 0;
-        recording(true);
-        if (!poll) poll = setInterval(tick, SAMPLE_MS);
-        vbText.textContent = pttLabel;
-        setUi();
-      }).catch(function () { ptt = false; setUi(); toast("Talking to MINT needs the microphone, and it was refused.", true); });
-      return true;
-    }
-    /** Release: send what was said. */
-    function pttUp() {
-      if (!ptt) return;
-      // A short tail, so the last syllable is not cut off by a quick release.
-      if (rec && rec.state === "recording") { var r0 = rec; setTimeout(function () { if (r0.state === "recording") r0.stop(); }, PTT_TAIL_MS); }
-      else { ptt = false; keepStream(); setUi(); }
-    }
-    /** Back to typing without sending. */
-    function pttCancel() {
-      ptt = false;
-      recording(false);
-      if (poll && !api_.speaking) { clearInterval(poll); poll = 0; }
-      keepStream();
-      setUi();
-    }
-
-    cMic.addEventListener("pointerdown", function (e) {
-      if (mode !== "ptt" || (e.button !== undefined && e.button !== 0)) return;
-      e.preventDefault();
-      if (!pttDown("Listening — release to send")) return;
-      downAt = Date.now();
-      var up = function () {
-        window.removeEventListener("pointerup", up);
-        window.removeEventListener("pointercancel", up);
-        if (Date.now() - downAt >= TAP_MS) return pttUp();
-        // A tap: keep listening until the voice bar's mic or Space sends it.
-        if (ptt) vbText.textContent = pttLabel = "Listening — press the mic or Space to send";
-      };
-      window.addEventListener("pointerup", up);
-      window.addEventListener("pointercancel", up);
-    });
-    cMic.addEventListener("click", function () {
-      if (mode === "ptt") return; // pointerdown/up handle it
-      api_.on ? stop() : start();
-    });
-    $("cc-vb-stop").addEventListener("click", function () {
-      if (ptt) return pttUp();
-      // Stop and send what has been said so far, if anything.
-      if (rec && rec.state === "recording" && heard) { api_.on = false; rec.stop(); setTimeout(stop, 50); }
-      else stop();
-    });
-    $("cc-vb-close").addEventListener("click", function () { if (ptt) pttCancel(); stop(); });
-
-    /* Hold Space to talk, anywhere but a text field or a control. */
-    function typing(el) { return el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable || el.tagName === "BUTTON" || el.getAttribute("role") === "radio"); }
-    document.addEventListener("keydown", function (e) {
-      if (e.code !== "Space" || e.repeat || !supported || api_.on || ptt || typing(document.activeElement)) return;
-      e.preventDefault();
-      pttDown("Listening — release Space to send");
-    });
-    document.addEventListener("keyup", function (e) {
-      if (e.code !== "Space" || !ptt) return;
-      e.preventDefault();
-      pttUp();
-    });
-
-    speakBtn.hidden = !READY;
-    speakBtn.addEventListener("click", function () {
-      api_.speakAll = !api_.speakAll;
-      if (api_.speakAll) outContext();
+    function paintSpeak() {
+      if (!speakBtn) return;
       speakBtn.setAttribute("aria-pressed", api_.speakAll ? "true" : "false");
       speakBtn.innerHTML = ic(api_.speakAll ? "speaker" : "mute");
       speakBtn.title = api_.speakAll ? "Replies are read aloud — click to keep them silent" : "Replies are silent — click to read MINT AI's replies aloud";
-      if (!api_.speakAll && !api_.on) { silence(); setUi(); }
-    });
+    }
+    if (speakBtn) {
+      speakBtn.hidden = !READY;
+      paintSpeak();
+      speakBtn.addEventListener("click", function () {
+        api_.speakAll = !api_.speakAll;
+        try { window.localStorage.setItem(READ_KEY, api_.speakAll ? "1" : "0"); } catch (e) { /* not remembered; still switched */ }
+        if (api_.speakAll) outContext();
+        paintSpeak();
+        if (!api_.speakAll) { silence(); setUi(); }
+      });
+    }
 
-    // What each turn's speech is counted as: {vt, cat}, set by send() and the desk.
+    // What each turn's speech is counted as: {vt, cat}, set by send().
     var tags = new Map();
     api_.tag = function (id, meta) { if (id != null && meta) tags.set(id, meta); };
     api_.unlock = function () { if (READY) outContext(); };
-    api_.summary = function (id, text) { if (READY) deskSummary(id, text); };
     api_.say = function (text) { if (READY) enqueue(text); };
+    api_.stop = function () { silence(); setUi(); };
     var spokenTurn = null;
     api_.feed = function (id, text) {
       text = String(text || "");
@@ -2947,62 +2482,53 @@
       spoken = 0;
       spokenTurn = null;
       if (tail) enqueue(tail, meta);
-      if (api_.on && !busy && !queue.length) listen(true);
     };
     return api_;
   })();
 
-  /* ================================================================ LIVE CONVERSATION (trial)
+  /* ================================================================ LIVE CONVERSATION
      Integration block for public/voice-live.js, which holds all of the live
-     logic (see its header and the README's integration contract). This only:
-       - offers the mode in the voice menu (administrators, when Settings has it
-         on: data-voice-live="1"), remembered per browser;
-       - starts and ends a call from the mic, the voice bar's End and close
-         buttons, and mutes from its mute button (Space and push to talk are
-         left alone while a call is on);
+     logic (see its header and the README's integration contract). Live
+     conversation is the only voice (2026-09-30): no push to talk, no
+     hands-free, no front desk. This only:
+       - starts and ends a call from the mic (the dock's too, and a link with
+         ?call=1 -- the dock on another page comes here with it), the voice
+         bar's End and close buttons, and mutes from its mute button;
+       - while a call is on: Space mutes (or, in speakers mode while it speaks,
+         interrupts), Esc interrupts or ends; nothing starts on a key;
        - feeds the core and the caption: onState -> the state the core and the
          caption show (listening / thinking / speaking / delegating, with an
          "interrupted" flash on the voice bar), onCaption -> the caption's
          sentence, word by word, onLevel -> the core's amplitude. */
   var LIVE_OK = READY && root.getAttribute("data-voice-live") === "1" && !!(window.VoiceLive && window.VoiceLive.supported());
-  var LIVE_KEY = "mint-voice-live";
   var LIVE_DUPLEX_KEY = "mint-live-duplex";
-  var LiveUI = { selected: false, active: false, state: "idle", caption: "", who: "", mic: 0, out: 0, duplex: root.getAttribute("data-live-duplex") === "full" ? "full" : "speakers" };
-  try { LiveUI.selected = LIVE_OK && window.localStorage.getItem(LIVE_KEY) === "1"; } catch (e) { /* storage blocked: not selected */ }
+  var LiveUI = { selected: LIVE_OK, active: false, state: "idle", caption: "", who: "", mic: 0, out: 0, duplex: root.getAttribute("data-live-duplex") === "full" ? "full" : "speakers" };
   try { var dxSaved = window.localStorage.getItem(LIVE_DUPLEX_KEY); if (dxSaved === "full" || dxSaved === "speakers") LiveUI.duplex = dxSaved; } catch (e) { /* storage blocked: the Settings default */ }
   var LIVE_TEXT = {
     connecting: "Connecting…", listening: "Listening — just talk", talking: "You're talking…", thinking: "Thinking…",
     speaking: "Speaking — talk over it to interrupt", speakingHalf: "Speaking — tap here to interrupt", interrupted: "Interrupted — go ahead", waiting: "Working on it — I'll tell you what I find",
     muted: "Muted — the microphone is off", ended: "Conversation ended", error: "The live conversation stopped", idle: "",
   };
-  var LIVE_TIP = "Live conversation (trial): talk freely. In speakers mode (the default) the microphone pauses while the voice speaks, so laptop speakers cannot make it interrupt itself: tap the bar, Space or Esc to interrupt. With headphones, switch the bar to headphones mode and just talk over it. Say “stop listening” or press End to finish.";
+  var LIVE_TIP = "Start a live conversation";
   function liveSelected() { return !!(LiveUI && LiveUI.selected); }
-  function liveMenuItem(mode) {
-    if (!(READY && root.getAttribute("data-voice-live") === "1")) return "";
-    var ok = !!(window.VoiceLive && window.VoiceLive.supported());
-    return '<button type="button" role="menuitemradio" data-vmode="live" aria-checked="' + (mode === "live") + '"' + (ok ? "" : " disabled") + ' title="' + esc(LIVE_TIP) + '"><span class="chk"></span>Live conversation<small><b>trial</b> · speakers or headphones</small></button>';
-  }
-  function liveSelect(on) {
-    LiveUI.selected = !!(on && LIVE_OK);
-    try { window.localStorage.setItem(LIVE_KEY, LiveUI.selected ? "1" : "0"); } catch (e) { /* not remembered */ }
-    if (!LiveUI.selected && LiveUI.active) liveStop();
-    paintLiveMode();
-    paintLiveKeys();
-  }
   function paintLiveMode() {
-    var mb = $("cc-mic-mode");
-    if (LiveUI.selected) {
-      if (mb) { mb.textContent = "Live conversation"; mb.setAttribute("data-mode", "live"); }
-      $("cc-c-mic").title = LIVE_TIP;
-    } else if (Voice.setMode) Voice.setMode(Voice.mode()); // repaint the ordinary mode
+    var mb = $("cc-mic-mode"), mic = $("cc-c-mic");
+    if (mb) { mb.textContent = LIVE_OK ? "Live · " + (VOICE || "voice") : "Voice"; mb.setAttribute("data-mode", LIVE_OK ? "live" : "off"); }
+    if (mic) {
+      mic.title = LiveUI.active ? "End the live conversation" : LIVE_OK ? LIVE_TIP : "Live conversation is not supported in this browser";
+      mic.setAttribute("aria-label", mic.title);
+      if (!LIVE_OK) mic.disabled = true;
+    }
   }
   function paintLive(st) {
     LiveUI.state = st;
     var dock = $("cc-dock"), on = LiveUI.active;
     dock.classList.toggle("live-on", on);
-    dock.classList.toggle("voice-on", on || Voice.on);
+    dock.classList.toggle("voice-on", on);
     dock.setAttribute("data-live", on ? st : "");
+    if (!$("cc-c-mic")) return paintState(); // no voice on this page (off, or no voice.use)
     $("cc-c-mic").classList.toggle("live", on);
+    $("cc-c-mic").setAttribute("aria-pressed", on ? "true" : "false");
     $("cc-live-acts").hidden = !on;
     $("cc-live-end").hidden = !on;
     var muted = on && st === "muted";
@@ -3028,8 +2554,9 @@
     if (LiveUI.active || !LIVE_OK) return;
     LiveUI.active = true;
     LiveUI.who = "";
-    if (Voice.on) $("cc-vb-close").click();
+    Voice.stop(); // a reply being read aloud gives way to the call
     paintLive("connecting");
+    paintLiveMode();
     window.VoiceLive.start({
       csrf: CSRF,
       tab: TAB_ID,
@@ -3074,7 +2601,6 @@
     LiveUI.active = false;
     LiveUI.caption = "";
     paintLive("idle");
-    Voice.setMode(Voice.mode());
     paintLiveMode();
   }
   function liveStop() { if (window.VoiceLive) window.VoiceLive.stop(); liveEnded(); liveSuggestClose(); }
@@ -3114,15 +2640,10 @@
     if (st === "waiting") { snap.delegatingTo = "MINT AI"; snap.delegation = "Working on it — I'll tell you what I find."; }
     return snap;
   }
-  // The mic, Space and the voice bar belong to the call while one is on.
-  window.addEventListener("pointerdown", function (e) {
-    if (!LiveUI.selected || !e.target.closest || !e.target.closest("#cc-c-mic")) return;
-    e.stopPropagation();
-    e.preventDefault();
-  }, true);
+  // The mic starts and ends a call; the voice bar belongs to the call while one is on.
   window.addEventListener("click", function (e) {
     if (!e.target.closest) return;
-    if (LiveUI.selected && e.target.closest("#cc-c-mic")) { e.stopPropagation(); e.preventDefault(); return LiveUI.active ? liveStop() : liveStart(); }
+    if (LIVE_OK && e.target.closest("#cc-c-mic")) { e.stopPropagation(); e.preventDefault(); return LiveUI.active ? liveStop() : liveStart(); }
     if (LiveUI.active && (e.target.closest("#cc-vb-close") || e.target.closest("#cc-live-end"))) { e.stopPropagation(); return liveStop(); }
     var sg = e.target.closest("[data-live-suggest]");
     if (sg) { e.stopPropagation(); return sg.getAttribute("data-live-suggest") === "speakers" ? liveDuplex("speakers") : liveSuggestClose(); }
@@ -3135,15 +2656,15 @@
     // A tap on the bar's text while the voice speaks interrupts it.
     if (LiveUI.active && e.target.closest(".cc-dock.live-on .cc-vb-text") && liveSpeaking()) { e.stopPropagation(); return window.VoiceLive.interrupt(); }
   }, true);
-  // Keys while live is the mode: Space starts a call, then mutes and unmutes it; Esc ends it
-  // (when nothing else is open for Esc to close). Push to talk's Space is never reached.
+  // Keys while a call is on: Space mutes and unmutes it (in speakers mode, while the voice
+  // speaks, it interrupts); Esc interrupts, then ends it (when nothing else is open for Esc to
+  // close). No key starts a call: the mic does.
   window.addEventListener("keydown", function (e) {
-    if (!LiveUI.selected || e.repeat || liveTyping(document.activeElement)) return;
+    if (!LiveUI.active || e.repeat || liveTyping(document.activeElement)) return;
     if (e.code === "Space") {
       e.stopPropagation();
       e.preventDefault();
-      if (!LiveUI.active) liveStart();
-      else if (LiveUI.duplex !== "full" && liveSpeaking()) window.VoiceLive.interrupt();
+      if (LiveUI.duplex !== "full" && liveSpeaking()) window.VoiceLive.interrupt();
       else window.VoiceLive.mute(!window.VoiceLive.muted());
     } else if (e.key === "Escape" && LiveUI.active && $("cc-pop").hidden && $("cc-reply").hidden && !document.querySelector(".cc-sheet.open") && !document.querySelector(".cc-need:not([hidden])")) {
       e.stopPropagation();
@@ -3152,23 +2673,36 @@
       else liveStop();
     }
   }, true);
-  window.addEventListener("keyup", function (e) { if (LiveUI.selected && e.code === "Space" && !liveTyping(document.activeElement)) e.stopPropagation(); }, true);
-  /** The hint under the pill: what Space and Esc do while live is the mode. */
+  window.addEventListener("keyup", function (e) { if (LiveUI.active && e.code === "Space" && !liveTyping(document.activeElement)) e.stopPropagation(); }, true);
+  /** The hint under the pill: "click the mic to talk · Esc ends", then what Space and Esc do in a call. */
   function paintLiveKeys() {
     var sp = $("cc-kb-space"), lk = $("cc-kb-live");
     if (!sp || !lk) return;
-    sp.hidden = !!LiveUI.selected;
-    lk.hidden = !LiveUI.selected;
+    sp.hidden = !!LiveUI.active;
+    lk.hidden = !LiveUI.active;
     var speaking = LiveUI.active && LiveUI.state === "speaking";
-    lk.innerHTML = !LiveUI.active ? "<kbd>Space</kbd> start a conversation"
-      : speaking && LiveUI.duplex !== "full" ? "<kbd>Space</kbd> or <kbd>Esc</kbd> interrupt"
+    lk.innerHTML = speaking && LiveUI.duplex !== "full" ? "<kbd>Space</kbd> or <kbd>Esc</kbd> interrupt"
       : speaking ? "<kbd>Space</kbd> mute · <kbd>Esc</kbd> interrupt"
       : "<kbd>Space</kbd> mute · <kbd>Esc</kbd> end";
   }
   function liveTyping(el) { return el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable || el.tagName === "BUTTON"); }
   window.addEventListener("beforeunload", function () { if (LiveUI.active) window.VoiceLive.stop(); });
-  if (LiveUI.selected) paintLiveMode();
+  paintLiveMode();
   paintLiveKeys();
+  /* The dock on another page starts a call by coming here with ?call=1 (and ?at=<that page>,
+     which the shell keeps showing): the call starts once, and the flag leaves the address. */
+  (function () {
+    var q = null;
+    try { q = new URLSearchParams(location.search); } catch (e) { return; }
+    if (q.get("call") !== "1") return;
+    q.delete("call");
+    var rest = q.toString();
+    try { history.replaceState(history.state, "", location.pathname + (rest ? "?" + rest : "") + location.hash); } catch (e) { /* the address keeps it; harmless */ }
+    if (!LIVE_OK) return toast(READY ? "Live conversation is not supported in this browser." : "Voice is off.", true);
+    setTimeout(liveStart, 0);
+  })();
+  /** For the dock (mint-dock.js in the shell): the mic there is this one. */
+  window.__mintLive = { ok: function () { return LIVE_OK; }, active: function () { return LiveUI.active; }, toggle: function () { if (!LIVE_OK) return false; if (LiveUI.active) liveStop(); else liveStart(); return true; } };
   /* ---------------------------------------------------------- screen actions
      What MINT AI's voice may change on this screen (UI control Phase 1): the
      shared allowlist public/ui-actions.js, checked again here, run through
@@ -3187,6 +2721,8 @@
     }
     var v = UA.validate(ev.action, ev.args);
     if (!v.ok) return v;
+    // Voice is off (or not this viewer's): the call and the voice cannot be touched from here.
+    if ((/^call\./.test(v.action) || v.action === "voice.set") && !READY) return { ok: false, why: "voice is off" };
     // Another page is up in the shell: anything but the call, page.open and a Tier-2 ask (its Confirm /
     // Cancel show in the dock) is done here, so come back first.
     if (shellUp() && v.tier !== 2 && ["call.end", "call.mute", "call.interrupt", "page.open"].indexOf(v.action) < 0) window.MintShell.expand();
@@ -3197,10 +2733,6 @@
         case "call.end": break; // the server ends it after the goodbye; the tab follows
         case "call.interrupt": break;
         case "call.mute": if (LiveUI.active && window.VoiceLive && !window.VoiceLive.muted()) window.VoiceLive.mute(true); break;
-        case "voice.mode":
-          if (a.mode === "live") { if (!LIVE_OK) return { ok: false, why: "live conversation is not available here" }; liveSelect(true); }
-          else { if (LiveUI.active) return { ok: false, why: "a live call is on: end it first" }; var wasLive = LiveUI.selected, wasMode = Voice.mode(); liveSelect(false); Voice.setMode(a.mode); undo = function () { if (wasLive) liveSelect(true); else Voice.setMode(wasMode); }; }
-          break;
         case "sheet.open": { var wasP = S.pane; openSheet(a.key); undo = function () { if (wasP) openSheet(wasP); else closeSheet(); }; break; }
         case "sheet.close": {
           var wasC = S.pane;
@@ -3211,7 +2743,7 @@
         case "view": { var wasV = S.pane; P.setView(a.name); undo = function () { if (wasV) openSheet(wasV); else closeSheet(); }; break; }
         case "core.set": { var wasK = coreNow(); setCoreChoice(a.core); undo = function () { setCoreChoice(wasK); }; break; }
         case "reply.show": if (!lastReplyTurn()) return { ok: false, why: "there is no reply yet" }; openReply(); undo = closeReply; break;
-        case "reply.read": if (!lastReplyTurn()) return { ok: false, why: "there is no reply yet" }; $("cc-reply-read").click(); break;
+        case "reply.read": if (!lastReplyTurn()) return { ok: false, why: "there is no reply yet" }; if (!$("cc-reply-read")) return { ok: false, why: "voice is off" }; $("cc-reply-read").click(); break;
         case "decision.show": if (!needQueue().length) return { ok: false, why: "no card is waiting" }; openNeed(); break;
         case "settings.open": link = UA.pageUrl(a.page); break; // a link to click: never navigates by itself (a call would end)
         case "page.open": {
@@ -3365,8 +2897,6 @@
       st.el.classList.add("expired");
       setTimeout(function () { st.el.remove(); }, 4000);
     }
-    // The relay desk's voice says it once; a live call says it itself.
-    if (line && !liveActive() && typeof Voice !== "undefined" && Voice.on && Voice.say) Voice.say(line.en);
   }
   /** The server heard a "yes" / "no" for this confirm. */
   function uiConfirmAnswer(id, ok) {
@@ -3395,7 +2925,7 @@
       b.click();
       return Promise.resolve();
     }
-    var url = r.action === "persona.set" ? "/credentials/openai-voice/persona" : r.action === "voice.set" ? "/credentials/openai-voice/options" : null;
+    var url = r.action === "persona.set" ? "/mint-ai/settings/voice/persona" : r.action === "voice.set" ? "/mint-ai/settings/voice/options" : null;
     if (!url || !r.form) return Promise.reject(new Error("not a preference this page can change"));
     var body = new URLSearchParams();
     body.set("_csrf", CSRF);

@@ -84,12 +84,52 @@ const MAX_AUDIO_BYTES = 25 * 1024 * 1024; // the transcription endpoint's own ca
 // Used only to estimate a text-to-speech reading that came back without usage.
 const AUDIO_TOKENS_PER_SECOND = 20;
 
+/*
+ * The voice model (MINT AI ▸ Settings ▸ Voice): one selector since voice became
+ * live conversation only (2026-09-30). It is the live call's realtime model
+ * (lib/voice-live.js), and the model that reads replies aloud -- but only a
+ * model the reader is verified with reads aloud (READER_MODELS: the out-of-band
+ * response protocol above and its verbatim check were measured on
+ * gpt-realtime-mini; gpt-realtime speaks the same protocol). Any other voice
+ * model reads aloud with gpt-realtime-mini, silently (readerModelFor): a
+ * reading that fails the verbatim check falls back to gpt-4o-mini-tts anyway.
+ * gpt-live-1 (the other protocol, readLive) is no longer offered.
+ */
+const VOICE_MODELS = Object.freeze([
+  { id: "gpt-realtime-2.1-mini", label: "GPT Realtime 2.1 mini" },
+  { id: "gpt-realtime-mini", label: "GPT Realtime mini" },
+  { id: "gpt-realtime", label: "GPT Realtime" },
+]);
+const READER_MODELS = Object.freeze(["gpt-realtime-mini", "gpt-realtime"]);
+/** The model that reads replies aloud for a given voice model. */
+function readerModelFor(model) {
+  return READER_MODELS.includes(model) ? model : "gpt-realtime-mini";
+}
+/** The reader's models (as the helper stores them). */
 const MODELS = [
   { id: "gpt-realtime-mini", label: "GPT Realtime mini", protocol: "realtime" },
   { id: "gpt-realtime", label: "GPT Realtime", protocol: "realtime" },
-  { id: "gpt-live-1", label: "GPT Live", protocol: "live" },
 ];
 const VOICES = ["marin", "cedar", "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse"];
+/**
+ * How each voice presents, for the voice cards: gender as the voice sounds in
+ * OpenAI's own samples (openai.fm, the Realtime demos) -- OpenAI publishes no
+ * gender for any voice, so these are perceptual. alloy is presented as neutral
+ * and labelled so rather than guessed; ballad and verse are the least certain.
+ * The one table (the Settings cards read it; nothing else depends on it).
+ */
+const VOICE_META = Object.freeze({
+  marin: { gender: "female", note: "warm · clear · default" },
+  cedar: { gender: "male", note: "low · calm" },
+  alloy: { gender: "neutral", note: "even · deliberately neutral" },
+  ash: { gender: "male", note: "soft · steady" },
+  ballad: { gender: "male", note: "gentle · lilting" },
+  coral: { gender: "female", note: "bright · friendly" },
+  echo: { gender: "male", note: "crisp · measured" },
+  sage: { gender: "female", note: "calm · unhurried" },
+  shimmer: { gender: "female", note: "light · airy" },
+  verse: { gender: "male", note: "bright · quick" },
+});
 const TRANSCRIBE_MODELS = [
   { id: "gpt-4o-mini-transcribe", label: "GPT-4o mini transcribe" },
   { id: "gpt-4o-transcribe", label: "GPT-4o transcribe" },
@@ -1131,7 +1171,11 @@ module.exports = {
   scrub,
   VoiceError,
   MODELS,
+  VOICE_MODELS,
+  READER_MODELS,
+  readerModelFor,
   VOICES,
+  VOICE_META,
   TRANSCRIBE_MODELS,
   TRANSCRIBE_PROMPT,
   TRANSCRIBE_PROMPT_KIND,

@@ -8,11 +8,13 @@
  *     running), Needs you (an approval waits) -- from the Command Center's own
  *     event stream and status, nothing polled from anywhere else;
  *   - hover: what MINT AI said last, and what you said;
- *   - push to talk: hold the mic, or hold Space (not while typing). The clip is
- *     transcribed by this server and sent to MINT AI exactly like a voice turn
- *     from the Command Center (its voice-turn id, so only what was heard is
- *     sent). No live call here: that lives in the Command Center (part 2 keeps
- *     it across pages);
+ *   - the mic (only when voice works for this viewer: on in Settings, a key,
+ *     voice.use -- else the server renders none): it starts a live
+ *     conversation. The call lives in the Command Center, so the mic goes there
+ *     with this page kept on screen in its frame (/mint-ai?at=<this page>&call=1:
+ *     the shell shows the page, moni-ai.js starts the call); in the shell it
+ *     starts or mutes the call at once. No push to talk (voice is live
+ *     conversation only, 2026-09-30);
  *   - MINT AI's own screen actions for this tab (its ui_action, through the
  *     event stream with this tab's id): page.open -- only to a page this
  *     viewer's role may see (data-pages) -- and settings.open work here; the
@@ -120,7 +122,7 @@
   }
 
   /* The page's own driver: status, the event stream, MINT AI's screen actions,
-   * push to talk. Not in the Command Center's shell, which drives the dock itself. */
+   * the mic. Not in the Command Center's shell, which drives the dock itself. */
   function pageDriver() {
     /* ---------------------------------------------------------- the events */
     // The stream replays its recent past on connect: that fills the caption, but
@@ -198,7 +200,6 @@
       paint();
     }).catch(function () { st.cap = "MINT AI is not reachable right now."; paint(); }).then(connect);
 
-    var cameBack = null; // "undo" / "go back" said soon after a page.open
     /* A page.open brought us here: say so, with Undo (back where we came from). */
     (function () {
       var o = null;
@@ -207,85 +208,19 @@
       var from = String(o.from);
       if (!/^\/[A-Za-z0-9/_-]*$/.test(from)) return; // a path of this site, nothing else
       var back = function () { if (window.history.length > 1) window.history.back(); else location.assign(from); };
-      cameBack = back;
-      setTimeout(function () { cameBack = null; }, 60000);
       toast("Mint opened " + o.label, { action: { label: "Undo", fn: back } });
     })();
 
-    /* ---------------------------------------------------------- push to talk */
-    var rec = null, chunks = [], stream = null, t0 = 0, holding = false, sending = false;
-    function newVt() { return "v" + Date.now().toString(36) + Math.random().toString(36).slice(2, 8); }
-    function startTalk() {
-      if (holding || sending) return;
-      if (!navigator.mediaDevices || !window.MediaRecorder) { toast("This browser cannot record here.", { bad: true }); return; }
-      holding = true;
-      st.listening = true; st.you = ""; paint();
-      $("md-mic").classList.add("rec");
-      var go = stream ? Promise.resolve(stream) : navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } }).then(function (s) { stream = s; return s; });
-      go.then(function (s) {
-        if (!holding) return;
-        chunks = [];
-        rec = new MediaRecorder(s);
-        rec.ondataavailable = function (e) { if (e.data && e.data.size) chunks.push(e.data); };
-        rec.start();
-        t0 = Date.now();
-      }).catch(function (e) {
-        holding = false; st.listening = false; $("md-mic").classList.remove("rec"); paint();
-        toast("The microphone is not available: " + ((e && e.message) || e), { bad: true });
+    /* ---------------------------------------------------------- the mic: a live call */
+    // The call lives in the Command Center: go there with this page kept in its frame, and start it.
+    var mic = $("md-mic");
+    if (mic) {
+      mic.addEventListener("click", function (e) {
+        e.preventDefault();
+        var here = location.pathname + location.search + location.hash;
+        location.assign("/mint-ai?at=" + encodeURIComponent(here) + "&call=1");
       });
     }
-    function stopTalk() {
-      if (!holding) return;
-      holding = false;
-      $("md-mic").classList.remove("rec");
-      st.listening = false; paint();
-      var r = rec;
-      rec = null;
-      if (!r || r.state === "inactive") return;
-      var long = Date.now() - t0 >= 350, stopAt = Date.now();
-      r.onstop = function () {
-        if (!long || !chunks.length) { toast("Hold to talk — keep holding while you speak."); return; }
-        var blob = new Blob(chunks, { type: r.mimeType || "audio/webm" });
-        var fr = new FileReader();
-        var ms = stopAt - t0;
-        fr.onload = function () { hear(String(fr.result).split(",")[1] || "", blob.type, { ms: ms }); };
-        fr.readAsDataURL(blob);
-      };
-      r.stop();
-    }
-    function hear(data, mime, level) {
-      var vt = newVt();
-      sending = true;
-      st.cap = "…"; paint();
-      api("transcribe", { data: data, mime: mime, vt: vt, level: level }).then(function (d) {
-        var said = String(d.text || "").trim();
-        if (!said || /^[\[(]/.test(said)) throw new Error("nothing said");
-        st.you = clip(said, 120);
-        if (window.VoiceStop && window.VoiceStop.heard(said)) { st.cap = "Okay."; paint(); return null; }
-        if (window.VoiceStop && window.VoiceStop.undo && window.VoiceStop.undo(said) && cameBack) { st.cap = "Going back."; paint(); cameBack(); return null; }
-        return api("send", { text: said, vt: vt, tab: TAB_ID }).then(function (r) {
-          if (r && r.confirm) { st.cap = r.confirm.ok ? "Confirmed." : "Cancelled."; paint(); return; }
-          st.busy = true; st.cap = "On it."; st.at = Date.now(); paint();
-        });
-      }).catch(function (e) {
-        st.cap = e.message === "nothing said" ? "I didn't hear anything." : "That did not go through: " + e.message;
-        paint();
-      }).then(function () { sending = false; });
-    }
-    var mic = $("md-mic");
-    mic.addEventListener("pointerdown", function (e) { e.preventDefault(); try { mic.setPointerCapture(e.pointerId); } catch (x) { /* fine */ } startTalk(); });
-    mic.addEventListener("pointerup", stopTalk);
-    mic.addEventListener("pointercancel", stopTalk);
-    mic.addEventListener("keydown", function (e) { if ((e.key === "Enter" || e.key === " ") && !e.repeat) { e.preventDefault(); startTalk(); } });
-    mic.addEventListener("keyup", function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); stopTalk(); } });
-    function typing(el) { return !!(el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT|BUTTON)$/.test(el.tagName || ""))); }
-    document.addEventListener("keydown", function (e) {
-      if (e.code !== "Space" || e.repeat || e.ctrlKey || e.metaKey || e.altKey || typing(e.target)) return;
-      e.preventDefault();
-      startTalk();
-    });
-    document.addEventListener("keyup", function (e) { if (e.code === "Space" && holding) { e.preventDefault(); stopTalk(); } });
-    window.addEventListener("blur", stopTalk);
 
     return { openPage: openPage };
   }
@@ -360,7 +295,7 @@
     };
     tick();
     liveT = setInterval(tick, 1000);
-    $("md-mic").classList.toggle("muted", !!ext.muted);
+    if ($("md-mic")) $("md-mic").classList.toggle("muted", !!ext.muted);
   }
 
   var api_ = { tab: TAB_ID, state: stateNow, toast: toast };
@@ -368,17 +303,19 @@
     var drv = pageDriver();
     api_.openPage = function (k) { var np = UA && UA.navPage(k); if (np) drv.openPage(k, np, 0); };
   } else {
-    // The shell's dock: the mic and Space are the Command Center's own (its push to talk, or,
-    // on a live call, mute); the orb, the name and expand bring the Command Center back.
-    var space = function (type) { document.dispatchEvent(new KeyboardEvent(type, { code: "Space", key: " ", bubbles: true, cancelable: true })); };
-    var down = false;
+    // The shell's dock: the mic is the Command Center's -- it starts the live call, and while one
+    // is on it mutes and unmutes it (End ends it); the orb, the name and expand bring the Command
+    // Center back.
     var mic = $("md-mic");
-    mic.addEventListener("pointerdown", function (e) { e.preventDefault(); try { mic.setPointerCapture(e.pointerId); } catch (x) { /* fine */ } if (!down) { down = true; space("keydown"); } });
-    var up = function () { if (down) { down = false; space("keyup"); } };
-    mic.addEventListener("pointerup", up);
-    mic.addEventListener("pointercancel", up);
-    mic.addEventListener("keydown", function (e) { if ((e.key === "Enter" || e.key === " ") && !e.repeat) { e.preventDefault(); e.stopPropagation(); if (!down) { down = true; space("keydown"); } } });
-    mic.addEventListener("keyup", function (e) { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); e.stopPropagation(); up(); } });
+    if (mic) {
+      mic.addEventListener("click", function (e) {
+        e.preventDefault();
+        var L = window.__mintLive;
+        if (!L) return;
+        if (L.active() && window.VoiceLive && window.VoiceLive.mute) return window.VoiceLive.mute(!window.VoiceLive.muted());
+        if (!L.toggle()) toast("Live conversation is not available here.", { bad: true });
+      });
+    }
     ["md-orb", "md-txt", "md-exp"].forEach(function (id) {
       $(id).addEventListener("click", function (e) { if (window.MintShell && window.MintShell.active()) { e.preventDefault(); window.MintShell.expand(); } });
     });

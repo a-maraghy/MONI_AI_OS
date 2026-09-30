@@ -20,7 +20,7 @@
  * link to /mint-ai?at=<path> opens straight onto that page (a deep link).
  *
  * The page in the frame talks back through app.js (only when framed): where it
- * is and its title, Space held to talk, theme changes; a signed-out page,
+ * is and its title, theme changes; a signed-out page,
  * logout and the Command Center itself leave the frame. Messages are accepted
  * only from this origin and from the frame's own window.
  *
@@ -286,17 +286,11 @@
     try { frame.contentWindow.postMessage({ mint: "theme", theme: html.getAttribute("data-theme") || "system" }, ORIGIN); } catch (e) { /* not loaded */ }
   }
   document.addEventListener("moni-theme", sendTheme);
-  function space(type) { document.dispatchEvent(new KeyboardEvent(type, { code: "Space", key: " ", bubbles: true, cancelable: true })); }
-  var spaceDown = false;
   window.addEventListener("message", function (e) {
     if (e.origin !== ORIGIN || e.source !== frame.contentWindow) return;
     var m = e.data && typeof e.data === "object" ? e.data : {};
     if (m.mint === "nav") followFrame();
-    else if (m.mint === "space") {
-      if (mode !== "dock") return;
-      if (m.down && !spaceDown) { spaceDown = true; space("keydown"); }
-      else if (!m.down && spaceDown) { spaceDown = false; space("keyup"); }
-    } else if (m.mint === "expand") expand();
+    else if (m.mint === "expand") expand();
     else if (m.mint === "theme") applyTheme(m.theme);
   });
 

@@ -1,7 +1,7 @@
 "use strict";
 /**
- * Arabic for the voice guards (Phase 0 of M-3, 2026-09-29): what the desk's
- * output guard (lib/voice-desk.js) and the transcript guard (lib/voice-guard.js)
+ * Arabic for the voice guards (Phase 0 of M-3, 2026-09-29): what the voice's
+ * output guard (lib/voice-shared.js, was voice-desk.js) and the transcript guard (lib/voice-guard.js)
  * need to read Egyptian and Modern Standard Arabic as strictly as English.
  *
  * Why: the guards were written for English. Probed offline on 2026-09-29, all

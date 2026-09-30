@@ -193,10 +193,12 @@ Voice only: OpenAI hears the person and reads the replies aloud; Claude does
 all the thinking. Everything goes through this server -- the browser never
 talks to OpenAI and never sees the key (the CSP still forbids it to).
 
-- **Hearing**: the recording (webm/opus) is posted to `/mint-ai/api/transcribe`
-  or `/console/:id/transcribe`, and sent on to `POST /v1/audio/transcriptions`
-  (`gpt-4o-mini-transcribe` by default), with a vocabulary prompt (Mint, MINT AI, Odoo,
-  sessions, agents) so the panel's own words are spelled right.
+- **Hearing**: the live call streams the microphone to this server (see *Live
+  conversation*); the server's own full-turn transcript of what it relayed
+  (`POST /v1/audio/transcriptions`, `gpt-4o-mini-transcribe` by default, with a
+  vocabulary prompt: Mint, MINT AI, Odoo, sessions, agents) is what MINT AI gets.
+  The console's dictation still posts a recording to `/console/:id/transcribe`.
+  The Command Center's push to talk (`/mint-ai/api/transcribe`) is gone.
 - **Speaking**: each sentence of a reply is posted to `/mint-ai/api/speak` or
   `/console/:id/speak`. The Command Center asks for it **streamed**
   (`Accept: application/x-ndjson`): `start {engine}`, then `audio {pcm}` (PCM16
@@ -204,10 +206,12 @@ talks to OpenAI and never sees the key (the CSP still forbids it to).
   plays it with Web Audio from the first chunk (a 60 ms lead, each chunk
   scheduled right after the last, one gain node per reading into the analyser
   that drives the seed core). The console still gets a whole WAV. `lib/voice.js` keeps
-  WebSockets to `wss://api.openai.com/v1/realtime?model=gpt-realtime-mini`
-  (default; `gpt-realtime` and `gpt-live-1` on `/v1/live/sessions` are
-  selectable) warm and reuses them, opening two as soon as a recording is
-  transcribed. Each sentence is an **out-of-band** `response.create`
+  WebSockets to `wss://api.openai.com/v1/realtime?model=<the reader>` warm and
+  reuses them. The reader is the selected voice model when the reader is
+  verified with it (`READER_MODELS`: `gpt-realtime-mini`, `gpt-realtime`),
+  else `gpt-realtime-mini` (`readerModelFor`; `gpt-realtime-2.1-mini`, the
+  default voice model, reads aloud with `gpt-realtime-mini` until a Test on the
+  real API shows it reads word for word). `gpt-live-1` is no longer offered. Each sentence is an **out-of-band** `response.create`
   (`conversation: "none"`, empty input, the text quoted in that response's
   instructions): put in as a user message, the real model *answers* it ("Hello,
   can you hear me?" -> "Yes, I can hear you loud and clear. How can I assist
@@ -235,11 +239,12 @@ talks to OpenAI and never sees the key (the CSP still forbids it to).
   line to the journal: `voice speak 200 engine=... ms=... first_audio_ms=...
   warm=1 cuts=... audio_s=... words=... streamed=1 usd=...` or `voice transcribe
   200 model=... ms=... usd=...`.
-- **The key**: Settings > Credentials > OpenAI voice (`/credentials/openai-voice`,
-  permission `voice.manage`, in no stock role -- administrators only). Write-only
-  field, shown as its last four characters, Replace, Remove and a Test button
-  that speaks one line and transcribes it back. Model, voice and listening model
-  selectors. Stored by the helper in `/var/lib/moni-voice/openai-voice.env`
+- **The key**: MINT AI ▸ Settings ▸ Voice (`/mint-ai/settings/voice`, row
+  *Voice API token*; permission `voice.manage`, in no stock role --
+  administrators only). Write-only, shown only as set / not set; **Replace**
+  opens a dialog with a password field (`POST /mint-ai/settings/voice/key`),
+  **Remove** asks first (`/clear`), **Test** speaks one line with the selected
+  voice model and transcribes it back (`/test`). Stored by the helper in `/var/lib/moni-voice/openai-voice.env`
   (root:root 0600, directory 0700) -- not the repo, not the database, not argv;
   set/clear/options are audited with the last four characters only. The panel
   reads it through `moni-helper voice-key-read` and keeps it in memory.
@@ -256,39 +261,70 @@ Tests: `node dashboard/tools/test-voice.cjs` (mock OpenAI for both protocols
 and transcription, the verbatim guard, the helper's key storage, the no-key
 views). Needs `ws` on `NODE_PATH`.
 
-### Voice front desk (GPT) -- trial, off by default
+### Voice: live conversation only (MINT AI ▸ Settings ▸ Voice)
 
-`lib/voice-desk.js`. Switched on by an administrator at Settings > Credentials >
-OpenAI voice > *Voice front desk (GPT)* (`POST /credentials/openai-voice/desk`,
-`voice.manage`, audited in the sign-in log; stored in the panel's `settings`
-table, not with the key). While it is off nothing about the voice changes.
-While on, the Command Center's mic posts each utterance to
-`POST /mint-ai/api/desk/turn` (`moniai.use` + CSRF). The voice bar shows
-**Front desk · GPT** or **Direct · MINT AI**.
+Since 2026-09-30 (the Mint OS reorganisation) voice **is** live conversation:
+the relay front desk, the Direct / Front desk / Live picker, push to talk and
+hands-free, Space held to talk and every "trial" label are gone.
 
-gpt-realtime-mini holds the conversation, server-side, **in text**, with exactly
-two tools: `read_status()` (the supervisor's read-only `snapshot` op: services,
-disk, memory, sessions, active missions and steps, open decisions and pending
-approvals as counts and titles, never a command; no live Odoo) and
-`ask_moni(text)` (a normal `send`, `via: "voice-desk"`, as the panel user; the
-administrator's own words go along when the desk paraphrases). It may make
-brief small talk, never with a status claim in it. Enforcement: only those two
-tools in the session; any other function call is refused; `deskOps()` opens for
-`snapshot` and `send` only; and an output guard over the desk's own words.
+- **One switch, for everyone**: *Voice Enabled / Disabled*
+  (`POST /mint-ai/settings/voice/enabled`, audited). Stored in the old front
+  desk's setting key, `voice_desk`, as `on` / `off`: the old values read as
+  `0` -> off, `1` and `live` -> on, and are rewritten once at start
+  (`migrateVoiceSetting`, logged). **Off** means no voice for anyone: no mic on
+  the Command Center or the dock, no read-aloud, no live bar and no voice-menu
+  voice entries; the live WebSocket upgrade answers 403 and open calls end
+  (`voiceLive.closeAll("disabled")`); `/mint-ai/api/speak` (and the console's
+  speak / transcribe) answer 409 `{code: "voice-off"}`; MINT AI's screen
+  actions `call.*` and `voice.set` are refused ("voice is off") on the server
+  and on the page. The key is kept, and its row stays usable.
+- **Who may talk**: permission `voice.use` (*Talk with MINT AI by voice*,
+  MINT AI group, implies `moniai.use`; administrators only by default). Live
+  needs `moniai.use` + `voice.use`; `voice.manage` is for Settings ▸ Voice.
+  Without `voice.use` there is no mic and no read-aloud anywhere.
+- **The voice model**: `gpt-realtime-2.1-mini` (default), `gpt-realtime-mini`,
+  `gpt-realtime` (`lib/voice.js` `VOICE_MODELS`). The live call's model is the
+  panel setting `voice_model`; the helper's options keep the reader's model
+  (`readerModelFor`), the voice and the listening model -- each Settings row
+  posts only its own field to `POST /mint-ai/settings/voice/options`. A change
+  reconnects open calls (`voiceLive.swapAll`, the model included).
+- **Voice cards** carry a gender (♀ Female / ♂ Male / ◌ Neutral) from one
+  table, `lib/voice.js` `VOICE_META`: as each voice presents in OpenAI's own
+  samples -- OpenAI labels none; alloy is Neutral; ballad and verse are the
+  least certain.
+- **The rest of the section**: Arabic persona + Reset (`/persona`,
+  `/persona/reset`), listening model, *Read replies aloud* (this browser:
+  `localStorage` `mint-read-aloud`, the Command Center's speaker button is the
+  same switch), live audio (speakers / headphones default, noise reduction:
+  `/live-audio`, each row its own field), call limits, spend, and the link to
+  the voice evaluation (`/mint-ai/voice-eval`, unchanged). The markup is
+  `lib/views-settings-voice.js`; the routes sit with the voice code in
+  `server.js` (`settingsRoutes.sections.voice`). Every form works in place
+  (os.js, JSON) and without JavaScript (a redirect back to its row).
+- **Old URLs**: `GET /credentials/openai-voice` -> 302 to the section; its
+  POSTs (`key`, `clear`, `test`, `options`, `persona`, `persona/reset`,
+  `live-audio`) -> 308 to the new routes (method and body kept);
+  `/credentials/openai-voice/desk` changes nothing and says the desk is gone.
+  Credentials shows the voice key as one status line linking here.
+- **The mic**: in the Command Center it starts / ends a live call (hint
+  "click the mic to talk · Esc ends"; during a call Space mutes or interrupts,
+  Esc interrupts, then ends). The dock on any other page goes to
+  `/mint-ai?at=<this page>&call=1`: the shell keeps the page on screen in its
+  frame and the call starts; in the shell the dock's mic starts or mutes it.
+- **Sign-out ends that device's call**: the live upgrade records the session
+  id with the call, and `endLiveCallsForSession(sid, reason)` (server.js) ends
+  every call bound to it -- on logout, on a revoked session, and from the
+  Devices page's sign-out of another device.
 
-**Sentence by sentence.** The desk answers in text; each sentence is released
-as soon as the guard has passed it and is spoken by the ordinary verbatim
-reader (`lib/voice.js`), so what is heard is exactly what was checked. The
-route streams NDJSON: `heard`, then per sentence `line {i, text}` and its audio
-as it is read -- `start` / `audio` / `cut` / `end` with the line's `i`,
-strictly in line order (`createSpeaker` holds a later line's audio until the
-one before it has ended) -- `asked`, and `done` with the turn's cost and the
-usage figures. The guard judges each sentence with the ones before it (a
-bare "Done." after an action sentence is a claim about that sentence; "it"
-borrows its subject), and holds a sentence it cannot judge alone -- one that
-mentions an action, a fragment, a hand-off whose `ask_moni` call is not known
-yet -- until the next sentence or the end. So whatever a later sentence does,
-it can only cut itself (property-tested over ~1,900 streamed texts).
+### What the live voice shares with the old front desk (`lib/voice-shared.js`)
+
+The desk's module was cut down to what the live call uses: the supervisor door
+(`voiceOps`: `snapshot` and `send` only, `via: "voice-desk"` -- the
+supervisor's existing name for a voice hand-off), the snapshot filter
+(`forModel`), the fixed lines, the output guard (`judge` / `guard` /
+`Releaser`) and the guarded summary of MINT AI's replies (`Summariser`,
+`summariserFor`). The rules below are the guard's, and hold for every word the
+live voice speaks and every summary.
 
 It cuts: a claim that something was done/deleted/restarted/pushed/approved (or
 is being: "Restarting Odoo."), a promise of one, a figure not in the snapshot /
@@ -298,8 +334,7 @@ the snapshot does not hold, a finding ("I found ...", "I checked the logs",
 checking" / "give me a moment" / «ثانية أشوفلك» / "I'll tell you what I find"
 when no request is being worked on (an `ask_moni` call in this response, or
 one still in progress). A cut reply is replaced by "Give me a moment, I'm
-looking into it." and the request really is worked on. A transient OpenAI
-server error is retried once.
+looking into it." and the request really is worked on.
 
 **One identity: the voice IS MINT AI** (the administrator, 2026-09-29: "you
 are MINT AI; don't say you delegate to MINT AI; talk to me as MINT AI; you can
@@ -335,10 +370,11 @@ your approval or your answer." / «محتاجة / محتاج موافقتك أو
 there is nothing grounded to work on. It is always MINT AI's voice and never
 claims to be human.
 
-**Summaries.** MINT AI's answer to a desk request stays on screen exactly as
-written; aloud, the page asks `POST /mint-ai/api/desk/summary {turn}` for a
-short summary (an out-of-band response: no conversation, no tools, the reply
-quoted). A reply of one or two plain sentences is read word for word instead
+**Summaries.** MINT AI's answer to a live call's request stays on screen
+exactly as written; aloud, the call asks the summariser for a short summary
+(an out-of-band text response: no conversation, no tools, the reply quoted,
+the administrator's request and last words alongside). A transient OpenAI
+server error is retried once. A reply of one or two plain sentences is read word for word instead
 (`fallback: "verbatim"`). The summary is held to the reply: a figure changed
 or rounded wrongly (2.7 may become 3, never 2), a negation flipped, a
 recommendation MINT AI did not make, "I'll ask you first" turned into "done", a
@@ -360,27 +396,25 @@ always MINT AI's voice and never claims to be human. The register and the
 gender are saved per user (`users.voice_persona`, JSON), change only when an
 utterance clearly shows a change (at least two markers of one register and none
 of the other; an unambiguous form of address), and each change is audited.
-Settings > OpenAI voice > *Voice persona* shows it read-only with a **Reset**;
+Settings ▸ Voice > *Arabic persona* shows it with a **Reset**;
 there is no free-text persona. The instruction for the language, register and
 gender is sent with every response (`instructionsFor`); summaries and the
 Arabic fixed lines follow it. The guard reads feminine and masculine Egyptian
 forms (participles such as «أنا عاملة ده», «مشغّلاه», «أنا عامله»). Tests:
 `test-voice-persona.cjs` (the real server from a scratch copy that cannot reach
-the helper -- `tools/scratch-server.cjs` -- saving, carrying over, the audit,
-Reset), and the persona and gender sections of `test-voice-arabic.cjs` and
-`test-voice-desk.cjs`.
+the helper -- `tools/scratch-server.cjs` -- the Settings rows, the audit,
+Reset), and the persona and gender sections of `test-voice-arabic.cjs`.
 
 **A chosen persona** (the administrator, 2026-09-29: «البرسونا بتاعتك بنت
-عربية مصرية من القاهرة»). Settings > OpenAI voice > *Voice persona* is a fixed
-list, posted to `POST /credentials/openai-voice/persona` (voice.manage + CSRF,
+عربية مصرية من القاهرة»). Settings ▸ Voice > *Arabic persona* is a fixed
+list, posted to `POST /mint-ai/settings/voice/persona` (voice.manage + CSRF,
 audited with the old and new choice): **Learn from how I speak** (the default,
 as above), **Cairene Egyptian -- feminine**, **Cairene Egyptian -- masculine**,
 **Modern Standard Arabic -- neutral** (`voicePersona.PRESETS`). A choice is
 stored as `{mode:"explicit", preset, dialect, gender, updated_at}`; an explicit
 choice always wins and learning never changes it (`merge` returns it untouched).
 Cairene feminine means Arabic replies in Cairo colloquial Egyptian with feminine
-first-person forms -- the relay turn instructions, the live conversation's
-instructions, the summary language, the safe lines and the approval line
+first-person forms -- the live conversation's instructions, the summary language, the safe lines and the approval line
 (`linesFor("ar","f")`); English replies stay plain English, and it is still
 MINT AI's voice, never claiming to be human. **Reset** (or picking *Learn from
 how I speak*) clears the choice and returns to learning. Nothing sets a user's
@@ -408,15 +442,16 @@ splits input / output / cache read / cache write; sphere size follows tokens,
 not dollars. Only the voice block shows money (`test-moniai-v3` holds it).
 
 **Cost, on screen -- no cap.** The daily budget was removed (the
-administrator's decision of 2026-09-29): nothing refuses or diverts the desk for
+administrator's decision of 2026-09-29): nothing refuses or diverts the voice for
 what it has spent. Instead every OpenAI call the voice makes is priced from the
-usage OpenAI reports -- each desk response, each reading (a cancelled one
+usage OpenAI reports -- each live response and summary, each reading (a cancelled one
 included), the text-to-speech fallback (`speech.audio.done`), each
 transcription -- with the one price list in `lib/voice-usage.js` (OpenAI's
 pricing page, read 2026-09-29), and written to the panel's `voice_usage` table
-with its voice turn and kind: **small talk**, **snapshot** answers,
-**hand-offs** (the request and, later, its summary), **direct** (the direct
-path, front desk off), and transcription on its own line. The Command Center
+with its voice turn and kind: **live** (the live call, its summaries and
+safe lines), **read aloud** (`direct`), and transcription on its own line; the
+old desk's kinds (small talk, snapshot, hand-offs) show only while the month
+still has spend on them. The Command Center
 shows it at the foot of the *Usage* sheet, folded under "Voice · OpenAI -- billed
 separately" (`GET /mint-ai/api/voice/usage`): today's and this
 month's voice spend (Africa/Cairo) by kind, transcription, the total, and the
@@ -426,15 +461,16 @@ a snapshot answer ~$0.0022, a hand-off ~$0.0008 plus ~$0.0054 for the summary
 it; the desk's own text tokens are $0.0001-0.0005.
 A kept conversation is replaced after 12 turns or 12k input tokens.
 
-Tests: `node dashboard/tools/test-voice-desk.cjs` (mock realtime server with the
-real event shapes, including out-of-band responses and `usage`; tools, the
-supervisor door, the snapshot payload, the guard, sentence release and its
-property, small talk, summaries, cost and the usage figures (Cairo day and
-month boundaries), streamed speech in line order, session length).
-`node dashboard/tools/test-voice-stream.cjs` runs the page's Voice module (cut
-out of `public/moni-ai.js`) against a fake Web Audio clock: playback from the
-first chunk, order, a clean cut and the fallback after it, barge-in during a
-stream, the desk's streamed lines.
+Tests: `node dashboard/tools/test-voice-shared.cjs` (mock realtime server with
+the real event shapes: the supervisor door, the snapshot payload, the guard,
+sentence release and its property, summaries). `test-voice-settings.cjs` runs
+the real server (scratch copy, helper cut off) through the switch, its
+migration, `voice.use`, the voice model, the old URLs and sign-out ending a
+call; `test-voice-mode.cjs` holds the page and the dock to live conversation
+only. `node dashboard/tools/test-voice-stream.cjs` runs the page's read-aloud
+module (cut out of `public/moni-ai.js`) against a fake Web Audio clock:
+playback from the first chunk, order, a clean cut and the fallback after it,
+switching it off during a stream.
 `node dashboard/tools/test-voice-guard.cjs` covers the guard between the
 microphone and MINT AI (`lib/voice-guard.js`, `lib/voice-intake.js`): silence
 is never transcribed (under 1,200 bytes, or measured by the page as under
@@ -455,29 +491,18 @@ spelling normalised, the fail-closed rules (a script other than Latin or
 Arabic, an unknown past-tense result verb), the summary rules across the two
 languages, the Arabic fixed lines, and the Arabic silence phrases and
 subtitle credits on the transcript side. `ask_moni` sends the server's own
-transcript of the turn, never the desk model's paraphrase (the paraphrase
-cases are in test-voice-desk.cjs).
-`sudo node dashboard/tools/eval-voice-desk.cjs --replies <copy.json> [--speak]
-[--session]` runs ~25 prompts and summaries of MINT AI's real replies (from a
-read-only copy of the ledger) against the real model with a stubbed supervisor
-(nothing reaches MINT AI; the key is read through the helper and never
-printed).
+transcript of the turn, never the voice model's paraphrase.
 
-### Live conversation (trial) -- off by default, administrators only
+### Live conversation
 
 `lib/voice-live.js` (server), `public/voice-live.js` + `public/voice-live-worklet.js`
 + `public/voice-live.css` (page). M-3 Phase 1, option C of the full-duplex
 proposal: you talk and the voice answers at once, and you can interrupt it --
 while the voice model still never thinks or acts for MINT AI.
 
-**The mode.** The front-desk setting is now three-way, in the same `settings`
-row (`voice_desk`), so existing values keep their meaning: `"0"` off (direct),
-`"1"` relay desk, `"live"` live conversation. Settings > OpenAI voice >
-*Voice front desk* > *Live conversation (trial)* (`POST
-/credentials/openai-voice/desk` with `mode=off|desk|live`; the older
-`enabled=1|0` still works; audited). In live mode administrators (`moniai.use`
-+ `voice.manage`) get a third choice in the Command Center's voice menu, *Live
-conversation (trial)*; everyone else, and push to talk, keep the relay desk.
+**The switch.** Settings ▸ Voice (see *Voice: live conversation only*); in
+the Command Center the mic starts a call for those with `moniai.use` +
+`voice.use`.
 
 **How it works.** The page opens the mic with echo cancellation, noise
 suppression and auto gain, and an AudioWorklet streams 24 kHz PCM16 in 20 ms
@@ -486,13 +511,13 @@ frames to `GET /mint-ai/api/live?csrf=…` (a WebSocket). The server relays it t
 far-field noise reduction; `create_response` and `interrupt_response` off --
 this server decides both, see *Self-hearing*)
 with exactly two tools, `read_status` and `look_into`, dispatched only through
-`deskOps()` (`snapshot` / `send`); any other tool name is refused. The key never
+`voiceOps()` (`snapshot` / `send`); any other tool name is refused. The key never
 leaves the server.
 
 - **Guard before sound.** Each audio chunk is tagged with the sentence the
   model's own transcript is in when the chunk arrives (the transcript leads the
   audio by 40-360 ms, so that is the chunk's sentence or a later one) and held
-  until that sentence has passed the desk's guard (`Releaser` / `judge()`: the
+  until that sentence has passed the output guard (`Releaser` / `judge()`: the
   sentences before it, the Arabic rules, fail-closed). The last sentence is
   judged as soon as `response.output_audio_transcript.done` arrives (unless it
   mentions a hand-off, which waits for the function calls). On a cut the held
@@ -502,7 +527,7 @@ leaves the server.
   masculine / neutral from the saved persona).
 - **MINT AI's answers never come from the speech model.** The server polls the
   supervisor's snapshot for the reply to a hand-off; the reply goes through the
-  desk's guarded summary (`SUMMARY_INSTRUCTIONS` -> `judge()`) or, if short and
+  guarded summary (`SUMMARY_INSTRUCTIONS` -> `judge()`) or, if short and
   plain, word for word, and each line is read by the verbatim reader into the
   same stream. The realtime conversation is then told (a system item) what MINT
   AI said and what was heard.
@@ -538,8 +563,8 @@ leaves the server.
      the bar's text, Space or the mute button (both interrupt while it speaks),
      or Esc (stops the voice first; a second Esc ends the call). *Headphones
      mode* (full duplex) is a toggle in the live bar (remembered per browser,
-     `localStorage` `mint-live-duplex`) and the default in Settings > OpenAI
-     voice > *Live conversation* (`POST /credentials/openai-voice/live-audio`,
+     `localStorage` `mint-live-duplex`) and the default in Settings ▸ Voice >
+     *Live conversation audio* (`POST /mint-ai/settings/voice/live-audio`,
      `duplex=speakers|full`, `noise=far_field|near_field|off`, audited; setting
      `voice_live_audio`). The bar shows which mode is on.
   3. *Guarded barge-in* (headphones mode). The VAD's `speech_started` while the
@@ -643,24 +668,23 @@ VoiceLive.duplex("full");  // switch mode mid-call; .speaking(), .route() ("loop
 Map `listening`/`talking`/`interrupted` to the core's *listening*, `thinking`
 to *thinking*, `speaking` to *speaking* (the caption: `onCaption` text of
 `who !== "you"`, word by word), `waiting` to *delegating* (to MINT AI); flash
-the voice bar on `interrupted`; feed `onLevel` to the core's amplitude. While
-live is the mode, Space starts a call, then mutes and unmutes it, and Esc ends it;
-while the voice speaks, Space (speakers mode) and Esc interrupt it instead, and
-the hint row says so. `#cc-live-duplex` (in `#cc-live-acts`, before mute) shows
+the voice bar on `interrupted`; feed `onLevel` to the core's amplitude. The
+mic starts a call (no key does); during one Space mutes and unmutes it and Esc
+ends it; while the voice speaks, Space (speakers mode) and Esc interrupt it
+instead, and the hint row says so. `#cc-live-duplex` (in `#cc-live-acts`, before mute) shows
 and switches the mode; its label goes at ≤1100 px.
 During a call the voice bar is one row inside the pill (2026-09-29, after the
 administrator's report of chips overflowing it and two X buttons): the status
-text (it takes the room, with an ellipsis), the wave, one `#cc-live-tag` "Live ·
-trial" (model and voice in its tooltip, from the `ready` message), then
-`#cc-live-acts` -- mute and End -- at the right. The push-to-talk mic, the
-route, the other tags and the bar's own X are hidden (End ends the call);
+text (it takes the room, with an ellipsis), the wave, then `#cc-live-acts` --
+mute and End -- at the right. The route, the tags and the bar's own X are
+hidden (End ends the call);
 narrower screens drop the wave (≤1000 px), End's label (≤720 px) and the tag
 (≤420 px). The page's grid column is `minmax(0, 1fr)`, so no bar can widen the
 page on a phone. The Command Center's own
-wiring is the block marked `LIVE CONVERSATION (trial)` in `public/moni-ai.js`.
+wiring is the block marked `LIVE CONVERSATION` in `public/moni-ai.js`.
 
 **The Egyptian evaluation** (`lib/voice-live-eval.js`). Administrators open
-**`/mint-ai/voice-eval`** (also linked from Settings > OpenAI voice), record the
+**`/mint-ai/voice-eval`** (also linked from Settings ▸ Voice), record the
 20 phrases in their own voice (Egyptian, MSA, English and mixed: status
 questions, an action request, stop commands, small talk; kept in
 `DATA_DIR/voice-eval/<user id>/`), tick the models (gpt-realtime-mini,
@@ -692,7 +716,7 @@ the evaluation page's API).
 ### Screen control by voice (UI control, Phase 1: the desk's `ui_action`)
 
 The administrator: *"Ideally, I want Mint AI to be able to do everything on the
-front end here as well."* The voice (live call and relay desk) has a third tool,
+front end here as well."* The live voice has a third tool,
 `ui_action`, from one shared allowlist, `public/ui-actions.js` (pure, required by
 the server and loaded by the page, so both refuse the same things):
 `call.end`, `call.mute` (mute only -- **unmute is by hand**), `call.interrupt`,
@@ -709,8 +733,8 @@ deploy.
   WebSocket (`{type:"ui", nonce, action, args, toast}`); the page checks the
   allowlist again, acts through the same functions the buttons use, and answers
   `ui-ack` -- no answer in 3 s, or a refusal, and the tool returns *refused*.
-- **Relay desk:** page actions only, back to the tab that spoke, in that turn's
-  NDJSON stream (`{type:"ui", ...}`); `call.*` is refused (no call).
+- **Voice off** (Settings ▸ Voice): `call.*` and `voice.set` are refused, on the
+  server (opening a confirm, MINT AI's own, and the confirm itself) and on the page.
 - Only in a turn the administrator really started (a transcript this server
   heard); at most 6 actions a turn and 20 a minute, `call.end` and
   `settings.open` once a turn; audited (`mint-ui` in the sign-in log); every one
@@ -725,13 +749,11 @@ deploy.
   «رجّعها», «رجع», «ألغي ده», «لأ خلاص», «ارجعي» (the whole utterance, as with
   the stop command: `VoiceStop.undo()` in `public/voice-stop.js`) runs that same
   Undo -- in a live call (the page tells the call `ui-undoable`; the server
-  drops the turn and sends `ui-undo`), through the relay desk (`undoable` in the
-  desk/turn body; the desk answers `heard.undo` and neither answers nor passes
-  it on) and on the direct path. With nothing to undo the words go on as an
+  drops the turn and sends `ui-undo`). With nothing to undo the words go on as an
   ordinary turn; "undo the last git commit" is always a request.
 - **MINT AI itself (Phase 2):** its MCP tool `ui_action` reaches the tab that
   asked, and only that tab. The page sends a per-tab id (`sessionStorage`
-  `mint-tab`) with every send, desk turn, live call and on its event stream;
+  `mint-tab`) with every send, live call and on its event stream;
   this server mints a one-time token for each send (`lib/ui-relay.js`, in
   memory, 1 h at most) and passes it to the supervisor; the supervisor's live
   `ui` event names only a tag of it. The tab's stream acts on it once; call.*
@@ -748,14 +770,14 @@ deploy.
   user, 30 s, audited) and the tab shows "Mint asks: Switch the voice to cedar?
   Confirm / Cancel". It is applied only after a click on Confirm, or when the
   administrator's NEXT utterance -- as this server heard or received it (the
-  relay desk's transcript, the live call's, or /send), never the model's words
+  live call's transcript, or /send), never the model's words
   -- is a whole "yes" (`VoiceStop.yes()`: "yes", "go ahead", «أيوه»,
   «اعملها»...). A whole "no" («لأ», "cancel") cancels it; anything else drops
   it and goes on as a normal turn; in a live call only a later, non-echo turn
   counts, and nothing is answered early while it waits. The page then takes it
   once (`POST /mint-ai/api/ui/confirm`) and applies it through the existing
-  CSRF'd, `voice.manage`-checked routes (`/credentials/openai-voice/persona`,
-  `/options`, which now answer JSON when asked) or the theme switch itself.
+  CSRF'd, `voice.manage`-checked routes (`/mint-ai/settings/voice/persona`,
+  `/options` -- a voice.set posts only the voice -- which answer JSON when asked) or the theme switch itself.
   The voice and MINT AI are told `status: "confirm"`: nothing changed yet, and
   "I switched the voice" is cut (ui-claim) until it is. Tier 3 (keys, users,
   roles, 2FA, rules, watchers, voice mode, budget, orders, restart, deploy) has
@@ -766,8 +788,7 @@ deploy.
   السيشنز, القرارات, التكلفة ...) and says a panel close is never ending the call.
 
 Tests: `tools/test-ui-actions.cjs` (the allowlist, the tool schema, rate limits,
-the claim words), the `ui_action` sections of `test-voice-live.cjs` and
-`test-voice-desk.cjs`.
+the claim words), the `ui_action` sections of `test-voice-live.cjs`.
 
 ### Themes
 

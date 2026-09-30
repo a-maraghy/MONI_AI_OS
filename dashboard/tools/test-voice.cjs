@@ -37,7 +37,6 @@ const ROOT = path.join(__dirname, "..");
 const voice = require(path.join(ROOT, "lib", "voice.js"));
 const views = require(path.join(ROOT, "lib", "views-moniai.js"));
 const consoleViews = require(path.join(ROOT, "lib", "views-console.js"));
-const credViews = require(path.join(ROOT, "lib", "views-credentials.js"));
 const rbac = require(path.join(ROOT, "lib", "rbac.js"));
 
 let passed = 0;
@@ -719,17 +718,16 @@ print(json.dumps(res))
 
 function viewTests() {
   const user = { name: "Tester", username: "tester", perm: rbac.actor({ permissions: ["*"] }) };
-  const off = views.page({ csrf: "c", user, voice: { configured: false, manage: true, voice: "marin" } });
-  check("Command Center without a key: 'Add an OpenAI key in Settings', linked", /Add an OpenAI key in Settings/.test(off) && /href="\/credentials\/openai-voice"/.test(off));
-  // v3: the big "Talk to MINT" card left the rail; the composer mic is the one control.
-  check("  the composer mic disabled, voice-ready flag off, no big mic card",
-    /id="cc-c-mic"[^>]*disabled/.test(off) && /data-voice-ready=""/.test(off) && !/id="cc-mic-big"/.test(off));
-  const offNoManage = views.page({ csrf: "c", user, voice: { configured: false, manage: false } });
-  check("  someone who cannot manage it is told to ask an administrator, with no link", /ask an administrator/.test(offNoManage) && !/href="\/credentials\/openai-voice"/.test(offNoManage));
-  const on = views.page({ csrf: "c", user, voice: { configured: true, manage: true, voice: "marin", model: "gpt-realtime-mini" } });
-  check("with a key: mic enabled, OpenAI and the voice named, no setup prompt",
-    !/id="cc-c-mic"[^>]*disabled/.test(on) && /data-voice-ready="1"/.test(on) && />OpenAI</.test(on) && />marin</.test(on) && !/Add an OpenAI key/.test(on) &&
-    /id="cc-speak-toggle"/.test(on) && /Space<\/kbd> hold to talk/.test(on));
+  const off = views.page({ csrf: "c", user, voice: { configured: false, manage: true, voice: "marin", on: true, use: true, live: false } });
+  check("Command Center without a key (voice on): a manager is pointed to Settings ▸ Voice, linked", /add a token in Settings ▸ Voice/.test(off) && /href="\/mint-ai\/settings\/voice"/.test(off));
+  // v3: the big "Talk to MINT" card left the rail; the composer mic is the one control -- and without voice it is not there.
+  check("  no mic, voice-ready flag off, no big mic card", !/id="cc-c-mic"/.test(off) && /data-voice-ready=""/.test(off) && !/id="cc-mic-big"/.test(off));
+  const offNoManage = views.page({ csrf: "c", user, voice: { configured: false, manage: false, on: true, use: true, live: false } });
+  check("  someone who cannot manage it gets no link and no note", !/href="\/mint-ai\/settings\/voice"/.test(offNoManage) && !/cc-voice-off/.test(offNoManage));
+  const on = views.page({ csrf: "c", user, voice: { configured: true, manage: true, voice: "marin", model: "gpt-realtime-2.1-mini", on: true, use: true, live: true } });
+  check("with a key and voice on: the mic starts a live call, OpenAI and the voice named, no setup prompt",
+    /id="cc-c-mic"[^>]*title="Start a live conversation"/.test(on) && /data-voice-ready="1"/.test(on) && />OpenAI</.test(on) && />marin</.test(on) && !/cc-voice-off/.test(on) &&
+    /id="cc-speak-toggle"/.test(on) && /click the mic to talk/.test(on));
   check("no Whisper or Piper left on the page", !/Whisper|Piper/i.test(on + off));
 
   const session = { id: 7, access: "full", cwd: "/", model: "claude-opus-5", effort: "medium", mode: "auto", title: "t", root_on: 1 };
@@ -749,17 +747,18 @@ function viewTests() {
   }
   check("console with a key: Live enabled, no Piper voice picker", /id="chat-live"/.test(cOn) && !/id="chat-live"[^>]*disabled/.test(cOn) && !/chat-voice"/.test(cOn));
 
-  const status = { configured: true, last4: "good", length: GOOD.length, model: "gpt-realtime-mini", voice: "marin", transcribe_model: "gpt-4o-mini-transcribe", path: "/var/lib/moni-voice/openai-voice.env", mode: "0o600" };
-  const page = credViews.voice({ csrf: "c", user, voice: status, models: voice.MODELS, voices: voice.VOICES, transcribeModels: voice.TRANSCRIBE_MODELS });
-  check("Settings: masked to the last four, with Replace, Remove and Test",
-    /••••good/.test(page) && /Replace key/.test(page) && /Remove key/.test(page) && /id="voice-test"/.test(page));
-  check("Settings: the key field is a write-only password input, empty", /<input name="value" type="password"[^>]*required/.test(page) && !/value="sk-/.test(page));
-  check("Settings: model and listening model selectors and voice cards, current ones selected",
-    /<option value="gpt-realtime-mini" selected>/.test(page) && /<input type="radio" name="voice" value="marin" checked>/.test(page) && (page.match(/name="voice" value=/g) || []).length === voice.VOICES.length && /<option value="gpt-4o-mini-transcribe" selected>/.test(page) && /gpt-live-1/.test(page));
-  const pageOff = credViews.voice({ csrf: "c", user, voice: { ...status, configured: false, last4: null, length: 0 }, models: voice.MODELS, voices: voice.VOICES, transcribeModels: voice.TRANSCRIBE_MODELS });
-  check("Settings without a key: no Test or Remove, 'Save key'", !/id="voice-test"/.test(pageOff) && !/Remove key/.test(pageOff) && /Save key/.test(pageOff));
-  const failed = credViews.voice({ csrf: "c", user, voice: status, models: voice.MODELS, voices: voice.VOICES, transcribeModels: voice.TRANSCRIBE_MODELS, test: { ok: false, text: "OpenAI refused the key <x>" } });
-  check("Settings: a failed test is shown, escaped", /Test failed/.test(failed) && /&lt;x&gt;/.test(failed));
+  const SV = require(path.join(ROOT, "lib", "views-settings-voice.js"));
+  const sv = (o) => SV.body(Object.assign({ csrf: "c", on: true, status: { configured: true }, model: "gpt-realtime-2.1-mini", models: voice.VOICE_MODELS, voice: "marin", voices: voice.VOICES, meta: voice.VOICE_META, transcribe: "gpt-4o-mini-transcribe", transcribeModels: voice.TRANSCRIBE_MODELS, persona: { mode: "learned" }, liveAudio: {}, usage: null }, o || {}));
+  const page = sv();
+  check("Settings ▸ Voice: the key is masked (not even its last four), with Replace, Remove and Test", /class="kv-mask"/.test(page) && /pill ok">set</.test(page) && !/good/.test(page) && /data-modal-open="m-voice-token"/.test(page) && /id="voice-remove"/.test(page) && /id="voice-test"/.test(page));
+  check("Settings ▸ Voice: the key field is a write-only password input, empty, in a dialog", /<section class="cc-modal os narrow" id="m-voice-token"[^>]* hidden>/.test(page) && /<input name="value" type="password"[^>]*required/.test(page) && !/value="sk-/.test(page));
+  check("Settings ▸ Voice: the voice model (three, no gpt-live-1), the listening model and the voice cards, current ones selected",
+    /<option value="gpt-realtime-2\.1-mini" selected>/.test(page) && (page.match(/<option value="gpt-realtime[^"]*"/g) || []).length === 3 && !/gpt-live-1/.test(page) && /<input type="radio" name="voice" value="marin" checked>/.test(page) && (page.match(/name="voice" value=/g) || []).length === voice.VOICES.length && /<option value="gpt-4o-mini-transcribe" selected>/.test(page));
+  check("Settings ▸ Voice: each voice card names its gender", /Marin<\/b><span class="g"[^>]*><i aria-hidden="true">♀<\/i>Female/.test(page) && /Alloy<\/b><span class="g"[^>]*><i aria-hidden="true">◌<\/i>Neutral/.test(page) && /Cedar<\/b><span class="g"[^>]*><i aria-hidden="true">♂<\/i>Male/.test(page));
+  const pageOff = sv({ status: { configured: false } });
+  check("Settings ▸ Voice without a key: Add token, no Remove, Test disabled", /Add token/.test(pageOff) && !/id="voice-remove"/.test(pageOff) && /id="voice-test" disabled/.test(pageOff));
+  const failed = sv({ test: { ok: false, text: "OpenAI refused the key <x>" } });
+  check("Settings ▸ Voice: a failed test is shown, escaped", /Test failed/.test(failed) && /&lt;x&gt;/.test(failed));
 
   check("rbac: voice.manage exists and is in no stock role",
     rbac.PERMISSION_SET.has("voice.manage") && rbac.SYSTEM_ROLES.filter((r) => r.name !== "administrator").every((r) => !r.permissions.includes("voice.manage")));

@@ -54,8 +54,8 @@ function cut(src, name) {
 
 const admin = rbac.actor({ permissions: ["*"] });
 const EVIL = `<img src=x onerror=alert(1)>"'&`;
-const html = views.page({ csrf: "t", user: { name: EVIL, perm: admin }, voice: { configured: true, voice: "marin", model: "gpt-realtime-mini", manage: true } });
-const noKey = views.page({ csrf: "t", user: { name: "a", perm: admin }, voice: { configured: false, manage: true } });
+const html = views.page({ csrf: "t", user: { name: EVIL, perm: admin }, voice: { configured: true, voice: "marin", model: "gpt-realtime-2.1-mini", manage: true, on: true, use: true, live: true } });
+const noKey = views.page({ csrf: "t", user: { name: "a", perm: admin }, voice: { configured: false, manage: true, on: true, use: true, live: false } });
 
 check("no live Odoo anywhere in the frame", !/live odoo|gizaseeds\.cloud|test\.gizaseeds/i.test(html + noKey));
 check("no live Odoo anywhere in the page scripts", ![main, panels, map].some((s) => /live odoo|gizaseeds\.cloud/i.test(s.replace(/^\s*\*.*$/gm, "").replace(/\/\/.*$/gm, ""))));
@@ -75,9 +75,9 @@ check("the Machine sheet has the core grid's eight cells", ["core", "sessions", 
 check("the core sits in the centre: one canvas, the orbit, the spark, the caption", /<canvas class="cc-core" id="cc-core"/.test(html) && /id="cc-orbit"/.test(html) && /id="cc-spark"/.test(html) && /id="cc-cap-state"/.test(html) && /id="cc-cap" aria-live="polite"/.test(html));
 check("the missions board is a sheet (tabs, head, lanes)", /id="cc-pane-missions"[\s\S]*id="cc-mis-tabs"[\s\S]*id="cc-mis-head"[\s\S]*id="cc-lanes"/.test(html));
 check("the event log lives under Decisions", /id="cc-pane-dec"[\s\S]*id="cc-evlog"[\s\S]*id="cc-feed"[\s\S]*id="cc-pane-tl"/.test(html));
-check("the composer keeps the mic, the voice bar and hold-to-talk", /id="cc-c-mic"/.test(html) && /id="cc-voicebar"/.test(html) && /<kbd>Space<\/kbd> hold to talk/.test(html));
+check("the composer keeps the mic (a live call), the voice bar and its hint", /id="cc-c-mic"/.test(html) && /id="cc-voicebar"/.test(html) && /click the mic to talk · <kbd>Esc<\/kbd> ends/.test(html));
 check("replies-aloud toggle is in the Conversation sheet's head", /id="cc-pane-conv"[\s\S]{0,900}id="cc-speak-toggle"/.test(html));
-check("without a key: toggle hidden, mic disabled, the hint links to Settings", /id="cc-speak-toggle"[^>]*hidden/.test(noKey) && /id="cc-c-mic"[^>]*disabled/.test(noKey) && /href="\/credentials\/openai-voice"/.test(noKey));
+check("without a key: no toggle, no mic, the note links to Settings ▸ Voice", !/id="cc-speak-toggle"/.test(noKey) && !/id="cc-c-mic"/.test(noKey) && /href="\/mint-ai\/settings\/voice"/.test(noKey));
 check("the palette button is in the dock, with its shortcut", /id="cc-kbtn"[^>]*aria-keyshortcuts="Control\+K"/.test(html));
 check("one decision card, top right, and the amber pill that brings it back", /<aside class="cc-need" id="cc-need" role="alertdialog"/.test(html) && /id="cc-needpill"[^>]*hidden>[\s\S]{0,120}need you/.test(html));
 check("no mockup leftovers (sample-data tag, Play demo, state preview)", !/SAMPLE DATA|Play flow|demo-btn|data-open="hire"|State preview/.test(html + main + panels));

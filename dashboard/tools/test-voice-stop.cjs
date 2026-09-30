@@ -155,13 +155,7 @@ check("the file is a browser global and a CommonJS module, and pure", /^var Voic
   !/document|window|localStorage|fetch\(/.test(fs.readFileSync(path.join(ROOT, "public", "voice-stop.js"), "utf8").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "")));
 
 const client = fs.readFileSync(path.join(ROOT, "public", "moni-ai.js"), "utf8");
-const direct = client.slice(client.indexOf("function transcribeAndSend("), client.indexOf("function openStream("));
-check("Command Center, direct path: checked after the transcript, before it is sent", /if \(isStopCommand\(said\)\) return stoppedByVoice\(said\);/.test(direct) && direct.indexOf("isStopCommand(said)") < direct.indexOf("send(said"));
-const desk = client.slice(client.indexOf("function deskSend("), client.indexOf("function deskSummary("));
-check("Command Center, front desk: the desk's flag or the words themselves stop it", /ev\.stop \|\| \(ev\.text && isStopCommand\(ev\.text\)\)/.test(desk));
-const sbv = client.slice(client.indexOf("function stoppedByVoice("), client.indexOf("function recording("));
-check("  stopping by voice is the mic button's stop(), with a visible note and nothing spoken", /\bstop\(\);/.test(sbv) && /Stopped listening\./.test(sbv) && /toast\(/.test(sbv) && !/enqueue\(|say\(/.test(sbv));
-check("  without voice-stop.js loaded, nothing is ever the command", /return !!\(window\.VoiceStop && window\.VoiceStop\.heard\(said\)\);/.test(client));
+check("Command Center: no push to talk or front desk left to check; the live call ends on it on the server and the page follows", !/function transcribeAndSend\(|function deskSend\(|isStopCommand/.test(client) && /if \(m\.type === "stop"\) toast\("Stopped listening\. The live conversation has ended\."\)/.test(client));
 
 const chat = fs.readFileSync(path.join(ROOT, "public", "console.js"), "utf8");
 const liveSend = chat.slice(chat.indexOf("function transcribeAndSend(blob)"), chat.indexOf("function recording(want)"));
@@ -169,11 +163,8 @@ check("the chat's live mode checks it too, before sending", /window\.VoiceStop &
 check("  and stops live mode as its button does, with a note", /function stoppedByVoice\(\) \{\s*stop\(\);\s*status\.textContent = "stopped listening";/.test(chat));
 
 const server = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
-const route = server.slice(server.indexOf('app.post("/mint-ai/api/desk/turn"'), server.indexOf('app.post("/mint-ai/api/desk/summary"'));
 check("the server requires the same file", /const voiceStop = require\("\.\/public\/voice-stop\.js"\);/.test(server));
-check("the desk ends the turn on it: heard with stop, done, and never desk().turn", /const stop = !!heard && voiceStop\.heard\(heard\);/.test(route) &&
-  /type: "heard"[^\n]*stop: stop \|\| undefined/.test(route) && /if \(stop\) \{[^}]*\}\);\s*out\.write\(\{ type: "done", asked: \[\], lines: 0, stop: true[^\n]*\}\);\s*return out\.end\(\);/.test(route) &&
-  route.indexOf("voiceStop.heard(heard)") < route.indexOf("desk().turn("));
+check("the live call ends on it (isStop), and the front desk's route is gone", /isStop: \(t\) => voiceStop\.heard\(t\),/.test(server) && !/app\.post\("\/mint-ai\/api\/desk\/turn"/.test(server));
 
 
 // ------------------------------------------------------------- spoken undo
@@ -188,17 +179,9 @@ check("«اقفلي المهام» / «اقفل الميشنز» / «اقفل ا
 check("undo(): too long after pleasantries is a sentence", !VoiceStop.undo("thank you so much, but I really think we should go back and undo that one now please"));
 {
   const client2 = fs.readFileSync(path.join(ROOT, "public", "moni-ai.js"), "utf8");
-  const direct2 = client2.slice(client2.indexOf("function transcribeAndSend("), client2.indexOf("function openStream("));
-  check("Command Center, direct path: undo checked after stop, before it is sent, only when undoable", /if \(isUndoCommand\(said\)\) return undoneByVoice\(said\);/.test(direct2) && direct2.indexOf("isUndoCommand(said)") < direct2.indexOf("send(said") &&
-    /function isUndoCommand\(said\) \{\s*return !!\(window\.VoiceStop && window\.VoiceStop\.undo && typeof uiUndoable === "function" && uiUndoable\(\) && window\.VoiceStop\.undo\(said\)\);/.test(client2));
-  const desk2 = client2.slice(client2.indexOf("function deskSend("), client2.indexOf("function deskSummary("));
-  check("Command Center, front desk: tells the server when an undo is possible, and follows its undo flag", /undoable: \(typeof uiUndoable === "function" && uiUndoable\(\)\) \|\| undefined/.test(desk2) && /if \(ev\.undo\) return undoneByVoice\(ev\.text \|\| ""\);/.test(desk2));
   check("Command Center, live: ui-undo from the server runs the same undo", /if \(m\.type === "ui-undo"\) uiUndoNow\("voice"\);/.test(client2));
   check("the toast's Undo button and the voice share one path (uiUndoNow), and a newer screen action replaces the undo", /uiUndoNow\("click"\)/.test(client2) && /uiUndoState = undo \? \{ fn: undo, el: el, until: Date\.now\(\) \+ UI_UNDO_MS \} : null;/.test(client2) && /uiUndoSignal\(undo \? UI_UNDO_MS : 0\);/.test(client2));
   const server2 = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
-  const route2 = server2.slice(server2.indexOf('app.post("/mint-ai/api/desk/turn"'), server2.indexOf('app.post("/mint-ai/api/desk/summary"'));
-  check("the desk: undo only when the page says it is undoable, never answered or passed on, audited", /const undo = !stop && body\.undoable === true && !!heard && voiceStop\.undo\(heard\);/.test(route2) &&
-    /if \(undo\) \{[\s\S]*?"mint-ui", "undo by the voice front desk"[\s\S]*?undo: true[\s\S]*?return out\.end\(\);/.test(route2) && route2.indexOf("voiceStop.undo(heard)") < route2.indexOf("desk().turn("));
   check("the live call gets isUndo", /isUndo: \(t\) => voiceStop\.undo\(t\),/.test(server2));
 }
 
