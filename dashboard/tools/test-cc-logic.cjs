@@ -178,6 +178,21 @@ const KEEP = [
 ];
 KEEP.forEach(([name, ok]) => check("kept: " + name, !!ok));
 
+// The last reply rests after 15 s of quiet (the administrator's ask, 2026-09-30).
+{
+  const b = { state: "idle", online: true, hasReply: true, quietSince: 1000 };
+  check("caption rest: 15 s is the constant", L.CAPTION_REST_MS === 15000);
+  check("caption rest: shown until 15 s of quiet, then it rests", !L.captionRests({ ...b, now: 1000 + 14999 }) && L.captionRests({ ...b, now: 1000 + 15000 }));
+  check("caption rest: never while MINT AI thinks, speaks, listens, delegates or waits on you",
+    ["thinking", "speaking", "listening", "delegating", "needs"].every((st) => !L.captionRests({ ...b, state: st, now: 1e9 }) && L.captionRestIn({ ...b, state: st, now: 1e9 }) === null));
+  check("caption rest: never while you type, a voice turn or call is on, the full reply is open, offline, or with no reply to rest",
+    !L.captionRests({ ...b, typing: true, now: 1e9 }) && !L.captionRests({ ...b, voice: true, now: 1e9 }) && !L.captionRests({ ...b, replyOpen: true, now: 1e9 }) && !L.captionRests({ ...b, online: false, now: 1e9 }) && !L.captionRests({ ...b, hasReply: false, now: 1e9 }));
+  check("caption rest: when to look again", L.captionRestIn({ ...b, now: 6000 }) === 10000 && L.captionRestIn({ ...b, now: 99999 }) === 0);
+  check("the page: new caption / non-idle state / typing / focus / closing the reply restart the quiet spell; the line is aria-hidden while it rests; the control says See last reply",
+    /if \(c\.state !== "idle" \|\| sig !== capRestSig\) \{ capQuietSince = Date\.now\(\);/.test(main) && /input\.addEventListener\("focus", capActivity\);/.test(main) && /capActivity\(\);\n    \$\("cc-send"\)/.test(main) &&
+    /line\.setAttribute\("aria-hidden", rest \? "true" : "false"\);/.test(main) && /rest \? "See last reply" : "Full reply"/.test(main) && /\.cc-caption\.rest \.cc-cap-line \{ opacity: 0; max-height: 0; \}/.test(read("public/moni-ai.css")) && /prefers-reduced-motion: reduce\) \{ \.cc-cap-line \{ transition: none; \}/.test(read("public/moni-ai.css")));
+}
+
 // Hired sessions (M-6): MINT AI's retire question is the Keep / Retire consent; a hired session's own
 // question says who asks and never offers "Always allow"; the routes are the administrator's, CSRF'd.
 {

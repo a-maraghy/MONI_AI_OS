@@ -439,9 +439,12 @@
     };
     return liveSnapshot(snap);
   }
-  var capSig = "";
+  var capSig = "", capRestSig = "", capQuietSince = Date.now(), capRestTimer = 0;
+  /** Activity: the caption's reply line comes back and the quiet spell starts again. */
+  function capActivity() { capQuietSince = Date.now(); if (capSig) paintCaption(); }
   function paintCaption(snap) {
-    var c = ML.caption(snap || snapshot());
+    snap = snap || snapshot();
+    var c = ML.caption(snap);
     var cs = $("cc-cap-state");
     cs.setAttribute("data-s", S.online ? c.state : "offline");
     $("cc-cap-label").textContent = c.label;
@@ -465,6 +468,17 @@
     var more = $("cc-cap-more");
     more.hidden = !(c.state === "idle" && S.online && last);
     if (last) $("cc-cap-at").textContent = hm(last.ended_at || last.started_at || last.created_at);
+    // After a quiet spell the reply line rests; "See last reply" stays in its place.
+    if (c.state !== "idle" || sig !== capRestSig) { capQuietSince = Date.now(); capRestSig = sig; }
+    var o = { state: c.state, online: S.online, hasReply: !!(last && snap.lastReply), typing: !!$("cc-input").value.trim(),
+      voice: !!((typeof Voice !== "undefined" && Voice && Voice.on) || liveActive()), replyOpen: !$("cc-reply").hidden, quietSince: capQuietSince, now: Date.now() };
+    var rest = ML.captionRests(o);
+    $("cc-caption").classList.toggle("rest", rest);
+    line.setAttribute("aria-hidden", rest ? "true" : "false");
+    if (!$("cc-cap-more").classList.contains("open")) $("cc-cap-more-t").textContent = rest ? "See last reply" : "Full reply";
+    clearTimeout(capRestTimer);
+    var due = ML.captionRestIn(o);
+    if (due != null && !rest) capRestTimer = setTimeout(function () { paintCaption(); }, due + 20);
     return c;
   }
   function reducedMotion() { return !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches); }
@@ -922,7 +936,10 @@
     if (e.key === "@" && !input.value) { e.preventDefault(); openMenu(); }
   });
   // "@planning-engine do this": a session named at the start addresses the message to it.
+  input.addEventListener("focus", capActivity);
+  input.addEventListener("blur", capActivity);
   input.addEventListener("input", function () {
+    capActivity();
     $("cc-send").classList.toggle("ready", !!input.value.trim());
     var m = /^@(\S+)\s/.exec(input.value);
     if (!m) return;
@@ -1323,8 +1340,8 @@
     if ($("cc-reply").hidden) return;
     $("cc-reply").hidden = true;
     $("cc-cap-more").setAttribute("aria-expanded", "false");
-    $("cc-cap-more-t").textContent = "Full reply";
     $("cc-cap-more").classList.remove("open");
+    capActivity(); // the reply was just read: a fresh quiet spell before it rests again
   }
   $("cc-cap-more").addEventListener("click", function () { if ($("cc-reply").hidden) openReply(); else closeReply(); });
   $("cc-reply-x").addEventListener("click", closeReply);

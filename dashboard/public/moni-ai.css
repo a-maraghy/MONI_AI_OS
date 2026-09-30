@@ -181,6 +181,10 @@ html.cc-page .cc-sheet code, html.cc-page #cc-overlay code { background: none; b
 .cc-cap-state[data-s="thinking"] .d, .cc-cap-state[data-s="delegating"] .d, .cc-cap-state[data-s="needs"] .d { animation: cc-blink 1.4s infinite; }
 .cc-cap-line { font: 400 21px/1.35 var(--brand-font); letter-spacing: -.005em; color: var(--ink); max-width: min(820px, 92vw); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cc-cap-line.interim { color: var(--muted); font-style: italic; }
+/* After 15 s of quiet the last reply rests (cc-logic captionRests): the line fades and folds away, "See last reply" stays. */
+.cc-cap-line { max-height: 60px; transition: opacity .6s ease, max-height .6s ease; }
+.cc-caption.rest .cc-cap-line { opacity: 0; max-height: 0; }
+@media (prefers-reduced-motion: reduce) { .cc-cap-line { transition: none; } }
 .cc-cap-line .w { opacity: 0; animation: cc-word .35s forwards; }
 @keyframes cc-word { from { opacity: 0; filter: blur(3px); } to { opacity: 1; filter: none; } }
 .cc-cap-more { font: 500 12.5px var(--ui); color: var(--dim); display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; border: 0; background: none; }

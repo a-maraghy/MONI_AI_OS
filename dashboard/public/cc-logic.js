@@ -137,6 +137,27 @@
     return out;
   }
 
+  /*
+   * The last reply rests after a quiet spell: with nothing happening for
+   * CAPTION_REST_MS the caption's reply line fades and only "See last reply"
+   * stays. Never while MINT AI thinks, speaks, listens, delegates or waits on
+   * you (any state but idle), while you type, while a voice call is on, while the
+   * full reply is open, or when there is no reply to rest. `quietSince` is the
+   * last activity (the page bumps it on each of those and on a new caption).
+   */
+  var CAPTION_REST_MS = 15000;
+  function captionRests(o) {
+    o = o || {};
+    if (o.state !== "idle" || !o.hasReply || o.typing || o.voice || o.replyOpen || !o.online) return false;
+    return (o.now || 0) - (o.quietSince || 0) >= CAPTION_REST_MS;
+  }
+  /** When to look again (ms from now), or null when nothing is counting down. */
+  function captionRestIn(o) {
+    o = o || {};
+    if (o.state !== "idle" || !o.hasReply || o.typing || o.voice || o.replyOpen || !o.online) return null;
+    return Math.max(0, CAPTION_REST_MS - ((o.now || 0) - (o.quietSince || 0)));
+  }
+
   /** The last whole sentence of a streaming reply (or its tail, if none is whole yet). */
   function lastSentence(text) {
     var t = String(text || "").replace(/```[\s\S]*?(```|$)/g, " ").replace(/[`*_#>|]/g, "").replace(/\s+/g, " ").trim();
@@ -377,7 +398,7 @@
   return {
     CORES: CORES, CORE_DEFAULT: CORE_DEFAULT, normCore: normCore, isCore: isCore,
     SESS_VIEWS: SESS_VIEWS, SESS_VIEW_DEFAULT: SESS_VIEW_DEFAULT, normSessView: normSessView, isSessView: isSessView,
-    STATES: STATES, LABEL: LABEL, coreState: coreState, caption: caption, lastSentence: lastSentence, gist: gist,
+    STATES: STATES, LABEL: LABEL, coreState: coreState, caption: caption, CAPTION_REST_MS: CAPTION_REST_MS, captionRests: captionRests, captionRestIn: captionRestIn, lastSentence: lastSentence, gist: gist,
     needQueue: needQueue, card: card, doneText: doneText, approvalFrom: approvalFrom, approvalNoRule: approvalNoRule,
     TOK_KEYS: TOK_KEYS, tokens: tokens, tokLine: tokLine, tokTip: tokTip,
     SHEETS: SHEETS, sheetKeys: sheetKeys,
