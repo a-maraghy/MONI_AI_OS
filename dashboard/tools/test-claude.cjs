@@ -308,7 +308,7 @@ const pages = {
   session: views.session({ csrf: "tok", user: admin, s: priv.redactDeep(g) }),
   subagent: views.session({ csrf: "tok", user: admin, s: a }),
   sessions: views.sessions({ csrf: "tok", user: admin, data: list, filters: { home: "", project: "", q: "", archived: false } }),
-  running: views.running({ csrf: "tok", user: admin, r: run1 }),
+  running: views.live({ csrf: "tok", user: admin, r: run1, team: null, counts: {} }), // Sessions ▸ Live (was Running)
   memory: views.memory({
     csrf: "tok",
     user: admin,
