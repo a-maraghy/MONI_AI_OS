@@ -10,7 +10,8 @@
  * Magic words in a user message:
  *   DESTROY   asks permission for `rm /tmp/moni-fake-victim`, then reports
  *             whether it was allowed or denied (and with what message)
- *   DELEGATE  "sends" a message to fake-target (DELEGATE "<name>": to that name): posts the PostToolUse event to
+ *   LISTAGENTS posts a ListAgents PostToolUse whose result is HOME/fake-listagents.txt
+ *   DELEGATE  "sends" a message to fake-target (DELEGATE "<name>": to that name; QUIET: no reply): posts the PostToolUse event to
  *             the hook socket the way hooks/ledger.js would, then a reply and
  *             an idle notice as UserPromptSubmit events
  *   SLOW <ms> takes that long (up to 30 s) before answering "slow done"
@@ -169,17 +170,27 @@ async function turn(msg) {
     const allowed = resp.behavior === "allow";
     out({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: toolUseId, content: allowed ? "removed" : resp.message, is_error: !allowed }] }, session_id: sessionId });
     reply = allowed ? "allowed" : "denied: " + resp.message;
+  } else if (text.includes("LISTAGENTS")) {
+    // MINT AI's ListAgents, as the ledger hook sees it: the text in HOME/fake-listagents.txt.
+    let body = "";
+    try { body = fs.readFileSync(path.join(home, "fake-listagents.txt"), "utf8"); } catch (_) { body = ""; }
+    await hookPost({ event: "PostToolUse", tool_name: "ListAgents", tool_input: {}, tool_use_id: "toolu_" + crypto.randomBytes(6).toString("hex"), tool_response: [{ type: "text", text: body }] });
+    reply = "listed";
   } else if (text.includes("DELEGATE")) {
     // DELEGATE "<name>" sends to that session instead (the dashboard's dot-stream tests); the reply comes from it.
-    const who = (/DELEGATE\s+"([^"]{1,60})"/.exec(text) || [])[1] || "fake-target";
+    const whoTo = (/DELEGATE\s+"([^"]{1,60})"/.exec(text) || [])[1] || "fake-target";
+    const who = whoTo.replace(/\s*\[[0-9a-f]{4,12}\]\s*$/i, "");
+    const quiet = /\bQUIET\b/.test(text); // no reply, no idle notice (a target that has not answered yet)
     const toolUseId = "toolu_" + crypto.randomBytes(6).toString("hex");
-    const input = { to: who + " [abc123]", message: "Please run the tests and report.", notify_when_idle: true };
+    // "<name> [ref]" as given; a sub-agent id has no ref; anything else gets a made-up one.
+    const to = /\[[0-9a-f]{4,12}\]\s*$/i.test(whoTo) || /^a[0-9a-f]{12,24}$/.test(whoTo) ? whoTo : whoTo + " [abc123]";
+    const input = { to, message: "Please run the tests and report.", notify_when_idle: true };
     out({ type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: toolUseId, name: "SendMessage", input }] }, session_id: sessionId });
     const msgId = crypto.randomUUID();
     await hookPost({ event: "PostToolUse", tool_name: "SendMessage", tool_input: input, tool_use_id: toolUseId, tool_response: { success: true, message: "queued", msg_id: msgId } });
     out({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: toolUseId, content: JSON.stringify({ success: true, msg_id: msgId }) }] }, session_id: sessionId });
     reply = "sent " + msgId;
-    setTimeout(async () => {
+    if (!quiet) setTimeout(async () => {
       await hookPost({ event: "UserPromptSubmit", prompt: `<cross-session-message from="uds:/run/user/0/cc-socks/${process.ppid}.sock" from-name="${who}" from-mode="prompting">\n42 passed\n</cross-session-message>` });
       await sleep(300);
       await hookPost({ event: "UserPromptSubmit", prompt: `[Cross-session idle notice] "${who}", which you asked to be notified about, is idle now — it finished a turn at 14:05. Its harness reports: «Done. 42 passed.». This is an automated notice.` });

@@ -37,6 +37,7 @@ const protocol = require("./lib/protocol");
 const classifier = require("./lib/classifier");
 const rulesLib = require("./lib/rules");
 const peers = require("./lib/peers");
+const targets = require("./lib/targets");
 const { redact, redactDeep, clip } = require("./lib/redact");
 const { createFeatures } = require("./lib/features");
 const { buildSnapshot } = require("./lib/snapshot");
@@ -1217,17 +1218,24 @@ function currentTurnId() {
   return turns.running ? turns.running.id : null;
 }
 
-function findSession({ name, pid }) {
-  const list = sessionsCache.list || [];
-  if (pid) {
-    const s = list.find((x) => x.pid === pid);
-    if (s) return s;
+/** A live session by session id, then pid, then a UNIQUE normalised name (lib/targets.js); namesakes -> null. */
+function findSession({ name, pid, sessionId }) {
+  return targets.findTarget(sessionsCache.list || [], { sessionId, pid, name }).session;
+}
+
+// What ListAgents last showed MINT AI: its refs ("Name [ref]" -> name, local / remote) and sub-agent ids,
+// so a SendMessage target is named, and its kind known, even when it is not a process on this machine.
+let agentRefs = {};
+let agentSubagents = [];
+function onListAgents(msg) {
+  const r = msg.tool_response;
+  const text = typeof r === "string" ? r : Array.isArray(r) ? contentText(r) : r && typeof r === "object" ? String(r.text || r.content || JSON.stringify(r)) : "";
+  const parsed = targets.parseListAgents(text);
+  if (Object.keys(parsed.refs).length || parsed.subagents.length) {
+    agentRefs = { ...agentRefs, ...parsed.refs };
+    agentSubagents = Array.from(new Set(agentSubagents.concat(parsed.subagents))).slice(-200);
   }
-  if (name) {
-    const same = list.filter((x) => x.name === name && !x.self);
-    if (same.length === 1) return same[0];
-  }
-  return null;
+  refreshSessions();
 }
 
 function onHookEvent(msg) {
@@ -1236,7 +1244,7 @@ function onHookEvent(msg) {
   if (features.hooks.onHook(msg)) return;
   if (msg.event === "PostToolUse" && msg.tool_name === "SendMessage") return onSendMessageResult(msg);
   if (msg.event === "UserPromptSubmit") return onInboundPrompt(msg.prompt);
-  if (msg.event === "PostToolUse" && msg.tool_name === "ListAgents") return refreshSessions();
+  if (msg.event === "PostToolUse" && msg.tool_name === "ListAgents") return onListAgents(msg);
 }
 
 function parseToolResponse(r) {
@@ -1254,7 +1262,14 @@ function onSendMessageResult(msg) {
   const resp = parseToolResponse(msg.tool_response);
   const to = String(input.to || "");
   const name = peers.bareName(to);
-  const target = findSession({ name });
+  // The ref ListAgents gave ("Name [ref]") names the session even after a rename; a sub-agent id or a
+  // Remote Control ref is never pinned to a local process.
+  const ref = targets.refOf(to);
+  const known = ref ? agentRefs[ref] : null;
+  const lookName = known && known.name ? known.name : name;
+  const pre = targets.kindFor({ to, refs: agentRefs, subagents: agentSubagents });
+  const target = pre === "subagent" || pre === "remote" ? null : findSession({ name: lookName }) || (lookName !== name ? findSession({ name }) : null);
+  const kind = targets.kindFor({ to, refs: agentRefs, subagents: agentSubagents, session: target });
   const ok = resp.success !== false && !!resp.msg_id;
   const d = ledger.addDelegation({
     msg_id: resp.msg_id || null,
@@ -1264,6 +1279,8 @@ function onSendMessageResult(msg) {
     target_name: name,
     target_pid: target ? target.pid : null,
     target_session: target ? target.session_id : null,
+    target_kind: kind,
+    target_ref: ref,
     text: String(input.message || ""),
     summary: input.summary || null,
     notify_idle: !!input.notify_when_idle,
@@ -1271,7 +1288,17 @@ function onSendMessageResult(msg) {
     note: ok ? null : clip(resp.message || resp.error || "SendMessage failed", 500),
   });
   if (d) emitDelegation(d);
-  refreshSessions();
+  // Unknown or ambiguous name: look at the sessions again first, then pin it only if it is now unique.
+  if (d && !target && kind !== "subagent" && kind !== "remote") {
+    refreshSessions(() => {
+      const t = findSession({ name: lookName }) || (lookName !== name ? findSession({ name }) : null);
+      if (!t) return;
+      const cur = ledger.get("delegations", d.id);
+      if (!cur || cur.target_session || cur.target_pid) return;
+      const upd = ledger.updateDelegation(d.id, { target_pid: t.pid, target_session: t.session_id, target_kind: "local" });
+      if (upd) emitDelegation(upd);
+    });
+  } else refreshSessions();
 }
 
 function onInboundPrompt(prompt) {
@@ -1471,22 +1498,34 @@ function refreshSubagents() {
   subagentsCache = bySession;
 }
 
-function refreshSessions() {
+const sessionsWaiters = [];
+/** Re-read the sessions; `then` (optional) runs once the cache has the new list (or the read failed). */
+function refreshSessions(then) {
+  if (typeof then === "function") sessionsWaiters.push(then);
   if (sessionsBusy) return;
   sessionsBusy = true;
+  const done = () => {
+    for (const fn of sessionsWaiters.splice(0)) {
+      try {
+        fn();
+      } catch (e) {
+        log("sessions waiter: " + e.message);
+      }
+    }
+  };
   refreshSubagents();
   execFile(cfg.cli, ["agents", "--json"], { timeout: 20000, env: childEnv(), maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
     sessionsBusy = false;
     if (err) {
       sessionsCache = { ...sessionsCache, error: err.message };
-      return;
+      return done();
     }
     let list;
     try {
       list = JSON.parse(stdout);
     } catch (e) {
       sessionsCache = { ...sessionsCache, error: "could not parse claude agents --json" };
-      return;
+      return done();
     }
     const reg = readRegistry();
     const ours = readState().session_id;
@@ -1533,6 +1572,7 @@ function refreshSessions() {
       lastSessionsSig = sig;
       emit("sessions", { sessions: sessionsWithLedger() });
     }
+    done();
   });
 }
 
@@ -1543,13 +1583,16 @@ function refreshSessions() {
  */
 function advanceDelegations(list) {
   for (const d of ledger.openDelegations()) {
-    const s = d.target_pid ? list.find((x) => x.pid === d.target_pid) : list.find((x) => x.name === d.target_name && !x.self);
+    // Session id, then pid, then a unique normalised name (lib/targets.js).
+    const s = targets.openTarget(d, list);
     let upd = null;
     if (!s) {
-      const age = Date.now() - Date.parse(d.created_at);
-      if (d.target_pid || age > 60000) upd = ledger.updateDelegation(d.id, { status: "failed", failed_at: now(), note: "the target session is no longer running" });
+      // Only a local session we had pinned can be "no longer running"; a remote, sub-agent or unknown
+      // target is not in this machine's list at all -- it stays sent until its ack or idle notice.
+      if (targets.mayFail(d)) upd = ledger.updateDelegation(d.id, { status: "failed", failed_at: now(), note: "the target session is no longer running" });
     } else if (s.status === "busy" || s.status === "waiting") {
-      if (d.status === "sent") upd = ledger.updateDelegation(d.id, { status: "working", working_at: now(), target_pid: d.target_pid || s.pid });
+      // (Never pins target_pid from a name match: a namesake could be the wrong one.)
+      if (d.status === "sent") upd = ledger.updateDelegation(d.id, { status: "working", working_at: now() });
     } else if (s.status === "idle") {
       const since = s.status_since ? Date.parse(s.status_since) : 0;
       const sent = Date.parse(d.created_at);
@@ -1563,15 +1606,16 @@ function advanceDelegations(list) {
 
 function sessionsWithLedger() {
   return (sessionsCache.list || []).map((s) => {
-    const last = ledger.db
-      .prepare("SELECT * FROM delegations WHERE target_pid = ? OR (target_pid IS NULL AND target_name = ?) ORDER BY id DESC LIMIT 1")
-      .get(s.pid, s.name || "");
-    const open = ledger.db
-      .prepare("SELECT count(*) AS n FROM delegations WHERE status IN ('sent','working','ack','held') AND (target_pid = ? OR (target_pid IS NULL AND target_name = ?))")
-      .get(s.pid, s.name || "").n;
+    // By session id first (a restart -- a new pid -- keeps them), then pid, then the name for rows that pinned neither.
+    const MATCH = "(target_session = @sid OR (target_session IS NULL AND (target_pid = @pid OR (target_pid IS NULL AND target_name = @name))))";
+    const args = { sid: s.session_id || "", pid: s.pid || -1, name: s.name || "" };
+    const last = ledger.prep(`SELECT * FROM delegations WHERE ${MATCH} ORDER BY id DESC LIMIT 1`).get(args);
+    const open = ledger.prep(`SELECT count(*) AS n FROM delegations WHERE status IN ('sent','working','ack','held') AND ${MATCH}`).get(args).n;
+    const today = ledger.prep(`SELECT count(*) AS n FROM delegations WHERE created_at >= @since AND ${MATCH}`).get({ ...args, since: new Date(Date.now() - 24 * 3600 * 1000).toISOString() }).n;
     return {
       ...s,
       open_delegations: open,
+      delegations_today: today,
       last_delegation: last ? publicDelegation(last) : null,
       subagents: (s.session_id && subagentsCache.get(s.session_id)) || [],
       ...features.sessionExtras(s),

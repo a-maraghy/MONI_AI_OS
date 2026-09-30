@@ -283,7 +283,7 @@ class Ledger {
   migrate() {
     const add = {
       turns: ["order_id INTEGER", "mission_id INTEGER", "decision_id INTEGER", "proc_start TEXT", "cost_delta_usd REAL", "sent_at TEXT"],
-      delegations: ["mission_id INTEGER", "step_id INTEGER"],
+      delegations: ["mission_id INTEGER", "step_id INTEGER", "target_kind TEXT", "target_ref TEXT"],
       approvals: ["mission_id INTEGER", "step_id INTEGER", "decision_id INTEGER", "rule_id INTEGER"],
     };
     for (const [table, cols] of Object.entries(add)) {
@@ -322,8 +322,8 @@ class Ledger {
     const t = now();
     const r = this.prep(
       `INSERT INTO delegations (msg_id, tool_use_id, turn_id, target, target_name, target_pid, target_session,
-         text, summary, notify_idle, status, note, created_at, updated_at, failed_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         text, summary, notify_idle, status, note, created_at, updated_at, failed_at, target_kind, target_ref)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(msg_id) DO NOTHING`
     ).run(
       d.msg_id || null,
@@ -340,7 +340,9 @@ class Ledger {
       d.note || null,
       t,
       t,
-      d.status === "failed" || d.status === "denied" ? t : null
+      d.status === "failed" || d.status === "denied" ? t : null,
+      d.target_kind || null,
+      d.target_ref || null
     );
     if (!r.changes) return this.prep("SELECT * FROM delegations WHERE msg_id = ?").get(d.msg_id) || null;
     return this.get("delegations", Number(r.lastInsertRowid));
