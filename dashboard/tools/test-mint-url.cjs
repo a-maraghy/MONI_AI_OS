@@ -72,7 +72,7 @@ check("the API routes are under /mint-ai/api", (server.match(/app\.(get|post)\("
   }
   check("no client code, view or README references the /moni-ai URL", hits.length === 0, hits.join(" | "));
   const ui = require(path.join(ROOT, "lib", "ui.js"));
-  check("the top-bar tab points at /mint-ai", ui.NAV[0].href === "/mint-ai");
+  check("the sidebar's Command Center item points at /mint-ai", ui.NAV[0].items[0].key === "moni-ai" && ui.NAV[0].items[0].href === "/mint-ai");
   const js = fs.readFileSync(path.join(ROOT, "public", "moni-ai.js"), "utf8");
   check("the page's API base, event stream and speech are under /mint-ai", /fetch\("\/mint-ai\/api\/" \+ path/.test(js) && /new EventSource\("\/mint-ai\/api\/events[?"]/.test(js) && /fetch\("\/mint-ai\/api\/speak"/.test(js));
 }
@@ -193,7 +193,7 @@ async function makeUser(username, roleName) {
     /* signed in, administrator */
     const a = await signIn("urladmin", admin.pw, admin.secret);
     check("GET /mint-ai signed in -> 200 Command Center", a.page.status === 200 && /id="cc"/.test(a.page.body) && !!a.csrf, a.page.status);
-    check("the page's own tab link is /mint-ai", /<a href="\/mint-ai" class="top-tab ai on" aria-current="page">/.test(a.page.body));
+    check("the page's own sidebar item (the drawer) is /mint-ai and current", /<a href="\/mint-ai" class="side-item on" aria-current="page"/.test(a.page.body));
     r = await req("GET", "/moni-ai", { cookie: a.cookie });
     check("signed in, the old URL still 301s to /mint-ai", r.status === 301 && r.headers.location === "/mint-ai", r.status);
     const st = { new: await req("GET", "/mint-ai/api/status", { cookie: a.cookie }), old: await req("GET", "/moni-ai/api/status", { cookie: a.cookie }) };
@@ -225,8 +225,12 @@ async function makeUser(username, roleName) {
     check("the page itself refuses a role without moniai.use", r.status === 403, r.status);
 
     /* the rest is unchanged */
+    // The classic chat is hidden (its data kept): every /console URL goes to the Command Center.
     r = await req("GET", "/console", { cookie: a.cookie });
-    check("/console is unchanged", r.status === 200, r.status);
+    check("/console -> 302 /mint-ai", r.status === 302 && r.headers.location === "/mint-ai", r.status + " " + r.headers.location);
+    r = await req("GET", "/console/s/1", { cookie: a.cookie });
+    check("/console/<anything> -> 302 /mint-ai too", r.status === 302 && r.headers.location === "/mint-ai", r.status + " " + r.headers.location);
+    check("the Command Center's noscript no longer links /console", !/href="\/console/.test(a.page.body));
   } catch (e) {
     check("the HTTP run completed", false, e.stack + "\n" + out);
   } finally {
