@@ -22,6 +22,11 @@
  *     helper's options); the old choices (gpt-realtime-mini, gpt-realtime,
  *     gpt-live-1, a listening model) are migrated once at start and refused
  *     after; no listening-model row;
+ *   - Transcription (2026-09-30 evening): the selector (OpenAI and on this
+ *     server, each with its figures; a local model not installed is disabled
+ *     and refused), the language, the live session's own model kept on
+ *     OpenAI's, the local server started and stopped through the helper
+ *     (faked), a bad stored value cleaned at start, admin only;
  *   - the voice cards name their gender; the old URLs redirect;
  *   - signing a device out ends its live call (endLiveCallsForSession), and
  *     only that device's.
@@ -77,7 +82,9 @@ mockHttp.on("upgrade", (req, sock, head) => {
   db.setSetting("voice_desk", "live", "before");
   // The old voice model choice (and, in the fake helper file, gpt-realtime-mini as the reader).
   db.setSetting("voice_model", "gpt-realtime", "before");
-  const s = await scratch.startScratch({ env: { MONI_OPENAI_WS: WS }, fakeVoiceOptions: true });
+  // A transcription value no build knows: cleaned once at start.
+  db.setSetting("voice_transcription", JSON.stringify({ model: "whisper-9", language: "fr" }), "before");
+  const s = await scratch.startScratch({ env: { MONI_OPENAI_WS: WS }, fakeVoiceOptions: true, fakeWhisper: { installed: ["small-q8_0"] } });
   const SET = "/mint-ai/settings/voice";
   const form = (o) => new URLSearchParams(o).toString();
   const origin = "http://127.0.0.1:" + s.port;
@@ -128,8 +135,15 @@ mockHttp.on("upgrade", (req, sock, head) => {
     const stok = s.csrfOf(set.body);
     check("Settings ▸ Voice: 200, enabled, the sub-nav says on", set.status === 200 && /Voice is enabled/.test(set.body) && /class="set-sec"/.test(set.body) && /href="\/mint-ai\/settings\/voice" class="on"[^>]*>[\s\S]{0,800}?Voice<span class="st">on<\/span>/.test(set.body));
     check("  the rows' anchors are there: v-model, v-token, v-voice, v-persona, v-read, v-live-audio, v-spend", ["v-model", "v-token", "v-voice", "v-persona", "v-read", "v-live-audio", "v-spend"].every((a) => set.body.includes(`id="${a}"`)));
-    check("  ONE voice model selector: GPT Realtime 2.1 mini, current, and nothing else", (set.body.match(/<select name="model"/g) || []).length === 1 && (set.body.match(/<option value="gpt-/g) || []).length === 1 && /<option value="gpt-realtime-2\.1-mini" selected>GPT Realtime 2\.1 mini · current<\/option>/.test(set.body) && !/value="gpt-realtime-mini"/.test(set.body) && !/value="gpt-realtime"/.test(set.body) && !/gpt-live-1/.test(set.body));
-    check("  no listening-model setting: no v-listen row, no transcribe_model field; the fixed pair is named in the help", !/id="v-listen"/.test(set.body) && !/name="transcribe_model"/.test(set.body) && !/Listening model/.test(set.body) && /id="voice-listen-note"[^>]*>[^<]*<code>gpt-4o-mini-transcribe<\/code>[\s\S]{0,200}not a setting/.test(set.body));
+    check("  ONE voice model selector: GPT Realtime 2.1 mini, current, and nothing else", (set.body.match(/<select name="model"/g) || []).length === 1 && ((set.body.match(/<select name="model"[\s\S]*?<\/select>/) || [""])[0].match(/<option value="gpt-/g) || []).length === 1 && /<option value="gpt-realtime-2\.1-mini" selected>GPT Realtime 2\.1 mini · current<\/option>/.test(set.body) && !/value="gpt-realtime-mini"/.test(set.body) && !/value="gpt-realtime"/.test(set.body) && !/gpt-live-1/.test(set.body));
+    check("  no old listening-model field; the voice model's help points at the transcription row", !/id="v-listen"/.test(set.body) && !/name="transcribe_model"/.test(set.body) && !/Listening model/.test(set.body) && /id="voice-listen-note"[^>]*>[^<]*transcription model below/.test(set.body) && !/not a setting/.test(set.body));
+    const trSel = (set.body.match(/<select name="transcriber"[\s\S]*?<\/select>/) || [""])[0];
+    check("Transcription: its rows (v-transcribe, v-transcribe-lang), scope everyone", /id="v-transcribe"/.test(set.body) && /id="v-transcribe-lang"/.test(set.body));
+    check("  the selector: OpenAI and 'On this server' groups, five options, the default selected, each with its figures", /<optgroup label="OpenAI">/.test(trSel) && /<optgroup label="On this server \(whisper\.cpp\)">/.test(trSel) && (trSel.match(/<option /g) || []).length === 5 && /<option value="gpt-4o-mini-transcribe"[^>]* selected>GPT-4o mini Transcribe · ~0\.4 s · CER 0\.004 · \$0\.003\/min/.test(trSel) && /value="gpt-transcribe"[^>]*>GPT Transcribe · \$0\.0045\/min/.test(trSel) && /value="gpt-4o-transcribe"[^>]*>GPT-4o Transcribe · \$0\.006\/min/.test(trSel), trSel.slice(0, 900));
+    check("  small (installed) offered with its figures; turbo (not installed) listed but disabled", /<option value="whisper-small" data-hint="[^"]*">Whisper small \(on this server\) · 1–2 s · CER 0\.11–0\.16/.test(trSel) && /<option value="whisper-large-v3-turbo"[^>]* disabled>Whisper large-v3-turbo \(on this server\) · not installed on this server/.test(trSel) && /install-voice-whisper\.sh/.test(set.body), trSel);
+    check("  the help says plainly that a live call's own transcript stays on OpenAI's model, and what the fallback is", /Inside a live call OpenAI accepts only its own models, so the call's running transcript stays on <code>gpt-4o-mini-transcribe<\/code>/.test(set.body) && /that turn goes to <code>gpt-4o-mini-transcribe<\/code> instead/.test(set.body));
+    check("  the selected model's figures under the selector; the language: Detect (default)", /id="voice-transcriber-hint">~0\.4 s · CER 0\.004/.test(set.body) && /<select name="language"[^>]*>[\s\S]*?<option value="auto" selected>Detect \(default\)<\/option><option value="ar">Arabic<\/option><option value="en">English<\/option>/.test(set.body));
+    check("migration: an unknown stored transcription value was cleaned to the default at start, once", db.getSetting("voice_transcription") === '{"model":"gpt-4o-mini-transcribe","language":"auto"}' && db.settingRow("voice_transcription").updated_by === "migration" && (s.out().match(/the transcription setting .* became/g) || []).length === 1);
     check("  the hidden note no longer names a Listening group", /Voice, Live audio and Spend are hidden while voice is off/.test(set.body));
     check("  every voice card names its gender, alloy neutral", ["Marin", "Cedar", "Alloy", "Ash", "Ballad", "Coral", "Echo", "Sage", "Shimmer", "Verse"].every((n) => new RegExp(n + "</b><span class=\"g\"[^>]*><i aria-hidden=\"true\">[♀♂◌]</i>(Female|Male|Neutral)</span>").test(set.body)) && /Alloy<\/b><span class="g"[^>]*><i aria-hidden="true">◌<\/i>Neutral/.test(set.body));
     check("  the key is masked, set, with Replace (a dialog) and Remove (a confirm)", /class="kv-mask"/.test(set.body) && /<span class="pill ok">set<\/span>/.test(set.body) && /data-modal-open="m-voice-token"/.test(set.body) && /data-confirm-dlg="Remove the voice token\?"/.test(set.body) && !set.body.includes(scratch.FAKE_KEY));
@@ -149,6 +163,35 @@ mockHttp.on("upgrade", (req, sock, head) => {
     r = await s.req("POST", SET + "/options", { cookie: A.cookie, headers: { Accept: "application/json", "X-Requested-With": "fetch" }, body: form({ _csrf: stok, transcribe_model: "gpt-4o-transcribe" }) });
     const j = JSON.parse(r.body);
     check("an old page's listening-model post is ignored: saved as before, the pair unchanged", r.status === 200 && j.ok && !/Listening model/.test(j.flash) && opts().transcribe_model === "gpt-4o-mini-transcribe" && opts().voice === "cedar");
+    // Transcription
+    const TR = SET + "/transcription";
+    const JS = { Accept: "application/json", "X-Requested-With": "fetch" };
+    const trNow = () => JSON.parse(db.getSetting("voice_transcription") || "{}");
+    const fw = () => JSON.parse(fs.readFileSync(path.join(s.data, "fake-whisper.json"), "utf8"));
+    r = await s.req("POST", TR, { cookie: A.cookie, headers: JS, body: form({ _csrf: stok, transcriber: "gpt-4o-transcribe" }) });
+    check("transcription gpt-4o-transcribe: saved; the live session's own model follows it (OpenAI's)", r.status === 200 && JSON.parse(r.body).ok && trNow().model === "gpt-4o-transcribe" && trNow().language === "auto" && opts().transcribe_model === "gpt-4o-transcribe" && /Transcription: GPT-4o Transcribe/.test(JSON.parse(r.body).message), r.body);
+    r = await s.req("POST", TR, { cookie: A.cookie, headers: JS, body: form({ _csrf: stok, transcriber: "gpt-transcribe" }) });
+    check("gpt-transcribe: saved for the full turn; the session stays on gpt-4o-mini-transcribe (not known to be accepted there)", JSON.parse(r.body).ok && trNow().model === "gpt-transcribe" && opts().transcribe_model === "gpt-4o-mini-transcribe");
+    r = await s.req("POST", TR, { cookie: A.cookie, headers: JS, body: form({ _csrf: stok, transcriber: "whisper-small" }) });
+    check("whisper-small (installed): the helper starts its server with small-q8_0, then it is saved", JSON.parse(r.body).ok && trNow().model === "whisper-small" && fw().selected === "small-q8_0" && fw().active === "active" && /Its server is running/.test(JSON.parse(r.body).message) && opts().transcribe_model === "gpt-4o-mini-transcribe", r.body);
+    set = await s.req("GET", SET, { cookie: A.cookie });
+    check("  the page shows it selected, with its figures under the selector", /<option value="whisper-small"[^>]* selected>/.test(set.body) && /id="voice-transcriber-hint">1–2 s · CER 0\.11–0\.16/.test(set.body));
+    r = await s.req("POST", TR, { cookie: A.cookie, headers: JS, body: form({ _csrf: stok, transcriber: "whisper-large-v3-turbo" }) });
+    check("whisper-large-v3-turbo (not installed): refused with the install command; nothing saved, small still running", r.status === 400 && /cannot be used: .*not installed.*install-voice-whisper\.sh/.test(JSON.parse(r.body).error) && trNow().model === "whisper-small" && fw().selected === "small-q8_0" && fw().active === "active", r.body);
+    r = await s.req("POST", TR, { cookie: A.cookie, headers: JS, body: form({ _csrf: stok, transcriber: "whisper-1" }) });
+    check("an id not in the list: refused", r.status === 400 && /from the lists/.test(JSON.parse(r.body).error) && trNow().model === "whisper-small");
+    r = await s.req("POST", TR, { cookie: A.cookie, headers: JS, body: form({ _csrf: stok, language: "ar" }) });
+    check("the language row posts only the language: Arabic saved, the model kept", JSON.parse(r.body).ok && trNow().language === "ar" && trNow().model === "whisper-small" && /Transcription language: Arabic/.test(JSON.parse(r.body).message));
+    r = await s.req("POST", TR, { cookie: A.cookie, headers: JS, body: form({ _csrf: stok, language: "fr" }) });
+    check("  a language not in the list: refused", r.status === 400 && trNow().language === "ar");
+    r = await s.req("POST", TR, { cookie: A.cookie, headers: JS, body: form({ _csrf: stok, transcriber: "gpt-4o-mini-transcribe", language: "auto" }) });
+    check("back to gpt-4o-mini-transcribe: the local server is stopped ('off'), the default saved", JSON.parse(r.body).ok && trNow().model === "gpt-4o-mini-transcribe" && trNow().language === "auto" && fw().active === "inactive" && fw().calls[fw().calls.length - 1] === "off", JSON.stringify(fw()));
+    const trLog = db.recentLogins(40).filter((x) => x.outcome === "voice").map((x) => x.detail).join("\n");
+    check("  audited: each change in the sign-in log, with the call's own model", /transcription gpt-4o-mini-transcribe \(OpenAI\), language auto; the call's own transcription gpt-4o-mini-transcribe \(was whisper-small, ar\)/.test(trLog) && /transcription whisper-small \(on this server\)/.test(trLog), trLog.slice(0, 600));
+    r = await s.req("POST", TR, { cookie: O.cookie, headers: { "X-CSRF-Token": otok, ...JS }, body: form({ _csrf: otok, transcriber: "whisper-small" }) });
+    check("  admin only: an account without voice.manage cannot change it", r.status === 403 && trNow().model === "gpt-4o-mini-transcribe");
+    r = await s.req("POST", TR, { cookie: A.cookie, body: form({ _csrf: "bad", transcriber: "gpt-transcribe" }) });
+    check("  and it needs the CSRF token", r.status === 403 && trNow().model === "gpt-4o-mini-transcribe");
     check("the start-time migration ran once (no second rewrite after the saves)", (s.out().match(/the helper's voice options became/g) || []).length === 1 && (s.out().match(/the voice model "gpt-realtime" became/g) || []).length === 1);
     r = await s.req("POST", SET + "/options", { cookie: A.cookie, body: form({ _csrf: "bad", voice: "marin" }) });
     check("the forms need the CSRF token", r.status === 403);

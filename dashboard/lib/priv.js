@@ -272,6 +272,10 @@ module.exports = {
   voiceKeyClear: () => callHelper("voice-key-clear"),
   voiceOptionsSet: (model, voice, transcribeModel) =>
     callHelper("voice-options-set", [model, voice, transcribeModel]),
+  // Transcription on this server (lib/voice-transcribe.js): what is installed,
+  // and the local server run with a model or stopped ("off").
+  voiceWhisperStatus: () => callHelper("voice-whisper-status"),
+  voiceWhisperSet: (model) => callHelper("voice-whisper-set", [model], { timeout: 90000 }),
 
   /* ---------------------------------------------------------- claude code -- */
 

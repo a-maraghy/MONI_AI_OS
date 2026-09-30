@@ -527,6 +527,23 @@ check("a grounded Arabic transcript matches its send however it is spelled", g.t
 const stop = require(path.join(ROOT, "public", "voice-stop.js"));
 check("the spoken stop command (72739e3) still works in Arabic", stop.heard("وقف الاستماع") && stop.heard("اقفل الاستماع"));
 
+section("English written in Arabic script (gpt-transcribe, and whisper on this server, write it so): the claims still cut");
+// gpt-4o-mini-transcribe keeps "restart" in Latin script; gpt-transcribe and whisper
+// write «ريستارت للداشبورد». Both spellings are the same claim.
+cut("احنا عاملين ريستارت للداشبورد.", "action-claim"); // we've restarted the dashboard
+cut("عملت ريستارت للداشبورد.", "action-claim"); // I restarted the dashboard
+cut("خلاص عملتلك ريستارت.", "action-claim"); // done, I restarted it for you
+cut("عملت ريبوت للسيرفر.", "action-claim"); // I rebooted the server
+cut("هاعمل ريستارت للداشبورد.", "promise"); // I'll restart the dashboard
+cut("هعمل ريستارت للداشبورد دلوقتي.", "promise"); // I'll restart the dashboard now
+cut("الداشبورد شغال دلوقتي.", "not-in-snapshot"); // the dashboard is running now (not in the snapshot)
+pass("هشوفلك الريستارت وأرجعلك."); // I'll ask about the restart and get back to you: a hand-off
+section("  and a transcript with them is a real request, not an echo or a silence phrase");
+for (const t of ["عايزك تعمل ريستارت للداشبورد بعد ما تشيك على الديسك يوزج", "اعمل \"Restart\" للداشبورد الوقتي", "امسح الباكب القديم لو سمحت"]) {
+  const r = T(t, { audioSeconds: 5 });
+  check("kept: " + t, r.ok, JSON.stringify(r));
+}
+
 /* ------------------------------------------------------------------ */
 
 console.log(`\n${passed} passed, ${failed} failed`);

@@ -43,7 +43,12 @@ const PRICES = Object.freeze({
   "gpt-4o-mini-tts": { text_in: 0.6, audio_out: 12.0 },
   "gpt-4o-mini-transcribe": { text_in: 1.25, audio_in: 1.25, text_out: 5.0, per_minute: 0.003 },
   "gpt-4o-transcribe": { text_in: 2.5, audio_in: 2.5, text_out: 10.0, per_minute: 0.006 },
+  // Listed per minute only (read 2026-09-30); token usage is priced by its audio
+  // length (TRANSCRIBE_AUDIO_TOKENS_PER_S), marked as an estimate there.
+  "gpt-transcribe": { per_minute: 0.0045 },
 });
+// About 10 audio tokens a second of speech on the transcribe models (lib/voice-guard.js uses the same).
+const TRANSCRIBE_AUDIO_TOKENS_PER_S = 10;
 const TOKEN_KINDS = ["text_in", "text_cached", "audio_in", "audio_cached", "text_out", "audio_out"];
 
 const CATEGORIES = Object.freeze(["small_talk", "snapshot", "handoff", "direct", "live"]);
@@ -103,6 +108,8 @@ function costOf(tokens, model) {
   for (const k of TOKEN_KINDS) usd += (t[k] || 0) * (p[k] || 0);
   usd /= 1e6;
   if (t.seconds && p.per_minute) usd += (t.seconds / 60) * p.per_minute;
+  // A per-minute-only model that reported tokens: its minutes from its audio tokens.
+  else if (p.per_minute && p.audio_in == null && t.audio_in) usd += (t.audio_in / TRANSCRIBE_AUDIO_TOKENS_PER_S / 60) * p.per_minute;
   return usd;
 }
 

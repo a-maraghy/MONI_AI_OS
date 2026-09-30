@@ -196,7 +196,8 @@ talks to OpenAI and never sees the key (the CSP still forbids it to).
 - **Hearing**: the live call streams the microphone to this server (see *Live
   conversation*); the server's own full-turn transcript of what it relayed
   (`POST /v1/audio/transcriptions`, `gpt-4o-mini-transcribe` by default, with a
-  vocabulary prompt: Mint, MINT AI, Odoo, sessions, agents) is what MINT AI gets.
+  vocabulary prompt: Mint, MINT AI, Odoo, sessions, agents -- or the model chosen
+  under *Transcription*, see below) is what MINT AI gets.
   The console's dictation still posts a recording to `/console/:id/transcribe`.
   The Command Center's push to talk (`/mint-ai/api/transcribe`) is gone.
 - **Speaking**: each sentence of a reply is posted to `/mint-ai/api/speak` or
@@ -246,7 +247,9 @@ talks to OpenAI and never sees the key (the CSP still forbids it to).
   administrators only). Write-only, shown only as set / not set; **Replace**
   opens a dialog with a password field (`POST /mint-ai/settings/voice/key`),
   **Remove** asks first (`/clear`), **Test** speaks one line with the selected
-  voice model and transcribes it back (`/test`). Stored by the helper in `/var/lib/moni-voice/openai-voice.env`
+  voice model and transcribes it back with the selected transcription model
+  (`/test`; the result names the model that answered, a fallback if there was
+  one, and the milliseconds). Stored by the helper in `/var/lib/moni-voice/openai-voice.env`
   (root:root 0600, directory 0700) -- not the repo, not the database, not argv;
   set/clear/options are audited with the last four characters only. The panel
   reads it through `moni-helper voice-key-read` and keeps it in memory.
@@ -255,9 +258,9 @@ talks to OpenAI and never sees the key (the CSP still forbids it to).
 
 Piper (`/opt/moni-tts`) is gone. whisper.cpp stays: the Telegram agents'
 voice-notes add-on runs its `whisper-cli` with `ggml-base.bin`
-(`VOICE_PROVIDER=local`). `moni-whisper.service` (the resident server on
-127.0.0.1:8081) stays installed too, though since this change nothing calls
-it -- the panel was its only client.
+(`VOICE_PROVIDER=local`). The old `moni-whisper.service` (tiny.en on
+127.0.0.1:8081) is unused and disabled; the panel's local transcription is a
+different unit, `moni-voice-whisper.service` (below).
 
 Tests: `node dashboard/tools/test-voice.cjs` (mock OpenAI for both protocols
 and transcription, the verbatim guard, the helper's key storage, the no-key
@@ -287,19 +290,15 @@ hands-free, Space held to talk and every "trial" label are gone.
 - **One voice model** (2026-09-30): `lib/voice.js` `VOICE_MODELS` holds only
   the models that passed live conversation, read-aloud and Arabic on the real
   API -- today `gpt-realtime-2.1-mini`. It is the panel setting `voice_model`
-  (the live call) and the reader. **Listening is not a setting**: no realtime
-  model can transcribe its own input (OpenAI refuses one as the session's
-  transcription model and on `/audio/transcriptions`), and a hand-off to MINT
-  AI must carry the server's own transcript, so the transcription model is the
-  voice model's fixed pair (prompting the voice model to transcribe its own
-  input was tested too and lost or changed about 1 turn in 5 -- see the note in
-  `lib/voice.js`) (`listenModelFor`: `gpt-4o-mini-transcribe`, which
-  keeps the English words of mixed Egyptian in Latin script, as the guards
-  expect; it retires 2027-02-26 -- move the pair to `gpt-transcribe` after
-  checking the guards, and widen the helper's `VOICE_TRANSCRIBE_RE`). The
-  helper's options hold the reader, the voice and the pair; each Settings row
-  posts only its own field to `POST /mint-ai/settings/voice/options` (a
-  `transcribe_model` field from an older page is ignored). At start
+  (the live call) and the reader. It cannot also be the transcriber: no
+  realtime model can transcribe its own input (OpenAI refuses one as the
+  session's transcription model and on `/audio/transcriptions`), and a
+  hand-off to MINT AI must carry the server's own transcript (prompting the
+  voice model to transcribe its own input was tested too and lost or changed
+  about 1 turn in 5 -- see the note in `lib/voice.js`). The helper's options
+  hold the reader, the voice and the live session's transcription model; each
+  Settings row posts only its own field to `POST /mint-ai/settings/voice/options`
+  (a `transcribe_model` field from an older page is ignored). At start
   `migrateVoiceModelSetting` rewrites an old `voice_model` (`gpt-realtime-mini`,
   `gpt-realtime`, ...) to the default and `migrateVoiceHelperModels` rewrites
   the helper's reader/listening models when they differ -- both idempotent. A
@@ -307,6 +306,62 @@ hands-free, Space held to talk and every "trial" label are gone.
   summariser (`lib/voice-shared.js` `SUMMARY_MODEL`) is a text step and stays
   on `gpt-realtime-mini` for now: on `gpt-realtime-2.1-mini` its 220-token cap
   cut a sentence mid-way (2026-09-30).
+- **Transcription** (Settings ▸ Voice ▸ *Transcription* and *Transcription
+  language*, 2026-09-30 evening -- the administrator asked for a choice, which
+  reverses "listening is not a setting"): `lib/voice-transcribe.js`. The panel
+  setting `voice_transcription` = `{model, language}`; nothing stored means
+  `gpt-4o-mini-transcribe` / `auto`, the behaviour before (an unreadable or
+  unknown value is cleaned once at start, `migrateTranscriptionSetting`).
+  `POST /mint-ai/settings/voice/transcription` (fields `transcriber`,
+  `language`; `voice.manage`; audited). The choice governs the **full-turn
+  transcript** -- the live call's hand-off text (`transcribeTurn`) and the
+  console's dictation. The live session's own input transcription stays on an
+  OpenAI model, because a realtime session accepts no other: the selected one
+  when it is `gpt-4o-mini-transcribe` or `gpt-4o-transcribe`, else
+  `gpt-4o-mini-transcribe` (`sessionModelFor`; `gpt-transcribe` is not put in
+  the session until it is known to be accepted there). Options
+  (`TRANSCRIBERS`, one entry each, a new `kind` is one function in `BACKENDS`),
+  with the hint the selector shows:
+  - OpenAI `gpt-4o-mini-transcribe` (~0.4 s, CER 0.004, $0.003/min),
+    `gpt-transcribe` ($0.0045/min, some English in Arabic script; allowed by the
+    helper's `VOICE_TRANSCRIBE_RE` now), `gpt-4o-transcribe` ($0.006/min);
+  - on this server, whisper.cpp: `whisper-large-v3-turbo` (q8_0, 6-13 s a turn,
+    CER ~0.05, 1.1 GB while selected) and `whisper-small` (q8_0, 1-2 s, CER
+    0.11-0.16, English in Arabic script). Measured 2026-09-30 on this box.
+  **Local backend**: `moni-voice-whisper.service` -- `whisper-server` on
+  127.0.0.1:8093, user `monispeech`, `Nice=10`, 8 threads, Silero VAD (silence
+  and noise come back empty: 100 ms), `MemoryMax=2500M`. It runs **only while a
+  local model is selected**: the route calls `moni-helper voice-whisper-set
+  <model>` (writes `/var/lib/moni-voice-whisper/server.env`, enables and
+  (re)starts the unit) and `voice-whisper-set off` when an OpenAI model is
+  chosen again; at start the panel re-asserts a local choice
+  (`syncLocalTranscriber`). A local model that is not installed is listed
+  disabled and refused. Per turn: ffmpeg to 16 kHz mono PCM, `temperature 0`
+  with `temperature_inc 0` (no fallback loop -- what ran away on noise), an
+  audio context sized to the clip (never below the measured 768 / 512; the
+  whole window past ~28 s), the language setting, a hard timeout (25 s turbo,
+  10 s small). Markers (`[BLANK_AUDIO]`, `(static)`, `*thud*`, `♪`) are taken
+  out. **Fallback**: server down, timeout, an error, or junk (a stock silence
+  phrase such as "you" / "Thank you." / subtitle credits, a loop, more words
+  than the audio holds, garbled text) sends the same audio to
+  `gpt-4o-mini-transcribe`, logged as `voice transcribe: <id> failed (<why>)
+  ... falling back` (never the words). A live hand-off waits for a local
+  transcript up to its timeout + 3 s (`heard_wait_ms`) instead of 6 s, so with
+  turbo MINT AI starts on a request several seconds later. Language: `auto`
+  lets the model detect (on this server that can translate the Arabic half of
+  a mixed turn into English); `ar` / `en` pin it (pinned to Arabic, the small
+  model turned "Restart the dashboard" into Arabic words); a pinned language
+  also goes to OpenAI and into the live session. Install once:
+  `sudo bash deploy/install-voice-whisper.sh [turbo] [small]` (copies
+  `whisper-server` and its libraries from `/opt/moni-agents/shared/whisper.cpp`,
+  read only, into `/var/lib/moni-voice-whisper/bin`; models into `.../models`,
+  SHA-256 checked, from `MONI_WHISPER_MODELS_FROM` or Hugging Face; installs the
+  unit without starting it). `deploy-dashboard.sh` reinstalls the unit file only.
+  Guards: whisper's hallucinations are caught twice -- as junk here (fallback)
+  and by `lib/voice-guard.js` (a transcript of markers only is `noise-label`);
+  the claim and stop guards read English written in Arabic script
+  («ريستارت للداشبورد», «ستوب الليسنينج», «يس», «اندو»), tested in
+  `test-voice-arabic.cjs` / `test-voice-stop.cjs`.
 - **Voice cards** carry a gender (♀ Female / ♂ Male / ◌ Neutral) from one
   table, `lib/voice.js` `VOICE_META`: as each voice presents in OpenAI's own
   samples -- OpenAI labels none; alloy is Neutral; ballad and verse are the

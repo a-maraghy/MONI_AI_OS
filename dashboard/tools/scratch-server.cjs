@@ -43,6 +43,8 @@ const FAKE_KEY = "sk-proj-SCRATCHFAKEKEY-not-real-0000000000000000";
  * /keys renders. With fakeVoiceOptions,
  * saving the voice settings writes a file in the scratch data dir (and the key
  * read answers from it) -- never the helper -- so a test can change the voice.
+ * With fakeWhisper ({ installed: ["small-q8_0"] }) the local transcription
+ * server's status and start/stop are answered from fake-whisper.json.
  */
 function makeCopy(o) {
   o = o || {};
@@ -65,6 +67,22 @@ function makeCopy(o) {
     const file = JSON.stringify(path.join(DATA, "fake-voice-options.json"));
     s = s.replace(setter[0], `voiceOptionsSet: async (model, voice, transcribeModel) => { require("fs").writeFileSync(${file}, JSON.stringify({ model, voice, transcribe_model: transcribeModel })); return { ok: true }; },\n`);
     s = s.replace(key, `voiceKeyRead: async () => { let o = {}; try { o = JSON.parse(require("fs").readFileSync(${file}, "utf8")); } catch (_) { o = {}; } return { key: "${FAKE_KEY}", model: o.model || "gpt-realtime-mini", voice: o.voice || "marin", transcribe_model: o.transcribe_model || "gpt-4o-mini-transcribe" }; },`);
+  }
+  if (o.fakeWhisper) {
+    // Local transcription (lib/voice-transcribe.js): the helper's voice-whisper-* answered from a
+    // file in the scratch data dir -- {installed: [model ids], selected, active, calls: [...]}.
+    const wstatus = 'voiceWhisperStatus: () => callHelper("voice-whisper-status"),';
+    const wset = 'voiceWhisperSet: (model) => callHelper("voice-whisper-set", [model], { timeout: 90000 }),';
+    if (!s.includes(wstatus) || !s.includes(wset)) throw new Error("scratch: priv.js voiceWhisper* not found");
+    const wf = JSON.stringify(path.join(DATA, "fake-whisper.json"));
+    fs.writeFileSync(path.join(DATA, "fake-whisper.json"), JSON.stringify({ installed: o.fakeWhisper.installed || [], selected: null, active: "inactive", calls: [] }));
+    const read = `const F = require("fs"); const W = JSON.parse(F.readFileSync(${wf}, "utf8"));`;
+    const out = `({ installed: true, binary: true, vad: true, models: W.installed.map((m) => ({ model: m, bytes: 1 })), selected: W.selected, active: W.active, enabled: W.active === "active" ? "enabled" : "disabled", install: "deploy/install-voice-whisper.sh" })`;
+    s = s.replace(wstatus, `voiceWhisperStatus: async () => { ${read} return ${out}; },`);
+    s = s.replace(
+      wset,
+      `voiceWhisperSet: async (model) => { ${read} W.calls.push(model); if (model === "off") { W.active = "inactive"; } else if (!W.installed.includes(model)) { F.writeFileSync(${wf}, JSON.stringify(W)); throw new Error("the model " + model + " is not installed on this server; run: deploy/install-voice-whisper.sh"); } else { W.selected = model; W.active = "active"; } F.writeFileSync(${wf}, JSON.stringify(W)); return ${out}; },`
+    );
   }
   if (o.fakeKeys) {
     // /keys lists keys through the helper; a test that renders it gets these.

@@ -196,5 +196,20 @@ check("undo(): too long after pleasantries is a sentence", !VoiceStop.undo("than
   check("neither: a yes with a request after it, a bare ok/تمام, other sentences", NEITHER.every((x) => !VoiceStop.yes(x) && !VoiceStop.no(x)), NEITHER.filter((x) => VoiceStop.yes(x) || VoiceStop.no(x)).join(" | "));
 }
 
+// ------------------------------------ English written in Arabic script (2026-09-30)
+// gpt-transcribe and whisper on this server write spoken English in Arabic script
+// («ستوب الليسنينج», «يس», «اندو»); gpt-4o-mini-transcribe kept it Latin.
+{
+  const STOP = ["ستوب الليسنينج", "ستوب ليسنينج", "اند الكول", "كلوز الكول", "ستوب اللايف", "stop المايك", "اوكي ستوب الليسنينج", "ستوب ليسنينج بليز", "ممكن تقفل الكول", "عايزك تقفل الكول"];
+  const NOT = ["ستوب", "اند", "ليه الريستارت وقف", "هل الريستارت خلص", "ستوب الريستارت بتاع اودو", "اعمل ريستارت للداشبورد"];
+  check("stop: English verbs and objects in Arabic script", misses(STOP).length === 0, misses(STOP).join(" | "));
+  check("  not: a bare verb, or a sentence about a restart", hits(NOT).length === 0, hits(NOT).join(" | "));
+  const Y = ["يس", "يس بليز", "شور", "اوكي اعملها", "جو اهيد"];
+  const N = ["نو", "نو ثانكس", "نوب"];
+  check("yes / no in Arabic script", Y.every((x) => VoiceStop.yes(x) && !VoiceStop.no(x)) && N.every((x) => VoiceStop.no(x) && !VoiceStop.yes(x)), Y.concat(N).filter((x) => !VoiceStop.yes(x) && !VoiceStop.no(x)).join(" | "));
+  check("  a bare «اوكي» is not a yes (as a bare ok is not), and «يس ريستارت الداشبورد» is a request", !VoiceStop.yes("اوكي") && !VoiceStop.yes("يس ريستارت الداشبورد"));
+  check("undo in Arabic script", ["اندو", "اندو ده", "اندو بليز"].every((x) => VoiceStop.undo(x)) && !VoiceStop.undo("اندو الريستارت بتاع امبارح لو ينفع"));
+}
+
 console.log(`\n${passes} passed, ${failures} failed`);
 process.exit(failures ? 1 : 0);

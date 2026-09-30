@@ -70,9 +70,15 @@ say "Installing the privileged helper and unit files"
 install -m 0755 "$SRC/deploy/moni-helper" /usr/local/sbin/moni-helper
 python3 -m py_compile /usr/local/sbin/moni-helper
 
-# Speech to text is OpenAI's now (lib/voice.js); the panel no longer calls the
-# local whisper-server, so moni-whisper is not installed or started from here.
-# Telegram voice notes run whisper-cli directly and do not need it either.
+# Speech to text is OpenAI's by default (lib/voice.js). The old moni-whisper
+# (tiny.en, port 8081) is not installed or started from here; Telegram voice
+# notes run whisper-cli directly. Since 2026-09-30 the panel can transcribe on
+# this server instead (Settings > Voice > Transcription): its unit is
+# moni-voice-whisper.service, installed here so edits to it land, but started
+# only by the panel when a local model is chosen. Its binary and models come
+# from deploy/install-voice-whisper.sh (run once; without it the local options
+# show as not installed).
+install -m 0644 "$SRC/deploy/moni-voice-whisper.service" /etc/systemd/system/moni-voice-whisper.service
 
 # The account the panel's console runs as. Separate from moniagent so the two
 # entitlements can never be confused for one another: this one holds full sudo,

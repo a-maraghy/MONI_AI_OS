@@ -3097,7 +3097,9 @@ VOICE_FILE = os.path.join(VOICE_DIR, "openai-voice.env")
 OPENAI_KEY_RE = re.compile(r"^sk-[A-Za-z0-9_\-]{20,300}$")
 VOICE_MODEL_RE = re.compile(r"^gpt-(realtime|live)[a-z0-9.\-]{0,40}$")
 VOICE_NAME_RE = re.compile(r"^[a-z]{2,20}$")
-VOICE_TRANSCRIBE_RE = re.compile(r"^gpt-4o(-mini)?-transcribe[a-z0-9.\-]{0,30}$")
+# The live session's own transcription model (always OpenAI's). gpt-transcribe
+# is allowed since 2026-09-30 (Settings ▸ Voice ▸ Transcription offers it).
+VOICE_TRANSCRIBE_RE = re.compile(r"^gpt-(4o-(mini-)?)?transcribe[a-z0-9.\-]{0,30}$")
 VOICE_DEFAULTS = {
     "OPENAI_VOICE_MODEL": "gpt-realtime-mini",
     "OPENAI_VOICE_NAME": "marin",
@@ -3215,6 +3217,118 @@ def cmd_voice_options_set(args):
     _voice_write(values)
     audit("voice-options-set", {"model": model, "voice": voice, "transcribe_model": transcribe})
     ok(_voice_options(values))
+
+
+# ======================================================= local transcription ==
+#
+# Speech to text on this server (whisper.cpp), for the panel's full-turn
+# transcript when Settings ▸ Voice ▸ Transcription names a local model
+# (dashboard/lib/voice-transcribe.js). One resident whisper-server,
+# moni-voice-whisper.service (127.0.0.1:8093 only, niced, 8 threads, Silero VAD
+# on), that runs ONLY while a local model is selected: voice-whisper-set <model>
+# writes the model into its environment file and starts it (or restarts it on
+# a change of model); voice-whisper-set off stops and disables it.
+#
+# The binary, its libraries and the model files are put in WHISPER_DIR by
+# deploy/install-voice-whisper.sh (root-owned, world-readable: the unit runs as
+# monispeech). This helper never downloads anything; a model that is not
+# installed is refused with the command that installs it.
+
+WHISPER_DIR = "/var/lib/moni-voice-whisper"
+WHISPER_MODELS_DIR = os.path.join(WHISPER_DIR, "models")
+WHISPER_BIN = os.path.join(WHISPER_DIR, "bin", "whisper-server")
+WHISPER_ENV = os.path.join(WHISPER_DIR, "server.env")
+WHISPER_VAD = os.path.join(WHISPER_MODELS_DIR, "ggml-silero-v5.1.2.bin")
+WHISPER_UNIT = "moni-voice-whisper.service"
+WHISPER_MODEL_RE = re.compile(r"^[a-z0-9][a-z0-9.\-_]{0,60}$")
+WHISPER_INSTALL = "deploy/install-voice-whisper.sh from the MONI_AI_OS checkout, as root"
+
+
+def _whisper_model_file(model):
+    return os.path.join(WHISPER_MODELS_DIR, "ggml-" + model + ".bin")
+
+
+def _whisper_env_model():
+    try:
+        with open(WHISPER_ENV, encoding="utf-8") as fh:
+            for line in fh:
+                key, _, value = line.strip().partition("=")
+                if key == "WHISPER_MODEL" and value:
+                    base = os.path.basename(value)
+                    if base.startswith("ggml-") and base.endswith(".bin"):
+                        return base[5:-4]
+    except OSError:
+        pass
+    return None
+
+
+def _whisper_status():
+    models = []
+    if os.path.isdir(WHISPER_MODELS_DIR):
+        for name in sorted(os.listdir(WHISPER_MODELS_DIR)):
+            if name.startswith("ggml-") and name.endswith(".bin") and "silero" not in name:
+                path = os.path.join(WHISPER_MODELS_DIR, name)
+                models.append({"model": name[5:-4], "bytes": os.path.getsize(path)})
+    unit = unit_state_for(WHISPER_UNIT)
+    return {
+        "installed": os.path.isfile(WHISPER_BIN) and os.path.isfile(WHISPER_VAD),
+        "binary": os.path.isfile(WHISPER_BIN),
+        "vad": os.path.isfile(WHISPER_VAD),
+        "models": models,
+        "selected": _whisper_env_model(),
+        "active": unit["active"],
+        "enabled": unit["enabled"],
+        "install": WHISPER_INSTALL,
+    }
+
+
+def cmd_voice_whisper_status(args):
+    """What is installed for local transcription, and whether its server runs."""
+    ok(_whisper_status())
+
+
+def cmd_voice_whisper_set(args):
+    """voice-whisper-set <model|off>: run the local server with that model, or stop it."""
+    if len(args) != 1:
+        fail("usage: voice-whisper-set <model|off>")
+    model = args[0]
+    if model == "off":
+        was = unit_state_for(WHISPER_UNIT)
+        if was["active"] == "active" or was["enabled"] == "enabled":
+            r = run(["systemctl", "disable", "--now", WHISPER_UNIT], timeout=45)
+            if r.returncode != 0:
+                fail("could not stop the local transcription server: " + (r.stderr or r.stdout).strip()[:200])
+        audit("voice-whisper-set", {"model": "off", "was": was["active"]})
+        ok(_whisper_status())
+    if not WHISPER_MODEL_RE.match(model) or "silero" in model:
+        fail("not a local model id: " + repr(model[:60]))
+    path = _whisper_model_file(model)
+    if not os.path.isfile(WHISPER_BIN) or not os.path.isfile(WHISPER_VAD):
+        fail("local transcription is not installed on this server; run: " + WHISPER_INSTALL)
+    if not os.path.isfile(path):
+        fail("the model " + model + " is not installed on this server; run: " + WHISPER_INSTALL)
+    before = _whisper_env_model()
+    os.makedirs(WHISPER_DIR, mode=0o755, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=WHISPER_DIR)
+    try:
+        os.fchmod(fd, 0o644)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write("# Written by moni-helper voice-whisper-set; the model the local transcription server loads.\n")
+            fh.write("WHISPER_MODEL=" + path + "\n")
+        os.chown(tmp, 0, 0)
+        os.replace(tmp, WHISPER_ENV)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+    state = unit_state_for(WHISPER_UNIT)
+    if state["enabled"] != "enabled":
+        run(["systemctl", "enable", WHISPER_UNIT], timeout=45)
+    if state["active"] != "active" or before != model:
+        r = run(["systemctl", "restart", WHISPER_UNIT], timeout=60)
+        if r.returncode != 0:
+            fail("could not start the local transcription server: " + (r.stderr or r.stdout).strip()[:200])
+    audit("voice-whisper-set", {"model": model, "was": before})
+    ok(_whisper_status())
 
 
 # =============================================================== probing =====
@@ -5802,6 +5916,8 @@ COMMANDS = {
     "voice-key-set": cmd_voice_key_set,
     "voice-key-clear": cmd_voice_key_clear,
     "voice-options-set": cmd_voice_options_set,
+    "voice-whisper-status": cmd_voice_whisper_status,
+    "voice-whisper-set": cmd_voice_whisper_set,
     "system-probe": cmd_system_probe,
     "console-open": cmd_console_open,
     "console-dirs": cmd_console_dirs,

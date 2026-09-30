@@ -113,6 +113,7 @@ const { asset } = require("./lib/ui");
 const { WebSocketServer } = require("ws");
 const voiceGuard = require("./lib/voice-guard");
 const voiceIntake = require("./lib/voice-intake");
+const voiceTranscribe = require("./lib/voice-transcribe"); // which model writes down what was said (Settings ▸ Voice ▸ Transcription)
 // The spoken "stop listening" command; the same file runs in the browser.
 const voiceStop = require("./public/voice-stop.js");
 const chrome = require("./lib/chrome");
@@ -2054,7 +2055,7 @@ async function voiceReconnect(greetActor) {
     voiceLive.closeAll("settings-changed");
     return [];
   }
-  const out = await voiceLive.swapAll({ key: cfg.key, voice: cfg.voice, model: cfg.model, live_model: cfg.live_model, transcribe_model: cfg.transcribe_model }, greetActor);
+  const out = await voiceLive.swapAll(liveCfgOf(cfg), greetActor);
   out.forEach((r) => console.log(`live: ${r.actor}'s call ${r.ok ? "reconnected" : "could not reconnect"} after a voice settings change${r.ms != null ? " (" + r.ms + " ms)" : ""}`));
   return out;
 }
@@ -2112,13 +2113,13 @@ function voiceAllowed(perm) {
   return !!(perm && perm.can && perm.can("moniai.use") && perm.can("voice.use"));
 }
 /**
- * The voice model (the one selector in Settings ▸ Voice): the live call's
- * realtime model AND the model that reads replies aloud (lib/voice.js
- * READER_MODELS: only models that passed the verbatim check are offered). What
- * the administrator said is written down by a transcription model paired with
- * it (listenModelFor) -- fixed, not a setting. A panel setting; the helper's
- * file holds the same reader model and transcription model, rewritten to match
- * on every save and once at start (migrateVoiceModels).
+ * The voice model (Settings ▸ Voice): the live call's realtime model AND the
+ * model that reads replies aloud (lib/voice.js READER_MODELS: only models that
+ * passed the verbatim check are offered). What the administrator said is
+ * written down by the transcription model chosen under it (the Transcription
+ * setting below, since 2026-09-30). A panel setting; the helper's file holds
+ * the same reader model and the live session's transcription model, rewritten
+ * to match on every save and once at start (migrateVoiceHelperModels).
  */
 const VOICE_MODEL_SETTING = "voice_model";
 function voiceModel() {
@@ -2155,7 +2156,7 @@ async function migrateVoiceHelperModels() {
     if (!d || !d.key) return null; // nothing stored yet: the first save writes the pair
     const model = voiceModel();
     const reader = voice.readerModelFor(model);
-    const listen = voice.listenModelFor(model);
+    const listen = voiceTranscribe.sessionModelFor(transcription().model);
     if (d.model === reader && d.transcribe_model === listen) return null;
     const name = voice.VOICES.includes(d.voice) ? d.voice : voice.DEFAULTS.voice;
     await priv.voiceOptionsSet(reader, name, listen);
@@ -2168,6 +2169,68 @@ async function migrateVoiceHelperModels() {
   }
 }
 migrateVoiceModelSetting();
+
+/**
+ * Transcription (Settings ▸ Voice ▸ Transcription, 2026-09-30): which model
+ * writes down the full turn -- the transcript MINT AI works from -- and the
+ * language hint. A panel setting, JSON {model, language}
+ * (lib/voice-transcribe.js TRANSCRIBERS / LANGUAGES); nothing stored means
+ * gpt-4o-mini-transcribe and "auto", the behaviour before the setting. The live
+ * session's own transcription stays on an OpenAI model (sessionModelFor), held
+ * in the helper's file as before. A local model runs on this server
+ * (moni-voice-whisper.service), started and stopped through the helper.
+ */
+const VOICE_TRANSCRIPTION_SETTING = "voice_transcription";
+function transcription() {
+  let v = null;
+  try {
+    v = JSON.parse(db.getSetting(VOICE_TRANSCRIPTION_SETTING, "") || "null");
+  } catch (_) {
+    v = null;
+  }
+  return voiceTranscribe.clean(v);
+}
+/** Idempotent: an unreadable or unknown stored value becomes the cleaned one; nothing stored stays nothing (the default). */
+function migrateTranscriptionSetting() {
+  try {
+    const raw = db.getSetting(VOICE_TRANSCRIPTION_SETTING, null);
+    if (raw === null || raw === undefined || raw === "") return null;
+    const now = JSON.stringify(transcription());
+    if (raw === now) return null;
+    db.setSetting(VOICE_TRANSCRIPTION_SETTING, now, "migration");
+    console.log(`voice: the transcription setting ${JSON.stringify(String(raw).slice(0, 60))} became ${now}`);
+    return now;
+  } catch (e) {
+    console.log("voice: could not migrate the transcription setting: " + e.message);
+    return null;
+  }
+}
+migrateTranscriptionSetting();
+/** What is installed for local transcription (the helper), or {error}. */
+async function whisperStatus() {
+  try {
+    return await priv.voiceWhisperStatus();
+  } catch (e) {
+    return { error: priv.redact(String(e.message || e)) };
+  }
+}
+/**
+ * At start: a local model selected means its server should run (after a
+ * reboot the unit is enabled and does already; this covers a stopped one).
+ * The helper restarts it only when it is not running or runs another model.
+ */
+async function syncLocalTranscriber() {
+  const t = voiceTranscribe.byId(transcription().model);
+  if (!t || t.kind === "openai") return null;
+  try {
+    const st = await priv.voiceWhisperSet(t.model);
+    console.log(`voice: local transcription server ${st && st.active === "active" ? "running" : "not running"} with ${t.model}`);
+    return st;
+  } catch (e) {
+    console.log(`voice: could not start the local transcription server for ${t.id} (turns fall back to ${voiceTranscribe.FALLBACK_MODEL}): ` + priv.redact(String(e.message || e)));
+    return null;
+  }
+}
 /**
  * How live conversation handles the speaker (a panel setting, JSON):
  *   duplex  "speakers" (half-duplex: the microphone is not heard while the
@@ -2277,6 +2340,15 @@ function ndjson(res) {
   };
 }
 
+/** The full-turn transcriber's part of the voice config (lib/voice-transcribe.js reads it). */
+function transcriberCfg(tr) {
+  return { transcriber: tr.model, transcribe_language: tr.language, heard_wait_ms: voiceTranscribe.heardWaitMs(tr.model) };
+}
+/** The fields a live call takes from the voice config (a new call, or a reconnect after a change). */
+function liveCfgOf(cfg) {
+  return { key: cfg.key, voice: cfg.voice, model: cfg.model, live_model: cfg.live_model, transcribe_model: cfg.transcribe_model, transcriber: cfg.transcriber, transcribe_language: cfg.transcribe_language, heard_wait_ms: cfg.heard_wait_ms };
+}
+
 async function voiceConfig() {
   if (voiceCache.cfg && Date.now() - voiceCache.at < VOICE_TTL_MS) return voiceCache.cfg;
   if (voiceCache.pending) return voiceCache.pending;
@@ -2284,21 +2356,25 @@ async function voiceConfig() {
     .voiceKeyRead()
     .then((d) => {
       const live = voiceModel();
+      const tr = transcription();
       const cfg = {
         key: d && d.key ? String(d.key) : null,
         // One voice model: it talks live and reads aloud (readerModelFor keeps an
-        // unverified value off the reader); listening is its fixed pair.
+        // unverified value off the reader).
         model: voice.readerModelFor(live),
         live_model: live,
         voice: (d && d.voice) || voice.DEFAULTS.voice,
-        transcribe_model: voice.listenModelFor(live),
+        // The live session's own transcription: always an OpenAI model.
+        transcribe_model: voiceTranscribe.sessionModelFor(tr.model),
+        ...transcriberCfg(tr),
       };
       if (voiceCache.pending === pending) voiceCache = { at: Date.now(), cfg, pending: null };
       return cfg;
     })
     .catch((e) => {
       if (voiceCache.pending === pending) voiceCache.pending = null;
-      return { key: null, ...voice.DEFAULTS, live_model: voiceModel(), transcribe_model: voice.listenModelFor(voiceModel()), error: e.message };
+      const tr = transcription();
+      return { key: null, ...voice.DEFAULTS, live_model: voiceModel(), transcribe_model: voiceTranscribe.sessionModelFor(tr.model), ...transcriberCfg(tr), error: e.message };
     });
   voiceCache.pending = pending;
   return pending;
@@ -2378,7 +2454,7 @@ async function voiceTranscribeRoute(req, res) {
       mime: AUDIO_MIME_RE.test(mime) ? mime : "audio/webm",
       level: req.body && req.body.level,
       cfg,
-      transcribe: voice.transcribeFull,
+      transcribe: voiceTranscribe.transcribeFull,
       grounds: voiceGrounds,
       actor: req.me && req.me.username,
       vt,
@@ -2386,7 +2462,8 @@ async function voiceTranscribeRoute(req, res) {
     const text = got.text;
     const usd = got.heard ? recordTranscription({ vt, actor: req.me && req.me.username, heard: got.heard }) : 0;
     voiceLog("transcribe", 200, {
-      model: cfg.transcribe_model,
+      model: (got.heard && (got.heard.transcriber || got.heard.model)) || cfg.transcriber,
+      fallback_from: got.heard && got.heard.fallback ? got.heard.fallback.from + ":" + got.heard.fallback.why : undefined,
       ms: Date.now() - t0,
       bytes: audio.length,
       audio_s: got.audioSeconds != null ? Math.round(got.audioSeconds * 10) / 10 : undefined,
@@ -2398,7 +2475,7 @@ async function voiceTranscribeRoute(req, res) {
     if (got.dropped) return res.json({ text: "", dropped: got.dropped });
     res.json({ text });
   } catch (e) {
-    voiceLog("transcribe", e.code || "error", { model: cfg && cfg.transcribe_model, ms: Date.now() - t0, bytes: audio.length, why: e.message });
+    voiceLog("transcribe", e.code || "error", { model: cfg && cfg.transcriber, ms: Date.now() - t0, bytes: audio.length, why: e.message });
     voiceFail(res, e);
   }
 }
@@ -2565,7 +2642,7 @@ const voiceGuardSettings = [requireAuth, voiceSettingsPerm, requireCsrf];
 
 settingsRoutes.sections.voice = async (req, res) => {
   const on = voiceEnabled();
-  const [status, cfg] = await Promise.all([voiceSettings(), voiceConfig()]);
+  const [status, cfg, local] = await Promise.all([voiceSettings(), voiceConfig(), whisperStatus()]);
   const test = req.query.test ? { ok: req.query.test === "ok", text: String(req.query.t || "").slice(0, 600) } : null;
   const persona = personaOf(req.me.id);
   return {
@@ -2579,6 +2656,10 @@ settingsRoutes.sections.voice = async (req, res) => {
       voices: voice.VOICES,
       meta: voice.VOICE_META,
       transcribe: cfg.transcribe_model,
+      transcription: transcription(),
+      transcribers: voiceTranscribe.TRANSCRIBERS,
+      languages: voiceTranscribe.LANGUAGES,
+      local,
       persona: { ...voicePersona.describe(persona), mode: persona.mode, preset: persona.preset },
       liveAudio: liveAudio(),
       usage: voiceUsageSummary(),
@@ -2598,7 +2679,7 @@ settingsRoutes.marks.push(async () => ({ voice: voiceEnabled() ? "on" : "off" })
  * The desk switch is gone: its POST lands on the section with a note.
  */
 app.get("/credentials/openai-voice", requireAuth, (req, res) => res.redirect(302, "/mint-ai/settings/voice"));
-for (const k of ["key", "clear", "test", "options", "persona", "persona/reset", "live-audio"]) {
+for (const k of ["key", "clear", "test", "options", "persona", "persona/reset", "live-audio", "transcription"]) {
   app.post("/credentials/openai-voice/" + k, (req, res) => res.redirect(308, "/mint-ai/settings/voice/" + k));
 }
 app.post("/credentials/openai-voice/desk", requireAuth, (req, res) =>
@@ -2652,9 +2733,9 @@ app.post("/mint-ai/settings/voice/clear", ...voiceGuardSettings, async (req, res
  * The voice model and the voice. Each Settings row posts only its own field; a
  * confirmed voice.set from the Command Center posts the voice. The voice model
  * is the panel's setting (live and read-aloud); the helper keeps the reader's
- * model (the same model), the voice and the paired transcription model
- * (listenModelFor). A `transcribe_model` field (an older page) is ignored:
- * listening is not a setting any more.
+ * model (the same model), the voice and the live session's transcription
+ * model (from the Transcription setting: sessionModelFor). A `transcribe_model`
+ * field (an older page) is ignored: transcription has its own row and route.
  */
 app.post("/mint-ai/settings/voice/options", ...voiceGuardSettings, async (req, res) => {
   const cur = await voiceConfig();
@@ -2669,7 +2750,7 @@ app.post("/mint-ai/settings/voice/options", ...voiceGuardSettings, async (req, r
   if (lock) return voiceReply(req, res, { err: "A voice change is waiting for a confirm on the Command Center; answer that first.", anchor: "v-voice" });
   try {
     const reader = voice.readerModelFor(vmodel);
-    const listen = voice.listenModelFor(vmodel);
+    const listen = voiceTranscribe.sessionModelFor(transcription().model);
     await priv.voiceOptionsSet(reader, name, listen);
     if (vmodel !== voiceModel()) db.setSetting(VOICE_MODEL_SETTING, vmodel, req.me.username);
     voiceForget("reconnect");
@@ -2677,7 +2758,7 @@ app.post("/mint-ai/settings/voice/options", ...voiceGuardSettings, async (req, r
     voiceGreet.delete(req.me.username);
     // Open live calls reconnect with the new settings and go on; the one whose confirm this is says a line in it.
     voiceReconnect(greet).catch(() => {});
-    db.logLogin(req.ip, req.me.username, "voice", `voice settings ${vmodel} (live and read-aloud; listens with ${listen}) / ${name}${voiceLive.activeCount() ? ` (${voiceLive.activeCount()} live call(s) reconnect with it)` : ""}`);
+    db.logLogin(req.ip, req.me.username, "voice", `voice settings ${vmodel} (live and read-aloud; the call's own transcription ${listen}) / ${name}${voiceLive.activeCount() ? ` (${voiceLive.activeCount()} live call(s) reconnect with it)` : ""}`);
     const what = has("model") && !has("voice") ? `Voice model: ${vmodel}.` : has("voice") && !has("model") ? `Voice: ${name}.` : "Voice settings saved.";
     voiceReply(req, res, { msg: what, anchor: has("model") && !has("voice") ? "v-model" : "v-voice" });
   } catch (e) {
@@ -2722,6 +2803,53 @@ app.post("/mint-ai/settings/voice/live-audio", ...voiceGuardSettings, (req, res)
 });
 
 /**
+ * Transcription: which model writes down the full turn, and the language hint
+ * (each row posts its own field; the other is kept). A local model is started
+ * through the helper first -- refused, and nothing saved, when it is not
+ * installed; going back to an OpenAI model stops the local server. The live
+ * session's own transcription model (always OpenAI's) is written to the
+ * helper's file, and open calls reconnect with it.
+ */
+app.post("/mint-ai/settings/voice/transcription", ...voiceGuardSettings, async (req, res) => {
+  const was = transcription();
+  const has = (k) => typeof (req.body && req.body[k]) === "string" && req.body[k] !== "";
+  const want = voiceTranscribe.clean({ model: has("transcriber") ? field(req.body, "transcriber") : was.model, language: has("language") ? field(req.body, "language") : was.language });
+  if ((has("transcriber") && want.model !== field(req.body, "transcriber")) || (has("language") && want.language !== field(req.body, "language"))) {
+    return voiceReply(req, res, { err: "Pick a transcription model and a language from the lists.", anchor: "v-transcribe" });
+  }
+  const t = voiceTranscribe.byId(want.model);
+  const before = voiceTranscribe.byId(was.model);
+  let note = "";
+  try {
+    if (t.kind !== "openai") {
+      const st = await priv.voiceWhisperSet(t.model);
+      note = st && st.active === "active" ? " Its server is running on this machine." : " Its server is starting.";
+    } else if (before && before.kind !== "openai") {
+      await priv.voiceWhisperSet("off").catch((e) => {
+        note = " The local server could not be stopped: " + priv.redact(String(e.message || e));
+      });
+    }
+  } catch (e) {
+    return voiceReply(req, res, { err: `${t.label} cannot be used: ${priv.redact(String(e.message || e))}`, anchor: "v-transcribe" });
+  }
+  db.setSetting(VOICE_TRANSCRIPTION_SETTING, JSON.stringify(want), req.me.username);
+  const listen = voiceTranscribe.sessionModelFor(want.model);
+  try {
+    // The helper's file, not the cached config (which already reads the new setting).
+    const d = await priv.voiceKeyRead();
+    if (d && d.key && d.transcribe_model !== listen) await priv.voiceOptionsSet(voice.readerModelFor(voiceModel()), voice.VOICES.includes(d.voice) ? d.voice : voice.DEFAULTS.voice, listen);
+  } catch (e) {
+    console.log("voice: could not store the live session's transcription model: " + priv.redact(String(e.message || e)));
+  }
+  voiceForget("reconnect");
+  voiceReconnect(null).catch(() => {});
+  db.logLogin(req.ip, req.me.username, "voice", `transcription ${want.model} (${t.kind === "openai" ? "OpenAI" : "on this server"}), language ${want.language}; the call's own transcription ${listen} (was ${was.model}, ${was.language})`);
+  const lang = (voiceTranscribe.LANGUAGES.find(([v]) => v === want.language) || [])[1] || want.language;
+  const msg = has("transcriber") && !has("language") ? `Transcription: ${t.label}.${note}` : has("language") && !has("transcriber") ? `Transcription language: ${lang}.` : `Transcription saved.${note}`;
+  voiceReply(req, res, { msg, anchor: "v-transcribe" });
+});
+
+/**
  * Test: one short line spoken by the voice model -- the reader MINT AI's
  * replies are read with -- and transcribed back by its paired listening model.
  * A real call; a passing Test shows the model reads aloud word for word.
@@ -2732,12 +2860,15 @@ app.post("/mint-ai/settings/voice/test", ...voiceGuardSettings, async (req, res)
   let text;
   try {
     const cfg = await voiceConfig();
-    const out = await voice.check({ ...cfg, model: cfg.live_model });
+    const out = await voice.check({ ...cfg, model: cfg.live_model }, { transcribe: voiceTranscribe.transcribeFull });
     ok = out.faithful && !!out.heard;
+    const fb = out.heard_fallback;
     text =
       `${out.model} (${out.voice}) spoke ${out.seconds != null ? out.seconds + " s of audio " : ""}in ${out.speak_ms} ms` +
       (out.faithful ? ", word for word" : `, but not as written — it said “${out.speak_transcript}”`) +
-      (out.heard != null ? `; listening (${cfg.transcribe_model}) heard “${out.heard}” in ${out.transcribe_ms} ms.` : ".");
+      (out.heard != null
+        ? `; transcription by ${out.heard_by}${fb ? ` (${fb.from} failed: ${fb.why}, so it fell back)` : ""} heard “${out.heard}” in ${out.transcribe_ms} ms.`
+        : ".");
   } catch (e) {
     text = e.message;
   }
@@ -5661,7 +5792,7 @@ function liveConnected(ws, { me, cfg, ip, duplex, noise, route, tab, canVoice, s
     return ws.close(4409, "busy");
   }
   const call = new voiceLive.LiveCall({
-    cfg: { key: cfg.key, voice: cfg.voice, model: cfg.model, live_model: cfg.live_model, transcribe_model: cfg.transcribe_model, noise_reduction: noise },
+    cfg: { ...liveCfgOf(cfg), noise_reduction: noise },
     actor,
     ops: voiceShared.voiceOps(moniCall, actor),
     client: {
@@ -5684,7 +5815,7 @@ function liveConnected(ws, { me, cfg, ip, duplex, noise, route, tab, canVoice, s
     hearPersona: (text) => personaHear({ userId: me.id, username: actor, ip }, text),
     audit: (line) => db.logLogin(ip, actor, "mint-ui", line),
     speak: voice.speakStream,
-    transcribe: voice.transcribeFull,
+    transcribe: voiceTranscribe.transcribeFull, // the full-turn transcript: the selected model (a local one falls back to OpenAI)
     summarise: (id, o) => voiceShared.summariserFor(actor, cfg, moniCall, { log: (m) => console.log(m) }).summarise(id, o),
     record: (row) => recordVoice(() => voiceLedger.add(row).usd),
     isStop: (t) => voiceStop.heard(t),
@@ -5791,6 +5922,8 @@ const httpServer = app.listen(PORT, BIND, () => {
   }
   // One voice model: bring the helper's stored reader/listening models in line once.
   migrateVoiceHelperModels();
+  // A local transcription model selected: make sure its server runs.
+  syncLocalTranscriber();
 });
 httpServer.on("upgrade", liveUpgrade);
 

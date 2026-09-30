@@ -216,7 +216,7 @@ function makeCall(extra) {
   const persona = { v: x.persona || {} };
   const audited = [];
   const c = new live.LiveCall({
-    cfg: { key: KEY, voice: "marin", model: "gpt-realtime-mini", transcribe_model: "gpt-4o-mini-transcribe", wsBase: WS_BASE },
+    cfg: { key: KEY, voice: "marin", model: "gpt-realtime-mini", transcribe_model: "gpt-4o-mini-transcribe", wsBase: WS_BASE, ...(x.cfg || {}) },
     actor: "amaraghy",
     ops: desk.voiceOps(call, "amaraghy"),
     client: {
@@ -447,6 +447,30 @@ let WS_BASE;
       refused = e.code === "refused";
     }
     check("the only door (voiceOps) refuses anything but snapshot and send", refused && Object.keys(desk.VOICE_OPS).join() === "snapshot,send");
+    c.close("test");
+  }
+
+  section("a transcriber on this server: the hand-off waits for its slower transcript (heard_wait_ms)");
+  {
+    const heard = "عايزك تعمل ريستارت للداشبورد";
+    const { c, sup } = makeCall({
+      cfg: { transcriber: "whisper-large-v3-turbo", heard_wait_ms: 9000 },
+      transcribe: async () => (await sleep(6600), { text: heard, model: "whisper-large-v3-turbo", tokens: null }),
+    });
+    await c.open();
+    const s = lastSession();
+    check("the live session's own transcription stays on the OpenAI model", s.of("session.update").every((e) => e.session.audio.input.transcription.model === "gpt-4o-mini-transcribe"));
+    await userTurn(s, c, "عايزك تعمل ريستارت للداش"); // the session's own transcript, cut short
+    await respond(s, null, { calls: [{ name: "look_into", args: { text: "Restart the dashboard." } }] });
+    await until(() => sup.calls.some((x) => x[0] === "send"), 9000, "the hand-off");
+    const sends = sup.calls.filter((x) => x[0] === "send");
+    check("  6.6 s later (past the 6 s an OpenAI transcript is given), MINT AI still gets the local full-turn transcript", sends.length === 1 && sends[0][1].text === heard, JSON.stringify(sends));
+    c.close("test");
+  }
+  {
+    const { c } = makeCall({ cfg: { transcribe_language: "ar" } });
+    await c.open();
+    check("a pinned language goes into the live session's transcription", lastSession().of("session.update").some((e) => e.session.audio.input.transcription.language === "ar"));
     c.close("test");
   }
 

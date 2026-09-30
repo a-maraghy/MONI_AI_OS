@@ -15,12 +15,14 @@
  * os.js, a plain POST without JavaScript). The key is typed in a dialog and
  * posted once, to be handed to the helper on stdin; it is never shown again.
  *
- * One voice model (2026-09-30): the model talks live and reads replies aloud;
- * what the administrator said is written down by a transcription model paired
- * with it -- named under the selector, not a setting of its own.
+ * One voice model (2026-09-30): the model talks live and reads replies aloud.
+ * What the administrator said is written down by the Transcription model, a
+ * setting again since the evening of 2026-09-30: OpenAI's, or whisper.cpp on
+ * this server (lib/voice-transcribe.js), each option with its measured speed,
+ * accuracy and cost; a local model that is not installed is listed, disabled.
  *
- * Anchors (the page registry scans them): v-model, v-token, v-voice, v-persona,
- * v-read, v-live-audio, v-spend.
+ * Anchors (the page registry scans them): v-model, v-transcribe,
+ * v-transcribe-lang, v-token, v-voice, v-persona, v-read, v-live-audio, v-spend.
  */
 
 const { esc, icon } = require("./ui");
@@ -69,7 +71,10 @@ function voiceCard(name, cur, meta) {
  *   model         the voice model now (lib/voice.js VOICE_MODELS id)
  *   models        [{id, label}]
  *   voice, voices, meta   the voice, the list, lib/voice.js VOICE_META
- *   transcribe    the paired transcription model (fixed; shown, not chosen)
+ *   transcribe    the live session's own transcription model (always OpenAI's)
+ *   transcription { model, language }: the Transcription setting
+ *   transcribers  lib/voice-transcribe.js TRANSCRIBERS; languages its LANGUAGES
+ *   local         the helper's voice-whisper-status (installed models), or { error }
  *   persona       voice-persona describe() + mode/preset
  *   liveAudio     { duplex, noise }
  *   usage         voice-usage summary (or { error })
@@ -102,9 +107,7 @@ function body(o) {
   const listen = o.transcribe || "gpt-4o-mini-transcribe";
   const modelRow = V.row(
     "Voice model",
-    `One model for the whole voice: it holds the live conversation and reads MINT AI's replies aloud, word for word. <span class="muted" id="voice-listen-note">Your words are written down by <code>${esc(
-      listen
-    )}</code>, paired with it: MINT AI always works from that transcript, never from the voice model's retelling. It is not a setting.</span>`,
+    `One model for the whole voice: it holds the live conversation and reads MINT AI's replies aloud, word for word. <span class="muted" id="voice-listen-note">Your words are written down by the transcription model below: MINT AI always works from that transcript, never from the voice model's retelling.</span>`,
     V.form(
       `${BASE}/options`,
       csrf,
@@ -136,7 +139,7 @@ function body(o) {
 
   const testRow = V.row(
     "Check the voice",
-    "Speaks one short line and transcribes it back — a real call, a fraction of a cent.",
+    "Speaks one short line and transcribes it back with the transcription model — a real call, a fraction of a cent. It says which model answered and how long it took.",
     V.form(`${BASE}/test`, csrf, `<button class="btn small" type="submit" id="voice-test"${on && set ? "" : " disabled"}>${icon("play", 14)} Test</button>`, { noSave: true, cls: "inline" }),
     { dep: true }
   );
@@ -146,7 +149,49 @@ function body(o) {
       }</strong> ${esc(o.test.text)}</div></div>`
     : "";
 
-  const main = `<div class="group" id="v-main">${hero}${offnote}${modelRow}${tokenRow}${testRow}${test}</div>`;
+  const tr = o.transcription || { model: "gpt-4o-mini-transcribe", language: "auto" };
+  const list = o.transcribers || [];
+  const local = o.local || {};
+  const installed = new Set(((local && local.models) || []).map((m) => m.model));
+  const ready = (t) => t.kind === "openai" || (local.installed && installed.has(t.model));
+  const cur = list.find((t) => t.id === tr.model) || list[0] || { hint: "" };
+  const groups = [];
+  for (const t of list) {
+    let g = groups.find((x) => x.name === t.group);
+    if (!g) groups.push((g = { name: t.group, items: [] }));
+    g.items.push(t);
+  }
+  const trOpt = (t) =>
+    `<option value="${esc(t.id)}" data-hint="${esc(t.hint)}"${t.id === tr.model ? " selected" : ""}${ready(t) || t.id === tr.model ? "" : " disabled"}>${esc(t.label)} · ${esc(
+      ready(t) ? t.hint : "not installed on this server"
+    )}</option>`;
+  const notInstalled = list.some((t) => t.kind !== "openai" && !ready(t));
+  const trRow = V.row(
+    "Transcription",
+    `Writes down what you say — the transcript MINT AI works from, in a live call and in dictation. A model on this server costs nothing but is slower; if it is down, too slow or returns junk, that turn goes to <code>gpt-4o-mini-transcribe</code> instead. <span class="muted" id="voice-session-note">Inside a live call OpenAI accepts only its own models, so the call's running transcript stays on <code>${esc(
+      listen
+    )}</code> whichever you pick.</span>${
+      notInstalled ? ` <span class="muted" id="voice-local-note">Models on this server are installed with <code>deploy/install-voice-whisper.sh</code>.</span>` : ""
+    }`,
+    `<div class="tr-pick">${V.form(
+      `${BASE}/transcription`,
+      csrf,
+      `<select name="transcriber" id="voice-transcriber" aria-label="Transcription model"${on ? "" : " disabled"}>${groups
+        .map((g) => `<optgroup label="${esc(g.name)}">${g.items.map(trOpt).join("")}</optgroup>`)
+        .join("")}</select>`
+    )}<small class="tr-hint" id="voice-transcriber-hint">${esc(cur.hint || "")}</small></div>`,
+    { dep: true, scope: "everyone", id: "v-transcribe" }
+  );
+  const langRow = V.row(
+    "Transcription language",
+    "Detect suits a mix of Arabic and English. Pin one only if you speak just that language: pinned to Arabic, English comes out as Arabic words; pinned to English, Arabic is translated. On this server, Detect can translate the Arabic half of a mixed turn into English.",
+    V.form(`${BASE}/transcription`, csrf, `<select name="language" aria-label="Transcription language"${on ? "" : " disabled"}>${(o.languages || [["auto", "Detect"]])
+      .map(([v, l]) => V.opt(v, l + (v === "auto" ? " (default)" : ""), tr.language))
+      .join("")}</select>`),
+    { dep: true, scope: "everyone", id: "v-transcribe-lang" }
+  );
+
+  const main = `<div class="group" id="v-main">${hero}${offnote}${modelRow}${trRow}${langRow}${tokenRow}${testRow}${test}</div>`;
 
   const hiddenNote = `<p class="hidden-note">${icon("info", 16)}Voice, Live audio and Spend are hidden while voice is off. Their values are kept.</p>`;
 

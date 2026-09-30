@@ -122,9 +122,27 @@ exports.guide = ({ csrf, user, publicHost, publicPort, sshHost }) => {
       <p>A single model does the voice: it holds the live conversation and reads MINT AI's
         replies aloud, word for word. Only models that passed both on the real API are
         offered — today <b>GPT Realtime 2.1 mini</b>. What you say is also written down by a
-        transcription model paired with it (<b>gpt-4o-mini-transcribe</b>); MINT AI always
-        acts on that transcript, never on the voice model's retelling of your words. The
-        transcription model is fixed, not a setting.</p>
+        <b>transcription model</b>; MINT AI always acts on that transcript, never on the voice
+        model's retelling of your words.</p>
+      <h3>Transcription</h3>
+      <p>Choose it under <b>Settings › Voice › Transcription</b>. Each option shows its measured
+        speed, accuracy and cost:</p>
+      <ul>
+        <li><b>OpenAI</b> — <b>GPT-4o mini Transcribe</b> (the default: fast, the most accurate
+          here, $0.003 a minute), <b>GPT Transcribe</b> (its successor; writes some English words
+          in Arabic script) or <b>GPT-4o Transcribe</b>.</li>
+        <li><b>On this server</b> (whisper.cpp) — <b>large-v3-turbo</b> (free, a little less
+          accurate, 6–13 seconds a turn) or <b>small</b> (1–2 seconds, noticeably weaker). Its
+          server runs only while one of them is selected, and takes about 1 GB of memory then.
+          If it is down, too slow or returns nonsense, that turn is sent to GPT-4o mini
+          Transcribe instead. They are installed once with
+          <code>deploy/install-voice-whisper.sh</code>; until then they show as not installed.</li>
+      </ul>
+      <p>Inside a live call OpenAI accepts only its own transcription models, so the call's
+        running transcript stays on an OpenAI model whatever you choose; the choice governs
+        the transcript MINT AI acts on. With a model on this server, MINT AI starts on a request
+        a few seconds later. <b>Transcription language</b>: leave it on <b>Detect</b> if you mix
+        Arabic and English. <b>Test</b> says which model transcribed and how long it took.</p>
       <h3>During a call</h3>
       <ul>
         <li>Say “stop listening”, press <kbd>Esc</kbd> or the red <b>End</b> to finish. A call

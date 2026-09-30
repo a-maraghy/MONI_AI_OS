@@ -170,6 +170,16 @@ const SILENCE_PHRASES = new Set([
   "you", "thank you", "thank you very much", "thanks", "thanks for watching", "thank you for watching", "thank you so much for watching",
   "bye", "bye bye", "goodbye", "okay", "ok", "so", "uh", "um", "hmm", "mm", "oh", "the end", "silence", "music", "applause",
 ]);
+// What whisper (lib/voice-transcribe.js, the models on this server) writes for
+// sounds rather than speech: "[BLANK_AUDIO]", "(static)", "*thud*", "♪", and a
+// stray special token. A transcript made only of these is noise.
+const MARKER_RE = /\[[^\]\n]{1,40}\]|\((?:[^)\n]{1,40})\)|\*[^*\n]{1,40}\*|[♪♫]+|<\|[a-z_]{1,20}\|>/giu;
+function stripMarkers(text) {
+  return String(text || "")
+    .replace(MARKER_RE, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
 const CREDITS_RE = /\b(subtitles?|captions?)\b.{0,40}\b(by|from)\b|amara\.org|\btranscribed by\b|\btranscription by\b|please subscribe|like and subscribe|\bwww\.[a-z0-9-]+\.[a-z]{2,}/i;
 const SHORT_S = 1.2; // a clip shorter than this is "short"
 
@@ -208,7 +218,7 @@ function checkTranscript(text, ctx) {
   const c = ctx || {};
   const s = String(text || "").trim();
   if (!s) return { ok: false, rule: "empty" };
-  if (/^[\[(]/.test(s)) return { ok: false, rule: "noise-label" };
+  if (/^[\[(]/.test(s) || !stripMarkers(s)) return { ok: false, rule: "noise-label" };
   const e = echoOf(s, c.sources);
   if (e) return { ok: false, rule: "echo", detail: e };
   if (tooManyWords(s, c.audioSeconds)) return { ok: false, rule: "too-many-words", detail: { words: tokens(s).length, audio_s: c.audioSeconds } };
@@ -283,6 +293,7 @@ module.exports = {
   echoOf,
   hallucination,
   tooManyWords,
+  stripMarkers,
   checkTranscript,
   refuseAtDoor,
   audioSecondsFromUsage,

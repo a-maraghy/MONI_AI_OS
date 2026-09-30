@@ -9,8 +9,14 @@
 .hero-sw .hs-form { flex: none; }
 .set-sec #v-main .row .rc select, .set-sec .dep-hide .row .rc select { width: min(360px, 100%); }
 .keybox .set-form.inline, .row .set-form.inline { display: inline-flex; }
+/* Transcription: the selector and the chosen model's measured figures under it. */
+.tr-pick { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; width: min(360px, 100%); }
+.tr-pick .set-form, .tr-pick select { width: 100%; }
+.tr-hint { color: var(--muted); font-size: 12px; line-height: 1.35; text-align: right; }
 @media (max-width: 640px) {
   .set-sec #v-main .row .rc select, .set-sec .dep-hide .row .rc select { width: 100%; }
   .row .rc > .set-form { width: 100%; }
   .row .rc > .set-form.inline { width: auto; }
+  .tr-pick { width: 100%; align-items: stretch; }
+  .tr-hint { text-align: left; }
 }

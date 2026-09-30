@@ -671,7 +671,8 @@ class LiveCall {
           format: { type: "audio/pcm", rate: RATE },
           noise_reduction: this.noise === "off" ? null : { type: this.noise },
           turn_detection: { type: "server_vad", threshold: this.opts.vadThreshold || VAD_THRESHOLD, silence_duration_ms: this.opts.silenceMs, prefix_padding_ms: 300, create_response: false, interrupt_response: false },
-          transcription: { model: this.cfg.transcribe_model || "gpt-4o-mini-transcribe" },
+          // Always an OpenAI model (a realtime session takes no other); a pinned language goes with it.
+          transcription: { model: this.cfg.transcribe_model || "gpt-4o-mini-transcribe", ...(this.cfg.transcribe_language === "ar" || this.cfg.transcribe_language === "en" ? { language: this.cfg.transcribe_language } : {}) },
         },
         output: { format: { type: "audio/pcm", rate: RATE }, voice: this.cfg.voice || "marin" },
       },
@@ -1465,7 +1466,9 @@ class LiveCall {
 
   /** The turn's words as this server heard them (the hand-off's text), or "". */
   async groundedText(t) {
-    const wait = (p) => Promise.race([p, new Promise((res) => this.timer(() => res(null), HEARD_WAIT_MS))]);
+    // A transcriber on this server takes longer (cfg.heard_wait_ms: its timeout and a fallback's round trip).
+    const waitMs = Math.max(HEARD_WAIT_MS, Number(this.cfg.heard_wait_ms) || 0);
+    const wait = (p) => Promise.race([p, new Promise((res) => this.timer(() => res(null), waitMs))]);
     let text = null;
     if (this.opts.handoff === "turn" && t.turnP) text = await wait(t.turnP);
     if (!text) text = await wait(t.sessionP);

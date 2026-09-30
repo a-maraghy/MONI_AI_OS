@@ -57,7 +57,11 @@ var VoiceStop = (function () {
     "المايك", "الميك", "المايكروفون", "الميكروفون",
     // the call itself
     "المكالمه", "الكول", "ال كول", "المحادثه", "الكلام ده", "الكلام",
+    // English written in Arabic script (gpt-transcribe, and whisper on this server, write it so)
+    "كول", "الليسنينج", "ليسنينج", "ليسننج", "المايك ده",
   ];
+  // English verbs written in Arabic script ("ستوب الليسنينج", "اند الكول"): with either object list.
+  var AR_SCRIPT_EN_VERBS = ["ستوب", "كلوز", "اند", "بوز"];
   // Whole commands that are not verb + object.
   var EXTRA = [
     "stop listening now", "you can stop listening", "stop listening to me",
@@ -68,9 +72,9 @@ var VoiceStop = (function () {
   ];
   // Allowed around the command, never on their own.
   var LEAD = ["ok", "okay", "alright", "all right", "please", "hey mint", "mint ai", "mint", "moni", "so", "now",
-    "خلاص", "طيب", "يا مينت", "مينت", "من فضلك", "لو سمحت"];
+    "خلاص", "طيب", "يا مينت", "مينت", "من فضلك", "لو سمحت", "اوكي", "اوكيه", "بليز"];
   var TAIL = ["please", "for now", "now", "thanks", "thank you", "mint", "mint ai",
-    "خلاص", "من فضلك", "لو سمحت", "دلوقتي", "شكرا", "يا مينت"];
+    "خلاص", "من فضلك", "لو سمحت", "دلوقتي", "شكرا", "يا مينت", "بليز", "ثانكس"];
   // A request: one of these, once, right before a whole command ("can you
   // stop listening", "عايزك تقفل اللايف"). Longest first. "ممكن ت" is the
   // prefix written apart ("ممكن تـ قفل" once normalised); written onto the
@@ -84,7 +88,7 @@ var VoiceStop = (function () {
   // conversation"): stripped first, and not counted toward the word cap.
   var PLEASANT = ["thank you so much", "thank you very much", "thanks so much", "thanks a lot", "thank you", "thanks",
     "perfect", "great", "awesome", "excellent", "wonderful", "cool", "nice", "good", "ok", "okay",
-    "تمام", "حلو", "جميل", "ممتاز", "شكرا جدا", "شكرا", "متشكر", "متشكره", "الف شكر", "مرسي"]
+    "تمام", "حلو", "جميل", "ممتاز", "شكرا جدا", "شكرا", "متشكر", "متشكره", "الف شكر", "مرسي", "ثانكس", "بيرفكت"]
     .sort(function (a, b) { return b.length - a.length; });
   // Longer than this after normalising (pleasantries aside), it is a sentence, not a command.
   var MAX_WORDS = 9;
@@ -101,6 +105,8 @@ var VoiceStop = (function () {
     "الغي", "الغيها", "الغيه", "الغي ده", "الغي دا", "الغي دي", "الغيها دي", "الغي اللي عملته", "الغي اللي فات",
     "لا خلاص", "لا لا خلاص", "لا رجعها", "لا رجعيها", "لا الغيها", "لا الغي ده",
     "كانسل", "كانسل ده", "كانسلها", "انسي", "انسي ده", "انسي الموضوع ده",
+    // English in Arabic script
+    "اندو", "اندو ده", "اندو دي", "اندو بليز",
   ];
   var UNDO_SET = {};
   UNDO.forEach(function (p) { UNDO_SET[p] = true; });
@@ -116,9 +122,12 @@ var VoiceStop = (function () {
   var YES = ["yes", "yes please", "yes do it", "yes go ahead", "yeah", "yeah do it", "yep", "yup", "sure", "sure go ahead", "confirm", "confirmed",
     "i confirm", "do it", "go ahead", "please do", "yes confirm", "ok do it", "okay do it", "ok go ahead", "okay go ahead", "yes switch it", "switch it",
     "ايوه", "ايوا", "ايوه اعمل كده", "ايوه اعملي كده", "ايوه اعملها", "ايوه اعمليها", "اه", "اه اعملها", "اه اعمليها", "اعملها", "اعمليها",
-    "اعمل كده", "اعملي كده", "ماشي", "ماشي اعملها", "موافق", "موافقه", "اكيد", "طبعا", "يلا", "يلا اعملها", "نعم", "اكد", "اكدي", "غيرها", "غيريها", "ايوه غيرها", "ايوه غيريها"];
+    "اعمل كده", "اعملي كده", "ماشي", "ماشي اعملها", "موافق", "موافقه", "اكيد", "طبعا", "يلا", "يلا اعملها", "نعم", "اكد", "اكدي", "غيرها", "غيريها", "ايوه غيرها", "ايوه غيريها",
+    // English in Arabic script
+    "يس", "يس بليز", "اوكي اعملها", "شور", "كونفيرم", "جو اهيد"];
   var NO = ["no", "no thanks", "no thank you", "nope", "cancel", "cancel it", "cancel that", "don't", "dont", "don't do it", "dont do it", "never mind", "nevermind", "leave it",
-    "لا", "لأ", "لا شكرا", "لا خلاص", "لا متعملش", "لا متعمليش", "متعملش", "متعمليش", "بلاش", "خليها", "خليه", "سيبها", "سيبيها", "مش عايز", "مش عايزه", "الغي", "الغيها", "كانسل"];
+    "لا", "لأ", "لا شكرا", "لا خلاص", "لا متعملش", "لا متعمليش", "متعملش", "متعمليش", "بلاش", "خليها", "خليه", "سيبها", "سيبيها", "مش عايز", "مش عايزه", "الغي", "الغيها", "كانسل",
+    "نو", "نو ثانكس", "نوب"];
   var YES_SET = {}, NO_SET = {};
   YES.forEach(function (p) { YES_SET[norm(p)] = true; });
   NO.forEach(function (p) { NO_SET[norm(p)] = true; });
@@ -127,6 +136,8 @@ var VoiceStop = (function () {
   function add(p) { PHRASES[p] = true; }
   EN_VERBS.forEach(function (v) { EN_OBJECTS.forEach(function (o) { add(v + " " + o); }); });
   AR_VERBS.forEach(function (v) { AR_OBJECTS.forEach(function (o) { add(v + " " + o); }); });
+  AR_SCRIPT_EN_VERBS.forEach(function (v) { AR_OBJECTS.concat(EN_OBJECTS).forEach(function (o) { add(v + " " + o); }); });
+  EN_VERBS.forEach(function (v) { AR_OBJECTS.forEach(function (o) { add(v + " " + o); }); });
   EXTRA.forEach(add);
   // Only after a request (ASK): "ممكن تقفل الاستماع", "عايزك تبطل تسمع".
   var ASKED = {};

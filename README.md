@@ -93,6 +93,10 @@ sudo bash /opt/moni-ai-os/deploy/install-obsidian.sh
 # whisper.cpp, for local voice-note transcription
 sudo bash /opt/moni-ai-os/deploy/install-whisper.sh
 
+# The panel's voice transcribing on this server instead of OpenAI (needs the
+# whisper.cpp build above); then pick a model in MINT AI > Settings > Voice
+sudo bash /opt/moni-ai-os/deploy/install-voice-whisper.sh
+
 # WhatsApp channels (unofficial library — see the caveat in whatsapp/README.md)
 sudo bash /opt/moni-ai-os/deploy/install-whatsapp.sh
 ```
