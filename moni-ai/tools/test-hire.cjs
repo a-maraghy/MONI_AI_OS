@@ -47,6 +47,16 @@ console.log("lib/hire.js");
   const hired = [{ slug: "a", name: "Alpha", session_id: "s-a", kept: 0, status: "hired" }, { slug: "b", name: "Beta", session_id: "s-b", kept: 1, status: "hired" }];
   check("findHired / retireRefusal: only hired sessions, never kept ones, never the administrator's own",
     H.findHired({ name: "alpha" }, hired).slug === "a" && H.retireRefusal(H.findHired({ name: "Beta" }, hired)).includes("kept") && H.retireRefusal(H.findHired({ name: "Demo Own" }, hired)).includes("never be retired by MINT AI") && H.findHired({ ref: "2e985f" }, hired, { "2e985f": { name: "Alpha" } }).slug === "a");
+  const again = (hiredRows, taken) => H.checkHire({ name: "Session Birth", cwd: "/root/moni", purpose: "Try the hire feature end to end." }, { live, hired: hiredRows, recent: 0, cwdOpts: fake, taken });
+  const re1 = again([], ["session-birth"]);
+  const re2 = again([], ["session-birth", "session-birth-2"]);
+  check("a retired hire's name may be hired again: a fresh slug (-2, then -3), the retired row kept for the record", re1.ok && re1.slug === "session-birth-2" && /retired hire/.test(re1.slug_note) && re2.ok && re2.slug === "session-birth-3", JSON.stringify([re1, re2]));
+  check("  a different name whose slug a live hire holds (\"Session Birth 2\" after a re-hire): the next free slug, not a refusal", (() => { const r = H.checkHire({ name: "Session Birth 2", cwd: "/root/moni", purpose: "Try the hire feature end to end." }, { live, hired: [{ name: "Session Birth", slug: "session-birth-2", status: "hired" }], recent: 0, cwdOpts: fake, taken: ["session-birth", "session-birth-2"] }); return r.ok && r.slug === "session-birth-2-2"; })());
+  check("  a fresh slug stays within 40 characters", H.freeSlug("a".repeat(40), ["a".repeat(40)]) === "a".repeat(38) + "-2" && H.freeSlug("x", []) === "x");
+  check("  still refused, in plain words: a namesake that is hired, or one waiting to be retired",
+    /already exists and is still hired: pick another name, or retire it first/.test(again([{ name: "Session Birth", slug: "session-birth", status: "hired" }], ["session-birth"]).error) &&
+      /is being retired \(waiting for the administrator's consent\)/.test(again([{ name: "Session Birth", slug: "session-birth-2", status: "retiring" }], ["session-birth", "session-birth-2"]).error) &&
+      again([{ name: "Session Birth", slug: "session-birth", status: "retired" }], ["session-birth"]).slug === "session-birth-2");
   check("firstPrompt: marked as MINT AI's, not the administrator's, and carries the purpose", /^\[From MINT AI -- not the administrator\./.test(H.firstPrompt({ name: "X", purpose: "Do Y." })) && /Do Y\./.test(H.firstPrompt({ name: "X", purpose: "Do Y." })));
 }
 
@@ -206,6 +216,20 @@ const runnerPid = (slug) => { try { return Number(fs.readFileSync(path.join(sysd
     await sleep(500);
     const t3 = (await call("hired", {})).data.hired.find((x) => x.slug === "test-third");
     check("a denied retire leaves it running and hired", t3 && t3.status === "hired" && !!(await liveNamed("Test Third")));
+
+    // Hiring a retired name again (2026-09-30: it failed with the raw "UNIQUE constraint failed: hired_sessions.slug").
+    await call("hire-limits-set", { per_hour: 10 });
+    const rehire = await call("session-hire", { name: "Test Birth", cwd: "/root/moni", purpose: "The same name again, after the first one retired." }, "moni-ai");
+    check("re-hiring a retired name (Test Birth): hired, under a fresh slug", rehire.ok && rehire.data.hired.slug === "test-birth-2" && rehire.data.hired.name === "Test Birth" && /mint-session@test-birth-2/.test(rehire.data.note), JSON.stringify(rehire));
+    const rows = (await call("hired", { all: true })).data.hired.filter((x) => x.name === "Test Birth");
+    check("  the retired row stays for the record, untouched", rows.length === 2 && rows.some((x) => x.slug === "test-birth" && x.status === "retired" && x.retired_by === "amaraghy") && rows.some((x) => x.slug === "test-birth-2" && x.status === "hired"), JSON.stringify(rows));
+    check("  its unit is the new slug's", /enable --now mint-session@test-birth-2\.service/.test(fs.readFileSync(path.join(sysd, "calls.log"), "utf8")));
+    const live2 = await call("session-hire", { name: "test birth", cwd: "/root/moni", purpose: "A namesake of a live hire." }, "moni-ai");
+    check("  a namesake of the live re-hire: a plain refusal, never the constraint text", !live2.ok && /already exists and is still hired/.test(live2.error) && !/UNIQUE|constraint/i.test(live2.error), JSON.stringify(live2));
+    const asking = await call("session-retire", { name: "Test Third", note: "done" }, "moni-ai");
+    const whileRetiring = await call("session-hire", { name: "Test Third", cwd: "/root/moni", purpose: "Hired again while the first waits to retire." }, "moni-ai");
+    check("  a namesake of a hire waiting to be retired: a plain refusal", asking.ok && !whileRetiring.ok && /being retired/.test(whileRetiring.error) && !/UNIQUE|constraint/i.test(whileRetiring.error), JSON.stringify(whileRetiring));
+    await call("deny", { approval_id: asking.data.approval_id });
   } catch (e) {
     check("the run completed", false, e.stack + "\n" + sup.logs.slice(-2000));
   } finally {

@@ -1375,9 +1375,18 @@ async function sessionHire(actor, p) {
   if (!(actor === "moni-ai" || isHuman(actor))) throw new Error("only MINT AI or the administrator can hire a session");
   const hourAgo = new Date(Date.now() - 3600 * 1000).toISOString();
   const lim = hireLimits();
-  const c = hireLib.checkHire(p, { live: sessionsCache.list || [], hired: ledger.hiredList(false), recent: ledger.hiredSince(hourAgo), limits: lim });
+  const all = ledger.hiredList(true);
+  const c = hireLib.checkHire(p, { live: sessionsCache.list || [], hired: all.filter((h) => h.status !== "retired"), recent: ledger.hiredSince(hourAgo), limits: lim, taken: all.map((h) => h.slug) });
   if (c.error) throw new Error(c.error);
-  const h = ledger.addHired({ slug: c.slug, name: c.name, cwd: c.cwd, purpose: c.purpose, model: c.model, session_id: crypto.randomUUID(), hired_by: actor });
+  let h;
+  try {
+    h = ledger.addHired({ slug: c.slug, name: c.name, cwd: c.cwd, purpose: c.purpose, model: c.model, session_id: crypto.randomUUID(), hired_by: actor });
+  } catch (e) {
+    // hired_sessions.slug is UNIQUE: a hire racing this one took it. Never the raw constraint text.
+    if (/UNIQUE/i.test(String(e.message))) throw new Error(`the name "${c.name}" was just taken by another hire: try again`);
+    throw e;
+  }
+  if (c.slug_note) log(`hire: ${c.slug_note}; "${h.name}" is hired as ${h.slug}`);
   // The permission mode is fixed at hire time (Settings > Sessions & hiring); bin/mint-session refuses bypass.
   writeHiredFile(h, { hired_by: actor, hired_at: h.hired_at, permission_mode: lim.perm_mode });
   features.onHired(h);

@@ -12,7 +12,9 @@
  * Limits: at most MAX_LIVE sessions in the spheres view (every live session
  * but MINT AI itself, plus hires still starting); a cwd under /root (the
  * allowlist: /root/moni and /root itself, never a hidden directory such as
- * /root/.ssh or /root/.claude); a unique normalised name; a sanitised slug;
+ * /root/.ssh or /root/.claude); a unique normalised name among the hires not
+ * retired (a retired hire's name may be hired again, under a fresh slug); a
+ * sanitised slug;
  * at most HIRES_PER_HOUR hires an hour.
  *
  * MAX_LIVE, HIRES_PER_HOUR and the hired permission mode are DEFAULTS since the
@@ -44,6 +46,22 @@ function slugOf(name) {
     .replace(/^-+|-+$/g, "")
     .slice(0, 40)
     .replace(/-+$/, "");
+}
+
+/**
+ * `slug`, or -- when it is already in hired_sessions (a retired hire's) -- the
+ * first of "<slug>-2", "<slug>-3", ... that is not, kept within 40
+ * characters. null only if a thousand are taken.
+ */
+function freeSlug(slug, taken) {
+  const used = new Set(taken || []);
+  if (!used.has(slug)) return slug;
+  for (let i = 2; i < 1000; i++) {
+    const sfx = "-" + i;
+    const s = slug.slice(0, 40 - sfx.length).replace(/-+$/, "") + sfx;
+    if (!used.has(s)) return s;
+  }
+  return null;
 }
 
 /** The realpath of a directory the allowlist accepts, or an error. */
@@ -117,10 +135,14 @@ function liveCount(live, hired) {
 
 /**
  * Check a hire. `live`: the live sessions list (supervisor's cache); `hired`:
- * the hired_sessions rows not retired; `recent`: hires in the last hour.
- * Returns { ok, name, slug, cwd, model } or { error }.
+ * the hired_sessions rows not retired; `recent`: hires in the last hour;
+ * `taken`: every slug in hired_sessions, retired ones included (the column is
+ * UNIQUE). A name held by a hire that is still hired or retiring is refused;
+ * one held only by a RETIRED hire may be hired again -- the old row stays for
+ * the record and the new hire gets a fresh slug (freeSlug: "<slug>-2", ...).
+ * Returns { ok, name, slug, cwd, model, slug_note? } or { error }.
  */
-function checkHire({ name, cwd, purpose, model }, { live, hired, recent, cwdOpts, limits } = {}) {
+function checkHire({ name, cwd, purpose, model }, { live, hired, recent, cwdOpts, limits, taken } = {}) {
   const lim = limits || { max_live: MAX_LIVE, per_hour: HIRES_PER_HOUR };
   const nm = String(name || "").trim().replace(/\s+/g, " ");
   if (!NAME_RE.test(nm)) return { error: "name must be 1-48 letters, digits, spaces and . _ ' ( ) & -" };
@@ -129,9 +151,11 @@ function checkHire({ name, cwd, purpose, model }, { live, hired, recent, cwdOpts
   const slug = slugOf(nm);
   if (!slug) return { error: "that name has no letters or digits to make a slug from" };
   const n = targets.norm(nm);
+  const clash = (hired || []).find((h) => h.status !== "retired" && targets.norm(h.name) === n);
+  if (clash && clash.status === "retiring") return { error: `a hired session named "${clash.name}" is being retired (waiting for the administrator's consent): pick another name, or hire again once it is retired` };
+  if (clash) return { error: `a hired session named "${clash.name}" already exists and is still hired: pick another name, or retire it first` };
   const liveOthers = (live || []).filter((s) => s && !s.self);
   if (liveOthers.some((s) => targets.norm(s.name) === n)) return { error: `a session named "${nm}" is already running` };
-  if ((hired || []).some((h) => targets.norm(h.name) === n || h.slug === slug)) return { error: `a hired session named "${nm}" already exists` };
   if (liveCount(live, hired).live >= lim.max_live) return { error: `already ${lim.max_live} sessions: retire one first (the limit is ${lim.max_live} live sessions)` };
   if (lim.per_hour === 0) return { error: "hiring is switched off (0 hires an hour in Settings)" };
   if ((recent || 0) >= lim.per_hour) return { error: `at most ${lim.per_hour} hires an hour` };
@@ -140,7 +164,10 @@ function checkHire({ name, cwd, purpose, model }, { live, hired, recent, cwdOpts
   const p = String(purpose || "").trim();
   if (p.length < 10) return { error: "purpose must say what the session is for (10 characters or more)" };
   if (model !== undefined && model !== null && model !== "" && !MODEL_RE.test(String(model))) return { error: "model must be a claude-* model id" };
-  return { ok: true, name: nm, slug, cwd: c.cwd, purpose: p, model: model || null };
+  // A retired hire keeps its row (and its slug) for the record: the new one gets the next free slug.
+  const free = freeSlug(slug, [...(taken || []), ...(hired || []).map((h) => h.slug)]);
+  if (!free) return { error: `too many hires have been named "${nm}": pick another name` };
+  return { ok: true, name: nm, slug: free, cwd: c.cwd, purpose: p, model: model || null, ...(free !== slug ? { slug_note: `"${slug}" belongs to a retired hire, kept for the record` } : {}) };
 }
 
 /**
@@ -181,4 +208,4 @@ function firstPrompt(h) {
   );
 }
 
-module.exports = { MAX_LIVE, HIRES_PER_HOUR, LIMIT_BOUNDS, HIRE_MODES, CWD_ROOTS, defaultPermMode, defaultLimits, checkLimits, effectiveLimits, liveCount, slugOf, checkCwd, checkHire, findHired, retireRefusal, firstPrompt };
+module.exports = { MAX_LIVE, HIRES_PER_HOUR, LIMIT_BOUNDS, HIRE_MODES, CWD_ROOTS, defaultPermMode, defaultLimits, checkLimits, effectiveLimits, liveCount, slugOf, freeSlug, checkCwd, checkHire, findHired, retireRefusal, firstPrompt };
