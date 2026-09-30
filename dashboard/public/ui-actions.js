@@ -77,7 +77,7 @@
     "os-firewall": { url: "/firewall", label: "the firewall", perm: "firewall.view" },
     "manage-credentials": { url: "/credentials", label: "the credentials", perm: "credentials.view" },
     "manage-ssh-keys": { url: "/keys", label: "the SSH keys", perm: "keys.view" },
-    "manage-devices": { url: "/devices", label: "the paired devices", perm: "devices.view" },
+    "manage-devices": { url: "/devices", label: "your signed-in devices", perm: null },
     "manage-users": { url: "/users", label: "the users", perm: "users.view" },
     "manage-roles": { url: "/roles", label: "the roles", perm: "roles.view" },
     "claude-memory": { url: "/claude/memory", label: "Claude's memory", perm: "claude.memory.read" },
