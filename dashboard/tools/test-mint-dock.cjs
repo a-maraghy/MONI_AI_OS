@@ -25,7 +25,8 @@ function check(name, cond, detail) {
   }
 }
 const permOf = (list) => ({ can: (p) => list === "*" || list.includes(p), canDash: () => true });
-const render = (perms, extra) => ui.shell("Test", "<p>body</p>", Object.assign({ user: { name: "demo-admin", perm: permOf(perms) }, csrf: "demo-csrf-token", active: "home" }, extra || {}));
+// voice: the dock's mic -- voice on, a key and voice.use (server.js ctx(): req.voiceMic)
+const render = (perms, extra, voiceOk) => ui.shell("Test", "<p>body</p>", Object.assign({ user: { name: "demo-admin", perm: permOf(perms), voice: voiceOk !== false }, csrf: "demo-csrf-token", active: "home" }, extra || {}));
 
 console.log("where the dock appears");
 {
@@ -35,6 +36,9 @@ console.log("where the dock appears");
   check("  hidden until its script runs (no dock without JavaScript)", /<div class="md-root" id="mint-dock-root"[^>]* hidden>/.test(all));
   check("  carrying the CSRF token for its posts", /data-csrf="demo-csrf-token"/.test(all));
   check("  mic, orb, state, expand; every link goes to the Command Center", /id="md-mic"/.test(all) && /id="md-orb"[^>]*|href="\/mint-ai"[^>]*id="md-orb"/.test(all) && (all.match(/href="\/mint-ai"/g) || []).length >= 3);
+  const quiet = render("*", null, false);
+  check("  no mic at all when voice is off for this viewer (off, no key, or no voice.use): orb, state, expand only", /id="mint-dock-root"/.test(quiet) && !/id="md-mic"/.test(quiet) && !/hold to talk|mic starts a live call/.test(quiet));
+  check("  the mic starts a live conversation (no hold to talk)", /id="md-mic" aria-label="Start a live conversation"/.test(all) && !/Hold to talk|hold to talk/.test(all));
   check("not for a role without moniai.use", !/mint-dock-root/.test(render(["os.view"])) && !/mint-dock\.js/.test(render(["os.view"])));
   check("not on MINT AI's own pages (the console dashboard)", !/mint-dock-root/.test(render("*", { dash: "console", active: "console" })));
   check("not when a page opts out (dock: false)", !/mint-dock-root/.test(render("*", { dock: false })));
@@ -67,16 +71,15 @@ console.log("\npublic/mint-dock.js");
   check("innerHTML only for the escaped «You: …» line", (code.match(/innerHTML/g) || []).length === 1 && /innerHTML = st\.you \? "You: <b>" \+ esc\(st\.you\)/.test(code));
   check("its posts carry the CSRF header", /"X-CSRF-Token": CSRF/.test(code));
   check("the tab's id is the Command Center's (sessionStorage mint-tab), so MINT AI's screen actions reach this tab", /sessionStorage\.getItem\("mint-tab"\)/.test(code) && /events\?tab=/.test(code) && /tab: TAB_ID/.test(code));
-  check("a voice turn is transcribed here and sent with its voice-turn id", /api\("transcribe", \{ data: data, mime: mime, vt: vt/.test(code) && /api\("send", \{ text: said, vt: vt, tab: TAB_ID \}/.test(code));
-  check("a stop command is not sent; «undo» after a page.open goes back", /VoiceStop\.heard\(said\)/.test(code) && /VoiceStop\.undo\(said\) && cameBack/.test(code));
+  check("the mic starts a live call in the Command Center, this page kept in its frame (no push to talk here)", /location\.assign\("\/mint-ai\?at=" \+ encodeURIComponent\(here\) \+ "&call=1"\)/.test(code) && !/api\("transcribe"|MediaRecorder|getUserMedia/.test(code));
   check("page.open: the role is checked (data-pages) before moving, and a refusal is answered and shown", /PAGES_OK\.indexOf\(" " \+ v\.args\.page \+ " "\) < 0/.test(code) && /their role cannot open/.test(code) && /your role cannot see it/.test(code));
   check("page.open leaves a note for the next page (Undo) and moves by a known key only", /sessionStorage\.setItem\("mint-opened"/.test(code) && /location\.assign\(np\.url\)/.test(code) && !/location\.assign\(v\.args/.test(code));
   check("Undo returns only to a path of this site", /\^\\\/\[A-Za-z0-9\/_-\]\*\$/.test(code));
   check("a Tier-2 change is withdrawn here (cancel), never applied", /api\("ui\/confirm", \{ id: ev\.confirm, decision: "cancel" \}\)/.test(code) && !/decision: "confirm"/.test(code));
   check("anything else is refused: it needs the Command Center", /needs the Command Center open/.test(code));
-  check("no live call here (part 2 keeps it across pages)", !/VoiceLive|voice\/live|getUserMedia\([^)]*\)\.then\(function \(s\) \{ live/.test(code));
+  check("no live call of its own (the Command Center holds it; in the shell the mic is the Command Center's)", !/voice\/live|getUserMedia/.test(code) && /window\.__mintLive/.test(code));
   check("the core pauses when the tab is hidden, and draws one still frame under reduced motion", /document\.hidden/.test(code) && /prefers-reduced-motion: reduce/.test(code) && /if \(reduced\) \{ t = 2\.4; drawOrb\(\); \}/.test(code));
-  check("Space talks only outside inputs", /function typing\(el\)/.test(code) && /e\.code !== "Space" \|\| e\.repeat/.test(code));
+  check("no Space to talk (it went with push to talk)", !/"Space"/.test(code));
 }
 
 console.log("\npublic/mint-dock.css");
@@ -99,7 +102,7 @@ console.log("\nthe Command Center as a shell (M-5 part 2)");
   const pageDock = ui.dockMarkup("demo-csrf-token", permOf("*"));
   check("  an ordinary page's dock has none of that", !/md-frame|md-hero|md-end|data-shell/.test(pageDock));
   const vsrc = fs.readFileSync(path.join(ROOT, "lib", "views-moniai.js"), "utf8");
-  check("the Command Center page renders the shell's dock and loads mint-dock.css/js and mint-shell.js after moni-ai.js", /dockMarkup\(o\.csrf, perm, \{ shell: true, noVoice: !voice\.configured \}\)/.test(vsrc) && /"moni-ai\.js", "mint-dock\.js", "mint-shell\.js"\]/.test(vsrc) && /"mint-dock\.css"/.test(vsrc));
+  check("the Command Center page renders the shell's dock and loads mint-dock.css/js and mint-shell.js after moni-ai.js", /dockMarkup\(o\.csrf, perm, \{ shell: true, noVoice: !vOk \}\)/.test(vsrc) && /"moni-ai\.js", "mint-dock\.js", "mint-shell\.js"\]/.test(vsrc) && /"mint-dock\.css"/.test(vsrc));
   const sh = fs.readFileSync(path.join(ROOT, "public", "mint-shell.js"), "utf8").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
   check("mint-shell.js: only paths of this site open in the frame (not /mint-ai, /login, /logout, the API, //host)", /x\.origin !== ORIGIN/.test(sh) && /\/\^\\\/\(\?!\\\/\)\//.test(sh) && /logout\|login\|mint-ai\\\/api/.test(sh) && /isCC\(x\.pathname\)/.test(sh));
   check("  messages only from this origin and from the frame's own window; posts only to this origin", /e\.origin !== ORIGIN \|\| e\.source !== frame\.contentWindow/.test(sh) && /postMessage\(\{ mint: "theme", theme: [^}]*\}, ORIGIN\)/.test(sh) && !/postMessage\([^)]*"\*"\)/.test(sh));
@@ -117,7 +120,7 @@ console.log("\nthe Command Center as a shell (M-5 part 2)");
   const br = app.slice(app.indexOf("The bridge to the Command Center's shell"));
   check("app.js bridge: only when framed by the shell (same origin, parent is top)", /window\.top !== window && window\.parent === window\.top && window\.top\.location\.origin === location\.origin && window\.top\.MintShell/.test(br) && /if \(!parent\) return;/.test(br));
   check("  breaks out when signed out, on logout, and for the Command Center itself", /\.auth-wrap/.test(br) && /parent\.location\.replace/.test(br) && /form\[action="\/logout"\]/.test(br) && /\.target = "_top"/.test(br) && /send\(\{ mint: "expand" \}\)/.test(br));
-  check("  sends where it is, Space held (not while typing) and theme changes; takes the theme only from its parent", /send\(\{ mint: "nav" \}\)/.test(br) && /send\(\{ mint: "space", down: true \}\)/.test(br) && /typing\(document\.activeElement\)/.test(br) && /e\.origin !== ORIGIN \|\| e\.source !== parent/.test(br) && /parent\.postMessage\(m, ORIGIN\)/.test(br));
+  check("  sends where it is and theme changes (no Space to talk any more); takes the theme only from its parent", /send\(\{ mint: "nav" \}\)/.test(br) && !/mint: "space"/.test(br) && /e\.origin !== ORIGIN \|\| e\.source !== parent/.test(br) && /parent\.postMessage\(m, ORIGIN\)/.test(br));
   const dj = fs.readFileSync(path.join(ROOT, "public", "mint-dock.js"), "utf8");
   check("mint-dock.js: none of its own inside the frame; in the shell no stream or recorder of its own", /if \(framed\) \{ root\.remove\(\); return; \}/.test(dj) && /if \(!SHELL\) \{\s*var drv = pageDriver\(\);/.test(dj));
 }

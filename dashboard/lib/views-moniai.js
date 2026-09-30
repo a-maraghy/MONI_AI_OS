@@ -169,7 +169,9 @@ function topExtra() {
 const TOP_CLOCK = `<div class="cc-clock" aria-hidden="true"><b id="cc-clock">--:--</b><span id="cc-clock-date">Cairo</span></div>`;
 
 /**
- * @param o  { csrf, user, core, voice: {configured, model, voice, manage, desk} }
+ * @param o  { csrf, user, core, voice: {configured, model, voice, manage, on, use, live, liveDuplex} }
+ *   voice.live  voice works for this viewer (on in Settings, a key, voice.use):
+ *         the only case with a mic, read-aloud and the live controls on the page
  *   core  the viewer's saved MINT AI core (A / B / C; anything else is C),
  *         rendered here so the page paints the right one from the first frame
  */
@@ -178,12 +180,11 @@ function page(o) {
   const core = logic.normCore(o.core);
   const sessview = logic.normSessView(o.sessview);
   const perm = o.user && o.user.perm;
-  const voiceOff = voice.configured
+  // Voice is live conversation only; with voice off, no key or no voice.use there is no mic at all.
+  const vOk = !!(voice.configured && voice.live);
+  const voiceOff = vOk || !voice.manage || (voice.on && voice.configured)
     ? ""
-    : voice.manage
-    ? `<span class="cc-voice-off">voice is off: <a href="/credentials/openai-voice">Add an OpenAI key in Settings</a></span>`
-    : `<span class="cc-voice-off">voice is off: Add an OpenAI key in Settings — ask an administrator</span>`;
-  const deskOn = !!(voice.configured && voice.desk);
+    : `<span class="cc-voice-off">voice is off: <a href="/mint-ai/settings/voice">${voice.on && !voice.configured ? "add a token in" : "switch it on in"} Settings ▸ Voice</a></span>`;
   // Every page of Mint OS is in the ☰ drawer; these are the few worth one tap on a phone.
   const dashLinks = [
     ["/agents/dashboard", "bot", "Agents & sessions", (p) => p.can("agents.view") || p.can("claude.running.view")],
@@ -201,14 +202,13 @@ function page(o) {
      data-pages="${esc(UiActions.navKeysFor((p) => !perm || perm.can(p)).join(" "))}"
      data-csrf="${esc(o.csrf)}"
      data-viewer="${esc(o.user && o.user.name)}"
-     data-voice-ready="${voice.configured ? "1" : ""}"
+     data-voice-ready="${vOk ? "1" : ""}"
      data-voice-manage="${voice.manage ? "1" : ""}"
-     data-voice="${esc(voice.voice || "")}"
-     data-voice-model="${esc(voice.model || "")}"
-     data-voice-desk="${deskOn ? "1" : ""}"
-     data-voice-live="${voice.configured && voice.live ? "1" : ""}"
-     data-live-worklet="${voice.configured && voice.live ? esc(asset("voice-live-worklet.js")) : ""}"
-     data-live-duplex="${voice.configured && voice.live ? esc(voice.liveDuplex || "speakers") : ""}">
+     data-voice="${esc(vOk ? voice.voice || "" : "")}"
+     data-voice-model="${esc(vOk ? voice.model || "" : "")}"
+     data-voice-live="${vOk ? "1" : ""}"
+     data-live-worklet="${vOk ? esc(asset("voice-live-worklet.js")) : ""}"
+     data-live-duplex="${vOk ? esc(voice.liveDuplex || "speakers") : ""}">
   <div class="cc-bg" aria-hidden="true"></div>
   <div class="cc-halo" id="cc-halo" aria-hidden="true"></div>
   <canvas class="cc-core" id="cc-core" aria-hidden="true"></canvas>
@@ -228,7 +228,7 @@ function page(o) {
     </div>
     <div class="cc-dock" id="cc-dock">
       <form class="cc-composer" id="cc-compose" autocomplete="off">
-        <button type="button" class="cc-c-mic" id="cc-c-mic" title="${voice.configured ? "Talk to MINT AI (hold, or hold Space)" : "Add an OpenAI key in Settings to use voice"}" aria-label="Talk to MINT AI"${voice.configured ? "" : " disabled"}>${ic("voice")}</button>
+        ${vOk ? `<button type="button" class="cc-c-mic" id="cc-c-mic" title="Start a live conversation" aria-label="Start a live conversation" aria-pressed="false">${ic("voice")}</button>` : ""}
         <button type="button" class="cc-target" id="cc-target" aria-haspopup="menu" aria-expanded="false" title="MINT AI picks the session">${ic("route")}<span id="cc-target-label">Auto-route</span></button>
         <input id="cc-input" name="text" placeholder="Ask MINT AI…" aria-label="Message MINT AI" maxlength="20000" autocomplete="off">
         <button type="button" class="cc-c-stop" id="cc-stop" title="Interrupt the current turn" aria-label="Interrupt" hidden>${ic("stop")}</button>
@@ -236,20 +236,15 @@ function page(o) {
       </form>
       <div class="cc-voicebar" id="cc-voicebar">
         <button type="button" class="cc-c-mic cc-live-end cc-live-only" id="cc-live-end" title="End the conversation (Esc)" aria-label="End conversation" hidden>${ic("close")}</button>
-        <button type="button" class="cc-c-mic live" id="cc-vb-stop" title="Send what you said" aria-label="Stop and send">${ic("voice")}</button>
         <div class="cc-vb-text"><b>TALK TO MINT AI</b><span id="cc-vb-text">Listening…</span></div>
         <div class="cc-vb-wave" id="cc-vb-wave" aria-hidden="true"></div>
-        <span class="cc-vb-tags"><span class="cc-tag cc-tag-mode" id="cc-vb-mode">Push to talk</span><span class="cc-tag${deskOn ? " desk" : ""}" id="cc-voice-mode" title="${
-          deskOn
-            ? "Voice front desk (GPT, trial): MINT AI's voice, speaking as MINT AI -- quick answers from a read-only snapshot, and short spoken summaries of MINT AI's own results. Switch it off in Settings › OpenAI voice."
-            : "Voice goes straight to MINT AI: OpenAI only hears and reads aloud."
-        }">${deskOn ? "Front desk · GPT" : "Direct · MINT AI"}</span><span class="cc-tag">OpenAI</span><span class="cc-tag" id="cc-voice-tag">${esc(voice.configured ? String(voice.voice || "voice") : "no key")}</span></span>
+        <span class="cc-vb-tags"><span class="cc-tag cc-tag-mode" id="cc-vb-mode">Live</span><span class="cc-tag">OpenAI</span><span class="cc-tag" id="cc-voice-tag">${esc(vOk ? String(voice.voice || "voice") : "off")}</span></span>
         <span class="cc-target cc-static">${ic("route")}<span id="cc-vb-target">Auto-route</span></span>
         <span class="cc-live-acts cc-live-only" id="cc-live-acts" hidden><button type="button" class="cc-btn sm cc-live-duplex" id="cc-live-duplex" data-duplex="speakers" title="Speakers mode" aria-label="Speakers mode: switch to headphones mode">${ic("speaker", "dx-sp")}${ic("headphones", "dx-hp")}<span class="lbl" id="cc-live-duplex-lbl">Speakers</span></button><button type="button" class="cc-ibtn" id="cc-live-mute" title="Mute the microphone (the conversation stays open)" aria-label="Mute" aria-pressed="false">${ic("mute")}</button></span>
         <button type="button" class="cc-ibtn" id="cc-vb-close" title="Back to typing" aria-label="Back to typing">${ic("close")}</button>
       </div>
-      <div class="cc-hint" id="cc-hint"><button type="button" class="cc-vm" id="cc-vm" aria-haspopup="menu" aria-expanded="false" title="Voice and core settings">${ic("voice")}<span id="cc-mic-mode" data-mode="ptt">Push to talk</span>${ic("chevd")}</button>${
-        voice.configured ? `<span class="kb" id="cc-kb-space"><kbd>Space</kbd> hold to talk</span><span class="kb cc-live-only" id="cc-kb-live" hidden></span>` : ""
+      <div class="cc-hint" id="cc-hint"><button type="button" class="cc-vm" id="cc-vm" aria-haspopup="menu" aria-expanded="false" title="Voice and core settings">${ic("voice")}<span id="cc-mic-mode" data-mode="${vOk ? "live" : "off"}">${vOk ? `Live · ${esc(voice.voice || "voice")}` : "Voice"}</span>${ic("chevd")}</button>${
+        vOk ? `<span class="kb" id="cc-kb-space">click the mic to talk · <kbd>Esc</kbd> ends</span><span class="kb cc-live-only" id="cc-kb-live" hidden></span>` : ""
       }<span class="kb"><kbd>@</kbd> a session</span><span class="kb"><kbd>Ctrl K</kbd> everything</span><span class="kb cc-guard">destructive steps wait for your approval</span>${voiceOff}</div>
     </div>
   </main>
@@ -260,7 +255,7 @@ function page(o) {
 <section class="cc-reply" id="cc-reply" aria-label="MINT AI's last reply" hidden>
   <div class="hd"><span id="cc-reply-h">MINT AI</span><span class="sp"></span><button type="button" class="cc-ibtn" id="cc-reply-x" aria-label="Close">${ic("close")}</button></div>
   <div class="bd cc-scroll" id="cc-reply-body"></div>
-  <div class="ft"><button type="button" class="cc-btn sm" data-sheet="conv">${ic("message")}Whole conversation</button><button type="button" class="cc-btn sm" id="cc-reply-read"${voice.configured ? "" : " hidden"}>${ic("speaker")}Read aloud</button></div>
+  <div class="ft"><button type="button" class="cc-btn sm" data-sheet="conv">${ic("message")}Whole conversation</button>${vOk ? `<button type="button" class="cc-btn sm" id="cc-reply-read">${ic("speaker")}Read aloud</button>` : ""}</div>
 </section>
 
 <aside class="cc-need" id="cc-need" role="alertdialog" aria-label="Needs you" hidden></aside>
@@ -271,7 +266,7 @@ function page(o) {
     "conv",
     "Conversation",
     `<span id="cc-dr-sub">the MINT AI session</span>`,
-    `<button type="button" class="cc-ibtn" id="cc-speak-toggle" aria-pressed="false" title="Replies are silent — click to read MINT AI's replies aloud" aria-label="Read replies aloud"${voice.configured ? "" : " hidden"}>${ic("mute")}</button>` +
+    (vOk ? `<button type="button" class="cc-ibtn" id="cc-speak-toggle" aria-pressed="false" title="Replies are silent — click to read MINT AI's replies aloud" aria-label="Read replies aloud">${ic("mute")}</button>` : "") +
       `<button type="button" class="cc-ibtn" id="cc-rc-open" title="Open in Claude Desktop (Remote Control)" aria-label="Open in Claude Desktop">${ic("open")}</button>` +
       `<button type="button" class="cc-ibtn" id="cc-expand" title="Widen the sheet" aria-label="Widen the sheet">${ic("expand")}</button>`,
     `<section class="cc-activity" id="cc-activity"><h3><span class="cc-dot" id="cc-act-dot"></span>Current AI activity<span class="cc-muted" id="cc-act-sub">—</span></h3><ol class="cc-steps" id="cc-steps"></ol></section>
@@ -359,7 +354,7 @@ function page(o) {
   )}
 </aside>
 <div id="cc-overlay"></div>
-${perm ? dockMarkup(o.csrf, perm, { shell: true, noVoice: !voice.configured }) : ""}
+${perm ? dockMarkup(o.csrf, perm, { shell: true, noVoice: !vOk }) : ""}
 <noscript><div class="cc-noscript">The Command Center needs JavaScript.</div></noscript>`;
 
   return shell("MINT AI", body, {
