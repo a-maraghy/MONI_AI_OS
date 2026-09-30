@@ -1,0 +1,16 @@
+/*
+ * MINT AI ▸ Settings ▸ Voice (lib/views-settings-voice.js): the few rules the
+ * section needs beyond mint-os.css (hero switch, voice cards with gender, the
+ * masked key, .voice-off / .dep / .dep-hide all live there).
+ */
+.set-sec .row.full .rc > .voice-form { flex: 1 1 auto; width: 100%; }
+.voice-form .voice-cards { flex: 1 1 auto; width: 100%; }
+.voice-card .top { width: 100%; }
+.hero-sw .hs-form { flex: none; }
+.set-sec #v-main .row .rc select, .set-sec .dep-hide .row .rc select { width: min(360px, 100%); }
+.keybox .set-form.inline, .row .set-form.inline { display: inline-flex; }
+@media (max-width: 640px) {
+  .set-sec #v-main .row .rc select, .set-sec .dep-hide .row .rc select { width: 100%; }
+  .row .rc > .set-form { width: 100%; }
+  .row .rc > .set-form.inline { width: auto; }
+}

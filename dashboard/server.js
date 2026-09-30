@@ -40,10 +40,12 @@ const moniai = require("./lib/moniai");
 const rbac = require("./lib/rbac");
 const totp = require("./lib/totp");
 const voice = require("./lib/voice");
-const voiceDesk = require("./lib/voice-desk");
+const voiceShared = require("./lib/voice-shared"); // the guard, the supervisor door, the summaries (was voice-desk.js)
 const voiceUsage = require("./lib/voice-usage");
 const voicePersona = require("./lib/voice-persona");
 const voiceLive = require("./lib/voice-live");
+// MINT AI ▸ Settings; the Voice section is rendered and handled with the voice code below.
+const settingsRoutes = require("./lib/routes-settings");
 const UiActions = require("./public/ui-actions.js");
 // UI control Phase 2: the ui tokens this server minted, in memory only (lib/ui-relay.js).
 const uiRelay = require("./lib/ui-relay").createRelay();
@@ -77,11 +79,16 @@ function personaOfActor(actor) {
  */
 function uiConfirmOpen(who, v, tab, by) {
   if ((v.action === "persona.set" || v.action === "voice.set") && !who.canVoice) return { error: "this account cannot change voice settings" };
+  if (uiVoiceOff(v.action)) return { error: "voice is off" };
   if (v.action === "voice.set" && uiConfirms.anyPending("voice.set")) return { error: "another voice change is already waiting for a confirm" };
   const o = uiConfirms.open({ actor: who.username, action: v.action, args: v.args, tab, ip: who.ip });
   if (o.error) return o;
   db.logLogin(who.ip, who.username, "mint-ui", `${v.action} ${JSON.stringify(v.args)} asked by ${by}: waiting for the administrator's confirm`);
   return { id: o.id, question: UiActions.toast(v.action, v.args) };
+}
+/** A voice screen action (call.*, voice.set) while voice is off: refused, wherever it comes from. */
+function uiVoiceOff(action) {
+  return (/^call\./.test(String(action || "")) || action === "voice.set") && !voiceEnabled();
 }
 /** The administrator's next utterance against a pending confirm (null when none is pending). */
 function uiConfirmHeard(who, text, where) {
@@ -92,7 +99,7 @@ function uiConfirmHeard(who, text, where) {
   }
   return r;
 }
-/** moniai.call for the voice desk and the live call: a send carrying a ui token binds it to the turn it started. */
+/** moniai.call for the live call: a send carrying a ui token binds it to the turn it started. */
 function moniCall(op, params, actor, opts) {
   return moniai.call(op, params, actor, opts).then((r) => {
     if (op === "send" && params && params.ut && r && r.turn) uiRelay.bind(params.ut, r.turn.id);
@@ -199,7 +206,7 @@ app.use(express.urlencoded({ extended: false, limit: "64kb" }));
  * parser be the one that decides. Everything else keeps the small ceiling,
  * which is the point of having one.
  */
-const PAYLOAD_ROUTES = /^(\/console\/\d+\/(upload|transcribe)|\/mint-ai\/api\/transcribe|\/mint-ai\/api\/voice-eval\/clip)$/;
+const PAYLOAD_ROUTES = /^(\/console\/\d+\/(upload|transcribe)|\/mint-ai\/api\/voice-eval\/clip)$/;
 const smallJson = express.json({ limit: "64kb" });
 app.use((req, res, next) =>
   PAYLOAD_ROUTES.test(req.path) ? next() : smallJson(req, res, next)
@@ -319,6 +326,7 @@ function loadActor(req, res, next) {
       // `revoked` is a flag, not a message: anything rendered on the sign-in
       // page that came out of a URL is text an attacker can put in front of
       // someone who is about to type their password.
+      endLiveCallsForSession(req.sessionID, "signed-out");
       return req.session.destroy(() => res.redirect("/login?revoked=1"));
     }
     req.me = me;
@@ -327,6 +335,17 @@ function loadActor(req, res, next) {
   next();
 }
 app.use(loadActor);
+// Whether this viewer gets the dock's microphone (voiceDockOk, with the voice code): pages only.
+app.use((req, res, next) => {
+  if (req.method !== "GET" || !req.me || /^\/(?:mint|moni)-ai\/api\//.test(req.path) || /\.[a-z0-9]{2,5}$/i.test(req.path)) return next();
+  voiceDockOk(req).then(
+    (ok) => {
+      req.voiceMic = ok;
+      next();
+    },
+    () => next()
+  );
+});
 
 // The frame's badges and health chip, from a shared 30-second cache (see
 // lib/chrome.js). A change made through the panel forgets the cache, so the
@@ -356,6 +375,7 @@ function ctx(req, dash) {
     perm: req.perm,
     dash: dash || null,
     chrome: req.chrome || null,
+    voice: !!req.voiceMic, // the dock's mic: voice on, a key, and voice.use (see voiceDockOk)
   };
 }
 
@@ -615,6 +635,7 @@ app.post("/login", loginLimiter, requireCsrf, async (req, res) => {
 });
 
 app.post("/logout", requireCsrf, (req, res) => {
+  endLiveCallsForSession(req.sessionID, "signed-out"); // this device's live call ends with its session
   req.session.destroy(() => res.redirect("/login"));
 });
 
@@ -1913,7 +1934,7 @@ const VOICE_TTL_MS = 5 * 60 * 1000;
 function voiceForget(live) {
   voiceCache = { at: 0, cfg: null, pending: null };
   voice.clearCache();
-  voiceDesk.closeAll(); // a changed key or voice must not keep a front desk open on the old one
+  voiceShared.closeAll(); // a changed key or voice must not keep a summariser open on the old one
   if (live === "close") voiceLive.closeAll("settings-changed");
 }
 /** After voiceForget("reconnect"): every open live call reconnects with the settings now on disk. */
@@ -1924,7 +1945,7 @@ async function voiceReconnect(greetActor) {
     voiceLive.closeAll("settings-changed");
     return [];
   }
-  const out = await voiceLive.swapAll({ key: cfg.key, voice: cfg.voice, model: cfg.model, transcribe_model: cfg.transcribe_model }, greetActor);
+  const out = await voiceLive.swapAll({ key: cfg.key, voice: cfg.voice, model: cfg.model, live_model: cfg.live_model, transcribe_model: cfg.transcribe_model }, greetActor);
   out.forEach((r) => console.log(`live: ${r.actor}'s call ${r.ok ? "reconnected" : "could not reconnect"} after a voice settings change${r.ms != null ? " (" + r.ms + " ms)" : ""}`));
   return out;
 }
@@ -1940,31 +1961,61 @@ function uiConfirmsVoicePending() {
 }
 
 /**
- * The voice front desk (TRIAL): a GPT realtime model answers from a read-only
- * snapshot or hands the request to MINT AI (lib/voice-desk.js). Off unless an
- * administrator switches it on in Settings; while off, nothing about the voice
- * changes. A panel setting, not a secret, so it lives in the panel's database.
+ * Voice on or off, for everyone: one switch (MINT AI ▸ Settings ▸ Voice). A
+ * panel setting, not a secret, so it lives in the panel's database -- in the
+ * key the front desk's three-way mode used ("voice_desk"), with new values:
+ *   "on"   voice is live conversation, for those who may use it (voice.use)
+ *   "off"  no voice at all: no microphone, no read-aloud, no live call, and
+ *          MINT AI's voice screen actions are refused. The key stays stored.
+ * The old values map onto them when read (0 -> off; 1 and live -> on), and are
+ * rewritten once at start (migrateVoiceSetting), so a downgrade reads "on" /
+ * "off" as its own "off" (an unknown value) -- never as voice on.
  */
-const VOICE_DESK_SETTING = "voice_desk";
-/**
- * The voice mode, one setting with three values (the existing ones kept):
- *   "0" (or unset)  off: the direct path
- *   "1"             the relay front desk
- *   "live"          Live conversation (trial, lib/voice-live.js), for
- *                   administrators (voice.manage); everyone else, and the
- *                   push-to-talk mic, keep the relay desk
- */
-const VOICE_MODES = { off: "0", desk: "1", live: "live" };
-function voiceMode() {
+const VOICE_SETTING = "voice_desk";
+function voiceSettingValue(raw) {
+  const v = String(raw == null ? "" : raw).trim();
+  return v === "on" || v === "1" || v === "live" ? "on" : "off";
+}
+function voiceEnabled() {
   try {
-    const v = db.getSetting(VOICE_DESK_SETTING, "0");
-    return v === "live" ? "live" : v === "1" ? "desk" : "off";
+    return voiceSettingValue(db.getSetting(VOICE_SETTING, "off")) === "on";
   } catch (_) {
-    return "off";
+    return false;
   }
 }
-function voiceDeskOn() {
-  return voiceMode() !== "off";
+/** The one-time rewrite of the old values (idempotent: on / off / unset are left alone). */
+function migrateVoiceSetting() {
+  try {
+    const raw = db.getSetting(VOICE_SETTING, null);
+    if (raw === null || raw === undefined || raw === "on" || raw === "off") return null;
+    const now = voiceSettingValue(raw);
+    db.setSetting(VOICE_SETTING, now, "migration");
+    console.log(`voice: the voice setting ${JSON.stringify(String(raw).slice(0, 10))} became "${now}" (voice is live conversation only)`);
+    return now;
+  } catch (e) {
+    console.log("voice: could not migrate the voice setting: " + e.message);
+    return null;
+  }
+}
+migrateVoiceSetting();
+/** May this actor talk to MINT AI by voice (administrators by default)? */
+function voiceAllowed(perm) {
+  return !!(perm && perm.can && perm.can("moniai.use") && perm.can("voice.use"));
+}
+/**
+ * The voice model (the selector in Settings ▸ Voice): the live call's realtime
+ * model, and -- when the reader is verified with it -- the model that reads
+ * replies aloud (lib/voice.js readerModelFor). A panel setting, so the
+ * helper's file keeps holding only what it always held.
+ */
+const VOICE_MODEL_SETTING = "voice_model";
+function voiceModel() {
+  try {
+    const v = db.getSetting(VOICE_MODEL_SETTING, "");
+    return voice.VOICE_MODELS.some((m) => m.id === v) ? v : voiceLive.LIVE_MODEL;
+  } catch (_) {
+    return voiceLive.LIVE_MODEL;
+  }
 }
 /**
  * How live conversation handles the speaker (a panel setting, JSON):
@@ -1990,10 +2041,11 @@ function liveAudio() {
 
 /**
  * What the voice costs, recorded here from the real usage OpenAI reports for
- * every call -- transcription, the desk's responses, every sentence spoken --
+ * every call -- the live call's audio, its summaries, every sentence spoken --
  * per voice turn and per kind of turn (lib/voice-usage.js). Shown in the
  * Command Center's Cost today card. No cap (the administrator's decision of
- * 2026-09-29): the desk is never refused for what it has spent.
+ * 2026-09-29): the voice is never refused for what it has spent (the daily
+ * token caps in Usage & budget are separate).
  */
 const voiceLedger = voiceUsage.createLedger({ insert: (r) => db.voiceUsageInsert(r), rowsSince: (ms) => db.voiceUsageSince(ms) });
 function voiceUsageSummary() {
@@ -2054,19 +2106,6 @@ function personaHear({ userId, username, ip }, text) {
   return m.persona;
 }
 
-/**
- * A refusal the page expects (desk off). 409 for a plain JSON caller; a
- * streaming page gets it as its first and only line, so a normal fallback
- * does not show up in the browser console as a failed request.
- */
-function deskRefuse(req, res, body) {
-  if (/application\/x-ndjson/.test(String(req.get("accept") || ""))) {
-    res.status(200).set({ "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-store" });
-    return res.end(JSON.stringify({ type: "refused", ...body }) + "\n");
-  }
-  return res.status(409).json(body);
-}
-
 function ndjson(res) {
   let open = true;
   res.on("close", () => (open = false));
@@ -2093,9 +2132,12 @@ async function voiceConfig() {
   const pending = priv
     .voiceKeyRead()
     .then((d) => {
+      const live = voiceModel();
       const cfg = {
         key: d && d.key ? String(d.key) : null,
-        model: (d && d.model) || voice.DEFAULTS.model,
+        // The reader: the voice model when it is verified with it, else gpt-realtime-mini.
+        model: voice.readerModelFor(live),
+        live_model: live,
         voice: (d && d.voice) || voice.DEFAULTS.voice,
         transcribe_model: (d && d.transcribe_model) || voice.DEFAULTS.transcribe_model,
       };
@@ -2104,27 +2146,49 @@ async function voiceConfig() {
     })
     .catch((e) => {
       if (voiceCache.pending === pending) voiceCache.pending = null;
-      return { key: null, ...voice.DEFAULTS, error: e.message };
+      return { key: null, ...voice.DEFAULTS, live_model: voiceModel(), error: e.message };
     });
   voiceCache.pending = pending;
   return pending;
 }
 
-/** What a page may know: whether voice works, and with what. Never the key. */
+/**
+ * What a page may know: whether voice works for this viewer, and with what.
+ * Never the key. `on` is the Settings switch; `use` this viewer's voice.use;
+ * `live` all of it and a key -- the only case in which any mic, read-aloud or
+ * live control is rendered.
+ */
 async function voicePublic(req) {
   const cfg = await voiceConfig();
+  const on = voiceEnabled();
+  const use = voiceAllowed(req && req.perm);
   return {
     configured: !!cfg.key,
-    model: cfg.model,
+    model: cfg.live_model,
     voice: cfg.voice,
     provider: "OpenAI",
     manage: !!(req && req.perm && req.perm.can("voice.manage")),
-    desk: !!cfg.key && voiceDeskOn(),
-    mode: voiceMode(),
-    // Live conversation: a key, the mode set to live, and an administrator.
-    live: !!cfg.key && voiceMode() === "live" && liveAllowed(req && req.perm),
+    on,
+    use,
+    live: !!cfg.key && on && use,
     liveDuplex: liveAudio().duplex,
   };
+}
+/**
+ * The dock's microphone on the other pages (lib/ui.js dockMarkup): shown only
+ * when live conversation works for this viewer. The voice settings are cached,
+ * so this costs nothing once they have been read; until then (the first page
+ * after a restart) it waits for them once.
+ */
+async function voiceDockOk(req) {
+  if (!req.me || !voiceEnabled() || !voiceAllowed(req.perm)) return false;
+  const cfg = await voiceConfig();
+  return !!cfg.key;
+}
+
+/** Voice is off for everyone (Settings ▸ Voice): the refusal a voice route gives. */
+function voiceOffRefuse(res) {
+  return res.status(409).json({ error: "Voice is off. An administrator can switch it on in MINT AI ▸ Settings ▸ Voice.", code: "voice-off" });
 }
 
 function voiceFail(res, e) {
@@ -2142,17 +2206,9 @@ const AUDIO_MIME_RE = /^audio\/[a-z0-9.+-]{1,30}$/;
  */
 const voiceGrounds = new voiceGuard.Grounds();
 
-/**
- * A recording through lib/voice-intake.js: silence is not sent to OpenAI, and
- * a transcript that is a prompt echo, too long for its audio, or a stock
- * silence phrase is dropped. Returns {text, dropped, heard, audioSeconds}.
- */
-function voiceHear(audio, mime, level, cfg) {
-  return voiceIntake.intake({ audio, mime: AUDIO_MIME_RE.test(mime) ? mime : "audio/webm", level, cfg, transcribe: voice.transcribeFull });
-}
-
-/** Shared by the console and the Command Center: base64 recording in, text out. */
+/** The console's dictation: base64 recording in, text out (the Command Center's push to talk used it too, until 2026-09-30). */
 async function voiceTranscribeRoute(req, res) {
+  if (!voiceEnabled()) return voiceOffRefuse(res);
   const data = typeof (req.body && req.body.data) === "string" ? req.body.data : "";
   if (!data || !/^[A-Za-z0-9+/=]+$/.test(data)) return res.status(400).json({ error: "No audio arrived.", code: "invalid" });
   const mime = String((req.body && req.body.mime) || "").split(";")[0].trim().toLowerCase();
@@ -2228,6 +2284,7 @@ function voiceLog(kind, status, f) {
  * what kind (the direct path by default), for the usage figures.
  */
 async function voiceSpeakRoute(req, res) {
+  if (!voiceEnabled()) return voiceOffRefuse(res);
   const text = typeof (req.body && req.body.text) === "string" ? req.body.text : "";
   if (!text.trim()) return res.status(400).json({ error: "Nothing to say.", code: "invalid" });
   const t0 = Date.now();
@@ -2322,8 +2379,13 @@ async function voiceSpeakRoute(req, res) {
   }
 }
 
-/* Settings: the key is write-only. It is posted once, handed to the helper on
-   stdin, and from then on the panel shows its last four characters. */
+/* MINT AI ▸ Settings ▸ Voice (/mint-ai/settings/voice): the section and its
+   forms. The key is write-only: it is posted once, handed to the helper on
+   stdin into the same root-only file, and from then on the panel only says
+   whether it is set. Every form answers os.js in place (JSON with the note)
+   and a plain POST with a redirect back to the row. */
+
+const voiceSettingsViews = require("./lib/views-settings-voice");
 
 async function voiceSettings() {
   try {
@@ -2333,86 +2395,141 @@ async function voiceSettings() {
   }
 }
 
-app.get("/credentials/openai-voice", requireAuth, requirePerm("voice.manage"), async (req, res) => {
-  const v = await voiceSettings();
-  if (v.error) return res.status(500).send(views.error("Voice settings unavailable", v.error));
+/** Answer a voice form: settingsRoutes' reply, plus {message|error} for the Command Center's confirmed changes. */
+function voiceReply(req, res, { msg, err, anchor, reload } = {}) {
+  if (settingsRoutes.wantsJson(req)) {
+    const { flashes } = require("./lib/ui");
+    return res.status(err ? 400 : 200).json({ ok: !err, flash: flashes({ msg, err }), reload: !!reload, ...(err ? { error: err } : { message: msg || "" }) });
+  }
+  return settingsRoutes.reply(req, res, "voice", { msg, err, anchor, reload });
+}
+/** Signed in, MINT AI and voice.manage (the section's own rule), then the CSRF token. */
+function voiceSettingsPerm(req, res, next) {
+  if (req.perm.can("moniai.use") && req.perm.can("voice.manage")) return next();
+  if (settingsRoutes.wantsJson(req)) return res.status(403).json({ ok: false, error: "This account cannot change voice settings." });
+  return requirePerm("voice.manage")(req, res, next);
+}
+const voiceGuardSettings = [requireAuth, voiceSettingsPerm, requireCsrf];
+
+settingsRoutes.sections.voice = async (req, res) => {
+  const on = voiceEnabled();
+  const [status, cfg] = await Promise.all([voiceSettings(), voiceConfig()]);
   const test = req.query.test ? { ok: req.query.test === "ok", text: String(req.query.t || "").slice(0, 600) } : null;
-  const list = req.perm.can("credentials.view") ? await priv.credentialList().catch(() => []) : [];
-  res.send(
-    credentialViews.voice({
+  const persona = personaOf(req.me.id);
+  return {
+    body: voiceSettingsViews.body({
       csrf: res.locals.csrf,
-      user: ctx(req),
-      credentials: list,
-      voice: v,
-      desk: { on: voiceDeskOn(), mode: voiceMode(), row: db.settingRow(VOICE_DESK_SETTING), model: voiceDesk.DESK_MODEL, liveModel: voiceLive.LIVE_MODEL, usage: voiceUsageSummary(), liveAudio: liveAudio() },
-      persona: voicePersona.describe(personaOf(req.me.id)),
-      models: voice.MODELS,
+      on,
+      status: status.error ? { configured: !!cfg.key } : status,
+      model: cfg.live_model,
+      models: voice.VOICE_MODELS,
+      voice: cfg.voice,
       voices: voice.VOICES,
+      meta: voice.VOICE_META,
+      transcribe: cfg.transcribe_model,
       transcribeModels: voice.TRANSCRIBE_MODELS,
+      persona: { ...voicePersona.describe(persona), mode: persona.mode, preset: persona.preset },
+      liveAudio: liveAudio(),
+      usage: voiceUsageSummary(),
       test,
-      flash: req.query.msg || null,
-      err: req.query.err || null,
-    })
-  );
+    }),
+    secClass: on ? "" : "voice-off",
+    assets: ["mint-settings-voice.css", "mint-settings-voice.js"],
+  };
+};
+settingsRoutes.marks.push(async () => ({ voice: voiceEnabled() ? "on" : "off" }));
+
+/*
+ * The old /credentials/openai-voice URLs (bookmarks, the Guide, the page
+ * registry until it is rescanned): a page GET goes to the section (302);
+ * a form POST keeps its method and body and goes to its new route (308), so
+ * an old form or a Command Center still running the old script keeps working.
+ * The desk switch is gone: its POST lands on the section with a note.
+ */
+app.get("/credentials/openai-voice", requireAuth, (req, res) => res.redirect(302, "/mint-ai/settings/voice"));
+for (const k of ["key", "clear", "test", "options", "persona", "persona/reset", "live-audio"]) {
+  app.post("/credentials/openai-voice/" + k, (req, res) => res.redirect(308, "/mint-ai/settings/voice/" + k));
+}
+app.post("/credentials/openai-voice/desk", requireAuth, (req, res) =>
+  res.redirect(303, "/mint-ai/settings/voice?msg=" + encodeURIComponent("The voice front desk is gone: voice is live conversation, switched on or off here."))
+);
+
+/** The switch: voice on or off, for everyone. Off ends every open live call; the key is kept. */
+app.post("/mint-ai/settings/voice/enabled", ...voiceGuardSettings, (req, res) => {
+  const want = req.body.enabled === "1" || req.body.enabled === "on" ? "on" : "off";
+  const was = voiceEnabled() ? "on" : "off";
+  db.setSetting(VOICE_SETTING, want, req.me.username);
+  let closed = 0;
+  if (want === "off") {
+    closed = voiceLive.activeCount();
+    voiceLive.closeAll("disabled");
+    voiceShared.closeAll();
+  }
+  db.logLogin(req.ip, req.me.username, "voice", `voice ${want === "on" ? "enabled" : "disabled"} for everyone${was === want ? " (unchanged)" : ""}${closed ? ` (${closed} live call(s) ended)` : ""}`);
+  voiceReply(req, res, {
+    msg: want === "on" ? "Voice is on: live conversation, for those whose role includes it." : "Voice is off for everyone. The token stays stored." + (closed ? ` ${closed} live call${closed === 1 ? "" : "s"} ended.` : ""),
+    anchor: "v-main",
+    reload: true,
+  });
 });
 
-app.post("/credentials/openai-voice/key", requireAuth, requirePerm("voice.manage"), requireCsrf, async (req, res) => {
+app.post("/mint-ai/settings/voice/key", ...voiceGuardSettings, async (req, res) => {
   const value = String((req.body && req.body.value) || "").trim();
   try {
     const out = await priv.voiceKeySet(value);
     voiceForget("reconnect");
     voiceReconnect(null).catch(() => {});
     db.logLogin(req.ip, req.me.username, "voice", "set the OpenAI voice key (…" + out.last4 + ")");
-    res.redirect("/credentials/openai-voice?msg=" + encodeURIComponent("Key saved. Press Test to check it."));
+    voiceReply(req, res, { msg: "Token saved. Press Test to check it.", anchor: "v-token", reload: true });
   } catch (e) {
-    res.redirect("/credentials/openai-voice?err=" + encodeURIComponent(priv.redact(e.message)));
+    voiceReply(req, res, { err: priv.redact(e.message), anchor: "v-token" });
   }
 });
 
-app.post("/credentials/openai-voice/clear", requireAuth, requirePerm("voice.manage"), requireCsrf, async (req, res) => {
+app.post("/mint-ai/settings/voice/clear", ...voiceGuardSettings, async (req, res) => {
   try {
     await priv.voiceKeyClear();
     voiceForget("close");
     db.logLogin(req.ip, req.me.username, "voice", "removed the OpenAI voice key");
-    res.redirect("/credentials/openai-voice?msg=" + encodeURIComponent("Key removed. Voice is off until a key is added."));
+    voiceReply(req, res, { msg: "Token removed. Voice stays off until a new one is added.", anchor: "v-token", reload: true });
   } catch (e) {
-    res.redirect("/credentials/openai-voice?err=" + encodeURIComponent(e.message));
+    voiceReply(req, res, { err: priv.redact(e.message), anchor: "v-token" });
   }
 });
 
 /**
- * A settings form's answer: the redirect it always was, or -- when the Command
- * Center applies a confirmed Tier-2 preference (UI control Phase 3) and asks
- * for JSON -- {ok, message}, read from the same redirect URL.
+ * The voice model, the voice and the listening model. Each Settings row posts
+ * only its own field; a confirmed voice.set from the Command Center posts all
+ * three. The voice model is the panel's setting (the live call's model); the
+ * helper keeps the reader's model (readerModelFor), the voice and the listening
+ * model, as before.
  */
-function formReply(req, res, url) {
-  if (!/application\/json/.test(req.get("accept") || "")) return res.redirect(url);
-  const q = new URL(url, "http://x").searchParams;
-  const err = q.get("err");
-  return res.status(err ? 400 : 200).json(err ? { ok: false, error: err } : { ok: true, message: q.get("msg") || "" });
-}
-
-app.post("/credentials/openai-voice/options", requireAuth, requirePerm("voice.manage"), requireCsrf, async (req, res) => {
-  const model = field(req.body, "model");
-  const name = field(req.body, "voice");
-  const tmodel = field(req.body, "transcribe_model");
-  if (!voice.MODELS.some((m) => m.id === model) || !voice.VOICES.includes(name) || !voice.TRANSCRIBE_MODELS.some((m) => m.id === tmodel)) {
-    return formReply(req, res, "/credentials/openai-voice?err=" + encodeURIComponent("Pick a model, voice and listening model from the lists."));
+app.post("/mint-ai/settings/voice/options", ...voiceGuardSettings, async (req, res) => {
+  const cur = await voiceConfig();
+  const has = (k) => typeof (req.body && req.body[k]) === "string" && req.body[k] !== "";
+  const vmodel = has("model") ? field(req.body, "model") : cur.live_model;
+  const name = has("voice") ? field(req.body, "voice") : cur.voice;
+  const tmodel = has("transcribe_model") ? field(req.body, "transcribe_model") : cur.transcribe_model;
+  if (!voice.VOICE_MODELS.some((m) => m.id === vmodel) || !voice.VOICES.includes(name) || !voice.TRANSCRIBE_MODELS.some((m) => m.id === tmodel)) {
+    return voiceReply(req, res, { err: "Pick a voice model, voice and listening model from the lists.", anchor: "v-voice" });
   }
   // The voice is locked while someone's confirm for a voice.set is open (their confirm applies it).
   const lock = uiConfirmsVoicePending();
-  if (lock) return formReply(req, res, "/credentials/openai-voice?err=" + encodeURIComponent("A voice change is waiting for a confirm on the Command Center; answer that first."));
+  if (lock) return voiceReply(req, res, { err: "A voice change is waiting for a confirm on the Command Center; answer that first.", anchor: "v-voice" });
   try {
-    await priv.voiceOptionsSet(model, name, tmodel);
+    const reader = voice.readerModelFor(vmodel);
+    await priv.voiceOptionsSet(reader, name, tmodel);
+    if (vmodel !== voiceModel()) db.setSetting(VOICE_MODEL_SETTING, vmodel, req.me.username);
     voiceForget("reconnect");
     const greet = (voiceGreet.get(req.me.username) || 0) > Date.now() ? req.me.username : null;
     voiceGreet.delete(req.me.username);
-    // Open live calls reconnect with the new voice and go on; the one whose confirm this is says a line in it.
+    // Open live calls reconnect with the new settings and go on; the one whose confirm this is says a line in it.
     voiceReconnect(greet).catch(() => {});
-    db.logLogin(req.ip, req.me.username, "voice", `voice settings ${model} / ${name} / ${tmodel}${voiceLive.activeCount() ? ` (${voiceLive.activeCount()} live call(s) reconnect with it)` : ""}`);
-    formReply(req, res, "/credentials/openai-voice?msg=" + encodeURIComponent("Voice settings saved."));
+    db.logLogin(req.ip, req.me.username, "voice", `voice settings ${vmodel} (reads aloud with ${reader}) / ${name} / ${tmodel}${voiceLive.activeCount() ? ` (${voiceLive.activeCount()} live call(s) reconnect with it)` : ""}`);
+    const what = has("model") ? `Voice model: ${vmodel}.` : has("voice") && !has("transcribe_model") ? `Voice: ${name}.` : has("transcribe_model") && !has("voice") ? `Listening model: ${tmodel}.` : "Voice settings saved.";
+    voiceReply(req, res, { msg: what, anchor: has("model") ? "v-model" : has("transcribe_model") && !has("voice") ? "v-listen" : "v-voice" });
   } catch (e) {
-    formReply(req, res, "/credentials/openai-voice?err=" + encodeURIComponent(e.message));
+    voiceReply(req, res, { err: e.message, anchor: "v-voice" });
   }
 });
 
@@ -2420,73 +2537,64 @@ app.post("/credentials/openai-voice/options", requireAuth, requirePerm("voice.ma
  * The voice persona: learned from speech, or chosen here from a fixed list of
  * presets (lib/voice-persona.js PRESETS) -- never typed. A choice is kept until
  * it is changed here or reset; speech never overrides it. Reset forgets it and
- * learns again.
+ * learns again. Per user (the scope "you").
  */
-app.post("/credentials/openai-voice/persona", requireAuth, requirePerm("voice.manage"), requireCsrf, (req, res) => {
+app.post("/mint-ai/settings/voice/persona", ...voiceGuardSettings, (req, res) => {
   const preset = field(req.body, "preset");
   const p = voicePersona.choose(preset);
-  if (!p) return formReply(req, res, "/credentials/openai-voice?err=" + encodeURIComponent("Choose one of the voice personas.") + "#v-persona");
+  if (!p) return voiceReply(req, res, { err: "Choose one of the voice personas.", anchor: "v-persona" });
   const was = voicePersona.describe(personaOf(req.me.id));
   db.setVoicePersona(req.me.id, p.mode === "explicit" ? JSON.stringify(p) : "");
   const now = voicePersona.describe(p);
   db.logLogin(req.ip, req.me.username, "voice", `voice persona set to "${now.choice}" (was "${was.choice}")`);
-  formReply(req, res, "/credentials/openai-voice?msg=" + encodeURIComponent(p.mode === "explicit" ? `Voice persona: ${now.choice}. Arabic replies use it from the next utterance; English stays English.` : "Voice persona: learned from how you speak again.") + "#v-persona");
+  voiceReply(req, res, { msg: p.mode === "explicit" ? `Voice persona: ${now.choice}. Arabic replies use it from the next utterance; English stays English.` : "Voice persona: learned from how you speak again.", anchor: "v-persona" });
 });
 
-app.post("/credentials/openai-voice/persona/reset", requireAuth, requirePerm("voice.manage"), requireCsrf, (req, res) => {
+app.post("/mint-ai/settings/voice/persona/reset", ...voiceGuardSettings, (req, res) => {
   db.setVoicePersona(req.me.id, "");
   db.logLogin(req.ip, req.me.username, "voice", "reset the voice persona (back to learning from speech; register and self-gender forgotten)");
-  res.redirect("/credentials/openai-voice?msg=" + encodeURIComponent("Voice persona reset. It is learned again from how you speak.") + "#v-persona");
+  voiceReply(req, res, { msg: "Voice persona reset. It is learned again from how you speak.", anchor: "v-persona", reload: true });
 });
 
-app.post("/credentials/openai-voice/desk", requireAuth, requirePerm("voice.manage"), requireCsrf, (req, res) => {
-  // mode=off|desk|live, or the older enabled=1|0 (off / relay desk).
-  const m = field(req.body, "mode");
-  const e = field(req.body, "enabled");
-  const mode = m ? (Object.prototype.hasOwnProperty.call(VOICE_MODES, m) ? m : null) : e === "1" ? "desk" : e === "0" ? "off" : null;
-  if (!mode) return res.redirect("/credentials/openai-voice?err=" + encodeURIComponent("Choose off, the relay desk or live conversation."));
-  const was = voiceMode();
-  db.setSetting(VOICE_DESK_SETTING, VOICE_MODES[mode], req.me.username);
-  if (mode === "off") voiceDesk.closeAll();
-  if (mode !== "live") voiceLive.closeAll("mode-changed");
-  const label = { off: "off", desk: "relay desk on", live: "live conversation (trial) on" }[mode];
-  db.logLogin(req.ip, req.me.username, "voice", `voice front desk (GPT, trial) ${label}${was === mode ? " (unchanged)" : ""}`);
-  const msg = {
-    off: "Voice front desk is off. The Command Center's voice talks to MINT AI directly again.",
-    desk: "Voice front desk is on. Reload the Command Center to use it.",
-    live: "Live conversation (trial) is on for administrators. Reload the Command Center and pick it in the voice menu; headphones are advised.",
-  }[mode];
-  res.redirect("/credentials/openai-voice?msg=" + encodeURIComponent(msg) + "#v-desk");
-});
-
-app.post("/credentials/openai-voice/live-audio", requireAuth, requirePerm("voice.manage"), requireCsrf, (req, res) => {
-  const duplex = field(req.body, "duplex");
-  const noise = field(req.body, "noise");
-  if (!voiceLive.DUPLEX.includes(duplex) || !voiceLive.NOISE_REDUCTION.includes(noise)) {
-    return res.redirect("/credentials/openai-voice?err=" + encodeURIComponent("Choose speakers or headphones, and a noise reduction.") + "#v-live");
-  }
+/** Speaker handling and noise reduction (each row posts its own field; the other is kept). */
+app.post("/mint-ai/settings/voice/live-audio", ...voiceGuardSettings, (req, res) => {
   const was = liveAudio();
+  const duplex = req.body && req.body.duplex !== undefined ? field(req.body, "duplex") : was.duplex;
+  const noise = req.body && req.body.noise !== undefined ? field(req.body, "noise") : was.noise;
+  if (!voiceLive.DUPLEX.includes(duplex) || !voiceLive.NOISE_REDUCTION.includes(noise)) {
+    return voiceReply(req, res, { err: "Choose speakers or headphones, and a noise reduction.", anchor: "v-live-audio" });
+  }
   db.setSetting(VOICE_LIVE_AUDIO_SETTING, JSON.stringify({ duplex, noise }), req.me.username);
   db.logLogin(req.ip, req.me.username, "voice", `live conversation audio: ${duplex === "speakers" ? "speakers mode" : "headphones mode"}, noise reduction ${noise} (was ${was.duplex}, ${was.noise})`);
-  res.redirect("/credentials/openai-voice?msg=" + encodeURIComponent("Live conversation audio saved. It applies to the next call; each browser can still switch from the live bar.") + "#v-live");
+  voiceReply(req, res, { msg: "Live conversation audio saved. It applies to the next call; each browser can still switch from the live bar.", anchor: "v-live-audio" });
 });
 
-app.post("/credentials/openai-voice/test", requireAuth, requirePerm("voice.manage"), requireCsrf, async (req, res) => {
+/**
+ * Test: one short line spoken with the voice model and transcribed back -- a
+ * real call. It reads with the selected voice model even when read-aloud uses
+ * gpt-realtime-mini (readerModelFor), so a passing Test is what shows a model
+ * can be trusted to read aloud word for word.
+ */
+app.post("/mint-ai/settings/voice/test", ...voiceGuardSettings, async (req, res) => {
   voiceForget("keep"); // test what is on disk now, not a cached copy; open calls are not touched
   let ok = false;
   let text;
   try {
-    const out = await voice.check(await voiceConfig());
+    const cfg = await voiceConfig();
+    const out = await voice.check({ ...cfg, model: cfg.live_model });
     ok = out.faithful && !!out.heard;
     text =
       `${out.model} (${out.voice}) spoke ${out.seconds != null ? out.seconds + " s of audio " : ""}in ${out.speak_ms} ms` +
       (out.faithful ? ", word for word" : `, but not as written — it said “${out.speak_transcript}”`) +
-      (out.heard != null ? `; listening heard “${out.heard}” in ${out.transcribe_ms} ms.` : ".");
+      (out.heard != null ? `; listening heard “${out.heard}” in ${out.transcribe_ms} ms.` : ".") +
+      (cfg.model !== cfg.live_model ? ` Replies are read aloud with ${cfg.model}.` : "");
   } catch (e) {
     text = e.message;
   }
+  text = priv.redact(voice.scrub(text));
   db.logLogin(req.ip, req.me.username, "voice", "tested the OpenAI voice key: " + (ok ? "ok" : "failed"));
-  res.redirect("/credentials/openai-voice?test=" + (ok ? "ok" : "fail") + "&t=" + encodeURIComponent(priv.redact(voice.scrub(text))));
+  if (settingsRoutes.wantsJson(req)) return voiceReply(req, res, ok ? { msg: "Test passed. " + text } : { err: "Test failed. " + text });
+  res.redirect(303, "/mint-ai/settings/voice?test=" + (ok ? "ok" : "fail") + "&t=" + encodeURIComponent(text) + "#v-main");
 });
 
 /* ---------------------------------------------------------- credentials --- */
@@ -2496,7 +2604,7 @@ app.get("/credentials", requireAuth, requirePerm("credentials.view"), async (req
     credentials: () => priv.credentialList(),
     probe: () => priv.systemProbe(),
   });
-  const voiceState = req.perm.can("voice.manage") ? await voiceSettings() : null;
+  const voiceState = req.perm.can("voice.manage") ? { ...(await voiceSettings()), on: voiceEnabled() } : null;
   res.send(
     credentialViews.index({
       csrf: res.locals.csrf,
@@ -3668,6 +3776,7 @@ function uiDeliver(ev, req, tab, res) {
   if (!r.deliver) return;
   const v = UiActions.validate(ev.action, ev.args || {});
   if (!v.ok) return void ack(false, v.why);
+  if (uiVoiceOff(v.action)) return void ack(false, "voice is off");
   if (v.tier === 2) {
     const o = uiConfirmOpen({ username: actor, ip: req.ip, canVoice: req.perm.can("voice.manage") }, v, tab, `MINT AI (turn ${ev.turn_id})`);
     if (o.error) return void ack(false, o.error);
@@ -3702,11 +3811,12 @@ app.post("/mint-ai/api/ui/confirm", ...moniAiWrite, async (req, res) => {
     return res.json({ ok: true, cancelled: true });
   }
   if ((t.action === "persona.set" || t.action === "voice.set") && !req.perm.can("voice.manage")) return res.status(403).json({ error: "This account cannot change voice settings." });
+  if (uiVoiceOff(t.action)) return res.status(409).json({ error: "Voice is off.", code: "voice-off" });
   let form = null;
   if (t.action === "persona.set") form = { preset: t.args.preset };
   if (t.action === "voice.set") {
-    const cfg = await voiceConfig();
-    form = { model: cfg.model, voice: t.args.voice, transcribe_model: cfg.transcribe_model };
+    // Only the voice: the voice model and the listening model are kept (Settings ▸ Voice options).
+    form = { voice: t.args.voice };
     // Its options post reconnects the open live calls; this user's call says a line in the new voice.
     voiceGreet.set(req.me.username, Date.now() + 20000);
   }
@@ -3791,225 +3901,18 @@ app.post("/mint-ai/api/rc", ...moniAiWrite, async (req, res) => {
 });
 
 /**
- * Voice for the Command Center, through OpenAI and only through this server:
- * the recording is posted here and transcribed with the key held here; a reply
- * is read aloud a sentence at a time and comes back as a WAV. The browser
- * never talks to OpenAI. Nothing is saved.
+ * Read-aloud for the Command Center ("Read replies aloud" and a reply's Read
+ * aloud), through OpenAI and only through this server: a reply is read a
+ * sentence at a time, its audio streamed back. The browser never talks to
+ * OpenAI. Nothing is saved. Refused (409 voice-off) while voice is off, and
+ * only for those who may use the voice (voice.use).
+ *
+ * The Command Center's push to talk (/mint-ai/api/transcribe) and the voice
+ * front desk (/mint-ai/api/desk/turn, /desk/summary) were removed on
+ * 2026-09-30: voice is live conversation only, and the live call hears on the
+ * server (lib/voice-live.js).
  */
-const moniAiAudioBody = express.json({ limit: "44mb" });
-
-app.post("/mint-ai/api/transcribe", requireApiPerm("moniai.use"), moniAiAudioBody, requireApiCsrf, voiceTranscribeRoute);
-
-app.post("/mint-ai/api/speak", ...moniAiWrite, voiceSpeakRoute);
-
-/**
- * The voice front desk (TRIAL, off by default): one utterance in -- a recording,
- * or text -- and what the desk says back, streamed as NDJSON as it happens:
- * {type:"heard"}; per released sentence {type:"line", i, text} and then its
- * audio as it is read -- {type:"start"|"audio"|"cut"|"end", i, ...}, strictly
- * in sentence order (voiceDesk.createSpeaker); {type:"asked", turn} for a
- * request passed to MINT AI; and {type:"done"} with what the turn cost and the
- * voice usage figures. The page reads MINT AI's answer later through
- * /desk/summary. Refused with 409 while the Settings switch is off
- * ("desk-off"), so the page falls back to the direct path. There is no budget.
- */
-app.post("/mint-ai/api/desk/turn", requireApiPerm("moniai.use"), moniAiAudioBody, requireApiCsrf, async (req, res) => {
-  if (!voiceDeskOn()) return deskRefuse(req, res, { error: "The voice front desk is off.", code: "desk-off" });
-  const t0 = Date.now();
-  const body = req.body || {};
-  const vt = bodyVt(req);
-  const actor = req.me.username;
-  let cfg = null;
-  let heard = "";
-  let tTranscribe = null;
-  let transcribeUsd = 0;
-  const out = ndjson(res);
-  let started = false;
-  try {
-    cfg = await voiceConfig();
-    if (!cfg.key) throw new voice.VoiceError("Add an OpenAI key in Settings to use voice.", "no-key");
-    const desk = () => voiceDesk.deskFor(req.me.username, cfg, moniCall, { log: (m) => console.log(m) });
-    let dropped = null;
-    if (typeof body.text === "string" && body.text.trim()) {
-      if (body.text.length > 4000 || body.text.includes("\u0000")) return res.status(400).json({ error: "That is too long.", code: "invalid" });
-      heard = body.text.trim();
-      const door = voiceGuard.refuseAtDoor(heard);
-      if (door) {
-        dropped = door.rule;
-        heard = "";
-      }
-    } else {
-      const data = typeof body.data === "string" ? body.data : "";
-      if (!data || !/^[A-Za-z0-9+/=]+$/.test(data)) return res.status(400).json({ error: "No audio arrived.", code: "invalid" });
-      const mime = String(body.mime || "").split(";")[0].trim().toLowerCase();
-      const audio = Buffer.from(data, "base64");
-      // Nothing is opened for a clip that will not be transcribed.
-      if (!voiceIntake.preCheck(audio, voiceIntake.cleanLevel(body.level))) {
-        desk().open(); // the socket opens while the words are transcribed
-        voice.warm(cfg); // and the reader's, for the first sentence
-      }
-      const got = await voiceHear(audio, mime, body.level, cfg);
-      heard = got.text;
-      dropped = got.dropped;
-      if (got.heard) transcribeUsd = recordTranscription({ vt, actor, heard: got.heard });
-      tTranscribe = Date.now() - t0;
-    }
-    if (dropped) voiceLog("desk", 200, { ms: Date.now() - t0, transcribe_ms: tTranscribe, dropped, lines: 0 });
-    out.start();
-    started = true;
-    // "Stop listening" said aloud: the page closes the mic, and the desk
-    // neither answers it nor passes it to MINT AI.
-    const stop = !!heard && voiceStop.heard(heard);
-    // "Undo" said while the tab can still undo its last screen action: the
-    // page undoes it, and the desk neither answers it nor passes it on.
-    // A pending Tier-2 confirm is answered by this utterance, or dropped by it.
-    const conf = !stop && heard && !/^[\[(]/.test(heard) ? uiConfirmHeard({ username: actor, ip: req.ip }, heard, "relay desk") : null;
-    const answered = conf && (conf.confirmed || conf.cancelled);
-    if (answered) {
-      out.write({ type: "heard", text: heard, confirm: { id: answered.id, ok: !!conf.confirmed } });
-      out.write({ type: "done", asked: [], lines: 0, confirm: true, cost_usd: transcribeUsd, usage: voiceUsageSummary() });
-      return out.end();
-    }
-    const undo = !stop && body.undoable === true && !!heard && voiceStop.undo(heard);
-    out.write({ type: "heard", text: heard && !/^[\[(]/.test(heard) ? heard : "", stop: stop || undefined, undo: undo || undefined });
-    if (!heard || /^[\[(]/.test(heard)) {
-      out.write({ type: "done", asked: [], lines: 0, cost_usd: transcribeUsd, usage: voiceUsageSummary() });
-      return out.end();
-    }
-    if (undo) {
-      voiceLog("desk", 200, { ms: Date.now() - t0, transcribe_ms: tTranscribe, undo: "voice-command", lines: 0 });
-      db.logLogin(req.ip, req.me.username, "mint-ui", "undo by the voice front desk");
-      out.write({ type: "done", asked: [], lines: 0, undo: true, cost_usd: transcribeUsd, usage: voiceUsageSummary() });
-      return out.end();
-    }
-    if (stop) {
-      voiceLog("desk", 200, { ms: Date.now() - t0, transcribe_ms: tTranscribe, stop: "voice-command", lines: 0 });
-      out.write({ type: "done", asked: [], lines: 0, stop: true, cost_usd: transcribeUsd, usage: voiceUsageSummary() });
-      return out.end();
-    }
-    const speaker = voiceDesk.createSpeaker({ speak: voice.speakStream, cfg, write: out.write, t0 });
-    const persona = personaHear({ userId: req.me.id, username: req.me.username, ip: req.ip }, heard);
-    const r = await desk().turn(heard, {
-      onLine: (line) => speaker.push(line),
-      persona,
-      // A hand-off to MINT AI carries a ui token for this tab (UI control Phase 2).
-      uiTicket: () => uiRelay.mint({ actor, tab: body.tab, via: "page" }),
-      // Tier 2 (theme / persona / voice): the page asks the administrator to confirm.
-      openConfirm: (v) => uiConfirmOpen({ username: actor, ip: req.ip, canVoice: req.perm.can("voice.manage") }, v, body.tab, "the voice front desk"),
-      // Screen actions (public/ui-actions.js) go back to this tab, in this stream; audited.
-      onUi: (ui) => {
-        out.write(ui);
-        db.logLogin(req.ip, req.me.username, "mint-ui", `${ui.action}${Object.keys(ui.args || {}).length ? " " + JSON.stringify(ui.args) : ""} by the voice front desk`);
-      },
-    });
-    for (const t of r.asked) out.write({ type: "asked", turn: t });
-    const sp = await speaker.done();
-    const cat = voiceDesk.categoryOf(r);
-    const deskUsd = recordVoice(() => voiceLedger.add({ vt, cat, part: "desk", model: voiceDesk.DESK_MODEL, tokens: r.tokens, actor }).usd);
-    const speechUsd = recordSpeech({ vt, cat, actor, billing: sp.billing, lateBilling: sp.lateBilling });
-    const usage = voiceUsageSummary();
-    if (r.asked.length) db.logLogin(req.ip, req.me.username, "moni-ai", "turn via the voice front desk");
-    voiceLog("desk", 200, {
-      ms: Date.now() - t0,
-      transcribe_ms: tTranscribe,
-      first_line_ms: r.timings.firstLine != null ? (tTranscribe || 0) + r.timings.firstLine : undefined,
-      first_audio_ms: sp.firstAudio,
-      desk_ms: r.timings.done,
-      tools: r.tools.join("+") || undefined,
-      asked: r.asked.length || undefined,
-      guard: r.trip ? r.trip.rule : undefined,
-      refused_tools: r.rejected.length || undefined,
-      lines: r.lines.length,
-      audio_s: Math.round(sp.spoken.reduce((n, l) => n + l.audio_s, 0) * 100) / 100,
-      cat,
-      usd: (transcribeUsd + deskUsd + speechUsd).toFixed(5),
-      day_usd: usage.today ? usage.today.total.toFixed(4) : undefined,
-    });
-    out.write({
-      type: "done",
-      asked: r.asked,
-      cat,
-      guard: r.trip ? { rule: r.trip.rule } : null,
-      ms: { total: Date.now() - t0, transcribe: tTranscribe, desk: r.timings.done, first_line: r.timings.firstLine, first_audio: sp.firstAudio },
-      cost_usd: transcribeUsd + deskUsd + speechUsd,
-      usage,
-    });
-    out.end();
-  } catch (e) {
-    voiceLog("desk", e.code || "error", { ms: Date.now() - t0, why: e.message });
-    if (started) {
-      out.write({ type: "error", error: voice.scrub(e.message), code: e.code || "error" });
-      return out.end();
-    }
-    if (e instanceof voiceDesk.DeskError && e.code === "invalid") return res.status(400).json({ error: e.message, code: "invalid" });
-    if (e.code === "no-key" || e.code === "invalid" || e.code === "timeout") return voiceFail(res, e);
-    res.status(502).json({ error: voice.scrub(e.message), code: e.code || "error" });
-  }
-});
-
-/**
- * MINT AI's answer to a request the desk passed on, as a short spoken summary
- * (streamed like /desk/turn, a hand-off's cost). The full text is on screen
- * already. {type:"done", fallback:"verbatim"} tells the page to read the
- * reply as written instead (it was short and plain, or the guard cut the
- * summary before a word was said); {pending:true} that MINT AI has not
- * answered yet. Refused like /desk/turn. Body: {turn, vt?}.
- */
-app.post("/mint-ai/api/desk/summary", ...moniAiWrite, async (req, res) => {
-  if (!voiceDeskOn()) return deskRefuse(req, res, { error: "The voice front desk is off.", code: "desk-off" });
-  const id = Number(req.body && req.body.turn);
-  if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: "Which request?", code: "invalid" });
-  const vt = bodyVt(req);
-  const actor = req.me.username;
-  const t0 = Date.now();
-  const out = ndjson(res);
-  let started = false;
-  try {
-    const cfg = await voiceConfig();
-    if (!cfg.key) throw new voice.VoiceError("Add an OpenAI key in Settings to use voice.", "no-key");
-    voice.warm(cfg);
-    const desk = voiceDesk.deskFor(req.me.username, cfg, moniCall, { log: (m) => console.log(m) });
-    out.start();
-    started = true;
-    const speaker = voiceDesk.createSpeaker({ speak: voice.speakStream, cfg, write: out.write, t0 });
-    const r = await desk.summarise(id, { onLine: (line) => speaker.push(line), persona: personaOf(req.me.id) });
-    const sp = await speaker.done();
-    const deskUsd = r.cost_usd ? recordVoice(() => voiceLedger.add({ vt, cat: "handoff", part: "desk", model: voiceDesk.DESK_MODEL, tokens: r.tokens, actor }).usd) : 0;
-    const speechUsd = recordSpeech({ vt, cat: "handoff", actor, billing: sp.billing, lateBilling: sp.lateBilling });
-    const usage = voiceUsageSummary();
-    voiceLog("desk-summary", 200, {
-      ms: Date.now() - t0,
-      first_line_ms: r.timings.firstLine,
-      first_audio_ms: sp.firstAudio,
-      fallback: r.fallback || (r.pending ? "pending" : undefined),
-      guard: r.trip ? r.trip.rule : undefined,
-      reply_chars: r.shape ? r.shape.chars : undefined,
-      lines: r.lines.length,
-      audio_s: Math.round(sp.spoken.reduce((n, l) => n + l.audio_s, 0) * 100) / 100,
-      usd: (deskUsd + speechUsd).toFixed(5),
-      day_usd: usage.today ? usage.today.total.toFixed(4) : undefined,
-    });
-    out.write({
-      type: "done",
-      fallback: r.fallback || null,
-      pending: !!r.pending,
-      guard: r.trip ? { rule: r.trip.rule } : null,
-      ms: { total: Date.now() - t0, first_line: r.timings.firstLine, first_audio: sp.firstAudio },
-      cost_usd: deskUsd + speechUsd,
-      usage,
-    });
-    out.end();
-  } catch (e) {
-    voiceLog("desk-summary", e.code || "error", { ms: Date.now() - t0, why: e.message });
-    if (started) {
-      out.write({ type: "error", error: voice.scrub(e.message), code: e.code || "error" });
-      return out.end();
-    }
-    if (e.code === "invalid") return res.status(400).json({ error: e.message, code: "invalid" });
-    if (e.code === "no-key" || e.code === "timeout") return voiceFail(res, e);
-    res.status(502).json({ error: voice.scrub(e.message), code: e.code || "error" });
-  }
-});
+app.post("/mint-ai/api/speak", ...moniAiWrite, requireApiPerm("voice.use"), voiceSpeakRoute);
 
 /**
  * The voice's usage figures for the Command Center: today's and this month's
@@ -5244,7 +5147,6 @@ app.get("/guide", requireAuth, (req, res) => {
  * /mint-ai/settings/<section> (lib/routes-settings.js, views lib/views-settings.js).
  * The Voice section's renderer and routes sit with the voice code below it.
  */
-const settingsRoutes = require("./lib/routes-settings");
 settingsRoutes.mount(app, { requireAuth, requireCsrf, ctx, db, moniai });
 
 /* ------------------------------------ live voice evaluation (admin) ---- */
@@ -5358,7 +5260,7 @@ app.use((err, req, res, next) => {
 /* ------------------------------------------- live conversation (WS) ---- */
 
 /**
- * Live conversation (TRIAL, lib/voice-live.js): the Command Center streams the
+ * Live conversation (lib/voice-live.js): the Command Center streams the
  * microphone here over a WebSocket, and this server relays it to OpenAI's
  * realtime model and plays back only what the guard has passed. The browser
  * never talks to OpenAI and never sees the key.
@@ -5367,9 +5269,9 @@ app.use((err, req, res, next) => {
  * the upgrade, unless all of these hold:
  *   - the Origin is this host (a page elsewhere cannot open it with the cookie);
  *   - a signed-in session (the same cookie and store as every page), a user
- *     who is not disabled, with moniai.use AND voice.manage (administrators);
+ *     who is not disabled, with moniai.use AND voice.use (administrators by default);
  *   - the session's CSRF token in the query;
- *   - the voice mode is "live" and an OpenAI key is set.
+ *   - voice is on (Settings ▸ Voice; 403 while it is off) and an OpenAI key is set.
  * Then: one live call per user (a second is told "busy" and closed), at most
  * LIVE_MAX_CALLS at once, 20 minutes at most (lib/voice-live.js), frames of at
  * most half a second of audio or 4 KB of JSON, and no more audio than twice
@@ -5385,7 +5287,7 @@ const LIVE_PATH = /^\/(?:mint|moni)-ai\/api\/live(?:\?|$)/;
 const LIVE_MAX_CALLS = 4;
 const LIVE_MAX_FRAME = voiceLive.RATE; // bytes: half a second of PCM16
 function liveAllowed(perm) {
-  return !!(perm && perm.can("moniai.use") && perm.can("voice.manage"));
+  return voiceAllowed(perm);
 }
 function hostOnly(h) {
   return String(h || "").trim().toLowerCase().replace(/:\d+$/, "").replace(/^\[|\]$/g, "");
@@ -5431,7 +5333,7 @@ function liveUpgrade(req, socket, head) {
       if (!liveAllowed(perm)) return refuseUpgrade(socket, 403, "Forbidden");
       const q = new URL(req.url, "http://x").searchParams;
       if (!sameToken(q.get("csrf"), sess.csrf)) return refuseUpgrade(socket, 403, "Invalid CSRF token");
-      if (voiceMode() !== "live") return refuseUpgrade(socket, 409, "Live conversation is off");
+      if (!voiceEnabled()) return refuseUpgrade(socket, 403, "Voice is off");
       const cfg = await voiceConfig();
       if (!cfg.key) return refuseUpgrade(socket, 409, "No OpenAI key");
       if (voiceLive.activeCount() >= LIVE_MAX_CALLS && !voiceLive.callFor(me.username)) return refuseUpgrade(socket, 503, "Too many live calls");
@@ -5441,7 +5343,8 @@ function liveUpgrade(req, socket, head) {
       const duplex = voiceLive.DUPLEX.includes(q.get("duplex")) ? q.get("duplex") : audio.duplex;
       const route = q.get("route") === "loopback" ? "loopback" : q.get("route") === "direct" ? "direct" : "unknown";
       const tab = q.get("tab") || null;
-      liveWss.handleUpgrade(req, socket, head, (ws) => liveConnected(ws, { me, cfg, ip, duplex, noise: audio.noise, route, tab, canVoice: perm.can("voice.manage") }));
+      const sid = req.sessionID || null; // the device's session: signing it out ends this call (endLiveCallsForSession)
+      liveWss.handleUpgrade(req, socket, head, (ws) => liveConnected(ws, { me, cfg, ip, duplex, noise: audio.noise, route, tab, canVoice: perm.can("voice.manage"), sid }));
     } catch (e) {
       console.log("live: upgrade failed: " + e.message);
       refuseUpgrade(socket, 500, "Server error");
@@ -5449,7 +5352,7 @@ function liveUpgrade(req, socket, head) {
   });
 }
 
-function liveConnected(ws, { me, cfg, ip, duplex, noise, route, tab, canVoice }) {
+function liveConnected(ws, { me, cfg, ip, duplex, noise, route, tab, canVoice, sid }) {
   const actor = me.username;
   const json = (o) => ws.readyState === 1 && ws.send(JSON.stringify(o));
   if (voiceLive.callFor(actor)) {
@@ -5457,9 +5360,9 @@ function liveConnected(ws, { me, cfg, ip, duplex, noise, route, tab, canVoice })
     return ws.close(4409, "busy");
   }
   const call = new voiceLive.LiveCall({
-    cfg: { key: cfg.key, voice: cfg.voice, model: cfg.model, transcribe_model: cfg.transcribe_model, noise_reduction: noise },
+    cfg: { key: cfg.key, voice: cfg.voice, model: cfg.model, live_model: cfg.live_model, transcribe_model: cfg.transcribe_model, noise_reduction: noise },
     actor,
-    ops: voiceDesk.deskOps(moniCall, actor),
+    ops: voiceShared.voiceOps(moniCall, actor),
     client: {
       json,
       audio: (seg, buf) => {
@@ -5481,7 +5384,7 @@ function liveConnected(ws, { me, cfg, ip, duplex, noise, route, tab, canVoice })
     audit: (line) => db.logLogin(ip, actor, "mint-ui", line),
     speak: voice.speakStream,
     transcribe: voice.transcribeFull,
-    summarise: (id, o) => voiceDesk.deskFor(actor, cfg, moniCall, { log: (m) => console.log(m) }).summarise(id, o),
+    summarise: (id, o) => voiceShared.summariserFor(actor, cfg, moniCall, { log: (m) => console.log(m) }).summarise(id, o),
     record: (row) => recordVoice(() => voiceLedger.add(row).usd),
     isStop: (t) => voiceStop.heard(t),
     isUndo: (t) => voiceStop.undo(t),
@@ -5498,8 +5401,9 @@ function liveConnected(ws, { me, cfg, ip, duplex, noise, route, tab, canVoice })
     log: (m) => console.log(m),
     opts: { duplex },
   });
+  call.sid = sid || null;
   voiceLive.register(actor, call);
-  db.logLogin(ip, actor, "voice", `live conversation (trial) started (${duplex === "full" ? "headphones" : "speakers"} mode, playback ${route}, noise reduction ${noise})`);
+  db.logLogin(ip, actor, "voice", `live conversation started (${duplex === "full" ? "headphones" : "speakers"} mode, playback ${route}, noise reduction ${noise})`);
   console.log(`live: call ${call.id} started: ${duplex} mode, playback ${route}, noise reduction ${noise}`);
   // Twice real time is the most a microphone can send; more is not a microphone.
   let window0 = Date.now();
@@ -5537,7 +5441,7 @@ function liveConnected(ws, { me, cfg, ip, duplex, noise, route, tab, canVoice })
     call.close("hung-up");
     voiceLive.unregister(actor, call);
     const dg = call.diag;
-    db.logLogin(ip, actor, "voice", `live conversation (trial) ended after ${Math.round((Date.now() - call.bornAt) / 1000)} s, $${call.usd.toFixed(4)}; ${call.duplex} mode, barge-ins ${dg.bargeIns.length} of ${dg.candidates.length} candidates, phantom turns ${dg.leaks}`);
+    db.logLogin(ip, actor, "voice", `live conversation ended after ${Math.round((Date.now() - call.bornAt) / 1000)} s, $${call.usd.toFixed(4)}; ${call.duplex} mode, barge-ins ${dg.bargeIns.length} of ${dg.candidates.length} candidates, phantom turns ${dg.leaks}`);
   });
   ws.on("error", () => {});
   call
@@ -5547,6 +5451,26 @@ function liveConnected(ws, { me, cfg, ip, duplex, noise, route, tab, canVoice })
       json({ type: "error", code: "upstream", error: voice.scrub(e.message) });
       call.close("upstream");
     });
+}
+
+/**
+ * End every live call bound to this browser session (its id, req.sessionID):
+ * signing a device out ends that device's call -- the logout here, and the
+ * Devices page's sign-out of another device. Returns how many were ended.
+ */
+function endLiveCallsForSession(sid, reason) {
+  if (!sid) return 0;
+  let n = 0;
+  for (const call of voiceLive.all()) {
+    if (call.sid !== sid) continue;
+    try {
+      call.close(reason || "signed-out");
+      n++;
+    } catch (e) {
+      console.log("live: could not end a call on sign-out: " + e.message);
+    }
+  }
+  return n;
 }
 
 const httpServer = app.listen(PORT, BIND, () => {

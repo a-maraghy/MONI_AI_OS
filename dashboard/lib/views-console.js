@@ -467,7 +467,7 @@ exports.console = ({
                                  title="Add an OpenAI key in Settings to use voice">${icon("voice", 15)}<span>Live</span></button>
                          ${
                            voice.manage
-                             ? `<a class="small voice-setup" href="/credentials/openai-voice">Add an OpenAI key in Settings</a>`
+                             ? `<a class="small voice-setup" href="/mint-ai/settings/voice">Add an OpenAI key in Settings</a>`
                              : `<span class="muted small voice-setup">Voice needs an OpenAI key — ask an administrator</span>`
                          }
                        </span>`
