@@ -40,19 +40,26 @@ console.log("where the dock appears");
   check("  no mic at all when voice is off for this viewer (off, no key, or no voice.use): orb, state, expand only", /id="mint-dock-root"/.test(quiet) && !/id="md-mic"/.test(quiet) && !/hold to talk|mic starts a live call/.test(quiet));
   check("  the mic starts a live conversation (no hold to talk)", /id="md-mic" aria-label="Start a live conversation"/.test(all) && !/Hold to talk|hold to talk/.test(all));
   check("not for a role without moniai.use", !/mint-dock-root/.test(render(["os.view"])) && !/mint-dock\.js/.test(render(["os.view"])));
-  check("not on MINT AI's own pages (the console dashboard)", !/mint-dock-root/.test(render("*", { dash: "console", active: "console" })));
+  check("not on the Command Center (the bare page: it is MINT AI already)", !/mint-dock-root/.test(render("*", { bare: true, active: "moni-ai" })) && !/dock-band/.test(render("*", { bare: true, active: "moni-ai" })));
+  check("  opts.dash is ignored (no dashboard switches the dock off any more)", /mint-dock-root/.test(render("*", { dash: "console", active: "console" })));
   check("not when a page opts out (dock: false)", !/mint-dock-root/.test(render("*", { dock: false })));
   check("not signed out", !/mint-dock-root/.test(ui.shell("Sign in", "<div class=\"card\">x</div>", {})));
-  check("the Command Center route renders its page with the console dashboard", /dash: "console"|active: "console"/.test(fs.readFileSync(path.join(ROOT, "lib", "views-moniai.js"), "utf8")));
+  check("the Command Center route renders its page bare, as the moni-ai item", /active: "moni-ai",\s*bare: true/.test(fs.readFileSync(path.join(ROOT, "lib", "views-moniai.js"), "utf8")));
+  check("the dock sits in its band under the content column (with-dock on <html>, .dock-band before the dock)", /<html lang="en" class="framed with-dock">/.test(all) && all.indexOf('class="dock-band"') > 0 && all.indexOf('class="dock-band"') < all.indexOf("mint-dock-root"));
+  check("  no band and no with-dock without the dock", !/with-dock|dock-band/.test(render(["os.view"])) && !/with-dock|dock-band/.test(render("*", { dock: false })));
 }
 
 console.log("\nthe role decides where page.open may go (before moving)");
 {
   const pagesOf = (html) => (/data-pages="([^"]*)"/.exec(html.slice(html.indexOf("mint-dock-root"))) || [])[1].split(" ");
   const lim = pagesOf(render(["os.view", "moniai.use"]));
-  check("a limited role: only the pages it can see (and guide, account, your devices, the Command Center)", lim.sort().join() === ["os-overview", "manage-devices", "guide", "account", "command-center"].sort().join(), lim.join());
+  check("a limited role: only the pages it can see (and guide, account, your devices, the Command Center and its Settings)", lim.sort().join() === ["os", "devices", "guide", "account", "cc", "settings"].sort().join(), lim.join());
   const full = pagesOf(render("*"));
-  check("an administrator: all 21", full.length === 21 && full.every((k) => UA.NAV_PAGES[k]));
+  check("an administrator: every entry of the page map in use (the built-in pages before a scan)", full.join() === Object.keys(UA.pages()).join() && full.length === Object.keys(UA.BUILTIN_PAGES).length, full.join());
+  const all = render("*");
+  const mapJson = (/data-page-map="([^"]*)"/.exec(all) || [])[1] || "[]";
+  const map = JSON.parse(mapJson.replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&"));
+  check("the dock also carries the map (data-page-map JSON: key, url, label, perm) for UiActions.setPages", map.length === full.length && map.every((e) => e.key && /^\//.test(e.url) && e.label && "perm" in e));
 }
 
 console.log("\nno inline code (the CSP forbids it)");

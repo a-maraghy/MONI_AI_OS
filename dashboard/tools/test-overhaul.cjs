@@ -57,17 +57,18 @@ const FACTS = {
 console.log("frame: badges and health");
 chrome.configure({ priv: {}, db: { listUsers: () => [{ totp_confirmed: 0, disabled: 0 }, { totp_confirmed: 1 }], listRoles: () => [1, 2, 3], listDevices: () => [] }, catalog: { ADDONS: [1, 2] } });
 const ca = chrome.forActor(admin, FACTS);
-check("services badge counts up of total, warns when one is down", JSON.stringify(ca.badges.services) === JSON.stringify(["1/2", "warn"]));
-check("firewall badge sums the jails", ca.badges.firewall[0] === "4 banned");
-check("users badge shows pending enrolment", ca.badges.users[0] === "1 pending" && ca.badges.users[1] === "warn");
-check("keys badge counts every account's keys", ca.badges.keys[0] === "3");
-check("memory badge is the current fact count", ca.badges["claude-memory"][0] === "607");
-check("running badge counts live sessions", ca.badges["claude-running"][0] === "2 live");
-check("agents badge names failures", ca.badges.agents[0] === "1 failed" && ca.badges.agents[1] === "bad");
+check("services badge counts up of total, warns when one is down", JSON.stringify(ca.badges.services) === JSON.stringify(["1/2", "warn", "1 service down"]));
+check("firewall badge sums the jails (a state: tinted)", JSON.stringify(ca.badges.firewall) === JSON.stringify(["4", "warn", "4 banned"]));
+check("users badge shows pending enrolment", ca.badges.users[0] === "1" && ca.badges.users[1] === "warn" && /awaiting enrolment/.test(ca.badges.users[2]));
+check("keys badge counts every account's keys, quietly", ca.badges.keys[0] === "3" && ca.badges.keys[1] === "plain");
+check("memory badge is the current fact count", ca.badges["claude-memory"][0] === "607" && ca.badges["claude-memory"][1] === "plain");
+check("the Sessions badge counts live sessions (a state: ok)", JSON.stringify(ca.badges["claude-sessions"]) === JSON.stringify(["2", "ok", "2 live"]));
+check("agents badge names failures", ca.badges.agents[0] === "1" && ca.badges.agents[1] === "bad" && /1 agent failed/.test(ca.badges.agents[2]));
+check("the credentials badge is gone", !("credentials" in ca.badges));
 check("health chip says what needs attention", ca.health.cls === "bad" && /1 service needs attention/.test(ca.health.text) && /1 agent failed/.test(ca.health.text));
 const cs = chrome.forActor(scoped, FACTS);
 check("a role without users.view gets no users badge", !cs.badges.users && !cs.badges.roles && !cs.badges["claude-memory"]);
-check("a scoped role counts only its own agents", cs.badges.agents[0] === "1 failed" && cs.ids.agents.sub.startsWith("0 of 1"));
+check("a scoped role counts only its own agents", cs.badges.agents[0] === "1" && cs.badges.agents[1] === "bad" && cs.ids.agents.sub.startsWith("0 of 1"));
 const healthyScout = chrome.forActor(scoped, Object.assign({}, FACTS, { services: [{ unit: "nginx", active: "active" }], agents: [{ slug: "scout", state: { active: "active" } }, { slug: "other", state: { active: "failed" } }] }));
 check("an agent out of scope never raises the chip", healthyScout.health.cls === "ok");
 check("with no facts yet the frame still renders", chrome.forActor(admin, null).badges && chrome.forActor(admin, null).ids.os.name === os.hostname());
@@ -77,18 +78,19 @@ const user = { name: "Ann <b>", roleLabel: "Administrator", perm: admin, chrome:
 const page = ui.shell("T", "<p>x</p>", { user, csrf: "c", active: "services", pattern: "b" });
 check("pattern B is declared on the content column", /<main class="content pat-b">/.test(page));
 check("pages default to the document pattern", /class="content pat-c"/.test(ui.shell("T", "", { user, csrf: "c", active: "keys" })));
-check("the frame marker is on <html> for framed pages", /<html lang="en" class="framed">/.test(page));
-check("sidebar badges render with their tone", /data-badge="services">1\/2</.test(page) && /class="badge warn" data-badge="services"/.test(page));
+check("the frame marker is on <html> for framed pages", /<html lang="en" class="framed( [^"]*)?">/.test(page));
+check("sidebar badges render with their tone", /class="badge warn" data-badge="services" title="1 service down">1\/2</.test(page));
 check("the current item is marked for assistive tech", /class="side-item on" aria-current="page"/.test(page));
 check("the health chip is on every page", /class="sys-chip bad"[^>]*data-health/.test(page) && page.includes('href="/services"'));
 check("the sidebar can collapse to icons", /data-side-collapse/.test(page));
-check("the clock is in the top bar", /data-clock/.test(page));
-check("crumbs trace dashboard / section / page", /<nav class="crumbs"[^>]*><a href="\/os">OS Dashboard<\/a>.*Platform.*<span>Services<\/span><\/nav>/s.test(page));
+check("no clock in the top bar of an OS page", !/data-clock/.test(page));
+check("crumbs trace group / page", /<nav class="crumbs"[^>]*><a href="\/os">Machine<\/a><span aria-hidden="true">\/<\/span><span>Services<\/span><\/nav>/.test(page));
+check("the top bar says where you are", /id="tb-where"><span class="g">Machine<\/span><span class="sep">\/<\/span><b>Services<\/b>/.test(page));
 check("the user's name is escaped", page.includes("Ann &lt;b&gt;") && !page.includes("Ann <b>"));
 check("os.css and os.js load on every page", /os\.css\?v=/.test(page) && /os\.js\?v=/.test(page));
 check("no inline script or style", !/<script>(?!<\/script>)|style="/.test(page.replace(/<script src[^>]*><\/script>/g, "")));
-const bare = ui.shell("C", "<p/>", { user, csrf: "c", active: "console", dash: "console" });
-check("the console keeps no sidebar and no frame marker", !bare.includes('class="sidebar"') && /<html lang="en">/.test(bare));
+const bare = ui.shell("C", "<p/>", { user, csrf: "c", active: "moni-ai", bare: true, brand: "ai" });
+check("the Command Center (bare) has no frame marker, but the sidebar as a drawer", /<html lang="en">/.test(bare) && bare.includes('class="sidebar"') && /data-os-toggle/.test(bare) && /id="os-scrim"/.test(bare));
 check("signed-out pages have no chrome", !ui.shell("Sign in", "<p/>", { csrf: "c" }).includes("topbar"));
 
 const theme = fs.readFileSync(path.join(ROOT, "public", "theme-init.js"), "utf8");
@@ -124,7 +126,7 @@ const fleet = [
   { slug: "odd", name: "Odd", state: { active: "failed" }, notes: 0, memory: {}, channel: null },
 ];
 const nursery = agentViews.dashboard({ csrf: "c", user, agents: fleet, channels: [{}], probe: null });
-check("the Agents dashboard is The nursery, one screen", /<h1>The nursery<\/h1>/.test(nursery) && /class="content pat-a"/.test(nursery));
+check("Agents & sessions ▸ Overview is a document holding the Telegram nursery", /<h1>Agents &amp; sessions<\/h1>/.test(nursery) && /class="content pat-c"/.test(nursery) && />Telegram agents<\/h2>/.test(nursery));
 check("every agent is a seedling card", (nursery.match(/class="card seed (hud )?(active|failed|inactive)"/g) || []).length === 2 && /class="seedling seed-art sd-on"/.test(nursery) && /class="seedling seed-art sd-failed"/.test(nursery));
 check("an agent with no channel gets a dashed root and an add link", /sd-root none/.test(nursery) && /No channel — add one/.test(nursery));
 check("effort shows as pips", /aria-label="effort high"/.test(nursery));
@@ -158,9 +160,9 @@ check("credentials: the forms are unchanged", /action="\/credentials\/claude"/.t
 const guide = lib("views-guide").guide({ csrf: "c", user, publicHost: "h", publicPort: 8443 });
 check("guide: sticky contents beside the document", /class="doc-side"/.test(guide) && /data-toc/.test(guide) && /href="#trouble"/.test(guide));
 
-const running = lib("views-claude").running({ csrf: "c", user, r: { ts: "2026-09-27T10:00:00Z", sessions: [], subagents: [], others: [], jobs: {}, units: [], services: [], subagent_hooks: [] } });
-check("running is a one-screen board", /class="content[^"]*pat-a"/.test(running) && /cc-board three/.test(running));
-check("running keeps every live-refresh section", ["stats", "sessions", "subagents", "others", "jobs", "units", "services", "hooks"].every((k) => running.includes('data-cc-section="' + k + '"')));
+const running = lib("views-claude").live({ csrf: "c", user, r: { ts: "2026-09-27T10:00:00Z", sessions: [], subagents: [], others: [], jobs: {}, units: [], services: [], subagent_hooks: [] }, team: null, counts: {} });
+check("what was Running is the Sessions page's Live tab, a board under the tabs", /<h1>Sessions<\/h1>/.test(running) && /cc-board three/.test(running) && /id="s-live"/.test(running));
+check("the Live tab keeps every live-refresh section", ["stats", "sessions", "subagents", "others", "jobs", "units", "services", "hooks"].every((k) => running.includes('data-cc-section="' + k + '"')));
 
 /* -------------------------------------------------------------- styles --- */
 

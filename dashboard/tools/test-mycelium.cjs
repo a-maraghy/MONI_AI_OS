@@ -410,7 +410,7 @@ function viewTests() {
   check("managed units keep restart and logs", /name="target" value="nginx"/.test(sp) && /\/services\/logs\?unit=nginx/.test(sp) && /name="target" value="fail2ban"/.test(sp));
   check("Odoo, PostgreSQL, the memory service, MINT AI and agents are read-only here", ["odoo", "postgresql@16-main", "claude-memory", "moni-ai", "moni-agent@admin"].every((u) =>
     !sp.includes(`name="target" value="${u}"`) && !sp.includes("/services/logs?unit=" + encodeURIComponent(u))) && (sp.match(/read-only<\/span>/g) || []).length === 5);
-  check("read-only rows point to where they are managed", /href="\/services\/agents"/.test(sp) && /href="\/claude\/memory"/.test(sp) && /href="\/mint-ai"/.test(sp));
+  check("read-only rows point to where they are managed", /href="\/services\?kind=agents"/.test(sp) && !/href="\/services\/agents"/.test(sp) && /href="\/claude\/memory"/.test(sp) && /href="\/mint-ai"/.test(sp));
 
   const scoped = rbac.actor({ permissions: ["os.view", "services.view", "agents.view"], agent_scope: "scout", channel_scope: "*" });
   const list = [{ unit: "nginx", active: "active" }, { unit: "moni-agent@scout", kind: "agent", active: "failed" }, { unit: "moni-agent@secret", kind: "agent", active: "active" }];
@@ -418,7 +418,7 @@ function viewTests() {
   check("an agent's unit is visible only within the viewer's agent scope", vis.length === 2 && !vis.some((s) => s.unit === "moni-agent@secret"));
   chrome.configure({ priv: {}, db: null, catalog: null });
   const fr = chrome.forActor(scoped, { services: list, agents: [{ slug: "scout", state: { active: "failed" } }, { slug: "secret", state: { active: "active" } }] });
-  check("the sidebar badge counts the same visible units", JSON.stringify(fr.badges.services) === JSON.stringify(["1/2", "warn"]), fr.badges.services);
+  check("the sidebar badge counts the same visible units", JSON.stringify(fr.badges.services) === JSON.stringify(["1/2", "warn", "1 service down"]), fr.badges.services);
   check("a failed agent is not counted twice in the health chip", fr.health && fr.health.text === "1 agent failed", fr.health);
 }
 
@@ -446,7 +446,7 @@ async function primeTests() {
   check("the cache is filled", d && d.services.length === 2);
   const merged = chrome.prime({ services: [{ unit: "nginx", active: "active" }, { unit: "odoo", active: "failed" }] });
   const fr = chrome.forActor(admin, merged);
-  check("a fresher unit list reaches the badge and the chip at once", JSON.stringify(fr.badges.services) === JSON.stringify(["1/2", "warn"]) && fr.health.cls === "warn", fr);
+  check("a fresher unit list reaches the badge and the chip at once", JSON.stringify(fr.badges.services) === JSON.stringify(["1/2", "warn", "1 service down"]) && fr.health.cls === "warn", fr);
   check("the rest of the cached facts are kept", Array.isArray(merged.agents));
 }
 

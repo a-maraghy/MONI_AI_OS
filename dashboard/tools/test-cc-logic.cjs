@@ -93,8 +93,19 @@ check("labels as the mockup: Approve/Deny, Apply fix/Dismiss, Retire/Keep/Later"
 check("an id is URL-encoded into its route", L.card({ type: "decision", id: "a/b", item: { status: "proposed", title: "t" } }).actions[0].path === "decisions/a%2Fb/approve");
 {
   // Every route the card names is one server.js serves (under moniAiWrite).
-  const routes = [/app\.post\("\/mint-ai\/api\/approvals\/:id\/:decision", \.\.\.moniAiWrite/, /app\.post\("\/mint-ai\/api\/decisions\/:id\/:action", \.\.\.moniAiWrite/, /\["approve", "dismiss", "ask"\]\.includes\(action\)/];
+  const routes = [/app\.post\("\/mint-ai\/api\/approvals\/:id\/:decision", \.\.\.moniAiWrite/, /app\.post\("\/mint-ai\/api\/decisions\/:id\/:action", \.\.\.moniAiWrite/, /\["approve", "dismiss", "ask", "resume"\]\.includes\(action\)/];
   check("every route the card calls exists on the server, behind moniai.use + CSRF", routes.every((r) => r.test(server)));
+  check("  decisions/:id/resume is the supervisor's budget-resume", /if \(action === "resume"\) \{[\s\S]{0,200}moniAiOp\(req, res, "budget-resume", \{ decision_id: id \}/.test(server));
+}
+{
+  // A daily token cap card (kind "cap"): Resume for today / Leave paused, as the Decisions sheet offers.
+  const cap = { id: 21, kind: "cap", status: "open", title: "MINT AI passed its daily cap", actions: ["resume", "dismiss"], last_seen: "2026-09-29T11:00:00Z" };
+  const cq = L.needQueue([], [cap]);
+  check("a cap card: Resume for today -> decisions/:id/resume, Leave paused -> dismiss, Later (never Investigate)", acts(cq[0]) === "resume=decisions/21/resume | dismiss=decisions/21/dismiss | later(local)" && L.card(cq[0]).actions.map((a) => a.label).join() === "Resume for today,Leave paused,Later", acts(cq[0]));
+  const warnCap = L.card({ type: "decision", id: 22, key: "d22", item: Object.assign({}, cap, { id: 22, actions: ["dismiss"] }) });
+  check("  a warn-only cap (nothing paused): Dismiss and Later only", warnCap.actions.map((a) => a.act).join() === "dismiss,later" && warnCap.actions[0].label === "Dismiss");
+  check("  its done text", L.doneText("resume") === "Resumed for today");
+  check("the Decisions sheet offers the same two on a cap card", /d\.kind === "cap" && st === "open"/.test(panels) && /data-dact="resume"/.test(panels) && /"Leave paused"/.test(panels));
 }
 check("the card's click handler posts exactly the action's path and body", /api\(act\.path, \{ body: act\.body \}\)/.test(main) && /if \(act\.act === "always"\) \{ P\.openAlways\(it\.id\); return; \}/.test(main) && /if \(act\.act === "later"\) \{ closeNeed\(\); return; \}/.test(main));
 check("the card pages (1 of N) and the amber pill brings it back", /data-need-pg/.test(main) && /\$\("cc-needpill"\)\.addEventListener\("click"/.test(main));

@@ -111,10 +111,11 @@ const TOP_LOCKUP = /<a class="brand" href="[^"]*" aria-label="Mint OS">\s*<span 
 check("an OS page's top bar is the OS leaf + MINT, no [OS] tag", TOP_LOCKUP.test(osPage) && !/pill-brand/.test(osPage));
 check("an OS page carries the OS favicons (16, 32, any, .ico)", /brand\/favicon-os-16\.svg\?v=/.test(osPage) && /brand\/favicon-os-32\.svg\?v=/.test(osPage) && /\/static\/favicon\.svg\?v=/.test(osPage) && /href="\/favicon\.ico"/.test(osPage));
 check("an OS page's title ends Mint OS", /<title>Services — Mint OS<\/title>/.test(osPage));
-const aiPage = ui.shell("Chat", "<p>x</p>", { user: { name: "desk" }, active: "console", csrf: "c" });
+// MINT AI's own page is the Command Center (brand "ai"); the classic chat is gone.
+const aiPage = ui.shell("MINT AI", "<p>x</p>", { user: { name: "desk" }, active: "moni-ai", bare: true, brand: "ai", csrf: "c" });
 check("MINT AI's pages carry the same top-bar lockup (OS leaf + MINT, no [AI] tag)", TOP_LOCKUP.test(aiPage) && !/pill-brand/.test(aiPage) && !/lockup ai/.test(aiPage));
 check("MINT AI's pages carry the AI favicons", /brand\/favicon-ai-16\.svg\?v=/.test(aiPage) && /favicon-ai\.svg\?v=/.test(aiPage) && /favicon-ai\.ico\?v=/.test(aiPage) && !/favicon-os/.test(aiPage));
-check("the MINT AI tab carries the spark", /class="top-tab ai[^"]*"[^>]*>\s*<svg class="ico spark"/.test(osPage));
+check("the sidebar's Command Center item carries the spark (the top-bar tabs are gone)", /<a href="\/mint-ai" class="side-item[^"]*"[^>]*><svg class="ico spark"/.test(osPage) && !/class="top-tab/.test(osPage));
 check("the fonts are preloaded from the panel", /<link rel="preload" href="\/static\/fonts\/inter-latin-400-normal\.woff2\?v=5\.3\.0" as="font" type="font\/woff2" crossorigin>/.test(osPage));
 const login = views.login({ csrf: "c" });
 check("the sign-in card carries the full MINT [OS] lockup", /<div class="card auth-card"><div class="auth-lockup"><span class="lockup os full"/.test(login) && /Operating System/.test(login));

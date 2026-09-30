@@ -74,8 +74,12 @@ check("every icon reference has a symbol", (() => {
   const missing = [...used].filter((n) => !views.SPRITE[n]);
   return missing.length === 0 || (console.log("   missing:", missing.join(", ")), false);
 })());
-check("the MINT AI tab is active and points at the Command Center", /<a href="\/mint-ai" class="top-tab ai on" aria-current="page">/.test(html));
-check("no sidebar on this page", !html.includes('class="sidebar"'));
+check("the Command Center's sidebar item is current and points at /mint-ai (no top-bar tabs)", /<a href="\/mint-ai" class="side-item on" aria-current="page"/.test(html) && !/class="top-tab/.test(html));
+check("the sidebar is rendered here too, as a drawer the rail's ☰ opens", html.includes('class="sidebar"') && /<div class="layout bare">/.test(html) && /id="os-scrim"[^>]*data-os-close/.test(html));
+check("  the rail's #cc-os-btn (data-os-toggle) sits right after the search button", /<button[^>]*class="cc-os-btn" id="cc-os-btn" data-os-toggle aria-controls="sidebar"/.test(html) && /<button type="button" id="cc-kbtn"[^>]*>[\s\S]{0,1500}?<\/button><span class="sep" aria-hidden="true"><\/span><button type="button" class="cc-os-btn" id="cc-os-btn"/.test(html));
+check("  and the top bar's ☰ toggles the same drawer (data-os-toggle, not the phone nav)", /<button class="nav-toggle"[^>]*data-os-toggle>/.test(html));
+check("no dock band on the Command Center (its dock is the shell's own)", !/class="dock-band"/.test(html) && !/<html[^>]*with-dock/.test(html));
+check("console.js is the Command Center's own, loaded before moni-ai.js", /console\.js\?v=/.test(html) && html.indexOf("console.js?v=") < html.indexOf("moni-ai.js?v="));
 check("every id is unique", (() => {
   const ids = [...html.matchAll(/\sid="([^"]+)"/g)].map((m) => m[1]);
   return ids.length === new Set(ids).size;
@@ -90,7 +94,9 @@ check("a page without an OpenAI key (voice on) has no mic, and points a manager 
 const plain = ui.shell("X", "<p>body</p>", { user: { name: "u", perm: admin }, csrf: "c" });
 // Framed pages carry only the frame marker (the fixed top bar and sidebar);
 // the Command Center's own palette class stays on the Command Center.
-check("other pages keep no page class but the frame's", /<html lang="en" class="framed">/.test(plain) && !plain.includes("cc-page"));
+check("other pages keep no page class but the frame's (and the dock's band)", /<html lang="en" class="framed with-dock">/.test(plain) && !plain.includes("cc-page"));
+check("every page loads style.css, os.css, moni-ai.css and mint-os.css, in that order", ["style.css", "os.css", "moni-ai.css", "mint-os.css"].map((f) => plain.indexOf("/static/" + f + "?v=")).every((i, n, a) => i > 0 && (n === 0 || i > a[n - 1])));
+check("console.js is no longer a global script", !/console\.js/.test(plain));
 check("every page loads the theme script before its stylesheet", plain.indexOf("theme-init.js") > -1 && plain.indexOf("theme-init.js") < plain.indexOf("style.css"));
 check("every signed-in page carries the theme switch", plain.includes("data-theme-switch") && ["system", "dark", "light"].every((t) => plain.includes(`data-theme-opt="${t}"`)));
 check("the signed-out page has no switch (no top bar at all)", !ui.shell("Sign in", "<form></form>", {}).includes("data-theme-switch"));
@@ -102,7 +108,7 @@ check("a page class with markup is refused", !ui.page("x", "", { pageClass: 'a" 
 check("moniai.use alone reveals the MINT AI tab", rbac.actor({ permissions: ["moniai.use"] }).canDash("console"));
 check("console.use alone still reveals it (it redirects to /console)", rbac.actor({ permissions: ["console.use"] }).canDash("console"));
 check("a viewer without either does not see it", !rbac.actor({ permissions: ["os.view"] }).canDash("console"));
-check("the tab's href is /mint-ai", ui.NAV[0].key === "console" && ui.NAV[0].href === "/mint-ai");
+check("the Command Center item's href is /mint-ai, first in the MINT AI group", ui.NAV[0].key === "mint-ai" && ui.NAV[0].items[0].key === "moni-ai" && ui.NAV[0].items[0].href === "/mint-ai" && ui.NAV[0].items[0].perm === "moniai.use");
 
 /* ------------------------------------------------- server wiring (source) --- */
 
@@ -250,7 +256,16 @@ check("the dark palette sets every token the light one declares for colour", (()
   return missing.length === 0 || (console.log("   not in dark:", missing.join(" ")), false);
 })());
 const ccCss = fs.readFileSync(path.join(ROOT, "public", "moni-ai.css"), "utf8");
-check("the Command Center's own tokens tie on specificity and so win on order (light, then dark)", /^:root\.cc-page \{/m.test(ccCss) && ccCss.includes(':root.cc-page[data-theme="dark"]') && /@media \(prefers-color-scheme: dark\) \{\s*:root\.cc-page:not\(\[data-theme="light"\]\)/.test(ccCss));
+// Its tokens are global now (every page carries its dialogs): on :root, light then dark, like style.css.
+check("the Command Center's tokens are global on :root (light, forced dark, system dark), no longer :root.cc-page", /^:root \{/m.test(ccCss) && /^:root\[data-theme="dark"\] \{/m.test(ccCss) && /@media \(prefers-color-scheme: dark\) \{\s*:root:not\(\[data-theme="light"\]\) \{/.test(ccCss) && !/^:root\.cc-page( |\[data-theme="dark"\] )\{/m.test(ccCss));
+{
+  // Global tokens must not redefine style.css's: that would restyle every page.
+  const styleCss = fs.readFileSync(path.join(ROOT, "public", "style.css"), "utf8");
+  const rootTokens = (css) => new Set([...css.matchAll(/(?:^|\n)\s*:root(?:\[data-theme="(?:dark|light)"\]|:not\(\[data-theme="light"\]\))?\s*\{([^}]*)\}/g)].flatMap((m) => [...m[1].matchAll(/(--[a-z0-9-]+)\s*:/g)].map((x) => x[1])));
+  const mine = rootTokens(ccCss), theirs = rootTokens(styleCss);
+  const clash = [...mine].filter((t) => theirs.has(t));
+  check("  and none of them redefines a style.css token", mine.size > 10 && clash.length === 0, clash.join(" "));
+}
 check("the Command Center no longer carries its own green palette: the Mint tokens come from style.css", !/--brand:\s*#47723e|--accent:\s*#8bd46a|--bg:\s*#0b0e0b/i.test(ccCss));
 
 console.log(`\n${passes} passed, ${failures} failed`);

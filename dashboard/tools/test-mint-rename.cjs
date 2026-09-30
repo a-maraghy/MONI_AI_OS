@@ -56,10 +56,11 @@ console.log("the frame");
   check("the page title ends in Mint OS", / — Mint OS$/.test(titleOf(page)), titleOf(page));
   check("the top-bar brand is the OS leaf + MINT, no [OS] tag", /<span class="lockup os brand-text" aria-label="MINT">[\s\S]*?<span class="lk-mint">MINT<\/span><\/span>/.test(page) && !/pill-brand/.test(page));
   check("the brand link is labelled Mint OS", /<a class="brand" href="[^"]*" aria-label="Mint OS">/.test(page));
-  check("the assistant's tab reads MINT AI", />MINT AI</.test(page) && /href="\/mint-ai"/.test(page));
+  check("the assistant's sidebar group reads MINT AI", /data-side-group="mint-ai">MINT AI</.test(page) && /href="\/mint-ai"/.test(page));
   check("no old name anywhere a person reads", !OLD_NAME.test(visible(page)) && !/MONI AI/.test(page), (visible(page).match(/.{0,40}\bMONI\b.{0,40}/) || [])[0]);
-  const nav = ui.NAV.find((n) => n.key === "console");
-  check("the NAV entry is labelled MINT AI", nav && nav.label === "MINT AI");
+  const nav = ui.NAV.find((n) => n.key === "mint-ai");
+  check("the NAV group is labelled MINT AI and holds the Command Center", nav && nav.label === "MINT AI" && nav.items[0].href === "/mint-ai" && nav.items[0].label === "Command Center");
+  check("no NAV label carries the old name", ui.NAV.every((g) => !OLD_NAME.test(g.label) && g.items.every((i) => !OLD_NAME.test(i.label))));
 }
 
 console.log("login, setup, pair");

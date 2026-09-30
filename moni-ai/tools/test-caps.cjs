@@ -25,6 +25,8 @@ const H = require(path.join(ROOT, "lib", "hire.js"));
 const C = require(path.join(ROOT, "lib", "caps.js"));
 const schedule = require(path.join(ROOT, "lib", "schedule.js"));
 const UiActions = require(path.join(ROOT, "lib", "ui-actions.js"));
+// A fresh checkout does not keep the executable bit (git mode 100644); the supervisor spawns it directly.
+fs.chmodSync(path.join(__dirname, "fake-claude.cjs"), 0o755);
 
 let passes = 0;
 let failures = 0;
