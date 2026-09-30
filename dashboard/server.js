@@ -1027,21 +1027,40 @@ async function probeQuietly() {
   }
 }
 
-app.get("/agents/dashboard", requireAuth, requirePerm("agents.view"), async (req, res) => {
+/* Agents & sessions ▸ Overview: the sessions round MINT AI, the Telegram nursery, capabilities. */
+app.get("/agents/dashboard", requireAuth, async (req, res) => {
+  const seesAgents = req.perm.can("agents.view");
+  const seesTeam = req.perm.can("moniai.use");
+  if (!seesAgents && !seesTeam && !req.perm.can("claude.running.view")) return res.status(403).send(views.error("Not allowed", "Your role does not include Agents & sessions."));
   const data = await gather({
-    agents: () => priv.agentList(),
-    channels: () => priv.channelList(),
-    probe: () => priv.systemProbe(),
+    agents: () => (seesAgents ? priv.agentList() : Promise.resolve([])),
+    channels: () => (seesAgents ? priv.channelList() : Promise.resolve([])),
+    probe: () => (seesAgents ? priv.systemProbe() : Promise.resolve(null)),
+    running: () => (req.perm.can("claude.running.view") ? priv.ccRunning() : Promise.resolve(null)),
+    memory: () => (req.perm.can("claude.memory.read") ? moniAiMemoryCounts() : Promise.resolve(null)),
   });
+  const team = seesTeam ? await sessionsTeam(req) : null;
+  let limits = null;
+  if (seesTeam) limits = await moniai.call("hire-limits", {}, req.me.username).catch(() => null);
+  let facts = null;
+  try {
+    facts = data.memory && data.memory.facts != null ? data.memory.facts : null;
+  } catch (_) {
+    facts = null;
+  }
   res.send(
     agentViews.dashboard({
       csrf: res.locals.csrf,
       user: ctx(req),
-      agents: scopeAgents(req, data.agents),
-      channels: scopeChannels(req, data.channels),
+      agents: scopeAgents(req, data.agents || []),
+      channels: scopeChannels(req, data.channels || []),
       probe: data.probe || null,
       flash: req.query.msg || null,
-      err: req.query.err || data.errors.agents || null,
+      err: req.query.err || (seesAgents ? data.errors.agents : null) || null,
+      team,
+      limits,
+      facts,
+      running: data.running || null,
     })
   );
 });
@@ -1758,18 +1777,34 @@ app.post("/channels/:slug/delete", requireAuth, requirePerm("channels.delete"), 
 
 /* ------------------------------------------------------------- services --- */
 
-app.get("/services", requireAuth, requirePerm("services.view"), async (req, res) => {
+/* Machine ▸ Services: tabs All / System (services.view) and Agents (agents.view; was /services/agents). */
+app.get("/services", requireAuth, async (req, res) => {
+  const seesSvc = req.perm.can("services.view");
+  const seesAgents = req.perm.can("agents.view");
+  if (!seesSvc && !seesAgents) return res.status(403).send(views.error("Not allowed", "Your role does not include services."));
+  let kind = ["all", "system", "agents"].includes(req.query.kind) ? req.query.kind : seesSvc ? "all" : "agents";
+  if (kind === "agents" && !seesAgents) kind = "all";
+  if (kind !== "agents" && !seesSvc) kind = "agents";
+  const flash = req.query.msg || null;
+  const err = req.query.err || null;
   try {
+    if (kind === "agents") {
+      const agents = scopeAgents(req, await priv.agentList());
+      return res.send(serviceViews.agents({ csrf: res.locals.csrf, user: ctx(req), agents, flash, err, counts: { agents: agents.length } }));
+    }
     const list = await priv.serviceList();
     primeFrame(req, list);
     const services = chrome.visibleServices(list, req.perm);
+    const system = services.filter((s) => !serviceViews.isAgentUnit(s));
     res.send(
       serviceViews.system({
         csrf: res.locals.csrf,
         user: ctx(req),
-        services,
-        flash: req.query.msg || null,
-        err: req.query.err || null,
+        services: kind === "system" ? system : services,
+        kind,
+        counts: { all: services.length, system: system.length },
+        flash,
+        err,
       })
     );
   } catch (e) {
@@ -1858,21 +1893,12 @@ app.post("/firewall/unban", requireAuth, requirePerm("firewall.manage"), require
   }
 });
 
-app.get("/services/agents", requireAuth, requirePerm("agents.view"), async (req, res) => {
-  try {
-    const agents = scopeAgents(req, await priv.agentList());
-    res.send(
-      serviceViews.agents({
-        csrf: res.locals.csrf,
-        user: ctx(req),
-        agents,
-        flash: req.query.msg || null,
-        err: req.query.err || null,
-      })
-    );
-  } catch (e) {
-    res.status(500).send(views.error("Could not list agents", e.message));
-  }
+// What was Agents ▸ Agent services is Machine ▸ Services ▸ Agents.
+app.get("/services/agents", requireAuth, (req, res) => {
+  const q = new URLSearchParams({ kind: "agents" });
+  if (req.query.msg) q.set("msg", String(req.query.msg));
+  if (req.query.err) q.set("err", String(req.query.err));
+  res.redirect(302, "/services?" + q.toString());
 });
 
 app.post("/services/agent-action", requireAuth, requirePerm("agents.control"), requireCsrf, async (req, res) => {
@@ -1881,12 +1907,12 @@ app.post("/services/agent-action", requireAuth, requirePerm("agents.control"), r
   // Scope is re-checked here because the slug arrives in the body rather than
   // the path, so requireAgentScope never sees it.
   if (!SLUG_RE.test(slug) || !req.perm.seesAgent(slug))
-    return res.redirect("/services/agents?err=" + encodeURIComponent("Unknown agent."));
+    return res.redirect("/services?kind=agents&err=" + encodeURIComponent("Unknown agent."));
   try {
     await priv.agentAction(slug, action);
-    res.redirect("/services/agents?msg=" + encodeURIComponent(slug + " " + action + "ed."));
+    res.redirect("/services?kind=agents&msg=" + encodeURIComponent(slug + " " + action + "ed."));
   } catch (e) {
-    res.redirect("/services/agents?err=" + encodeURIComponent(e.message));
+    res.redirect("/services?kind=agents&err=" + encodeURIComponent(e.message));
   }
 });
 
@@ -5123,25 +5149,106 @@ app.get("/claude/memory/session/:uuid", requireAuth, requirePerm("claude.memory.
   res.send(claudeViews.sessionMemory({ csrf: res.locals.csrf, user: ctx(req), data, uuid, err }));
 });
 
-app.get("/claude/sessions", requireAuth, requirePerm("claude.sessions.view"), async (req, res) => {
+/**
+ * Agents & sessions ▸ Sessions: tabs Live (what was Claude Code ▸ Running, with
+ * MINT AI's view of each session on top), All and Archived (the transcripts).
+ * ?archived=1 is the old spelling of the Archived tab.
+ */
+app.get("/claude/sessions", requireAuth, async (req, res) => {
+  const canLive = req.perm.can("claude.running.view");
+  const canAll = req.perm.can("claude.sessions.view");
+  if (!canLive && !canAll) return res.status(403).send(views.error("Not allowed", "Your role does not include Claude Code sessions."));
+  let tab = ["live", "all", "archived"].includes(req.query.tab) ? req.query.tab : req.query.archived === "1" ? "archived" : canLive ? "live" : "all";
+  if (tab === "live" && !canLive) tab = "all";
+  if (tab !== "live" && !canAll) tab = "live";
+  const flash = req.query.msg || null;
+  let err = req.query.err || null;
+
+  if (tab === "live") {
+    let r = null;
+    try {
+      r = await priv.ccRunning();
+    } catch (e) {
+      err = e.message;
+    }
+    const team = req.perm.can("moniai.use") ? await sessionsTeam(req) : null;
+    const live = team && !team.error ? team.sessions.filter((x) => !x.self).length : r ? (r.sessions || []).filter((x) => x.alive).length : null;
+    return res.send(claudeViews.live({ csrf: res.locals.csrf, user: ctx(req), r, team, flash, err, counts: { live } }));
+  }
+
   const filters = {
     home: CC_HOMES.has(String(req.query.home || "")) ? String(req.query.home) : "",
     project: CC_SLUG.test(String(req.query.project || "")) ? String(req.query.project) : "",
     q: String(req.query.q || "").slice(0, 200).trim(),
-    archived: req.query.archived === "1",
+    archived: tab === "archived",
     page: qint(req.query.page, 1),
     per_page: 25,
   };
   let data = null;
-  let err = req.query.err || null;
   try {
     data = await priv.ccSessionsList(filters);
   } catch (e) {
     err = e.message;
   }
-  res.send(
-    claudeViews.sessions({ csrf: res.locals.csrf, user: ctx(req), data, filters, flash: req.query.msg || null, err })
-  );
+  res.send(claudeViews.sessions({ csrf: res.locals.csrf, user: ctx(req), data, filters, flash, err }));
+});
+
+/**
+ * MINT AI's view of the live sessions for Sessions ▸ Live and the Overview:
+ * the supervisor's sessions (hired, kept, yours, itself) and each one's token
+ * cap row, by cap key. { sessions, caps, error } -- never throws.
+ */
+async function sessionsTeam(req) {
+  try {
+    const [s, c] = await Promise.all([
+      moniai.call("sessions", {}, req.me.username),
+      moniai.call("token-caps", {}, req.me.username).catch(() => null),
+    ]);
+    const caps = {};
+    for (const row of (c && c.sessions) || []) caps[row.key] = row;
+    return { sessions: (s && s.sessions) || [], caps, error: null, max_live: null };
+  } catch (e) {
+    return { sessions: [], caps: {}, error: "MINT AI is not reachable: " + e.message };
+  }
+}
+
+/* Sessions ▸ Live, the forms behind Keep / Stop keeping / Retire… / Resume (the
+   Command Center does the same through /mint-ai/api/sessions/...). */
+const liveBack = (res, kind, text) => res.redirect(303, "/claude/sessions?tab=live&" + kind + "=" + encodeURIComponent(text) + "#s-live");
+app.post("/claude/sessions/live/:slug/keep", requireAuth, requirePerm("moniai.use"), requireCsrf, async (req, res) => {
+  const slug = /^[a-z0-9][a-z0-9-]{0,39}$/.test(req.params.slug) ? req.params.slug : null;
+  if (!slug) return liveBack(res, "err", "No such session.");
+  const kept = field(req.body, "kept") === "1";
+  try {
+    await moniai.call("session-keep", { slug, kept }, req.me.username);
+    db.logLogin(req.ip, req.me.username, "moni-ai", `${kept ? "kept" : "unkept"} hired session ${slug}`);
+    liveBack(res, "msg", kept ? "Kept: MINT AI can never retire it." : "No longer kept.");
+  } catch (e) {
+    liveBack(res, "err", e.message);
+  }
+});
+app.post("/claude/sessions/live/:slug/retire", requireAuth, requirePerm("moniai.use"), requireCsrf, async (req, res) => {
+  const slug = /^[a-z0-9][a-z0-9-]{0,39}$/.test(req.params.slug) ? req.params.slug : null;
+  if (!slug) return liveBack(res, "err", "No such session.");
+  try {
+    await moniai.call("session-retire", { slug }, req.me.username, { timeout: 60000 });
+    db.logLogin(req.ip, req.me.username, "moni-ai", `retired hired session ${slug}`);
+    liveBack(res, "msg", "Retired. Its transcript is kept.");
+  } catch (e) {
+    liveBack(res, "err", e.message);
+  }
+});
+app.post("/claude/sessions/live/resume", requireAuth, requirePerm("moniai.use"), requireCsrf, async (req, res) => {
+  if (!req.perm.admin) return liveBack(res, "err", "Resuming past a cap is the administrator's.");
+  const key = String(field(req.body, "key") || "");
+  if (!/^[A-Za-z0-9<>._:-]{1,80}$/.test(key)) return liveBack(res, "err", "No such session.");
+  try {
+    await moniai.call("budget-resume", { key }, req.me.username);
+    db.logLogin(req.ip, req.me.username, "moni-ai", `resumed ${key} past its daily cap`);
+    liveBack(res, "msg", "Resumed for the rest of today.");
+  } catch (e) {
+    liveBack(res, "err", e.message);
+  }
 });
 
 app.get("/claude/sessions/:home/:uuid", requireAuth, requirePerm("claude.sessions.view"), ccSessionParams, async (req, res) => {
@@ -5197,15 +5304,12 @@ app.post("/claude/sessions/:home/:uuid/restore", requireAuth, requirePerm("claud
   }
 });
 
-app.get("/claude/running", requireAuth, requirePerm("claude.running.view"), async (req, res) => {
-  let r = null;
-  let err = req.query.err || null;
-  try {
-    r = await priv.ccRunning();
-  } catch (e) {
-    err = e.message;
-  }
-  res.send(claudeViews.running({ csrf: res.locals.csrf, user: ctx(req), r, flash: req.query.msg || null, err }));
+// What was Claude Code ▸ Running is Sessions ▸ Live.
+app.get("/claude/running", requireAuth, (req, res) => {
+  const q = new URLSearchParams({ tab: "live" });
+  if (req.query.msg) q.set("msg", String(req.query.msg));
+  if (req.query.err) q.set("err", String(req.query.err));
+  res.redirect(302, "/claude/sessions?" + q.toString());
 });
 
 // Polled by public/app.js every 10 s. The fragments are rendered here, by the
@@ -5226,19 +5330,19 @@ app.get("/api/claude/running", requireAuth, requirePerm("claude.running.view"), 
 
 app.post("/claude/running/stop", requireAuth, requirePerm("claude.running.stop"), requireCsrf, async (req, res) => {
   const pid = Number(field(req.body, "pid"));
-  if (!Number.isInteger(pid) || pid <= 1) return res.redirect(withMsg("/claude/running", "err", "Bad pid."));
+  if (!Number.isInteger(pid) || pid <= 1) return res.redirect(withMsg("/claude/sessions?tab=live", "err", "Bad pid."));
   const force = field(req.body, "force") === "1";
   try {
     const out = await priv.ccStop(pid, force, ccActor(req));
     res.redirect(
       withMsg(
-        "/claude/running",
+        "/claude/sessions?tab=live",
         "msg",
         out.signal + " sent to pid " + pid + "." + (force ? "" : " If it is still running in 10 seconds, Force stop appears.")
       )
     );
   } catch (e) {
-    res.redirect(withMsg("/claude/running", "err", e.message));
+    res.redirect(withMsg("/claude/sessions?tab=live", "err", e.message));
   }
 });
 

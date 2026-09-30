@@ -10,7 +10,7 @@
  * answered with fakes. The data dir is a temp dir, so no live setting
  * (voice_desk, the voice mode, a persona) can be written either.
  *
- *   const s = await startScratch({ env: {...} });
+ *   const s = await startScratch({ env: {...}, fakeReads: { "service-list": [...] } });
  *   await s.makeUser("admin1", "administrator");
  *   const who = await s.signIn("admin1");
  *   const r = await s.req("GET", "/mint-ai", { cookie: who.cookie });
@@ -49,7 +49,11 @@ function makeCopy(o) {
   let s = fs.readFileSync(p, "utf8");
   const head = "function callHelper(subcommand, args = [], opts = {}) {\n";
   if (!s.includes(head)) throw new Error("scratch: priv.js callHelper not found; refusing to start an unguarded copy");
-  s = s.replace(head, head + '  return Promise.reject(new Error("scratch copy: the helper is not called (" + subcommand + ")"));\n');
+  // fakeReads: canned answers for read-only subcommands (e.g. "service-list"), so a
+  // page that lists things can be rendered; everything else is still refused.
+  const reads = o.fakeReads && typeof o.fakeReads === "object" ? o.fakeReads : null;
+  const canned = reads ? "  { const F = " + JSON.stringify(reads) + "; if (Object.prototype.hasOwnProperty.call(F, subcommand) && /^(list|status|agent-list|channel-list|service-list|credential-list|system-probe|cc-)/.test(subcommand)) return Promise.resolve(JSON.parse(JSON.stringify(F[subcommand]))); }\n" : "";
+  s = s.replace(head, head + canned + '  return Promise.reject(new Error("scratch copy: the helper is not called (" + subcommand + ")"));\n');
   const status = 'voiceStatus: () => callHelper("voice-status"),';
   const key = 'voiceKeyRead: () => callHelper("voice-key-read"),';
   if (!s.includes(status) || !s.includes(key)) throw new Error("scratch: priv.js voice reads not found");

@@ -33,6 +33,32 @@ function controls(csrf, action, target, state) {
   return `<div class="row-end">${parts.join("")}</div>`;
 }
 
+/**
+ * Machine ▸ Services' tabs: All (every unit this panel tracks), System (not the
+ * agents' and channels' own) and Agents (the Telegram agents' units, with their
+ * controls -- what was Agents ▸ Agent services). Links: each is ?kind=.
+ */
+function tabs(kind, user, counts) {
+  const c = counts || {};
+  const items = [
+    ["all", "All", "services.view"],
+    ["system", "System", "services.view"],
+    ["agents", "Agents", "agents.view"],
+  ].filter((i) => can(user, i[2]));
+  if (items.length < 2) return "";
+  return `<nav class="tabs2" role="tablist" aria-label="Services">${items
+    .map(([k, label]) => `<a role="tab" href="/services?kind=${k}" aria-selected="${kind === k}">${label}${c[k] != null ? ` <span class="badge plain">${esc(c[k])}</span>` : ""}</a>`)
+    .join("")}</nav>`;
+}
+exports.tabs = tabs;
+
+/** A unit that belongs to an agent or a channel (the Agents tab's), not the machine's. */
+function isAgentUnit(s) {
+  const unit = String((s && s.unit) || "");
+  return s.kind === "agent" || s.kind === "whatsapp" || unit.startsWith("moni-agent@") || unit.startsWith("moni-whatsapp@");
+}
+exports.isAgentUnit = isAgentUnit;
+
 /* ------------------------------------------------------- system services -- */
 
 function unitMeta(s) {
@@ -40,7 +66,7 @@ function unitMeta(s) {
   if (DETAIL.has(unit)) return DETAIL.get(unit);
   if (s.kind === "agent" || unit.startsWith("moni-agent@")) {
     return { name: "Agent · " + unit.slice("moni-agent@".length), icon: "agents",
-      detail: "A Telegram agent's process. Start, stop and restart it from Agent services." };
+      detail: "A Telegram agent's process. Start, stop and restart it from the Agents tab." };
   }
   if (s.kind === "whatsapp" || unit.startsWith("moni-whatsapp@")) {
     return { name: "WhatsApp · " + unit.slice("moni-whatsapp@".length), icon: "whatsapp",
@@ -54,7 +80,7 @@ function readOnly(s, meta, user) {
   const unit = String(s.unit || "");
   const tag = `<span class="lockt" title="Reported here; the panel does not control this unit from this page">${icon("lock", 12)}read-only</span>`;
   let link = "";
-  if (unit.startsWith("moni-agent@") && can(user, "agents.view")) link = `<a class="btn small" href="/services/agents">${icon("agents", 14)}Agent services</a>`;
+  if (unit.startsWith("moni-agent@") && can(user, "agents.view")) link = `<a class="btn small" href="/services?kind=agents">${icon("agents", 14)}Agents tab</a>`;
   else if (unit.startsWith("moni-whatsapp@") && can(user, "channels.view"))
     link = `<a class="btn small" href="/channels/${encodeURIComponent(unit.slice("moni-whatsapp@".length))}">${icon("whatsapp", 14)}Channel</a>`;
   else if (unit === "claude-memory" && can(user, "claude.memory.read")) link = `<a class="btn small" href="/claude/memory">${icon("memory", 14)}Memory</a>`;
@@ -62,10 +88,11 @@ function readOnly(s, meta, user) {
   return tag + link;
 }
 
-exports.system = ({ csrf, user, services, flash, err }) =>
+exports.system = ({ csrf, user, services, flash, err, kind = "all", counts }) =>
   shell(
     "Services",
     `${flashes({ msg: flash, err })}
+    ${tabs(kind, user, counts)}
     <div class="alert info">${icon("info")}<div>SSH, nginx, the firewall and this panel
       can be restarted but not stopped from here. Stopping any of them would cut off
       access to the machine or to this page, and getting back in would need the Contabo
@@ -112,8 +139,8 @@ exports.system = ({ csrf, user, services, flash, err }) =>
       active: "services",
       pattern: "b",
       fill: true,
-      heading: "System services",
-      subtitle: "The units that keep the machine and this panel running.",
+      heading: "Services",
+      subtitle: "Every unit this panel tracks. The Telegram agents' own units are the Agents tab.",
       actions: `<span class="pill ${services.every((s) => s.active === "active") ? "ok" : "warn"}">${
         services.filter((s) => s.active === "active").length
       } of ${services.length} active</span>`,
@@ -122,10 +149,11 @@ exports.system = ({ csrf, user, services, flash, err }) =>
 
 /* -------------------------------------------------------- agent services -- */
 
-exports.agents = ({ csrf, user, agents, flash, err }) =>
+exports.agents = ({ csrf, user, agents, flash, err, counts }) =>
   shell(
-    "Agent services",
+    "Services",
     `${flashes({ msg: flash, err })}
+    ${tabs("agents", user, counts)}
     ${
       agents.length
         ? card(
@@ -163,18 +191,18 @@ exports.agents = ({ csrf, user, agents, flash, err }) =>
             empty(
               "agents",
               "No agents yet",
-              'Create one from <a href="/agents">Agents</a>.'
+              'Create one from <a href="/agents">Telegram agents</a>.'
             )
           )
     }`,
     {
       user,
       csrf,
-      active: "agent-services",
+      active: "services",
       pattern: "b",
-      heading: "Agent services",
+      heading: "Services",
       subtitle:
-        "One systemd unit per agent. Restarting an agent does not lose its memory or its conversation — both are on disk.",
+        "One systemd unit per Telegram agent. Restarting an agent does not lose its memory or its conversation — both are on disk.",
     }
   );
 

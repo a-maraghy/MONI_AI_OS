@@ -184,7 +184,16 @@ function controls(csrf, agent) {
 
 /* ------------------------------------------------------ agents dashboard - */
 
-exports.dashboard = ({ csrf, user, agents, channels, probe, flash, err }) => {
+/**
+ * Agents & sessions ▸ Overview: everything that acts on this machine -- the
+ * sessions round MINT AI (with Keep / Retire / Stop / Resume, as on Sessions ▸
+ * Live), the Telegram agents' nursery, and what an agent can be given.
+ *
+ * @param o { csrf, user, agents, channels, probe, flash, err,
+ *            team (sessions round MINT AI, or null), limits (hire-limits, or null),
+ *            facts (Claude memory facts, or null), running (priv.ccRunning, or null) }
+ */
+exports.dashboard = ({ csrf, user, agents, channels, probe, flash, err, team, limits, facts, running: runningNow }) => {
   const running = agents.filter((a) => a.state && a.state.active === "active");
   const failed = agents.filter((a) => a.state && a.state.active === "failed");
   const noChannel = agents.filter((a) => !a.channel);
@@ -204,7 +213,7 @@ exports.dashboard = ({ csrf, user, agents, channels, probe, flash, err }) => {
     alerts.push(["warn", `The Claude credential changed after
       ${probe.credential_stale_agents.map(esc).join(", ")} started, so
       ${probe.credential_stale_agents.length === 1 ? "it is" : "they are"} still running with the old one and
-      cannot authenticate. Restart from <a href="/services/agents">Agent services</a>.`]);
+      cannot authenticate. Restart from <a href="/services?kind=agents">Services ▸ Agents</a>.`]);
   }
   if (failed.length) {
     alerts.push(["bad", `${failed.length} agent${failed.length === 1 ? " is" : "s are"} in a failed state:
@@ -217,42 +226,61 @@ exports.dashboard = ({ csrf, user, agents, channels, probe, flash, err }) => {
   }
   const worst = alerts.some((a) => a[0] === "bad") ? "bad" : "warn";
 
+  const liveTeam = team && !team.error ? team.sessions.filter((x) => !x.self) : null;
+  const hired = liveTeam ? liveTeam.filter((x) => x.hire).length : null;
+  const claudeViews = require("./views-claude");
+  const seesAgents = can(user, "agents.view");
   return shell(
-    "Agents Dashboard",
+    "Agents & sessions",
     `${flashes({ msg: flash, err })}
     <div class="stats4">
-      ${stat(running.length + " / " + agents.length, "agents running", "agents")}
-      ${stat(channels.length, "channels", "channels")}
-      ${stat(totalNotes.toLocaleString("en-US"), "memory notes", "memory")}
-      ${stat(totalChunks.toLocaleString("en-US"), "indexed chunks", "search")}
+      ${stat(liveTeam ? liveTeam.length + (limits && limits.max_live ? " / " + limits.max_live : "") : "—", "sessions live", "activity")}
+      ${stat(hired == null ? "—" : hired, "hired by MINT AI", "core")}
+      ${seesAgents ? stat(running.length + " / " + agents.length, "Telegram agents running", "agents") : ""}
+      ${facts != null ? stat(Number(facts).toLocaleString("en-US"), "memory facts", "memory") : seesAgents ? stat(totalNotes.toLocaleString("en-US"), "agent memory notes", "memory") : ""}
     </div>
+    ${
+      team
+        ? card("Live sessions", claudeViews.teamTable(csrf, user, team, runningNow), {
+            icon: "activity",
+            id: "a-sessions",
+            actions: `<a class="btn small" href="/mint-ai#sessions">See them as spheres</a>`,
+          })
+        : ""
+    }
     ${
       alerts.length
         ? `<div class="alert ${worst}">${icon("alert")}<div>${alerts.map((a) => a[1]).join(" &nbsp;·&nbsp; ")}</div></div>`
         : ""
     }
     ${
-      agents.length || can(user, "agents.create")
-        ? fleetGrid(csrf, user, agents)
-        : card(
-            "",
-            empty(
-              "agents",
-              "No agents yet",
-              'An agent is a Claude session with its own memory. <a href="/agents/new">Create the first one</a>.'
-            )
-          )
-    }
-    ${getsCard(false)}`,
+      !seesAgents
+        ? ""
+        : `<section class="card" id="a-telegram"><div class="card-head"><h2>${icon("agents")}Telegram agents</h2><span class="muted small">${running.length} running · ${channels.length} channel${
+            channels.length === 1 ? "" : "s"
+          }</span></div>${
+            agents.length || can(user, "agents.create")
+              ? fleetGrid(csrf, user, agents)
+              : empty("agents", "No agents yet", 'An agent is a Claude session with its own memory. <a href="/agents/new">Create the first one</a>.')
+          }</section>
+    ${card(
+      "Capabilities",
+      `<table class="kv">
+        ${can(user, "addons.view") ? `<tr><td>Add-ons</td><td><a href="/addons">What an agent can be given</a></td></tr>` : ""}
+        <tr><td>Agent services</td><td><a href="/services?kind=agents">Services ▸ Agents</a></td></tr>
+      </table>
+      ${getsCard(false)}`,
+      { icon: "addons", id: "a-capabilities" }
+    )}`
+    }`,
     {
       user,
       csrf,
       active: "agents-dashboard",
-      pattern: "a",
-      heading: "The nursery",
-      subtitle: "Every agent on this machine, and what it can reach. Each is a Claude session with its own memory.",
-      actions: `<span class="pill ${running.length ? "ok" : "neutral"}">${running.length} running</span>
-        ${can(user, "channels.view") ? `<a class="btn" href="/channels">${icon("channels")} Channels</a>` : ""}
+      pattern: "c",
+      heading: "Agents & sessions",
+      subtitle: "Everything that acts on this machine: MINT AI's sessions and the Telegram agents.",
+      actions: `${can(user, "channels.view") ? `<a class="btn" href="/channels">${icon("channels")} Channels</a>` : ""}
         ${can(user, "agents.create") ? `<a class="btn primary" href="/agents/new">${icon("plus")} New agent</a>` : ""}`,
     }
   );
@@ -282,7 +310,7 @@ exports.list = ({ csrf, user, agents, flash, err }) =>
       csrf,
       active: "agents",
       pattern: "a",
-      heading: "Agents",
+      heading: "Telegram agents",
       subtitle: "Each agent is one Claude session with its own memory. They cannot see each other.",
       actions: can(user, "agents.create") ? `<a class="btn primary" href="/agents/new">${icon("plus")} New agent</a>` : "",
     }

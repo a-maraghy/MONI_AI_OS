@@ -116,6 +116,7 @@ document.addEventListener("submit", function (ev) {
     title: title,
     body: form.getAttribute("data-confirm-body") || "",
     yes: form.getAttribute("data-confirm-yes") || "Confirm",
+    no: form.getAttribute("data-confirm-no") || "Cancel",
     danger: form.getAttribute("data-confirm-danger") !== "0",
   }).then(function (ok) {
     if (!ok) return;

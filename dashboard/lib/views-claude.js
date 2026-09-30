@@ -72,14 +72,26 @@ function snippet(text, n) {
 const sessionHref = (home, uuid, extra) =>
   `/claude/sessions/${encodeURIComponent(home)}/${encodeURIComponent(uuid)}${qs(extra)}`;
 
-function tabs(active, user) {
+/**
+ * Sessions' tabs: Live (what was Running), All and Archived -- links, so each
+ * is a page of its own (?tab=) and works without JavaScript. `counts` is
+ * optional ({live, all, archived}).
+ */
+function tabs(active, user, counts) {
+  const c = counts || {};
   const items = [
-    ["/claude/memory", "memory", "Memory", "claude.memory.read"],
-    ["/claude/sessions", "sessions", "Sessions", "claude.sessions.view"],
-    ["/claude/running", "running", "Running", "claude.running.view"],
-  ].filter((i) => can(user, i[3]));
-  return `<nav class="tabs">${items
-    .map(([href, key, label]) => `<a href="${href}" class="${active === key ? "on" : ""}">${label}</a>`)
+    ["live", "Live", "claude.running.view"],
+    ["all", "All", "claude.sessions.view"],
+    ["archived", "Archived", "claude.sessions.view"],
+  ].filter((i) => can(user, i[2]));
+  if (items.length < 2) return "";
+  return `<nav class="tabs2" role="tablist" aria-label="Sessions">${items
+    .map(
+      ([key, label]) =>
+        `<a role="tab" href="/claude/sessions?tab=${key}" aria-selected="${active === key}">${label}${
+          c[key] != null ? ` <span class="badge plain">${esc(c[key])}</span>` : ""
+        }</a>`
+    )
     .join("")}</nav>`;
 }
 
@@ -99,7 +111,7 @@ const page = (title, body, { user, csrf, active, subtitle, actions, pattern, fil
     assets,
   });
 
-const memCrumbs = (here) => [["OS Dashboard", "/os"], ["Claude Code", null], ["Memory", "/claude/memory"], [here, null]];
+const memCrumbs = (here) => [["Agents & sessions", "/agents/dashboard"], ["Memory", "/claude/memory"], [here, null]];
 
 function factStatus(f) {
   if (f.superseded_by == null) return pill("ok", "current");
@@ -389,8 +401,7 @@ exports.memory = (d) => {
   const hide = (v) => (v === view ? "" : " hidden");
   return page(
     "Claude Code memory",
-    `${tabs("memory", user)}
-    ${flashes({ msg: d.flash, err: d.err })}
+    `    ${flashes({ msg: d.flash, err: d.err })}
     <div class="mg-page">
       ${graphPanel({
         kind: "claude",
@@ -456,8 +467,7 @@ exports.fact = ({ csrf, user, data, flash, err }) => {
     .join("");
   return page(
     "Fact #" + f.id,
-    `${tabs("memory", user)}
-    ${flashes({ msg: flash, err })}
+    `    ${flashes({ msg: flash, err })}
     ${card(
       f.topic || "Fact",
       `<pre class="snippet cc-fact">${esc(f.content)}</pre>
@@ -540,8 +550,7 @@ exports.memfile = ({ csrf, user, file, flash, err }) => {
   const writable = can(user, "claude.memory.write") && !file.redacted;
   return page(
     file.name,
-    `${tabs("memory", user)}
-    ${flashes({ msg: flash, err })}
+    `    ${flashes({ msg: flash, err })}
     ${
       file.redacted
         ? `<div class="alert warn">${icon("alert")}<div>This file contains something that looks like a
@@ -574,8 +583,7 @@ exports.sessionMemory = ({ csrf, user, data, uuid, err }) => {
   const pages = Math.max(1, Math.ceil((d.total_chunks || 0) / (d.per_page || 40)));
   return page(
     "Memory for a session",
-    `${tabs("memory", user)}
-    ${flashes({ err })}
+    `    ${flashes({ err })}
     ${card(
       "Facts from this session",
       factsTable(d.facts, "No facts were extracted from this session."),
@@ -619,17 +627,23 @@ function statusPills(r) {
   return out.join(" ");
 }
 
-exports.sessions = ({ csrf, user, data, filters, flash, err }) => {
+/**
+ * Sessions ▸ All / Archived: every Claude Code transcript on this machine
+ * (the Live tab is exports.live). An archived row can be restored in place.
+ */
+exports.sessions = ({ csrf, user, data, filters, flash, err, counts }) => {
   const d = data || { rows: [], total: 0, page: 1, per_page: 25, homes: [], projects: [] };
   const pages = Math.max(1, Math.ceil((d.total || 0) / (d.per_page || 25)));
-  const params = { home: filters.home, project: filters.project, q: filters.q, archived: filters.archived };
+  const tab = filters.archived ? "archived" : "all";
+  const params = { tab, home: filters.home, project: filters.project, q: filters.q };
+  const restorer = filters.archived && can(user, "claude.sessions.manage");
   return page(
-    "Claude Code sessions",
-    `${tabs("sessions", user)}
-    ${flashes({ msg: flash, err })}
+    "Sessions",
+    `${flashes({ msg: flash, err })}
     ${card(
-      filters.archived ? "Archived sessions" : "Sessions",
-      `<form method="get" action="/claude/sessions" class="cc-filters">
+      null,
+      `${tabs(tab, user, counts)}
+      <form method="get" action="/claude/sessions" class="cc-filters"><input type="hidden" name="tab" value="${tab}">
         <label>Home <select name="home"><option value="">All homes</option>${(d.homes || [])
           .map((h) => `<option value="${esc(h.key)}"${h.key === filters.home ? " selected" : ""}>${esc(h.label)}</option>`)
           .join("")}</select></label>
@@ -642,11 +656,8 @@ exports.sessions = ({ csrf, user, data, filters, flash, err }) => {
           )
           .join("")}</select></label>
         <label>Title contains <input name="q" value="${esc(filters.q || "")}" maxlength="200"></label>
-        <label class="check"><input type="checkbox" name="archived" value="1"${
-          filters.archived ? " checked" : ""
-        }> Archived</label>
         <button class="btn small" type="submit">Filter</button>
-        <a class="btn small" href="/claude/sessions">Reset</a>
+        <a class="btn small" href="/claude/sessions?tab=${tab}">Reset</a>
       </form>
       ${
         d.index_available === false
@@ -680,7 +691,14 @@ exports.sessions = ({ csrf, user, data, filters, flash, err }) => {
                 <td class="mono small right">${bytes(r.bytes)}</td>
                 <td class="mono small right">${esc(r.turns == null ? "—" : r.turns)}</td>
                 <td class="mono small right">${esc(r.subagents || 0)}</td>
-                <td>${statusPills(r)}</td>
+                <td>${statusPills(r)}${
+                  restorer && r.archived
+                    ? `<form method="post" action="${esc(sessionHref(r.home, r.uuid) + "/restore")}" class="inline">${hidden(csrf)}<button class="btn small" type="submit">${icon(
+                        "reindex",
+                        14
+                      )} Restore</button></form>`
+                    : ""
+                }</td>
               </tr>`
               )
               .join("")}</tbody></table></div>
@@ -689,9 +707,16 @@ exports.sessions = ({ csrf, user, data, filters, flash, err }) => {
               desktop app released it; the transcript is still on disk. The Windows archive is read-only.</p>`
           : empty("logs", "No sessions", filters.archived ? "Nothing has been archived from here." : "No transcripts match.")
       }`,
-      { icon: "logs" }
+      { className: "sess-card" }
     )}`,
-    { user, csrf, active: "sessions", pattern: "b", subtitle: "Every Claude Code transcript on this machine, across its three homes." }
+    {
+      user,
+      csrf,
+      active: "sessions",
+      pattern: "c",
+      crumbs: [["Agents & sessions", "/agents/dashboard"], ["Sessions", null]],
+      subtitle: "Every Claude Code session on this machine. What was “Running” is the Live tab.",
+    }
   );
 };
 
@@ -751,8 +776,7 @@ exports.session = ({ csrf, user, s, flash, err }) => {
   const title = s.title || "(untitled session)";
   return page(
     title,
-    `${tabs("sessions", user)}
-    ${flashes({ msg: flash, err })}
+    `${flashes({ msg: flash, err })}
     <div class="grid cols-2">
       ${card(
         "Session",
@@ -861,6 +885,7 @@ exports.session = ({ csrf, user, s, flash, err }) => {
       csrf,
       active: "sessions",
       pattern: "b",
+      crumbs: [["Agents & sessions", "/agents/dashboard"], ["Sessions", "/claude/sessions?tab=" + (s.archived ? "archived" : "all")], [title, null]],
       subtitle: `${esc(s.home_label)} · <span class="mono">${esc(s.uuid)}</span>`,
     }
   );
@@ -1011,7 +1036,94 @@ function runningSections(csrf, user, r) {
 }
 exports.runningSections = runningSections;
 
-exports.running = ({ csrf, user, r, flash, err }) => {
+function fmtTok(n) {
+  n = Math.max(0, Math.round(Number(n) || 0));
+  return n >= 1e6 ? (n / 1e6).toFixed(n >= 1e7 ? 0 : 1).replace(/\.0$/, "") + "M" : n >= 1e3 ? Math.round(n / 1e3) + "k" : String(n);
+}
+
+/**
+ * The sessions MINT AI knows, one row each: who started it (MINT AI itself,
+ * yours, hired, kept), its state, folder and tokens today (of its daily cap),
+ * and what may be done to it -- Keep / Stop keeping / Retire… for a hired
+ * one, Stop… for one of yours, Resume for one paused at its cap, and its
+ * transcript. Shared by Sessions ▸ Live and Agents & sessions ▸ Overview.
+ *
+ * @param team  { sessions: [supervisor sessions], caps: {key -> token-caps row}, error }
+ * @param r     the Running data (priv.ccRunning), to find a session's pid and home
+ */
+function teamTable(csrf, user, team, r, opts = {}) {
+  const t = team || {};
+  const caps = t.caps || {};
+  const running = (r && r.sessions) || [];
+  const byId = new Map(running.filter((x) => x.session_id).map((x) => [x.session_id, x]));
+  const rows = (t.sessions || []).filter((x) => opts.withSelf || !x.self);
+  if (t.error) return `<div class="alert bad">${icon("alert")}<div>${esc(t.error)}</div></div>`;
+  if (!rows.length) return empty("activity", "No live sessions", "Nothing is running round MINT AI right now.");
+  const useAi = can(user, "moniai.use");
+  const stopper = can(user, "claude.running.stop");
+  const kindTag = (x) =>
+    x.self
+      ? `<span class="cc-tag ai">MINT AI</span>`
+      : x.hire
+      ? x.hire.kept
+        ? `<span class="cc-tag ok">kept</span>`
+        : `<span class="cc-tag mute">hired</span>`
+      : `<span class="pill neutral">yours</span>`;
+  return `<table class="rows stack aligned"><thead><tr><th>Session</th><th>Who</th><th>Status</th><th>Folder</th><th class="right">Tokens today</th><th></th></tr></thead><tbody>${rows
+    .map((x) => {
+      const key = x.self ? "<self>" : x.hire ? x.hire.slug : x.session_id;
+      const cap = caps[key] || null;
+      const rr = x.session_id ? byId.get(x.session_id) : null;
+      const name = x.name || (x.session_id ? String(x.session_id).slice(0, 8) : "pid " + x.pid);
+      const paused = !!(cap && cap.paused);
+      const status = paused
+        ? `<span class="pill bad">paused</span>`
+        : /busy|working|running/.test(String(x.status || ""))
+        ? `<span class="pill work">working</span>`
+        : `<span class="pill neutral">${esc(x.status && x.status !== "idle" ? x.status : "idle")}</span>`;
+      const tk = cap ? cap.today && cap.today.total : x.tokens_today && x.tokens_today.total;
+      const acts = [];
+      if (rr && rr.home) acts.push(`<a class="btn small" href="${esc(sessionHref(rr.home, x.session_id))}">Transcript</a>`);
+      if (useAi && x.hire && !x.self) {
+        const slug = esc(x.hire.slug);
+        acts.push(
+          x.hire.kept
+            ? `<form method="post" action="/claude/sessions/live/${slug}/keep" class="inline">${hidden(csrf)}<input type="hidden" name="kept" value="0"><button class="btn small" type="submit">Stop keeping</button></form>`
+            : `<form method="post" action="/claude/sessions/live/${slug}/keep" class="inline">${hidden(csrf)}<input type="hidden" name="kept" value="1"><button class="btn small" type="submit">Keep</button></form>
+               <form method="post" action="/claude/sessions/live/${slug}/retire" class="inline" data-confirm-dlg="Retire “${esc(name)}”?" data-confirm-body="It ends gracefully and its sphere dissolves; its transcript is kept." data-confirm-yes="Retire" data-confirm-no="Keep">${hidden(
+                 csrf
+               )}<button class="btn small danger" type="submit">Retire…</button></form>`
+        );
+      }
+      if (!x.hire && !x.self && stopper && rr && rr.alive && rr.claude && !rr.stop_requested)
+        acts.push(
+          `<form method="post" action="/claude/running/stop" class="inline" data-confirm-dlg="Stop “${esc(name)}”?" data-confirm-body="This sends an interrupt (SIGINT) to pid ${esc(
+            rr.pid
+          )}, like pressing Ctrl-C. Work in progress in that session stops." data-confirm-yes="Stop">${hidden(csrf)}<input type="hidden" name="pid" value="${esc(rr.pid)}"><button class="btn small danger" type="submit">Stop…</button></form>`
+        );
+      if (paused && useAi)
+        acts.push(
+          `<form method="post" action="/claude/sessions/live/resume" class="inline">${hidden(csrf)}<input type="hidden" name="key" value="${esc(key)}"><button class="btn small primary" type="submit">Resume</button></form>`
+        );
+      return `<tr><td class="first" data-h="Session"><div class="l1"><b class="ink">${esc(name)}</b></div>${
+        x.hire && x.hire.purpose ? `<div class="l2">MINT AI hired it: ${esc(snippet(x.hire.purpose, 140))}</div>` : ""
+      }</td>
+        <td data-h="Who"><div class="l1">${kindTag(x)}</div></td>
+        <td data-h="Status"><div class="l1">${status}${rr && rr.uptime != null ? `<span class="muted-num">${esc(duration(rr.uptime))}</span>` : ""}</div></td>
+        <td data-h="Folder"><div class="l1 mono small">${esc(snippet(x.cwd || "—", 40))}</div></td>
+        <td class="right" data-h="Tokens"><div class="l1 mono small">${tk != null ? fmtTok(tk) : "—"}${cap && cap.cap ? " / " + fmtTok(cap.cap) : ""}</div></td>
+        <td class="right nolabel" data-h=""><div class="l1">${acts.join("")}</div></td></tr>`;
+    })
+    .join("")}</tbody></table>`;
+}
+exports.teamTable = teamTable;
+
+/**
+ * Sessions ▸ Live: MINT AI's view of the live sessions (above), then what the
+ * Running page showed -- every claude process, subagents, memory jobs --
+ * refreshed in place every ten seconds (public/app.js, /api/claude/running).
+ */
+exports.live = ({ csrf, user, r, team, flash, err, counts }) => {
   const data = r || {};
   const sec = runningSections(csrf, user, data);
   const table = (key, head) =>
@@ -1022,16 +1134,24 @@ exports.running = ({ csrf, user, r, flash, err }) => {
     `<section class="card${cls ? " " + cls : ""}"><div class="card-head"><h2>${icon(iconName)}${esc(title)}</h2></div>
       <div class="panel-body">${inner}</div></section>`;
   return page(
-    "Running now",
-    `${tabs("running", user)}
-    ${flashes({ msg: flash, err })}
+    "Sessions",
+    `${flashes({ msg: flash, err })}
+    ${card(
+      null,
+      `${tabs("live", user, counts)}${
+        team
+          ? teamTable(csrf, user, team, data)
+          : `<p class="muted">MINT AI's view of the sessions (who started each, tokens, Keep and Retire) needs the Command MINT AI permission.</p>`
+      }`,
+      { className: "sess-card", id: "s-live" }
+    )}
     <div data-cc-running class="cc-live">
       <div class="stats4" data-cc-section="stats">${sec.stats}</div>
-      <p class="muted small cc-line">Updated <span data-cc-updated>${esc(stamp(data.ts))}</span> · refreshes every
-        10 seconds while this tab is visible. <a href="/claude/running">Refresh now</a></p>
+      <p class="muted small cc-line">Processes updated <span data-cc-updated>${esc(stamp(data.ts))}</span> · refreshes every
+        10 seconds while this tab is visible. <a href="/claude/sessions?tab=live">Refresh now</a></p>
       <div class="cc-board three">
         ${panel(
-          "Claude Code sessions",
+          "Claude Code processes",
           "activity",
           `${table("sessions", ["Session", "Entrypoint", "Status", "Model", "cwd", "pid", "Uptime", ">CPU", "Updated", ""])}
           <p class="muted small">Stop sends an interrupt (SIGINT), the same as Ctrl-C, and only to a pid that
@@ -1059,6 +1179,13 @@ exports.running = ({ csrf, user, r, flash, err }) => {
         )}
       </div>
     </div>`,
-    { user, csrf, active: "running", pattern: "a", subtitle: "Claude Code processes, subagents and memory jobs on this machine." }
+    {
+      user,
+      csrf,
+      active: "sessions",
+      pattern: "c",
+      crumbs: [["Agents & sessions", "/agents/dashboard"], ["Sessions", null]],
+      subtitle: "Every Claude Code session on this machine. What was “Running” is the Live tab.",
+    }
   );
 };

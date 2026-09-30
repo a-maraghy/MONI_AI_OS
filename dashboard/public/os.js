@@ -203,7 +203,8 @@
     }
     document.addEventListener("change", function (e) {
       var el = e.target;
-      var f = el && el.closest && el.closest("form[data-live]");
+      // A control may sit outside its form (form="id", as in the token caps table).
+      var f = el && el.form && el.form.hasAttribute("data-live") ? el.form : el && el.closest && el.closest("form[data-live]");
       if (!f || el.hasAttribute("data-no-live")) return;
       var revert = null;
       if (el.type === "checkbox") { var was = !el.checked; revert = function () { el.checked = was; }; }

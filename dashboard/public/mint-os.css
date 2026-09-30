@@ -300,3 +300,10 @@ b.ink { color: var(--ink); }
 .cc-modal.os .perm-group { margin-top: 12px; }
 .linkish { background: none; border: 0; padding: 0; margin: 0; color: var(--accent); font: inherit; cursor: pointer; text-decoration: underline; }
 @media (max-width: 640px) { .cc-modal.os { top: calc(var(--topbar-h) + 10px); width: calc(100vw - 20px); max-height: calc(100vh - var(--topbar-h) - 20px); } }
+
+/* ---- tabs as links (Sessions, Services) ---- */
+.tabs2 a { height: 36px; padding: 0 12px; color: var(--muted); font: 600 13px var(--brand-font); border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap; display: inline-flex; align-items: center; gap: 6px; }
+.tabs2 a:hover { color: var(--ink); text-decoration: none; }
+.tabs2 a[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--brand); }
+.sess-card > .tabs2, .content > .frame-body > .tabs2 { margin-bottom: 10px; }
+.pill.work { color: var(--work, var(--accent)); border-color: color-mix(in srgb, var(--work, var(--accent)) 45%, transparent); background: color-mix(in srgb, var(--work, var(--accent)) 8%, transparent); }
