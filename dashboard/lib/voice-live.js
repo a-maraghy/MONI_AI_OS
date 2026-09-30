@@ -1927,7 +1927,7 @@ function restartAll() {
     n++;
   }
   calls.clear();
-  changed();
+  if (n) changed(); // (with no call open the status file already says 0: nothing is written while stopping)
   return n;
 }
 /**

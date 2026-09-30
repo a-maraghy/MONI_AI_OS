@@ -5779,16 +5779,16 @@ let stopping = false;
 function stopGracefully(sig) {
   if (stopping) return;
   stopping = true;
-  const n = voiceLive.restartAll();
+  const n = voiceLive.restartAll(); // (rewrites the status file only when calls were open)
+  if (!n) process.exit(0); // nothing to tell: stop at once, as before this handler existed
   console.log(`moni-dashboard: ${sig}; ${n} live call(s) told the dashboard is restarting`);
-  writeLiveStatus();
   try {
     httpServer.close();
   } catch (_) {
     /* already closing */
   }
   // A moment for the "restarting" frames and the close handshakes to leave.
-  setTimeout(() => process.exit(0), n ? 400 : 50).unref();
+  setTimeout(() => process.exit(0), 400).unref();
 }
 process.on("SIGTERM", () => stopGracefully("SIGTERM"));
 process.on("SIGINT", () => stopGracefully("SIGINT"));
