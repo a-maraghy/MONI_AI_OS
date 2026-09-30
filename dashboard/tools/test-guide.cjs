@@ -89,6 +89,7 @@ console.log("facts");
 check("voice is a live conversation", /live conversation/.test(text));
 check("Disabled turns off all voice incl. read-aloud, token kept", /Disabled[^.]*all voice[^.]*read-aloud/.test(text) && /token stays stored/.test(text));
 check("only administrators may talk by voice (voice.use)", /Only administrators may talk by voice/.test(text) && /voice\.use/.test(text));
+check("one voice model; listening is a fixed paired transcription model, not a setting", /One voice model/.test(text) && /GPT Realtime 2\.1 mini/.test(text) && /gpt-4o-mini-transcribe/.test(text) && /not a setting/.test(text) && !/Listening model/.test(text));
 check("caps count cache tokens, the N tok today figure", /input, output and cache/.test(text) && /N tok today/.test(text));
 check("caps are checked at turn end and after each cost scan", /end of every MINT AI turn/.test(text) && /cost scan/.test(text));
 check("your own sessions only warn", /can only warn/.test(text));
