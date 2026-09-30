@@ -27,6 +27,8 @@ const MAX_LINE = 64 * 1024;
 const MAX_TEXT = 20000;
 const ACTOR_RE = /^[A-Za-z0-9._@-]{1,64}$/;
 const ID_RE = /^[A-Za-z0-9._:-]{1,64}$/;
+// A token-cap key: "<self>" (MINT AI), "default" (new hires), a hire slug or a session id.
+const CAP_KEY_RE = /^(<self>|default|[a-z0-9][a-z0-9-]{0,39}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
 
 const TABLES = ["delegations", "inbound", "approvals", "turns", "audit", "hired_sessions"];
 const WATCHERS = ["service_failed", "ban_burst", "disk", "agent_failing", "odoo_errors"];
@@ -156,9 +158,60 @@ const OPS = {
   },
   "rule-delete": { mutating: true, params: { rule_id: int(1, Number.MAX_SAFE_INTEGER) } },
   "cost-budget": { mutating: true, params: { daily_usd: nullableNumber(0, 100000), warn_pct: int(50, 100) } },
+
+  /* ---- editable settings (Mint OS reorganisation, 2026-09-30); every write is the administrator's only ---- */
+  // Hire limits (lib/hire.js defaults; ledger hire_max_live / hire_per_hour / hire_perm_mode). null: back to the default.
+  "hire-limits": { mutating: false, params: {} },
+  "hire-limits-set": { mutating: true, params: { max_live: optNullable(int(1, 12)), per_hour: optNullable(int(0, 10)), perm_mode: optNullable(str(20, /^[A-Za-z]{1,20}$/)) } },
+  // The approval timeout (ledger approval_timeout_s over the config's). null: back to the config's.
+  "approval-timeout": { mutating: false, params: {} },
+  "approval-timeout-set": { mutating: true, params: { seconds: nullable(int(30, 3600)) } },
+  // Token caps per session (build spec §6). key: "<self>", "default", a hire slug or a session id; cap null removes it.
+  "token-caps": { mutating: false, params: {} },
+  "token-caps-set": { mutating: true, params: { key: optString(64, CAP_KEY_RE), cap: optNullable(int(1, 1e12)), at: optEnum(["warn", "pause"]), warn_pct: optInt(50, 100) } },
+  "budget-resume": { mutating: true, params: { key: optString(64, CAP_KEY_RE), decision_id: optInt(1, Number.MAX_SAFE_INTEGER) } },
+  // A hired session's standing link (bin/mint-session, actor "session.<slug>"): budget-pause / budget-resume come down it.
+  "session-link": { mutating: false, params: { slug: str(40, /^[a-z0-9][a-z0-9-]{0,39}$/) } },
+  // MINT AI's page map (build spec §5): no params reads it; pages stores and applies it; reset returns to the built-in list.
+  "ui-pages": { mutating: true, params: { pages: optArray(pageSpec(), 500), reset: optBool() } },
+  // MINT AI's charter (the CLAUDE.md in its working directory), read-only, at most 64 KB.
+  charter: { mutating: false, params: {} },
 };
 
 /* ------------------------------------------------------------ validators --- */
+
+function optNullable(check) {
+  const f = (v, name) => check(v, name);
+  f.optional = true;
+  f.nullable = true;
+  return f;
+}
+function nullable(check) {
+  const f = (v, name) => check(v, name);
+  f.nullable = true;
+  return f;
+}
+/** One page-map entry: { key, parent?, kind, label, url, perm? } -- short strings, a site-relative url. */
+function pageSpec() {
+  const key = str(64, /^[a-z0-9][a-z0-9._-]{0,63}$/);
+  const opt = (c) => {
+    const f = (v, n) => c(v, n);
+    f.optional = true;
+    return f;
+  };
+  const spec = objOf({
+    key,
+    parent: opt(key),
+    kind: str(16, /^[a-z]{1,16}$/),
+    label: str(120, /^[^\u0000-\u001f\u007f<>]{1,120}$/),
+    url: str(300, /^\/(?![\/\\])[^\s\u0000-\u001f\u007f<>"'`\\]{0,299}$/),
+    perm: opt(str(64, /^[A-Za-z0-9._:-]{1,64}$/)),
+  });
+  return (v, name) => {
+    const e = spec(v, name);
+    return { key: e.key, parent: e.parent || null, kind: e.kind, label: e.label, url: e.url, perm: e.perm || null };
+  };
+}
 
 /** A screen action's flat arguments: at most six known keys, short strings or booleans. */
 function uiArgs() {
@@ -379,7 +432,9 @@ function parseRequest(line) {
     if (!allowed.includes(params.status)) return { ok: false, id, error: "status is not valid for that table" };
   }
 
-  return { ok: true, req: { id, op: msg.op, actor: msg.actor, params, mutating: spec.mutating } };
+  // ui-pages without pages or reset only reads the map: not a write, not audited.
+  const mutating = msg.op === "ui-pages" ? params.pages !== undefined || !!params.reset : spec.mutating;
+  return { ok: true, req: { id, op: msg.op, actor: msg.actor, params, mutating } };
 }
 
 /** Serialise a reply line. */

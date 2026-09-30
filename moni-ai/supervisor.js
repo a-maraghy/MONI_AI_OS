@@ -46,6 +46,7 @@ const turnQueue = require("./lib/turnqueue");
 const names = require("./lib/names");
 const UiActions = require("./lib/ui-actions");
 const planUsageLib = require("./lib/usage");
+const settingsLib = require("./lib/settings");
 
 /* ----------------------------------------------------------------- config --- */
 
@@ -664,7 +665,7 @@ function userMessage(row) {
 }
 
 /** Turns this supervisor wrote itself: their replayed text is already recorded. */
-const OUR_SOURCES = new Set(["dashboard", "voice-desk", "order", "watcher", "mission-request", "decision"]);
+const OUR_SOURCES = new Set(["dashboard", "voice-desk", "order", "watcher", "mission-request", "decision", "cap-held"]);
 
 /**
  * Queue a turn for MINT AI. The supervisor holds the queue and hands the CLI
@@ -692,6 +693,8 @@ function queueTurn({ source, actor, text, target, order_id, mission_id, decision
  */
 function pump() {
   if (proc.state !== "ready" || turns.running || turns.inflight || !turns.pending.length) return;
+  // Paused at its daily token cap (build spec §6): every queued turn waits for Resume or the day turning.
+  if (features.caps.selfPaused()) return;
   const i = turnQueue.pickNext(turns.pending, Date.now(), cfg.queue_background_max_wait_s * 1000);
   if (i < 0) return;
   const { row, message } = turns.pending[i];
@@ -933,6 +936,20 @@ function onUser(ev) {
     turns.running.text = row.text;
   }
   emit("turn", { phase: "source", turn: publicTurn(row), from_pid: ev.origin && ev.origin.verifiedPeerPid });
+  if (turns.running && turns.running.uuid === uuid) holdIfPaused(row, source, fromName, shown);
+}
+
+/**
+ * Paused at the daily token cap: a turn the CLI started on its own (a peer's
+ * message, Remote Control, a cross-session notice) is interrupted. A message
+ * someone sent (peer, Remote Control) is kept and put back in the queue when
+ * MINT AI is resumed or the day turns; a notice is only interrupted.
+ */
+function holdIfPaused(row, source, fromName, text) {
+  if (!features.caps.selfPaused() || !proc.child) return;
+  if (source === "peer" || source === "remote") features.caps.holdForSelf({ source, from: fromName, text });
+  log(`token cap: interrupting a ${source} turn (#${row.id}) while MINT AI is paused at its daily cap${source === "peer" || source === "remote" ? "; its message is kept for later" : ""}`);
+  sendControl({ subtype: "interrupt" }, 15000).catch((e) => warn("cap interrupt: " + e.message));
 }
 
 function describeTool(name, input) {
@@ -1065,7 +1082,7 @@ function onControlRequest(ev) {
       : typeof input.command === "string"
       ? input.command
       : req.description || JSON.stringify(input);
-  const expires = new Date(Date.now() + cfg.approval_timeout_s * 1000).toISOString();
+  const expires = new Date(Date.now() + approvalTimeoutS() * 1000).toISOString();
   const row = ledger.addApproval({
     request_id: ev.request_id,
     tool_use_id: req.tool_use_id,
@@ -1078,7 +1095,7 @@ function onControlRequest(ev) {
     reason: req.decision_reason || gate.reason || req.description || null,
     expires_at: expires,
   });
-  const timer = setTimeout(() => expireApproval(row.id), cfg.approval_timeout_s * 1000);
+  const timer = setTimeout(() => expireApproval(row.id), approvalTimeoutS() * 1000);
   approvals.set(row.id, { requestId: ev.request_id, input, generation: proc.generation, timer, tool, toolUseId: req.tool_use_id });
   requestToApproval.set(ev.request_id, row.id);
   const t = turns.toolSteps.get(req.tool_use_id);
@@ -1203,7 +1220,7 @@ function decide(approvalId, allow, actor, note, alwaysRule) {
 function expireApproval(approvalId) {
   const a = approvals.get(approvalId);
   if (!a) return;
-  const mins = Math.round(cfg.approval_timeout_s / 60);
+  const mins = Math.round(approvalTimeoutS() / 60);
   answer(approvalId, false, `Nobody answered the approval request within ${mins} minute${mins === 1 ? "" : "s"}, so it was denied by default. Do not retry it; tell the user it is waiting for their approval.`);
   const row = ledger.updateApproval(approvalId, { status: "expired", decided_at: now(), decided_by: "timeout" });
   recordDeniedDelegation(a, row, "approval timed out");
@@ -1275,10 +1292,13 @@ function emitHired(h, what) {
 async function sessionHire(actor, p) {
   if (!(actor === "moni-ai" || isHuman(actor))) throw new Error("only MINT AI or the administrator can hire a session");
   const hourAgo = new Date(Date.now() - 3600 * 1000).toISOString();
-  const c = hireLib.checkHire(p, { live: sessionsCache.list || [], hired: ledger.hiredList(false), recent: ledger.hiredSince(hourAgo) });
+  const lim = hireLimits();
+  const c = hireLib.checkHire(p, { live: sessionsCache.list || [], hired: ledger.hiredList(false), recent: ledger.hiredSince(hourAgo), limits: lim });
   if (c.error) throw new Error(c.error);
   const h = ledger.addHired({ slug: c.slug, name: c.name, cwd: c.cwd, purpose: c.purpose, model: c.model, session_id: crypto.randomUUID(), hired_by: actor });
-  writeHiredFile(h, { hired_by: actor, hired_at: h.hired_at });
+  // The permission mode is fixed at hire time (Settings > Sessions & hiring); bin/mint-session refuses bypass.
+  writeHiredFile(h, { hired_by: actor, hired_at: h.hired_at, permission_mode: lim.perm_mode });
+  features.onHired(h);
   log(`hire: "${h.name}" (${h.slug}) in ${h.cwd} by ${actor}`);
   try {
     await systemctl(["enable", "--now", `mint-session@${h.slug}.service`]);
@@ -1405,7 +1425,7 @@ function sessionApproval(actor, p) {
     category: gate.category || null,
     label: gate.label || "Needs permission",
     reason: p.reason || gate.reason || null,
-    expires_at: new Date(Date.now() + cfg.approval_timeout_s * 1000).toISOString(),
+    expires_at: new Date(Date.now() + approvalTimeoutS() * 1000).toISOString(),
     origin: "session:" + p.slug,
     origin_name: h.name,
   });
@@ -1417,7 +1437,7 @@ function sessionApproval(actor, p) {
       requestToApproval.delete(key);
       emit("approval", { approval: publicApproval(ledger.updateApproval(row.id, { status: "expired", decided_at: now(), decided_by: "timeout" })) });
       resolve({ behavior: "deny", message: "Nobody answered the approval request in time, so it was denied." });
-    }, cfg.approval_timeout_s * 1000);
+    }, approvalTimeoutS() * 1000);
     approvals.set(row.id, { kind: "session", slug: p.slug, requestId: key, input, tool, timer, reply: (resp) => resolve(resp) });
     requestToApproval.set(key, row.id);
     emit("approval", { approval: publicApproval(ledger.get("approvals", row.id)) });
@@ -1434,6 +1454,187 @@ function sessionApprovalCancel(actor, p) {
   requestToApproval.delete(key);
   emit("approval", { approval: publicApproval(ledger.updateApproval(aid, { status: "cancelled", decided_at: now(), note: "withdrawn by the hired session" })) });
   return { cancelled: true };
+}
+
+/*
+ * A hired session's standing link (bin/mint-session, op session-link): the
+ * supervisor's way to reach a runner, for budget-pause / budget-resume. The
+ * reply carries the current state, so a runner that (re)connects while its
+ * session is paused pauses at once.
+ */
+const hiredLinks = new Map(); // slug -> Set<socket>
+function sessionLink(actor, p, req, sock) {
+  const h = ledger.hiredList(false).find((x) => x.slug === p.slug);
+  if (!h || actor !== "session." + p.slug) throw new Error("not a hired session's own link");
+  sock.write(protocol.reply(req.id, { linked: true, paused: features.caps.isPaused(h.slug), approval_timeout_s: approvalTimeoutS() }));
+  if (!hiredLinks.has(h.slug)) hiredLinks.set(h.slug, new Set());
+  hiredLinks.get(h.slug).add(sock);
+  sock.on("close", () => {
+    const set = hiredLinks.get(h.slug);
+    if (set) set.delete(sock);
+  });
+  return undefined; // reply already written; the connection stays open
+}
+/** Send a control line to a hired session's runner; false when it has no live link. */
+function tellHired(slug, control) {
+  const set = hiredLinks.get(slug);
+  let sent = false;
+  for (const s of set || []) {
+    if (s.destroyed) continue;
+    s.write(JSON.stringify({ control }) + "\n");
+    sent = true;
+  }
+  return sent;
+}
+
+/* ----------------------------------------------------- token caps (§6) --- */
+
+/** features.js decided to pause a session at its cap. */
+function onCapPause(e, o = {}) {
+  if (e.kind === "self") {
+    log("token cap: MINT AI is paused at its daily cap; queued turns wait (a running turn finishes)");
+    return;
+  }
+  if (e.kind !== "hired" && e.kind !== "kept") return; // the administrator's own sessions are never paused
+  const sent = tellHired(e.slug || e.key, { op: "budget-pause", reason: "daily token cap reached" });
+  if (!o.again) log(`token cap: budget-pause to "${e.name}" (${e.slug || e.key})${sent ? "" : ": no live link now; it pauses when it links, and its gate denies tool calls meanwhile"}`);
+}
+/** ...and to lift it: MINT AI's held messages go back in the queue, a hired session gets budget-resume. */
+function onCapResume(e, why, held) {
+  if (e.kind === "self") {
+    for (const m of held || []) {
+      queueTurn({
+        source: "cap-held",
+        actor: m.from || m.source,
+        text:
+          `[Held while you were paused at your daily token cap; delivered now (${why}). ` +
+          `${m.source === "peer" ? `A message from the session "${m.from || "unknown"}"` : "A message sent through Remote Control"}, received ${String(m.at || "").slice(11, 16)}:]\n\n${m.text}`,
+      });
+    }
+    pump();
+    return;
+  }
+  if (e.kind !== "hired" && e.kind !== "kept") return;
+  tellHired(e.slug || e.key, { op: "budget-resume", reason: why });
+  log(`token cap: budget-resume to "${e.name}" (${why})`);
+}
+
+/* ------------------------------------ editable settings (Mint OS reorganisation) --- */
+
+const APPROVAL_TIMEOUT_BOUNDS = [30, 3600];
+/** The approval timeout in force: the ledger setting (Settings > Approvals), else the config's. */
+function approvalTimeoutS() {
+  const v = settingsLib.get(ledger.db, "approval_timeout_s");
+  const [lo, hi] = APPROVAL_TIMEOUT_BOUNDS;
+  return Number.isInteger(v) && v >= lo && v <= hi ? v : cfg.approval_timeout_s;
+}
+function approvalTimeoutView() {
+  return { seconds: approvalTimeoutS(), default: cfg.approval_timeout_s, bounds: APPROVAL_TIMEOUT_BOUNDS, ...settingsLib.meta(ledger.db, "approval_timeout_s") };
+}
+function approvalTimeoutSet(actor, p) {
+  if (!isHuman(actor)) throw new Error("only the administrator can change the approval timeout");
+  settingsLib.set(ledger.db, "approval_timeout_s", p.seconds, actor); // null: back to the config's
+  log(`approval timeout: ${p.seconds === null ? "the default, " + cfg.approval_timeout_s : p.seconds} s (by ${actor})`);
+  return approvalTimeoutView();
+}
+
+const HIRE_KEYS = { max_live: "hire_max_live", per_hour: "hire_per_hour", perm_mode: "hire_perm_mode" };
+/** The hire limits in force, read at hire time: the ledger settings over lib/hire.js's defaults. */
+function hireLimits() {
+  const stored = {};
+  for (const [k, key] of Object.entries(HIRE_KEYS)) stored[k] = settingsLib.get(ledger.db, key);
+  return hireLib.effectiveLimits(stored, cfg);
+}
+function hireLimitsView() {
+  const lim = hireLimits();
+  const c = hireLib.liveCount(sessionsCache.list || [], ledger.hiredList(false));
+  const metas = Object.values(HIRE_KEYS).map((k) => settingsLib.meta(ledger.db, k)).filter((m) => m.updated_at).sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1));
+  return {
+    ...lim,
+    defaults: hireLib.defaultLimits(cfg),
+    bounds: hireLib.LIMIT_BOUNDS,
+    modes: hireLib.HIRE_MODES,
+    live: c.live,
+    hired: c.hired,
+    updated_by: metas.length ? metas[0].updated_by : null,
+    updated_at: metas.length ? metas[0].updated_at : null,
+  };
+}
+function hireLimitsSet(actor, p) {
+  if (!isHuman(actor)) throw new Error("only the administrator can change the hire limits");
+  const given = Object.keys(HIRE_KEYS).filter((k) => p[k] !== undefined);
+  if (!given.length) throw new Error("give max_live, per_hour or perm_mode");
+  const clean = hireLib.checkLimits(Object.fromEntries(given.filter((k) => p[k] !== null).map((k) => [k, p[k]])));
+  if (clean.error) throw new Error(clean.error);
+  for (const k of given) settingsLib.set(ledger.db, HIRE_KEYS[k], p[k] === null ? null : clean[k], actor); // null: back to the default
+  log(`hire limits changed by ${actor}: ${given.map((k) => `${k}=${p[k] === null ? "default" : clean[k]}`).join(", ")}`);
+  return hireLimitsView();
+}
+
+/*
+ * MINT AI's page map (build spec §5, "Feeding MINT AI"): the dashboard pushes
+ * the allowed page registry here; it is kept in the ledger (ui_pages) and
+ * handed to lib/ui-actions.js's setPages, which replaces page.open's allowlist
+ * -- at once, and again at every supervisor start. The ui_do / ui_actions_list
+ * tool schemas do not change (page is a free string checked at call time).
+ */
+function applyPages(pages) {
+  if (typeof UiActions.setPages !== "function") return false;
+  try {
+    UiActions.setPages(pages);
+    return true;
+  } catch (e) {
+    warn("ui pages: setPages refused the list: " + e.message);
+    return false;
+  }
+}
+function uiPages(actor, p) {
+  if (p.pages !== undefined || p.reset) {
+    if (!isHuman(actor)) throw new Error("only the administrator's dashboard can change MINT AI's page map");
+    if (p.pages !== undefined && p.reset) throw new Error("give pages or reset, not both");
+    if (p.reset) {
+      settingsLib.set(ledger.db, "ui_pages", null);
+      const applied = applyPages(null);
+      log(`ui pages: reset to the built-in list by ${actor}`);
+      return { pages: null, count: 0, applied, stored: false, updated_by: null, updated_at: null };
+    }
+    const seen = new Set();
+    for (const e of p.pages) {
+      if (seen.has(e.key)) throw new Error(`pages: the key "${e.key}" appears twice`);
+      seen.add(e.key);
+    }
+    settingsLib.set(ledger.db, "ui_pages", p.pages, actor);
+    const applied = applyPages(p.pages);
+    log(`ui pages: ${p.pages.length} entries stored by ${actor}${applied ? " and applied" : " (ui-actions has no setPages yet: stored only)"}`);
+    return { pages: p.pages, count: p.pages.length, applied, stored: true, ...settingsLib.meta(ledger.db, "ui_pages") };
+  }
+  const pages = settingsLib.get(ledger.db, "ui_pages");
+  return { pages: Array.isArray(pages) ? pages : null, count: Array.isArray(pages) ? pages.length : 0, applied: typeof UiActions.setPages === "function" && Array.isArray(pages), stored: Array.isArray(pages), ...settingsLib.meta(ledger.db, "ui_pages") };
+}
+/** At start: the stored page map, re-applied. */
+function loadPages() {
+  const pages = settingsLib.get(ledger.db, "ui_pages");
+  if (!Array.isArray(pages)) return;
+  if (applyPages(pages)) log(`ui pages: ${pages.length} entries re-applied from the ledger`);
+  else log(`ui pages: ${pages.length} entries stored, not applied (ui-actions has no setPages)`);
+}
+
+/**
+ * MINT AI's charter, read-only (Settings > General): the CLAUDE.md in its
+ * working directory, which the CLI loads as project instructions (the CLI
+ * starts in cfg.cwd). At most 64 KB of it.
+ */
+const CHARTER_MAX = 64 * 1024;
+function charter() {
+  const file = path.join(cfg.cwd, "CLAUDE.md");
+  let buf;
+  try {
+    buf = fs.readFileSync(file);
+  } catch (e) {
+    return { path: file, text: null, bytes: 0, truncated: false, error: e.code === "ENOENT" ? "no CLAUDE.md in MINT AI's working directory" : e.message };
+  }
+  const cut = buf.length > CHARTER_MAX;
+  return { path: file, text: redact((cut ? buf.subarray(0, CHARTER_MAX) : buf).toString("utf8").replace(/\uFFFD$/, "")), bytes: buf.length, truncated: cut, modified_at: fs.statSync(file).mtime.toISOString() };
 }
 
 /* ------------------------------------------------------------ delegations --- */
@@ -1937,6 +2138,9 @@ const features = createFeatures({
   projectsDir: PROJECTS_DIR,
   describeTool: (n, i) => describeTool(n, i),
   planUsage: (o) => planUsage.get(o),
+  isHuman: (a) => isHuman(a),
+  onCapPause: (e, o) => onCapPause(e, o),
+  onCapResume: (e, why, held) => onCapResume(e, why, held),
 });
 
 /* ------------------------------------------------------------ public views --- */
@@ -1980,6 +2184,8 @@ function status() {
       model: cfg.model,
       effort: cfg.effort,
       permission_mode: cfg.permission_mode,
+      cwd: cfg.cwd,
+      tz: cfg.tz,
     },
     session_id: st.session_id || null,
     session_created_at: st.created_at || null,
@@ -2002,7 +2208,9 @@ function status() {
     })(),
     vitals: vitalsCache,
     sessions_at: sessionsCache.at,
-    approval_timeout_s: cfg.approval_timeout_s,
+    approval_timeout_s: approvalTimeoutS(),
+    // Paused at its daily token cap (build spec §6): the Command Center says "Paused at its daily cap -- Resume".
+    paused_at_cap: features.caps.selfPaused(),
     delegation_allow: cfg.delegation_allow,
     seq,
   };
@@ -2128,6 +2336,20 @@ async function handle(req, sock) {
       return await sessionApproval(req.actor, p);
     case "session-approval-cancel":
       return sessionApprovalCancel(req.actor, p);
+    case "session-link":
+      return sessionLink(req.actor, p, req, sock);
+    case "hire-limits":
+      return hireLimitsView();
+    case "hire-limits-set":
+      return hireLimitsSet(req.actor, p);
+    case "approval-timeout":
+      return approvalTimeoutView();
+    case "approval-timeout-set":
+      return approvalTimeoutSet(req.actor, p);
+    case "ui-pages":
+      return uiPages(req.actor, p);
+    case "charter":
+      return charter();
     case "ui-ack": {
       const w = uiWaiting.get(p.nonce);
       if (!w) throw new Error("no such screen action is waiting (or it was answered already)");
@@ -2300,6 +2522,7 @@ function auditDetail(req) {
   const p = { ...req.params };
   if (p.ut) p.ut = "(set)"; // the ui token is never written down
   if (typeof p.text === "string") p.text = clip(p.text, 300);
+  if (Array.isArray(p.pages)) p.pages = `(${p.pages.length} pages)`;
   return p;
 }
 
@@ -2414,6 +2637,7 @@ async function main() {
   }, 5000);
 
   features.start();
+  loadPages();
   await start();
 
   let stopping = false;
