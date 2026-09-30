@@ -60,6 +60,9 @@ const noKey = views.page({ csrf: "t", user: { name: "a", perm: admin }, voice: {
 check("no live Odoo anywhere in the frame", !/live odoo|gizaseeds\.cloud|test\.gizaseeds/i.test(html + noKey));
 check("no live Odoo anywhere in the page scripts", ![main, panels, map].some((s) => /live odoo|gizaseeds\.cloud/i.test(s.replace(/^\s*\*.*$/gm, "").replace(/\/\/.*$/gm, ""))));
 check("no machine filter (Trial / Live) and no second machine card", !/data-m="live"|data-m="trial"|mach-filter/.test(html) && (html.match(/id="cc-mach-this"/g) || []).length === 1);
+check("Hire a session: no \"coming later\"; it says how (ask MINT AI), the limits, Keep / Retire on right-click, and the count of places in use",
+  /id="cc-hire-note"[\s\S]{0,300}Hire a session[\s\S]{0,200}id="cc-hire-count"[\s\S]{0,120}Ask MINT AI to hire a session[\s\S]{0,200}At most 7 sessions at a time and 3 hires an hour[\s\S]{0,80}Keep or retire a hired session with its buttons here, or right-click its sphere/.test(html) &&
+  !/Hire a session<\/b><span class="sp"><\/span><span class="cc-tag mute">coming later/.test(html) && /hc\.textContent = nLive \+ " of 7 in use · " \+ nHired \+ " hired";/.test(main));
 check("'Add a machine' is there, disabled, and says it comes later", /class="cc-card dashed cc-mach-add" aria-disabled="true"[^>]*>[\s\S]{0,300}Add a machine[\s\S]{0,120}coming later/.test(html));
 const SHEETS = ["conv", "sessions", "missions", "dec", "tl", "rules", "orders", "cost", "machine"];
 check("the dock opens the nine sheets, in order", (() => {

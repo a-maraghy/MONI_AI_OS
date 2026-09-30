@@ -280,7 +280,10 @@ function page(o) {
     "",
     `<div class="cc-stats"><div><b id="cc-stat-deleg">—</b><span>delegated · 24h</span></div><div><b id="cc-stat-done">—</b><span>done · 24h</span></div><div><b id="cc-stat-median">—</b><span>median turn</span></div></div>
       <div class="cc-sess-list" id="cc-sessions"></div>
-      <div class="cc-card dashed" aria-disabled="true">${ic("plus")}<b>Hire a session</b><span class="sp"></span><span class="cc-tag mute">coming later</span></div>`
+      <div class="cc-card dashed cc-hire-note" id="cc-hire-note">
+        <div class="t">${ic("plus")}<b>Hire a session</b><span class="sp"></span><span class="cc-tag mute" id="cc-hire-count">—</span></div>
+        <div class="m">Ask MINT AI to hire a session for a job that needs its own context. At most 7 sessions at a time and 3 hires an hour. Keep or retire a hired session with its buttons here, or right-click its sphere. MINT AI can only ask to retire one; you decide.</div>
+      </div>`
   )}
   ${pane(
     "missions",

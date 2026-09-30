@@ -669,6 +669,14 @@
     })) + "|" + S.target + "|" + (S.status && S.status.busy) + "|" + (S.status && S.status.process && S.status.process.model);
     var live = liveSessions();
     $("cc-sess-aside").textContent = live.length + " live" + (S.status && S.status.sessions_at ? " · polled " + ago(S.status.sessions_at) : "");
+    // Hiring (M-6): how many of the 7 places are taken, and how many of those MINT AI hired.
+    var hc = $("cc-hire-count");
+    if (hc) {
+      var nHired = live.filter(function (s) { return s.hire; }).length, nLive = S.sessions.filter(function (s) { return !s.self; }).length;
+      hc.textContent = nLive + " of 7 in use · " + nHired + " hired";
+      hc.className = "cc-tag " + (nLive >= 7 ? "warn" : "mute");
+      hc.title = nLive >= 7 ? "No room: MINT AI cannot hire until a session ends or is retired." : "Sessions live now (MINT AI itself not counted); hired ones included.";
+    }
     // The core's sessions (the orbit's dots or the family of spheres): what each is doing, its last message, today's cost.
     var nodes = sortSessions(live).map(familyNode);
     var nodeSig = JSON.stringify(nodes);

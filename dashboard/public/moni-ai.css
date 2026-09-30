@@ -376,6 +376,9 @@ html.cc-page .cc-pane .sh-hd h2 { margin: 0; font: 600 18px var(--brand-font); l
 .cc-card { border: 1px solid var(--cc-glass-line); border-radius: var(--cc-radius); padding: 12px 14px; margin-bottom: 8px; background: var(--cc-glass); position: relative; min-width: 0; }
 .cc-card.dashed { border-style: dashed; background: transparent; display: flex; align-items: center; gap: 8px; color: var(--dim); font-size: 13px; }
 .cc-card.dashed b { font-weight: 600; }
+.cc-card.dashed.cc-hire-note { display: block; }
+.cc-hire-note .t { display: flex; align-items: center; gap: 8px; color: var(--ink); }
+.cc-hire-note .m { margin-top: 6px; font-size: 12.5px; line-height: 1.45; color: var(--muted); }
 .cc-card .t { font-weight: 600; font-size: 13.5px; display: flex; align-items: center; gap: 8px; color: var(--ink); min-width: 0; }
 .cc-card .t b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cc-card .m { font-size: 12.5px; color: var(--muted); margin-top: 3px; overflow-wrap: anywhere; }
