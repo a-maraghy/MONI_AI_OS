@@ -14,6 +14,12 @@
  * allowlist: /root/moni and /root itself, never a hidden directory such as
  * /root/.ssh or /root/.claude); a unique normalised name; a sanitised slug;
  * at most HIRES_PER_HOUR hires an hour.
+ *
+ * MAX_LIVE, HIRES_PER_HOUR and the hired permission mode are DEFAULTS since the
+ * Mint OS reorganisation (2026-09-30): the administrator edits them in
+ * Settings > Sessions & hiring (ledger settings hire_max_live, hire_per_hour,
+ * hire_perm_mode; the supervisor's hire-limits ops), within LIMIT_BOUNDS, and
+ * the supervisor reads them at hire time. bypassPermissions is never a mode.
  */
 const fs = require("fs");
 const path = require("path");
@@ -22,6 +28,8 @@ const names = require("./names");
 
 const MAX_LIVE = 7;
 const HIRES_PER_HOUR = 3;
+const LIMIT_BOUNDS = { max_live: [1, 12], per_hour: [0, 10] };
+const HIRE_MODES = ["auto", "default", "plan"]; // never bypassPermissions
 const CWD_ROOTS = ["/root/moni", "/root"];
 const MODEL_RE = /^claude-[a-z0-9][a-z0-9.-]{2,60}$/;
 const NAME_RE = /^[\p{L}\p{N}][\p{L}\p{N} ._'()&-]{0,47}$/u;
@@ -58,12 +66,62 @@ function checkCwd(cwd, opts = {}) {
   return { cwd: r };
 }
 
+/** The hired permission mode today's config gives (mint-session's own rule), as a HIRE_MODES value. */
+function defaultPermMode(cfg = {}) {
+  const m = cfg.hired_permission_mode || cfg.permission_mode;
+  return HIRE_MODES.includes(m) ? m : "default";
+}
+
+/** The defaults: what applies when nothing is stored. */
+function defaultLimits(cfg) {
+  return { max_live: MAX_LIVE, per_hour: HIRES_PER_HOUR, perm_mode: defaultPermMode(cfg) };
+}
+
+/**
+ * Validate a change to the limits: any of {max_live, per_hour, perm_mode}.
+ * Returns the cleaned fields, or { error }.
+ */
+function checkLimits(p) {
+  const out = {};
+  for (const k of ["max_live", "per_hour"]) {
+    if (p[k] === undefined) continue;
+    const [lo, hi] = LIMIT_BOUNDS[k];
+    if (typeof p[k] !== "number" || !Number.isInteger(p[k]) || p[k] < lo || p[k] > hi) return { error: `${k} must be a whole number ${lo}..${hi}` };
+    out[k] = p[k];
+  }
+  if (p.perm_mode !== undefined) {
+    if (/bypass/i.test(String(p.perm_mode))) return { error: "bypassPermissions is never allowed for a hired session" };
+    if (!HIRE_MODES.includes(p.perm_mode)) return { error: `perm_mode must be one of ${HIRE_MODES.join(", ")}` };
+    out.perm_mode = p.perm_mode;
+  }
+  return out;
+}
+
+/** Stored values (any may be missing or out of bounds) over the defaults. */
+function effectiveLimits(stored, cfg) {
+  const d = defaultLimits(cfg);
+  const s = stored || {};
+  const inb = (k) => {
+    const [lo, hi] = LIMIT_BOUNDS[k];
+    return Number.isInteger(s[k]) && s[k] >= lo && s[k] <= hi ? s[k] : d[k];
+  };
+  return { max_live: inb("max_live"), per_hour: inb("per_hour"), perm_mode: HIRE_MODES.includes(s.perm_mode) ? s.perm_mode : d.perm_mode };
+}
+
+/** The live sessions counted against max_live, and the hired / kept ones: as checkHire counts them. */
+function liveCount(live, hired) {
+  const liveOthers = (live || []).filter((s) => s && !s.self);
+  const starting = (hired || []).filter((h) => !liveOthers.some((s) => s.session_id === h.session_id)).length;
+  return { live: liveOthers.length + starting, hired: (hired || []).length };
+}
+
 /**
  * Check a hire. `live`: the live sessions list (supervisor's cache); `hired`:
  * the hired_sessions rows not retired; `recent`: hires in the last hour.
  * Returns { ok, name, slug, cwd, model } or { error }.
  */
-function checkHire({ name, cwd, purpose, model }, { live, hired, recent, cwdOpts } = {}) {
+function checkHire({ name, cwd, purpose, model }, { live, hired, recent, cwdOpts, limits } = {}) {
+  const lim = limits || { max_live: MAX_LIVE, per_hour: HIRES_PER_HOUR };
   const nm = String(name || "").trim().replace(/\s+/g, " ");
   if (!NAME_RE.test(nm)) return { error: "name must be 1-48 letters, digits, spaces and . _ ' ( ) & -" };
   if (names.isSelfName(nm)) return { error: "that name is MINT AI's own" };
@@ -74,9 +132,9 @@ function checkHire({ name, cwd, purpose, model }, { live, hired, recent, cwdOpts
   const liveOthers = (live || []).filter((s) => s && !s.self);
   if (liveOthers.some((s) => targets.norm(s.name) === n)) return { error: `a session named "${nm}" is already running` };
   if ((hired || []).some((h) => targets.norm(h.name) === n || h.slug === slug)) return { error: `a hired session named "${nm}" already exists` };
-  const starting = (hired || []).filter((h) => !liveOthers.some((s) => s.session_id === h.session_id)).length;
-  if (liveOthers.length + starting >= MAX_LIVE) return { error: `already ${MAX_LIVE} sessions: retire one first (the spheres view holds ${MAX_LIVE})` };
-  if ((recent || 0) >= HIRES_PER_HOUR) return { error: `at most ${HIRES_PER_HOUR} hires an hour` };
+  if (liveCount(live, hired).live >= lim.max_live) return { error: `already ${lim.max_live} sessions: retire one first (the limit is ${lim.max_live} live sessions)` };
+  if (lim.per_hour === 0) return { error: "hiring is switched off (0 hires an hour in Settings)" };
+  if ((recent || 0) >= lim.per_hour) return { error: `at most ${lim.per_hour} hires an hour` };
   const c = checkCwd(cwd, cwdOpts);
   if (c.error) return c;
   const p = String(purpose || "").trim();
@@ -123,4 +181,4 @@ function firstPrompt(h) {
   );
 }
 
-module.exports = { MAX_LIVE, HIRES_PER_HOUR, CWD_ROOTS, slugOf, checkCwd, checkHire, findHired, retireRefusal, firstPrompt };
+module.exports = { MAX_LIVE, HIRES_PER_HOUR, LIMIT_BOUNDS, HIRE_MODES, CWD_ROOTS, defaultPermMode, defaultLimits, checkLimits, effectiveLimits, liveCount, slugOf, checkCwd, checkHire, findHired, retireRefusal, firstPrompt };

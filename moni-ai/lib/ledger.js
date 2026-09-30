@@ -307,6 +307,8 @@ class Ledger {
       turns: ["order_id INTEGER", "mission_id INTEGER", "decision_id INTEGER", "proc_start TEXT", "cost_delta_usd REAL", "sent_at TEXT", "tokens_cum TEXT", "tok_input INTEGER", "tok_output INTEGER", "tok_cache_read INTEGER", "tok_cache_write INTEGER"],
       delegations: ["mission_id INTEGER", "step_id INTEGER", "target_kind TEXT", "target_ref TEXT"],
       approvals: ["mission_id INTEGER", "step_id INTEGER", "decision_id INTEGER", "rule_id INTEGER", "origin TEXT", "origin_name TEXT"],
+      // Token-cap cards (kind "cap", subject = the session's cap key): warn or pause, and the Cairo day.
+      decisions: ["cap_at TEXT", "cap_day TEXT"],
     };
     for (const [table, cols] of Object.entries(add)) {
       const have = new Set(this.db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name));

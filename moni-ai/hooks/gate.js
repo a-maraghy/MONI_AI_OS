@@ -20,6 +20,11 @@
  * the gate would have let through is asked about instead.
  * Prints nothing for a harmless call, so the normal permission flow applies.
  * A rule that matched is reported to the supervisor (its use count).
+ *
+ * Token caps (build spec §6): in a hired session (MINT_GATE_SESSION=hired.<slug>)
+ * every tool call is denied while the supervisor records that session paused at
+ * its daily cap today (ledger settings token_caps_state; read-only). With
+ * --cap-only (bin/mint-session's catch-all hook) that is all it checks.
  */
 const fs = require("fs");
 const net = require("net");
@@ -55,6 +60,29 @@ function readRules(cfg) {
   }
 }
 
+/** Paused at its daily token cap today (Cairo day), per the supervisor's record? Unreadable: not paused (the runner pauses too). */
+function capPaused(cfg, session) {
+  if (!/^hired\./.test(session)) return false;
+  const file = path.join(cfg.state_dir || "/var/lib/moni-ai", "ledger.db");
+  if (!fs.existsSync(file)) return false;
+  try {
+    const { DatabaseSync } = require("node:sqlite");
+    const db = new DatabaseSync(file, { readOnly: true, timeout: 2000 });
+    let st;
+    try {
+      const r = db.prepare("SELECT value FROM settings WHERE key = 'token_caps_state'").get();
+      st = r ? JSON.parse(r.value) : null;
+    } finally {
+      db.close();
+    }
+    const schedule = require(path.join(__dirname, "..", "lib", "schedule.js"));
+    const rec = st && st.sessions && st.sessions[session.slice("hired.".length)];
+    return !!(st && st.day === schedule.dayOf(Date.now(), cfg.tz || "Africa/Cairo") && rec && rec.paused_at && !rec.resumed_at);
+  } catch (_) {
+    return false;
+  }
+}
+
 function report(sessionId, r) {
   return new Promise((resolve) => {
     const sock = process.env.MONI_AI_HOOK_SOCKET;
@@ -87,9 +115,14 @@ process.stdin.on("end", async () => {
     } catch (_) {
       /* defaults */
     }
-    const stored = readRules(cfg);
     // A hired session's gate (M-6, bin/mint-session) says whose it is: never MINT AI's always-allow rules.
     const session = /^hired\.[a-z0-9-]{1,40}$/.test(process.env.MINT_GATE_SESSION || "") ? process.env.MINT_GATE_SESSION : "moni-ai";
+    if (capPaused(cfg, session)) {
+      out("deny", "MINT AI gate: daily token cap reached. This session is paused until the administrator resumes it or the day turns. Stop here and do not retry.");
+      return process.exit(0);
+    }
+    if (process.argv.includes("--cap-only")) return process.exit(0);
+    const stored = readRules(cfg);
     const r = rules.evaluate(ev.tool_name, ev.tool_input, stored.rows, cfg, { session });
     let decision = r.decision;
     let reason;

@@ -21,6 +21,8 @@ const cost = require("./cost");
 const { Watchers, OPEN: OPEN_DECISION } = require("./watchers");
 const { Missions } = require("./missions");
 const names = require("./names");
+const caps = require("./caps");
+const settings = require("./settings");
 const { redact, redactDeep, clip } = require("./redact");
 
 const MORNING_BRIEFING = {
@@ -96,7 +98,14 @@ function createFeatures(deps) {
   /* ========================================================= decisions === */
 
   function publicDecision(d) {
-    return d ? redactDeep({ ...d, rate_limited: !!d.rate_limited }) : null;
+    if (!d) return null;
+    const out = { ...d, rate_limited: !!d.rate_limited };
+    // A token-cap card (kind "cap"): Resume for today (op budget-resume) and Leave paused / OK (decision-dismiss).
+    if (d.kind === "cap") {
+      out.cap_key = d.subject;
+      out.actions = OPEN_DECISION.includes(d.status) ? (d.cap_at === "pause" ? ["resume", "dismiss"] : ["dismiss"]) : [];
+    }
+    return redactDeep(out);
   }
   function emitDecision(d) {
     emit("decision", { decision: publicDecision(d) });
@@ -584,6 +593,296 @@ function createFeatures(deps) {
     return { moni_ai_usd: round(mine), others_usd_est: round(others), total_usd: round(mine + others), budget_usd: b.daily_usd, warn_pct: b.warn_pct };
   }
 
+  /* ======================================================= token caps === */
+  /*
+   * Build spec §6. Check points: every MINT AI turn end and every cost scan
+   * tick (so another session's cap acts within cost_scan_s). Pausing MINT AI
+   * holds its queue (supervisor pump); pausing a hired or kept session sends
+   * it budget-pause (deps.onCapPause); the administrator's own sessions only
+   * ever warn. Resume (budget-resume), raising the cap above today's use, or
+   * the Cairo day turning releases a pause.
+   */
+  const fmtTok = (n) => Math.round(Number(n) || 0).toLocaleString("en-US");
+  const ZERO_TOK = { input: 0, output: 0, cache_read: 0, cache_write: 0, total: 0 };
+  function capsConfig() {
+    return caps.normalize(settings.get(db, "token_caps"));
+  }
+  function saveCapsConfig(c, actor) {
+    settings.set(db, "token_caps", { default: c.default, sessions: c.sessions }, actor);
+  }
+  function selfName() {
+    return cfg.name && !names.OLD_NAMES.includes(cfg.name) ? cfg.name : names.DISPLAY_NAME;
+  }
+  /** MINT AI's own tokens today: the transcript figure, or the per-turn figure when that is ahead (a scan not run yet). */
+  function selfTokens() {
+    let a = null;
+    try {
+      a = tokensToday(null);
+    } catch (_) {
+      a = null;
+    }
+    const today = dayOf(Date.now());
+    const since = new Date(Date.now() - 36 * 3600 * 1000).toISOString();
+    const b = { ...ZERO_TOK };
+    for (const r of db.prepare("SELECT created_at, ended_at, tok_input, tok_output, tok_cache_read, tok_cache_write FROM turns WHERE tok_input IS NOT NULL AND created_at >= ?").all(since)) {
+      if (dayOf(Date.parse(r.ended_at || r.created_at)) !== today) continue;
+      b.input += r.tok_input || 0;
+      b.output += r.tok_output || 0;
+      b.cache_read += r.tok_cache_read || 0;
+      b.cache_write += r.tok_cache_write || 0;
+    }
+    b.total = b.input + b.output + b.cache_read + b.cache_write;
+    return a && a.total >= b.total ? a : b;
+  }
+  /** Every session a cap can apply to: MINT AI, the hired and kept ones, the administrator's own live ones. */
+  function capEntries() {
+    const out = [{ key: caps.SELF, name: selfName(), kind: "self", session_id: null }];
+    const hired = ledger.hiredList(false);
+    const hiredIds = new Set(hired.map((h) => h.session_id));
+    for (const h of hired) out.push({ key: h.slug, name: h.name, kind: h.kept ? "kept" : "hired", session_id: h.session_id, slug: h.slug });
+    const seen = new Set();
+    for (const s of deps.sessions() || []) {
+      if (s.self || !s.session_id || hiredIds.has(s.session_id) || seen.has(s.session_id)) continue;
+      seen.add(s.session_id);
+      out.push({ key: s.session_id, name: s.name || "session " + s.session_id.slice(0, 8), kind: "yours", session_id: s.session_id });
+    }
+    return out;
+  }
+  const canPause = (e) => e.kind !== "yours";
+  function tokensOf(e) {
+    if (e.kind === "self") return selfTokens();
+    try {
+      return tokensToday(e.session_id) || { ...ZERO_TOK };
+    } catch (_) {
+      return { ...ZERO_TOK };
+    }
+  }
+  function capState() {
+    return caps.stateFor(settings.get(db, "token_caps_state"), dayOf(Date.now()));
+  }
+  function saveCapState(st) {
+    settings.set(db, "token_caps_state", st, "supervisor");
+  }
+  function closeCapCards(key, result, actor) {
+    const t = now();
+    const rows = db.prepare(`SELECT * FROM decisions WHERE kind = 'cap' AND subject = ? AND status IN (${OPEN_DECISION.map(() => "?").join(",")})`).all(key, ...OPEN_DECISION);
+    for (const d of rows) emitDecision(ledger.update("decisions", d.id, { status: "done", result, decided_by: actor || null, decided_at: t, updated_at: t }));
+  }
+  function capCard(e, entry, tok, paused) {
+    const t = now();
+    const title = `${e.name} passed its daily cap${paused ? " — paused" : ""}`;
+    const what =
+      e.kind === "self"
+        ? "New turns (orders, watchers, messages, yours too) wait until you resume it or the day turns; a running turn finishes."
+        : "It stops after its current step and waits until you resume it or the day turns.";
+    const detail = `${fmtTok(tok.total)} tokens today (cache included); the cap is ${fmtTok(entry.cap)}.${paused ? " " + what : ""}`;
+    const r = db
+      .prepare("INSERT INTO decisions (kind, watcher, subject, title, detail, status, count, first_seen, last_seen, created_at, updated_at, cap_at, cap_day) VALUES ('cap', NULL, ?, ?, ?, 'open', 1, ?, ?, ?, ?, ?, ?)")
+      .run(e.key, clip(title, 200), detail, t, t, t, t, paused ? "pause" : "warn", dayOf(Date.now()));
+    emitDecision(ledger.get("decisions", Number(r.lastInsertRowid)));
+    const line = `Token cap: ${title} (${fmtTok(tok.total)} of ${fmtTok(entry.cap)} tokens)`;
+    log(line);
+    emit("notice", { level: "warn", text: line });
+  }
+  /** Lift a pause: MINT AI's held work goes back in the queue; a hired session gets budget-resume. */
+  function release(e, why, actor, st) {
+    const held = e.kind === "self" ? st.held : [];
+    if (e.kind === "self") st.held = [];
+    saveCapState(st);
+    log(`token cap: ${e.name} released (${why}${actor ? " by " + actor : ""})`);
+    emit("cap", { key: e.key, state: "released", why });
+    try {
+      if (deps.onCapResume) deps.onCapResume(e, why, held);
+    } catch (err) {
+      warn("cap resume: " + err.message);
+    }
+  }
+
+  /** The day turned since the stored record: clear it, release what it paused, close its cards. */
+  function capDayTurn() {
+    const raw = settings.get(db, "token_caps_state");
+    const today = dayOf(Date.now());
+    if (!raw || raw.day === today) return false;
+    const old = caps.stateFor(raw, raw.day);
+    const fresh = caps.stateFor(null, today);
+    saveCapState(fresh);
+    const entries = capEntries();
+    for (const [key, rec] of Object.entries(old.sessions)) {
+      closeCapCards(key, "The day turned: the daily cap starts again.", "day-turn");
+      if (!caps.isPaused(rec)) continue;
+      const e = entries.find((x) => x.key === key) || { key, name: key, kind: key === caps.SELF ? "self" : "hired", slug: key };
+      if (e.kind === "self") fresh.held = old.held;
+      release(e, "the day turned", null, fresh);
+    }
+    return true;
+  }
+
+  /** The check point. */
+  function capsCheck() {
+    capDayTurn();
+    const c = capsConfig();
+    const st = capState();
+    for (const e of capEntries()) {
+      const entry = c.sessions[e.key];
+      const rec = st.sessions[e.key] || {};
+      const tok = entry ? tokensOf(e) : null;
+      if (!entry || tok.total < entry.cap || !(entry.at === "pause" && canPause(e))) {
+        // No cap, under it, or a warn-only cap: a pause from earlier today no longer holds.
+        if (caps.isPaused(rec)) {
+          st.sessions[e.key] = { ...rec, resumed_at: now(), resumed_by: !entry ? "cap removed" : "cap changed" };
+          closeCapCards(e.key, !entry ? "The cap was removed." : "The cap no longer pauses it.", null);
+          release(e, !entry ? "the cap was removed" : "the cap no longer pauses it", null, st);
+        }
+        if (entry && tok.total >= entry.cap && !rec.warned_at && !rec.paused_at) {
+          st.sessions[e.key] = { ...(st.sessions[e.key] || rec), warned_at: now() };
+          saveCapState(st);
+          capCard(e, entry, tok, false);
+          emit("cap", { key: e.key, state: "warned" });
+        }
+        continue;
+      }
+      // Past a pause cap.
+      if (rec.resumed_at) continue; // resumed for today
+      if (rec.paused_at) {
+        // Still paused: tell a hired session again (it may have restarted; mint-session ignores a repeat).
+        if (e.kind !== "self" && deps.onCapPause) deps.onCapPause(e, { again: true });
+        continue;
+      }
+      st.sessions[e.key] = { ...rec, paused_at: now() };
+      saveCapState(st);
+      capCard(e, entry, tok, true);
+      emit("cap", { key: e.key, state: "paused" });
+      try {
+        if (deps.onCapPause) deps.onCapPause(e, {});
+      } catch (err) {
+        warn("cap pause: " + err.message);
+      }
+    }
+  }
+
+  function isPausedKey(key) {
+    const raw = settings.get(db, "token_caps_state");
+    return !!(raw && raw.day === dayOf(Date.now()) && raw.sessions && caps.isPaused(raw.sessions[key]));
+  }
+  /** MINT AI's own queue is held: paused at its cap today, not resumed. */
+  const selfPaused = () => isPausedKey(caps.SELF);
+  /** Kept for MINT AI until it is resumed: a peer or Remote Control message the CLI started on its own. */
+  function holdForSelf(item) {
+    const st = capState();
+    st.held = [...st.held, { at: now(), source: item.source, from: item.from || null, text: clip(String(item.text || ""), 4000) }].slice(-caps.MAX_HELD);
+    saveCapState(st);
+  }
+
+  function capsView() {
+    const c = capsConfig();
+    const st = capState();
+    const warnPct = budget().warn_pct;
+    return {
+      day: st.day,
+      warn_pct: warnPct,
+      default: c.default,
+      sessions: capEntries().map((e) => {
+        const entry = c.sessions[e.key] || null;
+        const tok = tokensOf(e);
+        const rec = st.sessions[e.key] || {};
+        return {
+          key: e.key,
+          name: e.name,
+          kind: e.kind,
+          session_id: e.session_id,
+          cap: entry ? entry.cap : null,
+          at: entry ? entry.at : null,
+          today: tok,
+          state: caps.stateOf(entry, tok.total, warnPct, rec, canPause(e)),
+          paused: caps.isPaused(rec),
+          resumed: !!rec.resumed_at,
+          warned: !!rec.warned_at,
+          can_pause: canPause(e),
+        };
+      }),
+      held: st.held.length,
+      ...settings.meta(db, "token_caps"),
+    };
+  }
+
+  function requireHuman(req, what) {
+    if (deps.isHuman && !deps.isHuman(req.actor)) throw new Error(`only the administrator can ${what}`);
+  }
+
+  /** The session a cap key names (a retired hire still counts, so its cap can be cleared). */
+  function capTarget(key) {
+    const e = capEntries().find((x) => x.key === key);
+    if (e) return e;
+    const h = ledger.hiredList(true).find((x) => x.slug === key);
+    if (h) return { key, name: h.name, kind: h.kept ? "kept" : "hired", session_id: h.session_id, slug: h.slug };
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(key)) return { key, name: sessionName(key), kind: "yours", session_id: key };
+    return null;
+  }
+
+  function capsSet(p, req) {
+    requireHuman(req, "change token caps");
+    if (p.key === undefined && p.warn_pct === undefined) throw new Error("give a key (with cap and at) or warn_pct");
+    if (p.key !== undefined) {
+      if (p.cap === undefined && p.at === undefined) throw new Error("cap (tokens, or null to remove it) or at is required with key");
+      const c = capsConfig();
+      const isDefault = p.key === caps.DEFAULT;
+      const target = isDefault ? null : capTarget(p.key);
+      if (!isDefault && !target) throw new Error(`no session has the cap key "${p.key}"`);
+      const cur = isDefault ? c.default : c.sessions[p.key];
+      let next = null;
+      if (p.cap !== null) {
+        const cap = p.cap === undefined ? cur && cur.cap : p.cap;
+        if (!cap) throw new Error("cap is required: this session has none yet");
+        next = { cap, at: p.at || (cur && cur.at) || "warn" };
+      }
+      if (next && next.at === "pause" && target && !canPause(target)) throw new Error("your own sessions can only warn: MINT AI never pauses them");
+      if (isDefault) c.default = next;
+      else if (next) c.sessions[p.key] = next;
+      else delete c.sessions[p.key];
+      saveCapsConfig(c, req.actor);
+      log(`token cap ${p.key}: ${next ? next.cap + " tokens, " + next.at : "removed"} (by ${req.actor})`);
+    }
+    if (p.warn_pct !== undefined) {
+      const b = budget();
+      settings.set(db, "budget", { daily_usd: b.daily_usd, warn_pct: p.warn_pct }, req.actor);
+    }
+    capsCheck(); // a raised cap unpauses at once, a lowered one pauses
+    return capsView();
+  }
+
+  function capsResume(p, req) {
+    requireHuman(req, "resume a session paused at its cap");
+    let key = p.key;
+    if (p.decision_id !== undefined) {
+      const d = decisionOr404(p.decision_id);
+      if (d.kind !== "cap") throw new Error(`decision #${d.id} is not a token-cap card`);
+      if (key !== undefined && key !== d.subject) throw new Error("key and decision_id name different sessions");
+      key = d.subject;
+    }
+    if (key === undefined) throw new Error("key or decision_id is required");
+    const e = capTarget(key);
+    if (!e) throw new Error(`no session has the cap key "${key}"`);
+    capDayTurn();
+    const st = capState();
+    const rec = st.sessions[key] || {};
+    const was = caps.isPaused(rec);
+    st.sessions[key] = { ...rec, resumed_at: now(), resumed_by: req.actor };
+    closeCapCards(key, `Resumed for today by ${req.actor}.`, req.actor);
+    if (was) release(e, "resumed", req.actor, st);
+    else saveCapState(st);
+    log(`token cap: ${e.name} resumed for today by ${req.actor}${was ? "" : " (it was not paused)"}`);
+    return { resumed: key, was_paused: was, session: capsView().sessions.find((x) => x.key === key) || null };
+  }
+
+  /** A new hire takes the default cap (build spec §6). */
+  function onHired(h) {
+    const c = capsConfig();
+    if (!c.default || c.sessions[h.slug]) return;
+    c.sessions[h.slug] = { ...c.default };
+    saveCapsConfig(c, "supervisor");
+    log(`token cap for the new hire ${h.slug}: the default, ${c.default.cap} tokens, ${c.default.at}`);
+  }
+
   function sessionCost(sid) {
     const week = days(7);
     const today = week[week.length - 1];
@@ -834,6 +1133,7 @@ function createFeatures(deps) {
     },
     "decision-approve": (p, req) => {
       const d = decisionOr404(p.decision_id);
+      if (d.kind === "cap") throw new Error("a token-cap card is resumed with budget-resume, not approved");
       if (d.status !== "proposed") throw new Error(`decision #${d.id} is ${d.status}; only a proposed fix can be approved`);
       const t = now();
       if (!d.fix_command) {
@@ -865,6 +1165,7 @@ function createFeatures(deps) {
     },
     "decision-ask": (p, req) => {
       const d = decisionOr404(p.decision_id);
+      if (d.kind === "cap") throw new Error("a token-cap card takes no questions: Resume for today, or leave it paused");
       if (!OPEN_DECISION.includes(d.status)) throw new Error(`decision #${d.id} is already ${d.status}`);
       let turn;
       if (d.status === "open") turn = investigate(d, `The administrator (${req.actor}) asks: ${p.text}`);
@@ -939,6 +1240,9 @@ function createFeatures(deps) {
       emit("rule", { deleted: r.id });
       return { deleted: r.id };
     },
+    "token-caps": () => capsView(),
+    "token-caps-set": (p, req) => capsSet(p, req),
+    "budget-resume": (p, req) => capsResume(p, req),
     "cost-budget": (p, req) => {
       const b = { daily_usd: p.daily_usd === undefined ? null : p.daily_usd, warn_pct: p.warn_pct };
       db.prepare("INSERT INTO settings (key, value, updated_by, updated_at) VALUES ('budget', ?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_by = excluded.updated_by, updated_at = excluded.updated_at").run(
@@ -990,6 +1294,11 @@ function createFeatures(deps) {
     /** A turn ended (done, interrupted, lost). */
     onTurnEnd(turn) {
       if (!turn) return;
+      try {
+        capsCheck(); // a check point for the token caps
+      } catch (e) {
+        warn("token caps: " + e.message);
+      }
       if (turn.order_id) finishRun(turn, "error", turn.status === "done" ? "The turn ended without a result." : `The turn ended: ${turn.status}.`);
       if (turn.decision_id) {
         const d = ledger.get("decisions", turn.decision_id);
@@ -1058,7 +1367,18 @@ function createFeatures(deps) {
     const poll = () => pollWatchers().catch((e) => warn("watchers: " + e.message));
     timers.push(setTimeout(poll, 2000));
     timers.push(setInterval(poll, (cfg.watcher_poll_s || 30) * 1000));
-    const scan = () => scanner.scan().catch((e) => warn("cost scan: " + e.message));
+    // Every cost scan tick is a check point for the token caps (and notices the day turn).
+    const scan = () =>
+      scanner
+        .scan()
+        .catch((e) => warn("cost scan: " + e.message))
+        .then(() => {
+          try {
+            capsCheck();
+          } catch (e) {
+            warn("token caps: " + e.message);
+          }
+        });
     timers.push(setTimeout(scan, 5000));
     timers.push(setInterval(scan, (cfg.cost_scan_s || 60) * 1000));
   }
@@ -1082,6 +1402,8 @@ function createFeatures(deps) {
     counts,
     costToday,
     tokensToday,
+    caps: { check: capsCheck, view: capsView, selfPaused, isPaused: isPausedKey, holdForSelf },
+    onHired,
     sessionExtras,
     approvalExtras,
     autoDecision,

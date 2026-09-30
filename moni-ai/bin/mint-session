@@ -32,6 +32,16 @@
  *
  * Its first prompt is the hire's purpose, marked as coming from MINT AI (not
  * the administrator), sent once.
+ *
+ * Token caps (Mint OS reorganisation, build spec §6): the runner keeps a
+ * standing link to the supervisor (op session-link). On budget-pause it lets
+ * the tool call that is running finish, sends the CLI an interrupt, and
+ * interrupts any turn that starts while paused (a peer's message reaches the
+ * CLI directly, not through here: it stays in the transcript); a message of
+ * its own (the first prompt) waits. budget-resume lifts it. Backstop: the gate
+ * denies every tool call while the supervisor records the session paused.
+ * The permission mode is the one set at hire time (Settings > Sessions &
+ * hiring; the hired record's permission_mode), never bypassPermissions.
  */
 const fs = require("fs");
 const net = require("net");
@@ -86,7 +96,9 @@ const CONTROL_SOCKET = path.join(cfg.run_dir, "moni-ai.sock");
 
 /* ------------------------------------------------------------- the CLI --- */
 const PERMISSION_MODES = ["auto", "default", "acceptEdits", "plan"]; // never bypassPermissions
-const mode = PERMISSION_MODES.includes(cfg.hired_permission_mode || cfg.permission_mode) ? cfg.hired_permission_mode || cfg.permission_mode : "default";
+const cfgMode = PERMISSION_MODES.includes(cfg.hired_permission_mode || cfg.permission_mode) ? cfg.hired_permission_mode || cfg.permission_mode : "default";
+// Fixed at hire time (the supervisor's hire_perm_mode); an older record without it keeps the config's rule.
+const mode = PERMISSION_MODES.includes(rec.permission_mode) ? rec.permission_mode : cfgMode;
 const GATE = path.join(__dirname, "..", "hooks", "gate.js");
 const settings = {
   hooks: {
@@ -94,6 +106,11 @@ const settings = {
       {
         matcher: "Bash|Monitor|SendMessage|mcp__memory__memory_forget|CronCreate|RemoteTrigger",
         hooks: [{ type: "command", command: `${process.execPath} --disable-warning=ExperimentalWarning ${GATE}`, timeout: 10 }],
+      },
+      // The token-cap backstop: every tool call is denied while the supervisor records this session paused at its cap.
+      {
+        matcher: "*",
+        hooks: [{ type: "command", command: `${process.execPath} --disable-warning=ExperimentalWarning ${GATE} --cap-only`, timeout: 10 }],
       },
     ],
   },
@@ -159,12 +176,31 @@ const write = (o) => {
   }
 };
 
+/** The approval timeout in force: the supervisor's ledger setting (read-only), else the config's. */
+function approvalTimeoutS() {
+  try {
+    const { DatabaseSync } = require("node:sqlite");
+    const db = new DatabaseSync(path.join(cfg.state_dir, "ledger.db"), { readOnly: true, timeout: 2000 });
+    try {
+      const r = db.prepare("SELECT value FROM settings WHERE key = 'approval_timeout_s'").get();
+      const v = r ? JSON.parse(r.value) : null;
+      if (Number.isInteger(v) && v >= 30 && v <= 3600) return v;
+    } finally {
+      db.close();
+    }
+  } catch (_) {
+    /* the config's */
+  }
+  return cfg.approval_timeout_s;
+}
+
 /* ------------------------------------------- permission questions -> cards --- */
 const waiting = new Map(); // request_id -> socket
 function ask(ev) {
   const req = ev.request || {};
   const done = (response) => {
     waiting.delete(ev.request_id);
+    awaiting.delete(ev.request_id);
     write({ type: "control_response", response: { subtype: "success", request_id: ev.request_id, response } });
   };
   const deny = (why) => done({ behavior: "deny", message: why + " Do not retry it; tell MINT AI it needs the administrator." });
@@ -172,12 +208,13 @@ function ask(ev) {
   let answered = false;
   const s = net.createConnection(CONTROL_SOCKET);
   waiting.set(ev.request_id, s);
+  if (req.tool_use_id) awaiting.set(ev.request_id, req.tool_use_id);
   const timer = setTimeout(() => {
     if (answered) return;
     answered = true;
     s.destroy();
     deny("Nobody answered the approval request in time, so it was denied.");
-  }, (cfg.approval_timeout_s + 30) * 1000);
+  }, (approvalTimeoutS() + 30) * 1000);
   let buf = "";
   s.setEncoding("utf8");
   s.on("connect", () =>
@@ -224,10 +261,93 @@ function ask(ev) {
 function cancel(ev) {
   const s = waiting.get(ev.request_id);
   waiting.delete(ev.request_id);
+  awaiting.delete(ev.request_id);
   if (s) s.destroy();
   const c = net.createConnection(CONTROL_SOCKET);
   c.on("error", () => {});
   c.on("connect", () => c.end(JSON.stringify({ id: "sc" + Date.now(), op: "session-approval-cancel", actor: "session." + slug, slug, request_id: String(ev.request_id).slice(0, 64) }) + "\n"));
+}
+
+/* ------------------------------------------ token cap: pause / resume --- */
+const awaiting = new Map(); // request_id -> tool_use_id: a tool call waiting for its approval card (not running)
+const executing = new Set(); // tool_use ids started and not yet answered
+let busy = false; // a turn is running
+let paused = false;
+let interrupted = false; // this turn was already interrupted
+let firstHeld = false; // the first prompt waits for budget-resume
+function sendFirst() {
+  saveRec({ first_sent: new Date().toISOString() });
+  busy = true;
+  write({ type: "user", message: { role: "user", content: hire.firstPrompt(rec) }, parent_tool_use_id: null, session_id: "" });
+  log(`first prompt sent (from MINT AI): ${String(rec.purpose).slice(0, 80)}`);
+}
+/** While paused: interrupt the running turn once no tool call is actually running (a call waiting for its card does not count). */
+function maybeInterrupt() {
+  if (!paused || !busy || interrupted || !initialised) return;
+  const waitingIds = new Set(awaiting.values());
+  if ([...executing].some((id) => !waitingIds.has(id))) return; // let the current tool call finish
+  interrupted = true;
+  write({ type: "control_request", request_id: "cap-" + Date.now(), request: { subtype: "interrupt" } });
+  log("paused at the daily token cap: interrupted the running turn");
+}
+function setPaused(on, why) {
+  if (on === paused) {
+    if (on) maybeInterrupt();
+    return;
+  }
+  paused = on;
+  if (on) {
+    log(`budget-pause (${why || "daily token cap reached"}): the running tool call finishes, then the turn is interrupted; nothing new starts until budget-resume`);
+    maybeInterrupt();
+  } else {
+    log(`budget-resume (${why || "resumed"})`);
+    interrupted = false;
+    if (firstHeld) {
+      firstHeld = false;
+      sendFirst();
+    }
+  }
+}
+let linkBackoff = 2000;
+function link() {
+  if (stopping) return;
+  const s = net.createConnection(CONTROL_SOCKET);
+  let buf = "";
+  let first = true;
+  s.setEncoding("utf8");
+  s.on("connect", () => s.write(JSON.stringify({ id: "sl" + Date.now(), op: "session-link", actor: "session." + slug, slug }) + "\n"));
+  s.on("data", (c) => {
+    buf += c;
+    let nl;
+    while ((nl = buf.indexOf("\n")) !== -1) {
+      const line = buf.slice(0, nl);
+      buf = buf.slice(nl + 1);
+      let m;
+      try {
+        m = JSON.parse(line);
+      } catch (_) {
+        continue;
+      }
+      if (first) {
+        first = false;
+        if (m.ok) {
+          linkBackoff = 2000;
+          setPaused(!!(m.data && m.data.paused), "linked while paused at the daily token cap");
+        } else log("the supervisor refused the link: " + m.error);
+        continue;
+      }
+      const op = m.control && m.control.op;
+      if (op === "budget-pause") setPaused(true, m.control.reason);
+      else if (op === "budget-resume") setPaused(false, m.control.reason);
+    }
+  });
+  s.on("error", () => {});
+  s.on("close", () => {
+    if (stopping) return;
+    const t = setTimeout(link, linkBackoff);
+    t.unref();
+    linkBackoff = Math.min(linkBackoff * 2, 30000);
+  });
 }
 
 /* --------------------------------------------------------- the stream --- */
@@ -250,12 +370,26 @@ rl.on("line", (line) => {
     initialised = true;
     if (cfg.remote_control) write({ type: "control_request", request_id: "rc", request: { subtype: "remote_control", enabled: true } });
     if (!rec.first_sent) {
-      saveRec({ first_sent: new Date().toISOString() });
-      write({ type: "user", message: { role: "user", content: hire.firstPrompt(rec) }, parent_tool_use_id: null, session_id: "" });
-      log(`first prompt sent (from MINT AI): ${String(rec.purpose).slice(0, 80)}`);
+      if (paused) {
+        firstHeld = true;
+        log("paused at the daily token cap: the first prompt waits for budget-resume");
+      } else sendFirst();
     }
   }
-  if (ev.type === "result") log(`turn ended${ev.is_error ? " (error)" : ""}`);
+  if (ev.type === "command_lifecycle" && ev.state === "started") busy = true;
+  if (ev.type === "assistant" || ev.type === "stream_event") busy = true;
+  if (ev.type === "assistant" && ev.message && Array.isArray(ev.message.content)) {
+    for (const b of ev.message.content) if (b && b.type === "tool_use" && b.id) executing.add(b.id);
+  }
+  if (ev.type === "user" && ev.message && Array.isArray(ev.message.content)) {
+    for (const b of ev.message.content) if (b && b.type === "tool_result") executing.delete(b.tool_use_id);
+  }
+  if (ev.type === "result") {
+    log(`turn ended${ev.is_error ? " (error)" : ""}`);
+    busy = false;
+    interrupted = false;
+    executing.clear();
+  } else maybeInterrupt();
 });
 write({ type: "control_request", request_id: "init", request: { subtype: "initialize" } });
 
@@ -278,3 +412,6 @@ child.on("exit", (code, signal) => {
   log(`"${rec.name}" exited code=${code} signal=${signal}`);
   process.exit(stopping ? 0 : code == null ? 1 : code);
 });
+
+// The standing link to the supervisor (token caps): after `stopping` exists.
+link();
