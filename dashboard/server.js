@@ -363,7 +363,7 @@ app.use((req, res, next) => {
 // The frame's badges and health chip, from a shared 30-second cache (see
 // lib/chrome.js). A change made through the panel forgets the cache, so the
 // page it redirects to counts what is true now rather than half a minute ago.
-chrome.configure({ priv, db, catalog, devicesFor: (userId) => deviceSessions.countFor(userId) });
+chrome.configure({ priv, db, catalog, devicesFor: (userId) => deviceSessions.countFor(userId), voiceOff: () => !voiceEnabled() });
 
 // The Machine core's live feed: one poller for every viewer, reading the
 // helper's pulse-feed, this panel's own sign-ins and audit log, and MINT AI's
