@@ -481,30 +481,76 @@ html.cc-page .cc-card-h h2, html.cc-page .cc-sec-h h2 { margin: 0; font-size: 11
 .cc-core-grid b { color: var(--ink); font-weight: 650; margin-left: auto; font-size: 11px; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .cc-core-grid b.ok { color: var(--accent); } .cc-core-grid b.warn { color: var(--warn); } .cc-core-grid b.bad { color: var(--bad); } .cc-core-grid b.off { color: var(--muted); }
 
-.cc-cost-top { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
-.cc-cost-top b { font: 650 20px/1.1 var(--mono); color: var(--ink); }
-.cc-cost-top span { font-size: 11px; color: var(--muted); white-space: nowrap; }
-.cc-cost-top svg { margin-left: auto; width: 76px; height: 26px; flex: 0 1 76px; min-width: 40px; align-self: center; }
 .cc-spark polyline { fill: none; stroke: var(--accent-2); stroke-width: 1.6; }
 .cc-spark circle { fill: var(--accent); }
 .cc-spark.est polyline { stroke: var(--muted); stroke-dasharray: 3 2; }
 .cc-spark.est circle { fill: var(--muted); }
-.cc-budget { margin: 6px 0 6px; }
-.cc-budget-bar { height: 6px; border-radius: 4px; background: var(--line); position: relative; overflow: visible; }
-.cc-budget-bar i { position: absolute; inset: 0 auto 0 0; border-radius: 4px; background: var(--accent-2); width: 0; }
-.cc-budget-bar i.w { background: var(--warn); }
-.cc-budget-bar i.x { background: var(--bad); }
-.cc-budget-bar em { position: absolute; left: 80%; top: -3px; bottom: -3px; width: 1.5px; background: var(--warn); opacity: .8; }
-.cc-budget-l { display: flex; justify-content: space-between; gap: 8px; font-size: 10.5px; color: var(--muted); margin-top: 3px; white-space: nowrap; }
-.cc-budget-l span { overflow: hidden; text-overflow: ellipsis; }
-.cc-cost-rows { display: grid; gap: 2px; }
-.cc-cost-row { display: grid; grid-template-columns: minmax(0, 1fr) 56px 46px; gap: 6px; align-items: center; font-size: 11.5px; }
-.cc-cost-row span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--body); }
-.cc-cost-row i { height: 4px; border-radius: 3px; background: var(--accent-2); opacity: .75; display: block; width: 0; }
-.cc-cost-row i.est { background: var(--muted); }
-.cc-cost-row b { text-align: right; font: 600 11px var(--mono); color: var(--ink); }
 
-/* the voice's own spend, under Cost today */
+/* Usage: Claude plan limits laid out like Claude's own usage screen, then the token counts */
+.cc-pu { min-width: 0; }
+.cc-pu-h, .cc-tk .cc-pu-h { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 2px 0 8px; min-width: 0; flex-wrap: wrap; }
+html.cc-page .cc-pu-h h3 { margin: 0; font: 650 13.5px/1.3 var(--ui); color: var(--ink); letter-spacing: 0; }
+.cc-pu-g { font-size: 10px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); margin: 12px 0 6px; }
+.cc-pu-row { margin: 0 0 12px; min-width: 0; }
+.cc-pu-t { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; min-width: 0; }
+.cc-pu-t b { font-weight: 600; font-size: 13px; color: var(--ink); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cc-pu-n { font: 600 12px var(--mono); color: var(--ink); white-space: nowrap; }
+.cc-pu-bar { height: 8px; border-radius: 5px; background: var(--line); margin: 5px 0 4px; overflow: hidden; }
+.cc-pu-bar i { display: block; height: 100%; width: 0; border-radius: 5px; background: var(--reply); transition: width .4s ease; }
+.cc-pu-bar i.w { background: var(--warn); }
+.cc-pu-bar i.x { background: var(--bad); }
+.cc-pu-r { font-size: 11.5px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cc-pu-f { display: flex; flex-wrap: wrap; align-items: center; gap: 0 4px; font-size: 11px; color: var(--muted); margin: -2px 0 4px; }
+.cc-pu-f .cc-err { font-size: 11px; }
+.cc-linkbtn { margin-left: auto; border: 0; background: none; color: var(--accent); font: inherit; font-size: 11.5px; display: inline-flex; align-items: center; gap: 4px; padding: 2px 4px; border-radius: 6px; cursor: pointer; }
+.cc-linkbtn:hover { background: var(--accent-soft); }
+.cc-linkbtn .cc-i { width: 12px; height: 12px; }
+
+.cc-tk { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); min-width: 0; }
+.cc-tk .cc-rule-hint { margin: 0 0 8px; }
+.cc-chips-sel.cc-tk-seg button { font-size: 11px; padding: 1px 9px; }
+.cc-tk-total { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.cc-tk-total b { font: 650 20px/1.1 var(--mono); color: var(--ink); }
+.cc-tk-total span { font-size: 11px; color: var(--muted); white-space: nowrap; }
+.cc-tk-total svg { margin-left: auto; width: 76px; height: 26px; flex: 0 1 76px; min-width: 40px; align-self: center; }
+.cc-tk-sum { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin: 8px 0 10px; }
+.cc-tk-sum div { min-width: 0; }
+.cc-tk-sum b { display: block; font: 600 13px var(--mono); color: var(--ink); }
+.cc-tk-sum span { display: block; font-size: 9.5px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cc-tk-rows { display: grid; gap: 3px; }
+.cc-tk-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(40px, 90px) 48px; gap: 8px; align-items: center; font-size: 11.5px; }
+.cc-tk-row > span:first-child { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--body); }
+.cc-tk-row b { text-align: right; font: 600 11px var(--mono); color: var(--ink); }
+.cc-tk-bar { display: flex; height: 6px; border-radius: 3px; overflow: hidden; width: 0; min-width: 2px; }
+.cc-tk-bar i, .cc-tk-legend i { display: block; height: 100%; width: 0; }
+.k-input { background: var(--reply); fill: var(--reply); }
+.k-output { background: var(--accent); fill: var(--accent); }
+.k-cache_read { background: var(--cc-dot-idle); fill: var(--cc-dot-idle); }
+.k-cache_write { background: var(--hire); fill: var(--hire); }
+.cc-tk-legend { display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 10.5px; color: var(--muted); margin-top: 6px; }
+.cc-tk-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.cc-tk-legend i { width: 9px; height: 9px; border-radius: 2px; }
+.cc-bars .cc-tkb { opacity: .7; }
+.cc-bars .cc-tkb.today { opacity: 1; }
+.cc-tk-tbl td.n, .cc-tk-tbl th.n { text-align: right; font-family: var(--mono); }
+.cc-tk-tbl tr.tot td { border-top: 1px solid var(--line); border-bottom: 0; font-weight: 650; color: var(--ink); }
+.cc-usage-2 > div { min-width: 0; }
+.cc-usage-2 .cc-tk { margin-top: 0; padding-top: 0; border-top: 0; }
+
+/* the voice (OpenAI, billed separately): below, folded */
+.cc-vu-box { margin-top: 14px; border-top: 1px solid var(--line); padding-top: 8px; min-width: 0; }
+.cc-vu-box > summary { display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 12px; color: var(--body); list-style: none; min-width: 0; }
+.cc-vu-box > summary::-webkit-details-marker { display: none; }
+.cc-vu-box > summary .cc-i { width: 14px; height: 14px; color: var(--muted); flex: none; }
+.cc-vu-box > summary span { font-weight: 600; white-space: nowrap; }
+.cc-vu-box > summary small { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.cc-vu-box > summary b { margin-left: auto; font: 600 11.5px var(--mono); color: var(--ink); white-space: nowrap; }
+.cc-vu-box > summary::after { content: ""; width: 7px; height: 7px; border-right: 1.5px solid var(--muted); border-bottom: 1.5px solid var(--muted); transform: rotate(45deg); margin: -3px 2px 0 4px; flex: none; }
+.cc-vu-box[open] > summary::after { transform: rotate(225deg); margin-top: 3px; }
+.cc-vu-box .cc-vu { border-top: 0; }
+.cc-vu-box .cc-vu-k { visibility: hidden; }
+
+/* the voice's own spend, in the Usage sheet */
 .cc-vu { margin-top: 7px; padding-top: 6px; border-top: 1px dashed var(--line); min-width: 0; }
 .cc-vu-h { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; margin-bottom: 3px; min-width: 0; }
 .cc-vu-k { font-size: 10px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--muted); white-space: nowrap; }

@@ -4165,6 +4165,10 @@ function strip2(o) {
   return out;
 }
 
+// usage: Claude plan limits as Claude Code's /usage shows them (the supervisor
+// asks the CLI; no credential passes through here) and the token counts.
+app.get("/mint-ai/api/usage", ...moniAiGuard, (req, res) => moniAiOp(req, res, "usage", req.query.plan_only === "1" ? { plan_only: true } : {}, { timeout: 35000 }));
+
 // cost
 app.get("/mint-ai/api/cost", ...moniAiGuard, (req, res) => moniAiOp(req, res, "cost"));
 app.post("/mint-ai/api/cost/budget", ...moniAiWrite, (req, res) => {

@@ -246,6 +246,19 @@ rl.on("line", (line) => {
       out({ type: "control_response", response: { subtype: "success", request_id: msg.request_id, response: r.enabled ? { session_url: "https://claude.ai/code/session_FAKE", bridge_session_id: "session_FAKE" } : {} } });
     } else if (r.subtype === "interrupt") {
       out({ type: "control_response", response: { subtype: "success", request_id: msg.request_id } });
+    } else if (r.subtype === "get_usage") {
+      // The shape 2.1.283 answers with (trimmed), plus a secret-looking field that must never be passed on.
+      out({ type: "control_response", response: { subtype: "success", request_id: msg.request_id, response: {
+        session: { total_cost_usd: 1.23 }, subscription_type: "max", rate_limits_available: true, behaviors: null,
+        rate_limits: {
+          five_hour: { utilization: 18, resets_at: "2026-09-30T09:30:00.411748+00:00" },
+          seven_day: { utilization: 39.6, resets_at: "2026-10-05T13:00:00.411767+00:00" },
+          seven_day_sonnet: null, seven_day_opus: null,
+          model_scoped: [{ display_name: "Fable", utilization: 0, resets_at: "2026-10-05T13:00:00+00:00" }],
+          extra_usage: { is_enabled: false, used_credits: null },
+          internal_token: "sk-ant-oat01-FAKE-MUST-NOT-LEAK",
+        },
+      } } });
     } else {
       out({ type: "control_response", response: { subtype: "error", request_id: msg.request_id, error: "unknown" } });
     }

@@ -260,4 +260,70 @@ class Scanner {
   }
 }
 
-module.exports = { turnDeltas, priceOf, usageCost, parseUsage, Scanner, PRICES };
+/* ------------------------------------------------------- token counts --- */
+
+const TOKEN_KEYS = ["input", "output", "cache_read", "cache_write"];
+
+function zeroTokens() {
+  return { input: 0, output: 0, cache_read: 0, cache_write: 0, total: 0 };
+}
+function addTokens(a, r) {
+  for (const k of TOKEN_KEYS) a[k] += Number(r[k]) || 0;
+  a.total = a.input + a.output + a.cache_read + a.cache_write;
+  return a;
+}
+
+/**
+ * Token consumption from the transcripts, per day and per session.
+ * rows: cost_daily rows { session_id, day, input, output, cache_read, cache_write }.
+ * days: the day keys to report, oldest first (the last is today).
+ * selfIds: MINT AI's own session ids, all reported as one row `selfName`.
+ * nameOf(sid): a session's display name; sessions sharing a name are one row.
+ * top: rows kept per period; the rest are folded into one "Other sessions" row.
+ * These are this box's own counts from the transcripts, not plan figures.
+ */
+function tokenReport(rows, { days, selfIds = new Set(), selfName = "MINT AI", nameOf = (s) => "session " + String(s).slice(0, 8), top = 12 }) {
+  const today = days[days.length - 1];
+  const week = days.slice(-7);
+  const inWeek = new Set(week);
+  const perDay = new Map(days.map((d) => [d, zeroTokens()]));
+  const periods = { today: new Map(), week: new Map() };
+  const names = new Map();
+  const nm = (sid) => {
+    if (!names.has(sid)) names.set(sid, selfIds.has(sid) ? selfName : String(nameOf(sid) || "session " + String(sid).slice(0, 8)));
+    return names.get(sid);
+  };
+  const bump = (map, sid, r) => {
+    const name = nm(sid);
+    let e = map.get(name);
+    if (!e) map.set(name, (e = { name, self: selfIds.has(sid), sessions: new Set(), ...zeroTokens() }));
+    e.sessions.add(sid);
+    addTokens(e, r);
+  };
+  for (const r of rows) {
+    if (perDay.has(r.day)) addTokens(perDay.get(r.day), r);
+    if (inWeek.has(r.day)) bump(periods.week, r.session_id, r);
+    if (r.day === today) bump(periods.today, r.session_id, r);
+  }
+  const period = (map) => {
+    const list = [...map.values()].filter((e) => e.total > 0).sort((a, b) => b.self - a.self || b.total - a.total || a.name.localeCompare(b.name));
+    const totals = list.reduce((a, e) => addTokens(a, e), zeroTokens());
+    const kept = list.slice(0, top).map((e) => ({ name: e.name, self: e.self, session_count: e.sessions.size, ...pick(e) }));
+    const rest = list.slice(top);
+    if (rest.length) {
+      const o = rest.reduce((a, e) => addTokens(a, e), zeroTokens());
+      kept.push({ name: "Other sessions (" + rest.length + ")", self: false, other: true, session_count: rest.reduce((n, e) => n + e.sessions.size, 0), ...o });
+    }
+    return { totals, sessions: kept };
+  };
+  return {
+    today,
+    days: days.map((d) => ({ day: d, ...perDay.get(d) })),
+    periods: { today: period(periods.today), week: { from: week[0], to: today, ...period(periods.week) } },
+  };
+}
+function pick(e) {
+  return { input: e.input, output: e.output, cache_read: e.cache_read, cache_write: e.cache_write, total: e.total };
+}
+
+module.exports = { turnDeltas, priceOf, usageCost, parseUsage, Scanner, PRICES, tokenReport };

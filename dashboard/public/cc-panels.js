@@ -2,7 +2,7 @@
 /*
  * The Command Center's panels: the missions board, the Decisions inbox
  * (approvals and watcher findings), Rules and Watchers, the standing orders
- * (rail list and editor), today's cost (rail widget and detail), the read-only
+ * (rail list and editor), usage (Claude plan limits, token counts, voice spend), the read-only
  * session deep view, the "Always allow this" rule dialog, the new-mission
  * dialog and the Ctrl+K command palette.
  *
@@ -75,6 +75,57 @@
     if (n >= 1e3) return Math.round(n / 1e3) + "k";
     return String(Math.round(n));
   }
+
+  /*
+   * Claude plan usage, shown as Claude Code's /usage dialog shows it (read off
+   * the 2.1.283 binary): "<floor(utilization)>% used", and "Resets <when>
+   * (<time zone>)" where <when> is the time alone for a reset within 24 hours
+   * and "Oct 5, 3pm" otherwise -- always the date on the weekly rows -- minutes
+   * left out on the hour, am/pm in lower case, the year only when it differs.
+   */
+  var PlanUsage = {
+    pctUsed: function (u) { var n = Number(u); return isFinite(n) ? Math.floor(n) : 0; },
+    resetText: function (iso, alwaysDate, nowMs, tz) {
+      var ms = Date.parse(iso);
+      if (!isFinite(ms)) return "";
+      var o = new Date(Math.floor(ms / 1000) * 1000), s = new Date(nowMs == null ? Date.now() : nowMs);
+      var zone = tz || (function () { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch (e) { return ""; } })();
+      var opt = { hour: "numeric", hour12: true };
+      if (zone && tz) opt.timeZone = tz;
+      var mins = Number(new Intl.DateTimeFormat("en-US", { minute: "numeric", timeZone: opt.timeZone }).format(o));
+      if (mins !== 0) opt.minute = "2-digit";
+      var txt, hoursAway = (o.getTime() - s.getTime()) / 3600000;
+      if (alwaysDate || hoursAway > 24) {
+        opt.month = "short";
+        opt.day = "numeric";
+        var yr = function (d) { return new Intl.DateTimeFormat("en-US", { year: "numeric", timeZone: opt.timeZone }).format(d); };
+        if (yr(o) !== yr(s)) opt.year = "numeric";
+        txt = o.toLocaleString("en-US", opt);
+      } else txt = o.toLocaleTimeString("en-US", opt);
+      txt = txt.replace(/[ \u202f]([AP]M)/i, function (m0, ap) { return ap.toLowerCase(); });
+      return txt + (zone ? " (" + zone + ")" : "");
+    },
+    /** "in 2 h 26 min", "in 3 d 4 h": how long until a reset. */
+    inText: function (iso, nowMs) {
+      var ms = Date.parse(iso) - (nowMs == null ? Date.now() : nowMs);
+      if (!isFinite(ms)) return "";
+      if (ms <= 0) return "due now";
+      var m = Math.round(ms / 60000), d = Math.floor(m / 1440), h = Math.floor((m % 1440) / 60), mm = m % 60;
+      if (d) return "in " + d + " d" + (h ? " " + h + " h" : "");
+      if (h) return "in " + h + " h" + (mm ? " " + mm + " min" : "");
+      return "in " + Math.max(1, mm) + " min";
+    },
+    planName: function (t) {
+      var k = String(t || "").toLowerCase();
+      return { max: "Max", pro: "Pro", team: "Team", enterprise: "Enterprise" }[k] || (k ? k.charAt(0).toUpperCase() + k.slice(1) : "");
+    },
+    /** 1234567 -> "1,234,567" (a full count, for the details table). */
+    fullNum: function (n) {
+      n = Math.round(Number(n) || 0);
+      return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+    },
+  };
+  window.MoniPlanUsage = PlanUsage;
 
   window.MoniPanels = function (CC) {
     var S = CC.S, esc = CC.esc, ic = CC.ic, api = CC.api, toast = CC.toast, money = CC.money, clip = CC.clip, hm = CC.hm, dur = CC.dur;
@@ -890,7 +941,14 @@
       }
     }
 
-    /* ======================================================== cost */
+    /* ======================================================== usage */
+    /*
+     * The Usage sheet (key "cost", kept so sheet.open and old links still work).
+     * First Claude plan usage exactly as Claude Code's /usage shows it -- the
+     * supervisor asks the CLI itself (get_usage), nothing is estimated here --
+     * then this box's own token counts from the transcripts, then the voice's
+     * OpenAI spend, the only money on the sheet (billed separately).
+     */
 
     function spark(vals, w, h, est) {
       vals = (vals || []).map(function (v) { return Number(v) || 0; });
@@ -900,45 +958,82 @@
       var last = vals[vals.length - 1];
       return '<svg class="cc-spark' + (est ? " est" : "") + '" viewBox="0 0 ' + w + " " + h + '" preserveAspectRatio="none" aria-hidden="true"><polyline points="' + pts.join(" ") + '" vector-effect="non-scaling-stroke"/><circle cx="' + ((vals.length - 1) * st).toFixed(1) + '" cy="' + (h - 2 - (last / mx) * (h - 4)).toFixed(1) + '" r="2.2"/></svg>';
     }
-    function dayTotal(d) { return (Number(d.moni_ai_usd) || 0) + (Number(d.others_usd_est) || 0); }
-    function budgetInfo() {
-      var ct = (S.status && S.status.cost_today) || {};
-      var b = (P.cost && P.cost.budget) || {};
-      return { daily: ct.budget_usd != null ? ct.budget_usd : b.daily_usd != null ? b.daily_usd : null, warn: ct.warn_pct || b.warn_pct || 80 };
+    var PU = window.MoniPlanUsage;
+    var TOK_KEYS = [["input", "Input"], ["output", "Output"], ["cache_read", "Cache read"], ["cache_write", "Cache write"]];
+    P.usagePeriod = "today";
+    function planBlock(u, opts) {
+      opts = opts || {};
+      var pl = u && u.plan, now = Date.now();
+      var h = '<div class="cc-pu" aria-live="polite">';
+      h += '<div class="cc-pu-h"><h3>Plan usage limits</h3>' + (pl && pl.plan && pl.plan.subscription_type ? '<span class="cc-badge b-mute">' + esc(PU.planName(pl.plan.subscription_type)) + " plan</span>" : "") + "</div>";
+      if (!pl || !pl.plan) {
+        h += '<div class="cc-callout warn">Plan usage is not available' + (pl && pl.error ? ": " + esc(pl.error) : P.err.usage ? ": " + esc(P.err.usage) : "") + ". Nothing is shown rather than a guess.</div></div>";
+        return h;
+      }
+      var p = pl.plan;
+      if (!p.available || !p.rows.length) h += '<div class="cc-callout">Plan limits do not apply to this login (API key or no plan): Claude Code shows none either.</div>';
+      p.rows.forEach(function (r, i) {
+        var pc = PU.pctUsed(r.utilization), prev = i ? p.rows[i - 1] : null;
+        if (r.group === "weekly" && (!prev || prev.group !== "weekly")) h += '<div class="cc-pu-g">Weekly limits</div>';
+        h += '<div class="cc-pu-row" data-k="' + esc(r.key) + '"><div class="cc-pu-t"><b>' + esc(r.title) + '</b><span class="cc-pu-n">' + esc(pc + "% used") + "</span></div>" +
+          '<div class="cc-pu-bar" role="progressbar" aria-label="' + esc(r.title) + '" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + esc(Math.min(100, pc)) + '"><i class="' + (pc >= 100 ? "x" : pc >= 80 ? "w" : "") + '" data-w="' + esc(Math.min(100, r.utilization)) + '"></i></div>' +
+          '<div class="cc-pu-r" title="' + esc(r.resets_at || "") + '">' + esc(r.resets_at ? "Resets " + PU.resetText(r.resets_at, r.always_date, now) : "No reset time given") + (r.resets_at ? '<span class="cc-muted"> · ' + esc(PU.inText(r.resets_at, now)) + "</span>" : "") + "</div></div>";
+      });
+      var src = pl.source === "probe" ? "Claude Code (a one-off check: MINT AI was not running)" : "Claude Code's /usage, asked of MINT AI's CLI";
+      h += '<div class="cc-pu-f"><span id="cc-pu-asof">' + esc("as of " + hm(pl.fetched_at)) + "</span>" + (P.err.usage || (pl.stale && pl.error) ? '<span class="cc-err"> · not refreshed: ' + esc(P.err.usage || pl.error) + "</span>" : "") +
+        '<span class="cc-muted" title="' + esc(src) + '"> · from ' + esc(pl.source === "probe" ? "Claude Code (one-off check)" : "Claude Code /usage") + "</span>" +
+        (opts.refresh ? '<button type="button" class="cc-linkbtn" data-pu-refresh>' + ic("repeat") + "Refresh</button>" : "") + "</div>";
+      return h + "</div>";
     }
-    function todayTotal() {
-      var ct = S.status && S.status.cost_today;
-      if (ct && ct.total_usd != null) return ct;
-      return P.cost && P.cost.today ? P.cost.today : null;
+    function tokenTotalsHTML(t) {
+      return '<div class="cc-tk-sum">' + TOK_KEYS.map(function (k) { return '<div><b>' + esc(tokens(t[k[0]])) + "</b><span>" + esc(k[1]) + "</span></div>"; }).join("") + "</div>";
+    }
+    function stackBar(r, mx) {
+      // One bar per session: its total against the largest, split by kind.
+      var w = mx ? r.total / mx * 100 : 0, parts = "";
+      TOK_KEYS.forEach(function (k) { if (r[k[0]]) parts += '<i class="k-' + k[0] + '" data-w="' + (r[k[0]] / (r.total || 1) * 100) + '"></i>'; });
+      return '<span class="cc-tk-bar" data-w="' + w + '">' + parts + "</span>";
+    }
+    function periodSeg(cur) {
+      return '<div class="cc-chips-sel cc-tk-seg" role="group" aria-label="Period">' + [["today", "Today"], ["week", "Last 7 days"]].map(function (x) {
+        return '<button type="button" data-tk-period="' + x[0] + '" aria-pressed="' + (x[0] === cur) + '">' + x[1] + "</button>";
+      }).join("") + "</div>";
+    }
+    function tokenSection(u, full) {
+      var t = u && u.tokens;
+      var h = '<div class="cc-tk"><div class="cc-pu-h"><h3>Tokens · counted on this box</h3>' + periodSeg(P.usagePeriod) + "</div>";
+      if (!t) return h + '<div class="cc-empty-s">' + esc(P.err.usage ? "Token counts are not available: " + P.err.usage : "—") + "</div></div>";
+      var per = t.periods[P.usagePeriod] || t.periods.today;
+      h += '<p class="cc-rule-hint">Mint OS\'s own count from the Claude transcripts on this VPS' + (P.usagePeriod === "week" ? " (" + esc(t.periods.week.from + " – " + t.periods.week.to) + ")" : " (today, " + esc(t.tz || "Cairo") + ")") + ". Not plan figures: Claude weighs tokens differently for the limits above.</p>";
+      h += '<div class="cc-tk-total"><b>' + esc(tokens(per.totals.total)) + "</b><span>tokens " + (P.usagePeriod === "week" ? "in the last 7 days" : "today") + "</span>" + spark(t.days.slice(-7).map(function (d) { return d.total; }), 76, 26) + "</div>";
+      h += tokenTotalsHTML(per.totals);
+      var rows = per.sessions;
+      if (!rows.length) return h + '<div class="cc-empty-s">No Claude tokens counted ' + (P.usagePeriod === "week" ? "this week" : "today") + ".</div></div>";
+      var mx = Math.max.apply(null, rows.map(function (r) { return r.total; })) || 1;
+      if (!full) {
+        h += '<div class="cc-tk-rows">' + rows.slice(0, 6).map(function (r) {
+          return '<div class="cc-tk-row" title="' + esc(r.name + ": in " + r.input + " · out " + r.output + " · cache read " + r.cache_read + " · cache write " + r.cache_write) + '"><span>' + esc(r.name) + (r.self ? ' <small class="cc-muted">CEO</small>' : "") + "</span>" + stackBar(r, mx) + "<b>" + esc(tokens(r.total)) + "</b></div>";
+        }).join("") + "</div>";
+        h += '<div class="cc-tk-legend">' + TOK_KEYS.map(function (k) { return '<span><i class="k-' + k[0] + '"></i>' + esc(k[1]) + "</span>"; }).join("") + "</div>";
+      } else {
+        h += '<table class="cc-tbl cc-tk-tbl"><tr><th>Session</th>' + TOK_KEYS.map(function (k) { return '<th class="n">' + esc(k[1]) + "</th>"; }).join("") + '<th class="n">Total</th></tr>' +
+          rows.map(function (r) {
+            return '<tr><td class="nm" title="' + esc(r.name + (r.session_count > 1 ? " · " + r.session_count + " session ids" : "")) + '">' + esc(r.name) + (r.self ? ' <small>CEO</small>' : "") + "</td>" + TOK_KEYS.map(function (k) { return '<td class="n">' + esc(PU.fullNum(r[k[0]])) + "</td>"; }).join("") + '<td class="n"><b>' + esc(PU.fullNum(r.total)) + "</b></td></tr>";
+          }).join("") +
+          '<tr class="tot"><td class="nm">All sessions</td>' + TOK_KEYS.map(function (k) { return '<td class="n">' + esc(PU.fullNum(per.totals[k[0]])) + "</td>"; }).join("") + '<td class="n"><b>' + esc(PU.fullNum(per.totals.total)) + "</b></td></tr></table>";
+      }
+      return h + "</div>";
     }
     function renderCostWidget() {
       var el = $("cc-cost-widget");
-      var today = todayTotal();
-      if (!today) { el.innerHTML = '<div class="cc-empty-s">' + esc(P.err.cost ? "Cost is not available: " + P.err.cost : "—") + "</div>"; return; }
-      var bi = budgetInfo();
-      var days = P.cost && P.cost.days ? P.cost.days.map(dayTotal) : [];
-      var h = '<div class="cc-cost-top"><b>' + esc(money(today.total_usd)) + "</b><span>today</span>" + (days.length ? spark(days, 76, 26) : "") + "</div>";
-      if (bi.daily) {
-        var p = today.total_usd / bi.daily * 100;
-        h += '<div class="cc-budget"><div class="cc-budget-bar"><i class="' + (p >= 100 ? "x" : p >= bi.warn ? "w" : "") + '" data-w="' + p + '"></i><em data-l="' + bi.warn + '" title="warning at ' + esc(bi.warn) + '%"></em></div>' +
-          '<div class="cc-budget-l"><span>' + Math.round(p) + "% of " + esc(money(bi.daily)) + " daily budget</span><span>warn " + esc(bi.warn) + "%</span></div></div>";
-      } else {
-        h += '<div class="cc-budget-l"><span>MINT AI ' + esc(money(today.moni_ai_usd)) + " · others ~" + esc(money(today.others_usd_est)) + " est</span></div>" +
-          '<div class="cc-budget-l"><span>No daily budget · set one in Details</span></div>';
-      }
-      var rows = P.cost && P.cost.sessions ? P.cost.sessions.slice().sort(function (a, b) { return (b.today_usd || 0) - (a.today_usd || 0); }).slice(0, 3) : [];
-      if (rows.length) {
-        var mx = rows[0].today_usd || 1;
-        h += '<div class="cc-cost-rows">' + rows.map(function (r) {
-          return '<div class="cc-cost-row"' + (r.estimated ? ' title="estimated API-equivalent"' : "") + "><span>" + esc(r.name || "session") + '</span><i class="' + (r.estimated ? "est" : "") + '" data-w="' + ((r.today_usd || 0) / mx * 100) + '"></i><b>' + esc(money(r.today_usd)) + "</b></div>";
-        }).join("") + "</div>";
-      }
-      el.innerHTML = h;
+      if (!el) return;
+      el.innerHTML = planBlock(P.usage, { refresh: true }) + tokenSection(P.usage, false);
       CC.applyBars(el);
     }
     /* ---- the voice's own spend (OpenAI), from the usage OpenAI reports for
        every call, priced on the server. Today and this month (Cairo), split by
-       kind of turn, transcription on its own line, and the last turn. ---- */
+       kind of turn, transcription on its own line, and the last turn. The only
+       money on the sheet: OpenAI bills it, separately from the Claude plan. ---- */
     var VU_ROWS = [
       ["small_talk", "Small talk", "The front desk's small talk"],
       ["snapshot", "Snapshot", "The front desk's answers from the read-only snapshot"],
@@ -955,9 +1050,15 @@
     function renderVoiceUsage() {
       var el = $("cc-voice-usage");
       if (!el) return;
+      var sum = $("cc-vu-sum");
       var u = P.voiceUsage;
-      if (!u || !u.today) { el.innerHTML = '<div class="cc-empty-s">Voice usage ' + esc(P.err.voiceUsage ? "is not available: " + P.err.voiceUsage : "—") + "</div>"; return; }
+      if (!u || !u.today) {
+        if (sum) sum.textContent = "";
+        el.innerHTML = '<div class="cc-empty-s">Voice usage ' + esc(P.err.voiceUsage ? "is not available: " + P.err.voiceUsage : "—") + "</div>";
+        return;
+      }
       var t = u.today, m = u.month_totals || {}, last = u.last;
+      if (sum) sum.textContent = vmoney(t.total) + " today";
       var h = '<div class="cc-vu-h"><span class="cc-vu-k">Voice · OpenAI</span><span class="cc-vu-n">' + esc((t.turns || 0) + " turn" + (t.turns === 1 ? "" : "s") + " today") + "</span></div>";
       h += '<div class="cc-vu-t" role="table" aria-label="Voice spend, today and this month"><span role="columnheader"></span><span class="n" role="columnheader">today</span><span class="n" role="columnheader">month</span>';
       VU_ROWS.forEach(function (r) {
@@ -981,81 +1082,78 @@
       if (!$("cc-voice-usage")) return Promise.resolve();
       return api("voice/usage").then(setVoiceUsage).catch(function (e) { P.err.voiceUsage = errText(e); renderVoiceUsage(); });
     }
+    var usageBusy = false;
     function loadCost() {
       loadVoiceUsage();
-      return api("cost").then(function (c) { P.cost = c; delete P.err.cost; }).catch(function (e) { P.err.cost = errText(e); })
-        .then(function () { renderCostWidget(); if (OV.kind === "cost") renderCostBody(); });
+      if (usageBusy) return Promise.resolve();
+      usageBusy = true;
+      return api("usage").then(function (u) { P.usage = u; delete P.err.usage; }).catch(function (e) { P.err.usage = errText(e); })
+        .then(function () { usageBusy = false; renderCostWidget(); if (OV.kind === "cost") renderCostBody(); });
     }
+    // Opening the sheet refreshes it (the server reuses an answer under a minute old).
+    (function () {
+      var pane = $("cc-pane-cost");
+      if (!pane || !window.MutationObserver) return;
+      new MutationObserver(function () { if (!pane.hidden) loadCost(); }).observe(pane, { attributes: true, attributeFilter: ["hidden"] });
+    })();
     function openCost() {
       overlay("cost",
-        '<div class="cc-mh">' + ic("coin") + '<div class="cc-min0"><h2>Cost and usage</h2><small>Per day, per session and per mission. MINT AI\'s own figures come from its ledger; other sessions are estimated API-equivalent from their transcripts.</small></div><div class="cc-sp"><button type="button" class="cc-iconbtn" data-close title="Close (Esc)" aria-label="Close">' + ic("close") + "</button></div></div>" +
+        '<div class="cc-mh">' + ic("gauge") + '<div class="cc-min0"><h2>Usage</h2><small>Claude plan limits as Claude Code\'s /usage shows them, and the tokens every session on this VPS used, per session and per day.</small></div><div class="cc-sp"><button type="button" class="cc-iconbtn" data-close title="Close (Esc)" aria-label="Close">' + ic("close") + "</button></div></div>" +
         '<div class="cc-mb-body" id="cc-cost-body"><div class="cc-empty-s">Loading…</div></div>',
-        "cc-modal wide", "Cost and usage");
-      if (P.cost) renderCostBody();
+        "cc-modal wide", "Usage");
+      if (P.usage) renderCostBody();
       loadCost();
     }
     function renderCostBody() {
       var el = $("cc-cost-body");
       if (!el) return;
-      var c = P.cost;
-      if (!c) { el.innerHTML = '<div class="cc-callout warn">Cost is not available: ' + esc(P.err.cost || "no data") + "</div>"; return; }
-      var bi = { daily: c.budget ? c.budget.daily_usd : null, warn: (c.budget && c.budget.warn_pct) || 80 };
-      var today = c.today || {};
-      var days = c.days || [];
-      var last7 = days.slice(-7).reduce(function (s, d) { return s + dayTotal(d); }, 0);
-      var used = bi.daily ? (today.total_usd || 0) / bi.daily * 100 : null;
-      var h = '<div class="cc-kpis">' +
-        '<div class="cc-kpi"><span>Today</span><b>' + esc(money(today.total_usd)) + "</b><small>MINT AI " + esc(money(today.moni_ai_usd)) + " · others ~" + esc(money(today.others_usd_est)) + " est</small></div>" +
-        '<div class="cc-kpi"><span>Last 7 days</span><b>' + esc(money(last7)) + "</b><small>avg " + esc(money(last7 / Math.max(1, Math.min(7, days.length)))) + " a day</small></div>" +
-        '<div class="cc-kpi' + (used != null && used >= 100 ? " x" : used != null && used >= bi.warn ? " w" : "") + '"><span>Daily budget</span><b>' + esc(bi.daily ? money(bi.daily) : "none") + "</b><small>" + esc(used != null ? Math.round(used) + "% used today" : "set one below") + "</small></div>" +
-        '<div class="cc-kpi"><span>Warn at</span><b>' + esc(bi.warn) + "%</b><small>" + esc(bi.daily ? money(bi.daily * bi.warn / 100) + " a day" : "of the daily budget") + "</small></div></div>";
-      // Per-day bars: MINT AI's own spend, with the other sessions' estimate stacked on top.
-      var w = 640, hh = 150, n = Math.max(1, days.length), bw = w / n;
-      var mx = Math.max.apply(null, days.map(dayTotal).concat([bi.daily ? bi.daily * bi.warn / 100 : 0, 0.01]));
-      var sc = (hh - 30) / (mx * 1.08);
-      var bars = days.map(function (d, i) {
-        var a = (Number(d.moni_ai_usd) || 0) * sc, b = (Number(d.others_usd_est) || 0) * sc, x = (i * bw + 5).toFixed(1), bwid = Math.max(2, bw - 10).toFixed(1);
-        var dt = new Date(d.day + "T12:00:00Z");
-        return '<rect class="cc-bar' + (i === days.length - 1 ? " today" : "") + '" x="' + x + '" y="' + (hh - 18 - a).toFixed(1) + '" width="' + bwid + '" height="' + a.toFixed(1) + '" rx="2"><title>' + esc(d.day + ": MINT AI " + money(d.moni_ai_usd)) + "</title></rect>" +
-          '<rect class="cc-bar est" x="' + x + '" y="' + (hh - 18 - a - b).toFixed(1) + '" width="' + bwid + '" height="' + b.toFixed(1) + '" rx="2"><title>' + esc(d.day + ": others ~" + money(d.others_usd_est) + " est") + "</title></rect>" +
-          '<text x="' + (i * bw + bw / 2).toFixed(1) + '" y="' + (hh - 4) + '" text-anchor="middle">' + esc(isFinite(dt) ? String(dt.getUTCDate()) : "") + "</text>";
-      }).join("");
-      var wl = bi.daily ? '<line class="warn-line" x1="0" x2="' + w + '" y1="' + (hh - 18 - bi.daily * bi.warn / 100 * sc).toFixed(1) + '" y2="' + (hh - 18 - bi.daily * bi.warn / 100 * sc).toFixed(1) + '" vector-effect="non-scaling-stroke"/>' : "";
-      h += '<div class="cc-twocol"><div><div class="cc-sec-t">Per day · last ' + days.length + ' days<span class="cc-muted">green MINT AI · grey others (est)</span></div><div class="cc-bars"><svg viewBox="0 0 ' + w + " " + hh + '" preserveAspectRatio="none" aria-label="Cost per day">' + bars + wl + "</svg></div>" +
-        '<p class="cc-rule-hint">' + (bi.daily ? "Dashed line: the " + esc(bi.warn) + "% warning (" + esc(money(bi.daily * bi.warn / 100)) + " a day). " : "") + esc(c.note || "") + "</p>" +
-        '<div class="cc-sec-t gap">Per mission</div><table class="cc-tbl"><tr><th>Mission</th><th>State</th><th class="n">Cost</th></tr>' +
-        ((c.missions || []).length ? c.missions.map(function (m) {
-          return '<tr><td class="nm">' + esc((m.ref || "") + " · " + (m.title || "")) + '</td><td><span class="cc-badge ' + (m.status === "active" ? "b-mis" : m.status === "done" ? "b-ok" : "b-mute") + '">' + esc(m.status) + '</span></td><td class="n">' + esc(money(m.cost_usd)) + "</td></tr>";
-        }).join("") : '<tr><td colspan="3" class="empty">No missions yet.</td></tr>') + "</table></div>";
-      h += '<div><div class="cc-sec-t">Per session · today</div><table class="cc-tbl"><tr><th>Session</th><th class="n">In</th><th class="n">Out</th><th>7 days</th><th class="n">Today</th></tr>' +
-        ((c.sessions || []).length ? c.sessions.map(function (r) {
-          return '<tr><td class="nm" title="' + esc(r.name || "") + '">' + esc(r.name || "session") + (r.estimated ? ' <small title="estimated API-equivalent">est.</small>' : "") + '</td><td class="n">' + esc(tokens(r.today_in)) + '</td><td class="n">' + esc(tokens(r.today_out)) + "</td><td>" + spark(r.week || [], 90, 18, r.estimated) + '</td><td class="n">' + esc(money(r.today_usd)) + "</td></tr>";
-        }).join("") : '<tr><td colspan="5" class="empty">Nothing spent today.</td></tr>') + "</table>" +
-        '<p class="cc-rule-hint">Figures marked est. are an estimated API-equivalent: what the tokens in that session\'s transcript would cost at API prices.</p>' +
-        '<div class="cc-sec-t gap">Budget</div><div class="cc-form"><label for="cc-bud">Daily budget</label><div class="inl"><span class="cc-muted">$</span><input class="cc-in cc-mono sm" id="cc-bud" type="number" min="0" step="0.5" placeholder="none" value="' + esc(bi.daily != null ? bi.daily : "") + '"><span class="cc-muted">empty = no budget</span></div>' +
-        '<label>Warn at</label><div class="cc-chips-sel" data-warn>' + [50, 80, 90].concat([50, 80, 90].indexOf(bi.warn) < 0 ? [bi.warn] : []).map(function (p) { return '<button type="button" data-v="' + p + '" aria-pressed="' + (p === bi.warn) + '">' + p + "%</button>"; }).join("") + "</div>" +
-        '<span></span><div class="cc-dact"><button type="button" class="cc-btn pri sm" id="cc-bud-save">' + ic("check") + 'Save budget</button><span class="cc-err" id="cc-bud-err"></span></div></div></div></div>';
+      var u = P.usage;
+      if (!u) { el.innerHTML = '<div class="cc-callout warn">Usage is not available: ' + esc(P.err.usage || "no data") + "</div>"; return; }
+      var h = '<div class="cc-twocol cc-usage-2"><div>' + planBlock(u, { refresh: true });
+      var t = u.tokens;
+      if (t && t.days && t.days.length) {
+        // Tokens per day: input + output + cache, stacked, from the transcripts.
+        var w = 640, hh = 150, n = t.days.length, bw = w / n;
+        var mx = Math.max.apply(null, t.days.map(function (d) { return d.total; }).concat([1]));
+        var sc = (hh - 30) / (mx * 1.08);
+        var bars = t.days.map(function (d, i) {
+          var x = (i * bw + 5).toFixed(1), bwid = Math.max(2, bw - 10).toFixed(1), y = hh - 18, out = "";
+          TOK_KEYS.forEach(function (k) {
+            var v = (d[k[0]] || 0) * sc;
+            if (v <= 0) return;
+            y -= v;
+            out += '<rect class="cc-tkb k-' + k[0] + (i === n - 1 ? " today" : "") + '" x="' + x + '" y="' + y.toFixed(1) + '" width="' + bwid + '" height="' + v.toFixed(1) + '"><title>' + esc(d.day + " · " + k[1] + ": " + PU.fullNum(d[k[0]])) + "</title></rect>";
+          });
+          var dt = new Date(d.day + "T12:00:00Z");
+          return out + '<text x="' + (i * bw + bw / 2).toFixed(1) + '" y="' + (hh - 4) + '" text-anchor="middle">' + esc(isFinite(dt) ? String(dt.getUTCDate()) : "") + "</text>";
+        }).join("");
+        h += '<div class="cc-sec-t gap">Tokens per day · last ' + n + ' days<span class="cc-muted">counted on this box</span></div><div class="cc-bars"><svg viewBox="0 0 ' + w + " " + hh + '" preserveAspectRatio="none" aria-label="Tokens per day">' + bars + "</svg></div>" +
+          '<div class="cc-tk-legend">' + TOK_KEYS.map(function (k) { return '<span><i class="k-' + k[0] + '"></i>' + esc(k[1]) + "</span>"; }).join("") + "</div>";
+      }
+      h += "</div><div>" + tokenSection(u, true) + '<p class="cc-rule-hint">' + esc((t && t.note) || "") + (t && t.scanned_at ? " Last read " + esc(hm(t.scanned_at)) + "." : "") + "</p></div></div>";
       el.innerHTML = h;
+      CC.applyBars(el);
     }
-    document.getElementById("cc-overlay").addEventListener("click", function (e) {
-      if (OV.kind !== "cost") return;
-      var w = e.target.closest("[data-warn] button");
-      if (w) { var bs = w.parentNode.querySelectorAll("button"); for (var i = 0; i < bs.length; i++) bs[i].setAttribute("aria-pressed", String(bs[i] === w)); return; }
-      var s = e.target.closest("#cc-bud-save");
-      if (!s) return;
-      var raw = $("cc-bud").value.trim(), daily = raw === "" ? null : Number(raw);
-      if (daily != null && (!isFinite(daily) || daily < 0)) { $("cc-bud-err").textContent = "A positive number, or empty for none."; return; }
-      var on = document.querySelector("[data-warn] [aria-pressed=\"true\"]");
-      var warn = on ? Number(on.getAttribute("data-v")) : 80;
-      s.disabled = true;
-      api("cost/budget", { body: { daily_usd: daily, warn_pct: warn } }).then(function (r) {
-        if (P.cost) P.cost.budget = (r && r.budget) || { daily_usd: daily, warn_pct: warn };
-        if (S.status && S.status.cost_today) { S.status.cost_today.budget_usd = P.cost.budget.daily_usd; S.status.cost_today.warn_pct = P.cost.budget.warn_pct; }
-        renderCostBody();
+    function usageClick(e) {
+      var b = e.target.closest("[data-tk-period]");
+      if (b) {
+        P.usagePeriod = b.getAttribute("data-tk-period") === "week" ? "week" : "today";
         renderCostWidget();
-        toast("Budget saved.");
-      }).catch(function (ex) { s.disabled = false; $("cc-bud-err").textContent = "Not saved: " + errText(ex); });
-    });
+        if (OV.kind === "cost") renderCostBody();
+        return;
+      }
+      if (e.target.closest("[data-pu-refresh]")) loadCost();
+    }
+    document.getElementById("cc-overlay").addEventListener("click", function (e) { if (OV.kind === "cost") usageClick(e); });
+    (function () {
+      var w = $("cc-cost-widget");
+      if (w) w.addEventListener("click", usageClick);
+      // The voice block stays as this viewer left it (open or closed).
+      var vb = $("cc-vu-box");
+      if (!vb) return;
+      try { if (localStorage.getItem("cc.vu.open") === "1") vb.open = true; } catch (e) { /* no storage */ }
+      vb.addEventListener("toggle", function () { try { localStorage.setItem("cc.vu.open", vb.open ? "1" : "0"); } catch (e) { /* no storage */ } });
+    })();
 
     /* ======================================================== deep view */
 
@@ -1132,7 +1230,7 @@
         '<div class="cc-box"><div class="cc-sec-t">What MINT AI told it · full text</div>' + deepToldHTML(d.delegations || (s.last_delegation ? [s.last_delegation] : []), s) + "</div>" +
         '<div class="cc-box grow"><div class="cc-sec-t">Tool calls today · ' + toolList.length + '</div><ul class="cc-tools cc-scroll">' +
         (toolList.length ? toolList.slice().reverse().map(function (x) { return '<li class="' + (x.ok === false ? "bad" : "") + '"><time>' + esc(hm(x.t)) + "</time>" + ic(x.ok === false ? "alert" : "terminal") + "<code title=\"" + esc(x.summary || "") + '">' + esc(x.name + (x.summary ? " · " + x.summary : "")) + "</code><em>" + esc(x.ok == null ? "running" : x.ok ? "ok" : "failed") + "</em></li>"; }).join("") : '<li class="empty">' + (dv.data ? "No tool calls today." : "…") + "</li>") + "</ul></div>" +
-        '<div class="cc-box"><div class="cc-sec-t">Cost today' + (cost && cost.estimated ? '<span class="cc-muted">estimated API-equivalent</span>' : "") + '</div><div class="cc-deep-cost"><div><b>' + esc(cost ? money(cost.today_usd) : "—") + "</b><span>today</span></div><div><b>" + esc(cost ? tokens(cost.today_in) : "—") + "</b><span>tokens in</span></div><div><b>" + esc(cost ? tokens(cost.today_out) : "—") + "</b><span>out</span></div>" + (cost && cost.week ? spark(cost.week, 160, 30, cost.estimated) : "<span></span>") + "</div></div>" +
+        '<div class="cc-box"><div class="cc-sec-t">Tokens today<span class="cc-muted">counted on this box</span></div><div class="cc-deep-cost"><div><b>' + esc(cost ? tokens((cost.today_in || 0) + (cost.today_out || 0)) : "—") + "</b><span>total</span></div><div><b>" + esc(cost ? tokens(cost.today_in) : "—") + "</b><span>in + cache</span></div><div><b>" + esc(cost ? tokens(cost.today_out) : "—") + "</b><span>out</span></div>" + (cost && cost.week_tokens ? spark(cost.week_tokens, 160, 30) : "<span></span>") + "</div></div>" +
         "</div></div>";
       h += '<div class="cc-deep-foot"><span class="cc-muted">' + ic("eye") + " Read-only view · refreshes every 5 s</span><div class=\"cc-sp\">" +
         (s.self ? (st === "working" ? '<button type="button" class="cc-btn" data-deep="interrupt">' + ic("stop") + "Interrupt</button>" : "") + '<button type="button" class="cc-btn pri" data-deep="rc">' + ic("open") + "Open in Claude Desktop</button>"
@@ -1168,7 +1266,7 @@
       add("Open", "Approval rules", "Rules & watchers", "scale", "", function () { P.rulesSub = "rules"; CC.openSheet("rules"); });
       add("Open", "Watchers", "Rules & watchers", "eye", "", function () { P.rulesSub = "watch"; CC.openSheet("rules"); });
       add("Open", "Standing orders", P.orders.length + " scheduled", "repeat", "", function () { CC.openSheet("orders"); });
-      add("Open", "Cost & voice usage", "sheet", "coin", "", function () { CC.openSheet("cost"); });
+      add("Open", "Usage", "Claude plan limits · tokens · voice", "gauge", "", function () { CC.openSheet("cost"); });
       add("Open", "Machine", "this VPS · the core grid", "server", "", function () { CC.openSheet("machine"); });
       add("Actions", "Cost details and budget", "overlay", "coin", "", openCost);
       add("Actions", "New mission…", "MINT AI plans it", "plus", "m", function () { openNewMission(); });

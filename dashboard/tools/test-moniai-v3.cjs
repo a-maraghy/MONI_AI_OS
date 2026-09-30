@@ -188,5 +188,54 @@ check("Interrupt and Open in Claude Desktop only in MINT AI's own deep view", /s
 check("'Always allow this' shows the rule before it saves", /rule-suggestion/.test(panels) && /approvals\/" \+ id \+ "\/approve", \{ body: \{ rule: \{ pattern: pattern, tool: tool \} \} \}/.test(panels));
 check("Telegram delivery is offered disabled, with the server's reason", /Telegram<\/button>/.test(panels) && /tg\.why/.test(panels));
 
+/* ------------------------------------------ plan usage, as /usage says it --- */
+{
+  const a = panels.indexOf("var PlanUsage = {");
+  const b = panels.indexOf("window.MoniPlanUsage = PlanUsage;");
+  const ctx = { Intl, Date, Math, Number, String, isFinite };
+  vm.createContext(ctx);
+  vm.runInContext(panels.slice(a, b) + "this.PU = PlanUsage;", ctx);
+  const PU = ctx.PU;
+  // Claude Code 2.1.283's own reset formatter (function ud/zft in the binary), verbatim but for names,
+  // with the zone passed in: the reference the panel must agree with.
+  function cliReset(iso, alwaysDate, nowMs, tz) {
+    const e = Math.floor(new Date(iso).getTime() / 1000);
+    const o = new Date(e * 1000), s = new Date(nowMs), m = (o.getTime() - s.getTime()) / 3600000;
+    const c = Number(new Intl.DateTimeFormat("en-US", { minute: "numeric", timeZone: tz }).format(o)); // o.getMinutes() in that zone
+    if (alwaysDate || m > 24) {
+      const u = { month: "short", day: "numeric", hour: "numeric", minute: c === 0 ? undefined : "2-digit", hour12: true, timeZone: tz };
+      if (new Intl.DateTimeFormat("en-US", { year: "numeric", timeZone: tz }).format(o) !== new Intl.DateTimeFormat("en-US", { year: "numeric", timeZone: tz }).format(s)) u.year = "numeric";
+      return o.toLocaleString("en-US", u).replace(/[ \u202f]([AP]M)/i, (d, l) => l.toLowerCase()) + ` (${tz})`;
+    }
+    return o.toLocaleTimeString("en-US", { hour: "numeric", minute: c === 0 ? undefined : "2-digit", hour12: true, timeZone: tz }).replace(/[ \u202f]([AP]M)/i, (d, l) => l.toLowerCase()) + ` (${tz})`;
+  }
+  const NOW = Date.parse("2026-09-30T07:03:35Z");
+  check("session reset: time only, minutes shown, zone named", PU.resetText("2026-09-30T09:30:00.411Z", false, NOW, "Africa/Cairo") === "12:30pm (Africa/Cairo)", PU.resetText("2026-09-30T09:30:00.411Z", false, NOW, "Africa/Cairo"));
+  check("weekly reset: always the date, no :00 on the hour", PU.resetText("2026-10-05T13:00:00.411Z", true, NOW, "Africa/Cairo") === "Oct 5, 4pm (Africa/Cairo)", PU.resetText("2026-10-05T13:00:00.411Z", true, NOW, "Africa/Cairo"));
+  check("a session reset over 24 h away gets the date", /^Oct 2, /.test(PU.resetText("2026-10-02T07:30:00Z", false, NOW, "Europe/Berlin")));
+  check("next year's reset carries the year", /2027/.test(PU.resetText("2027-01-02T10:00:00Z", true, NOW, "UTC")));
+  let agree = 0, total = 0, first = "";
+  for (const tz of ["Africa/Cairo", "Europe/Berlin", "UTC", "America/New_York"]) {
+    for (let h = -2; h < 24 * 9; h += 5) {
+      for (const min of [0, 7, 30]) {
+        const iso = new Date(NOW + h * 3600000 + min * 60000 + 411).toISOString();
+        for (const ad of [false, true]) {
+          total++;
+          const mine = PU.resetText(iso, ad, NOW, tz), ref = cliReset(iso, ad, NOW, tz);
+          if (mine === ref) agree++;
+          else if (!first) first = iso + " " + tz + " " + ad + ": " + mine + " vs " + ref;
+        }
+      }
+    }
+  }
+  check("reset text agrees with Claude Code's own formatter on " + total + " cases", agree === total, first);
+  check("% used is floored, as /usage does", PU.pctUsed(39.6) === 39 && PU.pctUsed(18) === 18 && PU.pctUsed(0) === 0 && PU.pctUsed(102.5) === 102 && PU.pctUsed(null) === 0);
+  check("time left", PU.inText("2026-09-30T09:30:00Z", NOW) === "in 2 h 26 min" && PU.inText("2026-10-05T13:00:00Z", NOW) === "in 5 d 5 h" && PU.inText("2026-09-30T07:03:00Z", NOW) === "due now" && PU.inText("2026-09-30T07:05:00Z", NOW) === "in 1 min");
+  check("plan names and full counts", PU.planName("max") === "Max" && PU.planName(null) === "" && PU.fullNum(1234567) === "1,234,567" && PU.fullNum(0) === "0");
+}
+check("the Usage sheet: plan first, then tokens, voice folded below; no dollars outside the voice block",
+  /<div id="cc-cost-widget">[\s\S]*<details class="cc-vu-box" id="cc-vu-box">/.test(html) && /planBlock\(P\.usage, \{ refresh: true \}\) \+ tokenSection\(P\.usage, false\)/.test(panels) && !/money\(|\$"|usd/i.test(panels.slice(panels.indexOf("/* ======================================================== usage */"), panels.indexOf("/* ---- the voice's own spend"))));
+check("the Usage sheet reads /mint-ai/api/usage, refreshes on open and every minute", /api\("usage"\)/.test(panels) && /attributeFilter: \["hidden"\]/.test(panels) && /setInterval\(function \(\) \{ if \(!document\.hidden && S\.online\) loadCost\(\); \}, 60000\)/.test(panels));
+
 console.log(`\n${passes} passed, ${failures} failed`);
 process.exit(failures ? 1 : 0);

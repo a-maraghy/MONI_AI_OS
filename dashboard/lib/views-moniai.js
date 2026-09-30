@@ -90,6 +90,7 @@ Object.assign(SPRITE, {
   cpu: '<rect x="6" y="6" width="12" height="12" rx="2"/><rect x="9.5" y="9.5" width="5" height="5"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/>',
   bot: '<rect x="5" y="8" width="14" height="11" rx="3"/><path d="M12 4v4M9 13h.01M15 13h.01"/>',
   user: '<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-8 8-8s8 3.6 8 8"/>',
+  gauge: '<path d="M4.2 17.5a9 9 0 1 1 15.6 0"/><path d="M12 13.5l4-5"/><circle cx="12" cy="14" r="1.6"/>',
   spark: '<path d="M12 2.5c.6 4.6 2.9 6.9 9.5 9.5-6.6 2.6-8.9 4.9-9.5 9.5-.6-4.6-2.9-6.9-9.5-9.5 6.6-2.6 8.9-4.9 9.5-9.5Z"/>',
 });
 
@@ -307,10 +308,14 @@ function page(o) {
   )}
   ${pane(
     "cost",
-    "Cost & voice usage",
-    "estimates · Cairo day",
-    `<button type="button" class="cc-btn sm" data-open="cost">Details and budget</button>`,
-    `<div id="cc-cost-widget"><div class="cc-empty-s">—</div></div>${voice.configured ? `<div class="cc-vu" id="cc-voice-usage" aria-live="polite"><div class="cc-empty-s">Voice usage —</div></div>` : ""}`
+    "Usage",
+    "Claude plan limits · tokens · voice",
+    `<button type="button" class="cc-btn sm" data-open="cost">Details</button>`,
+    `<div id="cc-cost-widget"><div class="cc-empty-s">—</div></div>${
+      voice.configured
+        ? `<details class="cc-vu-box" id="cc-vu-box"><summary>${ic("coin")}<span>Voice · OpenAI</span><small class="cc-muted">billed separately</small><b id="cc-vu-sum"></b></summary><div class="cc-vu" id="cc-voice-usage" aria-live="polite"><div class="cc-empty-s">Voice usage —</div></div></details>`
+        : ""
+    }`
   )}
   ${pane(
     "machine",

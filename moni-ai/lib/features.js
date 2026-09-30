@@ -412,8 +412,13 @@ function createFeatures(deps) {
     projectsDir: deps.projectsDir,
     dayOf,
     days: 15,
-    exclude: (sid) => (deps.selfSessionIds ? deps.selfSessionIds().has(sid) : sid === deps.selfSessionId()),
+    // MINT AI's own transcripts are scanned too, for their token counts. Their
+    // dollars are not added from here: MINT AI's cost comes from its ledger, so
+    // every money query below leaves its session ids out (isSelf).
   });
+  function selfIdSet() {
+    return deps.selfSessionIds ? deps.selfSessionIds() : new Set([deps.selfSessionId()].filter(Boolean));
+  }
 
   function backfillDeltas() {
     const rows = db.prepare("SELECT id, cost_usd, proc_start FROM turns WHERE cost_usd IS NOT NULL ORDER BY id").all();
@@ -479,12 +484,17 @@ function createFeatures(deps) {
     const ds = days(14);
     const today = ds[ds.length - 1];
     const mine = moniAiByDay(ds[0]);
-    const others = new Map(db.prepare("SELECT day, SUM(usd) AS usd FROM cost_daily WHERE day >= ? GROUP BY day").all(ds[0]).map((r) => [r.day, r.usd]));
+    const self = selfIdSet();
+    const others = new Map();
+    for (const r of db.prepare("SELECT session_id, day, SUM(usd) AS usd FROM cost_daily WHERE day >= ? GROUP BY session_id, day").all(ds[0])) {
+      if (!self.has(r.session_id)) others.set(r.day, (others.get(r.day) || 0) + r.usd);
+    }
     const round = (x) => Math.round((x || 0) * 100) / 100;
     const daysOut = ds.map((day) => ({ day, moni_ai_usd: round(mine.get(day)), others_usd_est: round(others.get(day)) }));
     const week = ds.slice(-7);
     const bySess = new Map();
     for (const r of db.prepare("SELECT session_id, day, SUM(usd) AS usd, SUM(input + cache_write + cache_read) AS tin, SUM(output) AS tout FROM cost_daily WHERE day >= ? GROUP BY session_id, day").all(week[0])) {
+      if (self.has(r.session_id)) continue;
       const s = bySess.get(r.session_id) || { session_id: r.session_id, week: week.map(() => 0), today_usd: 0, today_in: 0, today_out: 0, estimated: true };
       const i = week.indexOf(r.day);
       if (i !== -1) s.week[i] = round(r.usd);
@@ -518,10 +528,32 @@ function createFeatures(deps) {
     };
   }
 
+  /**
+   * The Usage sheet: Claude plan usage as /usage shows it (from the CLI, see
+   * lib/usage.js) and this box's own token counts from the transcripts.
+   */
+  function tokensReport() {
+    const ds = days(14);
+    const rows = db.prepare("SELECT session_id, day, SUM(input) AS input, SUM(output) AS output, SUM(cache_read) AS cache_read, SUM(cache_write) AS cache_write FROM cost_daily WHERE day >= ? GROUP BY session_id, day").all(ds[0]);
+    const selfName = cfg.name && !names.OLD_NAMES.includes(cfg.name) ? cfg.name : names.DISPLAY_NAME;
+    return {
+      ...cost.tokenReport(rows, { days: ds, selfIds: selfIdSet(), selfName, nameOf: sessionName }),
+      tz,
+      scanned_at: scanner.lastScan,
+      note: "Counted on this box from the Claude transcripts (~/.claude/projects): the usage the API reported on each assistant message, sub-agents included in their session. Not plan figures.",
+    };
+  }
+  async function usageReport(p) {
+    const plan = deps.planUsage ? await deps.planUsage({ refresh: !(p && p.cached) }) : { plan: null, stale: true, error: "plan usage is not available" };
+    return { plan, tokens: p && p.plan_only ? null : tokensReport() };
+  }
+
   function costToday() {
     const today = dayOf(Date.now());
     const mine = moniAiByDay(today).get(today) || 0;
-    const others = (db.prepare("SELECT SUM(usd) AS usd FROM cost_daily WHERE day = ?").get(today) || {}).usd || 0;
+    const self = selfIdSet();
+    let others = 0;
+    for (const r of db.prepare("SELECT session_id, SUM(usd) AS usd FROM cost_daily WHERE day = ? GROUP BY session_id").all(today)) if (!self.has(r.session_id)) others += r.usd || 0;
     const b = budget();
     const round = (x) => Math.round(x * 100) / 100;
     return { moni_ai_usd: round(mine), others_usd_est: round(others), total_usd: round(mine + others), budget_usd: b.daily_usd, warn_pct: b.warn_pct };
@@ -530,14 +562,18 @@ function createFeatures(deps) {
   function sessionCost(sid) {
     const week = days(7);
     const today = week[week.length - 1];
-    if (sid === deps.selfSessionId()) {
-      const mine = moniAiByDay(week[0]);
-      return { today_usd: Math.round((mine.get(today) || 0) * 100) / 100, today_in: null, today_out: null, week: week.map((d) => Math.round((mine.get(d) || 0) * 100) / 100), estimated: false };
-    }
-    const rows = db.prepare("SELECT day, SUM(usd) AS usd, SUM(input + cache_write + cache_read) AS tin, SUM(output) AS tout FROM cost_daily WHERE session_id = ? AND day >= ? GROUP BY day").all(sid, week[0]);
+    // Token counts from the transcripts (MINT AI's own are scanned too): the deep view shows these.
+    const self = sid === deps.selfSessionId() || selfIdSet().has(sid);
+    const ids = self ? [...selfIdSet()] : [sid];
+    const rows = db.prepare(`SELECT day, SUM(usd) AS usd, SUM(input + cache_write + cache_read) AS tin, SUM(output) AS tout FROM cost_daily WHERE session_id IN (${ids.map(() => "?").join(",")}) AND day >= ? GROUP BY day`).all(...ids, week[0]);
     const m = new Map(rows.map((r) => [r.day, r]));
     const t = m.get(today) || {};
-    return { today_usd: Math.round((t.usd || 0) * 100) / 100, today_in: t.tin || 0, today_out: t.tout || 0, week: week.map((d) => Math.round(((m.get(d) || {}).usd || 0) * 100) / 100), estimated: true };
+    const tok = { today_in: t.tin || 0, today_out: t.tout || 0, week_tokens: week.map((d) => ((m.get(d) || {}).tin || 0) + ((m.get(d) || {}).tout || 0)) };
+    if (self) {
+      const mine = moniAiByDay(week[0]);
+      return { today_usd: Math.round((mine.get(today) || 0) * 100) / 100, ...tok, week: week.map((d) => Math.round((mine.get(d) || 0) * 100) / 100), estimated: false };
+    }
+    return { today_usd: Math.round((t.usd || 0) * 100) / 100, ...tok, week: week.map((d) => Math.round(((m.get(d) || {}).usd || 0) * 100) / 100), estimated: true };
   }
 
   /* ==================================================== session mirror === */
@@ -714,6 +750,7 @@ function createFeatures(deps) {
       return { rule: s };
     },
     cost: () => costReport(),
+    usage: (p) => usageReport(p),
     "session-mirror": (p) => mirror(p.session_id),
 
     "mission-create": (p, req) => {

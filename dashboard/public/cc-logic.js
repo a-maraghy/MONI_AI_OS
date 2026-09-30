@@ -275,7 +275,7 @@
     { key: "rules", icon: "shield", label: "Rules & watchers" },
     { key: "orders", icon: "repeat", label: "Standing orders" },
     "-",
-    { key: "cost", icon: "coin", label: "Cost & voice usage" },
+    { key: "cost", icon: "gauge", label: "Usage" },
     { key: "machine", icon: "server", label: "Machine" },
   ];
   function sheetKeys() {

@@ -29,7 +29,7 @@
   // The dock's sheets (public/cc-logic.js SHEETS), plus the phone's Everything grid.
   var SHEETS = {
     conv: "Conversation", sessions: "Sessions", missions: "Missions", dec: "Decisions",
-    tl: "Timeline", rules: "Rules & watchers", orders: "Standing orders", cost: "Cost & voice usage",
+    tl: "Timeline", rules: "Rules & watchers", orders: "Standing orders", cost: "Usage",
     machine: "Machine", everything: "Everything",
   };
   // The words people use for each panel (English and Egyptian Arabic), for the tool's description.

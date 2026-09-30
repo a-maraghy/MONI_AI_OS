@@ -268,7 +268,24 @@ Command Center v3, phase 1 (all re-validated in `lib/protocol.js`, writes audite
 | `order-create`, `order-update`, `order-delete`, `order-run`, `order-pause` | name, schedule, target, prompt, delivery, paused | standing orders |
 | `rule-create`, `rule-update`, `rule-delete` | effect, tool, pattern, note | built-ins refused |
 | `approve` | + `rule_pattern, rule_tool` | "Always allow this": saves the rule, then approves |
-| `cost-budget` | `daily_usd` (or null), `warn_pct` | |
+| `cost-budget` | `daily_usd` (or null), `warn_pct` | kept for the API; the panel no longer shows a dollar budget |
+| `usage` | `plan_only?`, `cached?` | read: Claude plan usage exactly as `/usage` shows it, and this box's token counts (below) |
+
+**Plan usage (`usage`, lib/usage.js, 2026-09-30).** The supervisor sends MINT AI's
+running CLI the `get_usage` control request (stream-json, 2.1.283; answered out of
+band in ~0.1 s even mid-turn, it does not touch the turn). The CLI answers from the
+claude.ai usage endpoint with its own login: the same data as its `/usage` dialog.
+No credential is read, held or passed by the supervisor. When MINT AI is not running,
+a throwaway CLI is started for the question (initialize + get_usage, no prompt, no
+model turn, no transcript) with the `MONI_AI_*` variables stripped. Only `/usage`'s
+rows go on, with its labels and order: Current session (five_hour), Current week (all
+models) (seven_day), Current week (Sonnet only) for max/team plans, Current week
+(<model>) per `model_scoped`; a window with no utilization is skipped. Answers are
+reused for 50 s (a probe's for 2 min); a failure keeps the last answer marked stale.
+Verified 2026-09-30 against `claude -p /usage` at the same minute: identical, three rounds.
+Token counts: the cost scanner now reads MINT AI's own transcripts too (money queries
+leave its session ids out, its dollars still come from the ledger), and `usage` sums
+input / output / cache read / cache write per day and per session name.
 
 New events: `mission`, `decision`, `watcher`, `order`, `order_run`, `rule`, `machine`.
 
@@ -413,6 +430,7 @@ node moni-ai/tools/test-rules.cjs             # approval rules + the real gate h
 node moni-ai/tools/test-schedule.cjs          # cron, Cairo DST, missed runs
 node moni-ai/tools/test-watchers.cjs          # thresholds, dedup, cooldown, rate limit
 node moni-ai/tools/test-missions-cost.cjs     # missions store, cost deltas, transcript scan
+node moni-ai/tools/test-usage.cjs             # plan usage (get_usage shaping, cache, probe) and token counts
 sudo node moni-ai/tools/test-features.cjs     # all of phase 1 through a real supervisor
 node moni-ai/tools/test-protocol.cjs          # socket validation, peer-text parsing
 node moni-ai/tools/test-mcp.cjs               # the MCP server's status_snapshot, ui_actions_list, ui_do, session_hire and session_retire tools

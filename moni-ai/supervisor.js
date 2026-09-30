@@ -45,6 +45,7 @@ const { buildSnapshot } = require("./lib/snapshot");
 const turnQueue = require("./lib/turnqueue");
 const names = require("./lib/names");
 const UiActions = require("./lib/ui-actions");
+const planUsageLib = require("./lib/usage");
 
 /* ----------------------------------------------------------------- config --- */
 
@@ -1904,6 +1905,20 @@ function vitals() {
 }
 let vitalsCache = vitals();
 
+/**
+ * Claude plan usage, as Claude Code's /usage shows it (lib/usage.js): asked of
+ * MINT AI's own CLI with the get_usage control request, or of a throwaway CLI
+ * when MINT AI is not running. No credential is read or passed here.
+ */
+const planUsage = planUsageLib.createPlanUsage({
+  live: () => (proc.child && proc.state === "ready" ? sendControl({ subtype: "get_usage", skip_behaviors: true }, 20000) : null),
+  fallback: () => {
+    const env = childEnv();
+    for (const k of Object.keys(env)) if (k.startsWith("MONI_AI_")) delete env[k];
+    return planUsageLib.probe(cfg.cli, { env, cwd: os.tmpdir() });
+  },
+});
+
 const features = createFeatures({
   ledger,
   cfg,
@@ -1919,6 +1934,7 @@ const features = createFeatures({
   currentTurnId: () => (turns.running ? turns.running.id : null),
   projectsDir: PROJECTS_DIR,
   describeTool: (n, i) => describeTool(n, i),
+  planUsage: (o) => planUsage.get(o),
 });
 
 /* ------------------------------------------------------------ public views --- */

@@ -386,6 +386,21 @@ MINT AI's voice, never claiming to be human. **Reset** (or picking *Learn from
 how I speak*) clears the choice and returns to learning. Nothing sets a user's
 value except that form.
 
+**Usage sheet (2026-09-30).** The dock's *Usage* sheet (key `cost`, kept for
+`sheet.open`) leads with the Claude plan limits exactly as Claude Code's `/usage`
+shows them -- Current session, Current week (all models), any per-model week --
+"N% used" (floored), a bar and "Resets <time> (<zone>)", with "as of HH:MM"
+(`GET /mint-ai/api/usage`, supervisor op `usage`: the supervisor asks MINT AI's CLI
+with the `get_usage` control request, so the figures are Claude's own, never
+estimated; no credential passes through the dashboard). Refreshed when the sheet
+opens and every minute; a failed refresh keeps the last figures marked "not
+refreshed: <why>", and with none it says the plan usage is not available. Below:
+tokens counted on this box from the transcripts (today / last 7 days: input,
+output, cache read, cache write, per session, MINT AI first), labelled as Mint
+OS's own count, not plan figures; *Details* adds the 14-day chart and the full
+table. Money appears only in the folded voice block (OpenAI bills it). The
+estimated-dollar view and its daily budget were retired from the panel.
+
 **Cost, on screen -- no cap.** The daily budget was removed (the
 administrator's decision of 2026-09-29): nothing refuses or diverts the desk for
 what it has spent. Instead every OpenAI call the voice makes is priced from the
@@ -396,7 +411,8 @@ pricing page, read 2026-09-29), and written to the panel's `voice_usage` table
 with its voice turn and kind: **small talk**, **snapshot** answers,
 **hand-offs** (the request and, later, its summary), **direct** (the direct
 path, front desk off), and transcription on its own line. The Command Center
-shows it under *Cost today* (`GET /mint-ai/api/voice/usage`): today's and this
+shows it at the foot of the *Usage* sheet, folded under "Voice · OpenAI -- billed
+separately" (`GET /mint-ai/api/voice/usage`): today's and this
 month's voice spend (Africa/Cairo) by kind, transcription, the total, and the
 last turn's cost. Measured on the real API: small talk ~$0.0015 per utterance,
 a snapshot answer ~$0.0022, a hand-off ~$0.0008 plus ~$0.0054 for the summary

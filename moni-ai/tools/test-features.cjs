@@ -370,6 +370,17 @@ const ready = () => until(async () => (await call("status")).data.process.state 
     const expect = Math.round(turnsNow.length * 0.01 * 100) / 100;
     check("today's MINT AI cost is the sum of the deltas", c0.ok && Math.abs(c0.data.today.moni_ai_usd - expect) < 0.011, `${c0.data && c0.data.today.moni_ai_usd} vs ${expect}`);
     check("cost has 14 days", c0.data.days.length === 14);
+    /* ------------------------------------------------ plan usage --- */
+    const u0 = await call("usage");
+    const up = u0.ok && u0.data.plan && u0.data.plan.plan;
+    check("usage: plan figures come from the CLI's get_usage, in /usage's order and labels",
+      up && up.rows.map((r) => r.title).join("|") === "Current session|Current week (all models)|Current week (Fable)" && up.rows[0].utilization === 18 && up.rows[1].utilization === 39.6 && up.rows[1].resets_at === "2026-10-05T13:00:00.411Z",
+      JSON.stringify(u0.data || u0.error));
+    check("usage: the source is MINT AI's own CLI", u0.ok && u0.data.plan.source === "mint-ai" && u0.data.plan.stale === false);
+    check("usage: nothing outside the whitelisted windows is passed on", u0.ok && !JSON.stringify(u0.data).includes("MUST-NOT-LEAK") && !JSON.stringify(u0.data).includes("total_cost_usd"));
+    check("usage: token counts come with it", u0.ok && u0.data.tokens && u0.data.tokens.days.length === 14 && u0.data.tokens.periods.today.totals.total >= 0);
+    const u1 = await call("usage", { plan_only: true });
+    check("usage: plan_only skips the token counts; a second ask within a minute is the cached answer", u1.ok && u1.data.tokens === null && u1.data.plan.fetched_at === u0.data.plan.fetched_at);
     const bud = await call("cost-budget", { daily_usd: 40, warn_pct: 80 }, "amaraghy");
     check("a daily budget can be set", bud.ok && bud.data.budget.daily_usd === 40);
 

@@ -111,6 +111,9 @@ const OPS = {
   "rule-test": { mutating: false, params: { command: text(1, 8000), tool: optEnum(["Bash", "SendMessage"]) } },
   "rule-suggest": { mutating: false, params: { approval_id: int(1, Number.MAX_SAFE_INTEGER) } },
   cost: { mutating: false, params: {} },
+  // Claude plan usage as /usage shows it, plus this box's token counts.
+  // plan_only: skip the token counts; cached: do not ask the CLI, answer from the cache.
+  usage: { mutating: false, params: { plan_only: optBool(), cached: optBool() } },
   // The voice front desk's read-only view: counts, titles and figures, never a
   // command. `turns`: the desk's own earlier requests, to learn their replies.
   snapshot: { mutating: false, params: { turns: optIntList(1, Number.MAX_SAFE_INTEGER, 20) } },
