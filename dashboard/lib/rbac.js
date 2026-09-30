@@ -83,8 +83,11 @@ const PERMISSION_GROUPS = [
       },
       { key: "keys.view", label: "View SSH keys" },
       { key: "keys.manage", label: "Add and remove SSH keys", hint: "This is shell access to the host." },
-      { key: "devices.view", label: "View paired devices" },
-      { key: "devices.manage", label: "Pair and unpair devices" },
+      {
+        key: "keys.pair",
+        label: "Pair a device (one-time code)",
+        hint: "Create the code a laptop uses at /pair to install its own SSH key.",
+      },
     ],
   },
   {
@@ -181,13 +184,24 @@ const IMPLIES = {
   "credentials.edit": ["credentials.view"],
   "voice.manage": ["credentials.view"],
   "keys.manage": ["keys.view"],
-  "devices.manage": ["devices.view"],
+  "keys.pair": ["keys.view"],
   "users.manage": ["users.view", "roles.view"],
   "roles.manage": ["roles.view"],
   "console.full": ["console.use"],
   "claude.memory.write": ["claude.memory.read"],
   "claude.sessions.manage": ["claude.sessions.view"],
   "claude.running.stop": ["claude.running.view"],
+};
+
+/**
+ * Permissions that were renamed: a custom role that stored the old key is
+ * rewritten at startup (lib/db.js). Signed-in devices need no permission any
+ * more (everyone sees their own), and pairing a laptop for SSH moved to SSH
+ * keys, so both old device permissions become keys.pair.
+ */
+const RENAMED = {
+  "devices.view": "keys.pair",
+  "devices.manage": "keys.pair",
 };
 
 /** Expand a permission list to include everything it implies. */
@@ -296,7 +310,6 @@ function actor(role) {
         : can("os.view") ||
           can("credentials.view") ||
           can("keys.view") ||
-          can("devices.view") ||
           can("audit.view") ||
           can("users.view") ||
           can("roles.view") ||
@@ -352,6 +365,7 @@ module.exports = {
   PERMISSION_SET,
   PERMISSION_LABEL,
   SYSTEM_ROLES,
+  RENAMED,
   closure,
   actor,
   landing,

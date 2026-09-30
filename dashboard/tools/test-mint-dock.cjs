@@ -46,7 +46,7 @@ console.log("\nthe role decides where page.open may go (before moving)");
 {
   const pagesOf = (html) => (/data-pages="([^"]*)"/.exec(html.slice(html.indexOf("mint-dock-root"))) || [])[1].split(" ");
   const lim = pagesOf(render(["os.view", "moniai.use"]));
-  check("a limited role: only the pages it can see (and guide, account, the Command Center)", lim.sort().join() === ["os-overview", "guide", "account", "command-center"].sort().join(), lim.join());
+  check("a limited role: only the pages it can see (and guide, account, your devices, the Command Center)", lim.sort().join() === ["os-overview", "manage-devices", "guide", "account", "command-center"].sort().join(), lim.join());
   const full = pagesOf(render("*"));
   check("an administrator: all 21", full.length === 21 && full.every((k) => UA.NAV_PAGES[k]));
 }

@@ -422,153 +422,206 @@ function capRow(label, present, note) {
 
 /* ----------------------------------------------------------------- keys --- */
 
-exports.keys = ({ csrf, user, keys, devices, flash, flashError }) => {
-  const deviceByFp = new Map(devices.map((d) => [d.fingerprint, d]));
+/** "https://host/pair", with the port only when it is not 443. */
+function pairUrl(host, port) {
+  return "https://" + host + (String(port || "443") === "443" ? "" : ":" + port) + "/pair";
+}
 
-  const section = (account, list) =>
-    card(
-      account + " — " + list.length + " key" + (list.length === 1 ? "" : "s"),
-      list.length
-        ? `<table class="rows">
-            <thead><tr><th>Comment</th><th>Type</th><th>Fingerprint</th><th></th></tr></thead>
-            <tbody>${list
-              .map((k) => {
-                const dev = deviceByFp.get(k.fingerprint);
-                return `<tr>
-                  <td>${esc(k.comment || "—")}
-                    ${dev ? `<span class="tag">paired ${esc(dev.paired_at.slice(0, 10))}</span>` : ""}</td>
-                  <td class="mono small">${esc(k.type)}</td>
-                  <td class="mono small">${esc(k.fingerprint)}</td>
-                  <td class="right">
-                    <form method="post" action="/keys/remove" class="inline"
-                          data-confirm="Revoke this key from ${esc(account)}? Any device using it loses access immediately.">
+exports.keys = ({ csrf, user, keys, devices, canManage, canPair, codes, newCode, publicHost, publicPort, flash, flashError }) => {
+  const deviceByFp = new Map((devices || []).map((d) => [d.fingerprint, d]));
+  const rows = [];
+  for (const [account, list] of Object.entries(keys || {})) for (const k of list || []) rows.push({ account, k });
+
+  const keyTable = rows.length
+    ? `<table class="rows stack aligned">
+        <thead><tr><th>Label</th><th>User</th><th>Fingerprint</th><th></th></tr></thead>
+        <tbody>${rows
+          .map(({ account, k }) => {
+            const dev = deviceByFp.get(k.fingerprint);
+            return `<tr>
+              <td class="first" data-h="Label"><div class="l1"><b class="ink">${esc(k.comment || "(no label)")}</b>${
+                dev ? `<span class="pill nodot">paired</span>` : ""
+              }</div><div class="l2">${esc(k.type)}${dev ? ` · paired ${esc(stamp(dev.paired_at).slice(0, 16))}${dev.paired_ip ? " from " + esc(dev.paired_ip) : ""}` : ""}</div></td>
+              <td data-h="User"><div class="l1 mono small">${esc(account)}</div></td>
+              <td data-h="Fingerprint"><div class="l1 mono small">${esc(k.fingerprint)}</div></td>
+              <td class="right nolabel"><div class="l1">${
+                canManage
+                  ? `<form method="post" action="/keys/remove" class="inline"
+                      data-confirm-dlg="Remove the key “${esc(k.comment || k.fingerprint)}”?"
+                      data-confirm-body="That machine can no longer sign in to ${esc(account)} over SSH. It takes effect at once."
+                      data-confirm-yes="Remove">
                       <input type="hidden" name="_csrf" value="${esc(csrf)}">
                       <input type="hidden" name="target_user" value="${esc(account)}">
                       <input type="hidden" name="fingerprint" value="${esc(k.fingerprint)}">
-                      <button class="btn danger small" type="submit">Revoke</button>
-                    </form>
-                  </td>
-                </tr>`;
-              })
-              .join("")}</tbody></table>`
-        : `<p class="muted">No keys.</p>`,
-      { icon: "keys" }
-    );
+                      <button class="btn danger small" type="submit">${icon("trash", 14)} Remove</button>
+                    </form>`
+                  : ""
+              }</div></td>
+            </tr>`;
+          })
+          .join("")}</tbody></table>`
+    : `<p class="muted">No keys.</p>`;
+
+  const now = Date.now();
+  const active = (codes || []).filter((c) => !c.used_at && new Date(c.expires_at).getTime() > now);
+  const pairCard = canPair
+    ? card(
+        "Pair a device",
+        `<p class="muted">A one-time code lets a laptop install its own SSH key at <span class="mono">/pair</span> — no private key is copied anywhere. Codes work once and expire after 15 minutes.</p>
+        ${
+          newCode
+            ? `<div class="alert info">${icon("keys")}<div>Code <b class="mono pair-code">${esc(newCode)}</b> — enter it at <span class="mono">${esc(
+                pairUrl(publicHost, publicPort)
+              )}</span> on the laptop, with its public key.</div></div>`
+            : ""
+        }
+        ${
+          active.length
+            ? `<table class="rows stack aligned">
+                <thead><tr><th>Code</th><th>Label</th><th>Account</th><th>Expires</th><th></th></tr></thead>
+                <tbody>${active
+                  .map(
+                    (c) => `<tr>
+                      <td class="first" data-h="Code"><div class="l1 mono"><b class="ink">${esc(c.code)}</b></div></td>
+                      <td data-h="Label"><div class="l1">${esc(c.label)}</div></td>
+                      <td data-h="Account"><div class="l1 mono small">${esc(c.target_user)}</div></td>
+                      <td data-h="Expires"><div class="l1 mono small">${esc(stamp(c.expires_at).slice(0, 16))}</div></td>
+                      <td class="right nolabel"><div class="l1"><form method="post" action="/keys/pair/revoke" class="inline"
+                          data-confirm-dlg="Revoke the code ${esc(c.code)}?" data-confirm-body="The laptop it was meant for can no longer use it." data-confirm-yes="Revoke">
+                        <input type="hidden" name="_csrf" value="${esc(csrf)}">
+                        <input type="hidden" name="code" value="${esc(c.code)}">
+                        <button class="btn danger small" type="submit">Revoke code</button></form></div></td>
+                    </tr>`
+                  )
+                  .join("")}</tbody></table>`
+            : ""
+        }
+        <form method="post" action="/keys/pair" class="pair-form">
+          <input type="hidden" name="_csrf" value="${esc(csrf)}">
+          <label>Device label<input name="label" placeholder="e.g. new-laptop" maxlength="64" required></label>
+          <label>Grant access to
+            <select name="target_user">
+              <option value="ubuntu">ubuntu (normal use — recommended)</option>
+              <option value="root">root (full privilege)</option>
+            </select></label>
+          <div class="btn-row"><button class="btn primary" type="submit">${icon("plus", 16)} New pairing code</button></div>
+        </form>`,
+        { icon: "devices", id: "pair" }
+      )
+    : "";
+
+  const addCard = canManage
+    ? card(
+        "Add a key by hand",
+        `<p class="muted small">For a machine that cannot reach this panel${canPair ? `; otherwise prefer <a href="#pair">Pair a device</a>` : ""}.</p>
+        <form method="post" action="/keys/add">
+          <input type="hidden" name="_csrf" value="${esc(csrf)}">
+          <label>Account
+            <select name="target_user">
+              <option value="ubuntu">ubuntu (normal use)</option>
+              <option value="root">root (full privilege)</option>
+            </select></label>
+          <label>Label<input name="label" placeholder="e.g. work-laptop" maxlength="64"></label>
+          <label>Public key <span class="hint">contents of a .pub file</span>
+            <textarea name="pubkey" rows="3" placeholder="ssh-ed25519 AAAAC3... user@host" required></textarea></label>
+          <button class="btn primary" type="submit">Authorise key</button>
+        </form>`,
+        { icon: "plus" }
+      )
+    : "";
 
   return shell(
     "SSH keys",
     `${flashes({ msg: flash, err: flashError })}
-    ${Object.entries(keys).map(([acct, list]) => section(acct, list)).join("")}
-    ${card(
-      "Add a key manually",
-      `<p class="muted small">For pairing a device that can't reach this panel, prefer
-        <a href="/devices">Devices → pairing code</a>.</p>
-      <form method="post" action="/keys/add">
-        <input type="hidden" name="_csrf" value="${esc(csrf)}">
-        <label>Account
-          <select name="target_user">
-            <option value="ubuntu">ubuntu (normal use)</option>
-            <option value="root">root (full privilege)</option>
-          </select></label>
-        <label>Label<input name="label" placeholder="e.g. work-laptop" maxlength="64"></label>
-        <label>Public key <span class="hint">contents of a .pub file</span>
-          <textarea name="pubkey" rows="3" placeholder="ssh-ed25519 AAAAC3... user@host" required></textarea></label>
-        <button class="btn primary" type="submit">Authorise key</button>
-      </form>`,
-      { icon: "plus" }
-    )}`,
+    ${card("Keys", keyTable, { icon: "keys" })}
+    ${pairCard}
+    ${addCard}`,
     {
       user,
       csrf,
       active: "keys",
       pattern: "b",
       heading: "SSH keys",
-      subtitle: "Keys authorised to log in. Revoking one takes effect immediately.",
+      subtitle: "Keys that may sign in to this machine over SSH. Removing one takes effect at once.",
     }
   );
 };
 
 /* -------------------------------------------------------------- devices --- */
 
-exports.devices = ({ csrf, user, codes, devices, publicHost, publicPort, flash }) => {
-  const active = codes.filter((c) => !c.used_at && new Date(c.expires_at) > new Date());
+/** "now", "38 min ago", "2 h ago", "yesterday", "3 days ago". */
+function seenLabel(iso) {
+  const t = new Date(iso || 0).getTime();
+  if (!Number.isFinite(t) || !t) return "—";
+  const sec = Math.max(0, Math.floor((Date.now() - t) / 1000));
+  if (sec < 90) return "now";
+  if (sec < 3600) return Math.round(sec / 60) + " min ago";
+  if (sec < 86400) return Math.floor(sec / 3600) + " h ago";
+  if (sec < 2 * 86400) return "yesterday";
+  return Math.floor(sec / 86400) + " days ago";
+}
+
+exports.devices = ({ csrf, user, devices, canPair, flash, flashError }) => {
+  const list = devices || [];
+  const others = list.filter((d) => !d.current).length;
+  const signed = (d) =>
+    d.signedInAt ? esc(stamp(d.signedInAt).slice(0, 16)) : d.signedInBefore ? "before " + esc(stamp(d.signedInBefore).slice(0, 16)) : "—";
+
+  const outAll = `<form method="post" action="/devices/signout-others" class="inline"
+      data-confirm-dlg="Sign out ${others} other device${others === 1 ? "" : "s"}?"
+      data-confirm-body="Every session but this one ends at once, including a live call on it. This device stays signed in."
+      data-confirm-yes="Sign out">
+      <input type="hidden" name="_csrf" value="${esc(csrf)}">
+      <button class="btn danger" type="submit"${others ? "" : " disabled"}>${icon("power")} Sign out all other devices</button>
+    </form>`;
+
+  const table = list.length
+    ? `<table class="rows stack aligned devices-table">
+        <thead><tr><th>Device</th><th>IP · where</th><th>Signed in</th><th>Last seen</th><th></th></tr></thead>
+        <tbody>${list
+          .map(
+            (d) => `<tr${d.current ? ' class="me"' : ""}>
+              <td class="first" data-h="Device"><div class="dev-name"><span class="dev-ico${d.current ? " me" : ""}">${icon(d.mobile ? "devices" : "monitor", 18)}</span><div>
+                <div class="l1"><b class="ink">${esc(d.label)}</b>${d.current ? `<span class="pill ok">this device</span>` : ""}</div>
+                <div class="l2">session ${esc(d.id.slice(0, 6))}…${d.known ? "" : " · signed in before devices were recorded"}</div></div></div></td>
+              <td data-h="IP · where"><div><div class="l1 mono small">${esc(d.ip || "—")}</div><div class="l2">${d.place ? esc(d.place) : "place unknown"}</div></div></td>
+              <td data-h="Signed in"><div class="l1 mono small">${signed(d)}</div></td>
+              <td data-h="Last seen"><div class="l1 small">${d.current ? "now" : esc(seenLabel(d.lastSeenAt))}</div></td>
+              <td class="right nolabel"><div class="l1">${
+                d.current
+                  ? `<span class="muted small">you are here</span>`
+                  : `<form method="post" action="/devices/${esc(d.id)}/signout" class="inline"
+                      data-confirm-dlg="Sign out ${esc(d.label)}?"
+                      data-confirm-body="It is signed out at once; a live call on it ends. Signing in again needs the password and the authenticator."
+                      data-confirm-yes="Sign out">
+                      <input type="hidden" name="_csrf" value="${esc(csrf)}">
+                      <button class="btn danger small" type="submit">${icon("power", 14)} Sign out</button>
+                    </form>`
+              }</div></td>
+            </tr>`
+          )
+          .join("")}</tbody></table>`
+    : `<p class="muted">No signed-in browsers were found.</p>`;
+
   return shell(
-    "Devices",
-    `${
-      flash
-        ? `<div class="alert good">${icon("check")}<div><strong>Pairing code:</strong>
-             <code class="secret">${esc(flash)}</code><br>
-             Valid for 15 minutes, single use. On the new device open
-             <code>https://${esc(publicHost)}:${esc(publicPort)}/pair</code></div></div>`
-        : ""
-    }
-
+    "Signed-in devices",
+    `${flashes({ msg: flash, err: flashError })}
+    ${card("Your devices", table, { icon: "devices" })}
     ${card(
-      "Generate a pairing code",
-      `<form method="post" action="/devices/code">
-        <input type="hidden" name="_csrf" value="${esc(csrf)}">
-        <label>Device label<input name="label" placeholder="e.g. new-laptop" maxlength="64" required></label>
-        <label>Grant access to
-          <select name="target_user">
-            <option value="ubuntu">ubuntu (normal use — recommended)</option>
-            <option value="root">root (full privilege)</option>
-          </select></label>
-        <button class="btn primary" type="submit">Generate code</button>
-      </form>`,
-      { icon: "plus" }
-    )}
-
-    ${card(
-      "Active codes",
-      active.length
-        ? `<table class="rows">
-            <thead><tr><th>Code</th><th>Label</th><th>Account</th><th>Expires</th><th></th></tr></thead>
-            <tbody>${active
-              .map(
-                (c) => `<tr>
-                  <td class="mono">${esc(c.code)}</td>
-                  <td>${esc(c.label)}</td>
-                  <td>${esc(c.target_user)}</td>
-                  <td class="mono small">${esc(stamp(c.expires_at))}</td>
-                  <td class="right"><form method="post" action="/devices/code/revoke" class="inline">
-                    <input type="hidden" name="_csrf" value="${esc(csrf)}">
-                    <input type="hidden" name="code" value="${esc(c.code)}">
-                    <button class="btn danger small">Cancel</button></form></td>
-                </tr>`
-              )
-              .join("")}</tbody></table>`
-        : `<p class="muted">No active pairing codes.</p>`,
-      { icon: "clock" }
-    )}
-
-    ${card(
-      "Paired devices",
-      devices.length
-        ? `<table class="rows">
-            <thead><tr><th>Label</th><th>Account</th><th>Paired</th><th>From IP</th><th>Fingerprint</th></tr></thead>
-            <tbody>${devices
-              .map(
-                (d) => `<tr>
-                  <td>${esc(d.label)}</td>
-                  <td>${esc(d.target_user)}</td>
-                  <td class="mono small">${esc(stamp(d.paired_at))}</td>
-                  <td class="mono small">${esc(d.paired_ip || "—")}</td>
-                  <td class="mono small">${esc(d.fingerprint)}</td>
-                </tr>`
-              )
-              .join("")}</tbody></table>
-           <p class="muted small">Revoke a device from the <a href="/keys">SSH keys</a> page.</p>`
-        : `<p class="muted">No devices paired through this panel yet.</p>`,
-      { icon: "devices" }
+      "About",
+      `<p class="muted flush">A session ends by itself after 8 hours without use. Places are not looked up: there is no location database on this machine, and an IP is never sent elsewhere. Pairing a laptop for SSH moved to ${
+        canPair ? `<a href="/keys#pair">SSH keys › Pair a device</a>` : "SSH keys › Pair a device"
+      } — it installs a key, it is not a sign-in.</p>`,
+      { icon: "info" }
     )}`,
     {
       user,
       csrf,
       active: "devices",
       pattern: "b",
-      heading: "Devices",
-      subtitle:
-        "Pair a new machine without copying private keys around. Generate a code here, then enter it on the new device with its own public key.",
+      heading: "Signed-in devices",
+      subtitle: "Every browser signed in to Mint OS as you. Signing a device out ends its session at once — including a live call on it.",
+      actions: outAll,
     }
   );
 };

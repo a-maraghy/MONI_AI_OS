@@ -254,8 +254,32 @@ function migrateLegacyAdmin() {
   );
 }
 
+/**
+ * Rewrite renamed permissions (rbac.RENAMED) in stored roles. Idempotent: a
+ * role holding none of the old keys is left alone, so this is a no-op on every
+ * start after the first. Administrator stores "*" and never needs it.
+ */
+function migrateRenamedPermissions() {
+  const rows = db.prepare("SELECT id, permissions FROM roles").all();
+  const upd = db.prepare("UPDATE roles SET permissions = ? WHERE id = ?");
+  for (const r of rows) {
+    let list;
+    try {
+      list = JSON.parse(r.permissions);
+    } catch (_) {
+      continue;
+    }
+    if (!Array.isArray(list) || !list.some((p) => Object.prototype.hasOwnProperty.call(rbac.RENAMED, p))) continue;
+    // Only renames (plus what keys.pair implies); nothing unknown is dropped.
+    const next = new Set(list.map((p) => rbac.RENAMED[p] || p));
+    if (next.has("keys.pair")) next.add("keys.view");
+    upd.run(JSON.stringify([...next].sort()), r.id);
+  }
+}
+
 seedRoles();
 migrateLegacyAdmin();
+migrateRenamedPermissions();
 
 /* --------------------------------------------------------------- users --- */
 

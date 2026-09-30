@@ -38,7 +38,9 @@ process.env.MONI_LOG_DIR = LOGS;
 const FAKE_KEY = "sk-proj-SCRATCHFAKEKEY-not-real-0000000000000000";
 
 /**
- * Copy the dashboard and cut it off from the helper. With fakeVoiceOptions,
+ * Copy the dashboard and cut it off from the helper. With fakeKeys
+ * ({ ubuntu: [...], root: [...] }) the SSH key list answers with those, so
+ * /keys renders. With fakeVoiceOptions,
  * saving the voice settings writes a file in the scratch data dir (and the key
  * read answers from it) -- never the helper -- so a test can change the voice.
  */
@@ -63,6 +65,12 @@ function makeCopy(o) {
     const file = JSON.stringify(path.join(DATA, "fake-voice-options.json"));
     s = s.replace(setter[0], `voiceOptionsSet: async (model, voice, transcribeModel) => { require("fs").writeFileSync(${file}, JSON.stringify({ model, voice, transcribe_model: transcribeModel })); return { ok: true }; },\n`);
     s = s.replace(key, `voiceKeyRead: async () => { let o = {}; try { o = JSON.parse(require("fs").readFileSync(${file}, "utf8")); } catch (_) { o = {}; } return { key: "${FAKE_KEY}", model: o.model || "gpt-realtime-mini", voice: o.voice || "marin", transcribe_model: o.transcribe_model || "gpt-4o-mini-transcribe" }; },`);
+  }
+  if (o.fakeKeys) {
+    // /keys lists keys through the helper; a test that renders it gets these.
+    const list = 'listAllKeys: () => callHelper("list-all-keys"),';
+    if (!s.includes(list)) throw new Error("scratch: priv.js listAllKeys not found");
+    s = s.replace(list, "listAllKeys: async () => (" + JSON.stringify(o.fakeKeys) + "),");
   }
   s = s
     .replace(status, 'voiceStatus: async () => ({ configured: true, last4: "fake", length: 52, path: "(scratch)", mode: "0o600", modified: null, model: "gpt-realtime-mini", voice: "marin", transcribe_model: "gpt-4o-mini-transcribe" }),')

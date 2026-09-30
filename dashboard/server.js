@@ -20,6 +20,7 @@ const fs = require("fs");
 const path = require("path");
 
 const db = require("./lib/db");
+const deviceSessions = require("./lib/sessions");
 const priv = require("./lib/priv");
 const catalog = require("./lib/catalog");
 const telegram = require("./lib/telegram");
@@ -243,9 +244,17 @@ app.get("/favicon.ico", (req, res) => {
 
 // Kept as a value: the live conversation's WebSocket upgrade reads the same
 // session (see liveUpgrade), and an upgrade never passes through app.use.
+// The store and the secret are also handed to lib/sessions.js, which lists a
+// user's signed-in browsers (Devices) and signs them out through this store.
+const SESSION_MAX_AGE = 1000 * 60 * 60 * 8;
+const sessionStore = new SQLiteStore({ db: "sessions.db", dir: DATA_DIR });
 const sessionMw = session({
-    store: new SQLiteStore({ db: "sessions.db", dir: DATA_DIR }),
-    secret: loadOrCreateSessionSecret(),
+    store: sessionStore,
+    secret: (() => {
+      const secret = loadOrCreateSessionSecret();
+      deviceSessions.configure({ dataDir: DATA_DIR, secret, maxAge: SESSION_MAX_AGE, store: sessionStore });
+      return secret;
+    })(),
     name: "moni.sid",
     resave: false,
     saveUninitialized: false,
@@ -254,7 +263,7 @@ const sessionMw = session({
       httpOnly: true,
       secure: true, // we are always behind TLS
       sameSite: "strict",
-      maxAge: 1000 * 60 * 60 * 8,
+      maxAge: SESSION_MAX_AGE,
     },
   });
 app.use(sessionMw);
@@ -323,6 +332,10 @@ function loadActor(req, res, next) {
     }
     req.me = me;
     req.perm = rbac.actor(me.role);
+    // Devices' "last seen". At most once a minute, so a busy page does not
+    // rewrite its session row on every poll.
+    const now = Date.now();
+    if (!(req.session.seenAt > now - 60 * 1000)) req.session.seenAt = now;
   }
   next();
 }
@@ -331,7 +344,7 @@ app.use(loadActor);
 // The frame's badges and health chip, from a shared 30-second cache (see
 // lib/chrome.js). A change made through the panel forgets the cache, so the
 // page it redirects to counts what is true now rather than half a minute ago.
-chrome.configure({ priv, db, catalog });
+chrome.configure({ priv, db, catalog, devicesFor: (userId) => deviceSessions.countFor(userId) });
 
 // The Machine core's live feed: one poller for every viewer, reading the
 // helper's pulse-feed, this panel's own sign-ins and audit log, and MINT AI's
@@ -608,6 +621,11 @@ app.post("/login", loginLimiter, requireCsrf, async (req, res) => {
     req.session.userId = account.id;
     req.session.username = account.username;
     req.session.csrf = csrf;
+    // What Devices shows for this browser. The user agent is capped: it is
+    // the client's own text, stored until the session ends.
+    req.session.device = { ua: String(req.get("user-agent") || "").slice(0, 300), ip, at: Date.now() };
+    req.session.seenAt = Date.now();
+    deviceSessions.forget(account.id);
     db.logLogin(ip, account.username, "success", null);
     const actor = rbac.actor(account.role);
     res.redirect(rbac.landing(actor));
@@ -736,7 +754,7 @@ app.get("/os", requireAuth, requirePerm("os.view"), async (req, res) => {
       audit: data.audit || null,
       users: req.perm.can("users.view") ? db.listUsers() : null,
       roles: req.perm.can("roles.view") ? db.listRoles() : null,
-      devices: req.perm.can("devices.view") ? db.listDevices() : null,
+      devices: req.perm.can("keys.pair") ? db.listDevices() : null,
     })
   );
 });
@@ -804,6 +822,13 @@ app.get("/keys", requireAuth, requirePerm("keys.view"), async (req, res) => {
         user: ctx(req),
         keys,
         devices: db.listDevices(),
+        canManage: req.perm.can("keys.manage"),
+        canPair: req.perm.can("keys.pair"),
+        codes: req.perm.can("keys.pair") ? db.listPairingCodes() : [],
+        // A code just created: shown once, on the page the create redirected to.
+        newCode: req.perm.can("keys.pair") && /^[0-9A-Z]{4}-[0-9A-Z]{4}-[0-9A-Z]{4}$/.test(String(req.query.code || "")) ? String(req.query.code) : null,
+        publicHost: PUBLIC_HOST,
+        publicPort: PUBLIC_PORT,
         flash: req.query.msg || null,
         flashError: req.query.err || null,
       })
@@ -859,23 +884,75 @@ function sanitiseLabel(label) {
   return clean.slice(0, 64) || "added-via-dashboard";
 }
 
-/* -------------------------------------------------------------- pairing --- */
+/* -------------------------------------------------------------- devices --- */
 
-app.get("/devices", requireAuth, requirePerm("devices.view"), (req, res) => {
+/**
+ * Devices: the browsers signed in to Mint OS as you (lib/sessions.js). Every
+ * signed-in user sees and may sign out their own; no permission is needed.
+ * Signing a browser out destroys its session in the store -- its next request
+ * lands on the sign-in page -- and ends any live voice call bound to it.
+ */
+function endCallsFor(sids, why) {
+  // Added by the live-voice work; this branch must run without it.
+  if (typeof endLiveCallsForSession !== "function") return;
+  for (const sid of sids) {
+    try {
+      endLiveCallsForSession(sid, why);
+    } catch (_) {
+      /* the session is gone either way */
+    }
+  }
+}
+
+app.get("/devices", requireAuth, (req, res) => {
   res.send(
     views.devices({
       csrf: res.locals.csrf,
       user: ctx(req),
-      codes: db.listPairingCodes(),
-      devices: db.listDevices(),
-      publicHost: PUBLIC_HOST,
-      publicPort: PUBLIC_PORT,
+      devices: deviceSessions.listFor(req.me.id, req.sessionID),
+      canPair: req.perm.can("keys.pair"),
       flash: req.query.msg || null,
+      flashError: req.query.err || null,
     })
   );
 });
 
-app.post("/devices/code", requireAuth, requirePerm("devices.manage"), requireCsrf, (req, res) => {
+app.post("/devices/signout-others", requireAuth, requireCsrf, async (req, res) => {
+  const sids = deviceSessions.sidsFor(req.me.id, req.sessionID);
+  const n = await deviceSessions.destroyMany(sids);
+  endCallsFor(sids, "signed out");
+  deviceSessions.forget(req.me.id);
+  db.logLogin(req.ip, req.me.username, "devices", `signed out ${n} other device${n === 1 ? "" : "s"}`);
+  res.redirect("/devices?msg=" + encodeURIComponent(n ? `Signed out ${n} other device${n === 1 ? "" : "s"}.` : "No other device was signed in."));
+});
+
+app.post("/devices/:id/signout", requireAuth, requireCsrf, async (req, res) => {
+  const sid = deviceSessions.resolve(req.me.id, String(req.params.id));
+  if (!sid) return res.redirect("/devices?err=" + encodeURIComponent("That device is no longer signed in."));
+  if (sid === req.sessionID)
+    return res.redirect("/devices?err=" + encodeURIComponent("This is the device you are using. Sign out from the avatar menu instead."));
+  const row = deviceSessions.listFor(req.me.id, req.sessionID).find((d) => d.id === req.params.id);
+  try {
+    await deviceSessions.destroy(sid);
+  } catch (e) {
+    return res.redirect("/devices?err=" + encodeURIComponent("Could not sign that device out: " + e.message));
+  }
+  endCallsFor([sid], "signed out");
+  deviceSessions.forget(req.me.id);
+  const what = row ? row.label + (row.ip ? " (" + row.ip + ")" : "") : "a device";
+  db.logLogin(req.ip, req.me.username, "devices", "signed out " + what);
+  res.redirect("/devices?msg=" + encodeURIComponent("Signed out " + (row ? row.label : "that device") + "."));
+});
+
+/* -------------------------------------------------------------- pairing --- */
+
+/**
+ * Pairing a laptop for SSH lives on SSH keys (card "Pair a device"): a code
+ * installs a key, it is not a sign-in. The POST URLs it had under /devices
+ * answer 307 so a form still open on an old page keeps working (307 keeps the
+ * method and the body, CSRF token included).
+ */
+app.post("/keys/pair", requireAuth, requirePerm("keys.pair"), requireCsrf, (req, res) => {
   // Crockford-ish base32, no vowels, to avoid ambiguity and accidental words.
   const alphabet = "0123456789BCDFGHJKLMNPQRSTVWXZ";
   let code = "";
@@ -887,13 +964,19 @@ app.post("/devices/code", requireAuth, requirePerm("devices.manage"), requireCsr
   const targetUser = req.body.target_user === "root" ? "root" : "ubuntu";
   const expires = new Date(Date.now() + 15 * 60 * 1000).toISOString();
   db.createPairingCode(code, label, targetUser, expires);
-  res.redirect("/devices?msg=" + encodeURIComponent(code));
+  db.logLogin(req.ip, req.me.username, "keys", `created a pairing code for "${label}" (${targetUser})`);
+  res.redirect("/keys?code=" + encodeURIComponent(code) + "#pair");
 });
 
-app.post("/devices/code/revoke", requireAuth, requirePerm("devices.manage"), requireCsrf, (req, res) => {
-  db.deletePairingCode(String(req.body.code || ""));
-  res.redirect("/devices");
+app.post("/keys/pair/revoke", requireAuth, requirePerm("keys.pair"), requireCsrf, (req, res) => {
+  const code = String(req.body.code || "");
+  const gone = db.deletePairingCode(code).changes;
+  if (gone) db.logLogin(req.ip, req.me.username, "keys", "revoked a pairing code");
+  res.redirect("/keys?msg=" + encodeURIComponent(gone ? "Pairing code revoked." : "That code was already gone.") + "#pair");
 });
+
+app.post("/devices/code", (req, res) => res.redirect(307, "/keys/pair"));
+app.post("/devices/code/revoke", (req, res) => res.redirect(307, "/keys/pair/revoke"));
 
 // Deliberately unauthenticated: a brand-new device has no credentials yet.
 // Guarded by a single-use, 15-minute, high-entropy code plus rate limiting.
@@ -4527,6 +4610,26 @@ app.post("/users/:id/delete", requireAuth, requirePerm("users.manage"), requireC
   db.deleteUser(c.target.id);
   db.logLogin(req.ip, req.me.username, "admin", "deleted user " + c.target.username);
   res.redirect("/users?msg=" + encodeURIComponent(c.target.username + " removed."));
+});
+
+/**
+ * Sign every browser of another user out (Users ▸ Manage). Their live voice
+ * calls end with the sessions. Your own go through Devices, which keeps the
+ * one you are using -- so your own id is refused here. `back=detail` returns
+ * to the full-page /users/:id; anything else to /users.
+ */
+app.post("/users/:id/signout-all", requireAuth, requirePerm("users.manage"), requireCsrf, async (req, res) => {
+  const c = userContext(req);
+  if (!c) return res.status(404).send(views.error("Not found", "No such user."));
+  const back = field(req.body, "back") === "detail" ? "/users/" + c.target.id : "/users";
+  if (c.isSelf)
+    return res.redirect(back + "?err=" + encodeURIComponent("Use Devices to sign out your own browsers; it keeps the one you are using."));
+  const sids = deviceSessions.sidsFor(c.target.id, null);
+  const n = await deviceSessions.destroyMany(sids);
+  endCallsFor(sids, "signed out by an administrator");
+  deviceSessions.forget(c.target.id);
+  db.logLogin(req.ip, req.me.username, "admin", `signed out ${n} browser${n === 1 ? "" : "s"} of ${c.target.username}`);
+  res.redirect(back + "?msg=" + encodeURIComponent(n ? `Signed ${c.target.username} out of ${n} browser${n === 1 ? "" : "s"}.` : `${c.target.username} was not signed in anywhere.`));
 });
 
 /* ---------------------------------------------------------------- roles --- */
