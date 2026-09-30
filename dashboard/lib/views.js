@@ -317,7 +317,7 @@ exports.osDashboard = ({
             <div class="sec-cell"><b data-stat="banned">${sshd.banned}</b><span>IPs banned (SSH)</span></div>
             <div class="sec-cell"><b>${panelJail.banned}</b><span>panel bans</span></div>
             <div class="sec-cell"><b data-stat="failed">${sshd.total_failed}</b><span>failed SSH auths</span></div>
-            <div class="sec-cell${failedLogins ? " warn" : ""}"><b>${failedLogins} / ${logins.length}</b><span>failed panel sign-ins</span></div>
+            <div class="sec-cell${failedLogins ? " warn" : ""}"><b>${failedLogins} / ${logins.length}</b><span>failed panel sign‑ins</span></div>
           </div>
           <div class="muted small">fail2ban jails <span class="mono">sshd</span>, <span class="mono">moni-dashboard</span></div>
         </section>
@@ -329,10 +329,10 @@ exports.osDashboard = ({
                   <tr><td>Users</td><td>${users.length}
                     ${disabledUsers ? `<span class="muted small">${disabledUsers} disabled</span>` : ""}</td></tr>
                   <tr><td>Awaiting enrolment</td><td>${
-                    pendingEnrol ? `<span class="pill warn">${pendingEnrol}</span>` : `<span class="pill ok">none</span>`
+                    pendingEnrol ? `<span class="pill warn">${pendingEnrol}</span>` : "0"
                   }</td></tr>
                   <tr><td>Roles</td><td>${roles ? roles.length : "—"}</td></tr>
-                  <tr><td>Paired devices</td><td>${devices ? devices.length : "—"}</td></tr>
+                  <tr><td>Paired laptops (SSH)</td><td>${devices ? devices.length : "—"}</td></tr>
                 </table>
                 ${
                   roles
@@ -402,7 +402,6 @@ exports.osDashboard = ({
       assets: ["mycelium-graph.js", "mycelium.js"],
       heading: "Machine core",
       subtitle: "The machine everything runs on — host health, capabilities, and who can reach it.",
-      statusChip: esc(stats.hostname) + " · up " + esc(duration(stats.uptimeSec)),
       actions: `${can(user, "services.view") ? `<a class="btn" href="/services">${icon("services")} Services</a>` : ""}${
         can(user, "firewall.view") ? `<a class="btn" href="/firewall">${icon("ban")} Firewall</a>` : ""
       }`,

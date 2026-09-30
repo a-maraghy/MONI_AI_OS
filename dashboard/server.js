@@ -4435,7 +4435,7 @@ app.get("/users", requireAuth, requirePerm("users.view"), (req, res) => {
       err: req.query.err || null,
       meId: req.me.id,
       canManage: req.perm.can("users.manage"),
-      sessionsOf: typeof usersSignedInCount === "function" ? usersSignedInCount : null,
+      sessionsOf: (id) => { try { return deviceSessions.sessionsFor(id).count; } catch (_) { return null; } },
     })
   );
 });
