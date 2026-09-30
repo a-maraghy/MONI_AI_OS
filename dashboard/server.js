@@ -4623,11 +4623,13 @@ app.get("/account", requireAuth, (req, res) => {
 app.post("/account/appearance", requireAuth, requirePerm("moniai.use"), requireCsrf, (req, res) => {
   const core = String((req.body && req.body.core) || "");
   const view = req.body && req.body.sessions_view !== undefined ? String(req.body.sessions_view) : null;
-  if (!mintLogic.isCore(core)) return res.redirect("/account?err=" + encodeURIComponent("Choose core A, B or C.") + "#appearance");
-  if (view !== null && !mintLogic.isSessView(view)) return res.redirect("/account?err=" + encodeURIComponent("Choose Spheres or Classic orbit.") + "#appearance");
+  // The no-JavaScript path of Settings > Appearance: back there with a note.
+  const back = "/mint-ai/settings/appearance";
+  if (!mintLogic.isCore(core)) return res.redirect(back + "?err=" + encodeURIComponent("Choose core A, B or C.") + "#a-core");
+  if (view !== null && !mintLogic.isSessView(view)) return res.redirect(back + "?err=" + encodeURIComponent("Choose Spheres or Classic orbit.") + "#a-sessions");
   setMintCore(req, core);
   if (view !== null) setSessionsView(req, view);
-  res.redirect("/account?msg=" + encodeURIComponent(`MINT AI core: ${core} · ${mintLogic.CORES[core]}${view ? ` · Sessions view: ${mintLogic.SESS_VIEWS[view]}` : ""}.`) + "#appearance");
+  res.redirect(back + "?msg=" + encodeURIComponent(`MINT AI core: ${core} · ${mintLogic.CORES[core]}${view ? ` · Sessions view: ${mintLogic.SESS_VIEWS[view]}` : ""}.`) + "#a-core");
 });
 
 app.post("/account/password", requireAuth, requireCsrf, async (req, res) => {
@@ -5236,6 +5238,14 @@ app.get("/guide", requireAuth, (req, res) => {
     })
   );
 });
+
+/* ------------------------------------------------ MINT AI ▸ Settings ---- */
+/*
+ * /mint-ai/settings/<section> (lib/routes-settings.js, views lib/views-settings.js).
+ * The Voice section's renderer and routes sit with the voice code below it.
+ */
+const settingsRoutes = require("./lib/routes-settings");
+settingsRoutes.mount(app, { requireAuth, requireCsrf, ctx, db, moniai });
 
 /* ------------------------------------ live voice evaluation (admin) ---- */
 

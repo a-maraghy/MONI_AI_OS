@@ -7,13 +7,130 @@
  * wired up from this external file via a delegated listener instead.
  */
 
+/*
+ * The OS's dialogs are the Command Center's own (moni-ai.css is on every page):
+ *
+ *   MintUI.confirm({title, body, yes, no, danger}) -> Promise<boolean>
+ *       the .cc-sdlg confirm (its retire dialog); Esc or the backdrop cancels
+ *   MintUI.openModal(el) / MintUI.closeModal(el)
+ *       a server-rendered .cc-modal form dialog (Users, Roles, the voice
+ *       token): shown over a scrim, Esc / the scrim / [data-modal-close] close
+ *
+ * A form with data-confirm="Question?" (the old attribute), or
+ * data-confirm-dlg="Title" with data-confirm-body / data-confirm-yes /
+ * data-confirm-danger="0", asks through the confirm before it submits -- no
+ * more window.confirm. The button that submitted it is carried over.
+ */
+window.MintUI = (function () {
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+  }
+  function confirmDlg(o) {
+    o = o || {};
+    return new Promise(function (resolve) {
+      var back = document.createElement("div");
+      back.className = "cc-sdlg-back";
+      back.innerHTML =
+        '<div class="cc-sdlg" role="alertdialog" aria-modal="true" aria-labelledby="mint-dlg-t"><h3 id="mint-dlg-t">' + esc(o.title || "Are you sure?") + "</h3>" +
+        (o.body ? "<p>" + esc(o.body) + "</p>" : "") +
+        '<div class="acts"><button type="button" class="cc-btn" data-a="no">' + esc(o.no || "Cancel") + '</button><button type="button" class="cc-btn ' +
+        (o.danger === false ? "pri" : "danger") + '" data-a="yes">' + esc(o.yes || "Confirm") + "</button></div></div>";
+      document.body.appendChild(back);
+      var prev = document.activeElement;
+      back.querySelector('[data-a="no"]').focus();
+      function done(v) {
+        back.remove();
+        if (prev && prev.focus) prev.focus();
+        resolve(v);
+      }
+      back.addEventListener("click", function (e) {
+        if (e.target === back) return done(false);
+        var b = e.target.closest("[data-a]");
+        if (b) done(b.getAttribute("data-a") === "yes");
+      });
+      back.addEventListener("keydown", function (e) {
+        if (e.key === "Escape") {
+          e.stopPropagation();
+          done(false);
+        }
+      });
+    });
+  }
+  var scrim = null;
+  var openEl = null;
+  var opener = null;
+  function closeModal(el) {
+    el = el || openEl;
+    if (!el) return;
+    el.hidden = true;
+    if (scrim) scrim.hidden = true;
+    openEl = null;
+    if (opener && opener.focus) opener.focus();
+    opener = null;
+  }
+  function openModal(el) {
+    if (!el) return;
+    if (openEl) closeModal(openEl);
+    if (!scrim) {
+      scrim = document.createElement("div");
+      scrim.className = "cc-scrim os";
+      scrim.hidden = true;
+      scrim.addEventListener("click", function () { closeModal(); });
+      document.body.appendChild(scrim);
+    }
+    if (el.parentNode !== document.body) document.body.appendChild(el);
+    opener = document.activeElement;
+    scrim.hidden = false;
+    el.hidden = false;
+    openEl = el;
+    var first = el.querySelector("input:not([type=hidden]):not([disabled]):not([readonly]), select, textarea");
+    if (first) first.focus();
+  }
+  document.addEventListener("click", function (e) {
+    var t = e.target.closest && e.target.closest("[data-modal-open]");
+    if (t) {
+      e.preventDefault();
+      openModal(document.getElementById(t.getAttribute("data-modal-open")));
+      return;
+    }
+    if (e.target.closest && e.target.closest("[data-modal-close]")) {
+      e.preventDefault();
+      closeModal();
+    }
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape" && openEl && !document.querySelector(".cc-sdlg-back")) closeModal();
+  });
+  return { confirm: confirmDlg, openModal: openModal, closeModal: closeModal, esc: esc };
+})();
+
 document.addEventListener("submit", function (ev) {
   var form = ev.target;
   if (!(form instanceof HTMLFormElement)) return;
-  var message = form.getAttribute("data-confirm");
-  if (message && !window.confirm(message)) {
-    ev.preventDefault();
-  }
+  if (form.__mintConfirmed || form.hasAttribute("data-live")) return; // os.js sends live forms (and asks first)
+  var title = form.getAttribute("data-confirm-dlg") || form.getAttribute("data-confirm");
+  if (!title) return;
+  ev.preventDefault();
+  var submitter = ev.submitter || null;
+  window.MintUI.confirm({
+    title: title,
+    body: form.getAttribute("data-confirm-body") || "",
+    yes: form.getAttribute("data-confirm-yes") || "Confirm",
+    danger: form.getAttribute("data-confirm-danger") !== "0",
+  }).then(function (ok) {
+    if (!ok) return;
+    // form.submit() skips the submit event (and the button that was pressed):
+    // carry the button's name and value over as a hidden field.
+    if (submitter && submitter.name) {
+      var h = document.createElement("input");
+      h.type = "hidden";
+      h.name = submitter.name;
+      h.value = submitter.value;
+      form.appendChild(h);
+    }
+    form.__mintConfirmed = true;
+    HTMLFormElement.prototype.submit.call(form);
+  });
 });
 
 /* Live-refresh the overview tiles without a full page reload. */
@@ -131,6 +248,9 @@ document.addEventListener("submit", function (ev) {
   var DRAWERS = [
     { open: "nav-open", toggle: "data-nav-toggle", close: "data-nav-close", scrim: ".nav-scrim" },
     { open: "chats-open", toggle: "data-chats-toggle", close: "data-chats-close", scrim: ".chat-scrim" },
+    // The Command Center: its sidebar is a drawer at every width, opened by the
+    // ☰ at the bottom of its icon bar (and by the top bar's ☰ on a phone).
+    { open: "os-drawer", toggle: "data-os-toggle", close: "data-os-close", scrim: ".os-scrim", always: true },
   ];
 
   function setOpen(d, on) {
@@ -170,7 +290,7 @@ document.addEventListener("submit", function (ev) {
   });
 
   document.addEventListener("keydown", function (ev) {
-    if (ev.key === "Escape") closeAll();
+    if (ev.key === "Escape" && !document.querySelector(".cc-sdlg-back")) closeAll();
   });
 
   // A drawer is a small-screen state. Coming back to a wide window with one
@@ -178,7 +298,8 @@ document.addEventListener("submit", function (ev) {
   var wide = window.matchMedia("(min-width: 901px)");
   (wide.addEventListener ? wide.addEventListener.bind(wide, "change") : wide.addListener.bind(wide))(
     function (e) {
-      if (e.matches) closeAll();
+      if (!e.matches) return;
+      for (var i = 0; i < DRAWERS.length; i++) if (!DRAWERS[i].always) setOpen(DRAWERS[i], false);
     }
   );
 })();
@@ -197,8 +318,9 @@ document.addEventListener("submit", function (ev) {
  * Command Center uses to repaint its canvas in the new palette.
  */
 (function () {
-  var group = document.querySelector("[data-theme-switch]");
-  if (!group) return;
+  // The avatar menu holds one; Settings > Appearance another. Both stay in step.
+  var groups = document.querySelectorAll("[data-theme-switch]");
+  if (!groups.length) return;
   var root = document.documentElement;
   var ORDER = ["system", "dark", "light"];
 
@@ -207,7 +329,7 @@ document.addEventListener("submit", function (ev) {
     return t === "dark" || t === "light" ? t : "system";
   }
   function tick(pref) {
-    var bs = group.querySelectorAll("button[data-theme-opt]");
+    var bs = document.querySelectorAll("[data-theme-switch] button[data-theme-opt]");
     for (var i = 0; i < bs.length; i++) {
       var on = bs[i].getAttribute("data-theme-opt") === pref;
       bs[i].setAttribute("aria-checked", on ? "true" : "false");
@@ -228,17 +350,19 @@ document.addEventListener("submit", function (ev) {
   }
 
   tick(current());
-  group.addEventListener("click", function (ev) {
-    var b = ev.target.closest("button[data-theme-opt]");
-    if (b) apply(b.getAttribute("data-theme-opt"));
-  });
-  group.addEventListener("keydown", function (ev) {
-    if (ev.key !== "ArrowRight" && ev.key !== "ArrowLeft") return;
-    ev.preventDefault();
-    var i = (ORDER.indexOf(current()) + (ev.key === "ArrowRight" ? 1 : 2)) % 3;
-    apply(ORDER[i]);
-    var b = group.querySelector('button[data-theme-opt="' + ORDER[i] + '"]');
-    if (b) b.focus();
+  Array.prototype.forEach.call(groups, function (group) {
+    group.addEventListener("click", function (ev) {
+      var b = ev.target.closest("button[data-theme-opt]");
+      if (b) apply(b.getAttribute("data-theme-opt"));
+    });
+    group.addEventListener("keydown", function (ev) {
+      if (ev.key !== "ArrowRight" && ev.key !== "ArrowLeft") return;
+      ev.preventDefault();
+      var i = (ORDER.indexOf(current()) + (ev.key === "ArrowRight" ? 1 : 2)) % 3;
+      apply(ORDER[i]);
+      var b = group.querySelector('button[data-theme-opt="' + ORDER[i] + '"]');
+      if (b) b.focus();
+    });
   });
   // Following the system, a change there is a change here.
   var mq = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;

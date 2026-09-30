@@ -141,7 +141,10 @@ function dock() {
         : `<button type="button" data-sheet="${s.key}" aria-expanded="false" aria-label="${esc(s.label)}">${ic(s.icon)}${badge[s.key] || ""}<span class="tip">${esc(s.label)}</span></button>`
     ).join("") +
     `<span class="sep" aria-hidden="true"></span>` +
-    `<button type="button" id="cc-kbtn" aria-label="Search or run (Ctrl+K)" aria-keyshortcuts="Control+K">${ic("search")}<span class="tip">Search or run · Ctrl K</span></button>`
+    `<button type="button" id="cc-kbtn" aria-label="Search or run (Ctrl+K)" aria-keyshortcuts="Control+K">${ic("search")}<span class="tip">Search or run · Ctrl K</span></button>` +
+    // The whole Mint OS sidebar, as a drawer over the Command Center (app.js).
+    `<span class="sep" aria-hidden="true"></span>` +
+    `<button type="button" class="cc-os-btn" id="cc-os-btn" data-os-toggle aria-controls="sidebar" aria-label="Mint OS menu" aria-expanded="false"><svg class="cc-i" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h11"/></svg><span class="tip">Mint OS · every page</span></button>`
   );
 }
 
@@ -181,12 +184,14 @@ function page(o) {
     ? `<span class="cc-voice-off">voice is off: <a href="/credentials/openai-voice">Add an OpenAI key in Settings</a></span>`
     : `<span class="cc-voice-off">voice is off: Add an OpenAI key in Settings — ask an administrator</span>`;
   const deskOn = !!(voice.configured && voice.desk);
+  // Every page of Mint OS is in the ☰ drawer; these are the few worth one tap on a phone.
   const dashLinks = [
-    ["/os", "cpu", "OS Dashboard", "os"],
-    ["/agents/dashboard", "bot", "Agents", "agents"],
+    ["/agents/dashboard", "bot", "Agents & sessions", (p) => p.can("agents.view") || p.can("claude.running.view")],
+    ["/os", "cpu", "Machine", (p) => p.can("os.view")],
+    ["/mint-ai/settings", "panel", "MINT AI Settings", (p) => p.admin || p.can("voice.manage")],
   ]
-    .filter((d) => !perm || perm.canDash(d[3]))
-    .concat([["/account", "user", "Your account", ""]])
+    .filter((d) => !perm || d[3](perm))
+    .concat([["/account", "user", "Your account", null]])
     .map((d) => `<a class="cc-card cc-link-card" href="${d[0]}">${ic(d[1])}<b>${esc(d[2])}</b><span class="sp"></span>${ic("chevr")}</a>`)
     .join("");
 
@@ -347,7 +352,7 @@ function page(o) {
     `<div class="cc-everything">${logic.SHEETS.filter((s) => s !== "-")
       .map((s) => `<button type="button" data-sheet="${s.key}">${ic(s.icon)}<span>${esc(s.label.replace(" & voice usage", "").replace(" & watchers", ""))}</span>${s.key === "dec" ? `<span class="cc-badge-n warn" data-dec-mirror hidden>0</span>` : ""}</button>`)
       .join("")}<button type="button" data-open-palette>${ic("search")}<span>Search or run</span></button></div>
-      ${dashLinks ? `<div class="cc-sec-t">Dashboards</div>${dashLinks}` : ""}
+      ${dashLinks ? `<div class="cc-sec-t">Mint OS</div>${dashLinks}` : ""}
       <div class="cc-sec-t">MINT AI core</div>${coreSwitch(core, "wide")}
       <div class="cc-sec-t">Theme</div>
       <div class="cc-theme-mini" role="group" aria-label="Theme"><button type="button" data-theme-to="system" aria-label="System theme">${ic("monitor")}</button><button type="button" data-theme-to="dark" aria-label="Dark theme">${ic("moon")}</button><button type="button" data-theme-to="light" aria-label="Light theme">${ic("sun")}</button></div>`
@@ -355,17 +360,17 @@ function page(o) {
 </aside>
 <div id="cc-overlay"></div>
 ${perm ? dockMarkup(o.csrf, perm, { shell: true, noVoice: !voice.configured }) : ""}
-<noscript><div class="cc-noscript">The Command Center needs JavaScript. The older chat is at <a href="/console">/console</a>.</div></noscript>`;
+<noscript><div class="cc-noscript">The Command Center needs JavaScript.</div></noscript>`;
 
   return shell("MINT AI", body, {
     user: o.user,
     csrf: o.csrf,
     active: "moni-ai",
-    dash: "console",
+    bare: true,
     brand: "ai",
     heading: null,
     pageClass: "cc-page",
-    assets: ["moni-ai.css", "voice-live.css", "mint-dock.css", "cc-logic.js", "mint-core.js", "cc-family.js", "cc-map.js", "cc-panels.js", "voice-live-detect.js", "voice-live.js", "ui-actions.js", "moni-ai.js", "mint-dock.js", "mint-shell.js"],
+    assets: ["voice-live.css", "mint-dock.css", "console.js", "cc-logic.js", "mint-core.js", "cc-family.js", "cc-map.js", "cc-panels.js", "voice-live-detect.js", "voice-live.js", "ui-actions.js", "moni-ai.js", "mint-dock.js", "mint-shell.js"],
     topExtra: topExtra(),
     topEnd: TOP_CLOCK,
   });

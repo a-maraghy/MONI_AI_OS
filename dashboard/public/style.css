@@ -325,11 +325,11 @@ h3 { font-size: 14px; margin: 18px 0 8px; line-height: 1.35; }
   backdrop-filter: blur(8px);
 }
 
-.brand {
+.topbar > .brand {
   display: flex; align-items: center; gap: 10px;
   color: var(--ink); font-weight: 750; letter-spacing: .01em; white-space: nowrap; flex: none;
 }
-.brand:hover { text-decoration: none; }
+.topbar > .brand:hover { text-decoration: none; }
 .brand-mark {
   display: grid; place-items: center; width: 30px; height: 30px; border-radius: 8px;
   background: linear-gradient(145deg, var(--btn-a), var(--brand-deep));
@@ -1757,8 +1757,8 @@ h2 { font-weight: 700; }
 .topbar { gap: 14px; }
 .topbar::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 1px; background: linear-gradient(90deg, transparent, rgba(0, 230, 165, .35) 20%, transparent 55%); pointer-events: none; }
 .cc-page .topbar::after { background: linear-gradient(90deg, transparent, rgba(0, 230, 165, .4) 15%, rgba(138, 43, 226, .45) 45%, transparent 75%); }
-.brand { font-size: 15px; padding-right: 6px; gap: 0; }
-.brand .brand-text em { display: none; }
+.topbar > .brand { font-size: 15px; padding-right: 6px; gap: 0; }
+.topbar > .brand .brand-text em { display: none; }
 .top-tab { font: 600 14px/1 var(--brand-font); color: var(--muted); border-bottom: 0; position: relative; }
 .top-tab .spark { width: 16px; height: 16px; }
 .top-tab.on { color: var(--ink); background: linear-gradient(180deg, transparent, var(--accent-soft)); }
@@ -1853,8 +1853,8 @@ h2 { font-weight: 700; }
 .seed.new .seedling .sd-soil { fill: var(--leaf-b); opacity: .4; }
 /* Phones: the top bar keeps just the leaf of the lockup. */
 @media (max-width: 900px) {
-  .brand .lockup { display: inline-flex; }
-  .brand .lk-wm { display: none; }
+  .topbar > .brand .lockup { display: inline-flex; }
+  .topbar > .brand .lk-wm { display: none; }
   .topbar { gap: 8px; padding: 0 10px; }
 }
 

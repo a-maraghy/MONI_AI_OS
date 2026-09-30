@@ -1058,6 +1058,13 @@
   }
   /** The v3 name for the drawer's tabs; everything that called it opens the sheet now. */
   function showPane(id) { openSheet(id); }
+  /* A deep link (/mint-ai#dec -- the page map's sheets, the top bar's "needs you") opens that sheet. */
+  function sheetFromHash() {
+    var k = (location.hash || "").slice(1);
+    if (SHEET_KEYS.indexOf(k) >= 0 && k !== "everything") openSheet(k);
+  }
+  window.addEventListener("hashchange", sheetFromHash);
+  window.addEventListener("load", sheetFromHash);
   document.addEventListener("click", function (e) {
     var b = e.target.closest("[data-sheet]");
     if (b) { openSheet(b.getAttribute("data-sheet"), !!b.closest("#cc-rail")); return; }
@@ -1456,6 +1463,7 @@
   function renderNeed() {
     var q = needQueue(), n = q.length;
     $("cc-needn").textContent = n;
+    if (n !== renderNeed.lastN) { renderNeed.lastN = n; document.dispatchEvent(new CustomEvent("mint-needs", { detail: { n: n } })); } // the OS drawer's badge (os.js)
     $("cc-needpill").hidden = !n || Need.open;
     var mir = document.querySelectorAll("[data-dec-mirror]");
     for (var m = 0; m < mir.length; m++) { mir[m].textContent = n; mir[m].hidden = !n; }

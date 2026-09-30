@@ -1,12 +1,13 @@
 "use strict";
 /**
- * Page chrome: a top bar carrying the two dashboards, and a left sidebar
- * carrying everything you manage.
+ * Page chrome: a top bar that says where you are, and one left sidebar
+ * carrying everything in Mint OS.
  *
- * The split is deliberate. The top bar answers "which world am I looking at" --
- * the machine, or the agents running on it -- and there are only ever two
- * answers, so they are tabs rather than a menu. The sidebar answers "what am I
- * working on", which is a longer and growing list, so it is a list.
+ * The top bar answers "where am I, and does anything need me": the page's
+ * place in the navigation, the Decisions waiting in the Command Center, the
+ * health of the machine, and the avatar menu (account, devices, theme, sign
+ * out). The sidebar answers "what can I open", in five groups: MINT AI,
+ * Agents & sessions, Machine, Access & security, Help.
  *
  * Server-rendered, no client framework, no external assets: the CSP blocks
  * them, and a panel that can grant SSH access is the last place to be pulling
@@ -95,191 +96,120 @@ function stamp(iso) {
 /* ------------------------------------------------------- navigation model - */
 
 /**
- * The two dashboards, each owning its own sidebar.
+ * One sidebar for the whole OS, in five groups on two levels (the 2026-09-30
+ * reorganisation). The top bar says where you are; it no longer switches
+ * between dashboards -- the three "worlds" of the old bar are groups here.
  *
- * The top bar answers "which world am I in" -- the machine, or the agents
- * running on it -- and the sidebar shows only that world's actions. An earlier
- * version listed everything on both, which meant the OS view carried five items
- * that had nothing to do with the OS and the two views were indistinguishable
- * at a glance. Two clean contexts beat one crowded one.
- *
- * Each sidebar is three levels: the dashboard's own landing item, then
- * categories, then sections inside them. Every item names the permission that
- * reveals it, and empty sections and categories collapse away, so a viewer's
- * sidebar is genuinely short rather than mostly dead links.
+ * Each item names the permission that reveals it (or a `when(perm)` test for
+ * the ones that need more than one), and a group whose items are all hidden
+ * collapses away, so a viewer's sidebar is short rather than mostly dead links.
+ * `key` is what a page passes as `active`; ALIASES maps the keys pages used
+ * before (and pages that live under an item) onto the item that lights up.
  */
 const NAV = [
   {
-    // The main point of contact, so it sits first in the bar. It opens the
-    // MINT AI Command Center; the older console chat stays at /console. Both
-    // carry their own navigation inside the page, which is why this asks for
-    // no sidebar -- two lists side by side would be one too many.
-    key: "console",
-    href: "/mint-ai",
+    key: "mint-ai",
     label: "MINT AI",
-    icon: "core",
-    noSidebar: true,
-    home: { key: "console", href: "/console", label: "Chat", icon: "agents" },
-    categories: [],
-  },
-  {
-    key: "os",
-    href: "/os",
-    label: "OS Dashboard",
-    icon: "cpu",
-    home: { key: "os", href: "/os", label: "Dashboard", icon: "overview", perm: "os.view" },
-    categories: [
+    items: [
+      { key: "moni-ai", href: "/mint-ai", label: "Command Center", icon: "core", ai: true, perm: "moniai.use" },
       {
-        label: "Manage",
-        sections: [
-          {
-            label: "Access",
-            items: [
-              { key: "users", href: "/users", label: "Users", icon: "users", perm: "users.view" },
-              { key: "roles", href: "/roles", label: "Roles", icon: "shield", perm: "roles.view" },
-            ],
-          },
-          {
-            label: "Security",
-            items: [
-              { key: "firewall", href: "/firewall", label: "Firewall", icon: "ban", perm: "firewall.view" },
-              { key: "credentials", href: "/credentials", label: "Credentials", icon: "credentials", perm: "credentials.view" },
-              { key: "keys", href: "/keys", label: "SSH keys", icon: "keys", perm: "keys.view" },
-              { key: "devices", href: "/devices", label: "Devices", icon: "devices", perm: "devices.view" },
-            ],
-          },
-          {
-            label: "Platform",
-            items: [
-              { key: "services", href: "/services", label: "Services", icon: "services", perm: "services.view" },
-              { key: "audit", href: "/audit", label: "Audit log", icon: "audit", perm: "audit.view" },
-            ],
-          },
-        ],
-      },
-      {
-        // Claude Code's own state on this machine: what it remembers, what it
-        // said, and what is running now. Administrator-only by default.
-        label: "Claude Code",
-        sections: [
-          {
-            items: [
-              { key: "claude-memory", href: "/claude/memory", label: "Memory", icon: "memory", perm: "claude.memory.read" },
-              { key: "claude-sessions", href: "/claude/sessions", label: "Sessions", icon: "logs", perm: "claude.sessions.view" },
-              { key: "claude-running", href: "/claude/running", label: "Running", icon: "activity", perm: "claude.running.view" },
-            ],
-          },
-        ],
-      },
-      {
-        label: "Help",
-        sections: [
-          { items: [{ key: "guide", href: "/guide", label: "Guide", icon: "guide" }] },
-        ],
+        key: "mint-settings",
+        href: "/mint-ai/settings",
+        label: "Settings",
+        icon: "settings",
+        // Appearance is anyone's who uses MINT AI; Voice needs voice.manage;
+        // the rest is the administrator's (lib/views-settings.js).
+        perm: "moniai.use",
       },
     ],
   },
   {
     key: "agents",
-    href: "/agents/dashboard",
-    label: "Agents Dashboard",
-    icon: "agents",
-    home: {
-      key: "agents-dashboard",
-      href: "/agents/dashboard",
-      label: "Dashboard",
-      icon: "overview",
-      perm: "agents.view",
-    },
-    categories: [
-      {
-        label: "Manage",
-        sections: [
-          {
-            label: "Fleet",
-            items: [
-              { key: "agents", href: "/agents", label: "Agents", icon: "agents", perm: "agents.view" },
-              { key: "channels", href: "/channels", label: "Channels", icon: "channels", perm: "channels.view" },
-            ],
-          },
-          {
-            label: "Capabilities",
-            items: [
-              { key: "addons", href: "/addons", label: "Add-ons", icon: "addons", perm: "addons.view" },
-              { key: "agent-services", href: "/services/agents", label: "Agent services", icon: "services", perm: "agents.view" },
-            ],
-          },
-        ],
-      },
-      {
-        label: "Help",
-        sections: [
-          { items: [{ key: "guide", href: "/guide", label: "Guide", icon: "guide" }] },
-        ],
-      },
+    label: "Agents & sessions",
+    items: [
+      { key: "agents-dashboard", href: "/agents/dashboard", label: "Overview", icon: "overview", when: (p) => p.can("agents.view") || p.can("claude.running.view") },
+      { key: "claude-sessions", href: "/claude/sessions", label: "Sessions", icon: "activity", when: (p) => p.can("claude.sessions.view") || p.can("claude.running.view") },
+      { key: "agents", href: "/agents", label: "Telegram agents", icon: "agents", perm: "agents.view" },
+      { key: "channels", href: "/channels", label: "Channels", icon: "channels", perm: "channels.view" },
+      { key: "addons", href: "/addons", label: "Add-ons", icon: "addons", perm: "addons.view" },
+      { key: "claude-memory", href: "/claude/memory", label: "Memory", icon: "memory", perm: "claude.memory.read" },
     ],
+  },
+  {
+    key: "machine",
+    label: "Machine",
+    items: [
+      { key: "os", href: "/os", label: "Overview", icon: "cpu", perm: "os.view" },
+      { key: "services", href: "/services", label: "Services", icon: "services", when: (p) => p.can("services.view") || p.can("agents.view") },
+      { key: "audit", href: "/audit", label: "Audit log", icon: "audit", perm: "audit.view" },
+    ],
+  },
+  {
+    key: "access",
+    label: "Access & security",
+    items: [
+      { key: "users", href: "/users", label: "Users", icon: "users", perm: "users.view" },
+      { key: "roles", href: "/roles", label: "Roles", icon: "shield", perm: "roles.view" },
+      // Every signed-in person sees their own signed-in browsers.
+      { key: "devices", href: "/devices", label: "Devices", icon: "devices" },
+      { key: "keys", href: "/keys", label: "SSH keys", icon: "keys", perm: "keys.view" },
+      { key: "firewall", href: "/firewall", label: "Firewall", icon: "ban", perm: "firewall.view" },
+      { key: "credentials", href: "/credentials", label: "Credentials", icon: "credentials", perm: "credentials.view" },
+    ],
+  },
+  {
+    key: "help",
+    label: "Help",
+    items: [{ key: "guide", href: "/guide", label: "Guide", icon: "guide" }],
   },
 ];
 
-const DASHBOARDS = NAV.map((d) => ({ key: d.key, href: d.href, label: d.label, icon: d.icon }));
+/** Keys pages pass that are not items of their own, and the item they sit under. */
+const ALIASES = {
+  "claude-running": "claude-sessions",
+  running: "claude-sessions",
+  sessions: "claude-sessions",
+  memory: "claude-memory",
+  "agent-services": "services",
+  console: "moni-ai",
+  "voice-settings": "mint-settings",
+};
 
-/** Every item on a dashboard, flattened -- used to resolve the active tab. */
-function itemsOf(dash) {
-  const out = dash.home ? [{ ...dash.home, dash: dash.key }] : [];
-  for (const cat of dash.categories) {
-    for (const sec of cat.sections) {
-      for (const item of sec.items) out.push({ ...item, dash: dash.key });
-    }
+/** May this actor see the item? A missing actor (setup pages) sees everything. */
+function allowed(item, perm) {
+  if (!perm) return true;
+  if (item.perm && !perm.can(item.perm)) return false;
+  if (item.when && !item.when(perm)) return false;
+  return true;
+}
+
+/** Where an active key sits: { group, item } or null. */
+function locate(active) {
+  const key = ALIASES[active] || active;
+  for (const group of NAV) {
+    const item = group.items.find((i) => i.key === key);
+    if (item) return { group, item };
   }
-  return out;
+  return null;
+}
+
+/** The first item of a group this actor may open -- where the group's crumb goes. */
+function groupHref(group, perm) {
+  const first = group.items.find((i) => allowed(i, perm));
+  return first ? first.href : null;
 }
 
 /**
- * Which top-bar tab should look active. The guide appears on both dashboards,
- * so it resolves to whichever one the visitor came from -- passed in as
- * `opts.dash` -- rather than always snapping to the OS tab.
+ * The trail above a page title: group / page. Pages deeper than the
+ * navigation (an agent, a fact) pass their own trail as opts.crumbs, a list of
+ * [label, href] pairs; the last is where you are and is not a link.
  */
-function dashboardFor(active, hint) {
-  for (const dash of NAV) {
-    if (itemsOf(dash).some((i) => i.key === active)) {
-      // A shared item (the guide) defers to the hint.
-      const shared = NAV.filter((d) => itemsOf(d).some((i) => i.key === active)).length > 1;
-      if (shared && hint) return hint;
-      return dash.key;
-    }
-  }
-  return hint || null;
-}
-
-/** Where an item sits: [dashboard, category, section, item], for the crumbs. */
-function locate(active, dashKey) {
-  const dash = NAV.find((d) => d.key === dashKey);
-  if (!dash) return null;
-  if (dash.home && dash.home.key === active) return { dash, item: dash.home };
-  for (const cat of dash.categories) {
-    for (const sec of cat.sections) {
-      const item = sec.items.find((i) => i.key === active);
-      if (item) return { dash, cat, sec, item };
-    }
-  }
-  return { dash };
-}
-
-/**
- * The trail above a page title: dashboard / section / page. Pages deeper than
- * the navigation (an agent, a fact) pass their own trail as opts.crumbs, a list
- * of [label, href] pairs; the last is where you are and is not a link.
- */
-function renderCrumbs(active, dashKey, crumbs) {
+function renderCrumbs(active, perm, crumbs) {
   let trail = crumbs;
   if (!trail) {
-    const at = locate(active, dashKey);
+    const at = locate(active);
     if (!at) return "";
-    trail = [[at.dash.label, at.dash.href]];
-    if (at.sec && at.sec.label) trail.push([at.sec.label, null]);
-    else if (at.cat) trail.push([at.cat.label, null]);
-    if (at.item && at.item !== at.dash.home) trail.push([at.item.label, at.item.href]);
-    else if (at.item) trail.push(["Overview", null]);
+    trail = [[at.group.label, groupHref(at.group, perm)], [at.item.label, at.item.href]];
   }
   return `<nav class="crumbs" aria-label="Breadcrumb">${trail
     .map(([label, href], i) =>
@@ -289,51 +219,55 @@ function renderCrumbs(active, dashKey, crumbs) {
     .join("")}</nav>`;
 }
 
-function renderSidebar(active, dashKey, perm, chrome) {
-  const dash = NAV.find((d) => d.key === dashKey) || NAV[0];
-  const allow = (item) => !item.perm || !perm || perm.can(item.perm);
+/** The top bar's "where you are": group / page, or the page's own name. */
+function renderWhere(active, fallback) {
+  const at = locate(active);
+  if (at) return `<span class="g">${esc(at.group.label)}</span><span class="sep">/</span><b>${esc(at.item.label)}</b>`;
+  return fallback ? `<b>${esc(fallback)}</b>` : "";
+}
+
+/**
+ * A sidebar badge. Counts are quiet (plain, and a zero is hidden); only states
+ * are tinted. `b` is [text, cls, title?]: the text is what the item shows, the
+ * title the full sentence (a state badge shows "4" and says "4 live").
+ */
+function badgeHtml(key, b) {
+  if (!b) return "";
+  const text = String(b[0] == null ? "" : b[0]);
+  const cls = b[1] || "plain";
+  if (cls === "plain" && (text === "" || text === "0")) return "";
+  return `<span class="badge ${esc(cls)}" data-badge="${esc(key)}"${b[2] ? ` title="${esc(b[2])}"` : ""}>${esc(text)}</span>`;
+}
+
+function renderSidebar(active, perm, chrome) {
+  const at = locate(active);
   const badges = (chrome && chrome.badges) || {};
-
   const link = (i) => {
-    const b = badges[i.key];
-    return `<a href="${i.href}" class="side-item${active === i.key ? " on" : ""}"${
-      active === i.key ? ' aria-current="page"' : ""
-    } title="${esc(i.label)}">${icon(i.icon)}<span>${esc(i.label)}</span>${
-      b ? `<span class="badge ${esc(b[1])}" data-badge="${esc(i.key)}">${esc(b[0])}</span>` : ""
-    }</a>`;
+    const on = !!(at && at.item === i);
+    return `<a href="${i.href}" class="side-item${on ? " on" : ""}"${on ? ' aria-current="page"' : ""} title="${esc(i.label)}">${
+      i.ai ? brand.spark(18) : icon(i.icon)
+    }<span>${esc(i.label)}</span>${badgeHtml(i.key, badges[i.key])}</a>`;
   };
-
-  const home = dash.home && allow(dash.home) ? `<div class="side-home">${link(dash.home)}</div>` : "";
-
-  const categories = dash.categories
-    .map((cat) => {
-      const sections = cat.sections
-        .map((sec) => {
-          const items = sec.items.filter(allow);
-          if (!items.length) return "";
-          return `<div class="side-section">
-            ${sec.label ? `<div class="side-sublabel">${esc(sec.label)}</div>` : ""}
-            ${items.map(link).join("")}
-          </div>`;
-        })
-        .filter(Boolean)
-        .join("");
-      if (!sections) return "";
-      return `<div class="side-group">
-        <div class="side-label">${esc(cat.label)}</div>
-        ${sections}
-      </div>`;
-    })
+  const groups = NAV.map((g) => {
+    const items = g.items.filter((i) => allowed(i, perm));
+    if (!items.length) return "";
+    return `<div class="side-group" data-g="${esc(g.key)}"><button type="button" class="side-label" aria-expanded="true" data-side-group="${esc(g.key)}">${esc(
+      g.label
+    )}${icon("chevron").replace('class="ico"', 'class="ico car"')}</button><div class="side-items">${items.map(link).join("")}</div></div>`;
+  })
     .filter(Boolean)
     .join("");
 
-  const id = (chrome && chrome.ids && chrome.ids[dash.key]) || null;
+  const id = chrome && chrome.ids && chrome.ids.os;
+  const h = chrome && chrome.health;
   const idBlock = id
-    ? `<div class="side-id"><span class="side-id-mark">${dash.key === "agents" ? brand.seedling(3) : brand.osMark()}</span>
-        <div><b>${esc(id.name)}</b><small>${esc(id.sub)}</small></div></div>`
+    ? `<div class="side-id"><span class="side-id-mark">${brand.osMark()}${
+        h ? `<span class="hd${h.cls === "ok" ? "" : " " + esc(h.cls)}" title="${esc(h.text)}"></span>` : ""
+      }</span>
+        <div><b>${esc(id.name)}</b><div class="facts">${(id.facts || [id.sub]).map((f) => `<span>${esc(f)}</span>`).join("")}</div></div></div>`
     : "";
 
-  return `<div class="side-scroll">${idBlock}<nav aria-label="Section navigation">${home + categories}</nav></div>
+  return `<div class="side-scroll">${idBlock}<nav aria-label="Section navigation">${groups}</nav></div>
     <div class="side-foot">
       <button class="side-collapse" type="button" data-side-collapse aria-expanded="true" title="Collapse the sidebar to icons">${icon(
         "sidebar",
@@ -351,34 +285,56 @@ function healthChip(chrome) {
 }
 
 /**
- * Wall clock in the administrator's zone -- the same one the Command Center
- * keeps (Africa/Cairo), so the two never disagree about the time. os.js ticks
- * it; the server's own time stands in until then.
+ * "N needs you": the Decisions waiting in the Command Center. Rendered hidden
+ * when the count is not known yet; the dock (mint-dock.js) keeps it current.
  */
-const CLOCK_TZ = "Africa/Cairo";
-function clock() {
-  let hms = "";
-  try {
-    hms = new Intl.DateTimeFormat("en-GB", { timeZone: CLOCK_TZ, hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(new Date());
-  } catch (_) {
-    hms = new Date().toTimeString().slice(0, 8);
-  }
-  return `<div class="clock" data-clock data-tz="${CLOCK_TZ}" aria-hidden="true"><b>${hms}</b><span>${esc(CLOCK_TZ.split("/").pop())}</span></div>`;
+function needPill(n) {
+  const k = Number(n) || 0;
+  return `<a class="tb-need" id="tb-need" href="/mint-ai#dec" title="Decisions waiting for you in the Command Center"${k ? "" : " hidden"}><span class="dot"></span><span id="tb-need-n">${k}</span><span class="long">&nbsp;${
+    k === 1 ? "needs" : "need"
+  } you</span></a>`;
+}
+
+/** The avatar: its button, and the menu it opens (os.js wires it). */
+function avatarMenu(who, perm, csrf) {
+  const name = String(who.name || "");
+  const initial = esc((name.trim()[0] || "?").toUpperCase());
+  const role = who.roleLabel || "";
+  const all = perm && perm.admin ? " · all permissions" : "";
+  const settings = perm && perm.can("moniai.use");
+  return `<button class="avatar-btn" type="button" id="avatar-btn" aria-haspopup="menu" aria-expanded="false" aria-controls="me-menu" title="${esc(name)}"><span class="avatar">${initial}</span><span class="who"><b>${esc(
+    name
+  )}</b>${role ? `<small>${esc(role)}</small>` : ""}</span></button>
+  <div class="me-menu" id="me-menu" role="menu" hidden>
+    <div class="mh"><span class="avatar">${initial}</span><div><b>${esc(name)}</b><small>${esc(role)}${all}</small></div></div>
+    <a href="/account" role="menuitem">${icon("user")}Account &amp; sign-in</a>
+    <a href="/devices" role="menuitem">${icon("devices")}Signed-in devices</a>
+    ${settings ? `<a href="/mint-ai/settings/appearance" role="menuitem">${icon("eye")}MINT AI appearance</a>` : ""}
+    <div class="lbl">Theme</div>
+    ${themeSwitch()}
+    <hr>
+    <form method="post" action="/logout" class="me-logout" data-confirm-dlg="Sign out of Mint OS?" data-confirm-body="This browser's session ends. Any live voice call on it ends too." data-confirm-yes="Sign out">
+      <input type="hidden" name="_csrf" value="${esc(csrf)}">
+      <button class="mi" type="submit" role="menuitem">${icon("power")}Sign out</button>
+    </form>
+  </div>`;
 }
 
 /**
  * @param title   browser title
  * @param body    page markup
- * @param opts    { user, csrf, active, subtitle, actions, wide, perm, dash,
+ * @param opts    { user, csrf, active, subtitle, actions, wide, perm, bare,
  *                  pageClass, topExtra, topEnd, assets, pattern, crumbs,
- *                  heading, headClass }
+ *                  heading, headClass, where }
  *
  * `pattern` is how the page uses the screen: "a" one screen (nothing but
  * inner panels scrolls), "b" a fixed frame whose body panel scrolls, "c" a
- * document whose column scrolls under the frame (the default).
- * `topExtra` and `topEnd` are markup the caller has already escaped, placed
- * before and after the theme switch. `assets` are extra files from public/ --
- * .css as stylesheets, .js as deferred scripts.
+ * document whose column scrolls under the frame (the default). `bare` is the
+ * Command Center: it lays out its own screen, and the sidebar is a drawer its
+ * ☰ opens. `topExtra` replaces the needs-you pill and health chip (the Command
+ * Center brings its own), `topEnd` goes before the avatar (its clock). `where`
+ * names the page in the top bar when it is not a sidebar item. `assets` are
+ * extra files from public/ -- .css as stylesheets, .js as deferred scripts.
  */
 function shell(title, body, opts = {}) {
   // `user` is the viewer context: routes pass the object built by ctx(), but a
@@ -398,24 +354,9 @@ function shell(title, body, opts = {}) {
 
   const perm = who.perm || opts.perm || null;
   const chrome = who.chrome || null;
-  const dash = dashboardFor(opts.active, who.dash || opts.dash) || "os";
-  // A dashboard that carries its own navigation inside the page gets the full
-  // width instead of a sidebar it would only duplicate.
-  const bare = !!(NAV.find((d) => d.key === dash) || {}).noSidebar;
-  // MINT AI's own world (the Command Center, its chat) wears the AI brand.
-  opts = Object.assign({}, opts, { brand: opts.brand || (dash === "console" ? "ai" : "os") });
+  const bare = !!opts.bare;
+  opts = Object.assign({}, opts, { brand: opts.brand || "os" });
   const pattern = bare ? null : ["a", "b", "c"].includes(opts.pattern) ? opts.pattern : "c";
-
-  // A dashboard the actor cannot reach at all is hidden rather than shown as a
-  // link into a permission error.
-  const tabs = DASHBOARDS.filter((d) => !perm || perm.canDash(d.key))
-    .map(
-      (d) =>
-        `<a href="${d.href}" class="top-tab${d.key === "console" ? " ai" : ""}${dash === d.key ? " on" : ""}"${dash === d.key ? ' aria-current="page"' : ""}>
-         ${d.key === "console" ? brand.spark(16) : icon(d.icon, 17)}<span>${esc(d.label)}</span>
-       </a>`
-    )
-    .join("");
 
   const actions = [
     opts.statusChip ? `<span class="pill nodot mono">${opts.statusChip}</span>` : "",
@@ -427,7 +368,7 @@ function shell(title, body, opts = {}) {
       ? `<div class="page-head${opts.headClass ? " " + esc(opts.headClass) : ""}${opts.headArt ? " with-art" : ""}">
            ${opts.headArt ? `<div class="head-art">${opts.headArt}</div>` : ""}
            <div class="head-text">
-             ${renderCrumbs(opts.active, dash, opts.crumbs)}
+             ${renderCrumbs(opts.active, perm, opts.crumbs)}
              <h1>${opts.headingHtml || esc(opts.heading || title)}</h1>
              ${opts.subtitle ? `<p class="sub">${opts.subtitle}</p>` : ""}
            </div>
@@ -435,61 +376,42 @@ function shell(title, body, opts = {}) {
          </div>`
       : "";
 
-  const pageClass = [bare ? "" : "framed", opts.pageClass || ""].filter(Boolean).join(" ");
   // MINT AI's dock (M-5 part 1, public/mint-dock.js): on every page for anyone who may use MINT AI,
-  // except MINT AI's own (the Command Center, the console), which are MINT AI already.
-  const withDock = !!(perm && perm.can && perm.can("moniai.use")) && dash !== "console" && opts.dock !== false;
+  // except the Command Center, which is MINT AI already. The content column ends above
+  // the dock's band (with-dock), so the dock never covers what a page shows.
+  const withDock = !bare && !!(perm && perm.can && perm.can("moniai.use")) && opts.dock !== false;
+  const pageClass = [bare ? "" : "framed", withDock ? "with-dock" : "", opts.pageClass || ""].filter(Boolean).join(" ");
   if (withDock) opts = Object.assign({}, opts, { assets: (opts.assets || []).concat(["mint-dock.css", "ui-actions.js", "mint-dock.js"].filter((f) => !(opts.assets || []).includes(f))) });
+
+  const where = renderWhere(opts.active, opts.where || (opts.crumbs && opts.crumbs.length ? opts.crumbs[opts.crumbs.length - 1][0] : title));
 
   return page(
     title,
     `<header class="topbar">
-      ${
-        bare
-          ? ""
-          : `<button class="nav-toggle" type="button" aria-label="Menu"
-                     aria-expanded="false" aria-controls="sidebar"
-                     data-nav-toggle>${icon("menu", 20)}</button>`
-      }
+      <button class="nav-toggle" type="button" aria-label="Menu"
+              aria-expanded="false" aria-controls="sidebar"
+              ${bare ? "data-os-toggle" : "data-nav-toggle"}>${icon("menu", 20)}</button>
       <a class="brand" href="${perm ? landing(perm) : "/"}" aria-label="Mint OS">
         ${brand.lockup("os", { cls: "brand-text", tag: false })}
       </a>
-      <nav class="top-tabs" aria-label="Dashboards">${tabs}</nav>
+      <div class="tb-where" id="tb-where">${where}</div>
       <div class="top-right">
-        ${opts.topExtra ? opts.topExtra : healthChip(chrome)}
-        ${themeSwitch()}
-        ${opts.topEnd ? opts.topEnd : clock()}
-        <a class="whoami" href="/account" title="Your account">
-          <span class="whoami-name">${esc(who.name)}</span>
-          ${who.roleLabel ? `<span class="whoami-role">${esc(who.roleLabel)}</span>` : ""}
-        </a>
-        <form method="post" action="/logout" class="logout">
-          <input type="hidden" name="_csrf" value="${esc(opts.csrf)}">
-          <button type="submit" title="Sign out" aria-label="Sign out">${icon("power")}</button>
-        </form>
+        ${opts.topExtra ? opts.topExtra : needPill(0) + healthChip(chrome)}
+        ${opts.topEnd || ""}
+        ${avatarMenu(who, perm, opts.csrf)}
       </div>
     </header>
 
-    ${
-      bare
-        ? ""
-        : // Dismisses the drawer by tap, and dims what is behind it. Inert and
-          // invisible until the drawer opens, and absent entirely on a desktop
-          // width where the sidebar is always there to be clicked.
-          `<div class="nav-scrim" data-nav-close hidden></div>`
-    }
+    <div class="nav-scrim" data-nav-close hidden></div>
+    ${bare ? `<div class="os-scrim" id="os-scrim" data-os-close hidden></div>` : ""}
 
     <div class="layout${bare ? " bare" : ""}">
-      ${
-        bare
-          ? ""
-          : `<aside class="sidebar" id="sidebar" aria-label="Sidebar">${renderSidebar(opts.active, dash, perm, chrome)}</aside>`
-      }
+      <aside class="sidebar" id="sidebar" aria-label="Sidebar">${renderSidebar(opts.active, perm, chrome)}</aside>
       <main class="content${opts.wide ? " wide" : ""}${bare ? " flush" : " pat-" + pattern}">
         ${head}
         ${bare ? body : `<div class="frame-body${opts.fill ? " stretch" : ""}">${body}</div>`}
       </main>
-    </div>${withDock ? dockMarkup(opts.csrf, perm) : ""}`,
+    </div>${withDock ? `<div class="dock-band" aria-hidden="true"></div>` + dockMarkup(opts.csrf, perm) : ""}`,
     Object.assign({}, opts, { pageClass })
   );
 }
@@ -544,7 +466,10 @@ function themeSwitch() {
 }
 
 function page(title, inner, opts = {}) {
-  const assets = (opts.assets || []).filter((f) => /^[a-z0-9-]+\.(css|js)$/.test(f));
+  // Every page carries the Command Center's stylesheet too: its confirm
+  // (.cc-sdlg), form dialog (.cc-modal), buttons and tags are the whole OS's.
+  const GLOBAL = ["style.css", "os.css", "moni-ai.css", "mint-os.css", "app.js", "voice-stop.js", "os.js"];
+  const assets = (opts.assets || []).filter((f) => /^[a-z0-9-]+\.(css|js)$/.test(f) && !GLOBAL.includes(f));
   const css = assets.filter((f) => f.endsWith(".css")).map((f) => `<link rel="stylesheet" href="${asset(f)}">`).join("\n");
   const js = assets.filter((f) => f.endsWith(".js")).map((f) => `<script src="${asset(f)}" defer></script>`).join("\n");
   // The theme is applied before first paint, so a dark page never flashes
@@ -568,10 +493,11 @@ function page(title, inner, opts = {}) {
 <link rel="preload" href="/static/fonts/space-grotesk-latin-700-normal.woff2?v=5.3.0" as="font" type="font/woff2" crossorigin>
 ${theme}<link rel="stylesheet" href="${asset("style.css")}">
 <link rel="stylesheet" href="${asset("os.css")}">
+<link rel="stylesheet" href="${asset("moni-ai.css")}">
 ${css}
+<link rel="stylesheet" href="${asset("mint-os.css")}">
 <script src="${asset("app.js")}" defer></script>
 <script src="${asset("voice-stop.js")}" defer></script>
-<script src="${asset("console.js")}" defer></script>
 <script src="${asset("os.js")}" defer></script>
 ${js}
 </head><body>
@@ -750,5 +676,8 @@ module.exports = {
   can,
   steps,
   NAV,
-  DASHBOARDS,
+  ALIASES,
+  locate,
+  allowed,
+  badgeHtml,
 };

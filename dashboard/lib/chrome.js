@@ -1,7 +1,7 @@
 "use strict";
 /**
- * What the frame shows on every page: the live count badges in the sidebar,
- * the health chip in the top bar, and the line under each dashboard's name.
+ * What the frame shows on every page: the badges in the sidebar, the health
+ * chip in the top bar, and the machine's line at the top of the sidebar.
  *
  * Every page draws the frame, so none of this may cost a page a helper round
  * trip. The facts are fetched together, at most once every CACHE_MS, and held
@@ -95,10 +95,11 @@ function visibleServices(services, perm) {
 
 const plural = (n, one, many) => n + " " + (n === 1 ? one : many || one + "s");
 
-function uptimeShort(sec) {
+function uptimeLong(sec) {
   const d = Math.floor(sec / 86400);
   const h = Math.floor((sec % 86400) / 3600);
-  return d ? d + "d" : h + "h";
+  const m = Math.floor((sec % 3600) / 60);
+  return d ? d + "d " + h + "h" : h ? h + "h " + m + "m" : m + "m";
 }
 
 /**
@@ -120,16 +121,15 @@ function forActor(perm, data) {
   const failed = agents ? agents.filter((a) => a.state && a.state.active === "failed") : [];
   const running = agents ? agents.filter((a) => a.state && a.state.active === "active") : [];
 
+  // Badges are [text, class, title]. Counts are quiet ("plain", a zero is
+  // hidden by the sidebar); only states are tinted.
   if (services && can("services.view")) {
-    badges.services = [services.length - down.length + "/" + services.length, down.length ? "warn" : "plain"];
+    const up = services.length - down.length;
+    badges.services = [up + "/" + services.length, down.length ? "warn" : "ok", down.length ? plural(down.length, "service") + " down" : "all " + services.length + " up"];
   }
   if (d.status && d.status.jails && can("firewall.view")) {
     const banned = Object.values(d.status.jails).reduce((n, j) => n + (j.banned || 0), 0);
-    badges.firewall = [banned + " banned", banned ? "warn" : "plain"];
-  }
-  if (Array.isArray(d.credentials) && can("credentials.view")) {
-    const set = d.credentials.filter((c) => c.configured).length;
-    badges.credentials = [set + " set", set ? "ok" : "warn"];
+    if (banned) badges.firewall = [String(banned), "warn", banned + " banned"];
   }
   if (d.keys && typeof d.keys === "object" && can("keys.view")) {
     const n = Object.values(d.keys).reduce((m, list) => m + (Array.isArray(list) ? list.length : 0), 0);
@@ -140,23 +140,22 @@ function forActor(perm, data) {
       if (can("users.view")) {
         const users = deps.db.listUsers();
         const pending = users.filter((u) => !u.totp_confirmed && !u.disabled).length;
-        badges.users = pending ? [pending + " pending", "warn"] : [String(users.length), "plain"];
+        badges.users = pending ? [String(pending), "warn", pending + " awaiting enrolment"] : [String(users.length), "plain"];
       }
       if (can("roles.view")) badges.roles = [String(deps.db.listRoles().length), "plain"];
-      if (can("devices.view")) badges.devices = [String(deps.db.listDevices().length), "plain"];
     } catch (_) {
       /* the database is this process's own; if it fails the page will say so */
     }
   }
   if (d.memory && d.memory.db && can("claude.memory.read")) {
-    badges["claude-memory"] = [String(d.memory.db.facts.current), "plain"];
+    badges["claude-memory"] = [Number(d.memory.db.facts.current).toLocaleString("en-US"), "plain", "memory facts"];
   }
-  if (d.running && Array.isArray(d.running.sessions) && can("claude.running.view")) {
+  if (d.running && Array.isArray(d.running.sessions) && (can("claude.running.view") || can("claude.sessions.view"))) {
     const live = d.running.sessions.filter((s) => s.alive !== false).length;
-    badges["claude-running"] = [live + " live", live ? "ok" : "plain"];
+    if (live) badges["claude-sessions"] = [String(live), "ok", live + " live"];
   }
   if (agents && can("agents.view")) {
-    badges.agents = failed.length ? [failed.length + " failed", "bad"] : [String(agents.length), "plain"];
+    badges.agents = failed.length ? [String(failed.length), "bad", plural(failed.length, "agent") + " failed"] : [String(agents.length), "plain"];
   }
   if (channels && can("channels.view")) badges.channels = [String(channels.length), "plain"];
   if (deps && deps.catalog && can("addons.view")) {
@@ -164,6 +163,14 @@ function forActor(perm, data) {
       badges.addons = [String(deps.catalog.ADDONS ? deps.catalog.ADDONS.length : deps.catalog.all().length), "plain"];
     } catch (_) {
       /* no count is better than a wrong one */
+    }
+  }
+  // Voice off is a state of MINT AI's Settings worth seeing from anywhere.
+  if (deps && typeof deps.voiceOff === "function" && can("moniai.use")) {
+    try {
+      if (deps.voiceOff()) badges["mint-settings"] = ["voice off", "plain", "voice is disabled"];
+    } catch (_) {
+      /* no badge */
     }
   }
 
@@ -184,23 +191,19 @@ function forActor(perm, data) {
       cls: agentIssue ? "bad" : "warn",
       text: parts.join(" · "),
       short: svcIssue + agentIssue + " attention",
-      href: svcIssue ? "/services" : "/agents/dashboard",
+      href: svcIssue ? "/services" : "/agents",
     };
   } else if ((services && can("services.view")) || (agents && can("agents.view"))) {
-    health = { cls: "ok", text: "All systems nominal", short: "Nominal", href: can("services.view") ? "/services" : "/agents/dashboard" };
+    health = { cls: "ok", text: "All systems nominal", short: "OK", href: can("services.view") ? "/services" : "/agents" };
   }
 
   const mem = os.totalmem();
+  const facts = [os.cpus().length + " vCPU", Math.round(mem / 1024 ** 3) + " GB", "up " + uptimeLong(os.uptime())];
   const ids = {
-    os: {
-      name: os.hostname(),
-      sub: os.cpus().length + " vCPU · " + Math.round(mem / 1024 ** 3) + " GB · up " + uptimeShort(os.uptime()),
-    },
+    os: { name: os.hostname(), facts, sub: facts.join(" · ") },
     agents: {
-      name: "Agent fleet",
-      sub: agents
-        ? running.length + " of " + agents.length + " running" + (channels ? " · " + plural(channels.length, "channel") : "")
-        : "—",
+      name: "Telegram agents",
+      sub: agents ? running.length + " of " + agents.length + " running" + (channels ? " · " + plural(channels.length, "channel") : "") : "",
     },
   };
 

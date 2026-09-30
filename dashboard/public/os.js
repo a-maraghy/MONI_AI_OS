@@ -7,6 +7,10 @@
  * inline handlers (the CSP forbids them) -- listeners are attached from here.
  *
  *   sidebar collapse   remembered per browser under "moni-side"
+ *   sidebar groups     each label folds its group ("moni-side-shut")
+ *   avatar menu        account, devices, appearance, theme, sign out
+ *   needs you          the top bar's Decisions pill, from "mint-needs" events
+ *   live forms         settings rows saved in place ([data-live])
  *   clock              the browser's own time and zone, in the top bar
  *   (machine core      the OS overview's mycelium lives in mycelium.js)
  *   vitals             CPU / RAM / disk rings, refreshed from /api/stats
@@ -49,6 +53,180 @@
       window.dispatchEvent(new Event("resize"));
     });
     sync();
+  })();
+
+  /* ------------------------------------------------ sidebar group labels */
+  // Each group label folds its group; which ones are folded is remembered per
+  // browser under "moni-side-shut". The collapsed icon rail shows every group.
+  (function () {
+    var labels = document.querySelectorAll("[data-side-group]");
+    if (!labels.length) return;
+    var KEY = "moni-side-shut";
+    var shut = [];
+    try { shut = JSON.parse(window.localStorage.getItem(KEY) || "[]") || []; } catch (e) { shut = []; }
+    function paint() {
+      for (var i = 0; i < labels.length; i++) {
+        var k = labels[i].getAttribute("data-side-group");
+        var off = shut.indexOf(k) >= 0 && !labels[i].parentNode.querySelector(".side-item.on");
+        labels[i].parentNode.classList.toggle("shut", off);
+        labels[i].setAttribute("aria-expanded", off ? "false" : "true");
+      }
+    }
+    for (var i = 0; i < labels.length; i++) {
+      labels[i].addEventListener("click", function () {
+        var k = this.getAttribute("data-side-group");
+        var at = shut.indexOf(k);
+        if (at >= 0) shut.splice(at, 1);
+        else shut.push(k);
+        store(KEY, shut.length ? JSON.stringify(shut) : null);
+        paint();
+      });
+    }
+    paint();
+  })();
+
+  /* ------------------------------------------------------------ avatar menu */
+  // Account, devices, appearance, the theme and sign out, under the avatar.
+  (function () {
+    var btn = document.getElementById("avatar-btn");
+    var menu = document.getElementById("me-menu");
+    if (!btn || !menu) return;
+    function open(on) {
+      menu.hidden = !on;
+      btn.setAttribute("aria-expanded", on ? "true" : "false");
+      if (on) {
+        var first = menu.querySelector("a, button");
+        if (first) first.focus();
+      }
+    }
+    btn.addEventListener("click", function (e) {
+      e.stopPropagation();
+      open(menu.hidden);
+    });
+    document.addEventListener("click", function (e) {
+      if (!menu.hidden && !menu.contains(e.target) && !document.querySelector(".cc-sdlg-back")) open(false);
+    });
+    document.addEventListener("keydown", function (e) {
+      if (e.key === "Escape" && !menu.hidden) {
+        open(false);
+        btn.focus();
+      }
+    });
+    // Sign out asks first (app.js); the menu steps aside for the dialog.
+    menu.addEventListener("submit", function () { open(false); }, true);
+  })();
+
+  /* ------------------------------------------------ needs you (top bar) */
+  // The dock (mint-dock.js) and the Command Center announce how many Decisions
+  // wait; the top bar's pill and the Command Center's sidebar badge follow.
+  document.addEventListener("mint-needs", function (e) {
+    var n = Math.max(0, Number(e.detail && e.detail.n) || 0);
+    var pill = document.getElementById("tb-need");
+    if (pill) {
+      pill.hidden = !n;
+      var c = document.getElementById("tb-need-n");
+      if (c) c.textContent = String(n);
+      var l = pill.querySelector(".long");
+      if (l) l.innerHTML = "&nbsp;" + (n === 1 ? "needs" : "need") + " you";
+    }
+    var item = document.querySelector('.side-item[href="/mint-ai"]');
+    if (item) {
+      var b = item.querySelector(".badge");
+      if (!n) { if (b) b.remove(); return; }
+      if (!b) { b = document.createElement("span"); item.appendChild(b); }
+      b.className = "badge warn";
+      b.setAttribute("data-badge", "moni-ai");
+      b.title = n + (n === 1 ? " needs you" : " need you");
+      b.textContent = String(n);
+    }
+  });
+
+  /* ------------------------------------------------------ bars by data */
+  // Sizes that depend on data (a token cap's bar, its warning line) come as
+  // data-w / data-l: the CSP refuses style attributes, not element.style.
+  (function () {
+    var pct = function (v) { var n = Number(v); return isFinite(n) ? Math.max(0, Math.min(100, n)) : 0; };
+    var w = document.querySelectorAll(".ubar [data-w]");
+    for (var i = 0; i < w.length; i++) w[i].style.width = pct(w[i].getAttribute("data-w")) + "%";
+    var l = document.querySelectorAll(".ubar [data-l]");
+    for (var j = 0; j < l.length; j++) l[j].style.left = pct(l[j].getAttribute("data-l")) + "%";
+  })();
+
+  /* ------------------------------------------------------------ live forms */
+  // A settings row is a small form ([data-live]): sent as soon as one of its
+  // controls changes (a number field when it is committed: Enter or leaving
+  // it), in place, with the server's note shown in the page's flash slot.
+  // A form that asks first (data-confirm-dlg) asks through the OS confirm.
+  // Without JavaScript the same form posts and the page comes back with the note.
+  (function () {
+    var busy = false;
+    function note(html) {
+      var slot = document.getElementById("flash");
+      if (!slot) return;
+      slot.innerHTML = html || "";
+      var main = document.querySelector("main.content");
+      var r = slot.getBoundingClientRect();
+      if (main && (r.top < 60 || r.top > window.innerHeight)) main.scrollTo({ top: 0, behavior: "smooth" });
+    }
+    function send(f, revert) {
+      if (busy) return;
+      var go = function () {
+        busy = true;
+        f.classList.add("saving");
+        fetch(f.action, {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { Accept: "application/json", "X-Requested-With": "fetch", "Content-Type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams(new FormData(f)).toString(),
+        })
+          .then(function (r) { return r.json().catch(function () { return { ok: false, flash: "" }; }); })
+          .then(function (d) {
+            note(d.flash);
+            if (!d.ok && revert) revert();
+            if (d.reload) window.location.reload();
+          })
+          .catch(function () {
+            if (revert) revert();
+            note('<div class="alert bad"><div>Not saved: the panel did not answer. Try again.</div></div>');
+          })
+          .then(function () {
+            busy = false;
+            f.classList.remove("saving");
+          });
+      };
+      var q = f.getAttribute("data-confirm-dlg");
+      if (!q || !window.MintUI) return go();
+      window.MintUI.confirm({ title: q, body: f.getAttribute("data-confirm-body") || "", yes: f.getAttribute("data-confirm-yes") || "Confirm", danger: f.getAttribute("data-confirm-danger") !== "0" }).then(function (ok) {
+        if (ok) go();
+        else if (revert) revert();
+      });
+    }
+    document.addEventListener("change", function (e) {
+      var el = e.target;
+      var f = el && el.closest && el.closest("form[data-live]");
+      if (!f || el.hasAttribute("data-no-live")) return;
+      var revert = null;
+      if (el.type === "checkbox") { var was = !el.checked; revert = function () { el.checked = was; }; }
+      send(f, revert);
+    });
+    document.addEventListener("submit", function (e) {
+      var f = e.target;
+      if (!(f instanceof HTMLFormElement) || !f.hasAttribute("data-live")) return;
+      e.preventDefault();
+      send(f, null);
+    });
+    // A button in a live form that is not its submit (Resume, Rescan...) is sent by os.js too.
+    document.addEventListener("click", function (e) {
+      var b = e.target.closest && e.target.closest("form[data-live] button[type=submit][name]");
+      if (!b) return;
+      e.preventDefault();
+      var f = b.form;
+      var h = f.querySelector('input[type=hidden][data-btn]');
+      if (!h) { h = document.createElement("input"); h.type = "hidden"; h.setAttribute("data-btn", ""); f.appendChild(h); }
+      h.name = b.name;
+      h.value = b.value;
+      send(f, null);
+    });
   })();
 
   /* ----------------------------------------------------------------- clock */

@@ -82,6 +82,8 @@
     var nn = $("md-need-n");
     nn.hidden = !n;
     nn.textContent = n + (n === 1 ? " needs you" : " need you");
+    // The top bar's "N needs you" pill follows (os.js).
+    if (n !== paint.lastN) { paint.lastN = n; document.dispatchEvent(new CustomEvent("mint-needs", { detail: { n: n } })); }
     var ask = $("md-b-ask");
     ask.hidden = !n;
     if (n) ask.textContent = (n === 1 ? "Something is" : n + " things are") + " waiting for your approval — open the Command Center to decide.";

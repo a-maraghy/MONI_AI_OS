@@ -9,8 +9,9 @@
  * --violet-ink, --warn, …), so the three themes (System / Dark / Light) come
  * with them. The few tokens only this page needs -- the glass of the sheets
  * and cards, the halo behind the core, the chat bubble -- are declared below
- * on :root.cc-page, light first, then dark (chosen, or from the system), the
- * same order style.css uses. Mint #00E6A5 is a fill here and text only in the
+ * on :root, light first, then dark (chosen, or from the system), the same
+ * order style.css uses. They are global because every Mint OS page loads this
+ * file for the Command Center's dialogs (.cc-sdlg confirm, .cc-modal forms). Mint #00E6A5 is a fill here and text only in the
  * dark theme; in light, mint text is --accent (#00785A).
  *
  * Every class starts with cc- so nothing here reaches other pages. Sizes and
@@ -19,7 +20,7 @@
  * style attribute, which the CSP would refuse.
  */
 
-:root.cc-page {
+:root {
   --cc-glass: rgba(255, 255, 255, .78);
   --cc-glass-2: rgba(255, 255, 255, .93);
   --cc-glass-line: rgba(13, 17, 23, .08);
@@ -44,7 +45,7 @@
   --cc-fast: 140ms;
   --cc-dock-w: 64px;
 }
-:root.cc-page[data-theme="dark"] {
+:root[data-theme="dark"] {
   --cc-glass: rgba(18, 26, 34, .72);
   --cc-glass-2: rgba(23, 33, 43, .88);
   --cc-glass-line: rgba(157, 170, 182, .14);
@@ -64,7 +65,7 @@
   --orb-work: #00E6A5; --orb-wait: #F5B84A;
 }
 @media (prefers-color-scheme: dark) {
-  :root.cc-page:not([data-theme="light"]) {
+  :root:not([data-theme="light"]) {
     --cc-glass: rgba(18, 26, 34, .72);
     --cc-glass-2: rgba(23, 33, 43, .88);
     --cc-glass-line: rgba(157, 170, 182, .14);
