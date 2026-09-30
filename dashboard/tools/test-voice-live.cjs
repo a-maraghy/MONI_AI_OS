@@ -1057,7 +1057,7 @@ let WS_BASE;
   section("screen actions: ui_action (UI control, Phase 1)");
   {
     const outputs = (s) => s.of("conversation.item.create").filter((e) => e.item.type === "function_call_output").map((e) => e.item.output);
-    const { c, client, audited } = makeCall();
+    const { c, client, audited, spoke } = makeCall();
     await c.open();
     const s = lastSession();
     await userTurn(s, c, "open the missions please");
@@ -1065,11 +1065,15 @@ let WS_BASE;
     const acker = setInterval(() => {
       for (const m of client.json) if (m.type === "ui" && m.nonce && !m.acked) (m.acked = true), c.message({ type: "ui-ack", nonce: m.nonce, ok: true });
     }, 5);
+    const creates0 = s.of("response.create").length;
     await respond(s, null, { calls: [{ name: "ui_action", args: { action: "sheet.open", key: "missions" } }] });
     await until(() => outputs(s).length === 1, 1000);
     const ui = client.json.find((m) => m.type === "ui");
     check("a page action goes to the tab that holds the call, with its toast", ui && ui.action === "sheet.open" && ui.args.key === "missions" && ui.toast === "Mint opened Missions" && ui.nonce);
-    check("  the page confirmed it: ok, and the model is told to say it in the first person", /"status":"ok"/.test(outputs(s)[0]) && /first-person/.test(outputs(s)[0]));
+    check("  the page confirmed it: ok, and the model is told it was already said", /"status":"ok"/.test(outputs(s)[0]) && /already said aloud/.test(outputs(s)[0]), outputs(s)[0]);
+    await until(() => spoke.includes("Opened Missions."), 1000);
+    check("  this server says the fixed confirmation (grounded in the ui-ack), not the model", spoke.includes("Opened Missions.") && s.of("conversation.item.create").some((e) => e.item.role === "assistant" && /Opened Missions\./.test(JSON.stringify(e.item.content))), JSON.stringify(spoke));
+    check("  and the model is not asked for another round about it", s.of("response.create").length === creates0);
     check("  audited", audited.some((l) => /^sheet\.open \{"key":"missions"\} by the live voice, turn \d+ \(ok\)$/.test(l)), JSON.stringify(audited));
     const n0 = client.audio.length;
     await respond(s, "I opened Missions for you.");
@@ -1194,7 +1198,7 @@ let WS_BASE;
     const viewsSrc = fs.readFileSync(path.join(ROOT, "lib", "views-moniai.js"), "utf8");
     check("the detector script loads before voice-live.js (a file of this origin, for the CSP)", /"voice-live-detect\.js", "voice-live\.js"/.test(viewsSrc));
     check("the bar shows which mode is on and switches it (remembered per browser); the Settings value is the default", /id="cc-live-duplex"/.test(viewsSrc) && /data-live-duplex=/.test(viewsSrc) && /function liveDuplex/.test(block) && /LIVE_DUPLEX_KEY/.test(block));
-    check("in speakers mode, Space / the mute button / a tap on the bar / Esc interrupt the voice while it speaks", /LiveUI\.duplex !== "full" && liveSpeaking\(\)\) window\.VoiceLive\.interrupt\(\)/.test(block) && /cc-vb-text"\) && liveSpeaking\(\)\) \{ e\.stopPropagation\(\); return window\.VoiceLive\.interrupt\(\)/.test(block) && /if \(liveSpeaking\(\)\) window\.VoiceLive\.interrupt\(\);\n\s*else liveStop\(\)/.test(block));
+    check("in speakers mode, Space / the mute button / a tap on the bar / Esc interrupt the voice while it speaks", /LiveUI\.duplex !== "full" && liveSpeaking\(\)\) window\.VoiceLive\.interrupt\(\)/.test(block) && /cc-vb-text"\) && liveSpeaking\(\)\) \{ e\.stopPropagation\(\); return window\.VoiceLive\.interrupt\(\)/.test(block) && /e\.key === "Escape"[\s\S]{0,400}?if \(liveSpeaking\(\)\) window\.VoiceLive\.interrupt\(\);\n\s*\}/.test(block) && !/else liveStop\(\)/.test(block));
     check("the server's suggestion is a small non-blocking prompt", /m\.type === "suggest"/.test(block) && /function liveSuggest\(\)/.test(block) && /role", "status"/.test(block));
     check("  no inline script or style is added by the page", !/<script|style="/.test(block));
     // The voice bar in a call (the administrator's report of 2026-09-29: chips overflowing the pill, two X buttons).
@@ -1202,11 +1206,11 @@ let WS_BASE;
     const views = fs.readFileSync(path.join(ROOT, "lib", "views-moniai.js"), "utf8");
     check("the bar in a call: no 'Live · trial' tag; the other chips, the route, the bar's own X and the TALK TO label hidden", /\.cc-dock\.live-on \.cc-vb-tags,[\s\S]*?\.cc-dock\.live-on \.cc-voicebar \.cc-static,[\s\S]*?\.cc-dock\.live-on #cc-vb-close,\n\.cc-dock\.live-on \.cc-vb-text b \{ display: none; \}/.test(css) && !/cc-live-tag|Live · trial/.test(views + block));
     check("  the end control is the mic button's own box, first in the bar: red, a white X, \"End conversation\", no separate End button",
-      /<div class="cc-voicebar" id="cc-voicebar">\s*<button type="button" class="cc-c-mic cc-live-end cc-live-only" id="cc-live-end" title="End the conversation \(Esc\)" aria-label="End conversation" hidden>\$\{ic\("close"\)\}<\/button>/.test(views) &&
+      /<div class="cc-voicebar" id="cc-voicebar">\s*<button type="button" class="cc-c-mic cc-live-end cc-live-only" id="cc-live-end" title="End the conversation" aria-label="End conversation" hidden>\$\{ic\("close"\)\}<\/button>/.test(views) &&
       /\.cc-c-mic\.cc-live-end \{ background: var\(--cc-end-red\); color: #fff;/.test(css) && !/class="lbl">End conversation/.test(views) && /\$\("cc-live-end"\)\.hidden = !on;/.test(block));
     check("  speakers / headphones and mute compact at the right, where send is", /id="cc-live-acts"[\s\S]*id="cc-live-duplex"[\s\S]*id="cc-live-mute"/.test(views) && /\.cc-live-acts \.cc-live-duplex \{ width: 40px; height: 40px;/.test(css) && /\.cc-live-duplex \.lbl \{ display: none; \}/.test(css));
     check("  the status text takes the room and truncates", /\.cc-dock\.live-on \.cc-vb-text \{ flex: 1 1 auto; min-width: 0; \}/.test(css));
-    check("  the hint under the pill says what Space and Esc do in live mode", /<kbd>Space<\/kbd> mute · <kbd>Esc<\/kbd> end/.test(block) && /<kbd>Space<\/kbd> or <kbd>Esc<\/kbd> interrupt/.test(block) && /id="cc-kb-live"/.test(views));
+    check("  the hint under the pill says what Space and Esc do in live mode", /<kbd>Space<\/kbd> mute · <kbd>Esc<\/kbd> interrupt/.test(block) && !/<kbd>Esc<\/kbd> end/.test(block + views) && /<kbd>Space<\/kbd> or <kbd>Esc<\/kbd> interrupt/.test(block) && /id="cc-kb-live"/.test(views));
     check("  the old code that relabelled the push-to-talk tags during a call is gone", !/cc-voice-mode"\)\.textContent = "Live/.test(page));
   }
 

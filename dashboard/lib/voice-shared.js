@@ -213,13 +213,15 @@ function voiceOps(call, actor) {
     gate,
     snapshot: (turns) => gate("snapshot", turns && turns.length ? { turns } : {}),
     // extra.ut: the one-time ui token this server minted for the tab (UI control Phase 2).
+    // extra.call: the live call's id -- a repeat still queued in MINT AI is folded into its turn.
     ask: (text, extra) => {
       const t = String(text || "").trim();
       if (!t) throw new OpsError("nothing to pass on", "invalid");
       const door = voiceGuard.refuseAtDoor(t);
       if (door) throw new OpsError(`refused: that reads as ${door.source || "a prompt"}, not as something the administrator said`, "refused");
       const ut = extra && typeof extra.ut === "string" ? extra.ut : null;
-      return gate("send", { text: t.slice(0, 20000), via: "voice-desk", ...(ut ? { ut } : {}) });
+      const call = extra && typeof extra.call === "string" && /^lv[a-z0-9]{1,40}$/.test(extra.call) ? extra.call : null;
+      return gate("send", { text: t.slice(0, 20000), via: "voice-desk", ...(ut ? { ut } : {}), ...(call ? { call } : {}) });
     },
   };
 }
@@ -324,6 +326,25 @@ const STATE_STRONG = uni(/\b(running|up|down|healthy|failed|failing|active|inact
 const PRONOUN_SUBJECT = uni(/^(?:and |but |so |also )?(it|it's|its|that|that's|thats|they|they're|theyre|this|these|those|everything|everything's|all|both|all of them)\b/);
 const HEDGE = uni(/\b(whether|if|ask|asked|asking|check|checking|find out|look into|looking into|wants? to know|want me to)\b|[?؟]\s*$/);
 const MINT_NAME = /mint|moni|مينت|منت|موني/;
+// "I'll open the missions", "let me pull up the OS dashboard", «هفتحلك المهام»: a screen action announced
+// before (or while) the ui_action call is made. Judged once the response's calls are known: backed when
+// the response calls ui_action (the page's answer then says whether it worked), else by the usual rules.
+const UI_ANNOUNCE = new RegExp(
+  uni(/\b(?:i'll|ill|i will|let me|lemme|i'm going to|im going to|i am going to|going to|let's|lets)\s+(?:now\s+|just\s+|quickly\s+|go ahead and\s+)?(?:open|close|show|pull up|bring up|switch|put up|mute)\b/).source +
+    "|(?<![\\p{L}])(?:[هح](?:فتح|قفل|اقفل|عرض|غير)|خليني\\s+(?:افتح|اقفل|اعرض|اغير))\\p{L}*",
+  "u"
+);
+const UI_ANNOUNCE_G = new RegExp(UI_ANNOUNCE.source, "gu");
+function uiAnnounce(text) {
+  return UI_ANNOUNCE.test(norm(text));
+}
+// "The agents dashboard is open": after a screen action returned ok this turn, "open" is the page, not a
+// claim about the machine's state (every state word in the clause is "open").
+const STATE_WORD_ALL = new RegExp(STATE_WORD.source, "gu");
+function uiOpenOnly(cl) {
+  const all = cl.match(STATE_WORD_ALL) || [];
+  return all.length > 0 && all.every((w) => w === "open");
+}
 // Drafting a report with the administrator ("a good starting point is the uptime
 // section") talks about what to write, not about the machine's state.
 const REPORT_TALK = new RegExp(uni(/\b(report|draft|outline|section|headline|summary section|starting point|start with|break (?:it|that|them|this) down|bullet|paragraph)\b/).source + "|(?<![\\p{L}])(?:تقرير|التقرير|نكتب|نبدا|نضيف|مسوده|المسوده|نحط|الفقره|فقره|عنوان)(?![\\p{L}])", "u");
@@ -521,7 +542,8 @@ function mintAsOther(cl) {
   MINT_MENTION.lastIndex = 0;
   for (const m of cl.matchAll(MINT_MENTION)) {
     if (SELF_INTRO.test(cl.slice(0, m.index))) continue;
-    if (/^\s*(?:os\b|'s voice\b|s voice\b)/.test(cl.slice(m.index + m[0].length))) continue;
+    // The product: "MINT AI OS", "MINT AI's OS dashboard", "Mint AIOS", "MINT AI O.S." (as transcribed).
+    if (/^\s*(?:os\b|'s voice\b|s voice\b|'?s os\b|o\.\s?s\b|aios\b|ai\s?os\b)/.test(cl.slice(m.index + m[0].length))) continue;
     return true;
   }
   return false;
@@ -857,6 +879,10 @@ function judge(sentences, ctx) {
       let m;
       // One identity: never "I've passed that to MINT AI", never "MINT AI says ...".
       if (thirdPerson(cl)) return fail("third-person", raw, si);
+      // A screen action announced in a response whose calls are not known yet (null: the Releaser holds it)
+      // or that does call ui_action (true): the call and the page's answer decide, not the words.
+      // (Only in a sentence that announces nothing else: "I'll open the missions and delete the logs" is still judged.)
+      if (!summary && (c.uiCalling === null || c.uiCalling === true) && UI_ANNOUNCE.test(cl) && !ACTION_ANY.test(norm(sentence).replace(UI_ANNOUNCE_G, " "))) continue;
       // "I opened Missions" / «فتحتلك الـ missions»: only after a ui_action in this turn returned ok.
       const uiClaim = !summary && UiActions.claims(cl);
       if (uiClaim && !c.uiOk) return fail("ui-claim", raw, si);
@@ -909,7 +935,7 @@ function judge(sentences, ctx) {
         if (terms.length && stateWord && !hedge && finding && c.replied) {
           // "I found that Odoo is down": a result, so it must be about what a result says.
           if (!(replyText && terms.some((t) => t === "(unnamed)" || replyText.includes(t.replace(/s$/, ""))))) return fail("not-in-reply", raw, si);
-        } else if (terms.length && stateWord && !hedge && !MINT_NAME.test(cl)) {
+        } else if (terms.length && stateWord && !hedge && !MINT_NAME.test(cl) && !(c.uiOk && uiOpenOnly(cl))) {
           if (!c.grounded) return fail("ungrounded", raw, si);
           const knownTerm = terms.some((t) => t === "(unnamed)" || snapText.includes(t.replace(/s$/, "")));
           if (!knownTerm && !(replyText && terms.some((t) => replyText.includes(t.replace(/s$/, ""))))) return fail("not-in-snapshot", raw, si);
@@ -1101,7 +1127,9 @@ class Releaser {
     const list = sentencesOf(this.summary ? String(text).replace(/[`*]+/g, "") : text, final);
     this.sentences = list;
     // A hand-off said in the passive is true once the ask_moni call is known.
-    const ctxNow = () => ({ ...this.ctxFn(), askedNow: !!(i.askedNow && i.askedNow()) });
+    // A screen action announced ("I'll open the missions") waits until the response's calls are known (uiCalling).
+    const uiCalling = i.uiCalling ? i.uiCalling() : undefined;
+    const ctxNow = () => ({ ...this.ctxFn(), askedNow: !!(i.askedNow && i.askedNow()), ...(uiCalling !== undefined ? { uiCalling } : {}) });
     const g = judge(list, ctxNow());
     if (!g.ok) {
       this.trip = { ...g, sentence: list[g.at] || "" };
@@ -1136,6 +1164,7 @@ class Releaser {
       const last = k === list.length - 1;
       if (!final && last && needsNext(s)) break; // judged with the next one, or at the end
       if (!final && !this.summary && mentionsChecking(s) && !(i.askedNow && i.askedNow()) && !(i.pending && i.pending())) break; // backed only once the calls are known
+      if (!this.summary && uiCalling === null && uiAnnounce(s)) break; // backed only once the calls are known
       this.released = k + 1;
       this.onLine(s);
     }
@@ -1573,6 +1602,7 @@ module.exports = {
   mentionsHandoff,
   mentionsChecking,
   thirdPerson,
+  uiAnnounce,
   HANDOFF_PASSIVE_AR,
   numbersIn,
   numberSet,

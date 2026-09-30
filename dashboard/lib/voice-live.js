@@ -114,6 +114,32 @@ const MAX_ASK_CHARS = 2000;
 const VERBATIM_MAX_SENTENCES = 8;
 const REPLY_IN_CONTEXT_CHARS = 1500;
 const WS_BASE = process.env.MONI_OPENAI_WS || "wss://api.openai.com/v1";
+/*
+ * Keeping the upstream leg alive (2026-09-30: 13 calls ended "upstream"; the
+ * firewall showed OpenAI's IPv6 packets arriving 13-21 s after our side's TCP
+ * connection had died, so the drop was ours or the path's, not OpenAI's):
+ *   - IPv4 only for the OpenAI WebSocket (MONI_OPENAI_IPV4=0, or cfg.ipv4 =
+ *     false, goes back to the resolver's choice);
+ *   - a ping every KEEPALIVE_MS; a leg that has answered nothing (no pong, no
+ *     event) for KEEPALIVE_DEAD_MS is dead and is replaced at once;
+ *   - an unexpected close is reconnected (swapUpstream) with a recap of the
+ *     last lines, and the voice says it is back -- at most RECONNECT_PER_MIN
+ *     times a minute, then the call ends with the reason shown;
+ *   - opening a session is tried twice (OPEN_TRIES), OPEN_RETRY_MS apart.
+ */
+const FORCE_IPV4 = process.env.MONI_OPENAI_IPV4 !== "0";
+const KEEPALIVE_MS = 10 * 1000;
+const KEEPALIVE_DEAD_MS = 25 * 1000;
+const RECONNECT_PER_MIN = 2;
+const OPEN_TRIES = 2;
+const OPEN_RETRY_MS = 800;
+const RECAP_LINES = 6;
+const EARLIER_MS = 45 * 1000; // a result arriving this long after its ask (or after newer words) is introduced
+// What the page may say when it ends a call ({type: "end", why}); anything else is logged as "unspecified".
+const END_WHY = /^(?:button|esc|mic|navigate|unload|track-ended|devicechange|voice-changed|error:[^\u0000-\u001f]{0,80})$/;
+const BACK_LINE = { en: "The line dropped for a second — I'm back.", ar: "الخط قطع لثانية، وأنا معاك تاني." };
+const RECONNECTED_LINE = { en: "Reconnected.", ar: "الاتصال رجع، وأنا معاك." };
+const EARLIER_LINE = { en: "About your earlier question:", ar: "بخصوص سؤالك اللي فات:" };
 
 const TOOLS = [
   {
@@ -312,7 +338,11 @@ class LiveCall {
     this.uiPending = new Map(); // nonce -> resolve (the page's ui-ack)
     this.endAfterSpeech = 0; // call.end: when it was asked
     this.undoUntil = 0; // the page's last screen action can be undone until then (ui-undoable)
-    this.diag = { ui: [], responses: 0, trips: [], bargeIns: [], candidates: [], held: [], firstAudio: [], echoes: 0, leaks: 0, stops: 0, refused: [], handoffs: [], transcripts: [], gatedMs: 0, dupUsage: 0, created: 0 };
+    this.diag = { ui: [], responses: 0, trips: [], bargeIns: [], candidates: [], held: [], firstAudio: [], echoes: 0, leaks: 0, stops: 0, refused: [], handoffs: [], transcripts: [], gatedMs: 0, dupUsage: 0, created: 0, drops: [], merged: 0 };
+    this.recap = []; // [{who: "you" | "me", text}]: the last lines, for a new upstream session
+    this.drops = []; // when the upstream leg dropped (the per-minute cap)
+    this.keepT = null;
+    this.endWhy = null; // { why, detail } once ended
     this.state = "connecting";
   }
 
@@ -350,17 +380,23 @@ class LiveCall {
   }
 
   /**
-   * A new voice (or key, or listening model) while the call is open: the
-   * upstream session is replaced and the call goes on -- the same page, its
-   * socket, microphone and playback, the same mode, persona, mute and noise
-   * settings. What was playing stops; the old session is closed quietly; the
-   * new one gets a note of what happened. With `greet`, the voice says one
-   * short line in its new voice (a true claim: the change is applied).
-   * Returns { ok, ms } -- ms from the swap to the new session being ready.
+   * The upstream session is replaced and the call goes on -- the same page,
+   * its socket, microphone and playback, the same mode, persona, mute and
+   * noise settings. What was playing stops; the old session is closed quietly;
+   * the new one gets a note of what happened and a recap of the last lines.
+   * Two reasons (o.reason):
+   *   "voice" (the default): a new voice (or key, or listening model) while the
+   *     call is open. With `greet`, the voice says one short line in its new
+   *     voice (a true claim: the change is applied);
+   *   "drop": the upstream leg closed unexpectedly (upstreamLost); the voice
+   *     says the line dropped and it is back.
+   * Opening is tried OPEN_TRIES times. Returns { ok, ms } -- ms from the swap
+   * to the new session being ready.
    */
   async swapUpstream(patch, o) {
     o = o || {};
     if (this.closed) return { ok: false, why: "the call has ended" };
+    const drop = o.reason === "drop";
     const t0 = this.now();
     const was = this.cfg.voice;
     this.cfg = { ...this.cfg, ...(patch || {}) };
@@ -375,28 +411,35 @@ class LiveCall {
     this.pendingRound = null;
     this.queued = null;
     this.pendingBarge = null;
+    this.stopKeepalive();
     try {
-      if (old) old.close(1000, "voice changed");
+      if (old) old.close(1000, drop ? "replaced" : "voice changed");
     } catch (_) {
       /* already gone */
     }
     this.setState("connecting");
     try {
-      await this.open();
+      await this.connect();
     } catch (e) {
-      this.close("upstream", "Could not reconnect with the new voice: " + scrub(e.message));
+      if (!this.closed) this.close("upstream", (drop ? "The connection to OpenAI dropped and could not be restored: " : "Could not reconnect with the new voice: ") + scrub(e.message), "reconnect failed");
       return { ok: false, why: e.message };
     }
+    if (this.closed) return { ok: false, why: "the call has ended" };
     const ms = this.now() - t0;
-    this.diag.swaps = (this.diag.swaps || []).concat([{ ms, voice: this.cfg.voice }]);
-    this.log(`live: call ${this.id} reconnected with voice ${this.cfg.voice} (was ${was}) in ${ms} ms${o.greet ? ", greeting" : ""}`);
-    // The new session knows nothing of the old one: tell it what just happened.
-    this.send({ type: "conversation.item.create", item: { type: "message", role: "user", content: [{ type: "input_text", text: "(System note, not the administrator speaking: the voice was just changed to " + this.cfg.voice + " at the administrator's request, after their confirmation. The conversation goes on.)" }] } });
-    this.toClient({ type: "voice-changed", voice: this.cfg.voice, greet: !!o.greet, ms });
+    if (drop) this.diag.drops.push({ ms, why: o.why || "" });
+    else this.diag.swaps = (this.diag.swaps || []).concat([{ ms, voice: this.cfg.voice }]);
+    this.log(drop ? `live: call ${this.id} upstream reconnected in ${ms} ms` : `live: call ${this.id} reconnected with voice ${this.cfg.voice} (was ${was}) in ${ms} ms${o.greet ? ", greeting" : ""}`);
+    // The new session knows nothing of the old one: tell it what just happened, and the last lines.
+    const what = drop ? "the connection dropped for a moment and was restored; this is the same conversation" : "the voice was just changed to " + this.cfg.voice + " at the administrator's request, after their confirmation. The conversation goes on";
+    this.send({ type: "conversation.item.create", item: { type: "message", role: "user", content: [{ type: "input_text", text: "(System note, not the administrator speaking: " + what + "." + this.recapText() + ")" }] } });
+    if (drop) this.toClient({ type: "reconnected", ms });
+    else this.toClient({ type: "voice-changed", voice: this.cfg.voice, greet: !!o.greet, ms });
     if (this.muted) this.setState("muted");
-    else this.setState("listening");
-    if (o.greet) {
-      const line = voiceChangedLine(desk.langOf(this.heard.length ? this.heard[this.heard.length - 1] : "", ""), this.persona);
+    else this.setState(this.anyPending() ? "waiting" : "listening");
+    const lang = desk.langOf(this.heard.length ? this.heard[this.heard.length - 1] : "", "");
+    if (drop) this.sayFixed(lang === "ar" ? BACK_LINE.ar : BACK_LINE.en, "the back line");
+    else if (o.greet) {
+      const line = voiceChangedLine(lang, this.persona);
       const g = desk.judge(desk.sentencesOf(line, true), { uiOk: true });
       if (g.ok) {
         this.send({ type: "conversation.item.create", item: { type: "message", role: "assistant", content: [{ type: "output_text", text: line }] } });
@@ -406,7 +449,82 @@ class LiveCall {
     return { ok: true, ms };
   }
 
-  /** Open the upstream session with the fixed configuration. */
+  /** A call the page reconnected after the dashboard restarted (?resume=restart): the voice says so, once. */
+  sayReconnected(lang) {
+    return this.sayFixed(lang === "ar" ? RECONNECTED_LINE.ar : RECONNECTED_LINE.en, "the reconnected line");
+  }
+
+  /**
+   * A fixed line of this server's own (not the model's): it is put in the
+   * realtime conversation as the voice's, and read by the verbatim reader.
+   * Judged like the voice's words; a line that does not pass is not said --
+   * except a screen confirmation (o.trusted): it is built only from the
+   * action's toast and the page map's labels ("Opened MINT AI Settings."),
+   * which the third-person rule would otherwise take for MINT AI as someone else.
+   */
+  sayFixed(line, what, turn, o) {
+    if (this.closed || !line) return false;
+    const g = o && o.trusted ? { ok: true } : desk.judge(desk.sentencesOf(line, true), { uiOk: true });
+    if (!g.ok) {
+      this.log(`live: ${what || "a fixed line"} did not pass the guard (${g.rule}); not said`);
+      return false;
+    }
+    this.send({ type: "conversation.item.create", item: { type: "message", role: "assistant", content: [{ type: "output_text", text: line }] } });
+    this.say([{ text: line, safe: true }], "safe", turn || null);
+    return true;
+  }
+
+  /** The last few lines heard and said, for a new upstream session (short, most recent last). */
+  recapText() {
+    const lines = this.recap.slice(-RECAP_LINES);
+    if (!lines.length) return "";
+    return " The last lines, most recent last: " + lines.map((l) => (l.who === "you" ? "Administrator: " : "You: ") + JSON.stringify(String(l.text).slice(0, 200))).join(" / ");
+  }
+  addRecap(who, text) {
+    const t = String(text || "").trim();
+    if (!t) return;
+    this.recap.push({ who, text: t });
+    if (this.recap.length > 12) this.recap.shift();
+  }
+
+  /** open(), tried OPEN_TRIES times (a connect failure is retried once). */
+  async connect() {
+    const tries = Math.max(1, this.opts.openTries || OPEN_TRIES);
+    let last = null;
+    for (let i = 0; i < tries; i++) {
+      if (this.closed) throw new Error("the call has ended");
+      if (i) {
+        await new Promise((r) => this.timer(r, this.opts.openRetryMs != null ? this.opts.openRetryMs : OPEN_RETRY_MS));
+        if (this.closed) throw new Error("the call has ended");
+        this.log(`live: call ${this.id} retrying the upstream connection (${last && last.message})`);
+      }
+      try {
+        return await this.open();
+      } catch (e) {
+        last = e;
+        this.ws = null;
+        this.ready = null;
+      }
+    }
+    throw last || new Error("could not connect");
+  }
+
+  /** IPv4 only for the OpenAI WebSocket (on by default; see FORCE_IPV4). */
+  ipv4() {
+    return this.cfg.ipv4 != null ? !!this.cfg.ipv4 : FORCE_IPV4;
+  }
+
+  stopKeepalive() {
+    if (this.keepT) clearInterval(this.keepT);
+    this.keepT = null;
+  }
+
+  /**
+   * Open the upstream session with the fixed configuration. Everything about
+   * how it ends is logged (close code and reason, the socket error's code, the
+   * last event it sent); an unexpected end of the current session goes to
+   * upstreamLost().
+   */
   open() {
     if (this.ready) return this.ready;
     this.ready = new Promise((resolve, reject) => {
@@ -415,35 +533,72 @@ class LiveCall {
         headers: { Authorization: "Bearer " + this.cfg.key },
         handshakeTimeout: 10000,
         perMessageDeflate: false,
+        ...(this.ipv4() ? { family: 4 } : {}),
       }));
+      const up = { at: this.now(), heardAt: this.now(), last: "none", err: "" };
       let opened = false;
-      // A session replaced by swapUpstream() goes quietly: only the current one can end the call.
-      const fail = (why) => {
-        if (ws !== this.ws) return !opened && reject(new Error("replaced"));
-        if (!opened) reject(new Error(why));
-        else this.close("upstream", why);
+      let gone = false;
+      // Only the current session can end the call; one replaced by swapUpstream() goes quietly.
+      const lost = (detail) => {
+        if (gone) return;
+        gone = true;
+        if (ws === this.ws) this.stopKeepalive();
+        if (ws !== this.ws || this.closed) return !opened && reject(new Error("replaced"));
+        const secs = Math.round((this.now() - up.at) / 1000);
+        this.log(`live: call ${this.id} upstream ${opened ? "lost" : "failed"}: ${detail}${up.err ? ", " + up.err : ""}, after ${secs} s, last event ${up.last}`);
+        const why = opened
+          ? "OpenAI closed the live session (" + detail + ")"
+          : /^HTTP (\d+)/.test(detail)
+            ? "OpenAI refused the live session (" + detail.slice(5) + ")"
+            : "Could not reach OpenAI (" + (up.err || detail) + ")";
+        if (!opened) return reject(new Error(why));
+        this.upstreamLost(why);
       };
-      ws.on("unexpected-response", (req, res) => fail("OpenAI refused the live session (" + res.statusCode + ")"));
-      ws.on("error", (e) => fail("Could not reach OpenAI: " + scrub(e.message)));
-      ws.on("close", () => fail("OpenAI closed the live session"));
+      ws.on("unexpected-response", (req, res) => {
+        lost("HTTP " + res.statusCode);
+        try {
+          req.destroy();
+        } catch (_) {
+          /* gone */
+        }
+      });
+      ws.on("error", (e) => {
+        up.err = "error " + ((e && e.code) || "") + " " + scrub((e && e.message) || "").slice(0, 120);
+        up.err = up.err.replace(/\s+/g, " ").trim();
+      });
+      ws.on("close", (code, reason) => lost("code " + code + (reason && reason.length ? ' "' + scrub(String(reason)).slice(0, 120) + '"' : "")));
+      ws.on("pong", () => (up.heardAt = this.now()));
       ws.on("open", () => this.send({ type: "session.update", session: this.sessionConfig() }));
       ws.on("message", (data) => {
         if (ws !== this.ws) return;
+        up.heardAt = this.now();
         let ev;
         try {
           ev = JSON.parse(String(data));
         } catch (_) {
           return;
         }
+        up.last = String(ev.type || "?").slice(0, 60);
         if (!opened) {
           if (ev.type === "session.updated") {
             opened = true;
             this.sessionAt = this.now();
             if (!this.maxTimer) this.maxTimer = this.timer(() => this.close("max-length", "The live conversation reached its 20-minute limit."), this.opts.maxMs);
+            this.startKeepalive(ws, up);
             this.setState("listening");
             return resolve(this);
           }
-          if (ev.type === "error") return fail(scrub((ev.error && ev.error.message) || "OpenAI error"));
+          if (ev.type === "error") {
+            up.err = "OpenAI error " + scrub((ev.error && (ev.error.code || ev.error.message)) || "");
+            this.log(`live: call ${this.id} OpenAI refused the session: ${scrub((ev.error && ev.error.message) || "OpenAI error")}`);
+            gone = true;
+            try {
+              ws.close(1000, "refused");
+            } catch (_) {
+              /* closed */
+            }
+            return reject(new Error(scrub((ev.error && ev.error.message) || "OpenAI error")));
+          }
           return;
         }
         try {
@@ -455,6 +610,52 @@ class LiveCall {
     });
     this.ready.catch(() => {});
     return this.ready;
+  }
+
+  /** A ping on the upstream leg every KEEPALIVE_MS; silence for KEEPALIVE_DEAD_MS ends it (and the call reconnects). */
+  startKeepalive(ws, up) {
+    this.stopKeepalive();
+    const every = this.opts.keepaliveMs || KEEPALIVE_MS;
+    const dead = this.opts.keepaliveDeadMs || KEEPALIVE_DEAD_MS;
+    this.keepT = setInterval(() => {
+      if (ws !== this.ws || this.closed) return this.stopKeepalive();
+      if (ws.readyState !== WebSocket.OPEN) return;
+      if (this.now() - up.heardAt > dead) {
+        this.log(`live: call ${this.id} upstream silent for ${Math.round((this.now() - up.heardAt) / 1000)} s (no pong, no event); dropping it`);
+        up.err = "no answer to pings";
+        try {
+          ws.terminate();
+        } catch (_) {
+          /* gone */
+        }
+        return;
+      }
+      try {
+        ws.ping();
+      } catch (_) {
+        /* closing */
+      }
+    }, every);
+    if (this.keepT.unref) this.keepT.unref();
+  }
+
+  /**
+   * The current upstream session ended without being asked to: reconnect with
+   * a recap and say so -- unless it has dropped RECONNECT_PER_MIN times in the
+   * last minute already, then the call ends with the reason shown.
+   */
+  upstreamLost(why) {
+    if (this.closed) return;
+    const now = this.now();
+    this.drops = this.drops.filter((t) => now - t < 60 * 1000);
+    const cap = this.opts.reconnectPerMin != null ? this.opts.reconnectPerMin : RECONNECT_PER_MIN;
+    if (this.opts.reconnect === false || this.drops.length >= cap) {
+      if (this.drops.length >= cap && cap > 0) this.log(`live: call ${this.id} upstream dropped ${this.drops.length + 1} times within a minute; ending the call`);
+      return this.close("upstream", this.drops.length >= cap && cap > 0 ? "The connection to OpenAI dropped " + (this.drops.length + 1) + " times within a minute. Start the call again when the line is steadier." : why, why);
+    }
+    this.drops.push(now);
+    this.toClient({ type: "reconnecting", why: "upstream" });
+    this.swapUpstream(null, { reason: "drop", why }).catch((e) => this.close("upstream", "Could not reconnect: " + scrub(e.message)));
   }
 
   sessionConfig() {
@@ -477,13 +678,21 @@ class LiveCall {
     };
   }
 
-  close(why, text) {
+  /**
+   * End the call. why: the category the logs and the page use (hung-up,
+   * upstream, voice-command, mint-ended, max-length, page-closed, restarting,
+   * signed-out, ...); text: what the page shows; detail: a short note for the
+   * log only (the page's end reason, a close code, the stop phrase).
+   */
+  close(why, text, detail) {
     if (this.closed) return;
+    this.endWhy = { why: why || "ended", detail: detail ? String(detail).slice(0, 120) : "" };
     this.toClient({ type: "ended", why: why || "ended", text: text || undefined });
     this.closed = true;
     this.speechGen++;
     for (const t of this.timers) clearTimeout(t);
     this.timers.clear();
+    this.stopKeepalive();
     try {
       if (this.ws) this.ws.close();
     } catch (_) {
@@ -494,7 +703,7 @@ class LiveCall {
     } catch (_) {
       /* gone */
     }
-    this.log(`live: call ${this.id} ended (${why}) after ${Math.round((this.now() - this.bornAt) / 1000)} s, $${this.usd.toFixed(4)}`);
+    this.log(`live: call ${this.id} ended (${why}${this.endWhy.detail ? ": " + this.endWhy.detail : ""}) after ${Math.round((this.now() - this.bornAt) / 1000)} s, $${this.usd.toFixed(4)}`);
   }
 
   /* ---- from the browser ---- */
@@ -563,9 +772,12 @@ class LiveCall {
         if (done) done({ ok: !!m.ok, why: typeof m.why === "string" ? m.why.slice(0, 200) : "" });
         break;
       }
-      case "end":
-        this.close("hung-up");
+      case "end": {
+        // The page says why ({type: "end", why}): the red button, a mic track that ended, leaving the page...
+        const w = typeof m.why === "string" ? m.why.replace(/[\u0000-\u001f]/g, " ").slice(0, 90) : "";
+        this.close("hung-up", undefined, END_WHY.test(w) ? w : "unspecified");
         break;
+      }
       default:
         break;
     }
@@ -872,6 +1084,8 @@ class LiveCall {
       if (JSON.stringify([this.persona.dialect, this.persona.gender]) !== before) this.send({ type: "session.update", session: { type: "realtime", instructions: instructionsFor(this.persona) } });
     }
     this.heard.push(text);
+    this.lastHeardN = t.n;
+    this.addRecap("you", text);
     this.toClient({ type: "caption", who: "you", text, final: true });
     t.resolveSession(text);
     this.answer(t);
@@ -1024,7 +1238,7 @@ class LiveCall {
     }
     this.toClient({ type: "flush", at: this.now() });
     this.toClient({ type: "stop", why: "voice-command", text });
-    this.close("voice-command");
+    this.close("voice-command", undefined, JSON.stringify(String(text || "").slice(0, 60)));
   }
 
   responseCreated(ev) {
@@ -1049,7 +1263,7 @@ class LiveCall {
       firstAudioOut: null,
     };
     r.rel = new desk.Releaser(() => this.context(), (text) => this.onRelease(r, text));
-    r.info = { askedNow: () => !!(turn && turn.asked), pending: () => [...this.requests.values()].some((x) => !x.answered) };
+    r.info = { askedNow: () => !!(turn && turn.asked), pending: () => [...this.requests.values()].some((x) => !x.answered), uiCalling: () => (r.uiCalls === undefined ? null : r.uiCalls) };
     this.resp = r;
     this.diag.responses++;
     // A turn already dropped (an echo, a stop command) gets no answer.
@@ -1112,6 +1326,7 @@ class LiveCall {
 
   onRelease(r, text) {
     this.spoken.push({ text, at: this.now() });
+    this.addRecap("me", text);
     if (this.spoken.length > 40) this.spoken.shift();
     this.toClient({ type: "caption", who: "desk", text, final: true, seg: r.seg || undefined });
   }
@@ -1130,6 +1345,8 @@ class LiveCall {
     // "I'm checking" is backed only once the response's calls are known (response.done), unless a request is already in progress.
     const inProgress = r.info.askedNow() || r.info.pending();
     if (!inProgress && (desk.mentionsChecking(r.text) || desk.unbackedChecking(r.text, { askedNow: false, pending: false }))) return;
+    // "I'll open the missions" is backed by the ui_action call, known at response.done.
+    if (desk.uiAnnounce(r.text)) return;
     r.rel.update(r.text, true, r.info);
     if (r.rel.trip) return this.trip(r);
     r.textFinal = true;
@@ -1174,6 +1391,7 @@ class LiveCall {
       if (q !== r.turn && !q.dropped) this.createFor(q);
     }
     const calls = (resp.output || []).filter((o) => o.type === "function_call").map((o) => ({ name: o.name, call_id: o.call_id, arguments: o.arguments }));
+    r.uiCalls = calls.some((c) => c.name === "ui_action");
     for (const o of resp.output || []) {
       if (o.type === "message" && !r.trip && !r.cancelled) {
         const full = (o.content || []).map((p) => p.transcript || p.text || "").join("");
@@ -1194,6 +1412,12 @@ class LiveCall {
       if (s && s.itemId) {
         s.truncated = true;
         this.send({ type: "conversation.item.truncate", item_id: s.itemId, content_index: 0, audio_end_ms: Math.floor(s.sentBytes / BYTES_PER_MS) });
+      }
+      // A cut response that also called a tool: the calls run (the next round speaks, a ui_action says
+      // its own confirmation, look_into passes the request on) -- no second hand-off of the same words.
+      if (calls.length) {
+        this.log(`live: the cut reply called ${calls.map((c) => String(c.name).slice(0, 30)).join(", ")}; the calls run, no hand-off`);
+        return this.runCalls(r, calls);
       }
       return this.afterTrip(r);
     }
@@ -1256,14 +1480,22 @@ class LiveCall {
     } catch (_) {
       ut = null;
     }
-    const res = await this.d.ops.ask(request, ut ? { ut } : undefined);
+    // `call`: this call's id, so the supervisor can fold a repeat that is still queued into the same turn.
+    const res = await this.d.ops.ask(request, { ...(ut ? { ut } : {}), call: this.id });
     const tt = res && res.turn;
     t.asked = (tt && tt.id) || true;
-    if (tt && tt.id) this.requests.set(tt.id, { text: request, answered: false });
-    this.diag.handoffs.push({ turn: t.n, chars: request.length });
-    this.toClient({ type: "asked", turn: tt ? { id: tt.id, status: tt.status } : null });
+    const mine = tt && tt.id ? this.requests.get(tt.id) : null;
+    const merged = !!(mine && !mine.answered);
+    if (merged) {
+      // Said again while the first was still waiting in MINT AI's queue: one turn, one answer.
+      mine.text += "\n" + request;
+      this.diag.merged++;
+      this.log(`live: call ${this.id} turn ${t.n} folded into the queued request ${tt.id}`);
+    } else if (tt && tt.id) this.requests.set(tt.id, { text: request, answered: false, askedAt: this.now(), turnN: t.n });
+    this.diag.handoffs.push({ turn: t.n, chars: request.length, merged });
+    this.toClient({ type: "asked", turn: tt ? { id: tt.id, status: tt.status } : null, merged: merged || undefined });
     this.setState("waiting");
-    if (tt && tt.id) this.watchReply(tt.id, request);
+    if (tt && tt.id && !merged) this.watchReply(tt.id, request);
     return tt;
   }
 
@@ -1271,15 +1503,23 @@ class LiveCall {
     const outputs = [];
     for (const call of calls) {
       let output;
+      const before = (r.uiConfirms || []).length;
       try {
         output = await this.runTool(call, r);
       } catch (e) {
         output = JSON.stringify({ error: "that did not work: " + scrub(e.message) });
       }
-      outputs.push({ call, output });
+      outputs.push({ call, output, confirm: (r.uiConfirms || []).length > before ? r.uiConfirms[r.uiConfirms.length - 1] : null });
     }
     if (this.closed) return;
     for (const o of outputs) this.send({ type: "conversation.item.create", item: { type: "function_call_output", call_id: o.call.call_id, output: o.output } });
+    // Only screen actions, all confirmed by the page: this server says so in a fixed line (grounded in the
+    // page's ui-ack), and the model is not asked to speak about it (it cannot claim more than was done).
+    if (outputs.length && outputs.every((o) => o.confirm)) {
+      const line = outputs.map((o) => o.confirm[this.lang()]).join(" ");
+      if (!this.sayFixed(line, "the screen confirmation", r.turn, { trusted: true })) this.setState("listening");
+      return;
+    }
     if (r.round + 1 >= MAX_ROUNDS) return this.setState("listening");
     // A new utterance in the meantime takes over; this round is not answered.
     if (this.lastTurn !== r.turn && this.lastTurn && this.lastTurn.startedAt > r.createdAt) return;
@@ -1410,9 +1650,15 @@ class LiveCall {
         audit("refused by the page: " + ack.why);
         return refuse(ack.why || "the screen refused it");
       }
-      result = v.action === "page.open"
-        ? { status: "ok", done: toast, note: "The page is open in the Command Center's frame and this live call carries on. Say in one short first-person sentence that it is open." }
-        : { status: "ok", done: toast, note: "Say in one short first-person sentence what you did." };
+      const said = uiConfirmLine(v.action, v.args);
+      if (said) {
+        // Spoken by this server once the calls have run (runCalls): the page's answer is what backs it.
+        r.uiConfirms = (r.uiConfirms || []).concat([said]);
+        result = { status: "ok", done: toast, note: "Done, and already said aloud to the administrator (\"" + said[this.lang()] + "\"). Do not say it again or add to it." + (v.action === "page.open" ? " The page is open in the Command Center's frame and this live call carries on." : "") };
+      } else
+        result = v.action === "page.open"
+          ? { status: "ok", done: toast, note: "The page is open in the Command Center's frame and this live call carries on. Say in one short first-person sentence that it is open." }
+          : { status: "ok", done: toast, note: "Say in one short first-person sentence what you did." };
     }
     t.uiOk = true;
     this.diag.ui.push({ turn: t.n, action: v.action });
@@ -1471,6 +1717,12 @@ class LiveCall {
     mine.answered = true;
     this.toClient({ type: "replied", turn: id });
     const lines = [];
+    // A result for an older request (the administrator has said more since, or it took a while): say which.
+    const vt0 = this.id + "r" + id;
+    if ((this.lastHeardN || 0) > (mine.turnN || 0) || (mine.askedAt && this.now() - mine.askedAt > EARLIER_MS)) {
+      const intro = arabic.isArabic(mine.text || "") ? EARLIER_LINE.ar : EARLIER_LINE.en;
+      this.say([{ text: intro, safe: true }], "mint", null, vt0);
+    }
     let fallback = !this.d.summarise;
     let deskTokens = null;
     const vt = this.id + "r" + id;
@@ -1536,6 +1788,10 @@ class LiveCall {
   anyPending() {
     return [...this.requests.values()].some((x) => !x.answered);
   }
+  /** The call's language: the last thing heard ("ar" or "en"). */
+  lang() {
+    return desk.langOf(this.heard.length ? this.heard[this.heard.length - 1] : "", "") === "ar" ? "ar" : "en";
+  }
 
   async sayOne(line, kind, turn, vt, gen) {
     const seg = ++this.segSeq;
@@ -1547,6 +1803,7 @@ class LiveCall {
     this.toClient({ type: "caption", who: kind === "mint" ? "mint" : "desk", text: line.text, final: true, seg });
     this.setState("speaking");
     this.spoken.push({ text: line.text, at: this.now() });
+    this.addRecap("me", line.text);
     try {
       const res = await this.d.speak(line.text, { ...this.cfg, voice: this.cfg.voice }, {
         start: () => {},
@@ -1596,23 +1853,82 @@ function voiceChangedLine(lang, persona) {
   return lang === "ar" ? "غيّرت صوتي، ده صوتي الجديد." : "I switched my voice, this is my new voice.";
 }
 
+/**
+ * The fixed line this server says after the page confirmed a screen action
+ * (its ui-ack): { en, ar }, or null for an action that speaks for itself
+ * (reply.read reads the reply aloud) or is not the page's. Built from the
+ * action's own toast ("Mint opened Agents & sessions" -> "Opened Agents &
+ * sessions."); names of pages and panels stay as the screen shows them.
+ */
+function uiConfirmLine(action, args) {
+  const a = args || {};
+  const toast = UiActions.toast(action, a);
+  if (!toast || action === "reply.read" || /^call\./.test(action)) return null;
+  // (decision.show's toast, "showed the waiting card -- approving it is yours", reads as a claim to the guard.)
+  const en = action === "decision.show" ? "The waiting card is open; the decision is yours." : toast.replace(/^Mint\s+/, "").replace(/\s+--\s+/g, "; ").replace(/^./, (c) => c.toUpperCase()).replace(/[.!]?$/, ".");
+  const label = (s) => String(s || "").trim();
+  const page = action === "page.open" ? UiActions.navPage(a.page) : null;
+  const sheet = /^Mint (?:opened|closed) (.+)$/.exec(toast);
+  const ar = {
+    "page.open": () => "فتحت " + label(page ? page.label : a.page) + ".",
+    "sheet.open": () => "فتحت " + label(sheet && sheet[1]) + ".",
+    "sheet.close": () => (a.key ? "قفلت " + label(sheet && sheet[1]) + "." : "قفلت اللوحة."),
+    view: () => (a.name === "map" ? "فتحت الخريطة." : "فتحت Missions."),
+    "core.set": () => "غيّرت الـ core لـ " + label(a.core) + ".",
+    "reply.show": () => "فتحت آخر رد.",
+    "decision.show": () => "فتحت الكارت اللي مستنيك، والقرار ليك.",
+  }[action];
+  return { en, ar: ar ? ar() : en };
+}
+
 /* ------------------------------------------------ one call per user -- */
 
 const calls = new Map(); // actor -> LiveCall
+let onChange = null; // server.js: the open calls changed (the deploy scripts read the count it writes)
 
+function changed() {
+  try {
+    if (onChange) onChange(activeCount());
+  } catch (_) {
+    /* best effort */
+  }
+}
+function setOnChange(fn) {
+  onChange = typeof fn === "function" ? fn : null;
+}
 function callFor(actor) {
   const c = calls.get(actor);
   return c && !c.closed ? c : null;
 }
 function register(actor, call) {
   calls.set(actor, call);
+  changed();
 }
 function unregister(actor, call) {
   if (calls.get(actor) === call) calls.delete(actor);
+  changed();
 }
 function closeAll(why) {
   for (const c of calls.values()) c.close(why || "closed");
   calls.clear();
+  changed();
+}
+/**
+ * The dashboard is stopping (SIGTERM: a deploy or a restart): every page is
+ * told first ({type: "restarting"}), so it reconnects by itself with backoff
+ * instead of showing a dead call. Returns how many calls were open.
+ */
+function restartAll() {
+  let n = 0;
+  for (const c of [...calls.values()]) {
+    if (c.closed) continue;
+    c.toClient({ type: "restarting" });
+    c.close("restarting", "The dashboard is restarting; the call reconnects by itself.", "SIGTERM");
+    n++;
+  }
+  calls.clear();
+  changed();
+  return n;
 }
 /**
  * The voice settings changed (the voice is global): every open call is
@@ -1636,6 +1952,10 @@ function all() {
 function activeCount() {
   return [...calls.values()].filter((c) => !c.closed).length;
 }
+/** The open calls, for the status file the deploy scripts read: no words, no ids of anything else. */
+function status() {
+  return all().map((c) => ({ call: c.id, actor: c.d.actor, since: new Date(c.bornAt).toISOString(), state: c.state }));
+}
 
 module.exports = {
   LIVE_MODEL,
@@ -1658,9 +1978,13 @@ module.exports = {
   register,
   unregister,
   closeAll,
+  restartAll,
+  setOnChange,
   swapAll,
   voiceChangedLine,
+  uiConfirmLine,
   activeCount,
+  status,
   all,
   liveSources,
 };

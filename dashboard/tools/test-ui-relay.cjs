@@ -78,7 +78,7 @@ console.log("\nthe live call hands the token on");
   check("voiceOps.ask(text, {ut}) sends the token with the voice's send (via voice-desk)", seen[0].op === "send" && seen[0].params.ut === "UtUtUtUtUtUtUtUtUtUtUt01" && seen[0].params.via === "voice-desk");
   check("  and without one sends none", seen[1].op === "send" && !("ut" in seen[1].params));
   const liveSrc = fs.readFileSync(path.join(ROOT, "lib", "voice-live.js"), "utf8");
-  check("the live call's hand-off carries its ticket", /ut = this\.d\.uiTicket \? this\.d\.uiTicket\(\) : null;[\s\S]{0,300}this\.d\.ops\.ask\(request, ut \? \{ ut \} : undefined\)/.test(liveSrc));
+  check("the live call's hand-off carries its ticket", /ut = this\.d\.uiTicket \? this\.d\.uiTicket\(\) : null;[\s\S]{0,300}this\.d\.ops\.ask\(request, \{ \.\.\.\(ut \? \{ ut \} : \{\}\), call: this\.id \}\)/.test(liveSrc));
   check("the live call does MINT AI's call.* itself (deepUi), nothing else", /deepUi\(v\) \{[\s\S]*?else return \{ ok: false, why: "not a call action" \};/.test(liveSrc));
 
   console.log("\nserver.js");

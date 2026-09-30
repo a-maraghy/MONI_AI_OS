@@ -3956,6 +3956,22 @@ app.post("/mint-ai/api/ui/ack", ...moniAiWrite, async (req, res) => {
   }
 });
 
+/**
+ * The page's end reason when a socket message cannot carry it: leaving the
+ * page (navigator.sendBeacon on pagehide / unload, public/voice-live.js). The
+ * body is {_csrf, call, why}. Ends that call if it is still open (the socket's
+ * close may not have arrived yet) and logs the reason either way.
+ */
+app.post("/mint-ai/api/live/end", ...moniAiWrite, (req, res) => {
+  const b = req.body || {};
+  const why = typeof b.why === "string" && /^(?:unload|navigate|button|error:[^\u0000-\u001f]{0,80})$/.test(b.why) ? b.why : "unspecified";
+  const id = typeof b.call === "string" && /^lv[a-z0-9]{1,40}$/.test(b.call) ? b.call : null;
+  const call = voiceLive.callFor(req.me.username);
+  if (call && id && call.id === id) call.close("hung-up", undefined, why);
+  else console.log(`live: call ${id || "?"} end reason from the page (beacon): ${why}${call ? "" : " (already ended)"}`);
+  res.status(204).end();
+});
+
 app.post("/mint-ai/api/send", ...moniAiWrite, async (req, res) => {
   try {
     const params = moniai.cleanSend(req.body || {});
@@ -5586,7 +5602,9 @@ function liveUpgrade(req, socket, head) {
       const route = q.get("route") === "loopback" ? "loopback" : q.get("route") === "direct" ? "direct" : "unknown";
       const tab = q.get("tab") || null;
       const sid = req.sessionID || null; // the device's session: signing it out ends this call (endLiveCallsForSession)
-      liveWss.handleUpgrade(req, socket, head, (ws) => liveConnected(ws, { me, cfg, ip, duplex, noise: audio.noise, route, tab, canVoice: perm.can("voice.manage"), sid }));
+      // The page coming back after the dashboard restarted (it was told "restarting"): the voice says it is back.
+      const resume = q.get("resume") === "restart" ? { lang: q.get("lang") === "ar" ? "ar" : "en" } : null;
+      liveWss.handleUpgrade(req, socket, head, (ws) => liveConnected(ws, { me, cfg, ip, duplex, noise: audio.noise, route, tab, canVoice: perm.can("voice.manage"), sid, resume }));
     } catch (e) {
       console.log("live: upgrade failed: " + e.message);
       refuseUpgrade(socket, 500, "Server error");
@@ -5594,7 +5612,7 @@ function liveUpgrade(req, socket, head) {
   });
 }
 
-function liveConnected(ws, { me, cfg, ip, duplex, noise, route, tab, canVoice, sid }) {
+function liveConnected(ws, { me, cfg, ip, duplex, noise, route, tab, canVoice, sid, resume }) {
   const actor = me.username;
   const json = (o) => ws.readyState === 1 && ws.send(JSON.stringify(o));
   if (voiceLive.callFor(actor)) {
@@ -5646,7 +5664,7 @@ function liveConnected(ws, { me, cfg, ip, duplex, noise, route, tab, canVoice, s
   call.sid = sid || null;
   voiceLive.register(actor, call);
   db.logLogin(ip, actor, "voice", `live conversation started (${duplex === "full" ? "headphones" : "speakers"} mode, playback ${route}, noise reduction ${noise})`);
-  console.log(`live: call ${call.id} started: ${duplex} mode, playback ${route}, noise reduction ${noise}`);
+  console.log(`live: call ${call.id} started: ${duplex} mode, playback ${route}, noise reduction ${noise}${resume ? ", resumed after a restart" : ""}`);
   // Twice real time is the most a microphone can send; more is not a microphone.
   let window0 = Date.now();
   let bytes = 0;
@@ -5678,20 +5696,27 @@ function liveConnected(ws, { me, cfg, ip, duplex, noise, route, tab, canVoice, s
       /* closed */
     }
   }, 15000);
-  ws.on("close", () => {
+  // The page's socket closed. A call it ended itself ({type: "end", why}) is already closed with its
+  // reason; anything else (a tab killed, a network drop, a reload without the unload beacon) is
+  // "page-closed", with the close code -- not "hung-up", which is only ever the page's own end.
+  ws.on("close", (code, reason) => {
     clearInterval(ping);
-    call.close("hung-up");
+    if (!call.closed) call.close("page-closed", undefined, "code " + code + (reason && reason.length ? " " + JSON.stringify(String(reason).slice(0, 60)) : ""));
     voiceLive.unregister(actor, call);
     const dg = call.diag;
-    db.logLogin(ip, actor, "voice", `live conversation ended after ${Math.round((Date.now() - call.bornAt) / 1000)} s, $${call.usd.toFixed(4)}; ${call.duplex} mode, barge-ins ${dg.bargeIns.length} of ${dg.candidates.length} candidates, phantom turns ${dg.leaks}`);
+    const end = call.endWhy || { why: "ended", detail: "" };
+    db.logLogin(ip, actor, "voice", `live conversation ended (${end.why}${end.detail ? ": " + end.detail : ""}) after ${Math.round((Date.now() - call.bornAt) / 1000)} s, $${call.usd.toFixed(4)}; ${call.duplex} mode, barge-ins ${dg.bargeIns.length} of ${dg.candidates.length} candidates, phantom turns ${dg.leaks}, upstream reconnects ${dg.drops.length}`);
   });
   ws.on("error", () => {});
   call
-    .open()
-    .then(() => json({ type: "ready", call: call.id, model: call.model, voice: cfg.voice, max_s: Math.round(call.opts.maxMs / 1000), rate: voiceLive.RATE, duplex: call.duplex, noise }))
+    .connect()
+    .then(() => {
+      json({ type: "ready", call: call.id, model: call.model, voice: cfg.voice, max_s: Math.round(call.opts.maxMs / 1000), rate: voiceLive.RATE, duplex: call.duplex, noise, resumed: !!resume });
+      if (resume) call.sayReconnected(resume.lang);
+    })
     .catch((e) => {
       json({ type: "error", code: "upstream", error: voice.scrub(e.message) });
-      call.close("upstream");
+      call.close("upstream", voice.scrub(e.message), "could not connect");
     });
 }
 
@@ -5725,3 +5750,78 @@ const httpServer = app.listen(PORT, BIND, () => {
   }
 });
 httpServer.on("upgrade", liveUpgrade);
+
+/* ------------------------------------------- restarts and deploys ---- */
+
+/**
+ * The open live calls, in a file the deploy scripts read before they restart
+ * anything (deploy/deploy-dashboard.sh and deploy-moni-ai.sh warn about open
+ * calls). Rewritten whenever a call starts or ends; {count: 0} at start.
+ */
+const LIVE_STATUS_FILE = path.join(DATA_DIR, "live-calls.json");
+function writeLiveStatus() {
+  try {
+    fs.writeFileSync(LIVE_STATUS_FILE + ".tmp", JSON.stringify({ count: voiceLive.activeCount(), calls: voiceLive.status(), pid: process.pid, at: new Date().toISOString() }) + "\n", { mode: 0o640 });
+    fs.renameSync(LIVE_STATUS_FILE + ".tmp", LIVE_STATUS_FILE);
+  } catch (e) {
+    console.log("live: could not write " + LIVE_STATUS_FILE + ": " + e.message);
+  }
+}
+voiceLive.setOnChange(writeLiveStatus);
+writeLiveStatus();
+
+/**
+ * SIGTERM (systemctl restart / stop, a deploy): every live call's page is told
+ * {type: "restarting"} before its call ends, and reconnects by itself with
+ * backoff once the new process listens. Then this process exits.
+ */
+let stopping = false;
+function stopGracefully(sig) {
+  if (stopping) return;
+  stopping = true;
+  const n = voiceLive.restartAll();
+  console.log(`moni-dashboard: ${sig}; ${n} live call(s) told the dashboard is restarting`);
+  writeLiveStatus();
+  try {
+    httpServer.close();
+  } catch (_) {
+    /* already closing */
+  }
+  // A moment for the "restarting" frames and the close handshakes to leave.
+  setTimeout(() => process.exit(0), n ? 400 : 50).unref();
+}
+process.on("SIGTERM", () => stopGracefully("SIGTERM"));
+process.on("SIGINT", () => stopGracefully("SIGINT"));
+
+/**
+ * MINT AI hears that the dashboard (re)started, with what was deployed
+ * (deploy-dashboard.sh writes DEPLOYED next to server.js: the commit and when):
+ * the supervisor passes it on with MINT AI's next turn. Retried while the
+ * supervisor is not up.
+ */
+function deployedStamp(file) {
+  try {
+    const out = {};
+    for (const line of fs.readFileSync(file, "utf8").split("\n")) {
+      const m = /^([a-z_]+)=([^\s]{1,80})$/.exec(line.trim());
+      if (m) out[m[1]] = m[2];
+    }
+    return out;
+  } catch (_) {
+    return {};
+  }
+}
+function announceStart(tries) {
+  const d = deployedStamp(path.join(__dirname, "DEPLOYED"));
+  const params = { component: "dashboard", started_at: new Date(Date.now() - Math.round(process.uptime() * 1000)).toISOString() };
+  if (d.commit && /^[0-9a-f]{7,40}$/.test(d.commit)) params.commit = d.commit;
+  if (d.deployed_at && /^\d{4}-\d\d-\d\dT[\d:.]+Z$/.test(d.deployed_at)) params.deployed_at = d.deployed_at;
+  moniai
+    .call("deploy-event", params, "moni-dashboard", { timeout: 5000 })
+    .catch((e) => {
+      if (tries > 0 && !stopping) setTimeout(() => announceStart(tries - 1), 30000).unref();
+      else console.log("moni-dashboard: MINT AI was not told about this start (" + e.message + ")");
+    });
+}
+if (process.env.MONI_ANNOUNCE_START !== "0") setTimeout(() => announceStart(10), 2000).unref();
+
