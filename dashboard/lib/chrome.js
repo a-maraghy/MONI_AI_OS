@@ -20,7 +20,7 @@ const os = require("os");
 const CACHE_MS = 30 * 1000;
 const FIRST_WAIT_MS = 1500;
 
-let deps = null; // { priv, db, catalog } -- injected so tests can fake them
+let deps = null; // { priv, db, catalog, devicesFor? } -- injected so tests can fake them
 let cache = null; // { at, data }
 let inflight = null;
 
@@ -105,9 +105,10 @@ function uptimeLong(sec) {
 /**
  * The frame for one actor. `perm` is the actor from rbac; `data` the shared
  * facts (null when the helper has not answered yet -- then only what this
- * process knows by itself is shown).
+ * process knows by itself is shown); `me` the signed-in user, for the one
+ * badge that is per person rather than per role (Devices).
  */
-function forActor(perm, data) {
+function forActor(perm, data, me) {
   const can = (p) => !perm || perm.can(p);
   const sees = (slug) => !perm || perm.seesAgent(slug);
   const seesCh = (slug) => !perm || perm.seesChannel(slug);
@@ -145,6 +146,16 @@ function forActor(perm, data) {
       if (can("roles.view")) badges.roles = [String(deps.db.listRoles().length), "plain"];
     } catch (_) {
       /* the database is this process's own; if it fails the page will say so */
+    }
+  }
+  // Devices: how many browsers the viewer is signed in on. Their own, so no
+  // permission; counted by lib/sessions.js, which caches it per user for 30 s.
+  if (me && deps && typeof deps.devicesFor === "function") {
+    try {
+      const n = deps.devicesFor(me.id);
+      if (n) badges.devices = [String(n), "plain", n === 1 ? "signed in on 1 browser" : "signed in on " + n + " browsers"];
+    } catch (_) {
+      /* no badge */
     }
   }
   if (d.memory && d.memory.db && can("claude.memory.read")) {
@@ -216,7 +227,7 @@ function middleware() {
     req.chrome = null;
     if (!req.me || req.method !== "GET" || req.path.startsWith("/api/") || req.path.includes("/api/")) return next();
     try {
-      req.chrome = forActor(req.perm, await facts());
+      req.chrome = forActor(req.perm, await facts(), req.me);
     } catch (_) {
       req.chrome = null;
     }
