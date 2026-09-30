@@ -170,6 +170,28 @@
     return aps.concat(ds);
   }
 
+  /* ---- token counts, as the Usage sheet shows them (cc-panels.js tokens(), TOK_KEYS) ---- */
+  var TOK_KEYS = [["input", "Input"], ["output", "Output"], ["cache_read", "Cache read"], ["cache_write", "Cache write"]];
+  /** Tokens as people read them: 812, 44k, 3.1M. */
+  function tokens(n) {
+    if (n == null || !isFinite(n)) return "—";
+    n = Number(n);
+    if (n >= 1e6) return (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + "M";
+    if (n >= 1e3) return Math.round(n / 1e3) + "k";
+    return String(Math.round(n));
+  }
+  function fullNum(n) { return Math.round(Number(n) || 0).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ","); }
+  /** "1.2M tok" (+ suffix) from {input, output, cache_read, cache_write, total}; "" when there is nothing. */
+  function tokLine(t, suffix) {
+    if (!t || t.total == null) return "";
+    return tokens(t.total) + " tok" + (suffix ? " " + suffix : "");
+  }
+  /** The tooltip: the split, in full numbers. */
+  function tokTip(t, note) {
+    if (!t) return "";
+    return TOK_KEYS.map(function (k) { return k[1] + " " + fullNum(t[k[0]]); }).join(" · ") + " · Total " + fullNum(t.total) + " (" + (note || "counted on this box from the transcripts") + ")";
+  }
+
   /** Who asks: MINT AI, or a session it hired (M-6: origin "session:<slug>"). */
   function approvalFrom(a) {
     return a && /^session:/.test(String(a.origin || "")) ? String(a.origin_name || a.origin.slice(8)) : "MINT AI";
@@ -357,6 +379,7 @@
     SESS_VIEWS: SESS_VIEWS, SESS_VIEW_DEFAULT: SESS_VIEW_DEFAULT, normSessView: normSessView, isSessView: isSessView,
     STATES: STATES, LABEL: LABEL, coreState: coreState, caption: caption, lastSentence: lastSentence, gist: gist,
     needQueue: needQueue, card: card, doneText: doneText, approvalFrom: approvalFrom, approvalNoRule: approvalNoRule,
+    TOK_KEYS: TOK_KEYS, tokens: tokens, tokLine: tokLine, tokTip: tokTip,
     SHEETS: SHEETS, sheetKeys: sheetKeys,
     normName: normName, makeAliases: makeAliases, resolveTarget: resolveTarget, resolveFrom: resolveFrom, ghostWhere: ghostWhere,
   };

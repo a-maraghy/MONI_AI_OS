@@ -366,6 +366,13 @@ const ready = () => until(async () => (await call("status")).data.process.state 
     /* -------------------------------------------------------- cost --- */
     const turnsNow = (await call("ledger", { table: "turns", limit: 500 })).data.rows.filter((r) => r.cost_usd != null);
     check("every result records a per-turn delta, not the running total", turnsNow.length > 3 && turnsNow.every((r) => Math.abs(r.cost_delta_usd - 0.01) < 1e-6), JSON.stringify(turnsNow.map((r) => [r.cost_usd, r.cost_delta_usd]).slice(0, 8)));
+    const tokTurns = (await call("ledger", { table: "turns", limit: 500 })).data.rows.filter((r) => r.tokens_cum != null);
+    check("every result records the turn's own tokens (the running usage's difference), not the running total",
+      tokTurns.length > 3 && tokTurns.every((r) => r.tok_input === 1500 && r.tok_output === 200 && r.tok_cache_read === 5000 && r.tok_cache_write === 300), JSON.stringify(tokTurns.map((r) => [r.tokens_cum, r.tok_input]).slice(0, 4)));
+    const stTok = await call("status");
+    const ssTok = await call("sessions");
+    check("status carries MINT AI's tokens today, sessions carry theirs (from the transcripts, as the Usage sheet)",
+      stTok.ok && "tokens_today" in stTok.data && ssTok.ok && ssTok.data.sessions.every((x) => !x.session_id || (x.tokens_today && typeof x.tokens_today.total === "number")), JSON.stringify(ssTok.data && ssTok.data.sessions.map((x) => [x.name, x.tokens_today])));
     const c0 = await call("cost");
     const expect = Math.round(turnsNow.length * 0.01 * 100) / 100;
     check("today's MINT AI cost is the sum of the deltas", c0.ok && Math.abs(c0.data.today.moni_ai_usd - expect) < 0.011, `${c0.data && c0.data.today.moni_ai_usd} vs ${expect}`);
@@ -401,6 +408,7 @@ const ready = () => until(async () => (await call("status")).data.process.state 
     await sub2.waitFor((e) => e.type === "result" && e.turn && e.turn.text === "after restart", 8000);
     const last = (await call("ledger", { table: "turns", limit: 1 })).data.rows[0];
     check("after a restart the first turn's cost is its own (the new process's total), not a negative jump", Math.abs(last.cost_delta_usd - 0.01) < 1e-6 && last.cost_usd === 0.01, JSON.stringify(last));
+    check("  and its tokens are its own too (a new process starts from zero)", last.tok_input === 1500 && last.tok_cache_read === 5000, JSON.stringify(last));
     const c1b = await call("cost");
     check("today's cost keeps counting across the restart", Math.abs(c1b.data.today.moni_ai_usd - (expect + 0.01)) < 0.011, `${c1b.data.today.moni_ai_usd}`);
     const o1 = await call("orders");

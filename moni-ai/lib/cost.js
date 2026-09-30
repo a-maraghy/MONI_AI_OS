@@ -326,4 +326,26 @@ function pick(e) {
   return { input: e.input, output: e.output, cache_read: e.cache_read, cache_write: e.cache_write, total: e.total };
 }
 
-module.exports = { turnDeltas, priceOf, usageCost, parseUsage, Scanner, PRICES, tokenReport };
+/**
+ * A turn's own tokens from the CLI's result `usage`, which -- like
+ * total_cost_usd -- is the running total of the PROCESS (Claude Code sums its
+ * per-model usage for the session). The turn's share is the difference from the
+ * previous turn of the same process; a new process (another proc_start, or any
+ * count going down) starts from zero.
+ * usage: the result's usage object; prev: { cum, proc_start } of the previous turn or null.
+ * Returns { cum, delta } with keys input / output / cache_read / cache_write.
+ */
+function usageTokens(u) {
+  u = u || {};
+  return { input: Number(u.input_tokens) || 0, output: Number(u.output_tokens) || 0, cache_read: Number(u.cache_read_input_tokens) || 0, cache_write: Number(u.cache_creation_input_tokens) || 0 };
+}
+function turnTokenDelta(usage, procStart, prev) {
+  const cum = usageTokens(usage);
+  const p = prev && prev.cum;
+  const sameProc = p && prev.proc_start && procStart && prev.proc_start === procStart && TOKEN_KEYS.every((k) => cum[k] >= (Number(p[k]) || 0));
+  const delta = {};
+  for (const k of TOKEN_KEYS) delta[k] = sameProc ? cum[k] - (Number(p[k]) || 0) : cum[k];
+  return { cum, delta };
+}
+
+module.exports = { turnDeltas, priceOf, usageCost, parseUsage, Scanner, PRICES, tokenReport, turnTokenDelta, TOKEN_KEYS };

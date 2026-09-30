@@ -17,7 +17,7 @@
  *   - a session that appears condenses out of her; one that goes away
  *     dissolves back into her (a retired one too: retiring is the supervisor's,
  *     after the administrator's consent -- nothing here retires anything);
- *   - hover: a card with its task, last message and cost today; click (or
+ *   - hover: a card with its task, last message and tokens today; click (or
  *     Enter on its name) opens that session's existing deep view; right-click
  *     (or the context-menu key on its name) calls opts.onMenu(id, x, y).
  *
@@ -237,7 +237,7 @@
       k.kept = d.hired !== true;
       k.menu = !!d.slug; // hired through MINT AI (kept or not): Keep / Retire in its menu
       if (!k.tint) k.tint = d.tint && TINTS[d.tint] ? d.tint : freeTint(d.name || d.label || d.id);
-      k.act = Math.max(1, +d.act || 1); k.cost = d.cost; k.task = d.task || ""; k.last = d.last || ""; k.mission = d.mission || "";
+      k.act = Math.max(1, +d.act || 1); k.tok = d.tok || ""; k.tokTip = d.tokTip || ""; k.task = d.task || ""; k.last = d.last || ""; k.mission = d.mission || "";
       if (!fresh && was === "working" && k.st === "idle") { k.bloom = 1; k.doneUntil = t + 3.5; }
       var want = Math.min(6, (d.subs || []).length), alive = k.subs.filter(function (s) { return !s.dying; });
       for (var i = alive.length; i < want; i++) k.subs.push({ ph: rand() * TAU, sp: 0.55 + rand() * 0.5, tilt: 0.25 + rand() * 0.5, dir: rand() < 0.5 ? -1 : 1, life: fresh || reduced ? 1 : 0, dying: false, rr: 1.45 + rand() * 0.3 });
@@ -261,7 +261,7 @@
       if (k._h !== html) { k.elN.innerHTML = html; k._h = html; k.lw = Math.max(60, k.elN.offsetWidth || k.lw); }
     }
 
-    /** The live sessions: [{id, label, st, subs, act, cost, task, last, mission, hired?, tint?}]. */
+    /** The live sessions: [{id, label, st, subs, act, tok, tokTip, task, last, mission, hired?, slug?, tint?}]. */
     function setNodes(list) {
       var byId = {};
       kids.forEach(function (k) { if (!k.dis) byId[k.id] = k; });
@@ -517,7 +517,6 @@
       });
       return best;
     }
-    function money(v) { return v == null ? "—" : "$" + (+v).toFixed(2); }
     function pill(k) { return k.st === "waiting" ? '<span class="cc-kpill needs">Needs you</span>' : k.st === "working" ? '<span class="cc-kpill">Working</span>' : '<span class="cc-kpill idle">Idle</span>'; }
     function showCard(k) {
       if (!card) return;
@@ -526,7 +525,7 @@
         "<dl><dt>State</dt><dd>" + pill(k) + (na ? ' <span class="cc-kmuted">+' + na + (na === 1 ? " sub-agent" : " sub-agents") + "</span>" : "") + "</dd>" +
         "<dt>Now</dt><dd>" + esc(k.task || "Nothing running") + "</dd>" +
         (k.last ? '<dt>Last</dt><dd class="q">“' + esc(k.last) + "”</dd>" : "") +
-        "<dt>Today</dt><dd>" + money(k.cost) + (k.cost != null ? " est" : "") + "</dd></dl>" +
+        "<dt>Today</dt><dd" + (k.tokTip ? ' title="' + esc(k.tokTip) + '"' : "") + ">" + esc(k.tok || "—") + "</dd></dl>" +
         '<div class="hint">Click to open the conversation' + (k.menu ? " · right-click: Keep / Retire" : "") + "</div>";
       card.classList.add("on");
       card.setAttribute("aria-hidden", "false");

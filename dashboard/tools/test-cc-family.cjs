@@ -42,10 +42,10 @@ check("prefers-reduced-motion: settled once, still frames", /prefers-reduced-mot
 check("needs you (waiting) is amber with a badge; a finished one blooms and says done", /k\.st === "waiting" \? "needs you" : t < k\.doneUntil \? "done"/.test(fam) && /was === "working" && k\.st === "idle"\) \{ k\.bloom = 1/.test(fam));
 check("birth from her, dissolve back into her; nothing here retires anything (no call, no fetch)", /form: born && !reduced \? 0 : 1/.test(fam) && /k\.dis = 0\.0001/.test(fam) && !/retire\w*\s*\(|hire\(|fetch\(|api\(/i.test(fam.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, ""))); // M-6: it only offers a menu (opts.onMenu); the page retires, after consent
 check("sub-agent specks from real sub-agent data (running ones, at most 6)", /Math\.min\(6, \(d\.subs \|\| \[\]\)\.length\)/.test(fam) && /a\.status !== "done" && a\.status !== "failed"/.test(page));
-check("hover card: task, last message, cost today; click / Enter opens the existing deep view", /<dt>Now<\/dt>/.test(fam) && /<dt>Last<\/dt>/.test(fam) && /<dt>Today<\/dt>/.test(fam) && /onOpen: function \(key\) \{ if \(P && P\.openDeep && findSess\(key\)\) P\.openDeep\(key\)/.test(page));
+check("hover card: task, last message, tokens today; click / Enter opens the existing deep view", /<dt>Now<\/dt>/.test(fam) && /<dt>Last<\/dt>/.test(fam) && /<dt>Today<\/dt>/.test(fam) && /onOpen: function \(key\) \{ if \(P && P\.openDeep && findSess\(key\)\) P\.openDeep\(key\)/.test(page));
 check("names are buttons (keyboard) with an aria-label; the canvas is aria-hidden", /document\.createElement\("button"\)/.test(fam) && /setAttribute\("aria-label", line \+ "\. Open its conversation\."\)/.test(fam) && /class="cc-family" id="cc-family" aria-hidden="true"/.test(views));
 check("an overlap audit and frame stats are exposed for the checks", /audit: function \(\)/.test(fam) && /stats: function \(\)/.test(fam));
-check("real data only in the page: task from waiting_for / mission / delegation, last from its messages, size from today's work", /function familyNode\(s\)/.test(page) && /S\.inbound\.forEach/.test(page) && /cost_today_usd_est/.test(page));
+check("real data only in the page: task from waiting_for / mission / delegation, last from its messages, size from today's tokens and delegations", /function familyNode\(s\)/.test(page) && /S\.inbound\.forEach/.test(page) && /s\.tokens_today && s\.tokens_today\.total/.test(page) && !/cost_today_usd_est/.test(page));
 
 console.log(`\n${passes} passed, ${failures} failed`);
 process.exit(failures ? 1 : 0);

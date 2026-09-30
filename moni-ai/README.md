@@ -285,7 +285,12 @@ reused for 50 s (a probe's for 2 min); a failure keeps the last answer marked st
 Verified 2026-09-30 against `claude -p /usage` at the same minute: identical, three rounds.
 Token counts: the cost scanner now reads MINT AI's own transcripts too (money queries
 leave its session ids out, its dollars still come from the ledger), and `usage` sums
-input / output / cache read / cache write per day and per session name.
+input / output / cache read / cache write per day and per session name. Each
+session in `sessions` (and MINT AI's own in `status`) carries `tokens_today`
+from the same counts. A mission's `metrics.tokens` is MINT AI's tokens over the
+turns that worked on it: each result's `usage` is the CLI process's running
+total (like `total_cost_usd`), so every turn stores its difference
+(`turns.tok_*`, `lib/cost.js` `turnTokenDelta`; a new process starts from zero).
 
 New events: `mission`, `decision`, `watcher`, `order`, `order_run`, `rule`, `machine`.
 

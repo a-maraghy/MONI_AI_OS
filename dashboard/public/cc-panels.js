@@ -128,7 +128,7 @@
   window.MoniPlanUsage = PlanUsage;
 
   window.MoniPanels = function (CC) {
-    var S = CC.S, esc = CC.esc, ic = CC.ic, api = CC.api, toast = CC.toast, money = CC.money, clip = CC.clip, hm = CC.hm, dur = CC.dur;
+    var ML = window.MintLogic, S = CC.S, esc = CC.esc, ic = CC.ic, api = CC.api, toast = CC.toast, clip = CC.clip, hm = CC.hm, dur = CC.dur;
     function $(id) { return document.getElementById(id); }
 
     var P = {
@@ -291,7 +291,7 @@
       var sess = mt.sessions ? mt.sessions.length : 0;
       var elapsed = mt.elapsed_s != null ? dur(mt.elapsed_s * 1000) : "—";
       $("cc-mis-head").innerHTML = '<div class="cc-min0"><h3>' + esc(m.ref || "") + " · " + esc(m.title || "") + "</h3><p>" + esc(m.goal || "") + '</p></div>' +
-        '<div class="cc-mis-kpis"><div><b>' + p[0] + "/" + p[1] + "</b><span>steps done</span></div><div><b>" + sess + "</b><span>sessions</span></div><div><b>" + esc(elapsed) + "</b><span>elapsed</span></div><div><b>" + esc(mt.cost_usd != null ? money(mt.cost_usd) : "—") + "</b><span>cost</span></div></div>" +
+        '<div class="cc-mis-kpis"><div><b>' + p[0] + "/" + p[1] + "</b><span>steps done</span></div><div><b>" + sess + "</b><span>sessions</span></div><div><b>" + esc(elapsed) + "</b><span>elapsed</span></div><div" + (mt.tokens ? ' title="' + esc(ML.tokTip(mt.tokens, "MINT AI\u2019s turns on this mission")) + '"' : "") + "><b>" + esc(mt.tokens ? ML.tokens(mt.tokens.total) : "—") + "</b><span>tokens</span></div></div>" +
         '<div class="cc-mis-prog"><i data-w="' + (p[1] ? p[0] / p[1] * 100 : 0) + '"></i></div>';
       CC.applyBars($("cc-mis-head"));
       var steps = (m.steps || []).slice().sort(function (a, b) { return a.n - b.n; });
@@ -1268,7 +1268,7 @@
       add("Open", "Standing orders", P.orders.length + " scheduled", "repeat", "", function () { CC.openSheet("orders"); });
       add("Open", "Usage", "Claude plan limits · tokens · voice", "gauge", "", function () { CC.openSheet("cost"); });
       add("Open", "Machine", "this VPS · the core grid", "server", "", function () { CC.openSheet("machine"); });
-      add("Actions", "Cost details and budget", "overlay", "coin", "", openCost);
+      add("Actions", "Usage details", "plan limits · tokens by session", "gauge", "", openCost);
       add("Actions", "New mission…", "MINT AI plans it", "plus", "m", function () { openNewMission(); });
       add("Actions", "New standing order…", "scheduled prompt", "clock", "", function () { openOrder(null); });
       add("Actions", "Test a command in Rules…", "what would the gate do", "scale", "", function () {

@@ -103,6 +103,7 @@ function hookPost(msg) {
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 let runningCost = 0;
+let runningUsage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
 
 /** One call to the supervisor's control socket, as MINT AI's MCP server makes it. */
 function ctl(op, params) {
@@ -225,7 +226,9 @@ async function turn(msg) {
   }
   out({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: reply }] }, session_id: sessionId });
   runningCost = Math.round((runningCost + 0.01) * 100) / 100;
-  out({ type: "result", subtype: "success", is_error: false, result: reply, duration_ms: 5, total_cost_usd: runningCost, session_id: sessionId });
+  // usage, like total_cost_usd, is the PROCESS's running total (Claude Code sums its per-model usage): +1,500 / +200 / +5,000 / +300 a turn.
+  runningUsage.input_tokens += 1500; runningUsage.output_tokens += 200; runningUsage.cache_read_input_tokens += 5000; runningUsage.cache_creation_input_tokens += 300;
+  out({ type: "result", subtype: "success", is_error: false, result: reply, duration_ms: 5, total_cost_usd: runningCost, usage: { ...runningUsage }, session_id: sessionId });
   out({ type: "command_lifecycle", command_uuid: uuid, state: "completed", session_id: sessionId });
 }
 

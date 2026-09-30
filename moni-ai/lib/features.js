@@ -445,6 +445,31 @@ function createFeatures(deps) {
     ledger.update("turns", turnId, { proc_start: procStart, cost_delta_usd: d == null ? null : d });
   }
 
+  /** Called on every result: the turn's own tokens from the running usage (M-6 follow-up: missions show tokens). */
+  function recordTurnTokens(turnId, usage, procStart) {
+    if (!usage || typeof usage !== "object") return;
+    const prevRow = db.prepare("SELECT tokens_cum, proc_start FROM turns WHERE tokens_cum IS NOT NULL AND id < ? ORDER BY id DESC LIMIT 1").get(turnId);
+    let prev = null;
+    try {
+      prev = prevRow ? { cum: JSON.parse(prevRow.tokens_cum), proc_start: prevRow.proc_start } : null;
+    } catch (_) {
+      prev = null;
+    }
+    const { cum, delta } = cost.turnTokenDelta(usage, procStart, prev);
+    ledger.update("turns", turnId, { tokens_cum: JSON.stringify(cum), tok_input: delta.input, tok_output: delta.output, tok_cache_read: delta.cache_read, tok_cache_write: delta.cache_write });
+  }
+
+  /** A session's tokens today, from the transcripts (the Usage sheet's source); MINT AI's own ids count as one. */
+  function tokensToday(sid) {
+    const self = selfIdSet();
+    const ids = sid && (sid === deps.selfSessionId() || self.has(sid)) ? [...new Set([...self, sid])] : sid ? [sid] : [...self];
+    if (!ids.length) return null;
+    const r = db.prepare(`SELECT SUM(input) AS input, SUM(output) AS output, SUM(cache_read) AS cache_read, SUM(cache_write) AS cache_write FROM cost_daily WHERE day = ? AND session_id IN (${ids.map(() => "?").join(",")})`).get(dayOf(Date.now()), ...ids) || {};
+    const t = { input: r.input || 0, output: r.output || 0, cache_read: r.cache_read || 0, cache_write: r.cache_write || 0 };
+    t.total = t.input + t.output + t.cache_read + t.cache_write;
+    return t;
+  }
+
   function budget() {
     const r = db.prepare("SELECT value FROM settings WHERE key = 'budget'").get();
     try {
@@ -521,7 +546,7 @@ function createFeatures(deps) {
       today: { moni_ai_usd: t.moni_ai_usd, others_usd_est: t.others_usd_est, total_usd: round(t.moni_ai_usd + t.others_usd_est) },
       days: daysOut,
       sessions: sessionsOut.filter((s) => s.today_usd > 0 || s.week.some((x) => x > 0)).slice(0, 30),
-      missions: missions.list({ limit: 20 }).map((m) => ({ id: m.id, ref: m.ref, title: m.title, status: m.status, cost_usd: m.metrics.cost_usd })),
+      missions: missions.list({ limit: 20 }).map((m) => ({ id: m.id, ref: m.ref, title: m.title, status: m.status, cost_usd: m.metrics.cost_usd, tokens: m.metrics.tokens })),
       budget: budget(),
       updated_at: scanner.lastScan,
       note: "MINT AI: from its ledger (per-turn difference of the CLI's running total). Other sessions: estimated API-equivalent from transcript token usage at list prices.",
@@ -668,7 +693,13 @@ function createFeatures(deps) {
     } catch (_) {
       c = null;
     }
-    return { mission: m, cost_today_usd_est: c };
+    let tk = null;
+    try {
+      tk = s.session_id ? tokensToday(s.session_id) : null;
+    } catch (_) {
+      tk = null;
+    }
+    return { mission: m, cost_today_usd_est: c, tokens_today: tk };
   }
 
   function rememberNames(list) {
@@ -947,6 +978,13 @@ function createFeatures(deps) {
       } catch (e) {
         warn("cost: " + e.message);
       }
+      try {
+        recordTurnTokens(turn.id, ev.usage, procStart);
+        // A mission this turn worked on now counts its tokens: show the new figure.
+        for (const r of db.prepare("SELECT mission_id FROM mission_turns WHERE turn_id = ?").all(turn.id)) emitMission(missions.get(r.mission_id));
+      } catch (e) {
+        warn("tokens: " + e.message);
+      }
       if (turn.order_id) finishRun(turn, ev.is_error ? "error" : "ok", ev.result || ev.subtype || "");
     },
     /** A turn ended (done, interrupted, lost). */
@@ -1043,6 +1081,7 @@ function createFeatures(deps) {
     serviceList: () => services.list.map((x) => ({ unit: x.unit, active: x.active })),
     counts,
     costToday,
+    tokensToday,
     sessionExtras,
     approvalExtras,
     autoDecision,

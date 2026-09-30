@@ -304,7 +304,7 @@ class Ledger {
   /** Columns added after the first release; ALTER is idempotent by probing. */
   migrate() {
     const add = {
-      turns: ["order_id INTEGER", "mission_id INTEGER", "decision_id INTEGER", "proc_start TEXT", "cost_delta_usd REAL", "sent_at TEXT"],
+      turns: ["order_id INTEGER", "mission_id INTEGER", "decision_id INTEGER", "proc_start TEXT", "cost_delta_usd REAL", "sent_at TEXT", "tokens_cum TEXT", "tok_input INTEGER", "tok_output INTEGER", "tok_cache_read INTEGER", "tok_cache_write INTEGER"],
       delegations: ["mission_id INTEGER", "step_id INTEGER", "target_kind TEXT", "target_ref TEXT"],
       approvals: ["mission_id INTEGER", "step_id INTEGER", "decision_id INTEGER", "rule_id INTEGER", "origin TEXT", "origin_name TEXT"],
     };

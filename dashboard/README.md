@@ -400,6 +400,12 @@ output, cache read, cache write, per session, MINT AI first), labelled as Mint
 OS's own count, not plan figures; *Details* adds the 14-day chart and the full
 table. Money appears only in the folded voice block (OpenAI bills it). The
 estimated-dollar view and its daily budget were retired from the panel.
+The rest of the Command Center follows suit: a sphere's hover card ("Today
+1.4M tok"), each session's line in the sessions sheet and MINT AI's own card
+("1.4M tok today"), and the mission header's KPI show tokens in the same compact
+format (`MintLogic.tokens`, byte-identical to the sheet's), with a tooltip that
+splits input / output / cache read / cache write; sphere size follows tokens,
+not dollars. Only the voice block shows money (`test-moniai-v3` holds it).
 
 **Cost, on screen -- no cap.** The daily budget was removed (the
 administrator's decision of 2026-09-29): nothing refuses or diverts the desk for

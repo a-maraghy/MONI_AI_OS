@@ -89,11 +89,12 @@ class Missions {
     const sessions = [...new Set(steps.map((s) => s.target).filter(Boolean))];
     const end = m.done_at ? Date.parse(m.done_at) : Date.now();
     const cost = this.cost(m.id);
+    const tokens = this.tokens(m.id);
     return {
       ...m,
       ref: ref(m.id),
       steps,
-      metrics: { steps_done: done, steps_total: steps.length, sessions, elapsed_s: Math.max(0, Math.round((end - Date.parse(m.created_at)) / 1000)), cost_usd: cost },
+      metrics: { steps_done: done, steps_total: steps.length, sessions, elapsed_s: Math.max(0, Math.round((end - Date.parse(m.created_at)) / 1000)), cost_usd: cost, tokens },
     };
   }
 
@@ -103,6 +104,17 @@ class Missions {
       .prepare("SELECT SUM(t.cost_delta_usd) AS usd, COUNT(t.cost_delta_usd) AS n FROM turns t JOIN mission_turns mt ON mt.turn_id = t.id WHERE mt.mission_id = ?")
       .get(missionId);
     return r && r.n ? Math.round(r.usd * 10000) / 10000 : null;
+  }
+
+  /** MINT AI's tokens over the turns that worked on this mission (per-turn deltas of the CLI's running usage); null if none were counted. */
+  tokens(missionId) {
+    const r = this.db
+      .prepare("SELECT SUM(t.tok_input) AS input, SUM(t.tok_output) AS output, SUM(t.tok_cache_read) AS cache_read, SUM(t.tok_cache_write) AS cache_write, COUNT(t.tok_input) AS n FROM turns t JOIN mission_turns mt ON mt.turn_id = t.id WHERE mt.mission_id = ?")
+      .get(missionId);
+    if (!r || !r.n) return null;
+    const t = { input: r.input || 0, output: r.output || 0, cache_read: r.cache_read || 0, cache_write: r.cache_write || 0 };
+    t.total = t.input + t.output + t.cache_read + t.cache_write;
+    return t;
   }
 
   linkTurn(missionId, turnId) {

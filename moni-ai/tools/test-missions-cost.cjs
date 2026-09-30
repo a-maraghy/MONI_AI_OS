@@ -127,6 +127,28 @@ check("at most 50 steps", throws(() => M.create({ title: "big", steps: Array.fro
   check("the fact from 28 Sep: 6.08 then 9.12 in one process is 3.04", Math.abs(cost.turnDeltas([{ id: 1, cost_usd: 6.08, proc_start: "P" }, { id: 2, cost_usd: 9.12, proc_start: "P" }]).get(2) - 3.04) < 1e-9);
 }
 
+/* ------------------------------------------------ MINT AI's tokens per turn --- */
+{
+  // The result's usage is the PROCESS's running total (Claude Code sums its per-model usage), like total_cost_usd.
+  const U = (i, o, cr, cw) => ({ input_tokens: i, output_tokens: o, cache_read_input_tokens: cr, cache_creation_input_tokens: cw });
+  const a = cost.turnTokenDelta(U(1000, 100, 5000, 300), "P", null);
+  const b = cost.turnTokenDelta(U(2500, 300, 12000, 300), "P", { cum: a.cum, proc_start: "P" });
+  const c = cost.turnTokenDelta(U(900, 50, 4000, 100), "Q", { cum: b.cum, proc_start: "P" });
+  const d = cost.turnTokenDelta(U(10, 1, 1, 1), "P", { cum: b.cum, proc_start: "P" });
+  check("turn tokens: the first turn is its running total", JSON.stringify(a.delta) === JSON.stringify({ input: 1000, output: 100, cache_read: 5000, cache_write: 300 }));
+  check("  the next turn of the same process is the difference", JSON.stringify(b.delta) === JSON.stringify({ input: 1500, output: 200, cache_read: 7000, cache_write: 0 }));
+  check("  a new process starts again from zero (another stamp, or a count going down)", c.delta.input === 900 && c.delta.cache_read === 4000 && d.delta.input === 10);
+  // A mission's tokens: the sum over its turns; none counted -> null ("—" on the board).
+  const mt = M.create({ title: "Tok", goal: "", steps: [], actor: "moni-ai" });
+  check("a mission with no counted turns has no token figure", M.get(mt.id).metrics.tokens === null);
+  const t1 = ledger.addTurn({ source: "user", text: "x", status: "done" }), t2 = ledger.addTurn({ source: "user", text: "y", status: "done" });
+  ledger.update("turns", t1.id, { tok_input: 1000, tok_output: 100, tok_cache_read: 5000, tok_cache_write: 300 });
+  ledger.update("turns", t2.id, { tok_input: 1500, tok_output: 200, tok_cache_read: 7000, tok_cache_write: 0 });
+  M.linkTurn(mt.id, t1.id); M.linkTurn(mt.id, t2.id);
+  const tk = M.get(mt.id).metrics.tokens;
+  check("a mission's tokens: MINT AI's turns on it, summed, with the total", tk && tk.input === 2500 && tk.output === 300 && tk.cache_read === 12000 && tk.cache_write === 300 && tk.total === 15100, JSON.stringify(tk));
+}
+
 /* ---------------------------------------------------------- transcripts --- */
 {
   check("prices: Opus 5.5 is $4/$20", cost.priceOf("claude-opus-5-5").join() === "4,20,0.2");

@@ -95,13 +95,6 @@
   function num(n) { return n == null || !isFinite(n) ? "—" : Number(n).toLocaleString("en-US"); }
   function clip(s, n) { s = String(s || ""); return s.length > n ? s.slice(0, n - 1) + "…" : s; }
   function firstLine(s) { return String(s || "").split("\n").filter(function (l) { return l.trim(); })[0] || ""; }
-  /** Dollars, to the cent; under a cent shows as <$0.01 rather than $0.00. */
-  function money(v) {
-    if (v == null || !isFinite(v)) return "—";
-    v = Number(v);
-    if (v > 0 && v < 0.01) return "<$0.01";
-    return "$" + v.toFixed(2);
-  }
   /** Plain text of a markdown reply, for one-line previews. */
   function plain(s) {
     return String(s || "").replace(/```[\s\S]*?```/g, " ").replace(/`([^`]*)`/g, "$1").replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1")
@@ -303,11 +296,11 @@
     if (!list.some(function (s) { return s.self; }) && (st.session_id || (st.process && st.process.pid))) {
       list.push({ self: true, synthetic: true, name: "MINT AI", pid: st.process && st.process.pid, session_id: st.session_id || null,
         cwd: "/root/moni-ai", where: "headless · supervisor", kind: "supervisor", status: st.busy ? "busy" : "idle", subagents: [],
-        started_at: st.process && st.process.started_at, cost_today_usd_est: st.cost_today ? st.cost_today.moni_ai_usd : null });
+        started_at: st.process && st.process.started_at, tokens_today: st.tokens_today || null });
     }
     list.forEach(function (s) {
       if ((!s.mission || s.mission.derived) && !s.self && s.name && typeof P !== "undefined" && P) s.mission = P.missionFor(s.name);
-      if (s.self && s.cost_today_usd_est == null && st.cost_today) s.cost_today_usd_est = st.cost_today.moni_ai_usd;
+      if (s.self && !s.tokens_today && st.tokens_today) s.tokens_today = st.tokens_today;
     });
     S.sessions = list;
     ALIAS.learnSessions(list);
@@ -624,9 +617,9 @@
     if (!last && d) last = d.summary || firstLine(d.text) || "";
     return {
       id: sessKey(s), label: clip(name, 26), name: name, st: st, subs: subs, mission: s.mission ? s.mission.ref || "mission" : "",
-      cost: s.cost_today_usd_est, task: task, last: clip(last, 140),
-      // Size: what it did today (delegations, cost), never less than a little.
-      act: 1 + dels * 3 + Math.min(20, (+s.cost_today_usd_est || 0) * 4) + (st === "working" ? 2 : 0),
+      tok: ML.tokLine(s.tokens_today), tokTip: ML.tokTip(s.tokens_today), task: task, last: clip(last, 140),
+      // Size: what it did today (delegations, tokens: 2 per million, at most 20), never less than a little.
+      act: 1 + dels * 3 + Math.min(20, ((s.tokens_today && s.tokens_today.total) || 0) / 5e5) + (st === "working" ? 2 : 0),
       hired: s.hired === true,
       slug: s.hire && s.hire.slug ? s.hire.slug : null, // hired through MINT AI (kept or not): its menu has Keep / Retire
     };
@@ -664,14 +657,14 @@
       if (d && Date.now() - Date.parse(d.updated_at || d.created_at) < 6 * 3600 * 1000) bits.push(esc((d.status === "ack" ? "replied" : d.status) + " " + ago(d.updated_at || d.created_at)));
       else bits.push(esc(sessState(s) + (s.status_since ? " " + ago(s.status_since) : "")));
     }
-    if (s.cost_today_usd_est != null) bits.push(esc(money(s.cost_today_usd_est)) + (s.self ? "" : " est"));
+    if (s.tokens_today) bits.push('<span title="' + esc(ML.tokTip(s.tokens_today)) + '">' + esc(ML.tokLine(s.tokens_today, "today")) + "</span>");
     return bits.join(" · ");
   }
   function renderSessions(force) {
     var list = sortSessions(S.sessions);
     var sig = JSON.stringify(list.map(function (s) {
       return [s.pid, s.name, s.status, s.waiting_for, s.where, s.open_delegations, s.last_delegation && [s.last_delegation.id, s.last_delegation.status],
-        s.mission && [s.mission.ref, s.mission.step_n, s.mission.step_status], s.cost_today_usd_est, s.cwd,
+        s.mission && [s.mission.ref, s.mission.step_n, s.mission.step_status], s.tokens_today && s.tokens_today.total, s.cwd,
         (s.subagents || []).map(function (a) { return [a.id, a.status, a.description]; })];
     })) + "|" + S.target + "|" + (S.status && S.status.busy) + "|" + (S.status && S.status.process && S.status.process.model);
     var live = liveSessions();
@@ -695,7 +688,7 @@
     var h = "";
     self.forEach(function (s) {
       h += '<div class="cc-sec-t">MINT AI<span class="sp"></span><span class="cc-tag ai">CEO · you talk to it</span></div>' +
-        '<div class="cc-card cc-sc self" data-sess="' + esc(sessKey(s)) + '"><div class="t"><b>MINT AI</b><span class="sp"></span><span class="cc-mono">' + esc(s.cost_today_usd_est != null ? money(s.cost_today_usd_est) : "") + "</span></div>" +
+        '<div class="cc-card cc-sc self" data-sess="' + esc(sessKey(s)) + '"><div class="t"><b>MINT AI</b><span class="sp"></span><span class="cc-mono" title="' + esc(ML.tokTip(s.tokens_today)) + '">' + esc(ML.tokLine(s.tokens_today, "today")) + "</span></div>" +
         '<div class="m">' + esc([p.model ? modelLabel(p.model) + (p.effort ? " · " + p.effort : "") : "", s.cwd || "/root/moni-ai", selfState() === "working" ? "working on a turn" : "routes work to the sessions below"].filter(Boolean).join(" · ")) + "</div>" +
         '<div class="acts"><button type="button" class="cc-btn sm" data-deep-open="' + esc(sessKey(s)) + '">' + ic("eye") + "Deep view</button></div></div>";
     });
@@ -3375,7 +3368,7 @@
      view and the palette live in cc-panels.js; this is what they are given. */
 
   var CC = {
-    S: S, root: root, api: api, esc: esc, ic: ic, md: md, num: num, clip: clip, firstLine: firstLine, plain: plain, money: money,
+    S: S, root: root, api: api, esc: esc, ic: ic, md: md, num: num, clip: clip, firstLine: firstLine, plain: plain,
     hm: hm, hms: hms, when: when, ago: ago, dur: dur, modelLabel: modelLabel, applyBars: applyBars, toast: toast,
     fmtDay: fmtDay, fmtHM: fmtHM, fmtDate: fmtDate, TZ: TZ,
     AI_NAME: AI_NAME, isAiName: isAiName, aiLabel: aiLabel,

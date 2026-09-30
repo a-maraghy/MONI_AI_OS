@@ -1991,6 +1991,13 @@ function status() {
     counts: { ...ledger.counts(), ...features.counts() },
     machine: features.machine(),
     cost_today: features.costToday(),
+    tokens_today: (() => {
+      try {
+        return features.tokensToday(null); // MINT AI's own, from its transcripts
+      } catch (_) {
+        return null;
+      }
+    })(),
     vitals: vitalsCache,
     sessions_at: sessionsCache.at,
     approval_timeout_s: cfg.approval_timeout_s,

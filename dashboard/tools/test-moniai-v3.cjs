@@ -131,8 +131,16 @@ check("fuzzy: out of order does not match", box.fuzzy("zx", "Theme: light") === 
 check("tokens read like people say them", box.tokens(812) === "812" && box.tokens(44000) === "44k" && box.tokens(3100000) === "3.1M" && box.tokens(null) === "—");
 
 const box2 = {};
-vm.runInNewContext(["esc", "money", "plain", "pct", "applyBars", "clip"].map((n) => cut(main, n)).join("\n"), box2);
-check("money: cents, under a cent, and missing", box2.money(11.4) === "$11.40" && box2.money(0.004) === "<$0.01" && box2.money(0) === "$0.00" && box2.money(null) === "—");
+vm.runInNewContext(["esc", "plain", "pct", "applyBars", "clip"].map((n) => cut(main, n)).join("\n"), box2);
+{
+  // Tokens, not money, in the Command Center (voice aside): one formatter, the Usage sheet's.
+  const L = require(path.join(__dirname, "..", "public", "cc-logic.js"));
+  const t = { input: 1234, output: 567, cache_read: 1200000, cache_write: 3000, total: 1204801 };
+  check("tokens: compact totals, \"1.2M tok today\", and a tooltip that splits input / output / cache", L.tokLine(t, "today") === "1.2M tok today" && L.tokens(44000) === "44k" && L.tokens(812) === "812" && L.tokLine(null) === "" &&
+    L.tokTip(t) === "Input 1,234 · Output 567 · Cache read 1,200,000 · Cache write 3,000 · Total 1,204,801 (counted on this box from the transcripts)");
+  const panelsTok = /function tokens\(n\) \{[\s\S]*?\n  \}/.exec(panels)[0].replace(/\s+/g, " "), logicTok = /function tokens\(n\) \{[\s\S]*?\n  \}/.exec(fs.readFileSync(path.join(__dirname, "..", "public", "cc-logic.js"), "utf8"))[0].replace(/\s+/g, " ");
+  check("  the same formatter as the Usage sheet (and its labels)", panelsTok === logicTok && /var TOK_KEYS = \[\["input", "Input"\], \["output", "Output"\], \["cache_read", "Cache read"\], \["cache_write", "Cache write"\]\];/.test(panels) && L.TOK_KEYS.map((k) => k[1]).join() === "Input,Output,Cache read,Cache write");
+}
 check("plain: markdown becomes one line of text", box2.plain("**Disk** 6%\n- `nginx` ok\n[docs](https://x)") === "Disk 6% nginx ok docs");
 check("applyBars: widths, --v and left from data attributes, clamped", (() => {
   const mk = (attr, v) => ({ attr, v, style: { setProperty(k, x) { this[k] = x; } }, getAttribute() { return this.v; } });
@@ -232,6 +240,21 @@ check("Telegram delivery is offered disabled, with the server's reason", /Telegr
   check("% used is floored, as /usage does", PU.pctUsed(39.6) === 39 && PU.pctUsed(18) === 18 && PU.pctUsed(0) === 0 && PU.pctUsed(102.5) === 102 && PU.pctUsed(null) === 0);
   check("time left", PU.inText("2026-09-30T09:30:00Z", NOW) === "in 2 h 26 min" && PU.inText("2026-10-05T13:00:00Z", NOW) === "in 5 d 5 h" && PU.inText("2026-09-30T07:03:00Z", NOW) === "due now" && PU.inText("2026-09-30T07:05:00Z", NOW) === "in 1 min");
   check("plan names and full counts", PU.planName("max") === "Max" && PU.planName(null) === "" && PU.fullNum(1234567) === "1,234,567" && PU.fullNum(0) === "0");
+}
+{
+  // No dollars anywhere in the Command Center outside the voice block: the sphere hover cards, the sessions list,
+  // MINT AI's own card, the mission header, the palette -- tokens instead.
+  const fam = read("cc-family.js"), logic = read("cc-logic.js");
+  const strip = (src) => src.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
+  const voiceA = panels.indexOf("/* ---- the voice's own spend"), voiceB = panels.indexOf("function loadCost()");
+  const outside = strip(panels.slice(0, voiceA) + panels.slice(voiceB));
+  const DOLLAR = /\bmoney\(|["']\$["']\s*\+|\$[0-9]+\.[0-9]|usd_est|cost_usd|today_usd/; // a "$" + figure, a $0.00 text, a dollar field
+  check("no dollars outside the voice block: the sphere hover card, the sessions list, MINT AI's card, the mission header, the palette",
+    voiceA > 0 && voiceB > voiceA && !DOLLAR.test(strip(fam)) && !DOLLAR.test(strip(main)) && !DOLLAR.test(outside) && !/function money\(/.test(main) && !/Cost details and budget/.test(panels),
+    [strip(fam), strip(main), outside].map((x) => (DOLLAR.exec(x) || [""])[0]).join("|"));
+  check("  they show tokens: hover card, sessions line, MINT AI's card, mission KPI", /<dt>Today<\/dt><dd" \+ \(k\.tokTip \? ' title="' \+ esc\(k\.tokTip\)/.test(fam) && /ML\.tokLine\(s\.tokens_today, "today"\)/.test(main) && /tok: ML\.tokLine\(s\.tokens_today\), tokTip: ML\.tokTip\(s\.tokens_today\)/.test(main) &&
+    /ML\.tokens\(mt\.tokens\.total\)[\s\S]{0,40}<span>tokens<\/span>/.test(panels) && !/\$/.test(logic.slice(logic.indexOf("function tokens(n)"), logic.indexOf("function tokTip"))));
+  check("  sphere size follows tokens, not dollars", /Math\.min\(20, \(\(s\.tokens_today && s\.tokens_today\.total\) \|\| 0\) \/ 5e5\)/.test(main));
 }
 check("the Usage sheet: plan first, then tokens, voice folded below; no dollars outside the voice block",
   /<div id="cc-cost-widget">[\s\S]*<details class="cc-vu-box" id="cc-vu-box">/.test(html) && /planBlock\(P\.usage, \{ refresh: true \}\) \+ tokenSection\(P\.usage, false\)/.test(panels) && !/money\(|\$"|usd/i.test(panels.slice(panels.indexOf("/* ======================================================== usage */"), panels.indexOf("/* ---- the voice's own spend"))));
