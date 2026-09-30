@@ -307,3 +307,10 @@ b.ink { color: var(--ink); }
 .tabs2 a[aria-selected="true"] { color: var(--ink); border-bottom-color: var(--brand); }
 .sess-card > .tabs2, .content > .frame-body > .tabs2 { margin-bottom: 10px; }
 .pill.work { color: var(--work, var(--accent)); border-color: color-mix(in srgb, var(--work, var(--accent)) 45%, transparent); background: color-mix(in srgb, var(--work, var(--accent)) 8%, transparent); }
+
+/* ---- page map extras ---- */
+.group > .gh.gh-sub { border-top: 1px solid var(--line); }
+.tn .set-form { justify-content: flex-end; flex-wrap: nowrap; }
+.tn-url { font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 280px; }
+.tree li[hidden] { display: none; }
+@media (max-width: 640px) { .tn { grid-template-columns: 18px minmax(0, 1fr) auto; } .tn .tn-url { display: none; } .tree ul { padding-left: 12px; margin-left: 6px; } }

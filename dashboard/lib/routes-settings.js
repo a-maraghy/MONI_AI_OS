@@ -13,9 +13,7 @@
  * The Voice section is rendered by whoever owns the voice (server.js registers
  * `sections.voice`), so everything voice stays next to the voice code.
  *
- *   mount(app, deps)   deps: { requireAuth, requireCsrf, ctx, db, moniai,
- *                              mintLogic, setMintCore, setSessionsView,
- *                              registry, uiActionsEnabled, setUiActionsEnabled }
+ *   mount(app, deps)   deps: { requireAuth, requireCsrf, ctx, db, moniai, pageMap }
  */
 
 const V = require("./views-settings");
@@ -237,6 +235,126 @@ sections.sessions = async (req, res, deps) => {
         V.linkRow("Token caps", "A daily cap per session, and what happens at it.", "/mint-ai/settings/usage#u-caps")
     );
   return { body };
+};
+
+/** Settings > Screen control > Allow screen actions, per person (default on). */
+function uiActionsEnabled(db, userId) {
+  try {
+    return db.getSetting("ui_actions_enabled:" + Number(userId), "1") !== "0";
+  } catch (_) {
+    return true;
+  }
+}
+
+const TIER1 = [
+  "End, mute or interrupt a call",
+  "Open or close a Command Center panel",
+  "Show the map or Missions",
+  "Switch the core",
+  "Show or read the last reply",
+  "Show the waiting Decision (approving stays yours)",
+  "Open a page, section, tab or card",
+];
+
+/** The page map as a tree: page › section / sheet / tab › anchor, each with its allow switch. */
+function treeHtml(entries, allow, newKeys, csrf) {
+  const kids = new Map();
+  for (const e of entries) {
+    const k = e.parent || "";
+    if (!kids.has(k)) kids.set(k, []);
+    kids.get(k).push(e);
+  }
+  const isNew = new Set(newKeys || []);
+  const node = (e, parentOff) => {
+    const ch = kids.get(e.key) || [];
+    const on = allow[e.key] !== false && !parentOff;
+    return `<li${e.key === "settings" ? ' class="open"' : ""} data-tn="${esc((e.label + " " + e.key).toLowerCase())}"><div class="tn k-${esc(e.kind)}${on ? "" : " off"}">${
+      ch.length ? `<button type="button" class="tw" data-tw aria-label="Expand">${icon("chevron")}</button>` : "<span></span>"
+    }<span class="nm">${esc(e.label)} <code>${esc(e.key)}</code>${e.kind !== "page" ? `<span class="tag-s">${esc(e.kind)}</span>` : ""}${isNew.has(e.key) ? `<span class="tag-s new">new</span>` : ""}${
+      e.perm ? `<span class="tag-s ro" title="Only roles with this permission">${esc(e.perm)}</span>` : ""
+    }</span><span class="muted-num tn-url">${esc(e.url)}</span>
+    <form method="post" action="/mint-ai/settings/screen/allow" class="set-form" data-live><input type="hidden" name="_csrf" value="${esc(csrf)}"><input type="hidden" name="key" value="${esc(e.key)}">${V.sw(
+      'name="on" value="1" aria-label="Allow ' + esc(e.label) + '"' + (parentOff ? " disabled" : ""),
+      allow[e.key] !== false,
+      "",
+      "",
+      "nolab"
+    )}</form></div>${ch.length ? `<ul>${ch.map((c) => node(c, !on)).join("")}</ul>` : ""}</li>`;
+  };
+  return `<ul>${(kids.get("") || []).map((e) => node(e, false)).join("")}</ul>`;
+}
+
+function diffHtml(d) {
+  if (!d) return "";
+  const lines = [];
+  for (const k of d.added.slice(0, 12)) lines.push(`<div class="dl"><span class="tag-s ok">new</span><span><code>${esc(k)}</code></span><span></span></div>`);
+  if (d.added.length > 12) lines.push(`<div class="dl"><span class="tag-s ok">new</span><span>…and ${d.added.length - 12} more (marked new in the map below)</span><span></span></div>`);
+  for (const [k, from, to] of d.renamed) lines.push(`<div class="dl"><span class="tag-s warn">renamed</span><span><code>${esc(k)}</code> ${k === from ? "" : esc(from) + " "}→ <b>${esc(to)}</b></span><span></span></div>`);
+  for (const [k, why] of d.removed) lines.push(`<div class="dl"><span class="tag-s bad">removed</span><span><code>${esc(k)}</code> — ${esc(why)}</span><span></span></div>`);
+  if (!lines.length) lines.push(`<div class="hint-line">${icon("check", 15)}No changes since the last scan.</div>`);
+  return `<div class="diff">${lines.join("")}</div>`;
+}
+
+const stampOf = (iso) => String(iso || "").replace("T", " ").slice(0, 16);
+
+sections.screen = async (req, res, deps) => {
+  const csrf = res.locals.csrf;
+  const pm = deps.pageMap;
+  const st = pm && pm.current();
+  const allow = pm ? pm.allowMap() : {};
+  const entries = st ? st.entries : [];
+  const nAllowed = pm && st ? pm.effective().length : 0;
+  const push = pm ? pm.lastPush() : {};
+  const on = uiActionsEnabled(deps.db, req.me.id);
+  const body =
+    V.head(
+      "Screen control",
+      "What MINT AI may do on your screen when you ask. It reads this allowlist at run time; nothing on a page is ever clicked for you, and changing a preference still waits for your confirm."
+    ) +
+    V.group(
+      "Acts at once — with a note and 60 s undo",
+      "check",
+      V.row("Allow screen actions", "Off keeps MINT AI to words only.", V.form("/mint-ai/settings/screen/actions", csrf, V.sw('name="on" value="1"', on)), { scope: "you", id: "sc-actions" }) +
+        V.row("Actions", null, `<div class="chips-r">${TIER1.map((x) => `<span class="tag-s">${esc(x)}</span>`).join("")}</div>`, { full: true })
+    ) +
+    V.group(
+      "Asks you first",
+      "shield",
+      V.row(
+        "Preference changes",
+        "Applied only after you confirm; the server holds the change until then.",
+        `<div class="chips-r"><span class="tag-s">theme</span><span class="tag-s">voice persona</span><span class="tag-s">voice (for everyone)</span></div>`
+      )
+    ) +
+    V.group(
+      "Pages it may open",
+      "external",
+      `<div class="lr"><div><b>Page map</b><span class="d">Built from the routes, settings sections, Command Center sheets, tabs and card anchors in the source — a new page or section becomes openable without a code change.${
+        push && push.ok === false ? ` <span class="pill warn">MINT AI has not been told yet: ${esc(push.error || "")}</span>` : ""
+      }</span></div>
+      <div class="gap8"><span class="muted-num" id="reg-stamp">${st ? "last scanned " + esc(stampOf(st.at)) + (st.by ? " · " + esc(st.by) : "") : "never scanned"}</span>
+      <form method="post" action="/mint-ai/settings/screen/rescan" class="set-form" data-rescan><input type="hidden" name="_csrf" value="${esc(csrf)}"><button type="submit" class="btn small primary">${icon(
+        "reindex",
+        14
+      )} Rescan pages</button></form></div></div>
+      <div id="scan-live" hidden><div class="scanbar"><i id="scan-bar"></i></div><div class="scan-log" id="scan-log"></div></div>
+      ${st && st.diff ? `<div class="gh gh-sub">${icon("activity", 16)}Last scan<span class="aside">${esc(stampOf(st.at))}</span></div>${diffHtml(st.diff)}` : ""}
+      ${V.row(
+        "New entries",
+        "What a newly found page or anchor starts as.",
+        V.form("/mint-ai/settings/screen/policy", csrf, `<select name="policy" aria-label="New entries">${V.opt("auto", "Allowed at once (default)", pm ? pm.policy() : "auto")}${V.opt("wait", "Off until I allow it", pm ? pm.policy() : "auto")}</select>`),
+        { id: "sc-policy" }
+      )}
+      ${
+        st
+          ? `<div class="tree-tools"><input type="search" placeholder="Filter pages, sections, anchors…" data-reg-q aria-label="Filter the page map"><span class="sp"></span><span class="muted-num">${entries.length} entries · ${nAllowed} allowed</span>
+            <form method="post" action="/mint-ai/settings/screen/allow-all" class="set-form" data-live><input type="hidden" name="_csrf" value="${esc(csrf)}"><button type="submit" name="all" value="1" class="btn small">Allow all</button></form></div>
+            <div class="tree" id="reg-tree">${treeHtml(entries, allow, st.new_keys, csrf)}</div>`
+          : `<div class="lr"><div><b>Not scanned yet</b><span class="d">page.open uses its built-in pages until the first scan.</span></div><span class="pill warn">never scanned</span></div>`
+      }`,
+      { id: "sc-registry" }
+    );
+  return { body, assets: ["mint-screen.js"] };
 };
 
 sections.approvals = async (req, res, deps) => {
@@ -481,6 +599,62 @@ function mount(app, deps) {
     }
   });
 
+  /* ---- Screen control ---- */
+  app.post("/mint-ai/settings/screen/actions", requireAuth, guard("screen"), requireCsrf, (req, res) => {
+    const on = req.body.on === "1" || req.body.on === "on";
+    db.setSetting("ui_actions_enabled:" + Number(req.me.id), on ? "1" : "0", req.me.username);
+    db.logLogin(req.ip, req.me.username, "mint-ui", `screen actions ${on ? "on" : "off"}`);
+    reply(req, res, "screen", { msg: on ? "MINT AI may act on your screen when you ask." : "Screen actions are off: MINT AI keeps to words.", anchor: "sc-actions" });
+  });
+  app.post("/mint-ai/settings/screen/policy", requireAuth, guard("screen"), requireCsrf, (req, res) => {
+    const p = req.body.policy === "wait" ? "wait" : "auto";
+    deps.pageMap.setPolicy(p, req.me.username);
+    db.logLogin(req.ip, req.me.username, "mint-ui", `page map: new entries ${p === "wait" ? "off until allowed" : "allowed at once"}`);
+    reply(req, res, "screen", { msg: p === "wait" ? "New pages start off until you allow them." : "New pages are allowed at once.", anchor: "sc-policy" });
+  });
+  app.post("/mint-ai/settings/screen/allow", requireAuth, guard("screen"), requireCsrf, (req, res) => {
+    const key = String(req.body.key || "");
+    const st = deps.pageMap.current();
+    if (!st || !st.entries.some((e) => e.key === key)) return reply(req, res, "screen", { err: "No such entry in the page map.", anchor: "sc-registry" });
+    const on = req.body.on === "1" || req.body.on === "on";
+    deps.pageMap.setAllow(key, on, req.me.username);
+    db.logLogin(req.ip, req.me.username, "mint-ui", `page map: ${key} ${on ? "allowed" : "off"}`);
+    reply(req, res, "screen", { msg: `${key}: ${on ? "MINT AI may open it" : "off — MINT AI cannot open it or anything under it"}.`, anchor: "sc-registry", reload: true });
+  });
+  app.post("/mint-ai/settings/screen/allow-all", requireAuth, guard("screen"), requireCsrf, (req, res) => {
+    deps.pageMap.allowAll(req.me.username);
+    db.logLogin(req.ip, req.me.username, "mint-ui", "page map: allowed all");
+    reply(req, res, "screen", { msg: "Every entry of the page map is allowed.", anchor: "sc-registry", reload: true });
+  });
+  // Rescan pages: re-read the view sources on disk. JSON (with the scan's steps) for mint-screen.js.
+  app.post("/mint-ai/settings/screen/rescan", requireAuth, guard("screen"), requireCsrf, (req, res) => {
+    let st;
+    try {
+      st = deps.pageMap.scan(req.me.username);
+    } catch (e) {
+      return reply(req, res, "screen", { err: "The scan failed: " + e.message, anchor: "sc-registry" });
+    }
+    const d = st.diff || { added: [], renamed: [], removed: [] };
+    const by = (k) => st.entries.filter((e) => e.kind === k).length;
+    db.logLogin(req.ip, req.me.username, "mint-ui", `page map rescanned: ${st.entries.length} entries, ${d.added.length} new, ${d.renamed.length} renamed, ${d.removed.length} removed`);
+    const msg = `Page map rebuilt: ${d.added.length} new, ${d.renamed.length} renamed, ${d.removed.length} removed.`;
+    if (wantsJson(req))
+      return res.json({
+        ok: true,
+        flash: flashes({ msg }),
+        reload: true,
+        steps: [
+          `Reading the routes (ui NAV) … ${by("page")} pages`,
+          `Reading settings sections … ${by("section")} sections`,
+          `Reading Command Center sheets (cc-logic SHEETS) … ${by("sheet")}`,
+          `Reading tabs and card anchors in lib/views-*.js … ${by("tab")} tabs, ${by("anchor")} anchors`,
+          `Checking each entry's permission …`,
+          `Comparing with the last map …`,
+        ],
+      });
+    reply(req, res, "screen", { msg, anchor: "sc-registry" });
+  });
+
   /* ---- Approvals & automations ---- */
   app.post("/mint-ai/settings/approvals/timeout", requireAuth, guard("approvals"), requireCsrf, async (req, res) => {
     const n = intIn(req.body.seconds, 30, 3600);
@@ -582,4 +756,4 @@ function mount(app, deps) {
   });
 }
 
-module.exports = { mount, sections, marks, reply, wantsJson, sup, capPill, fmtTok };
+module.exports = { mount, sections, marks, reply, wantsJson, sup, capPill, fmtTok, uiActionsEnabled };

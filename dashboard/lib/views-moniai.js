@@ -26,7 +26,6 @@
 const { esc, shell, card, asset, dockMarkup } = require("./ui");
 const marks = require("./marks");
 const logic = require("../public/cc-logic");
-const UiActions = require("../public/ui-actions");
 
 /* Icons for the page, as one sprite referenced by <use>. */
 const SPRITE = {
@@ -195,10 +194,11 @@ function page(o) {
     .map((d) => `<a class="cc-card cc-link-card" href="${d[0]}">${ic(d[1])}<b>${esc(d[2])}</b><span class="sp"></span>${ic("chevr")}</a>`)
     .join("");
 
+  const pageMap = require("./ui").pageMapFor(perm);
   const body = `${sprite()}
 <div class="cc-shell" id="cc"
      data-core="${core}" data-state="idle" data-sessview="${sessview}"
-     data-pages="${esc(UiActions.navKeysFor((p) => !perm || perm.can(p)).join(" "))}"
+     data-pages="${esc(pageMap.keys)}" data-page-map="${esc(pageMap.map)}"
      data-csrf="${esc(o.csrf)}"
      data-viewer="${esc(o.user && o.user.name)}"
      data-voice-ready="${voice.configured ? "1" : ""}"

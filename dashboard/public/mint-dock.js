@@ -36,6 +36,8 @@
   var dock = $("md-dock"), CSRF = root.getAttribute("data-csrf") || "";
   var PAGES_OK = " " + (root.getAttribute("data-pages") || "") + " ";
   var UA = window.UiActions;
+  // The page map this viewer's MINT AI may open (lib/page-map.js), checked again here.
+  try { if (UA && UA.setPages) UA.setPages(JSON.parse(root.getAttribute("data-page-map") || "null")); } catch (e) { /* the built-in pages stay */ }
   var reduced = !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
   var TAB_ID = (function () {
     var fresh = "t" + Math.random().toString(36).slice(2, 12) + Date.now().toString(36);

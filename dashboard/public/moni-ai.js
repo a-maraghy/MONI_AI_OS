@@ -3178,6 +3178,8 @@
   var uiSeen = {};
   function runUiAction(ev) {
     var UA = window.UiActions;
+    // The page map this viewer's MINT AI may open (lib/page-map.js), checked again here.
+    try { if (UA && UA.setPages) UA.setPages(JSON.parse($("cc").getAttribute("data-page-map") || "null")); } catch (e) { /* the built-in pages stay */ }
     if (!UA || !ev) return { ok: false, why: "this page has no screen actions" };
     if (ev.nonce) {
       if (uiSeen[ev.nonce]) return { ok: false, why: "already done" };

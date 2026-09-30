@@ -16,6 +16,7 @@
  *   UiActions.toast(action, args)  -> "Mint opened Missions"
  *   UiActions.tool()               -> the realtime tool definition (ui_action)
  *   UiActions.limiter()            -> per-turn / per-minute rate limits
+ *   UiActions.setPages(list|null)  -> the page map page.open uses (lib/page-registry.js)
  *
  * Where an action runs: "server" (the live call itself: end, mute, interrupt)
  * or "page" (the tab that holds the call, or that sent the relay-desk turn).
@@ -52,42 +53,80 @@
   var PERSONAS = { cairene_f: "Cairene Egyptian, feminine", cairene_m: "Cairene Egyptian, masculine", msa_n: "Modern Standard Arabic, neutral", learned: "learned from how you speak" };
   // lib/voice.js VOICES (tested to match).
   var VOICE_NAMES = { marin: "marin", cedar: "cedar", alloy: "alloy", ash: "ash", ballad: "ballad", coral: "coral", echo: "echo", sage: "sage", shimmer: "shimmer", verse: "verse" };
-  var MODES = { ptt: "push to talk", handsfree: "hands-free", live: "live conversation" };
   var VIEWS = { map: "the map", missions: "Missions" };
-  // settings.open: a fixed list of pages, never a URL from the model.
-  var PAGES = {
-    voice: { url: "/credentials/openai-voice", label: "voice settings" },
-    account: { url: "/account", label: "your account" },
-    "voice-eval": { url: "/mint-ai/voice-eval", label: "the voice evaluation" },
-  };
 
-  // page.open (M-5): the pages MINT AI may take the administrator to -- a fixed
-  // map, GET pages only (none has a real side effect), no parameters, no query
-  // strings. perm: what the page needs (checked on the page before it moves;
-  // null = anyone signed in). Nothing on a page is ever clicked for them.
-  var NAV_PAGES = {
-    "os-overview": { url: "/os", label: "the OS dashboard", perm: "os.view" },
-    agents: { url: "/agents/dashboard", label: "the agents dashboard", perm: "agents.view" },
-    "agents-fleet": { url: "/agents", label: "the Telegram agents", perm: "agents.view" },
-    "agents-channels": { url: "/channels", label: "the channels", perm: "channels.view" },
-    "agents-addons": { url: "/addons", label: "the add-ons", perm: "addons.view" },
-    "agents-services": { url: "/services/agents", label: "the agent services", perm: "agents.view" },
-    "os-services": { url: "/services", label: "the services", perm: "services.view" },
-    "os-audit": { url: "/audit", label: "the audit log", perm: "audit.view" },
-    "os-firewall": { url: "/firewall", label: "the firewall", perm: "firewall.view" },
-    "manage-credentials": { url: "/credentials", label: "the credentials", perm: "credentials.view" },
-    "manage-ssh-keys": { url: "/keys", label: "the SSH keys", perm: "keys.view" },
-    "manage-devices": { url: "/devices", label: "the paired devices", perm: "devices.view" },
-    "manage-users": { url: "/users", label: "the users", perm: "users.view" },
-    "manage-roles": { url: "/roles", label: "the roles", perm: "roles.view" },
-    "claude-memory": { url: "/claude/memory", label: "Claude's memory", perm: "claude.memory.read" },
-    "claude-sessions": { url: "/claude/sessions", label: "the Claude sessions", perm: "claude.sessions.view" },
-    "claude-running": { url: "/claude/running", label: "the running sessions", perm: "claude.running.view" },
-    guide: { url: "/guide", label: "the guide", perm: null },
-    account: { url: "/account", label: "your account", perm: null },
-    "voice-settings": { url: "/credentials/openai-voice", label: "the voice settings", perm: "voice.manage" },
-    "command-center": { url: "/mint-ai", label: "the Command Center", perm: "moniai.use" },
+  /*
+   * page.open: the page map (lib/page-registry.js) -- every page, Settings
+   * section, Command Center sheet, tab and card anchor MINT AI may open, built
+   * from the source and allowed entry by entry in Settings > Screen control.
+   * The panel hands the current map to the supervisor (op ui-pages) and to each
+   * page (data-page-map), and both call setPages(); until then the built-in
+   * pages below stand in. Entries are GET pages only (none has a side effect);
+   * a url is never taken from the model, only from the map. perm: what the page
+   * needs (checked on the page before it moves; null = anyone signed in).
+   * Nothing on a page is ever clicked for them.
+   */
+  var BUILTIN_PAGES = {
+    cc: { url: "/mint-ai", label: "Command Center", perm: "moniai.use", kind: "page" },
+    settings: { url: "/mint-ai/settings", label: "MINT AI Settings", perm: "moniai.use", kind: "page" },
+    "settings.voice": { url: "/mint-ai/settings/voice", label: "Voice settings", perm: "voice.manage", kind: "section" },
+    agents: { url: "/agents/dashboard", label: "Agents & sessions", perm: "agents.view", kind: "page" },
+    sessions: { url: "/claude/sessions", label: "Sessions", perm: "claude.sessions.view", kind: "page" },
+    "sessions.live": { url: "/claude/sessions?tab=live", label: "Live sessions", perm: "claude.running.view", kind: "tab" },
+    telegram: { url: "/agents", label: "Telegram agents", perm: "agents.view", kind: "page" },
+    channels: { url: "/channels", label: "Channels", perm: "channels.view", kind: "page" },
+    addons: { url: "/addons", label: "Add-ons", perm: "addons.view", kind: "page" },
+    memory: { url: "/claude/memory", label: "Memory", perm: "claude.memory.read", kind: "page" },
+    os: { url: "/os", label: "Machine overview", perm: "os.view", kind: "page" },
+    services: { url: "/services", label: "Services", perm: "services.view", kind: "page" },
+    "services.agents": { url: "/services?kind=agents", label: "Agent services", perm: "agents.view", kind: "tab" },
+    audit: { url: "/audit", label: "Audit log", perm: "audit.view", kind: "page" },
+    users: { url: "/users", label: "Users", perm: "users.view", kind: "page" },
+    roles: { url: "/roles", label: "Roles", perm: "roles.view", kind: "page" },
+    devices: { url: "/devices", label: "Signed-in devices", perm: null, kind: "page" },
+    keys: { url: "/keys", label: "SSH keys", perm: "keys.view", kind: "page" },
+    firewall: { url: "/firewall", label: "Firewall", perm: "firewall.view", kind: "page" },
+    credentials: { url: "/credentials", label: "Credentials", perm: "credentials.view", kind: "page" },
+    guide: { url: "/guide", label: "Guide", perm: null, kind: "page" },
+    account: { url: "/account", label: "Your account", perm: null, kind: "page" },
   };
+  // page.open's keys before the page map, and the entries they became (still accepted).
+  var LEGACY_PAGES = {
+    "os-overview": "os", "agents-fleet": "telegram", "agents-channels": "channels", "agents-addons": "addons",
+    "agents-services": "services.agents", "os-services": "services", "os-audit": "audit", "os-firewall": "firewall",
+    "manage-credentials": "credentials", "manage-ssh-keys": "keys", "manage-devices": "devices", "manage-users": "users",
+    "manage-roles": "roles", "claude-memory": "memory", "claude-sessions": "sessions", "claude-running": "sessions.live",
+    "voice-settings": "settings.voice", "command-center": "cc",
+  };
+  var NAV_PAGES = BUILTIN_PAGES;
+  var PAGE_KEY = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+
+  /**
+   * The page map in use: [{key, label, url, perm, kind, parent}] (the panel's
+   * allowed entries), or null for the built-in pages. Bad entries are skipped:
+   * a url must be a path of this site.
+   */
+  function setPages(list) {
+    if (!Array.isArray(list)) { NAV_PAGES = BUILTIN_PAGES; return Object.keys(NAV_PAGES).length; }
+    var m = {};
+    list.forEach(function (e) {
+      if (!e || typeof e.key !== "string" || !PAGE_KEY.test(e.key) || typeof e.url !== "string" || !/^\/(?!\/)[^\s"'<>\\]{0,300}$/.test(e.url)) return;
+      m[e.key] = { url: e.url, label: String(e.label || e.key).slice(0, 120), perm: e.perm || null, kind: e.kind || "page", parent: e.parent || null };
+    });
+    NAV_PAGES = m;
+    return Object.keys(m).length;
+  }
+  function pageKey(key) {
+    if (typeof key !== "string") return null;
+    if (Object.prototype.hasOwnProperty.call(NAV_PAGES, key)) return key;
+    var to = Object.prototype.hasOwnProperty.call(LEGACY_PAGES, key) ? LEGACY_PAGES[key] : null;
+    return to && Object.prototype.hasOwnProperty.call(NAV_PAGES, to) ? to : null;
+  }
+  // page.open's argument: a free string checked against the map at call time.
+  function pageArg(a) {
+    var k = pageKey(a && a.page);
+    return k ? { page: k } : null;
+  }
 
   function oneOf(map, key) {
     return function (a) {
@@ -117,7 +156,6 @@
       toast: function () { return "Mint muted the microphone"; },
     },
     "call.interrupt": { tier: 1, where: "server", args: none, toast: function () { return "Mint stopped reading"; } },
-    "voice.mode": { tier: 1, where: "page", args: oneOf(MODES, "mode"), toast: function (a) { return "Mint switched the voice to " + MODES[a.mode]; } },
     "sheet.open": { tier: 1, where: "page", args: oneOf(SHEETS, "key"), toast: function (a) { return "Mint opened " + SHEETS[a.key]; } },
     // key is optional: "close the missions" may name the panel it closes.
     "sheet.close": { tier: 1, where: "page", args: optKey, toast: function (a) { return a.key ? "Mint closed " + SHEETS[a.key] : "Mint closed the panel"; } },
@@ -126,9 +164,8 @@
     "reply.show": { tier: 1, where: "page", args: none, toast: function () { return "Mint opened the last reply"; } },
     "reply.read": { tier: 1, where: "page", args: none, toast: function () { return "Mint is reading the last reply"; } },
     "decision.show": { tier: 1, where: "page", args: none, toast: function () { return "Mint showed the waiting card -- approving it is yours"; } },
-    "settings.open": { tier: 1, where: "page", once: true, args: oneOf(PAGES, "page"), toast: function (a) { return "Mint suggests " + PAGES[a.page].label; } },
-    // Takes the administrator to one page of the fixed map (M-5). Once a turn.
-    "page.open": { tier: 1, where: "page", once: true, args: oneOf(NAV_PAGES, "page"), toast: function (a) { return "Mint opened " + NAV_PAGES[a.page].label; } },
+    // Takes the administrator to one entry of the page map (M-5). Once a turn.
+    "page.open": { tier: 1, where: "page", once: true, args: pageArg, why: "no such page in the page map (see ui_actions_list)", toast: function (a) { var p = navPage(a.page); return "Mint opened " + (p ? p.label : a.page); } },
     // Tier 2: the toast is the question; done() is what is shown once confirmed and applied.
     "theme.set": { tier: 2, where: "page", args: oneOf(THEMES, "theme"), toast: function (a) { return "Switch to " + THEMES[a.theme] + "?"; }, done: function (a) { return "Switched to " + THEMES[a.theme]; } },
     "persona.set": { tier: 2, where: "page", args: oneOf(PERSONAS, "preset"), toast: function (a) { return "Set the voice persona to " + PERSONAS[a.preset] + "?"; }, done: function (a) { return "Voice persona: " + PERSONAS[a.preset]; } },
@@ -157,17 +194,17 @@
     return a ? a.toast(args || {}) : "";
   }
 
-  function pageUrl(page) {
-    return PAGES[page] ? PAGES[page].url : null;
-  }
-  /** page.open: { url, label, perm } for a key of the fixed map, or null. */
+  /** page.open: { url, label, perm, kind } for a key of the page map (or an old key), or null. */
   function navPage(key) {
-    return Object.prototype.hasOwnProperty.call(NAV_PAGES, key) ? NAV_PAGES[key] : null;
+    var k = pageKey(key);
+    return k ? NAV_PAGES[k] : null;
   }
   /** The page.open keys a viewer may use, given can(perm). */
   function navKeysFor(can) {
     return Object.keys(NAV_PAGES).filter(function (k) { var p = NAV_PAGES[k].perm; return !p || !!can(p); });
   }
+  /** The page map in use, as { key: { url, label, perm, kind, parent } }. */
+  function pages() { return NAV_PAGES; }
 
   /**
    * The realtime tool. Flat, optional arguments so the model can fill them
@@ -180,11 +217,11 @@
       name: "ui_action",
       description:
         "Change what the administrator sees on this Command Center screen, at once: end or mute this call (never unmute), stop reading, " +
-        "switch the voice mode, open or close a panel (" + Object.keys(SHEETS).join(", ") + "), show the map or missions, switch the core (A/B/C), " +
-        "show or read the last reply, show the waiting decision card, or suggest a settings page (voice, account, voice-eval). " +
-        "page.open takes the administrator to another page of Mint OS (page = one of: " + Object.keys(NAV_PAGES).join(", ") + "): " +
-        "\"open the OS dashboard\" / «افتحلي الـ OS dashboard» -> os-overview; \"the agents dashboard\" -> agents; \"the Telegram agents\" -> agents-fleet; \"users\" -> manage-users; " +
-        "\"back to the Command Center\" -> command-center. It only opens the page (nothing on it is clicked), is refused when their role cannot see that page, and is once a turn. " +
+        "open or close a panel (" + Object.keys(SHEETS).join(", ") + "), show the map or missions, switch the core (A/B/C), " +
+        "show or read the last reply, or show the waiting decision card. " +
+        "page.open takes the administrator to a page, a Settings section, a tab or a card of Mint OS (page = one key of the page map: " + Object.keys(NAV_PAGES).join(", ") + "): " +
+        "\"open the machine overview\" / «افتحلي الـ OS dashboard» -> os; \"agents and sessions\" -> agents; \"the Telegram agents\" -> telegram; \"users\" -> users; \"the voice settings\" -> settings.voice; " +
+        "\"back to the Command Center\" -> cc. It only opens the page (nothing on it is clicked), is refused when their role cannot see that page, and is once a turn. " +
         "Panel names as the administrator may say them: " + PANEL_WORDS + ". " +
         "\"Close the missions\", \"hide the decisions\", «اقفلي المهام», «اقفل الميشنز», «شيل القرارات» close that PANEL (sheet.close), never the call: " +
         "call.end only when they name the call or the conversation (\"end the call\", «اقفل المكالمة»). " +
@@ -199,10 +236,9 @@
         properties: {
           action: { type: "string", enum: names() },
           key: { type: "string", enum: Object.keys(SHEETS), description: "sheet.open: which panel; sheet.close: optional, the panel named" },
-          mode: { type: "string", enum: Object.keys(MODES), description: "voice.mode" },
           name: { type: "string", enum: Object.keys(VIEWS), description: "view" },
           core: { type: "string", enum: Object.keys(CORES), description: "core.set" },
-          page: { type: "string", enum: Object.keys(PAGES).concat(Object.keys(NAV_PAGES).filter(function (k) { return !PAGES[k]; })), description: "settings.open: voice, account or voice-eval; page.open: a page key from the list" },
+          page: { type: "string", description: "page.open: one key of the page map (listed in this tool's description)" },
           theme: { type: "string", enum: Object.keys(THEMES), description: "theme.set (needs confirm)" },
           preset: { type: "string", enum: Object.keys(PERSONAS), description: "persona.set (needs confirm)" },
           voice: { type: "string", enum: Object.keys(VOICE_NAMES), description: "voice.set (needs confirm; an open call reconnects with it)" },
@@ -213,6 +249,7 @@
     };
   }
 
+  // Fixed for ever (ui_do's schema): "mode" stays though voice.mode is gone.
   var ARG_KEYS = ["key", "mode", "name", "core", "page", "on", "theme", "preset", "voice"];
 
   /*
@@ -228,7 +265,6 @@
     "call.end": "end the administrator's live voice call",
     "call.mute": "mute their microphone in the live call (never unmute)",
     "call.interrupt": "stop reading aloud",
-    "voice.mode": "switch the voice mode",
     "sheet.open": "open a Command Center panel",
     "sheet.close": "close the open panel (or the panel named, if it is the one open)",
     view: "show the map or the missions",
@@ -236,8 +272,7 @@
     "reply.show": "open your last reply in full",
     "reply.read": "read your last reply aloud",
     "decision.show": "show the waiting decision card (approving it stays theirs)",
-    "settings.open": "suggest a settings page (a toast with a link; nothing opens by itself)",
-    "page.open": "take the administrator to another page of Mint OS (only the page opens; refused when their role cannot see it)",
+    "page.open": "take the administrator to a page, Settings section, tab or card of Mint OS (only the page opens; refused when their role cannot see it)",
     "theme.set": "ask to switch the theme (they confirm)",
     "persona.set": "ask to set the Arabic voice persona (they confirm)",
     "voice.set": "ask to switch the voice's sound, for everyone (they confirm; an open call reconnects in it)",
@@ -245,13 +280,11 @@
   function labels(map, f) { var o = {}; Object.keys(map).forEach(function (k) { o[k] = f ? f(map[k], k) : map[k]; }); return o; }
   var ARG_SPEC = {
     "call.mute": { on: { required: false, values: { "true": "mute (the only value)" } } },
-    "voice.mode": { mode: { required: true, values: MODES } },
     "sheet.open": { key: { required: true, values: SHEETS } },
     "sheet.close": { key: { required: false, values: SHEETS } },
     view: { name: { required: true, values: VIEWS } },
     "core.set": { core: { required: true, values: CORES } },
-    "settings.open": { page: { required: true, values: labels(PAGES, function (p) { return p.label; }) } },
-    "page.open": { page: { required: true, values: labels(NAV_PAGES, function (p) { return p.label + (p.perm ? " (needs " + p.perm + ")" : ""); }) } },
+
     "theme.set": { theme: { required: true, values: THEMES } },
     "persona.set": { preset: { required: true, values: PERSONAS } },
     "voice.set": { voice: { required: true, values: VOICE_NAMES } },
@@ -269,7 +302,10 @@
       ],
       actions: names().map(function (n) {
         var a = ACTIONS[n];
-        return { action: n, what: WHAT[n] || "", tier: a.tier, needs_confirm: a.tier === 2, once_per_request: !!a.once, args: ARG_SPEC[n] || {} };
+        var args = ARG_SPEC[n] || {};
+        // The page map changes as Mint OS grows (Settings > Screen control): read it now.
+        if (n === "page.open") args = { page: { required: true, values: labels(NAV_PAGES, function (p) { return p.label + (p.kind && p.kind !== "page" ? " [" + p.kind + "]" : "") + (p.perm ? " (needs " + p.perm + ")" : ""); }) } };
+        return { action: n, what: WHAT[n] || "", tier: a.tier, needs_confirm: a.tier === 2, once_per_request: !!a.once, args: args };
       }),
     };
   }
@@ -290,7 +326,7 @@
 
   /**
    * Rate limits: at most `perTurn` actions per turn and `perMinute` per
-   * minute, and a `once` action (call.end, settings.open) once per turn.
+   * minute, and a `once` action (call.end, page.open) once per turn.
    */
   function limiter(opts) {
     var o = opts || {};
@@ -327,7 +363,8 @@
   }
 
   return {
-    ACTIONS: ACTIONS, SHEETS: SHEETS, CORES: CORES, MODES: MODES, VIEWS: VIEWS, PAGES: PAGES, THEMES: THEMES, PERSONAS: PERSONAS, VOICE_NAMES: VOICE_NAMES, ARG_KEYS: ARG_KEYS,
-    names: names, validate: validate, toast: toast, doneText: doneText, navPage: navPage, navKeysFor: navKeysFor, NAV_PAGES: NAV_PAGES, pageUrl: pageUrl, tool: tool, fromTool: fromTool, catalog: catalog, stableSchema: stableSchema, limiter: limiter, claims: claims,
+    ACTIONS: ACTIONS, SHEETS: SHEETS, CORES: CORES, VIEWS: VIEWS, THEMES: THEMES, PERSONAS: PERSONAS, VOICE_NAMES: VOICE_NAMES, ARG_KEYS: ARG_KEYS,
+    BUILTIN_PAGES: BUILTIN_PAGES, LEGACY_PAGES: LEGACY_PAGES,
+    names: names, validate: validate, toast: toast, doneText: doneText, navPage: navPage, navKeysFor: navKeysFor, pages: pages, setPages: setPages, tool: tool, fromTool: fromTool, catalog: catalog, stableSchema: stableSchema, limiter: limiter, claims: claims,
   };
 });

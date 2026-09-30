@@ -417,6 +417,28 @@ function shell(title, body, opts = {}) {
 }
 
 /**
+ * page.open's map for a page: the keys this viewer's role may open (data-pages)
+ * and the allowed entries to check them against (data-page-map, JSON; the page
+ * hands it to UiActions.setPages). The built-in pages until the first scan.
+ */
+function pageMapFor(perm) {
+  const can = (p) => !perm || perm.can(p);
+  let v = null;
+  try {
+    const PM = require("./page-map");
+    if (PM.current()) v = PM.forViewer(perm);
+  } catch (_) {
+    v = null;
+  }
+  if (!v) {
+    const UiActions = require("../public/ui-actions");
+    const b = UiActions.BUILTIN_PAGES;
+    v = { keys: UiActions.navKeysFor(can), map: Object.keys(b).map((k) => ({ key: k, url: b[k].url, label: b[k].label, perm: b[k].perm, kind: b[k].kind })) };
+  }
+  return { keys: v.keys.join(" "), map: JSON.stringify(v.map) };
+}
+
+/**
  * MINT AI's dock on a page that is not the Command Center: its small core,
  * state and the last thing it said, push to talk (the mic, or hold Space),
  * and a way back to the Command Center. Everything else is public/mint-dock.js.
@@ -424,8 +446,7 @@ function shell(title, body, opts = {}) {
  * before moving).
  */
 function dockMarkup(csrf, perm, opts = {}) {
-  const UiActions = require("../public/ui-actions");
-  const keys = UiActions.navKeysFor((p) => perm.can(p)).join(" ");
+  const { keys, map } = pageMapFor(perm);
   // The Command Center's shell (M-5 part 2): the same dock, driven by the Command Center, over a
   // same-origin frame that holds the other pages, and the canvas the core flies on between them.
   const shellParts = opts.shell
@@ -435,7 +456,7 @@ function dockMarkup(csrf, perm, opts = {}) {
     : "";
   const svg = (d) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
   return `
-<div class="md-root${opts.shell ? " md-shell" : ""}" id="mint-dock-root" data-csrf="${esc(csrf)}" data-pages="${esc(keys)}"${opts.shell ? ' data-shell="1"' : ""} hidden>${shellParts}
+<div class="md-root${opts.shell ? " md-shell" : ""}" id="mint-dock-root" data-csrf="${esc(csrf)}" data-pages="${esc(keys)}" data-page-map="${esc(map)}"${opts.shell ? ' data-shell="1"' : ""} hidden>${shellParts}
   <div class="md-bubble" id="md-bubble" aria-hidden="true" data-s="idle"><div class="b-top">MINT AI · <b id="md-b-state">READY</b><span id="md-b-at">now</span></div><div class="b-you" id="md-b-you"></div><div class="b-cap" id="md-b-cap">Ready when you are.</div><div class="b-ask" id="md-b-ask" hidden></div>
     <div class="b-hint"><span>Click to open the Command Center</span>${opts.noVoice ? "" : `<span><kbd>Space</kbd> hold to talk</span>`}</div></div>
   <div class="md-toast" id="md-toast" role="status"><span class="t-ic" aria-hidden="true"></span><span id="md-t-txt"></span><button type="button" id="md-t-act" hidden>Undo</button><button type="button" id="md-t-no" hidden>Cancel</button></div>
@@ -654,6 +675,7 @@ function empty(iconName, title, body) {
 
 module.exports = {
   dockMarkup,
+  pageMapFor,
   asset,
   docLayout,
   tocCard,

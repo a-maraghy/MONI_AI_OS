@@ -3694,6 +3694,8 @@ function uiDeliver(ev, req, tab, res) {
   if (!r.deliver) return;
   const v = UiActions.validate(ev.action, ev.args || {});
   if (!v.ok) return void ack(false, v.why);
+  // Settings > Screen control > Allow screen actions (per person): off keeps MINT AI to words.
+  if (v.tier === 1 && !settingsRoutes.uiActionsEnabled(db, req.me.id)) return void ack(false, "screen actions are off (the administrator switched them off in Settings > Screen control)");
   if (v.tier === 2) {
     const o = uiConfirmOpen({ username: actor, ip: req.ip, canVoice: req.perm.can("voice.manage") }, v, tab, `MINT AI (turn ${ev.turn_id})`);
     if (o.error) return void ack(false, o.error);
@@ -5366,7 +5368,15 @@ app.get("/guide", requireAuth, (req, res) => {
  * The Voice section's renderer and routes sit with the voice code below it.
  */
 const settingsRoutes = require("./lib/routes-settings");
-settingsRoutes.mount(app, { requireAuth, requireCsrf, ctx, db, moniai });
+// The page map (Settings > Screen control): scanned now, and again on Rescan pages.
+const pageMap = require("./lib/page-map");
+pageMap.configure({ db, moniai });
+try {
+  pageMap.scan("panel start");
+} catch (e) {
+  console.error("page map: the scan failed, page.open keeps its built-in pages: " + e.message);
+}
+settingsRoutes.mount(app, { requireAuth, requireCsrf, ctx, db, moniai, pageMap });
 
 /* ------------------------------------ live voice evaluation (admin) ---- */
 

@@ -77,13 +77,15 @@ const sessionHref = (home, uuid, extra) =>
  * is a page of its own (?tab=) and works without JavaScript. `counts` is
  * optional ({live, all, archived}).
  */
+const SESSION_TABS = [
+  ["live", "Live", "claude.running.view"],
+  ["all", "All", "claude.sessions.view"],
+  ["archived", "Archived", "claude.sessions.view"],
+];
+exports.SESSION_TABS = SESSION_TABS; // the page map's Sessions tabs (lib/page-registry.js)
 function tabs(active, user, counts) {
   const c = counts || {};
-  const items = [
-    ["live", "Live", "claude.running.view"],
-    ["all", "All", "claude.sessions.view"],
-    ["archived", "Archived", "claude.sessions.view"],
-  ].filter((i) => can(user, i[2]));
+  const items = SESSION_TABS.filter((i) => can(user, i[2]));
   if (items.length < 2) return "";
   return `<nav class="tabs2" role="tablist" aria-label="Sessions">${items
     .map(

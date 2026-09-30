@@ -38,13 +38,15 @@ function controls(csrf, action, target, state) {
  * agents' and channels' own) and Agents (the Telegram agents' units, with their
  * controls -- what was Agents ▸ Agent services). Links: each is ?kind=.
  */
+const SERVICE_TABS = [
+  ["all", "All", "services.view"],
+  ["system", "System", "services.view"],
+  ["agents", "Agents", "agents.view"],
+];
+exports.SERVICE_TABS = SERVICE_TABS; // the page map's Services tabs (lib/page-registry.js)
 function tabs(kind, user, counts) {
   const c = counts || {};
-  const items = [
-    ["all", "All", "services.view"],
-    ["system", "System", "services.view"],
-    ["agents", "Agents", "agents.view"],
-  ].filter((i) => can(user, i[2]));
+  const items = SERVICE_TABS.filter((i) => can(user, i[2]));
   if (items.length < 2) return "";
   return `<nav class="tabs2" role="tablist" aria-label="Services">${items
     .map(([k, label]) => `<a role="tab" href="/services?kind=${k}" aria-selected="${kind === k}">${label}${c[k] != null ? ` <span class="badge plain">${esc(c[k])}</span>` : ""}</a>`)
