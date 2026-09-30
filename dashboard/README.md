@@ -291,7 +291,9 @@ hands-free, Space held to talk and every "trial" label are gone.
   model can transcribe its own input (OpenAI refuses one as the session's
   transcription model and on `/audio/transcriptions`), and a hand-off to MINT
   AI must carry the server's own transcript, so the transcription model is the
-  voice model's fixed pair (`listenModelFor`: `gpt-4o-mini-transcribe`, which
+  voice model's fixed pair (prompting the voice model to transcribe its own
+  input was tested too and lost or changed about 1 turn in 5 -- see the note in
+  `lib/voice.js`) (`listenModelFor`: `gpt-4o-mini-transcribe`, which
   keeps the English words of mixed Egyptian in Latin script, as the guards
   expect; it retires 2027-02-26 -- move the pair to `gpt-transcribe` after
   checking the guards, and widen the helper's `VOICE_TRANSCRIBE_RE`). The
