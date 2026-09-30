@@ -89,10 +89,12 @@ const MAX_AUDIO_BYTES = 25 * 1024 * 1024; // the transcription endpoint's own ca
 const AUDIO_TOKENS_PER_SECOND = 20;
 
 /*
- * The voice model (MINT AI ▸ Settings ▸ Voice): ONE model for the voice since
- * 2026-09-30 -- it holds the live conversation (lib/voice-live.js) and reads
- * MINT AI's replies aloud. Only a model that does both passed the feasibility
- * run of 2026-09-30 (real API, the panel's own key):
+ * The voice model (MINT AI ▸ Settings ▸ Voice): the model that holds the live
+ * conversation (lib/voice-live.js), chosen from VOICE_MODELS. It reads MINT
+ * AI's replies aloud too when it passed the verbatim check (READER_MODELS);
+ * any other choice has its replies read by gpt-realtime-2.1-mini, so read-aloud
+ * stays word for word whatever is picked (readerModelFor). The feasibility run
+ * of 2026-09-30 (real API, the panel's own key):
  *
  *   gpt-realtime-2.1-mini   live Arabic/English 3/3 in the right language,
  *                           read-aloud word for word 18/18 (English, Egyptian,
@@ -106,8 +108,15 @@ const AUDIO_TOKENS_PER_SECOND = 20;
  *                           by design: read aloud 5/6 English, 0/4 Arabic (it
  *                           translated Arabic into English).
  *
- * So the list holds one model. READER_MODELS is what passed the verbatim check;
- * readerModelFor() keeps any other value off the reader.
+ * On 2026-09-30 the list was cut to gpt-realtime-2.1-mini alone. On 2026-10-01
+ * the administrator asked for gpt-realtime-mini and GPT-4o Mini Realtime back:
+ * they are offered again with the facts above in their hints, for the live
+ * conversation only -- READER_MODELS is still what passed the verbatim check,
+ * and readerModelFor() keeps any other value off the reader. A model marked
+ * `gated` is offered only when the key's /v1/models listing carries it (or a
+ * dated snapshot of it): modelAccess(); the server checks at start, caches
+ * the answer and refuses to save a gated model the key cannot use. On
+ * 2026-10-01 the key listed gpt-realtime-mini but no gpt-4o-mini-realtime*.
  *
  * Listening (the transcription model) is its own setting again since the
  * evening of 2026-09-30 -- the administrator asked for a choice, OpenAI or a
@@ -136,12 +145,86 @@ const AUDIO_TOKENS_PER_SECOND = 20;
  * gpt-transcribe before then, after the guards are checked against it (the
  * helper's VOICE_TRANSCRIBE_RE must allow it too).
  */
-const VOICE_MODELS = Object.freeze([{ id: "gpt-realtime-2.1-mini", label: "GPT Realtime 2.1 mini" }]);
+// short: the option's own line; hint: the line under the selector (facts from the 2026-09-30 run).
+const VOICE_MODELS = Object.freeze([
+  Object.freeze({
+    id: "gpt-realtime-2.1-mini",
+    label: "GPT Realtime 2.1 mini",
+    short: "default · 18/18 word for word · Arabic OK",
+    hint: "The default. Holds the call and reads replies aloud: word for word 18/18, and it answers Arabic in Arabic.",
+  }),
+  Object.freeze({
+    id: "gpt-realtime-mini",
+    label: "GPT Realtime mini",
+    short: "14/18 word for word · retires 20 Jan 2027",
+    hint: "Same list price as 2.1 mini. Holds the call, but read aloud word for word only 14/18 and answered Arabic in English (2 of 2), so replies are read aloud by 2.1 mini. OpenAI retires it on 20 Jan 2027.",
+  }),
+  Object.freeze({
+    id: "gpt-4o-mini-realtime-preview",
+    label: "GPT-4o Mini Realtime",
+    short: "preview · replies read by 2.1 mini",
+    hint: "A preview model. Holds the call; it did not pass the word-for-word check, so replies are read aloud by 2.1 mini.",
+    gated: true,
+  }),
+]);
 const VOICE_MODEL_DEFAULT = VOICE_MODELS[0].id;
 const READER_MODELS = Object.freeze(["gpt-realtime-2.1-mini"]);
 /** The model that reads replies aloud for a given voice model: itself, when it passed the verbatim check. */
 function readerModelFor(model) {
   return READER_MODELS.includes(model) ? model : VOICE_MODEL_DEFAULT;
+}
+
+/**
+ * The key's model listing (GET /v1/models: free, lists ids only). Resolves to
+ * the ids; throws a VoiceError (never the key) when it cannot be read.
+ */
+async function listModels(cfg) {
+  requireKey(cfg);
+  let res;
+  try {
+    res = await fetch((cfg.httpBase || HTTP_BASE) + "/models", {
+      headers: { Authorization: "Bearer " + cfg.key },
+      signal: AbortSignal.timeout(cfg.timeoutMs || 10000),
+    });
+  } catch (e) {
+    if (e.name === "TimeoutError") throw new VoiceError("OpenAI took too long to list the models", "timeout");
+    throw new VoiceError("Could not reach OpenAI: " + scrub(e.message), "network");
+  }
+  const body = await res.text();
+  let data = null;
+  try {
+    data = JSON.parse(body);
+  } catch (_) {
+    /* reported below */
+  }
+  if (!res.ok) throw classify(res.status, data && data.error ? data.error.message : body);
+  if (!data || !Array.isArray(data.data)) throw new VoiceError("OpenAI sent back no model list", "upstream");
+  return data.data.map((m) => String((m && m.id) || "")).filter(Boolean);
+}
+
+/**
+ * Which voice models this key may use, from a listing (null: not known). An
+ * ungated model is always offered. A gated one needs its id in the listing,
+ * or a dated snapshot of it (id-YYYY-MM-DD, the newest is used); unknown
+ * counts as not available. -> { [id]: { available, use, known } }
+ */
+function modelAccess(ids) {
+  const list = Array.isArray(ids) ? ids : null;
+  const out = {};
+  for (const m of VOICE_MODELS) {
+    if (!m.gated) {
+      out[m.id] = { available: true, use: m.id, known: true };
+      continue;
+    }
+    if (!list) {
+      out[m.id] = { available: false, use: null, known: false };
+      continue;
+    }
+    const snap = new RegExp("^" + m.id.replace(/[.\-]/g, "\\$&") + "-\\d{4}-\\d{2}-\\d{2}$");
+    const use = list.includes(m.id) ? m.id : list.filter((i) => snap.test(i)).sort().pop() || null;
+    out[m.id] = { available: !!use, use, known: true };
+  }
+  return out;
 }
 /** The reader's models (as the helper stores them). */
 const MODELS = [{ id: "gpt-realtime-2.1-mini", label: "GPT Realtime 2.1 mini", protocol: "realtime" }];
@@ -1221,6 +1304,8 @@ module.exports = {
   VOICE_MODEL_DEFAULT,
   READER_MODELS,
   readerModelFor,
+  listModels,
+  modelAccess,
   VOICES,
   VOICE_META,
   LISTEN_MODEL,

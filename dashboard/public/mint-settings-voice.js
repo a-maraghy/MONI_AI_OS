@@ -4,16 +4,21 @@
  * which is this browser's own choice -- localStorage "mint-read-aloud", the
  * same one the Command Center's speaker button switches and reads at start.
  * Nothing is sent to the server. Without JavaScript (or storage) the switch
- * just shows off. Also: the Transcription selector's line of measured figures
- * follows the option chosen (the form itself is posted by os.js).
+ * just shows off. Also: the line under the Voice model and Transcription
+ * selectors follows the option chosen (the form itself is posted by os.js).
  */
 (function () {
-  var pick = document.getElementById("voice-transcriber");
-  var hint = document.getElementById("voice-transcriber-hint");
-  if (!pick || !hint) return;
-  pick.addEventListener("change", function () {
-    var o = pick.options[pick.selectedIndex];
-    hint.textContent = (o && o.getAttribute("data-hint")) || "";
+  [
+    ["voice-transcriber", "voice-transcriber-hint"],
+    ["voice-model", "voice-model-hint"],
+  ].forEach(function (ids) {
+    var pick = document.getElementById(ids[0]);
+    var hint = document.getElementById(ids[1]);
+    if (!pick || !hint) return;
+    pick.addEventListener("change", function () {
+      var o = pick.options[pick.selectedIndex];
+      hint.textContent = (o && o.getAttribute("data-hint")) || "";
+    });
   });
 })();
 (function () {

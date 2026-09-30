@@ -2113,29 +2113,82 @@ function voiceAllowed(perm) {
   return !!(perm && perm.can && perm.can("moniai.use") && perm.can("voice.use"));
 }
 /**
- * The voice model (Settings ▸ Voice): the live call's realtime model AND the
- * model that reads replies aloud (lib/voice.js READER_MODELS: only models that
- * passed the verbatim check are offered). What the administrator said is
+ * The voice model (Settings ▸ Voice): the live call's realtime model, and the
+ * model that reads replies aloud when it passed the verbatim check
+ * (lib/voice.js READER_MODELS; any other choice is read by
+ * gpt-realtime-2.1-mini: readerModelFor). What the administrator said is
  * written down by the transcription model chosen under it (the Transcription
  * setting below, since 2026-09-30). A panel setting; the helper's file holds
  * the same reader model and the live session's transcription model, rewritten
  * to match on every save and once at start (migrateVoiceHelperModels).
  */
 const VOICE_MODEL_SETTING = "voice_model";
+/**
+ * The chosen voice model, as stored (a VOICE_MODELS id). A gated model the key
+ * is KNOWN not to reach (voiceAccess below) gives the default instead, so a
+ * call never starts on a model OpenAI will refuse; not known yet keeps the
+ * choice (it was available when it was saved).
+ */
 function voiceModel() {
   try {
     const v = db.getSetting(VOICE_MODEL_SETTING, "");
-    return voice.VOICE_MODELS.some((m) => m.id === v) ? v : voice.VOICE_MODEL_DEFAULT;
+    if (!voice.VOICE_MODELS.some((m) => m.id === v)) return voice.VOICE_MODEL_DEFAULT;
+    const a = voiceModelAccess()[v];
+    return a && a.known && !a.available ? voice.VOICE_MODEL_DEFAULT : v;
   } catch (_) {
     return voice.VOICE_MODEL_DEFAULT;
   }
 }
+/** The id the live call connects with: a gated model's listed id or dated snapshot, else the model itself. */
+function voiceLiveModelId(model) {
+  const a = voiceModelAccess()[model];
+  return (a && a.use) || model;
+}
 /**
- * One voice model (2026-09-30): the old choices -- gpt-realtime-mini and
- * gpt-realtime as the voice model, a listening model of one's own, a reader
- * model in the helper's file -- become the one model and its paired
- * transcription model. Idempotent: a value already in the list is left alone,
- * and the helper's file is rewritten only when it differs (and holds a key).
+ * Which voice models the key reaches (lib/voice.js modelAccess): its free
+ * /v1/models listing, read at start, after the key changes, when Settings ▸
+ * Voice is opened with an answer older than VOICE_ACCESS_TTL_MS (in the
+ * background), and before a gated model is saved. Only ids are kept. So
+ * GPT-4o Mini Realtime enables itself once the key gains it.
+ */
+// (The two env values exist for the tests: tools/test-voice-models.cjs.)
+const VOICE_ACCESS_TTL_MS = Number(process.env.MONI_VOICE_ACCESS_TTL_MS) >= 0 && process.env.MONI_VOICE_ACCESS_TTL_MS ? Number(process.env.MONI_VOICE_ACCESS_TTL_MS) : 6 * 60 * 60 * 1000;
+const VOICE_ACCESS_RECHECK_MS = Number(process.env.MONI_VOICE_ACCESS_RECHECK_MS) >= 0 && process.env.MONI_VOICE_ACCESS_RECHECK_MS ? Number(process.env.MONI_VOICE_ACCESS_RECHECK_MS) : 60 * 1000;
+let voiceAccess = { at: 0, ids: null, error: null, pending: null };
+function voiceModelAccess() {
+  return voice.modelAccess(voiceAccess.ids);
+}
+function checkVoiceAccess(opts) {
+  const force = !!(opts && opts.force);
+  if (!force && voiceAccess.at && Date.now() - voiceAccess.at < VOICE_ACCESS_TTL_MS) return Promise.resolve(voiceAccess);
+  if (voiceAccess.pending) return voiceAccess.pending;
+  const pending = voiceConfig()
+    .then((cfg) => {
+      if (!cfg.key) return { ids: null, error: "no token" };
+      return voice.listModels({ key: cfg.key, httpBase: process.env.MONI_OPENAI_HTTP || undefined }).then(
+        (ids) => ({ ids, error: null }),
+        (e) => ({ ids: null, error: priv.redact(String(e.message || e)) })
+      );
+    })
+    .catch((e) => ({ ids: null, error: priv.redact(String(e.message || e)) }))
+    .then((r) => {
+      const was = JSON.stringify(voiceModelAccess());
+      // A failed check keeps the last good listing (a blip must not disable a working choice).
+      voiceAccess = { at: Date.now(), ids: r.ids || voiceAccess.ids, error: r.error, pending: null };
+      if (r.error) console.log("voice: could not list the key's models: " + r.error);
+      if (JSON.stringify(voiceModelAccess()) !== was) voiceCache = { at: 0, cfg: null, pending: null };
+      return voiceAccess;
+    });
+  voiceAccess.pending = pending;
+  return pending;
+}
+/**
+ * The voice model setting, cleaned once at start. Idempotent: nothing stored
+ * or a value in VOICE_MODELS is left alone -- gpt-realtime-mini and GPT-4o
+ * Mini Realtime are choices again (2026-10-01), so the rewrite of 2026-09-30
+ * that turned them into gpt-realtime-2.1-mini no longer happens; only an
+ * unknown value (gpt-realtime, gpt-live-1, junk) becomes the default. The
+ * helper's file is rewritten only when it differs (and holds a key).
  */
 function migrateVoiceModelSetting() {
   try {
@@ -2143,7 +2196,7 @@ function migrateVoiceModelSetting() {
     if (raw === null || raw === undefined || raw === "" || voice.VOICE_MODELS.some((m) => m.id === raw)) return null;
     const now = voice.VOICE_MODEL_DEFAULT;
     db.setSetting(VOICE_MODEL_SETTING, now, "migration");
-    console.log(`voice: the voice model ${JSON.stringify(String(raw).slice(0, 40))} became "${now}" (one voice model for live, read-aloud and listening)`);
+    console.log(`voice: the voice model ${JSON.stringify(String(raw).slice(0, 40))} is not offered; it became "${now}"`);
     return now;
   } catch (e) {
     console.log("voice: could not migrate the voice model: " + e.message);
@@ -2359,10 +2412,11 @@ async function voiceConfig() {
       const tr = transcription();
       const cfg = {
         key: d && d.key ? String(d.key) : null,
-        // One voice model: it talks live and reads aloud (readerModelFor keeps an
-        // unverified value off the reader).
+        // The voice model talks live; it reads aloud too only when it passed the
+        // verbatim check (readerModelFor: otherwise gpt-realtime-2.1-mini reads).
         model: voice.readerModelFor(live),
-        live_model: live,
+        live_model: voiceLiveModelId(live),
+        voice_model: live,
         voice: (d && d.voice) || voice.DEFAULTS.voice,
         // The live session's own transcription: always an OpenAI model.
         transcribe_model: voiceTranscribe.sessionModelFor(tr.model),
@@ -2374,7 +2428,7 @@ async function voiceConfig() {
     .catch((e) => {
       if (voiceCache.pending === pending) voiceCache.pending = null;
       const tr = transcription();
-      return { key: null, ...voice.DEFAULTS, live_model: voiceModel(), transcribe_model: voiceTranscribe.sessionModelFor(tr.model), ...transcriberCfg(tr), error: e.message };
+      return { key: null, ...voice.DEFAULTS, live_model: voiceLiveModelId(voiceModel()), voice_model: voiceModel(), transcribe_model: voiceTranscribe.sessionModelFor(tr.model), ...transcriberCfg(tr), error: e.message };
     });
   voiceCache.pending = pending;
   return pending;
@@ -2392,7 +2446,7 @@ async function voicePublic(req) {
   const use = voiceAllowed(req && req.perm);
   return {
     configured: !!cfg.key,
-    model: cfg.live_model,
+    model: cfg.voice_model || cfg.live_model,
     voice: cfg.voice,
     provider: "OpenAI",
     manage: !!(req && req.perm && req.perm.can("voice.manage")),
@@ -2642,6 +2696,8 @@ const voiceGuardSettings = [requireAuth, voiceSettingsPerm, requireCsrf];
 
 settingsRoutes.sections.voice = async (req, res) => {
   const on = voiceEnabled();
+  // Which voice models the key reaches: a stale answer is refreshed in the background (the next visit shows it).
+  checkVoiceAccess().catch(() => {});
   const [status, cfg, local] = await Promise.all([voiceSettings(), voiceConfig(), whisperStatus()]);
   const test = req.query.test ? { ok: req.query.test === "ok", text: String(req.query.t || "").slice(0, 600) } : null;
   const persona = personaOf(req.me.id);
@@ -2650,8 +2706,9 @@ settingsRoutes.sections.voice = async (req, res) => {
       csrf: res.locals.csrf,
       on,
       status: status.error ? { configured: !!cfg.key } : status,
-      model: cfg.live_model,
+      model: cfg.voice_model || cfg.live_model,
       models: voice.VOICE_MODELS,
+      access: voiceModelAccess(),
       voice: cfg.voice,
       voices: voice.VOICES,
       meta: voice.VOICE_META,
@@ -2711,6 +2768,7 @@ app.post("/mint-ai/settings/voice/key", ...voiceGuardSettings, async (req, res) 
     const out = await priv.voiceKeySet(value);
     voiceForget("reconnect");
     voiceReconnect(null).catch(() => {});
+    checkVoiceAccess({ force: true }).catch(() => {}); // a new key may reach other models
     db.logLogin(req.ip, req.me.username, "voice", "set the OpenAI voice key (…" + out.last4 + ")");
     voiceReply(req, res, { msg: "Token saved. Press Test to check it.", anchor: "v-token", reload: true });
   } catch (e) {
@@ -2732,18 +2790,31 @@ app.post("/mint-ai/settings/voice/clear", ...voiceGuardSettings, async (req, res
 /**
  * The voice model and the voice. Each Settings row posts only its own field; a
  * confirmed voice.set from the Command Center posts the voice. The voice model
- * is the panel's setting (live and read-aloud); the helper keeps the reader's
- * model (the same model), the voice and the live session's transcription
+ * is the panel's setting (the live call); the helper keeps the reader's
+ * model (readerModelFor: the same model when verified, else 2.1 mini), the voice and the live session's transcription
  * model (from the Transcription setting: sessionModelFor). A `transcribe_model`
  * field (an older page) is ignored: transcription has its own row and route.
  */
 app.post("/mint-ai/settings/voice/options", ...voiceGuardSettings, async (req, res) => {
   const cur = await voiceConfig();
   const has = (k) => typeof (req.body && req.body[k]) === "string" && req.body[k] !== "";
-  const vmodel = has("model") ? field(req.body, "model") : cur.live_model;
+  const vmodel = has("model") ? field(req.body, "model") : cur.voice_model || voiceModel();
   const name = has("voice") ? field(req.body, "voice") : cur.voice;
-  if (!voice.VOICE_MODELS.some((m) => m.id === vmodel) || !voice.VOICES.includes(name)) {
+  const entry = voice.VOICE_MODELS.find((m) => m.id === vmodel);
+  if (!entry || !voice.VOICES.includes(name)) {
     return voiceReply(req, res, { err: "Pick a voice model and a voice from the lists.", anchor: has("model") ? "v-model" : "v-voice" });
+  }
+  // A gated model is saved only when the key's model list carries it (checked
+  // again now unless the answer is under VOICE_ACCESS_RECHECK_MS old), so a live call never
+  // starts on a model OpenAI will refuse.
+  if (entry.gated && vmodel !== voiceModel()) {
+    if (!voiceModelAccess()[vmodel].available && Date.now() - voiceAccess.at >= VOICE_ACCESS_RECHECK_MS) await checkVoiceAccess({ force: true });
+    if (!voiceModelAccess()[vmodel].available) {
+      return voiceReply(req, res, {
+        err: `${entry.label} is not available on this OpenAI key${voiceAccess.error ? " (the model list could not be read: " + voiceAccess.error + ")" : ""}. The voice model is unchanged.`,
+        anchor: "v-model",
+      });
+    }
   }
   // The voice is locked while someone's confirm for a voice.set is open (their confirm applies it).
   const lock = uiConfirmsVoicePending();
@@ -2752,14 +2823,16 @@ app.post("/mint-ai/settings/voice/options", ...voiceGuardSettings, async (req, r
     const reader = voice.readerModelFor(vmodel);
     const listen = voiceTranscribe.sessionModelFor(transcription().model);
     await priv.voiceOptionsSet(reader, name, listen);
-    if (vmodel !== voiceModel()) db.setSetting(VOICE_MODEL_SETTING, vmodel, req.me.username);
+    // Compared with what is stored too: a stored gated model that is out of reach reads as the default.
+    const stored = db.getSetting(VOICE_MODEL_SETTING, "") || "";
+    if (vmodel !== voiceModel() || (stored && stored !== vmodel)) db.setSetting(VOICE_MODEL_SETTING, vmodel, req.me.username);
     voiceForget("reconnect");
     const greet = (voiceGreet.get(req.me.username) || 0) > Date.now() ? req.me.username : null;
     voiceGreet.delete(req.me.username);
     // Open live calls reconnect with the new settings and go on; the one whose confirm this is says a line in it.
     voiceReconnect(greet).catch(() => {});
-    db.logLogin(req.ip, req.me.username, "voice", `voice settings ${vmodel} (live and read-aloud; the call's own transcription ${listen}) / ${name}${voiceLive.activeCount() ? ` (${voiceLive.activeCount()} live call(s) reconnect with it)` : ""}`);
-    const what = has("model") && !has("voice") ? `Voice model: ${vmodel}.` : has("voice") && !has("model") ? `Voice: ${name}.` : "Voice settings saved.";
+    db.logLogin(req.ip, req.me.username, "voice", `voice settings ${vmodel} (live; read-aloud ${reader}; the call's own transcription ${listen}) / ${name}${voiceLive.activeCount() ? ` (${voiceLive.activeCount()} live call(s) reconnect with it)` : ""}`);
+    const what = has("model") && !has("voice") ? `Voice model: ${vmodel}.${reader !== vmodel ? ` Replies are read aloud by ${reader}, which reads word for word.` : ""}` : has("voice") && !has("model") ? `Voice: ${name}.` : "Voice settings saved.";
     voiceReply(req, res, { msg: what, anchor: has("model") && !has("voice") ? "v-model" : "v-voice" });
   } catch (e) {
     voiceReply(req, res, { err: e.message, anchor: "v-voice" });
@@ -5920,8 +5993,10 @@ const httpServer = app.listen(PORT, BIND, () => {
     getSetupToken();
     console.log("No admin account yet. Setup token is in " + DATA_DIR + "/setup.token");
   }
-  // One voice model: bring the helper's stored reader/listening models in line once.
+  // Bring the helper's stored reader/listening models in line with the settings once.
   migrateVoiceHelperModels();
+  // Which voice models the key reaches (GPT-4o Mini Realtime is offered only when listed).
+  checkVoiceAccess({ force: true }).catch(() => {});
   // A local transcription model selected: make sure its server runs.
   syncLocalTranscriber();
 });

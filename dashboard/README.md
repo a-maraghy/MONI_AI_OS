@@ -208,11 +208,11 @@ talks to OpenAI and never sees the key (the CSP still forbids it to).
   scheduled right after the last, one gain node per reading into the analyser
   that drives the seed core). The console still gets a whole WAV. `lib/voice.js` keeps
   WebSockets to `wss://api.openai.com/v1/realtime?model=<the reader>` warm and
-  reuses them. The reader is the voice model itself (`READER_MODELS`:
-  `gpt-realtime-2.1-mini`, which read 18 of 18 test sentences word for word on
-  the real API on 2026-09-30, English and Egyptian, including the ones that
-  tempt a model to answer; `readerModelFor` keeps any other value off the
-  reader). A reading that still fails the verbatim check is read again by
+  reuses them. The reader is the voice model when it passed the verbatim check
+  (`READER_MODELS`: `gpt-realtime-2.1-mini`, which read 18 of 18 test sentences
+  word for word on the real API on 2026-09-30, English and Egyptian, including
+  the ones that tempt a model to answer); `readerModelFor` gives
+  `gpt-realtime-2.1-mini` for any other voice model. A reading that still fails the verbatim check is read again by
   `gpt-4o-mini-tts` -- a fixed safety net, not a setting. `gpt-live-1` is not
   offered. Each sentence is an **out-of-band** `response.create`
   (`conversation: "none"`, empty input, the text quoted in that response's
@@ -287,21 +287,41 @@ hands-free, Space held to talk and every "trial" label are gone.
   MINT AI group, implies `moniai.use`; administrators only by default). Live
   needs `moniai.use` + `voice.use`; `voice.manage` is for Settings ▸ Voice.
   Without `voice.use` there is no mic and no read-aloud anywhere.
-- **One voice model** (2026-09-30): `lib/voice.js` `VOICE_MODELS` holds only
-  the models that passed live conversation, read-aloud and Arabic on the real
-  API -- today `gpt-realtime-2.1-mini`. It is the panel setting `voice_model`
-  (the live call) and the reader. It cannot also be the transcriber: no
+- **The voice model** (Settings ▸ Voice ▸ *Voice model*): `lib/voice.js`
+  `VOICE_MODELS` -- `gpt-realtime-2.1-mini` (the default), `gpt-realtime-mini`
+  and `gpt-4o-mini-realtime-preview` (*GPT-4o Mini Realtime*), each with a short
+  line of its 2026-09-30 test results in the selector. On 2026-09-30 the list
+  was cut to 2.1 mini alone (gpt-realtime-mini read 14/18 word for word and
+  answered Arabic in English 2/2, retiring 2027-01-20; 4o-mini-realtime was
+  refused for this key); on 2026-10-01 the administrator asked for the other
+  two back. It is the panel setting `voice_model` and drives the live call.
+  **Read-aloud stays verbatim**: the reader is the voice model only when it is
+  in `READER_MODELS` (2.1 mini), else `readerModelFor` gives
+  `gpt-realtime-2.1-mini`. *GPT-4o Mini Realtime* is `gated`: offered only when
+  the key's free `GET /v1/models` listing carries it or a dated snapshot of it
+  (`modelAccess`; the call then uses that id). The server lists the models at
+  start, after a key change and when the section is opened with an answer
+  older than 6 h (`checkVoiceAccess`, ids only, a failed check keeps the last
+  good list); the option is shown disabled -- "not available on this OpenAI
+  key" -- while it is not listed, `POST /mint-ai/settings/voice/options`
+  refuses to save it (re-checking once first), and a stored choice the key is
+  known not to reach reads as the default. On 2026-10-01 the key listed
+  `gpt-realtime-mini` but no `gpt-4o-mini-realtime*`.
+  The voice model cannot also be the transcriber: no
   realtime model can transcribe its own input (OpenAI refuses one as the
   session's transcription model and on `/audio/transcriptions`), and a
   hand-off to MINT AI must carry the server's own transcript (prompting the
   voice model to transcribe its own input was tested too and lost or changed
   about 1 turn in 5 -- see the note in `lib/voice.js`). The helper's options
-  hold the reader, the voice and the live session's transcription model; each
+  hold the reader, the voice and the live session's transcription model (its
+  `VOICE_MODEL_RE` accepts `gpt-realtime*`, `gpt-live*` and
+  `gpt-4o-mini-realtime*`); each
   Settings row posts only its own field to `POST /mint-ai/settings/voice/options`
   (a `transcribe_model` field from an older page is ignored). At start
-  `migrateVoiceModelSetting` rewrites an old `voice_model` (`gpt-realtime-mini`,
-  `gpt-realtime`, ...) to the default and `migrateVoiceHelperModels` rewrites
-  the helper's reader/listening models when they differ -- both idempotent. A
+  `migrateVoiceModelSetting` rewrites only an unknown `voice_model`
+  (`gpt-realtime`, `gpt-live-1`, junk) to the default -- a listed choice,
+  `gpt-realtime-mini` included, is left alone -- and `migrateVoiceHelperModels`
+  rewrites the helper's reader/listening models when they differ -- both idempotent. A
   change reconnects open calls (`voiceLive.swapAll`, the model included). The
   summariser (`lib/voice-shared.js` `SUMMARY_MODEL`) is a text step and stays
   on `gpt-realtime-mini` for now: on `gpt-realtime-2.1-mini` its 220-token cap

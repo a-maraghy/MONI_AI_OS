@@ -99,6 +99,17 @@ function answerTo() {
 }
 
 const server = http.createServer((req, res) => {
+  if (req.method === "GET" && req.url === "/v1/models") {
+    // The model listing (ids only), as the real endpoint returns it.
+    mock.modelsGets = (mock.modelsGets || 0) + 1;
+    res.setHeader("Content-Type", "application/json");
+    if (req.headers.authorization !== "Bearer " + GOOD) {
+      res.statusCode = 401;
+      return res.end(JSON.stringify({ error: { message: "Incorrect API key provided: sk-proj-****nope." } }));
+    }
+    const ids = mock.modelIds || ["gpt-realtime-mini", "gpt-realtime-2.1-mini", "gpt-4o-mini-transcribe"];
+    return res.end(JSON.stringify({ object: "list", data: ids.map((id) => ({ id, object: "model", owned_by: "system" })) }));
+  }
   if (req.method === "POST" && req.url === "/v1/audio/speech") {
     const chunks = [];
     req.on("data", (d) => chunks.push(d));
@@ -621,6 +632,22 @@ async function main() {
   r = await expectCode(voice.check(cfg({ key: BAD })), "auth");
   check("a wrong key: the error comes back", r.ok, r.got);
 
+  section("the key's model list (GET /models, for GPT-4o Mini Realtime)");
+  const gets = mock.modelsGets || 0;
+  let ids = await voice.listModels({ ...base, key: GOOD });
+  check("listModels: the ids, one GET", Array.isArray(ids) && ids.includes("gpt-realtime-mini") && !ids.includes("gpt-4o-mini-realtime-preview") && mock.modelsGets === gets + 1, JSON.stringify(ids));
+  check("  so GPT-4o Mini Realtime reads as not available (known)", JSON.stringify(voice.modelAccess(ids)["gpt-4o-mini-realtime-preview"]) === '{"available":false,"use":null,"known":true}');
+  mock.modelIds = ["gpt-realtime-mini", "gpt-4o-mini-realtime-preview-2024-12-17"];
+  ids = await voice.listModels({ ...base, key: GOOD });
+  check("  a key that gains it: available, the call uses the listed snapshot", voice.modelAccess(ids)["gpt-4o-mini-realtime-preview"].use === "gpt-4o-mini-realtime-preview-2024-12-17");
+  mock.modelIds = null;
+  r = await expectCode(voice.listModels({ ...base, key: BAD }), "auth");
+  check("listModels with a wrong key: code auth, the key not in the message", r.ok && !String(r.e && r.e.message).includes(BAD), r.got);
+  r = await expectCode(voice.listModels({ ...base, key: "" }), "no-key");
+  check("listModels without a key: code no-key, no call", r.ok && mock.modelsGets === gets + 3, r.got);
+  r = await expectCode(voice.listModels({ ...base, httpBase: "http://127.0.0.1:1/v1", key: GOOD }), "network");
+  check("listModels, OpenAI unreachable: code network", r.ok, r.got);
+
   section("the key never appears in any message");
   check("no error message contains a key", allMessages.every((m) => m && !m.includes(GOOD) && !m.includes(BAD) && !/sk-proj-[A-Za-z0-9]{8}/.test(m)), allMessages.join(" | "));
   check("scrub() masks keys and bearer tokens", voice.scrub("key sk-proj-abcdefgh1234 and Bearer xyz") === "key sk-… and Bearer …");
@@ -672,6 +699,10 @@ res["status1"] = call("voice-status")
 res["read"] = call("voice-key-read")
 res["opt_bad"] = call("voice-options-set", ["gpt-4o", "marin", "gpt-4o-mini-transcribe"])
 res["opt_bad2"] = call("voice-options-set", ["gpt-realtime", "Marin;rm", "gpt-4o-mini-transcribe"])
+res["opt_4o"] = call("voice-options-set", ["gpt-4o-mini-realtime-preview", "marin", "gpt-4o-mini-transcribe"])
+res["opt_4o_snap"] = call("voice-options-set", ["gpt-4o-mini-realtime-preview-2024-12-17", "marin", "gpt-4o-mini-transcribe"])
+res["opt_mini"] = call("voice-options-set", ["gpt-realtime-mini", "marin", "gpt-4o-mini-transcribe"])
+res["opt_4o_tr"] = call("voice-options-set", ["gpt-4o-mini-transcribe", "marin", "gpt-4o-mini-transcribe"])
 res["opt_ok"] = call("voice-options-set", ["gpt-live-1", "cedar", "gpt-4o-transcribe"])
 res["status2"] = call("voice-status")
 res["file_after_opts"] = open(H.VOICE_FILE).read()
@@ -704,6 +735,8 @@ print(json.dumps(res))
   check("key-read returns it (for the panel's own process)", J(res.read).data.key === GOOD);
   check("options: refuses a non-realtime model", J(res.opt_bad).ok === false);
   check("options: refuses a malformed voice", J(res.opt_bad2).ok === false);
+  check("options: accepts the re-added voice models (gpt-realtime-mini, gpt-4o-mini-realtime-preview and its dated snapshot), still refuses a transcribe model there",
+    J(res.opt_4o).ok === true && J(res.opt_4o_snap).ok === true && J(res.opt_mini).ok === true && J(res.opt_4o_tr).ok === false);
   check("options: model, voice and listening model saved", J(res.opt_ok).ok && J(res.status2).data.model === "gpt-live-1" && J(res.status2).data.voice === "cedar" && J(res.status2).data.transcribe_model === "gpt-4o-transcribe");
   check("saving options keeps the key", res.file_after_opts.includes("OPENAI_API_KEY=" + GOOD));
   check("remove: not configured, key gone from the file, options kept",
@@ -753,10 +786,29 @@ function viewTests() {
   check("Settings ▸ Voice: the key is masked (not even its last four), with Replace, Remove and Test", /class="kv-mask"/.test(page) && /pill ok">set</.test(page) && !/good/.test(page) && /data-modal-open="m-voice-token"/.test(page) && /id="voice-remove"/.test(page) && /id="voice-test"/.test(page));
   check("Settings ▸ Voice: the key field is a write-only password input, empty, in a dialog", /<section class="cc-modal os narrow" id="m-voice-token"[^>]* hidden>/.test(page) && /<input name="value" type="password"[^>]*required/.test(page) && !/value="sk-/.test(page));
   const modelSelect = (page.match(/<select name="model"[\s\S]*?<\/select>/) || [""])[0];
-  check("Settings ▸ Voice: ONE voice model (gpt-realtime-2.1-mini, selected), the transcription selector beside it (no old transcribe_model field), the voice cards, current one selected",
-    /<option value="gpt-realtime-2\.1-mini" selected>/.test(modelSelect) && (modelSelect.match(/<option /g) || []).length === 1 && !/gpt-live-1/.test(page) && !/name="transcribe_model"/.test(page) && /<select name="transcriber"/.test(page) && /<code>gpt-4o-mini-transcribe<\/code>/.test(page) && /<input type="radio" name="voice" value="marin" checked>/.test(page) && (page.match(/name="voice" value=/g) || []).length === voice.VOICES.length);
-  check("one voice model: it is the reader (passed the verbatim check), listening is its fixed pair, anything else reads with it",
-    voice.VOICE_MODELS.length === 1 && voice.READER_MODELS.join() === "gpt-realtime-2.1-mini" && voice.readerModelFor("gpt-realtime-2.1-mini") === "gpt-realtime-2.1-mini" && voice.readerModelFor("gpt-realtime-mini") === "gpt-realtime-2.1-mini" && voice.readerModelFor("gpt-live-1") === "gpt-realtime-2.1-mini" && voice.listenModelFor("gpt-realtime-2.1-mini") === "gpt-4o-mini-transcribe" && voice.DEFAULTS.model === "gpt-realtime-2.1-mini" && voice.DEFAULTS.transcribe_model === "gpt-4o-mini-transcribe" && voice.TRANSCRIBE_MODELS === undefined);
+  check("Settings ▸ Voice: three voice models (2.1 mini selected), the transcription selector beside it (no old transcribe_model field), the voice cards, current one selected",
+    /<option value="gpt-realtime-2\.1-mini" data-hint="[^"]*" selected>GPT Realtime 2\.1 mini · default · 18\/18 word for word · Arabic OK · current</.test(modelSelect) && (modelSelect.match(/<option /g) || []).length === 3 && !/gpt-live-1/.test(page) && !/name="transcribe_model"/.test(page) && /<select name="transcriber"/.test(page) && /<code>gpt-4o-mini-transcribe<\/code>/.test(page) && /<input type="radio" name="voice" value="marin" checked>/.test(page) && (page.match(/name="voice" value=/g) || []).length === voice.VOICES.length);
+  check("the voice models: 2.1 mini, gpt-realtime-mini, GPT-4o Mini Realtime (gated); only 2.1 mini reads aloud, anything else reads with it; listening is its fixed pair",
+    voice.VOICE_MODELS.map((m) => m.id).join() === "gpt-realtime-2.1-mini,gpt-realtime-mini,gpt-4o-mini-realtime-preview" && voice.VOICE_MODEL_DEFAULT === "gpt-realtime-2.1-mini" && voice.VOICE_MODELS.filter((m) => m.gated).map((m) => m.id).join() === "gpt-4o-mini-realtime-preview" && voice.READER_MODELS.join() === "gpt-realtime-2.1-mini" && voice.readerModelFor("gpt-realtime-2.1-mini") === "gpt-realtime-2.1-mini" && voice.readerModelFor("gpt-realtime-mini") === "gpt-realtime-2.1-mini" && voice.readerModelFor("gpt-4o-mini-realtime-preview") === "gpt-realtime-2.1-mini" && voice.readerModelFor("gpt-live-1") === "gpt-realtime-2.1-mini" && voice.listenModelFor("gpt-realtime-2.1-mini") === "gpt-4o-mini-transcribe" && voice.DEFAULTS.model === "gpt-realtime-2.1-mini" && voice.DEFAULTS.transcribe_model === "gpt-4o-mini-transcribe" && voice.TRANSCRIBE_MODELS === undefined);
+  check("the options carry the facts: 18/18 + Arabic OK; 14/18, Arabic in English, retires 20 Jan 2027, read by 2.1 mini; 4o: read by 2.1 mini",
+    /18\/18/.test(voice.VOICE_MODELS[0].hint) && /Arabic in Arabic/.test(voice.VOICE_MODELS[0].hint) && /14\/18/.test(voice.VOICE_MODELS[1].hint) && /Arabic in English/.test(voice.VOICE_MODELS[1].hint) && /20 Jan 2027/.test(voice.VOICE_MODELS[1].hint) && /read aloud by 2\.1 mini/.test(voice.VOICE_MODELS[1].hint) && /read aloud by 2\.1 mini/.test(voice.VOICE_MODELS[2].hint) &&
+    /<option value="gpt-realtime-mini" data-hint="[^"]*14\/18[^"]*">GPT Realtime mini · 14\/18 word for word · retires 20 Jan 2027</.test(modelSelect) && /id="voice-model-hint">The default\./.test(page));
+  check("GPT-4o Mini Realtime, access not known: listed, disabled, 'not checked on this OpenAI key yet'",
+    /<option value="gpt-4o-mini-realtime-preview" data-hint="Not checked[^"]*" disabled>GPT-4o Mini Realtime · not checked on this OpenAI key yet</.test(modelSelect));
+  const noAccess = sv({ access: voice.modelAccess(["gpt-realtime-mini", "gpt-realtime-2.1-mini"]) });
+  const noSel = (noAccess.match(/<select name="model"[\s\S]*?<\/select>/) || [""])[0];
+  check("GPT-4o Mini Realtime, not in the key's model list: disabled, 'not available on this OpenAI key'; the other two enabled",
+    /<option value="gpt-4o-mini-realtime-preview" data-hint="Not available on this OpenAI key[^"]*" disabled>GPT-4o Mini Realtime · not available on this OpenAI key</.test(noSel) && (noSel.match(/ disabled>/g) || []).length === 1);
+  const withAccess = sv({ access: voice.modelAccess(["gpt-4o-mini-realtime-preview-2024-12-17"]) });
+  const wSel = (withAccess.match(/<select name="model"[\s\S]*?<\/select>/) || [""])[0];
+  check("GPT-4o Mini Realtime, listed (a dated snapshot): offered normally", /<option value="gpt-4o-mini-realtime-preview" data-hint="A preview model[^"]*">GPT-4o Mini Realtime · preview · replies read by 2\.1 mini</.test(wSel) && !/ disabled>/.test(wSel));
+  const cur4o = sv({ model: "gpt-4o-mini-realtime-preview", access: voice.modelAccess(["gpt-4o-mini-realtime-preview"]) });
+  check("GPT-4o Mini Realtime current: selected, its hint under the selector", /<option value="gpt-4o-mini-realtime-preview" data-hint="[^"]*" selected>GPT-4o Mini Realtime · preview · replies read by 2\.1 mini · current</.test(cur4o) && /id="voice-model-hint">A preview model\./.test(cur4o));
+  const acc = (ids) => JSON.stringify(voice.modelAccess(ids)["gpt-4o-mini-realtime-preview"]);
+  check("modelAccess: unknown -> not available (not known); listed -> itself; only a dated snapshot -> the newest one; lookalikes ignored; ungated always",
+    acc(null) === '{"available":false,"use":null,"known":false}' && acc([]) === '{"available":false,"use":null,"known":true}' && acc(["gpt-4o-mini-realtime-preview"]) === '{"available":true,"use":"gpt-4o-mini-realtime-preview","known":true}' &&
+    acc(["gpt-4o-mini-realtime-preview-2024-12-17", "gpt-4o-mini-realtime-preview-2025-06-03"]) === '{"available":true,"use":"gpt-4o-mini-realtime-preview-2025-06-03","known":true}' && acc(["gpt-4o-mini-realtime-preview-x", "gpt-4o-mini-realtime-previewz-2024-12-17", "gpt-4o-realtime-preview"]) === '{"available":false,"use":null,"known":true}' &&
+    voice.modelAccess(null)["gpt-realtime-mini"].available === true && voice.modelAccess([])["gpt-realtime-2.1-mini"].available === true);
   check("Settings ▸ Voice: each voice card names its gender", /Marin<\/b><span class="g"[^>]*><i aria-hidden="true">♀<\/i>Female/.test(page) && /Alloy<\/b><span class="g"[^>]*><i aria-hidden="true">◌<\/i>Neutral/.test(page) && /Cedar<\/b><span class="g"[^>]*><i aria-hidden="true">♂<\/i>Male/.test(page));
   const pageOff = sv({ status: { configured: false } });
   check("Settings ▸ Voice without a key: Add token, no Remove, Test disabled", /Add token/.test(pageOff) && !/id="voice-remove"/.test(pageOff) && /id="voice-test" disabled/.test(pageOff));

@@ -15,7 +15,9 @@
  * os.js, a plain POST without JavaScript). The key is typed in a dialog and
  * posted once, to be handed to the helper on stdin; it is never shown again.
  *
- * One voice model (2026-09-30): the model talks live and reads replies aloud.
+ * The voice model holds the live call and reads replies aloud when it passed
+ * the verbatim check (else gpt-realtime-2.1-mini reads them); a gated model the
+ * OpenAI key cannot reach is listed, disabled (2026-10-01).
  * What the administrator said is written down by the Transcription model, a
  * setting again since the evening of 2026-09-30: OpenAI's, or whisper.cpp on
  * this server (lib/voice-transcribe.js), each option with its measured speed,
@@ -69,7 +71,8 @@ function voiceCard(name, cur, meta) {
  *   on            the switch
  *   status        priv.voiceStatus(): configured, modified (never the key)
  *   model         the voice model now (lib/voice.js VOICE_MODELS id)
- *   models        [{id, label}]
+ *   models        lib/voice.js VOICE_MODELS [{id, label, short, hint, gated?}]
+ *   access        lib/voice.js modelAccess(): { id: { available, known } }
  *   voice, voices, meta   the voice, the list, lib/voice.js VOICE_META
  *   transcribe    the live session's own transcription model (always OpenAI's)
  *   transcription { model, language }: the Transcription setting
@@ -105,16 +108,31 @@ function body(o) {
   const offnote = `<div class="offnote">${icon("info", 16)}<div>Voice is off for everyone: the microphone, read-aloud and live-call controls disappear from the Command Center and the dock, and MINT AI's voice screen actions are refused. Typing works as always. The token stays stored — you can still replace or remove it below.</div></div>`;
 
   const listen = o.transcribe || "gpt-4o-mini-transcribe";
+  // The voice model: each option says its facts; a gated model the key cannot
+  // reach is listed, disabled (lib/voice.js modelAccess), unless it is current.
+  const access = o.access || {};
+  const models = o.models || [];
+  const reach = (m) => !m.gated || !!(access[m.id] && access[m.id].available);
+  const away = (m) => (access[m.id] && access[m.id].known ? "not available on this OpenAI key" : "not checked on this OpenAI key yet");
+  const mCur = models.find((m) => m.id === o.model) || models[0] || { hint: "" };
+  const mHint = (m) =>
+    reach(m)
+      ? m.hint || ""
+      : access[m.id] && access[m.id].known
+        ? "Not available on this OpenAI key: its model list does not carry it. It is offered here once the key can use it."
+        : "Not checked on this OpenAI key yet: it is offered once the key's model list shows it.";
+  const mOpt = (m) =>
+    `<option value="${esc(m.id)}" data-hint="${esc(mHint(m))}"${m.id === o.model ? " selected" : ""}${reach(m) || m.id === o.model ? "" : " disabled"}>${esc(
+      (m.label || m.id) + " · " + (reach(m) ? m.short || "" : away(m)) + (m.id === o.model ? " · current" : "")
+    )}</option>`;
   const modelRow = V.row(
     "Voice model",
-    `One model for the whole voice: it holds the live conversation and reads MINT AI's replies aloud, word for word. <span class="muted" id="voice-listen-note">Your words are written down by the transcription model below: MINT AI always works from that transcript, never from the voice model's retelling.</span>`,
-    V.form(
+    `Holds the live conversation. Replies are read aloud by the voice model when it reads word for word; otherwise by <code>gpt-realtime-2.1-mini</code>, so read-aloud never paraphrases. <span class="muted" id="voice-listen-note">Your words are written down by the transcription model below: MINT AI always works from that transcript, never from the voice model's retelling.</span>`,
+    `<div class="tr-pick">${V.form(
       `${BASE}/options`,
       csrf,
-      `<select name="model" aria-label="Voice model"${on ? "" : " disabled"}>${o.models
-        .map((m) => V.opt(m.id, (m.label || m.id) + (m.id === o.model ? " · current" : ""), o.model))
-        .join("")}</select>`
-    ),
+      `<select name="model" id="voice-model" aria-label="Voice model"${on ? "" : " disabled"}>${models.map(mOpt).join("")}</select>`
+    )}<small class="tr-hint" id="voice-model-hint">${esc(mHint(mCur))}</small></div>`,
     { dep: true, scope: "everyone", id: "v-model" }
   );
 

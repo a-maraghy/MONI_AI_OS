@@ -118,10 +118,15 @@ exports.guide = ({ csrf, user, publicHost, publicPort, sshHost }) => {
         <li>Check the <b>Voice model</b> and pick a <b>voice</b> — each card says whether it
           sounds female, male or neutral.</li>
       </ol>
-      <h3>One voice model</h3>
-      <p>A single model does the voice: it holds the live conversation and reads MINT AI's
-        replies aloud, word for word. Only models that passed both on the real API are
-        offered — today <b>GPT Realtime 2.1 mini</b>. What you say is also written down by a
+      <h3>Voice model</h3>
+      <p>The voice model holds the live conversation. Three are offered, each with its test
+        results beside it: <b>GPT Realtime 2.1 mini</b> (the default: it read 18 of 18 test
+        sentences word for word and answers Arabic in Arabic), <b>GPT Realtime mini</b> (14 of
+        18, may answer Arabic in English; OpenAI retires it on 20 January 2027) and
+        <b>GPT-4o Mini Realtime</b> (a preview, offered only when your OpenAI key can use it —
+        otherwise it is listed but greyed out). Replies are read aloud by the voice model only
+        when it reads word for word; with the other two, GPT Realtime 2.1 mini reads them, so
+        read-aloud never paraphrases. What you say is also written down by a
         <b>transcription model</b>; MINT AI always acts on that transcript, never on the voice
         model's retelling of your words.</p>
       <h3>Transcription</h3>
