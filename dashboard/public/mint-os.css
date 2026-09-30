@@ -326,3 +326,4 @@ b.ink { color: var(--ink); }
 
 /* A stacked cell's later lines stay in the value column (the label is ::before). */
 @media (max-width: 640px) { table.stack td:not(.first):not(.nolabel) > * { grid-column: 2; } }
+.me-menu .theme-seg button span { display: inline; }
