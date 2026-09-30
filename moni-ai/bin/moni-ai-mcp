@@ -22,6 +22,8 @@
  *                         memory, live sessions, missions, open decisions and
  *                         pending approvals -- counts and titles, never a command
  *   ui_actions_list       the screen actions that exist right now (read-only)
+ *   session_hire          hire a worker session (its own context, supervised, gated)
+ *   session_retire        ASK the administrator to retire one it hired (a consent card; never ends it)
  *   ui_do                 do one: change what the administrator sees in the tab
  *                         they asked from (open a page or a panel, end the
  *                         call...), during their own turn only; never approves,
@@ -210,6 +212,53 @@ const TOOLS = [
     shape: snapshotView,
   },
   ...uiTools(),
+  // Hired sessions (M-6). Stable schemas from day one: plain strings, no enums (a resumed CLI keeps what it first loaded).
+  {
+    name: "session_hire",
+    op: "session-hire",
+    description:
+      "Hire a worker session: start a new Claude Code session with its own context, under the given display name, in the given directory, " +
+      "whose first message is the purpose (marked as coming from you, MINT AI, not the administrator). Hire only when a job needs its own context " +
+      "and no existing session fits. It runs supervised (it survives restarts), is listed by ListAgents and reached with SendMessage; its " +
+      "destructive actions wait for the administrator's approval like yours, and it inherits none of your always-allow rules. Limits: at most 7 " +
+      "sessions, a unique name, a directory under /root (not a hidden one), 3 hires an hour. You can NEVER retire it yourself: see session_retire.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "The session's display name, e.g. \"Session Birth\" (1-48 characters, unique)." },
+        cwd: { type: "string", description: "Its working directory: an existing directory under /root/moni or /root, e.g. \"/root/moni\"." },
+        purpose: { type: "string", description: "What it is for, in a few sentences: this is its first message." },
+        model: { type: "string", description: "Optional: a claude-* model id (default: yours)." },
+      },
+      required: ["name", "cwd", "purpose"],
+      additionalProperties: false,
+    },
+    shape: (d) => d,
+  },
+  {
+    name: "session_retire",
+    op: "session-retire",
+    description:
+      "ASK the administrator to retire a session you hired. It never ends a session by itself: it raises a consent card in the Command Center, " +
+      "and only if the administrator approves is the session ended (gracefully; its transcript is kept). Refused for kept sessions and for any " +
+      "session not hired through session_hire (the administrator's own sessions are never yours to retire). Name it by name, ListAgents ref or " +
+      "session_id. The result's status is consent: say that nothing has ended and it waits for the administrator.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "The session's name." },
+        ref: { type: "string", description: "Or its ListAgents ref (the hex in [ ])." },
+        session_id: { type: "string", description: "Or its session id." },
+        note: { type: "string", description: "Optional: why, in one line, shown to the administrator." },
+      },
+      additionalProperties: false,
+    },
+    map(given) {
+      if (!given.name && !given.ref && !given.session_id) throw new Error("name, ref or session_id is required");
+      return given;
+    },
+    shape: (d) => d,
+  },
 ];
 
 /**
@@ -292,7 +341,8 @@ async function onMessage(msg) {
         serverInfo: { name: "mint-ai", version: "1.0.0" }, // registered as "mint-ai" (supervisor.js MCP_NAME)
         instructions:
           "MINT AI's missions and decision proposals, recorded by the supervisor and shown in the Command Center; status_snapshot: this VPS at a glance, read-only; " +
-          "ui_actions_list / ui_do: change what the administrator sees in the tab they asked from, during their own request only (list first, then do).",
+          "ui_actions_list / ui_do: change what the administrator sees in the tab they asked from, during their own request only (list first, then do); " +
+          "session_hire / session_retire: hire a worker session, and ASK the administrator to retire one you hired (never ends it yourself).",
       },
     });
   }

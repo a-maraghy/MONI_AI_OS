@@ -102,6 +102,7 @@
         sceneRight: sceneRight,
         top: function () { var tb = document.querySelector(".topbar"); return tb ? tb.getBoundingClientRect().bottom : 60; },
         onClick: function (id) { if (opts.onOpen) opts.onOpen(id); else if (opts.onClick) opts.onClick(id); },
+        onMenu: function (id, x, y) { if (opts.onMenu) opts.onMenu(id, x, y); },
       });
     }
     function spheresOn() { return root.getAttribute("data-sessview") !== "orbit"; }

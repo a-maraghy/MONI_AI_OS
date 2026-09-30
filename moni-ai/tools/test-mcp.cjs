@@ -164,6 +164,35 @@ function hasKeyDeep(v, keys) {
       check("  a stale call to ui_action is an unknown tool", old && old.error && /unknown tool/.test(old.error.message));
     }
 
+    // session_hire + session_retire (M-6): new names, schemas frozen from day one (no enums).
+    {
+      const hire = list.result.tools.find((t) => t.name === "session_hire");
+      const ret = list.result.tools.find((t) => t.name === "session_retire");
+      const FROZEN_HIRE = JSON.stringify({ type: "object", properties: {
+        name: { type: "string", description: "The session's display name, e.g. \"Session Birth\" (1-48 characters, unique)." },
+        cwd: { type: "string", description: "Its working directory: an existing directory under /root/moni or /root, e.g. \"/root/moni\"." },
+        purpose: { type: "string", description: "What it is for, in a few sentences: this is its first message." },
+        model: { type: "string", description: "Optional: a claude-* model id (default: yours)." },
+      }, required: ["name", "cwd", "purpose"], additionalProperties: false });
+      const FROZEN_RETIRE = JSON.stringify({ type: "object", properties: {
+        name: { type: "string", description: "The session's name." },
+        ref: { type: "string", description: "Or its ListAgents ref (the hex in [ ])." },
+        session_id: { type: "string", description: "Or its session id." },
+        note: { type: "string", description: "Optional: why, in one line, shown to the administrator." },
+      }, additionalProperties: false });
+      check("session_hire's schema is the frozen one {name, cwd, purpose, model?}", hire && JSON.stringify(hire.inputSchema) === FROZEN_HIRE, hire && JSON.stringify(hire.inputSchema));
+      check("session_retire's schema is the frozen one {name | ref | session_id, note?}", ret && JSON.stringify(ret.inputSchema) === FROZEN_RETIRE, ret && JSON.stringify(ret.inputSchema));
+      check("  its description says it only ASKS (a consent card)", ret && /never ends a session by itself/.test(ret.description) && /consent card/.test(ret.description));
+      seen.length = 0;
+      await rpc({ jsonrpc: "2.0", id: 11, method: "tools/call", params: { name: "session_hire", arguments: { name: "Demo Worker", cwd: "/root/moni", purpose: "A demo purpose text." } } });
+      check("session_hire is op session-hire as moni-ai with exactly its arguments", seen[0] && seen[0].op === "session-hire" && seen[0].actor === "moni-ai" && seen[0].name === "Demo Worker" && seen[0].cwd === "/root/moni", JSON.stringify(seen[0]));
+      seen.length = 0;
+      const none = await rpc({ jsonrpc: "2.0", id: 12, method: "tools/call", params: { name: "session_retire", arguments: {} } });
+      check("session_retire with no name, ref or session id: a tool error, nothing sent", none.result.isError && seen.length === 0);
+      await rpc({ jsonrpc: "2.0", id: 13, method: "tools/call", params: { name: "session_retire", arguments: { name: "Demo Worker" } } });
+      check("session_retire is op session-retire as moni-ai", seen[0] && seen[0].op === "session-retire" && seen[0].actor === "moni-ai" && seen[0].name === "Demo Worker");
+    }
+
     // The supervisor down: a clean tool error, not a crash.
     server.close();
     fs.rmSync(SOCK, { force: true });

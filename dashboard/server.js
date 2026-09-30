@@ -3549,6 +3549,40 @@ app.get("/mint-ai/api/sessions", ...moniAiGuard, async (req, res) => {
   }
 });
 
+/**
+ * Hired sessions (M-6): the administrator keeps / unkeeps one, or retires it
+ * (the Command Center's Keep / Retire dialog is the consent). The supervisor
+ * refuses both for sessions not hired through MINT AI, and retire for a kept one.
+ */
+const cleanSlug = (v) => (/^[a-z0-9][a-z0-9-]{0,39}$/.test(String(v || "")) ? String(v) : null);
+app.post("/mint-ai/api/sessions/:slug/keep", ...moniAiWrite, async (req, res) => {
+  const slug = cleanSlug(req.params.slug);
+  const kept = req.body && req.body.kept;
+  if (!slug) return res.status(404).json({ error: "No such session." });
+  if (typeof kept !== "boolean") return res.status(400).json({ error: "kept must be true or false." });
+  try {
+    const out = await moniai.call("session-keep", { slug, kept }, req.me.username);
+    db.logLogin(req.ip, req.me.username, "moni-ai", `${kept ? "kept" : "unkept"} hired session ${slug}`);
+    res.json(out);
+  } catch (e) {
+    moniAiFail(res, e);
+  }
+});
+app.post("/mint-ai/api/sessions/:slug/retire", ...moniAiWrite, async (req, res) => {
+  const slug = cleanSlug(req.params.slug);
+  if (!slug) return res.status(404).json({ error: "No such session." });
+  try {
+    const params = { slug };
+    const note = moniai.cleanNote(req.body && req.body.note);
+    if (note) params.note = note;
+    const out = await moniai.call("session-retire", params, req.me.username, { timeout: 60000 });
+    db.logLogin(req.ip, req.me.username, "moni-ai", `retired hired session ${slug}`);
+    res.json(out);
+  } catch (e) {
+    moniAiFail(res, e);
+  }
+});
+
 app.get("/mint-ai/api/memory", ...moniAiGuard, async (req, res) => {
   res.json(await moniAiMemoryCounts());
 });

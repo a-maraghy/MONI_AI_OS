@@ -170,8 +170,17 @@
     return aps.concat(ds);
   }
 
+  /** Who asks: MINT AI, or a session it hired (M-6: origin "session:<slug>"). */
+  function approvalFrom(a) {
+    return a && /^session:/.test(String(a.origin || "")) ? String(a.origin_name || a.origin.slice(8)) : "MINT AI";
+  }
+  /** A card that must never grow an always-allow rule: a hired session's question, or a retire. */
+  function approvalNoRule(a) {
+    return !!a && (a.tool === "SessionRetire" || /^session:/.test(String(a.origin || "")));
+  }
   function approvalWhat(a) {
     var inp = a.input || {};
+    if (a.tool === "SessionRetire") return { title: "Retire the session " + String(inp.session || inp.name || "?"), cmd: "Ends it gracefully; its transcript is kept" };
     if (a.tool === "SendMessage") return { title: "Send a message to " + String(inp.to || "a session").replace(/\s*\[[0-9a-f]+\]$/, ""), cmd: String(inp.message || a.summary || "") };
     if (typeof inp.command === "string") return { title: a.label ? String(a.label) : "Run a command", cmd: inp.command };
     return { title: "Use " + (a.tool || "a tool"), cmd: String(a.summary || a.tool || "") };
@@ -188,18 +197,32 @@
     var id = encodeURIComponent(String(q.id));
     var later = { act: "later", label: "Later", local: true };
     if (q.type === "approval") {
-      var a = q.item, w = approvalWhat(a);
+      var a = q.item, w = approvalWhat(a), from = approvalFrom(a);
+      if (a.tool === "SessionRetire") {
+        // MINT AI asks to retire a session it hired: the Keep / Retire consent (M-6).
+        return {
+          kind: "Retire", icon: "stop", title: w.title, meta: "Asked by MINT AI · " + w.cmd,
+          why: oneLine(a.reason || "Nothing ends unless you choose Retire.", 280),
+          expires: a.expires_at || null, created: a.created_at || null,
+          actions: [
+            { act: "approve", label: "Retire", primary: true, path: "approvals/" + id + "/approve", body: {} },
+            { act: "deny", label: "Keep", path: "approvals/" + id + "/deny", body: {} },
+            later,
+          ],
+        };
+      }
+      var acts = [
+        { act: "approve", label: "Approve", primary: true, path: "approvals/" + id + "/approve", body: {} },
+        { act: "deny", label: "Deny", path: "approvals/" + id + "/deny", body: {} },
+      ];
+      if (!approvalNoRule(a)) acts.push({ act: "always", label: "Always allow…", local: true, link: true });
+      acts.push(later);
       return {
         kind: "Approval", icon: "shield", title: w.title,
-        meta: oneLine(w.cmd, 160) + (a.mission_ref ? " · " + a.mission_ref + (a.step_n ? " step " + a.step_n : "") : ""),
+        meta: (from !== "MINT AI" ? "From " + from + " (hired) · " : "") + oneLine(w.cmd, 160) + (a.mission_ref ? " · " + a.mission_ref + (a.step_n ? " step " + a.step_n : "") : ""),
         why: oneLine(a.reason || (a.category ? String(a.category).replace(/_/g, " ") + (a.label && a.label !== a.category ? " — " + a.label : "") : "A step the gate treats as destructive. Nothing runs until you choose."), 280),
         expires: a.expires_at || null, created: a.created_at || null,
-        actions: [
-          { act: "approve", label: "Approve", primary: true, path: "approvals/" + id + "/approve", body: {} },
-          { act: "deny", label: "Deny", path: "approvals/" + id + "/deny", body: {} },
-          { act: "always", label: "Always allow…", local: true, link: true },
-          later,
-        ],
+        actions: acts,
       };
     }
     var d = q.item;
@@ -333,7 +356,7 @@
     CORES: CORES, CORE_DEFAULT: CORE_DEFAULT, normCore: normCore, isCore: isCore,
     SESS_VIEWS: SESS_VIEWS, SESS_VIEW_DEFAULT: SESS_VIEW_DEFAULT, normSessView: normSessView, isSessView: isSessView,
     STATES: STATES, LABEL: LABEL, coreState: coreState, caption: caption, lastSentence: lastSentence, gist: gist,
-    needQueue: needQueue, card: card, doneText: doneText,
+    needQueue: needQueue, card: card, doneText: doneText, approvalFrom: approvalFrom, approvalNoRule: approvalNoRule,
     SHEETS: SHEETS, sheetKeys: sheetKeys,
     normName: normName, makeAliases: makeAliases, resolveTarget: resolveTarget, resolveFrom: resolveFrom, ghostWhere: ghostWhere,
   };

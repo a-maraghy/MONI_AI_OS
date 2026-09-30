@@ -13,6 +13,8 @@
  *   approvals    every Approve / Deny card, with who answered and when
  *   turns        every turn MINT AI ran, and where it came from
  *   audit        every action taken through the socket, with the panel user
+ *   hired_sessions  the worker sessions MINT AI (or the administrator) hired
+ *                (M-6): hired -> retired; kept by the administrator or not
  */
 
 const { DatabaseSync } = require("node:sqlite");
@@ -252,6 +254,26 @@ CREATE TABLE IF NOT EXISTS cost_names (
   updated_at      TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS hired_sessions (
+  id              INTEGER PRIMARY KEY,
+  slug            TEXT NOT NULL UNIQUE,
+  name            TEXT NOT NULL,
+  cwd             TEXT NOT NULL,
+  purpose         TEXT NOT NULL,
+  model           TEXT,
+  session_id      TEXT NOT NULL,
+  status          TEXT NOT NULL,
+  kept            INTEGER NOT NULL DEFAULT 0,
+  hired_by        TEXT NOT NULL,
+  hired_at        TEXT NOT NULL,
+  retire_asked_at TEXT,
+  retire_approval_id INTEGER,
+  retired_at      TEXT,
+  retired_by      TEXT,
+  note            TEXT,
+  updated_at      TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS audit (
   id              INTEGER PRIMARY KEY,
   at              TEXT NOT NULL,
@@ -284,7 +306,7 @@ class Ledger {
     const add = {
       turns: ["order_id INTEGER", "mission_id INTEGER", "decision_id INTEGER", "proc_start TEXT", "cost_delta_usd REAL", "sent_at TEXT"],
       delegations: ["mission_id INTEGER", "step_id INTEGER", "target_kind TEXT", "target_ref TEXT"],
-      approvals: ["mission_id INTEGER", "step_id INTEGER", "decision_id INTEGER", "rule_id INTEGER"],
+      approvals: ["mission_id INTEGER", "step_id INTEGER", "decision_id INTEGER", "rule_id INTEGER", "origin TEXT", "origin_name TEXT"],
     };
     for (const [table, cols] of Object.entries(add)) {
       const have = new Set(this.db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name));
@@ -378,7 +400,7 @@ class Ledger {
   addApproval(a) {
     const r = this.prep(
       `INSERT INTO approvals (request_id, tool_use_id, turn_id, tool, input_json, summary, category, label, reason,
-         status, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`
+         status, created_at, expires_at, origin, origin_name) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)`
     ).run(
       a.request_id,
       a.tool_use_id || null,
@@ -390,10 +412,32 @@ class Ledger {
       a.label || null,
       a.reason || null,
       now(),
-      a.expires_at
+      a.expires_at,
+      a.origin || null,
+      a.origin_name || null
     );
     return this.get("approvals", Number(r.lastInsertRowid));
   }
+  /* ---------------------------------------------------- hired sessions --- */
+
+  addHired(h) {
+    const t = now();
+    const r = this.prep(
+      `INSERT INTO hired_sessions (slug, name, cwd, purpose, model, session_id, status, kept, hired_by, hired_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'hired', 0, ?, ?, ?)`
+    ).run(h.slug, h.name, h.cwd, h.purpose, h.model || null, h.session_id, h.hired_by, t, t);
+    return this.get("hired_sessions", Number(r.lastInsertRowid));
+  }
+  hiredList(all) {
+    return this.prep(all ? "SELECT * FROM hired_sessions ORDER BY id" : "SELECT * FROM hired_sessions WHERE status != 'retired' ORDER BY id").all();
+  }
+  hiredSince(iso) {
+    return this.prep("SELECT count(*) AS n FROM hired_sessions WHERE hired_at >= ?").get(iso).n;
+  }
+  updateHired(id, fields) {
+    return this.update("hired_sessions", id, { ...fields, updated_at: now() });
+  }
+
   pendingApprovals() {
     return this.prep("SELECT * FROM approvals WHERE status = 'pending' ORDER BY id").all();
   }

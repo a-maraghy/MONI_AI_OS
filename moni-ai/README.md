@@ -297,6 +297,33 @@ event). All of its state is in the ledger, so a restart loses nothing.
   Bash -- and holds counts, titles and figures, never a command, fix or evidence;
   the server drops the forbidden keys again and the desk's own request list. The
   charter tells MINT AI to use it first for status questions.
+- **Hired sessions (M-6).** MINT AI may hire a worker session on its own and
+  may retire one only with the administrator's consent (fact #779). Tools
+  `session_hire` {name, cwd, purpose, model?} → op `session-hire`, and
+  `session_retire` {name | ref | session_id, note?} → op `session-retire`
+  (schemas frozen by test-mcp; no enums). A hire (`lib/hire.js`: at most 7 live
+  sessions, cwd under /root/moni or /root and never hidden, a unique normalised
+  name, a sanitised slug, 3 hires an hour) is recorded in the ledger's
+  `hired_sessions`, written to `<state_dir>/sessions/<slug>.json` and started as
+  its own systemd unit `mint-session@<slug>.service` (`deploy/mint-session@.service`,
+  `enable --now`: it outlives dashboard and MINT AI restarts and reboots).
+  `bin/mint-session` runs the same CLI as MINT AI, as root with HOME=/root (root's
+  registry, memory MCP and hooks; ListAgents lists it, SendMessage reaches it),
+  `-n <name>`, `--session-id` then `--resume`, permission mode `auto` (or
+  `hired_permission_mode`; never bypassPermissions, never
+  --dangerously-skip-permissions), the gate added with `--settings` under
+  `MINT_GATE_SESSION=hired.<slug>` (built-in rules, classifier, deny / ask rules
+  -- never MINT AI's always-allow rules), and `--permission-prompt-tool stdio`:
+  each question goes to op `session-approval` (actor `session.<slug>`) and is a
+  card in the Command Center from that session, with no "Always allow"; no answer
+  or no supervisor is a deny. Its first message is the purpose, marked as from
+  MINT AI. `session_retire` from MINT AI never ends anything: it raises a
+  SessionRetire card (Retire / Keep); only on Retire is the unit disabled and
+  stopped (SIGTERM, stdin closed, transcript kept). Kept sessions and sessions
+  not hired here are refused. The administrator keeps / unkeeps (`session-keep`)
+  or retires (`session-retire`, a human actor) from a sphere's right-click menu
+  or the sessions sheet. Everything is audited. Tests: `tools/test-hire.cjs`
+  (fake systemctl, fake CLI, scratch registry).
 - **Screen actions for MINT AI (UI control Phase 2; stable since M-5).** Two
   tools: `ui_actions_list` (read-only, answered here from `UiActions.catalog()`:
   every action, what it does, its tier, `needs_confirm`, `once_per_request`, its
@@ -388,7 +415,8 @@ node moni-ai/tools/test-watchers.cjs          # thresholds, dedup, cooldown, rat
 node moni-ai/tools/test-missions-cost.cjs     # missions store, cost deltas, transcript scan
 sudo node moni-ai/tools/test-features.cjs     # all of phase 1 through a real supervisor
 node moni-ai/tools/test-protocol.cjs          # socket validation, peer-text parsing
-node moni-ai/tools/test-mcp.cjs               # the MCP server's status_snapshot, ui_actions_list and ui_do tools
+node moni-ai/tools/test-mcp.cjs               # the MCP server's status_snapshot, ui_actions_list, ui_do, session_hire and session_retire tools
+node moni-ai/tools/test-hire.cjs              # hire / keep / retire end to end (fake systemctl + fake CLI)
 sudo node moni-ai/tools/test-ui-action.cjs    # ui-action / ui-ack through a real supervisor
 node moni-ai/tools/test-turnqueue.cjs         # queue order: users first, FIFO, no starvation
 sudo node moni-ai/tools/test-queue.cjs        # the queue + status_snapshot through a real supervisor

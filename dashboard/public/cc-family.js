@@ -6,8 +6,8 @@
  *
  *   - one sphere per live session, its own tint (from its name), sized by what
  *     it did today; a kept ring under every session the administrator runs
- *     (all of them today -- hiring is not built yet; a session marked
- *     `hired: true` has no ring);
+ *     or keeps; a session MINT AI hired (`hired: true`, M-6) has no ring and a
+ *     small "hired" tag by its name;
  *   - working ones shimmer and turn faster, idle ones dim, one waiting on you
  *     glows amber with a pulsing "needs you" badge; one that just finished
  *     blooms and shows "done";
@@ -15,9 +15,11 @@
  *     thinner thread back (real supervisor events, through send() / reply());
  *   - its running sub-agents (real data) are specks circling it;
  *   - a session that appears condenses out of her; one that goes away
- *     dissolves back into her (nothing here retires anything);
+ *     dissolves back into her (a retired one too: retiring is the supervisor's,
+ *     after the administrator's consent -- nothing here retires anything);
  *   - hover: a card with its task, last message and cost today; click (or
- *     Enter on its name) opens that session's existing deep view.
+ *     Enter on its name) opens that session's existing deep view; right-click
+ *     (or the context-menu key on its name) calls opts.onMenu(id, x, y).
  *
  * The spheres never overlap MINT AI, each other, the caption, the composer or
  * voice bar, the approval card, the icon rail, the top bar or an open panel:
@@ -233,6 +235,7 @@
       var was = k.st;
       k.label = d.label || "session"; k.st = d.st === "working" || d.st === "waiting" ? d.st : "idle";
       k.kept = d.hired !== true;
+      k.menu = !!d.slug; // hired through MINT AI (kept or not): Keep / Retire in its menu
       if (!k.tint) k.tint = d.tint && TINTS[d.tint] ? d.tint : freeTint(d.name || d.label || d.id);
       k.act = Math.max(1, +d.act || 1); k.cost = d.cost; k.task = d.task || ""; k.last = d.last || ""; k.mission = d.mission || "";
       if (!fresh && was === "working" && k.st === "idle") { k.bloom = 1; k.doneUntil = t + 3.5; }
@@ -254,7 +257,7 @@
     function stText(k) { return k.st === "waiting" ? "waiting on you" : k.st === "working" ? "working" : "idle"; }
     function measure(k) {
       var na = k.subs.filter(function (s) { return !s.dying; }).length;
-      var html = esc(k.label) + '<span class="st">' + (k.st === "working" ? "<i>working</i>" : esc(stText(k))) + (na ? " · " + na + (na === 1 ? " agent" : " agents") : "") + "</span>";
+      var html = esc(k.label) + (k.kept ? "" : '<span class="ht">hired</span>') + '<span class="st">' + (k.st === "working" ? "<i>working</i>" : esc(stText(k))) + (na ? " · " + na + (na === 1 ? " agent" : " agents") : "") + "</span>";
       if (k._h !== html) { k.elN.innerHTML = html; k._h = html; k.lw = Math.max(60, k.elN.offsetWidth || k.lw); }
     }
 
@@ -341,7 +344,7 @@
       glow *= Math.exp(-dt * 1.6);
       physics(dt);
       var hk = null;
-      if (mouse.over && !phone) hk = hit(mouse.x, mouse.y);
+      if (mouse.over && !phone && !document.querySelector(".cc-smenu, .cc-sdlg-back")) hk = hit(mouse.x, mouse.y); // no hover card under a sphere's menu
       if (hk !== hoverKid) { hoverKid = hk; if (hk) showCard(hk); else hideCard(); els.root.classList.toggle("kid-hover", !!hk); }
       if (hoverKid) placeCard(hoverKid);
       for (var j = kids.length - 1; j >= 0; j--) {
@@ -524,7 +527,7 @@
         "<dt>Now</dt><dd>" + esc(k.task || "Nothing running") + "</dd>" +
         (k.last ? '<dt>Last</dt><dd class="q">“' + esc(k.last) + "”</dd>" : "") +
         "<dt>Today</dt><dd>" + money(k.cost) + (k.cost != null ? " est" : "") + "</dd></dl>" +
-        '<div class="hint">Click to open the conversation</div>';
+        '<div class="hint">Click to open the conversation' + (k.menu ? " · right-click: Keep / Retire" : "") + "</div>";
       card.classList.add("on");
       card.setAttribute("aria-hidden", "false");
     }
@@ -549,6 +552,19 @@
       if (uiTarget(e.target)) return;
       var k = hit(e.clientX, e.clientY);
       if (k && opts.onClick) { hideCard(); opts.onClick(k.id); }
+    });
+
+    document.addEventListener("contextmenu", function (e) {
+      if (!on || !opts.onMenu) return;
+      var b = e.target && e.target.closest ? e.target.closest("[data-kid]") : null;
+      var id = b ? b.getAttribute("data-kid") : null;
+      if (!id && !uiTarget(e.target)) { var k = hit(e.clientX, e.clientY); if (k) id = k.id; }
+      if (!id) return;
+      e.preventDefault();
+      hideCard(); mouse.over = false;
+      if (!b || e.clientX || e.clientY) return opts.onMenu(id, e.clientX, e.clientY);
+      var r = b.getBoundingClientRect();
+      opts.onMenu(id, r.left + r.width / 2, r.bottom);
     });
 
     function frame() {
@@ -605,7 +621,7 @@
         return { n: a.length, jsMedian: +med(a).toFixed(2), jsP95: +p95(a).toFixed(2), frameMedian: +med(b).toFixed(2), fps: +(1000 / med(b)).toFixed(1) };
       },
       resetStats: function () { cost = []; iv = []; },
-      kids: function () { return kids.map(function (k) { var p = kidPos(k); return { id: k.id, label: k.label, st: k.st, x: p.x, y: p.y, r: p.r, kept: k.kept, tint: k.tint, subs: k.subs.filter(function (s) { return !s.dying; }).length, form: k.form, dis: k.dis, badge: k.badge }; }); },
+      kids: function () { return kids.map(function (k) { var p = kidPos(k); return { id: k.id, label: k.label, st: k.st, x: p.x, y: p.y, r: p.r, kept: k.kept, hired: !k.kept, tint: k.tint, subs: k.subs.filter(function (s) { return !s.dying; }).length, form: k.form, dis: k.dis, badge: k.badge }; }); },
       layout: function () { return { cx: L.cx, cy: L.cy, R: L.R }; },
     };
   };

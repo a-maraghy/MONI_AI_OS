@@ -28,7 +28,7 @@ const MAX_TEXT = 20000;
 const ACTOR_RE = /^[A-Za-z0-9._@-]{1,64}$/;
 const ID_RE = /^[A-Za-z0-9._:-]{1,64}$/;
 
-const TABLES = ["delegations", "inbound", "approvals", "turns", "audit"];
+const TABLES = ["delegations", "inbound", "approvals", "turns", "audit", "hired_sessions"];
 const WATCHERS = ["service_failed", "ban_burst", "disk", "agent_failing", "odoo_errors"];
 const STATUSES = {
   delegations: ["sent", "working", "ack", "held", "done", "failed", "denied"],
@@ -36,6 +36,7 @@ const STATUSES = {
   turns: ["queued", "running", "done", "error", "interrupted", "lost"],
   inbound: ["message", "idle", "delivery"],
   audit: [],
+  hired_sessions: ["hired", "retiring", "retired"],
 };
 
 // op -> { mutating, params: { name: validator } }
@@ -76,6 +77,18 @@ const OPS = {
   // pending: a Tier-2 preference shown for the administrator's confirm (nothing changed yet).
   "ui-ack": { mutating: true, params: { nonce: str(40, /^[A-Za-z0-9]{8,40}$/), ok: bool(), why: optText(200), pending: optBool() } },
   interrupt: { mutating: true, params: {} },
+  // Hired sessions (M-6). Hire: MINT AI or the administrator. Retire: from MINT AI only a consent card;
+  // from the administrator (the Command Center's Keep / Retire dialog) it ends the session. Keep: the administrator.
+  "session-hire": { mutating: true, params: { name: text(1, 48), cwd: str(300, /^\/[^\u0000\n\r]*$/), purpose: text(10, 4000), model: optString(64, /^claude-[a-z0-9][a-z0-9.-]{2,60}$/) } },
+  "session-retire": { mutating: true, params: { slug: optString(40, /^[a-z0-9][a-z0-9-]{0,39}$/), name: optString(64, /^[^\n\r\u0000]{1,64}$/), ref: optString(12, /^[0-9a-f]{4,12}$/i), session_id: optString(36, /^[0-9a-f-]{36}$/), note: optText(500) } },
+  "session-keep": { mutating: true, params: { slug: optString(40, /^[a-z0-9][a-z0-9-]{0,39}$/), session_id: optString(36, /^[0-9a-f-]{36}$/), kept: bool() } },
+  hired: { mutating: false, params: { all: optBool() } },
+  // A hired session's own permission question (bin/mint-session, actor "session.<slug>"): answered on this connection.
+  "session-approval": {
+    mutating: false,
+    params: { slug: str(40, /^[a-z0-9][a-z0-9-]{0,39}$/), request_id: str(64, /^[^\n\r\u0000]{1,64}$/), tool: str(80, /^[A-Za-z0-9_.:-]{1,80}$/), input: text(2, 16000), reason: optText(2000), tool_use_id: optString(64, /^[A-Za-z0-9_-]{1,64}$/) },
+  },
+  "session-approval-cancel": { mutating: false, params: { slug: str(40, /^[a-z0-9][a-z0-9-]{0,39}$/), request_id: str(64, /^[^\n\r\u0000]{1,64}$/) } },
   approve: {
     mutating: true,
     params: { approval_id: int(1, Number.MAX_SAFE_INTEGER), note: optText(500), rule_pattern: optText(2000), rule_tool: optEnum(["Bash", "SendMessage"]) },

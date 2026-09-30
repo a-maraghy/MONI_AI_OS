@@ -88,7 +88,9 @@ process.stdin.on("end", async () => {
       /* defaults */
     }
     const stored = readRules(cfg);
-    const r = rules.evaluate(ev.tool_name, ev.tool_input, stored.rows, cfg);
+    // A hired session's gate (M-6, bin/mint-session) says whose it is: never MINT AI's always-allow rules.
+    const session = /^hired\.[a-z0-9-]{1,40}$/.test(process.env.MINT_GATE_SESSION || "") ? process.env.MINT_GATE_SESSION : "moni-ai";
+    const r = rules.evaluate(ev.tool_name, ev.tool_input, stored.rows, cfg, { session });
     let decision = r.decision;
     let reason;
     if (stored.error && decision !== "deny" && decision !== "ask") {
@@ -98,7 +100,7 @@ process.stdin.on("end", async () => {
     else if (decision === "ask")
       reason = r.source === "classifier" && r.classifier ? `MINT AI gate · ${r.classifier.label}: ${r.classifier.reason}. Waiting for the administrator's approval.` : `MINT AI gate: ${r.explain} Waiting for the administrator's approval.`;
     else if (decision === "allow") reason = `MINT AI gate: ${r.explain}`;
-    await report(ev.session_id, r);
+    if (session === "moni-ai") await report(ev.session_id, r);
     if (decision === "none") return process.exit(0);
     out(decision, reason);
     process.exit(0);

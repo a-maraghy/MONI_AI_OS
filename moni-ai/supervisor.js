@@ -38,6 +38,7 @@ const classifier = require("./lib/classifier");
 const rulesLib = require("./lib/rules");
 const peers = require("./lib/peers");
 const targets = require("./lib/targets");
+const hireLib = require("./lib/hire");
 const { redact, redactDeep, clip } = require("./lib/redact");
 const { createFeatures } = require("./lib/features");
 const { buildSnapshot } = require("./lib/snapshot");
@@ -86,6 +87,9 @@ const DEFAULTS = {
   queue_requeue_max_age_s: 21600, // after a supervisor restart, re-queue unsent turns younger than this
   queue_start_timeout_s: 120, // a handed-over turn that has not started by then, with nothing running, frees the queue
   cli_extra_args: [], // tests only, e.g. ["--setting-sources", "project"]
+  // Hired sessions (M-6): each runs as mint-session@<slug>.service (deploy/mint-session@.service).
+  systemctl: "/usr/bin/systemctl",
+  retire_consent_s: 3600, // how long MINT AI's retire question waits for the administrator
 };
 
 function loadConfig() {
@@ -556,8 +560,9 @@ function onExit(gen, code, signal) {
   rc.state = null;
   emit("rc", { enabled: false });
 
-  // Whatever was waiting on this process is over.
+  // Whatever was waiting on this process is over (a hired session's questions and retire questions are not its).
   for (const [aid, a] of approvals) {
+    if (a.kind) continue;
     clearTimeout(a.timer);
     const row = ledger.updateApproval(aid, { status: "cancelled", decided_at: now(), note: "MINT AI's process ended before an answer" });
     approvals.delete(aid);
@@ -1117,9 +1122,21 @@ function autoAnswer(ev, req, tool, input, auto) {
   emit("approval", { approval: publicApproval(upd) });
 }
 
-function answer(approvalId, allow, message) {
+function answer(approvalId, allow, message, actor) {
   const a = approvals.get(approvalId);
   if (!a) return false;
+  // A hired session's question, or MINT AI's retire question (M-6), is answered through its own callback.
+  if (a.kind === "session" || a.kind === "retire") {
+    clearTimeout(a.timer);
+    approvals.delete(approvalId);
+    requestToApproval.delete(a.requestId);
+    try {
+      a.reply(allow ? { behavior: "allow" } : { behavior: "deny", message }, actor);
+    } catch (e) {
+      warn("approval callback failed:", e.message);
+    }
+    return a;
+  }
   if (a.generation !== proc.generation) return false;
   clearTimeout(a.timer);
   approvals.delete(approvalId);
@@ -1135,7 +1152,7 @@ function answer(approvalId, allow, message) {
 }
 
 function recordDeniedDelegation(a, row, why) {
-  if (a.tool !== "SendMessage") return;
+  if (a.tool !== "SendMessage" || a.kind) return; // MINT AI's own delegations only
   const to = String(a.input.to || "");
   const d = ledger.addDelegation({
     tool_use_id: a.toolUseId,
@@ -1158,6 +1175,7 @@ function decide(approvalId, allow, actor, note, alwaysRule) {
   const a = approvals.get(approvalId);
   if (!a) throw new Error("that request is no longer waiting (the process restarted)");
   let rule = null;
+  if (alwaysRule && a.kind) throw new Error("an always-allow rule is only for MINT AI's own requests (a hired session inherits none)");
   if (allow && alwaysRule) {
     // "Always allow this": the rule must at least cover this very call, and
     // is saved before the call runs so the next identical one needs no card.
@@ -1168,7 +1186,7 @@ function decide(approvalId, allow, actor, note, alwaysRule) {
   const msg = allow
     ? null
     : `Denied by ${actor} in the MINT AI dashboard${note ? ": " + note : ""}. Do not retry it, do not route it through another session, and tell the user it was denied.`;
-  answer(approvalId, allow, msg);
+  answer(approvalId, allow, msg, actor);
   const updated = ledger.updateApproval(approvalId, {
     status: allow ? "approved" : "denied",
     decided_at: now(),
@@ -1203,6 +1221,218 @@ function onControlCancel(ev) {
   // the turn was interrupted.
   const row = ledger.updateApproval(aid, { status: "cancelled", decided_at: now(), note: "withdrawn by the CLI (answered elsewhere or interrupted)" });
   emit("approval", { approval: publicApproval(row) });
+}
+
+/* ----------------------------------------------------- hired sessions (M-6) --- */
+/*
+ * MINT AI may HIRE worker sessions on its own; it may RETIRE one only with the
+ * administrator's consent (an Approve / Deny card), and never a kept session or
+ * one not hired through this feature (fact #779). Each hired session runs as
+ * mint-session@<slug>.service (bin/mint-session): outside this process, so it
+ * outlives MINT AI's and the dashboard's restarts; its permission questions
+ * come back here as op session-approval and become cards attributed to it.
+ */
+const SESSIONS_FILES = path.join(cfg.state_dir, "sessions");
+const INTERNAL_ACTORS = new Set(["moni-ai", "watcher", "supervisor", "flag-file", "scheduler", "order"]);
+/** A person at the panel or a shell (not MINT AI, not a hired session, not the supervisor's own jobs). */
+function isHuman(actor) {
+  return !INTERNAL_ACTORS.has(actor) && !/^session\./.test(actor);
+}
+function publicHired(h) {
+  if (!h) return null;
+  return { slug: h.slug, name: h.name, cwd: h.cwd, purpose: h.purpose, model: h.model, session_id: h.session_id, status: h.status, kept: !!h.kept, hired_by: h.hired_by, hired_at: h.hired_at, retired_at: h.retired_at, retired_by: h.retired_by, retire_approval_id: h.retire_approval_id };
+}
+function writeHiredFile(h, extra) {
+  fs.mkdirSync(SESSIONS_FILES, { recursive: true, mode: 0o700 });
+  const file = path.join(SESSIONS_FILES, h.slug + ".json");
+  let old = {};
+  try {
+    old = JSON.parse(fs.readFileSync(file, "utf8"));
+  } catch (_) {
+    /* new */
+  }
+  const rec = { ...old, slug: h.slug, name: h.name, cwd: h.cwd, purpose: h.purpose, model: h.model, session_id: h.session_id, status: h.status, ...(extra || {}) };
+  fs.writeFileSync(file + ".tmp", JSON.stringify(rec, null, 2), { mode: 0o600 });
+  fs.renameSync(file + ".tmp", file);
+}
+function systemctl(args) {
+  return new Promise((resolve, reject) => {
+    const env = { PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" };
+    // Tests only: a fake systemctl (tools/fake-systemctl.cjs) starts the runner itself, with the fake CLI's settings.
+    if (process.env.FAKE_SYSTEMCTL_DIR) for (const k of Object.keys(process.env)) if (/^FAKE_/.test(k)) env[k] = process.env[k];
+    if (process.env.FAKE_SYSTEMCTL_DIR) env.MONI_AI_CONFIG = CONFIG_FILE;
+    execFile(cfg.systemctl, args, { timeout: 60000, env }, (err, stdout, stderr) =>
+      err ? reject(new Error(String(stderr || err.message).trim().slice(0, 300))) : resolve(String(stdout || ""))
+    );
+  });
+}
+function emitHired(h, what) {
+  emit("hired", { hired: publicHired(h), what });
+  refreshSessions();
+}
+
+async function sessionHire(actor, p) {
+  if (!(actor === "moni-ai" || isHuman(actor))) throw new Error("only MINT AI or the administrator can hire a session");
+  const hourAgo = new Date(Date.now() - 3600 * 1000).toISOString();
+  const c = hireLib.checkHire(p, { live: sessionsCache.list || [], hired: ledger.hiredList(false), recent: ledger.hiredSince(hourAgo) });
+  if (c.error) throw new Error(c.error);
+  const h = ledger.addHired({ slug: c.slug, name: c.name, cwd: c.cwd, purpose: c.purpose, model: c.model, session_id: crypto.randomUUID(), hired_by: actor });
+  writeHiredFile(h, { hired_by: actor, hired_at: h.hired_at });
+  log(`hire: "${h.name}" (${h.slug}) in ${h.cwd} by ${actor}`);
+  try {
+    await systemctl(["enable", "--now", `mint-session@${h.slug}.service`]);
+  } catch (e) {
+    const upd = ledger.updateHired(h.id, { status: "retired", retired_at: now(), retired_by: "supervisor", note: "could not start: " + e.message });
+    writeHiredFile(upd);
+    emitHired(upd, "failed");
+    throw new Error(`could not start "${h.name}": ${e.message}`);
+  }
+  emit("notice", { level: "info", text: `${actor === "moni-ai" ? "MINT AI" : actor} hired a session: ${h.name}` });
+  emitHired(h, "hired");
+  return { hired: publicHired(h), note: `"${h.name}" is starting (mint-session@${h.slug}); its first message is the purpose, from MINT AI. Reach it with SendMessage once ListAgents lists it.` };
+}
+
+async function doRetire(h, by) {
+  try {
+    await systemctl(["disable", "--now", `mint-session@${h.slug}.service`]);
+  } catch (e) {
+    const back = ledger.updateHired(h.id, { status: "hired", note: "retire failed: " + e.message });
+    emitHired(back, "retire-failed");
+    throw new Error(`could not stop "${h.name}": ${e.message}`);
+  }
+  const upd = ledger.updateHired(h.id, { status: "retired", retired_at: now(), retired_by: by });
+  writeHiredFile(upd, { retired_at: upd.retired_at, retired_by: by });
+  auditLine(by, "session-retired", { slug: h.slug, name: h.name, session_id: h.session_id }, true);
+  log(`retire: "${h.name}" (${h.slug}) by ${by}; its transcript is kept`);
+  emit("notice", { level: "info", text: `${h.name} was retired (by ${by}); its transcript is kept` });
+  emitHired(upd, "retired");
+  return upd;
+}
+
+async function sessionRetire(actor, p) {
+  const all = ledger.hiredList(false);
+  const h = hireLib.findHired({ slug: p.slug, session_id: p.session_id, ref: p.ref, name: p.name }, all, agentRefs);
+  if (actor === "moni-ai") {
+    const why = hireLib.retireRefusal(h);
+    if (why) throw new Error(why);
+    // Never ends it: a consent card for the administrator.
+    const secs = cfg.retire_consent_s;
+    const row = ledger.addApproval({
+      request_id: `retire:${h.slug}:${Date.now()}`,
+      tool: "SessionRetire",
+      input_json: JSON.stringify({ session: h.name, slug: h.slug, session_id: h.session_id, cwd: h.cwd, purpose: h.purpose, why: p.note || null }),
+      summary: clip(`Retire the session "${h.name}" (hired ${h.hired_at.slice(0, 16).replace("T", " ")} by ${h.hired_by === "moni-ai" ? "MINT AI" : h.hired_by}: ${h.purpose})`, 4000),
+      category: "retire",
+      label: "Retire a session",
+      reason: clip(`MINT AI asks to retire this hired session${p.note ? ": " + p.note : ""}. Nothing ends unless you approve; its transcript is kept.`, 2000),
+      expires_at: new Date(Date.now() + secs * 1000).toISOString(),
+      origin: "moni-ai",
+      origin_name: "MINT AI",
+    });
+    const timer = setTimeout(() => {
+      const a = approvals.get(row.id);
+      if (!a) return;
+      approvals.delete(row.id);
+      const cur = ledger.get("hired_sessions", h.id);
+      if (cur && cur.status === "retiring") emitHired(ledger.updateHired(h.id, { status: "hired" }), "retire-expired");
+      emit("approval", { approval: publicApproval(ledger.updateApproval(row.id, { status: "expired", decided_at: now(), decided_by: "timeout" })) });
+    }, secs * 1000);
+    if (timer.unref) timer.unref();
+    approvals.set(row.id, {
+      kind: "retire",
+      requestId: row.request_id,
+      input: {},
+      tool: "SessionRetire",
+      timer,
+      reply: (resp, by) => {
+        const cur = ledger.get("hired_sessions", h.id);
+        if (!cur || cur.status === "retired") return;
+        if (resp.behavior === "allow") doRetire(cur, by || "administrator").catch((e) => warn("retire:", e.message));
+        else emitHired(ledger.updateHired(h.id, { status: "hired" }), "retire-denied");
+      },
+    });
+    ledger.updateHired(h.id, { status: "retiring", retire_asked_at: now(), retire_approval_id: row.id });
+    emitHired(ledger.get("hired_sessions", h.id), "retire-asked");
+    emit("approval", { approval: publicApproval(ledger.get("approvals", row.id)) });
+    return { status: "consent", approval_id: row.id, note: `Nothing has ended: the administrator must approve retiring "${h.name}" in the Command Center. Tell them it waits for their consent.` };
+  }
+  if (!isHuman(actor)) throw new Error("only MINT AI (asking for consent) or the administrator can retire a session");
+  if (!h) throw new Error("that is not a session hired through MINT AI (the administrator's own sessions are not retired from here)");
+  if (h.kept) throw new Error(`"${h.name}" is kept: unkeep it first`);
+  // The administrator's own consent was given in the Command Center's dialog (Keep / Retire).
+  if (h.status === "retiring" && h.retire_approval_id) {
+    const a = approvals.get(h.retire_approval_id);
+    if (a) {
+      clearTimeout(a.timer);
+      approvals.delete(h.retire_approval_id);
+      emit("approval", { approval: publicApproval(ledger.updateApproval(h.retire_approval_id, { status: "approved", decided_at: now(), decided_by: actor, note: "retired from the session's menu" })) });
+    }
+  }
+  return { retired: publicHired(await doRetire(h, actor)) };
+}
+
+function sessionKeep(actor, p) {
+  if (!isHuman(actor)) throw new Error("only the administrator can keep or unkeep a session");
+  const h = hireLib.findHired({ slug: p.slug, session_id: p.session_id }, ledger.hiredList(false));
+  if (!h) throw new Error("that is not a session hired through MINT AI");
+  const upd = ledger.updateHired(h.id, { kept: p.kept ? 1 : 0 });
+  log(`keep: "${h.name}" ${p.kept ? "kept" : "no longer kept"} by ${actor}`);
+  emitHired(upd, p.kept ? "kept" : "unkept");
+  return { hired: publicHired(upd) };
+}
+
+/** A hired session's permission question (bin/mint-session): a card attributed to it; answered on this connection. */
+function sessionApproval(actor, p) {
+  const h = ledger.hiredList(false).find((x) => x.slug === p.slug);
+  if (!h || actor !== "session." + p.slug) throw new Error("not a hired session's own question");
+  let input = {};
+  try {
+    input = JSON.parse(p.input || "{}");
+  } catch (_) {
+    input = { raw: String(p.input || "").slice(0, 2000) };
+  }
+  const tool = p.tool;
+  const gate = classifier.gateDecision(tool, input, cfg) || {};
+  const summary = tool === "SendMessage" ? `SendMessage to ${peers.bareName(input.to)}: ${input.message || ""}` : typeof input.command === "string" ? input.command : JSON.stringify(input);
+  const key = `${p.slug}:${p.request_id}`;
+  const row = ledger.addApproval({
+    request_id: key,
+    tool_use_id: p.tool_use_id || null,
+    tool,
+    input_json: clip(JSON.stringify(redactDeep(input)), 16000),
+    summary: clip(redact(summary), 4000),
+    category: gate.category || null,
+    label: gate.label || "Needs permission",
+    reason: p.reason || gate.reason || null,
+    expires_at: new Date(Date.now() + cfg.approval_timeout_s * 1000).toISOString(),
+    origin: "session:" + p.slug,
+    origin_name: h.name,
+  });
+  log(`approval #${row.id} raised by hired session "${h.name}": ${tool} ${clip(summary, 120)}`);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      if (!approvals.has(row.id)) return;
+      approvals.delete(row.id);
+      requestToApproval.delete(key);
+      emit("approval", { approval: publicApproval(ledger.updateApproval(row.id, { status: "expired", decided_at: now(), decided_by: "timeout" })) });
+      resolve({ behavior: "deny", message: "Nobody answered the approval request in time, so it was denied." });
+    }, cfg.approval_timeout_s * 1000);
+    approvals.set(row.id, { kind: "session", slug: p.slug, requestId: key, input, tool, timer, reply: (resp) => resolve(resp) });
+    requestToApproval.set(key, row.id);
+    emit("approval", { approval: publicApproval(ledger.get("approvals", row.id)) });
+  });
+}
+function sessionApprovalCancel(actor, p) {
+  if (actor !== "session." + p.slug) throw new Error("not a hired session's own question");
+  const key = `${p.slug}:${p.request_id}`;
+  const aid = requestToApproval.get(key);
+  if (!aid) return { cancelled: false };
+  const a = approvals.get(aid);
+  if (a) clearTimeout(a.timer);
+  approvals.delete(aid);
+  requestToApproval.delete(key);
+  emit("approval", { approval: publicApproval(ledger.updateApproval(aid, { status: "cancelled", decided_at: now(), note: "withdrawn by the hired session" })) });
+  return { cancelled: true };
 }
 
 /* ------------------------------------------------------------ delegations --- */
@@ -1567,7 +1797,7 @@ function refreshSessions(then) {
         // the mission tint and cost change without the session changing
         JSON.stringify(features.sessionExtras(s)),
       ])
-    );
+    ) + JSON.stringify(ledger.hiredList(false).map((h) => [h.session_id, h.status, h.kept])); // a keep / retire changes the view
     if (sig !== lastSessionsSig) {
       lastSessionsSig = sig;
       emit("sessions", { sessions: sessionsWithLedger() });
@@ -1605,6 +1835,7 @@ function advanceDelegations(list) {
 }
 
 function sessionsWithLedger() {
+  const hiredBySession = new Map(ledger.hiredList(false).map((h) => [h.session_id, h]));
   return (sessionsCache.list || []).map((s) => {
     // By session id first (a restart -- a new pid -- keeps them), then pid, then the name for rows that pinned neither.
     const MATCH = "(target_session = @sid OR (target_session IS NULL AND (target_pid = @pid OR (target_pid IS NULL AND target_name = @name))))";
@@ -1612,8 +1843,12 @@ function sessionsWithLedger() {
     const last = ledger.prep(`SELECT * FROM delegations WHERE ${MATCH} ORDER BY id DESC LIMIT 1`).get(args);
     const open = ledger.prep(`SELECT count(*) AS n FROM delegations WHERE status IN ('sent','working','ack','held') AND ${MATCH}`).get(args).n;
     const today = ledger.prep(`SELECT count(*) AS n FROM delegations WHERE created_at >= @since AND ${MATCH}`).get({ ...args, since: new Date(Date.now() - 24 * 3600 * 1000).toISOString() }).n;
+    const hd = s.session_id ? hiredBySession.get(s.session_id) : null;
     return {
       ...s,
+      // Hired through MINT AI (M-6): no ring and a "hired" tag unless the administrator keeps it.
+      hired: !!(hd && !hd.kept),
+      hire: hd ? publicHired(hd) : null,
       open_delegations: open,
       delegations_today: today,
       last_delegation: last ? publicDelegation(last) : null,
@@ -1856,6 +2091,18 @@ async function handle(req, sock) {
       return await freshStart(req.actor, p);
     case "ui-action":
       return await uiAction(req.actor, p);
+    case "session-hire":
+      return await sessionHire(req.actor, p);
+    case "session-retire":
+      return await sessionRetire(req.actor, p);
+    case "session-keep":
+      return sessionKeep(req.actor, p);
+    case "hired":
+      return { hired: ledger.hiredList(!!p.all).map(publicHired) };
+    case "session-approval":
+      return await sessionApproval(req.actor, p);
+    case "session-approval-cancel":
+      return sessionApprovalCancel(req.actor, p);
     case "ui-ack": {
       const w = uiWaiting.get(p.nonce);
       if (!w) throw new Error("no such screen action is waiting (or it was answered already)");

@@ -25,7 +25,7 @@ say() { printf '\n\033[1;36m==>\033[0m %s\n' "$*"; }
 [[ -f "$SRC/supervisor.js" ]] || { echo "no moni-ai/ in $REPO_DIR" >&2; exit 1; }
 
 say "Checking syntax"
-for f in "$SRC"/supervisor.js "$SRC"/lib/*.js "$SRC"/hooks/*.js "$SRC"/bin/moni-ai-ctl "$SRC"/bin/moni-ai-mcp; do
+for f in "$SRC"/supervisor.js "$SRC"/lib/*.js "$SRC"/hooks/*.js "$SRC"/bin/moni-ai-ctl "$SRC"/bin/moni-ai-mcp "$SRC"/bin/mint-session; do
   node --check "$f"
 done
 
@@ -38,7 +38,7 @@ id -u moniadmin >/dev/null 2>&1 && usermod -aG moniai moniadmin
 say "Installing the supervisor to $TARGET"
 install -d -m 0755 "$TARGET" "$TARGET/cli"
 rsync -a --delete --exclude cli --exclude home --exclude deploy "$SRC/" "$TARGET/"
-chmod 0755 "$TARGET/hooks/"*.js "$TARGET/bin/moni-ai-ctl" "$TARGET/bin/moni-ai-mcp"
+chmod 0755 "$TARGET/hooks/"*.js "$TARGET/bin/moni-ai-ctl" "$TARGET/bin/moni-ai-mcp" "$TARGET/bin/mint-session"
 ln -sf "$TARGET/bin/moni-ai-ctl" /usr/local/bin/moni-ai-ctl
 
 say "Configuration"
@@ -73,6 +73,8 @@ install -m 0644 "$SRC/home/.claude/settings.json" "$HOME_DIR/.claude/settings.js
 
 say "systemd unit"
 install -m 0644 "$SRC/deploy/moni-ai.service" /etc/systemd/system/moni-ai.service
+# Hired sessions (M-6): one template unit, instantiated per hire by the supervisor (mint-session@<slug>).
+install -m 0644 "$SRC/deploy/mint-session@.service" /etc/systemd/system/mint-session@.service
 systemctl daemon-reload
 systemctl enable moni-ai >/dev/null 2>&1
 

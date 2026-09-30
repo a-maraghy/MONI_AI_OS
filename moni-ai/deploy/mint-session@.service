@@ -1,0 +1,31 @@
+[Unit]
+Description=MINT AI hired session %i
+Documentation=file:/opt/moni-ai/bin/mint-session
+# Hired by MINT AI (or the administrator) through the supervisor's session-hire op (M-6).
+# Independent of moni-ai.service: it outlives MINT AI's and the dashboard's restarts. Only a
+# retire the administrator consented to stops it (systemctl disable --now mint-session@<slug>).
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Root, HOME=/root, the default Claude config dir: the session registry every other
+# session on this box uses, so ListAgents lists it and SendMessage reaches it.
+User=root
+Group=root
+WorkingDirectory=/root
+Environment=HOME=/root
+Environment=NODE_NO_WARNINGS=1
+ExecStart=/usr/bin/node --disable-warning=ExperimentalWarning /opt/moni-ai/bin/mint-session %i
+# SIGTERM to the runner alone: it closes claude's stdin so the transcript is written, then exits 0.
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=40
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mint-session-%i
+
+[Install]
+WantedBy=multi-user.target

@@ -176,5 +176,19 @@ const KEEP = [
 ];
 KEEP.forEach(([name, ok]) => check("kept: " + name, !!ok));
 
+// Hired sessions (M-6): MINT AI's retire question is the Keep / Retire consent; a hired session's own
+// question says who asks and never offers "Always allow"; the routes are the administrator's, CSRF'd.
+{
+  const r = L.card({ type: "approval", id: 7, item: { id: 7, tool: "SessionRetire", status: "pending", input: { session: "Demo Worker", slug: "demo-worker" }, origin: "moni-ai", origin_name: "MINT AI" } });
+  check("a retire question: kind Retire, \"Retire the session Demo Worker\", Retire (approve) / Keep (deny), no Always allow",
+    r.kind === "Retire" && r.title === "Retire the session Demo Worker" && r.actions[0].label === "Retire" && /approve$/.test(r.actions[0].path) && r.actions[1].label === "Keep" && /deny$/.test(r.actions[1].path) && !r.actions.some((a) => a.act === "always"));
+  const h = L.card({ type: "approval", id: 8, item: { id: 8, tool: "Bash", status: "pending", input: { command: "rm -rf /tmp/demo" }, origin: "session:demo-worker", origin_name: "Demo Worker" } });
+  check("a hired session's question: says it is from Demo Worker (hired), Approve / Deny, no Always allow", /^From Demo Worker \(hired\)/.test(h.meta) && h.actions.map((a) => a.act).join() === "approve,deny,later", JSON.stringify(h));
+  const m = L.card({ type: "approval", id: 9, item: { id: 9, tool: "Bash", status: "pending", input: { command: "rm -rf /tmp/demo" } } });
+  check("MINT AI's own question still offers Always allow", m.actions.some((a) => a.act === "always") && L.approvalFrom({}) === "MINT AI");
+  check("routes: keep and retire a hired session (moniai.use + CSRF)", /app\.post\("\/mint-ai\/api\/sessions\/:slug\/keep", \.\.\.moniAiWrite/.test(server) && /app\.post\("\/mint-ai\/api\/sessions\/:slug\/retire", \.\.\.moniAiWrite/.test(server));
+  check("the page: a sphere's menu, the Keep / Retire dialog, keep toggle", /function sessMenu\(key, x, y\)/.test(main) && /function retireDialog\(s\)/.test(main) && /function hireKeep\(s, kept\)/.test(main) && /onMenu: function \(id, x, y\)/.test(map));
+}
+
 console.log(`\n${passes} passed, ${failures} failed`);
 process.exit(failures ? 1 : 0);

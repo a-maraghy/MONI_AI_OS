@@ -354,6 +354,7 @@
     onClick: function (key) { openSheet("sessions"); highlightSess(key); },
     // A sphere: its conversation (the existing deep view), or the sessions sheet if that is not there.
     onOpen: function (key) { if (P && P.openDeep && findSess(key)) P.openDeep(key); else { openSheet("sessions"); highlightSess(key); } },
+    onMenu: function (key, x, y) { sessMenu(key, x, y); },
   });
   window.__mintCC = { core: Orb.core, orbit: Orb, S: S, renderSessions: function (f) { renderSessions(f); } };
 
@@ -627,6 +628,7 @@
       // Size: what it did today (delegations, cost), never less than a little.
       act: 1 + dels * 3 + Math.min(20, (+s.cost_today_usd_est || 0) * 4) + (st === "working" ? 2 : 0),
       hired: s.hired === true,
+      slug: s.hire && s.hire.slug ? s.hire.slug : null, // hired through MINT AI (kept or not): its menu has Keep / Retire
     };
   }
   // A sphere's id: the session id first (it survives a restart), then the pid.
@@ -702,6 +704,7 @@
     others.forEach(function (s) {
       var st = sessState(s), key = sessKey(s), name = s.name || "unnamed session";
       var tag = st === "working" ? '<span class="cc-tag ok">working</span>' : st === "waiting" ? '<span class="cc-tag warn">waiting' + (s.waiting_for ? " on " + esc(clip(s.waiting_for, 24)) : "") + "</span>" : '<span class="cc-tag mute">idle</span>';
+      if (s.hire) tag = '<span class="cc-tag ' + (s.hire.kept ? "ok" : "mute") + '" data-hire-tag>' + (s.hire.kept ? "kept" : "hired") + "</span>" + tag;
       if (s.mission) tag = '<span class="cc-tag ai">' + ic("flag") + esc(s.mission.ref || "mission") + (s.mission.step_n ? " · step " + esc(s.mission.step_n) : "") + "</span>" + tag;
       var subs = s.subagents || [];
       h += '<div class="cc-card cc-sc ' + st + (S.target === s.name ? " target" : "") + '" data-sess="' + esc(key) + '" title="' + esc(name + " · " + (s.cwd || "") + " · pid " + (s.pid || "?")) + '">' +
@@ -709,7 +712,9 @@
         '<div class="m">' + sessLine(s) + " · " + esc(sessWhere(s)) + "</div>" +
         (subs.length ? '<div class="cc-subagents">' + subs.map(function (a) { return "<div><i></i><b>" + esc(a.type || "agent") + "</b> " + esc(clip(a.description || "", 80)) + "</div>"; }).join("") + "</div>" : "") +
         '<div class="acts"><button type="button" class="cc-btn sm" data-deep-open="' + esc(key) + '">' + ic("eye") + "Deep view</button>" +
-        (s.name ? '<button type="button" class="cc-btn sm" data-at="' + esc(s.name) + '">' + ic("message") + "Message via MINT AI</button>" : "") + "</div></div>";
+        (s.name ? '<button type="button" class="cc-btn sm" data-at="' + esc(s.name) + '">' + ic("message") + "Message via MINT AI</button>" : "") +
+        (s.hire ? '<button type="button" class="cc-btn sm" data-hire-keep="' + esc(key) + '" aria-pressed="' + (s.hire.kept ? "true" : "false") + '">' + (s.hire.kept ? "Stop keeping" : "Keep") + "</button>" +
+          '<button type="button" class="cc-btn sm" data-hire-retire="' + esc(key) + '"' + (s.hire.kept ? ' disabled title="Kept: stop keeping it first"' : "") + ">Retire…</button>" : "") + "</div></div>";
     });
     el.innerHTML = h;
   }
@@ -728,8 +733,105 @@
     var d = e.target.closest("[data-deep-open]");
     if (d) { P.openDeep(d.getAttribute("data-deep-open")); return; }
     var at = e.target.closest("[data-at]");
-    if (at) { setTarget(at.getAttribute("data-at")); closeSheet(); input.focus(); }
+    if (at) { setTarget(at.getAttribute("data-at")); closeSheet(); input.focus(); return; }
+    var kb = e.target.closest("[data-hire-keep]");
+    if (kb) { var ks = findSess(kb.getAttribute("data-hire-keep")); if (ks && ks.hire) hireKeep(ks, !ks.hire.kept); return; }
+    var rb = e.target.closest("[data-hire-retire]");
+    if (rb && !rb.disabled) { var rs = findSess(rb.getAttribute("data-hire-retire")); if (rs && rs.hire) retireDialog(rs); }
   });
+
+  /* ---- hired sessions (M-6): the administrator keeps one, or retires it.
+     Right-click a sphere (or the context-menu key on its name) for its menu;
+     the sessions sheet has the same two buttons. Retire always goes through
+     the Keep / Retire consent dialog; the supervisor refuses a kept session,
+     and any session MINT AI did not hire. */
+  function closeSessMenu() {
+    var m = document.querySelector(".cc-smenu");
+    if (m) m.remove();
+    document.removeEventListener("pointerdown", sessMenuAway, true);
+  }
+  function sessMenuAway(e) { if (!e.target.closest || !e.target.closest(".cc-smenu")) closeSessMenu(); }
+  function sessMenu(key, x, y) {
+    closeSessMenu();
+    var s = findSess(key);
+    if (!s) return;
+    var m = document.createElement("div");
+    m.className = "cc-smenu";
+    m.setAttribute("role", "menu");
+    m.setAttribute("aria-label", (s.name || "session") + " menu");
+    var h = '<div class="h">' + esc(clip(s.name || "unnamed session", 32)) + (s.hire ? ' <span class="cc-ktag' + (s.hire.kept ? " kept" : "") + '">' + (s.hire.kept ? "Kept" : "Hired") + "</span>" : "") + "</div>" +
+      '<button type="button" role="menuitem" data-sm="open">' + ic("eye") + "Open the conversation</button>";
+    if (s.hire) {
+      h += '<button type="button" role="menuitem" data-sm="keep">' + ic("check") + (s.hire.kept ? "Stop keeping it" : "Keep it (never retired by MINT AI)") + "</button>" +
+        '<button type="button" role="menuitem" data-sm="retire" class="danger"' + (s.hire.kept ? ' aria-disabled="true"' : "") + ">" + ic("stop") + "Retire…</button>" +
+        (s.hire.kept ? "<small>Kept: stop keeping it before retiring it.</small>" : "<small>MINT AI hired it" + (s.hire.purpose ? ": " + esc(clip(s.hire.purpose, 90)) : "") + "</small>");
+    } else {
+      h += "<small>Your own session: never retired from here or by MINT AI.</small>";
+    }
+    m.innerHTML = h;
+    document.body.appendChild(m);
+    var w = m.offsetWidth, hh = m.offsetHeight;
+    m.style.left = Math.max(8, Math.min(x, window.innerWidth - w - 8)) + "px";
+    m.style.top = Math.max(8, Math.min(y, window.innerHeight - hh - 8)) + "px";
+    m.addEventListener("click", function (e) {
+      var b = e.target.closest("[data-sm]");
+      if (!b || b.getAttribute("aria-disabled") === "true") return;
+      var what = b.getAttribute("data-sm");
+      closeSessMenu();
+      if (what === "open") { if (P && P.openDeep) P.openDeep(key); else { openSheet("sessions"); highlightSess(key); } }
+      else if (what === "keep") hireKeep(s, !s.hire.kept);
+      else if (what === "retire") retireDialog(s);
+    });
+    m.addEventListener("keydown", function (e) {
+      var items = [].slice.call(m.querySelectorAll("[data-sm]")), i = items.indexOf(document.activeElement);
+      if (e.key === "Escape") { closeSessMenu(); return; }
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); items[(i + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length].focus(); }
+    });
+    setTimeout(function () { document.addEventListener("pointerdown", sessMenuAway, true); }, 0);
+    var first = m.querySelector("[data-sm]");
+    if (first) first.focus();
+  }
+  function hireKeep(s, kept) {
+    api("sessions/" + encodeURIComponent(s.hire.slug) + "/keep", { body: { kept: kept } }).then(function () {
+      s.hire.kept = kept; s.hired = !kept;
+      renderSessions(true);
+      toast(kept ? "Kept “" + s.name + "”: MINT AI can never retire it." : "“" + s.name + "” is no longer kept.");
+    }, function (e) { toast(e.message, true); });
+  }
+  function retireDialog(s) {
+    if (document.querySelector(".cc-sdlg-back")) return;
+    var back = document.createElement("div");
+    back.className = "cc-sdlg-back";
+    back.innerHTML = '<div class="cc-sdlg" role="alertdialog" aria-modal="true" aria-labelledby="cc-sdlg-t">' +
+      '<h3 id="cc-sdlg-t">Retire “' + esc(s.name) + '”?</h3>' +
+      "<p>It ends gracefully and its sphere dissolves; its transcript is kept.</p>" +
+      (s.hire && s.hire.purpose ? '<p class="purpose">MINT AI hired it: ' + esc(clip(s.hire.purpose, 200)) + "</p>" : "") +
+      '<div class="err" data-sdlg-err hidden></div>' +
+      '<div class="acts"><button type="button" class="cc-btn" data-sdlg="keep">Keep</button><button type="button" class="cc-btn danger" data-sdlg="retire">Retire</button></div></div>';
+    document.body.appendChild(back);
+    var prev = document.activeElement;
+    function close() { back.remove(); if (prev && prev.focus) prev.focus(); }
+    back.addEventListener("click", function (e) {
+      if (e.target === back) return close();
+      var b = e.target.closest("[data-sdlg]");
+      if (!b) return;
+      if (b.getAttribute("data-sdlg") === "keep") return close();
+      b.disabled = true;
+      api("sessions/" + encodeURIComponent(s.hire.slug) + "/retire", { body: {} }).then(function () {
+        close();
+        toast("Retired “" + s.name + "”. Its transcript is kept.");
+      }, function (err) {
+        b.disabled = false;
+        var el = back.querySelector("[data-sdlg-err]");
+        el.textContent = err.message; el.hidden = false;
+      });
+    });
+    back.addEventListener("keydown", function (e) {
+      if (e.key === "Escape") { e.stopPropagation(); close(); }
+      if (e.key === "Tab") { var bs = back.querySelectorAll("button"); if (e.shiftKey && document.activeElement === bs[0]) { e.preventDefault(); bs[bs.length - 1].focus(); } else if (!e.shiftKey && document.activeElement === bs[bs.length - 1]) { e.preventDefault(); bs[0].focus(); } }
+    });
+    back.querySelector('[data-sdlg="keep"]').focus();
+  }
 
   /** The Remote Control link, fetched when asked for and never kept on the page. */
   function openRemoteControl() {
@@ -1046,11 +1148,14 @@
 
   function approvalTarget(a) {
     var inp = a.input || {};
+    if (a.tool === "SessionRetire") return "the hired session " + String(inp.session || inp.name || "?") + " · its transcript is kept";
+    if (/^session:/.test(String(a.origin || ""))) return (a.tool === "SendMessage" ? String(inp.to || "").replace(/\s*\[[0-9a-f]+\]$/, "") + " · peer message from " : "this machine · as root, for the hired session ") + ML.approvalFrom(a);
     if (a.tool === "SendMessage") return String(inp.to || "").replace(/\s*\[[0-9a-f]+\]$/, "") + " · peer message";
     return "this machine · MINT AI runs it as root";
   }
   function approvalCmd(a) {
     var inp = a.input || {};
+    if (a.tool === "SessionRetire") return { text: a.summary || "Retire a hired session", shell: false };
     if (a.tool === "SendMessage") return { text: String(inp.message || a.summary || ""), shell: false };
     if (typeof inp.command === "string") return { text: inp.command, shell: true };
     return { text: a.summary || a.tool, shell: false };
@@ -1070,7 +1175,8 @@
     var cmd = approvalCmd(a);
     var byRule = /^rule:/.test(String(a.decided_by || ""));
     var head = res === "ok" ? (byRule ? "Auto-approved" : "Approved") : a.status === "denied" ? "Denied" : a.status === "expired" ? "Expired" : a.status === "cancelled" ? "Withdrawn" : "Approval needed";
-    var what = a.tool === "SendMessage" ? "send this to <b>" + esc(String((a.input || {}).to || "a session").replace(/\s*\[[0-9a-f]+\]$/, "")) + "</b>" : a.tool === "Bash" || a.tool === "Monitor" ? "run this command" : "use <b>" + esc(a.tool) + "</b>";
+    var who = esc(ML.approvalFrom(a)) + (/^session:/.test(String(a.origin || "")) ? " (a session MINT AI hired)" : "");
+    var what = a.tool === "SessionRetire" ? "retire the session <b>" + esc(String((a.input || {}).session || (a.input || {}).name || "?")) + "</b>" : a.tool === "SendMessage" ? "send this to <b>" + esc(String((a.input || {}).to || "a session").replace(/\s*\[[0-9a-f]+\]$/, "")) + "</b>" : a.tool === "Bash" || a.tool === "Monitor" ? "run this command" : "use <b>" + esc(a.tool) + "</b>";
     var resText = a.status === "approved" ? (byRule ? "Approved automatically by " + esc(decidedBy(a)) : "Approved by " + esc(decidedBy(a))) + " · " + esc(hm(a.decided_at))
       : a.status === "denied" ? "Denied by " + esc(decidedBy(a)) + " · " + esc(hm(a.decided_at)) + " — nothing ran"
       : a.status === "expired" ? "Nobody answered in time — denied by default at " + esc(hm(a.decided_at))
@@ -1080,15 +1186,15 @@
       '<div class="cc-ap-h">' + ic("shield") + "<span>" + head + '</span><span class="risk">destructive</span>' +
       (a.mission_ref ? '<span class="cc-badge b-mis">' + esc(a.mission_ref) + (a.step_n ? " · step " + esc(a.step_n) : "") + "</span>" : "") +
       (a.status === "pending" ? '<span class="timer" data-timer title="Nobody answering means denied">—</span><span class="cc-ap-bar" data-bar></span>' : "") + "</div>" +
-      '<div class="cc-ap-body"><p>' + (a.status === "pending" ? "MINT AI wants to " + what + ". Nothing runs until you choose." : "MINT AI asked to " + what + ".") + "</p>" +
+      '<div class="cc-ap-body"><p>' + (a.status === "pending" ? who + " wants to " + what + ". Nothing " + (a.tool === "SessionRetire" ? "ends" : "runs") + " until you choose." : who + " asked to " + what + ".") + "</p>" +
       '<div class="cc-ap-cmd' + (cmd.shell ? " shell" : "") + '">' + esc(clip(cmd.text, 2000)) + "</div>" +
       '<dl class="cc-ap-dl"><dt>target</dt><dd>' + esc(approvalTarget(a)) + "</dd>" +
       "<dt>effect</dt><dd>" + esc(a.category ? a.category.replace(/_/g, " ") + (a.label && a.label !== a.category ? " — " + a.label : "") : a.label || "a step the gate treats as destructive") + "</dd>" +
       (a.reason ? "<dt>reason</dt><dd>" + esc(clip(a.reason, 400)) + "</dd>" : "") + "</dl>" +
-      '<div class="cc-ap-act"><button type="button" class="cc-btn pri sm" data-approve="' + a.id + '">' + ic("check") + 'Approve once</button>' +
-      '<button type="button" class="cc-btn sm" data-always="' + a.id + '">' + ic("scale") + "Always allow this</button>" +
-      '<button type="button" class="cc-btn sm" data-deny="' + a.id + '">' + ic("close") + "Deny</button></div>" +
-      (a.status === "pending" && sug && sug.pattern ? '<div class="cc-ap-hint">“Always allow this” would add an allow rule for <code>' + esc(clip(sug.pattern, 160)) + "</code> — you see it before it is saved.</div>" : "") +
+      '<div class="cc-ap-act"><button type="button" class="cc-btn pri sm" data-approve="' + a.id + '">' + ic("check") + (a.tool === "SessionRetire" ? "Retire" : "Approve once") + "</button>" +
+      (ML.approvalNoRule(a) ? "" : '<button type="button" class="cc-btn sm" data-always="' + a.id + '">' + ic("scale") + "Always allow this</button>") +
+      '<button type="button" class="cc-btn sm" data-deny="' + a.id + '">' + ic("close") + (a.tool === "SessionRetire" ? "Keep" : "Deny") + "</button></div>" +
+      (a.status === "pending" && sug && sug.pattern && !ML.approvalNoRule(a) ? '<div class="cc-ap-hint">“Always allow this” would add an allow rule for <code>' + esc(clip(sug.pattern, 160)) + "</code> — you see it before it is saved.</div>" : "") +
       '<div class="cc-ap-res">' + (res === "ok" ? ic("check") : ic("close")) + "<span>" + resText + "</span></div>" +
       '<div class="cc-ap-err" data-err hidden></div></div></div>';
   }

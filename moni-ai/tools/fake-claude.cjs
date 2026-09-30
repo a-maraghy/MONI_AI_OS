@@ -63,6 +63,33 @@ fs.appendFileSync(path.join(home, "fake-argv.log"), JSON.stringify(args) + "\n")
 fs.mkdirSync(path.join(home, ".claude", "projects", "-fake"), { recursive: true });
 fs.writeFileSync(path.join(home, ".claude", "projects", "-fake", sessionId + ".jsonl"), "{}\n");
 
+// A hired session's fake (FAKE_AGENTS_REGISTER, passed on by bin/mint-session in the tests): it shows up in
+// `agents --json` (HOME/fake-agents.json) under its -n name while it runs, like a real session in root's registry.
+if (process.env.FAKE_AGENTS_REGISTER && flag("-n")) {
+  const file = path.join(home, "fake-agents.json");
+  const edit = (fn) => {
+    let list = [];
+    try {
+      list = JSON.parse(fs.readFileSync(file, "utf8"));
+    } catch (_) {
+      list = [];
+    }
+    list = fn(list);
+    fs.writeFileSync(file + "." + process.pid, JSON.stringify(list));
+    fs.renameSync(file + "." + process.pid, file);
+  };
+  edit((l) => l.filter((a) => a.sessionId !== sessionId).concat([{ pid: process.pid, sessionId, name: flag("-n"), cwd: process.cwd(), kind: "interactive", status: "idle", startedAt: Date.now() }]));
+  const leave = () => {
+    try {
+      edit((l) => l.filter((a) => a.pid !== process.pid));
+    } catch (_) {
+      /* gone */
+    }
+  };
+  process.on("exit", leave);
+  process.stdin.on("end", () => setTimeout(() => process.exit(0), 50));
+}
+
 const out = (o) => process.stdout.write(JSON.stringify(o) + "\n");
 const waiting = new Map(); // request_id -> resolve
 let busy = Promise.resolve();

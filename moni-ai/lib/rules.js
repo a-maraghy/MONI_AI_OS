@@ -159,8 +159,18 @@ function segments(cmd) {
   }
 }
 
-function ruleApplies(rule, kind) {
-  if (rule.scope_session && rule.scope_session !== "moni-ai") return false;
+/**
+ * Does a stored rule apply to this gate? MINT AI's gate (session "moni-ai") uses
+ * its own rules. A hired session's gate (session "hired.<slug>", M-6) uses the
+ * rules scoped to it, and of MINT AI's only the deny and ask ones -- never an
+ * "Always allow" MINT AI was given: a hired session inherits no approvals.
+ */
+function ruleApplies(rule, kind, session) {
+  const me = session || "moni-ai";
+  const scope = rule.scope_session || "moni-ai";
+  if (me === "moni-ai") {
+    if (scope !== "moni-ai") return false;
+  } else if (scope !== me && !(scope === "moni-ai" && rule.effect !== "allow")) return false;
   if (rule.scope_machine && rule.scope_machine !== "this") return false;
   return rule.tool === "any" || rule.tool === kind;
 }
@@ -186,7 +196,7 @@ function userMatch(rule, subject) {
  *   cfg:   the supervisor config (delegation_allow)
  * Returns { decision: allow|ask|deny|none, source, rule, builtin, classifier, explain }.
  */
-function evaluate(tool, input, rules, cfg = {}) {
+function evaluate(tool, input, rules, cfg = {}, opts = {}) {
   const subject = subjectOf(tool, input);
   const gate = classifier.gateDecision(tool, input, cfg);
   const cls = gate ? { destructive: gate.decision === "ask", decision: gate.decision, category: gate.category, label: gate.label, reason: gate.reason } : null;
@@ -204,7 +214,7 @@ function evaluate(tool, input, rules, cfg = {}) {
     return gate ? out(gate.decision, "classifier", { explain: gate.label + ": " + gate.reason }) : out("none", "none", { explain: "No rule applies to this tool." });
   }
 
-  const mine = (rules || []).filter((r) => r && !r.builtin && EFFECTS.includes(r.effect) && ruleApplies(r, subject.kind));
+  const mine = (rules || []).filter((r) => r && !r.builtin && EFFECTS.includes(r.effect) && ruleApplies(r, subject.kind, opts.session));
   const denies = mine.filter((r) => r.effect === "deny" && userMatch(r, subject));
   if (denies.length) {
     const r = denies.sort((a, b) => specificity(b.pattern) - specificity(a.pattern))[0];

@@ -146,11 +146,17 @@ check("applyBars: widths, --v and left from data attributes, clamped", (() => {
   const b = {
     hm: () => "12:00",
     ic: (n) => `<svg data-i="${n}"></svg>`,
+    ML: require(path.join(__dirname, "..", "public", "cc-logic.js")),
   };
   vm.runInNewContext(["esc", "clip", "approvalTarget", "approvalCmd", "decidedBy", "approvalHTML"].map((n) => cut(main, n)).join("\n"), b);
   const a = { id: 7, tool: "Bash", status: "pending", input: { command: `rm -rf /tmp/"x"<b>` }, category: "delete", label: "Deletes files", reason: EVIL,
     rule_suggestion: { tool: "Bash", pattern: "rm -rf /tmp/<p>" }, mission_ref: "M-7", step_n: 3, expires_at: "2026-09-28T12:10:00Z", created_at: "2026-09-28T12:00:00Z" };
   const h = b.approvalHTML(a);
+  // M-6: a hired session's question names it and has no "Always allow"; MINT AI's retire question is Retire / Keep.
+  const hs = b.approvalHTML({ ...a, id: 8, origin: "session:demo-worker", origin_name: "Demo Worker" });
+  check("a hired session's card: from Demo Worker, Approve once / Deny, no Always allow", /Demo Worker \(a session MINT AI hired\) wants to/.test(hs) && !/data-always=/.test(hs) && /data-deny="8"/.test(hs));
+  const rt = b.approvalHTML({ id: 9, tool: "SessionRetire", status: "pending", input: { session: "Demo Worker" }, summary: "Retire the session", origin: "moni-ai", origin_name: "MINT AI", rule_suggestion: { tool: "Bash", pattern: "x" } });
+  check("MINT AI's retire card: retire the session Demo Worker, Retire / Keep, no Always allow", /MINT AI wants to retire the session <b>Demo Worker<\/b>\. Nothing ends/.test(rt) && /data-approve="9"[^>]*>[\s\S]*?Retire</.test(rt) && /data-deny="9"[^>]*>[\s\S]*?Keep</.test(rt) && !/data-always=/.test(rt));
   check("approval card: Approve once, Always allow this, Deny", /data-approve="7"[^>]*>[\s\S]*Approve once/.test(h) && /data-always="7"[\s\S]*Always allow this/.test(h) && /data-deny="7"/.test(h));
   check("approval card: command, reason and suggested pattern are escaped", !h.includes('"x"<b>') && !h.includes(EVIL) && !h.includes("/tmp/<p>") && h.includes("rm -rf /tmp/&lt;p&gt;"));
   check("approval card: names its mission step", /M-7 · step 3/.test(h));
