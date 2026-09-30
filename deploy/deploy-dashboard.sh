@@ -18,6 +18,24 @@ say() { printf '\n\033[1;36m==>\033[0m %s\n' "$*"; }
 [[ $EUID -eq 0 ]] || { echo "run this with sudo" >&2; exit 1; }
 [[ -d "$SRC" ]] || { echo "no dashboard/ in $REPO_DIR" >&2; exit 1; }
 
+# Live calls (dashboard/server.js keeps the count in live-calls.json): a restart of
+# the dashboard ends them (the pages are told and reconnect by themselves), and a
+# restart of moni-ai drops the requests MINT AI is working on. Say so before
+# anything changes; MONI_DEPLOY_NOWAIT=1 skips the pause.
+LIVE_STATUS=/var/lib/moni-dashboard/live-calls.json
+if [[ -f "$LIVE_STATUS" ]]; then
+  LIVE_N=$(node -e 'try{const s=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));process.stdout.write(String(Number(s.count)||0))}catch(e){process.stdout.write("0")}' "$LIVE_STATUS" 2>/dev/null || echo 0)
+  if [[ "${LIVE_N:-0}" -gt 0 ]]; then
+    printf '\n\033[1;33m!!\033[0m %s live call(s) open right now:\n' "$LIVE_N" >&2
+    node -e 'const s=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"));for(const c of s.calls||[])console.error("   "+c.call+"  "+c.actor+"  since "+c.since+"  ("+c.state+")")' "$LIVE_STATUS" 2>/dev/null || true
+    echo "   Restarting the dashboard ends them; each page is told and reconnects by itself, with backoff." >&2
+    if [[ "${MONI_DEPLOY_NOWAIT:-0}" != "1" ]]; then
+      echo "   Continuing in 10 s -- Ctrl-C to stop (MONI_DEPLOY_NOWAIT=1 skips this pause)." >&2
+      sleep 10
+    fi
+  fi
+fi
+
 # The tree being replaced, kept so a bad deploy is one tar command from undone.
 if [[ -d "$TARGET" ]]; then
   BACKUP_DIR=/root/backups
@@ -32,6 +50,10 @@ mkdir -p "$TARGET"
 rsync -a --delete \
   --exclude node_modules --exclude .git --exclude 'deploy' \
   "$SRC/" "$TARGET/"
+
+# What is deployed, for MINT AI and anyone checking: the commit and when (read at start).
+COMMIT=$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || true)
+{ [[ -n "$COMMIT" ]] && echo "commit=$COMMIT"; echo "deployed_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"; [[ -n "$(git -C "$REPO_DIR" status --porcelain 2>/dev/null)" ]] && echo "dirty=1"; } > "$TARGET/DEPLOYED" || true
 
 say "Installing dependencies if package.json changed"
 if [[ ! -d "$TARGET/node_modules" ]] || \
