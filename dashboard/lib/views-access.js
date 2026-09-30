@@ -13,10 +13,29 @@
 const { esc, shell, card, flashes, icon, stamp, ago, empty, enrolSteps } = require("./ui");
 const rbac = require("./rbac");
 
+/**
+ * A role as a pill: the administrator solid, every other role neutral. (The
+ * old "brand" pill picked up the top bar's logo rule and broke its shape.)
+ */
 const roleBadge = (role) =>
   role
-    ? `<span class="pill ${role.builtin ? "brand" : "neutral"}">${esc(role.label)}</span>`
+    ? `<span class="pill ${role.permissions && role.permissions.includes("*") ? "solid" : "neutral"}">${esc(role.label)}</span>`
     : `<span class="pill bad">no role</span>`;
+
+/** "all permissions", "9 permissions". */
+function permsText(role) {
+  const n = permCount(role);
+  return n === "all" ? "all permissions" : n + " permission" + (n === "1" ? "" : "s");
+}
+
+/** A modal's frame (.cc-modal, opened by app.js MintUI from [data-modal-open]). */
+function modal(id, title, sub, ic, body, foot, size) {
+  return `<section class="cc-modal os ${size || "narrow"}" id="${esc(id)}" role="dialog" aria-modal="true" aria-labelledby="${esc(id)}-t" hidden>
+    <div class="cc-mh">${icon(ic, 18)}<div class="cc-min0"><h2 id="${esc(id)}-t">${esc(title)}</h2>${sub ? `<small>${esc(sub)}</small>` : ""}</div>
+      <span class="cc-sp"><button type="button" class="cc-ibtn" data-modal-close aria-label="Close">${icon("close", 16)}</button></span></div>
+    ${body}
+    <div class="mf">${foot}</div></section>`;
+}
 
 /** A permission count that reads honestly for the wildcard administrator. */
 function permCount(role) {
@@ -27,8 +46,90 @@ function permCount(role) {
 
 /* ---------------------------------------------------------------- users --- */
 
-exports.users = ({ csrf, user, users, roles, missingEmail = 0, flash, err }) =>
-  shell(
+/**
+ * Users: one row a person, every cell's first line on one 22px line, stacked
+ * into label/value cards on a phone. Manage and Add user open dialogs (the
+ * full pages /users/:id and /users/new stay for no-JS and for password reset).
+ *
+ * @param o { csrf, user, users, roles, missingEmail, flash, err, meId, canManage,
+ *            sessionsOf? (userId -> number of signed-in browsers) }
+ */
+exports.users = ({ csrf, user, users, roles, missingEmail = 0, flash, err, meId, canManage, sessionsOf }) => {
+  const admins = users.filter((u) => u.role && u.role.permissions.includes("*") && !u.disabled);
+  const status = (u) =>
+    u.disabled ? `<span class="pill bad">disabled</span>` : u.totp_confirmed ? `<span class="pill ok">active</span>` : `<span class="pill warn">enrolment pending</span>`;
+  const rows = users
+    .map(
+      (u) => `<tr>
+        <td class="first" data-h="User"><div class="l1"><b class="ink">${esc(u.display_name || u.username)}</b></div>
+          <div class="l2 mono">${esc(u.username)}</div>
+          <div class="l2">${u.email ? esc(u.email) : `<span class="pill warn">no email</span>`}</div></td>
+        <td data-h="Role"><div class="l1">${roleBadge(u.role)}<span class="muted small">${permsText(u.role)}</span></div></td>
+        <td data-h="Status"><div class="l1">${status(u)}</div></td>
+        <td data-h="Last sign-in"><div class="l1 mono small">${u.last_login_at ? esc(ago(u.last_login_at)) : "never"}</div></td>
+        <td class="right nolabel" data-h=""><div class="l1"><a class="btn small" href="/users/${u.id}"${canManage ? ` data-modal-open="m-user-${u.id}"` : ""}>${icon("edit", 14)} ${
+        canManage ? "Manage" : "View"
+      }</a></div></td>
+      </tr>`
+    )
+    .join("");
+
+  const roleOpts = (cur) => roles.map((r) => `<option value="${r.id}"${String(r.id) === String(cur) ? " selected" : ""}>${esc(r.label)} — ${esc(permsText(r))}</option>`).join("");
+  const dialogs = canManage
+    ? users
+        .map((u) => {
+          const isSelf = u.id === meId;
+          const lastAdmin = !!(u.role && u.role.permissions.includes("*") && !u.disabled && admins.length <= 1);
+          const n = typeof sessionsOf === "function" ? sessionsOf(u.id) : null;
+          const fid = "f-user-" + u.id;
+          return modal(
+            "m-user-" + u.id,
+            "Manage " + (u.display_name || u.username),
+            u.username,
+            "user",
+            `<form class="mb" method="post" action="/users/${u.id}" id="${fid}" autocomplete="off">
+              <input type="hidden" name="_csrf" value="${esc(csrf)}"><input type="hidden" name="back" value="/users">
+              ${lastAdmin ? `<div class="alert warn">${icon("alert")}<div>The last active administrator: the role stays and the account cannot be disabled or deleted until another administrator exists.</div></div>` : ""}
+              <label>Display name<input name="display_name" value="${esc(u.display_name || "")}"></label>
+              <label>Email <span class="hint">what their authenticator app shows beside the code</span><input name="email" type="email" value="${esc(u.email || "")}" required spellcheck="false"></label>
+              <label>Role<select name="role_id"${lastAdmin ? " disabled" : ""}>${roleOpts(u.role_id)}</select>${lastAdmin ? `<input type="hidden" name="role_id" value="${u.role_id}">` : ""}</label>
+              <label class="check"><input type="checkbox" name="disabled" value="1"${u.disabled ? " checked" : ""}${isSelf || lastAdmin ? " disabled" : ""}>
+                <span>Disabled — cannot sign in${isSelf ? " (not yourself)" : ""}</span></label>
+              ${
+                n == null || isSelf
+                  ? ""
+                  : `<p class="muted small">${n ? n + " signed-in browser" + (n === 1 ? "" : "s") : "Not signed in anywhere."}${
+                      n ? ` <button type="submit" class="linkish" form="f-user-out-${u.id}">Sign them all out</button>` : ""
+                    }</p>`
+              }
+            </form>
+            <form method="post" action="/users/${u.id}/totp" id="f-user-totp-${u.id}" data-confirm-dlg="Reset ${esc(u.username)}'s authenticator?" data-confirm-body="Their current authenticator stops working at once, and they enrol again at their next sign-in." data-confirm-yes="Reset"><input type="hidden" name="_csrf" value="${esc(csrf)}"></form>
+            ${isSelf || lastAdmin ? "" : `<form method="post" action="/users/${u.id}/delete" id="f-user-del-${u.id}" data-confirm-dlg="Delete ${esc(u.username)}?" data-confirm-body="They lose access at once. The audit log keeps what they did." data-confirm-yes="Delete"><input type="hidden" name="_csrf" value="${esc(csrf)}"></form>`}
+            ${n ? `<form method="post" action="/users/${u.id}/signout-all" id="f-user-out-${u.id}" data-confirm-dlg="Sign ${esc(u.username)} out everywhere?" data-confirm-body="Every browser signed in as them ends its session now, and any live voice call on it ends too." data-confirm-yes="Sign out"><input type="hidden" name="_csrf" value="${esc(csrf)}"></form>` : ""}`,
+            `<button type="submit" class="btn small" form="f-user-totp-${u.id}">Reset authenticator</button>${
+              isSelf || lastAdmin ? "" : `<button type="submit" class="btn small danger" form="f-user-del-${u.id}">${icon("trash", 14)} Delete</button>`
+            }<a class="btn small" href="/users/${u.id}">Password…</a><span class="sp"></span><button type="button" class="btn" data-modal-close>Cancel</button><button type="submit" class="btn primary" form="${fid}">Save</button>`
+          );
+        })
+        .join("") +
+      modal(
+        "m-user-add",
+        "Add a user",
+        "They enrol their authenticator at first sign-in.",
+        "plus",
+        `<form class="mb" method="post" action="/users/new" id="f-user-add" autocomplete="off">
+          <input type="hidden" name="_csrf" value="${esc(csrf)}">
+          <label>Username <span class="hint">what they type to sign in</span><input name="username" required pattern="[a-zA-Z0-9._\\-]{3,32}" autocomplete="off" spellcheck="false"></label>
+          <label>Display name <span class="hint">optional</span><input name="display_name"></label>
+          <label>Email <span class="hint">what their authenticator app shows beside the code</span><input name="email" type="email" required spellcheck="false" placeholder="name@company.com"></label>
+          <label>Role<select name="role_id">${roleOpts((roles.find((r) => r.name === "viewer") || roles[roles.length - 1] || {}).id)}</select></label>
+          <label>Temporary password <span class="hint">shown once, on the next screen</span><input name="password" type="password" minlength="12" required autocomplete="new-password"></label>
+        </form>`,
+        `<span class="sp"></span><button type="button" class="btn" data-modal-close>Cancel</button><button type="submit" class="btn primary" form="f-user-add">Add user</button>`
+      )
+    : "";
+
+  return shell(
     "Users",
     `${flashes({ msg: flash, err })}
     ${
@@ -44,44 +145,13 @@ exports.users = ({ csrf, user, users, roles, missingEmail = 0, flash, err }) =>
     ${card(
       "People with access",
       users.length
-        ? `<table class="rows">
-            <thead><tr>
-              <th>User</th><th>Role</th><th>Status</th><th>Last sign-in</th><th></th>
-            </tr></thead>
-            <tbody>${users
-              .map(
-                (u) => `<tr>
-                  <td>
-                    <div class="row-title">${esc(u.display_name || u.username)}</div>
-                    <div class="muted small mono">${esc(u.username)}</div>
-                    <div class="muted small">${
-                      u.email
-                        ? esc(u.email)
-                        : `<span class="pill warn">no email</span>`
-                    }</div>
-                  </td>
-                  <td>${roleBadge(u.role)}
-                    <div class="muted small">${permCount(u.role)} permission${
-                      permCount(u.role) === "1" ? "" : "s"
-                    }</div></td>
-                  <td>${
-                    u.disabled
-                      ? `<span class="pill bad">disabled</span>`
-                      : u.totp_confirmed
-                        ? `<span class="pill ok">active</span>`
-                        : `<span class="pill warn">enrolment pending</span>`
-                  }</td>
-                  <td class="mono small">${u.last_login_at ? esc(ago(u.last_login_at)) : "never"}</td>
-                  <td class="right"><a class="btn small" href="/users/${u.id}">${icon(
-                    "edit"
-                  )} Manage</a></td>
-                </tr>`
-              )
-              .join("")}</tbody></table>`
+        ? `<table class="rows stack aligned">
+            <thead><tr><th>User</th><th>Role</th><th>Status</th><th>Last sign-in</th><th></th></tr></thead>
+            <tbody>${rows}</tbody></table>`
         : empty("users", "No users yet", "Add someone to give them access to this panel."),
       {
         icon: "users",
-        actions: `<a class="btn primary small" href="/users/new">${icon("plus")} Add user</a>`,
+        actions: canManage ? `<a class="btn primary small" href="/users/new" data-modal-open="m-user-add">${icon("plus")} Add user</a>` : "",
       }
     )}
 
@@ -94,21 +164,23 @@ exports.users = ({ csrf, user, users, roles, missingEmail = 0, flash, err }) =>
       <div class="chips">${roles
         .map(
           (r) =>
-            `<a class="chip-link" href="/roles/${r.id}">${esc(r.label)}
+            `<a class="chip-link" href="/roles">${esc(r.label)}
                <span class="muted">${r.user_count} user${r.user_count === 1 ? "" : "s"}</span></a>`
         )
         .join("")}</div>`,
       { icon: "info" }
-    )}`,
+    )}
+    ${dialogs}`,
     {
       user,
       csrf,
       active: "users",
-      pattern: "b",
+      pattern: "c",
       heading: "Users",
       subtitle: "Who can sign in to Mint OS, and what they are allowed to do once they are in.",
     }
   );
+};
 
 exports.userNew = ({ csrf, user, roles, form = {}, errors = [] }) =>
   shell(
@@ -345,39 +417,95 @@ exports.userDetail = ({ csrf, user, target, roles, isSelf, lastAdmin, flash, err
 
 /* ---------------------------------------------------------------- roles --- */
 
-exports.roles = ({ csrf, user, roles, flash, err }) =>
-  shell(
+/**
+ * Roles: the same aligned table as Users. Manage / New role open the editor as
+ * a dialog (name, scope, permissions grouped as in rbac); the full pages
+ * /roles/:id and /roles/new stay for no-JS. Built-in roles keep their name,
+ * the administrator's permissions are locked, and a role still held by
+ * someone cannot be deleted.
+ *
+ * @param o { csrf, user, roles, flash, err, canManage, agents, channels }
+ */
+exports.roles = ({ csrf, user, roles, flash, err, canManage, agents = [], channels = [] }) => {
+  const scopeText = (r) =>
+    `agents: ${esc(rbac.scopeLabel(rbac.parseScope(r.agent_scope)))} · channels: ${esc(rbac.scopeLabel(rbac.parseScope(r.channel_scope)))}`;
+  const rows = roles
+    .map(
+      (r) => `<tr>
+        <td class="first" data-h="Role"><div class="l1">${roleBadge(r)}${r.builtin ? `<span class="tag-s">built-in</span>` : ""}</div>
+          ${r.description ? `<div class="l2">${esc(r.description)}</div>` : ""}</td>
+        <td data-h="Users"><div class="l1 mono small">${r.user_count}</div></td>
+        <td data-h="Permissions"><div class="l1">${permsText(r)}</div></td>
+        <td data-h="Scope"><div class="l1 small">${scopeText(r)}</div></td>
+        <td class="right nolabel" data-h=""><div class="l1"><a class="btn small" href="/roles/${r.id}"${canManage ? ` data-modal-open="m-role-${r.id}"` : ""}>${icon("edit", 14)} ${
+        canManage && !r.permissions.includes("*") ? "Manage" : "View"
+      }</a></div></td>
+      </tr>`
+    )
+    .join("");
+
+  const editor = (r, isNew) => {
+    const held = new Set(r.permissions || []);
+    const wildcard = held.has("*");
+    const id = isNew ? "new" : String(r.id);
+    const fid = "f-role-" + id;
+    const readOnly = wildcard;
+    return modal(
+      "m-role-" + id,
+      isNew ? "New role" : "Manage " + r.label,
+      wildcard ? "The administrator role always has every permission." : "Permissions and scope",
+      "shield",
+      `<form class="mb" method="post" action="${isNew ? "/roles/new" : "/roles/" + r.id}" id="${fid}" autocomplete="off">
+        <input type="hidden" name="_csrf" value="${esc(csrf)}"><input type="hidden" name="back" value="/roles">
+        <div class="grid cols-2">
+          <label>Name <span class="hint">${isNew ? "lowercase, used internally" : "cannot be changed"}</span>
+            <input name="name" value="${esc(r.name || "")}"${isNew ? ' required pattern="[a-z0-9_\\-]{2,32}"' : " readonly"}></label>
+          <label>Label <span class="hint">what people see</span><input name="label" value="${esc(r.label || "")}" required${readOnly ? " readonly" : ""}></label>
+        </div>
+        <label>Description<input name="description" value="${esc(r.description || "")}"${readOnly ? " readonly" : ""}></label>
+        ${
+          wildcard
+            ? `<p class="muted">All agents and all channels, and every permission on the system — including ones added by future updates.</p>`
+            : `<div class="grid cols-2">${scopePicker("agent_scope", rbac.parseScope(r.agent_scope), agents, "Agents", "No agents exist yet.", false)}${scopePicker(
+                "channel_scope",
+                rbac.parseScope(r.channel_scope),
+                channels,
+                "Channels",
+                "No channels exist yet.",
+                false
+              )}</div>${permGroups(held, false)}`
+        }
+      </form>
+      ${
+        !isNew && !r.builtin && !r.user_count
+          ? `<form method="post" action="/roles/${r.id}/delete" id="f-role-del-${id}" data-confirm-dlg="Delete the ${esc(r.label)} role?" data-confirm-yes="Delete"><input type="hidden" name="_csrf" value="${esc(csrf)}"></form>`
+          : ""
+      }`,
+      `${
+        !isNew && !r.builtin
+          ? r.user_count
+            ? `<span class="muted small">${r.user_count} user${r.user_count === 1 ? " holds" : "s hold"} it — move them first to delete it</span>`
+            : `<button type="submit" class="btn small danger" form="f-role-del-${id}">${icon("trash", 14)} Delete</button>`
+          : ""
+      }<span class="sp"></span><button type="button" class="btn" data-modal-close>${readOnly ? "Close" : "Cancel"}</button>${
+        readOnly ? "" : `<button type="submit" class="btn primary" form="${fid}">${isNew ? "Create role" : "Save"}</button>`
+      }`,
+      "wide"
+    );
+  };
+
+  return shell(
     "Roles",
     `${flashes({ msg: flash, err })}
 
     ${card(
       "Roles",
-      `<table class="rows">
-        <thead><tr><th>Role</th><th>Permissions</th><th>Scope</th><th>Users</th><th></th></tr></thead>
-        <tbody>${roles
-          .map(
-            (r) => `<tr>
-              <td>
-                <div class="row-title">${esc(r.label)} ${
-                  r.builtin ? `<span class="pill brand">built-in</span>` : ""
-                }</div>
-                <div class="muted small">${esc(r.description || "—")}</div>
-              </td>
-              <td>${esc(permCount(r))}</td>
-              <td class="mono small">
-                agents: ${esc(rbac.scopeLabel(rbac.parseScope(r.agent_scope)))}<br>
-                channels: ${esc(rbac.scopeLabel(rbac.parseScope(r.channel_scope)))}
-              </td>
-              <td>${r.user_count}</td>
-              <td class="right"><a class="btn small" href="/roles/${r.id}">${icon("edit")} ${
-                r.builtin ? "View" : "Edit"
-              }</a></td>
-            </tr>`
-          )
-          .join("")}</tbody></table>`,
+      `<table class="rows stack aligned">
+        <thead><tr><th>Role</th><th>Users</th><th>Permissions</th><th>Scope</th><th></th></tr></thead>
+        <tbody>${rows}</tbody></table>`,
       {
         icon: "shield",
-        actions: `<a class="btn primary small" href="/roles/new">${icon("plus")} New role</a>`,
+        actions: canManage ? `<a class="btn primary small" href="/roles/new" data-modal-open="m-role-new">${icon("plus")} New role</a>` : "",
       }
     )}
 
@@ -388,16 +516,75 @@ exports.roles = ({ csrf, user, roles, flash, err }) =>
         later. A named list means exactly those — an agent added tomorrow will not appear for
         that role until you add it here, which is the point.</p>`,
       { icon: "info" }
-    )}`,
+    )}
+    ${canManage ? roles.map((r) => editor(r, false)).join("") + editor({ permissions: [], agent_scope: "*", channel_scope: "*" }, true) : ""}`,
     {
       user,
       csrf,
       active: "roles",
-      pattern: "b",
+      pattern: "c",
       heading: "Roles",
-      subtitle: "Permission sets you assign to users. Change a role and everyone holding it changes with it.",
+      subtitle: "A role carries permissions and a scope. Every user has exactly one.",
     }
   );
+};
+
+function scopePicker(name, scope, options, label, emptyNote, readOnly) {
+  const all = scope === "*";
+  return `<fieldset class="scope">
+    <legend>${esc(label)}</legend>
+    <label class="check">
+      <input type="radio" name="${name}_mode" value="all"${all ? " checked" : ""}${
+        readOnly ? " disabled" : ""
+      }>
+      <span>All — including any created later</span></label>
+    <label class="check">
+      <input type="radio" name="${name}_mode" value="list"${!all ? " checked" : ""}${
+        readOnly ? " disabled" : ""
+      }>
+      <span>Only the ones ticked below</span></label>
+    <div class="scope-list">
+      ${
+        options.length
+          ? options
+              .map(
+                (o) => `<label class="check">
+                  <input type="checkbox" name="${name}" value="${esc(o.slug)}"${
+                    !all && scope.includes(o.slug) ? " checked" : ""
+                  }${readOnly ? " disabled" : ""}>
+                  <span>${esc(o.name || o.slug)} <span class="muted mono small">${esc(
+                    o.slug
+                  )}</span></span></label>`
+              )
+              .join("")
+          : `<p class="muted small">${esc(emptyNote)}</p>`
+      }
+    </div>
+  </fieldset>`;
+}
+
+/** The permission checkboxes, grouped as in rbac. */
+function permGroups(held, readOnly) {
+  return rbac.PERMISSION_GROUPS.map(
+    (g) => `<div class="perm-group">
+      <div class="perm-head">
+        <h3>${esc(g.label)}</h3>
+        ${g.blurb ? `<p class="muted small">${esc(g.blurb)}</p>` : ""}
+      </div>
+      ${g.perms
+        .map(
+          (p) => `<label class="check perm">
+            <input type="checkbox" name="permissions" value="${esc(p.key)}"${held.has(p.key) ? " checked" : ""}${readOnly ? " disabled" : ""}>
+            <span>
+              <span class="perm-label">${esc(p.label)}</span>
+              ${p.hint ? `<span class="muted small">${esc(p.hint)}</span>` : ""}
+            </span>
+          </label>`
+        )
+        .join("")}
+    </div>`
+  ).join("");
+}
 
 /**
  * The role editor. Built-in administrator renders read-only: it is the account
@@ -409,40 +596,6 @@ exports.roleEdit = ({ csrf, user, role, agents, channels, isNew, readOnly, error
   const wildcard = held.has("*");
   const agentScope = rbac.parseScope(role.agent_scope);
   const channelScope = rbac.parseScope(role.channel_scope);
-
-  const scopePicker = (name, scope, options, label, emptyNote) => {
-    const all = scope === "*";
-    return `<fieldset class="scope">
-      <legend>${esc(label)}</legend>
-      <label class="check">
-        <input type="radio" name="${name}_mode" value="all"${all ? " checked" : ""}${
-          readOnly ? " disabled" : ""
-        }>
-        <span>All — including any created later</span></label>
-      <label class="check">
-        <input type="radio" name="${name}_mode" value="list"${!all ? " checked" : ""}${
-          readOnly ? " disabled" : ""
-        }>
-        <span>Only the ones ticked below</span></label>
-      <div class="scope-list">
-        ${
-          options.length
-            ? options
-                .map(
-                  (o) => `<label class="check">
-                    <input type="checkbox" name="${name}" value="${esc(o.slug)}"${
-                      !all && scope.includes(o.slug) ? " checked" : ""
-                    }${readOnly ? " disabled" : ""}>
-                    <span>${esc(o.name || o.slug)} <span class="muted mono small">${esc(
-                      o.slug
-                    )}</span></span></label>`
-                )
-                .join("")
-            : `<p class="muted small">${esc(emptyNote)}</p>`
-        }
-      </div>
-    </fieldset>`;
-  };
 
   return shell(
     isNew ? "New role" : role.label,
@@ -488,27 +641,7 @@ exports.roleEdit = ({ csrf, user, role, agents, channels, isNew, readOnly, error
         "Permissions",
         wildcard
           ? `<p class="muted">This role holds every permission on the system.</p>`
-          : rbac.PERMISSION_GROUPS.map(
-              (g) => `<div class="perm-group">
-                <div class="perm-head">
-                  <h3>${esc(g.label)}</h3>
-                  ${g.blurb ? `<p class="muted small">${esc(g.blurb)}</p>` : ""}
-                </div>
-                ${g.perms
-                  .map(
-                    (p) => `<label class="check perm">
-                      <input type="checkbox" name="permissions" value="${esc(p.key)}"${
-                        held.has(p.key) ? " checked" : ""
-                      }${readOnly ? " disabled" : ""}>
-                      <span>
-                        <span class="perm-label">${esc(p.label)}</span>
-                        ${p.hint ? `<span class="muted small">${esc(p.hint)}</span>` : ""}
-                      </span>
-                    </label>`
-                  )
-                  .join("")}
-              </div>`
-            ).join(""),
+          : permGroups(held, readOnly),
         {
           icon: "lock",
           actions: wildcard
@@ -522,8 +655,8 @@ exports.roleEdit = ({ csrf, user, role, agents, channels, isNew, readOnly, error
         wildcard
           ? `<p class="muted">All agents and all channels.</p>`
           : `<div class="grid cols-2">
-              ${scopePicker("agent_scope", agentScope, agents, "Agents", "No agents exist yet.")}
-              ${scopePicker("channel_scope", channelScope, channels, "Channels", "No channels exist yet.")}
+              ${scopePicker("agent_scope", agentScope, agents, "Agents", "No agents exist yet.", readOnly)}
+              ${scopePicker("channel_scope", channelScope, channels, "Channels", "No channels exist yet.", readOnly)}
             </div>`,
         { icon: "eye" }
       )}
@@ -598,7 +731,15 @@ exports.account = ({ csrf, user, me, flash, err, appearance }) =>
       { icon: "user" }
     )}
 
-    ${appearance ? appearance.html : ""}
+    ${
+      appearance
+        ? card(
+            "MINT AI appearance",
+            `<p class="muted">The core and the sessions view moved to <a href="/mint-ai/settings/appearance">MINT AI ▸ Settings ▸ Appearance</a>. The theme is in your avatar menu.</p>`,
+            { icon: "eye", id: "appearance" }
+          )
+        : ""
+    }
 
     ${card(
       "Change password",
@@ -622,8 +763,8 @@ exports.account = ({ csrf, user, me, flash, err, appearance }) =>
       `${
         me.totp_confirmed
           ? `<p class="muted">Your codes come from an authenticator app on your phone —
-             Microsoft Authenticator, or any other. They gate sign-in, and they are also
-             what unlocks root in a console chat, so moving them is worth doing carefully.</p>
+             Microsoft Authenticator, or any other. They gate sign-in, so moving them is
+             worth doing carefully.</p>
            <p class="muted small">Moving does not take effect until a code from the new app
              is accepted, so if something goes wrong halfway your current app keeps working.</p>`
           : `<div class="alert warn">${icon("alert")}<div>This account is
@@ -641,6 +782,7 @@ exports.account = ({ csrf, user, me, flash, err, appearance }) =>
       }
       <div class="btn-row">
         <a class="btn" href="/account/authenticator">${icon("reindex")} Move to another app or phone</a>
+        <a class="btn" href="/devices">${icon("devices")} Signed-in devices</a>
       </div>`,
       { icon: "devices" }
     )}
@@ -661,9 +803,9 @@ exports.account = ({ csrf, user, me, flash, err, appearance }) =>
       user,
       csrf,
       active: null,
+      crumbs: [["Account", null]],
       heading: me.display_name || me.username,
-      subtitle: "Your own credentials and what your role permits.",
-      assets: appearance ? appearance.assets : undefined,
+      subtitle: "Your own sign-in, authenticator and role.",
     }
   );
 
@@ -701,6 +843,7 @@ exports.reenrolStart = ({ csrf, user, me, err }) =>
       user,
       csrf,
       active: null,
+      crumbs: [["Account", "/account"], ["Move your authenticator", null]],
       heading: "Move your authenticator",
       subtitle: "For a new phone, or to switch to Microsoft Authenticator.",
       actions: `<a class="btn" href="/account">${icon("chevron")} Your account</a>`,
@@ -741,6 +884,7 @@ exports.reenrolScan = ({ csrf, user, me, qr, secret, err }) =>
       user,
       csrf,
       active: null,
+      crumbs: [["Account", "/account"], ["Scan the new code", null]],
       heading: "Scan the new code",
       subtitle: "This page expires in 15 minutes. Leaving it changes nothing.",
       actions: `<a class="btn" href="/account">${icon("chevron")} Cancel</a>`,

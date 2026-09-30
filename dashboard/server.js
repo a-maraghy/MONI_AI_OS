@@ -4308,6 +4308,9 @@ app.get("/users", requireAuth, requirePerm("users.view"), (req, res) => {
       missingEmail: db.usersMissingEmail(),
       flash: req.query.msg || null,
       err: req.query.err || null,
+      meId: req.me.id,
+      canManage: req.perm.can("users.manage"),
+      sessionsOf: typeof usersSignedInCount === "function" ? usersSignedInCount : null,
     })
   );
 });
@@ -4403,7 +4406,8 @@ app.get("/users/:id", requireAuth, requirePerm("users.view"), (req, res) => {
 app.post("/users/:id", requireAuth, requirePerm("users.manage"), requireCsrf, (req, res) => {
   const c = userContext(req);
   if (!c) return res.status(404).send(views.error("Not found", "No such user."));
-  const back = "/users/" + c.target.id;
+  // Users > Manage (the dialog on /users) comes back to the list; the full page to itself.
+  const back = field(req.body, "back") === "/users" ? "/users" : "/users/" + c.target.id;
 
   const roleId = c.lastAdmin ? c.target.role_id : Number(field(req.body, "role_id"));
   const disabled = !c.lastAdmin && !c.isSelf && field(req.body, "disabled") === "1";
@@ -4485,7 +4489,10 @@ app.post("/users/:id/delete", requireAuth, requirePerm("users.manage"), requireC
 
 /* ---------------------------------------------------------------- roles --- */
 
-app.get("/roles", requireAuth, requirePerm("roles.view"), (req, res) => {
+app.get("/roles", requireAuth, requirePerm("roles.view"), async (req, res) => {
+  const canManage = req.perm.can("roles.manage");
+  // The Manage dialogs carry the scope pickers, so they need the agent and channel lists.
+  const opts = canManage ? await scopeOptions() : { agents: [], channels: [] };
   res.send(
     accessViews.roles({
       csrf: res.locals.csrf,
@@ -4493,6 +4500,8 @@ app.get("/roles", requireAuth, requirePerm("roles.view"), (req, res) => {
       roles: db.listRoles(),
       flash: req.query.msg || null,
       err: req.query.err || null,
+      canManage,
+      ...opts,
     })
   );
 });
@@ -4589,7 +4598,9 @@ app.post("/roles/:id", requireAuth, requirePerm("roles.manage"), requireCsrf, (r
     channelScope: readScope(req.body, "channel_scope"),
   });
   db.logLogin(req.ip, req.me.username, "admin", "edited role " + role.name);
-  res.redirect("/roles/" + role.id + "?msg=" + encodeURIComponent("Role saved."));
+  // Roles > Manage (the dialog on /roles) comes back to the list.
+  const back = field(req.body, "back") === "/roles" ? "/roles" : "/roles/" + role.id;
+  res.redirect(back + "?msg=" + encodeURIComponent(role.label + " saved."));
 });
 
 app.post("/roles/:id/delete", requireAuth, requirePerm("roles.manage"), requireCsrf, (req, res) => {
@@ -4613,8 +4624,8 @@ app.get("/account", requireAuth, (req, res) => {
       me: req.me,
       flash: req.query.msg || null,
       err: req.query.err || null,
-      // The Appearance card only for those who can open the Command Center.
-      appearance: req.perm.can("moniai.use") ? moniAiViews.appearance({ csrf: res.locals.csrf, core: req.me.mint_core, sessview: req.me.sessions_view }) : null,
+      // A pointer to Settings > Appearance, for those who can open the Command Center.
+      appearance: req.perm.can("moniai.use"),
     })
   );
 });

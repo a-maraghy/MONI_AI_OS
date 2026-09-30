@@ -291,3 +291,12 @@ b.ink { color: var(--ink); }
 .seg-radio .seg-opt:has(input:checked) { background: var(--panel); color: var(--accent); box-shadow: var(--shadow-sm), inset 0 0 0 1px var(--line-strong); }
 .seg-radio .seg-opt:has(input:focus-visible) { outline: 2px solid var(--accent-2); outline-offset: 1px; }
 @media (max-width: 640px) { .set-form { justify-content: flex-start; } }
+
+/* ---- dialogs on OS pages ---- */
+.cc-modal.os { display: flex; flex-direction: column; max-height: calc(100vh - var(--topbar-h) - 60px); }
+.cc-modal.os[hidden] { display: none; }
+.cc-modal.os .mb { flex: 1 1 auto; min-height: 0; }
+.cc-modal.os .mf { flex-wrap: wrap; align-items: center; }
+.cc-modal.os .perm-group { margin-top: 12px; }
+.linkish { background: none; border: 0; padding: 0; margin: 0; color: var(--accent); font: inherit; cursor: pointer; text-decoration: underline; }
+@media (max-width: 640px) { .cc-modal.os { top: calc(var(--topbar-h) + 10px); width: calc(100vw - 20px); max-height: calc(100vh - var(--topbar-h) - 20px); } }
