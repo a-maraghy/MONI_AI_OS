@@ -129,7 +129,7 @@ exports.guide = ({ csrf, user, publicHost, publicPort, sshHost }) => {
         speed, accuracy and cost:</p>
       <ul>
         <li><b>OpenAI</b> — <b>GPT-4o mini Transcribe</b> (the default: fast, the most accurate
-          here, $0.003 a minute), <b>GPT Transcribe</b> (its successor; writes some English words
+          here, and the cheapest of the three), <b>GPT Transcribe</b> (its successor; writes some English words
           in Arabic script) or <b>GPT-4o Transcribe</b>.</li>
         <li><b>On this server</b> (whisper.cpp) — <b>large-v3-turbo</b> (free, a little less
           accurate, 6–13 seconds a turn) or <b>small</b> (1–2 seconds, noticeably weaker). Its
