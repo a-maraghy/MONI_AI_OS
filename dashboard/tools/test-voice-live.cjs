@@ -1200,9 +1200,11 @@ let WS_BASE;
     // The voice bar in a call (the administrator's report of 2026-09-29: chips overflowing the pill, two X buttons).
     const css = fs.readFileSync(path.join(ROOT, "public", "voice-live.css"), "utf8");
     const views = fs.readFileSync(path.join(ROOT, "lib", "views-moniai.js"), "utf8");
-    check("the bar in a call: one 'Live · trial' tag, the other chips, the route and the bar's own X hidden", /\.cc-dock\.live-on \.cc-vb-tags,[\s\S]*?\.cc-dock\.live-on \.cc-voicebar \.cc-static,[\s\S]*?\.cc-dock\.live-on #cc-vb-close \{ display: none; \}/.test(css) && /id="cc-live-tag"[^>]*>Live · trial</.test(views));
-    check("  the tag's tooltip names the model and the voice", /cc-live-tag"\)\.title = "Live conversation \(trial\)" \+ \(LiveUI\.model/.test(block) && /m\.type === "ready"\) \{ LiveUI\.model = m\.model/.test(block));
-    check("  mute and End grouped at the right; End collapses to its icon on narrow screens", /id="cc-live-acts"[\s\S]*id="cc-live-mute"[\s\S]*id="cc-live-end"[\s\S]*class="lbl">End conversation</.test(views) && /max-width: 720px\)[\s\S]*\.cc-live-end \.lbl \{ display: none; \}/.test(css));
+    check("the bar in a call: no 'Live · trial' tag; the other chips, the route, the bar's own X and the TALK TO label hidden", /\.cc-dock\.live-on \.cc-vb-tags,[\s\S]*?\.cc-dock\.live-on \.cc-voicebar \.cc-static,[\s\S]*?\.cc-dock\.live-on #cc-vb-close,\n\.cc-dock\.live-on \.cc-vb-text b \{ display: none; \}/.test(css) && !/cc-live-tag|Live · trial/.test(views + block));
+    check("  the end control is the mic button's own box, first in the bar: red, a white X, \"End conversation\", no separate End button",
+      /<div class="cc-voicebar" id="cc-voicebar">\s*<button type="button" class="cc-c-mic cc-live-end cc-live-only" id="cc-live-end" title="End the conversation \(Esc\)" aria-label="End conversation" hidden>\$\{ic\("close"\)\}<\/button>/.test(views) &&
+      /\.cc-c-mic\.cc-live-end \{ background: var\(--cc-end-red\); color: #fff;/.test(css) && !/class="lbl">End conversation/.test(views) && /\$\("cc-live-end"\)\.hidden = !on;/.test(block));
+    check("  speakers / headphones and mute compact at the right, where send is", /id="cc-live-acts"[\s\S]*id="cc-live-duplex"[\s\S]*id="cc-live-mute"/.test(views) && /\.cc-live-acts \.cc-live-duplex \{ width: 40px; height: 40px;/.test(css) && /\.cc-live-duplex \.lbl \{ display: none; \}/.test(css));
     check("  the status text takes the room and truncates", /\.cc-dock\.live-on \.cc-vb-text \{ flex: 1 1 auto; min-width: 0; \}/.test(css));
     check("  the hint under the pill says what Space and Esc do in live mode", /<kbd>Space<\/kbd> mute · <kbd>Esc<\/kbd> end/.test(block) && /<kbd>Space<\/kbd> or <kbd>Esc<\/kbd> interrupt/.test(block) && /id="cc-kb-live"/.test(views));
     check("  the old code that relabelled the push-to-talk tags during a call is gone", !/cc-voice-mode"\)\.textContent = "Live/.test(page));

@@ -151,6 +151,15 @@
     if (o.state !== "idle" || !o.hasReply || o.typing || o.voice || o.replyOpen || !o.online) return false;
     return (o.now || 0) - (o.quietSince || 0) >= CAPTION_REST_MS;
   }
+  /**
+   * The composer rests translucent when nothing is going on: online, MINT AI
+   * idle, no text in it, no voice turn or live call. Hover and focus lift it in
+   * CSS; anything else here lifts it too.
+   */
+  function composerCalm(o) {
+    o = o || {};
+    return !!o.online && o.state === "idle" && !o.text && !o.voice && !o.live;
+  }
   /** When to look again (ms from now), or null when nothing is counting down. */
   function captionRestIn(o) {
     o = o || {};
@@ -398,7 +407,7 @@
   return {
     CORES: CORES, CORE_DEFAULT: CORE_DEFAULT, normCore: normCore, isCore: isCore,
     SESS_VIEWS: SESS_VIEWS, SESS_VIEW_DEFAULT: SESS_VIEW_DEFAULT, normSessView: normSessView, isSessView: isSessView,
-    STATES: STATES, LABEL: LABEL, coreState: coreState, caption: caption, CAPTION_REST_MS: CAPTION_REST_MS, captionRests: captionRests, captionRestIn: captionRestIn, lastSentence: lastSentence, gist: gist,
+    STATES: STATES, LABEL: LABEL, coreState: coreState, caption: caption, CAPTION_REST_MS: CAPTION_REST_MS, captionRests: captionRests, captionRestIn: captionRestIn, composerCalm: composerCalm, lastSentence: lastSentence, gist: gist,
     needQueue: needQueue, card: card, doneText: doneText, approvalFrom: approvalFrom, approvalNoRule: approvalNoRule,
     TOK_KEYS: TOK_KEYS, tokens: tokens, tokLine: tokLine, tokTip: tokTip,
     SHEETS: SHEETS, sheetKeys: sheetKeys,

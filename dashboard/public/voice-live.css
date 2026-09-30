@@ -1,25 +1,37 @@
 /*
- * Live conversation (trial) in the Command Center's voice bar. One tidy row
- * inside the pill: the status text (it takes the room), the wave, one
- * "Live · trial" tag (model and voice in its tooltip), then mute and End
- * together at the right. The push-to-talk mic, the route, the other tags and
- * the bar's own close button are not shown during a call: End ends it.
- * Narrower screens drop the wave, then End's label, then the tag.
+ * Live conversation in the Command Center's voice bar. The bar keeps the idle
+ * composer's exact shape and size (same box, padding, border, shadow; tested
+ * to 0 px): the round mic button stays where it is and becomes the end
+ * control -- a red circle with a white X ("End conversation"; Esc too) --
+ * the status text and the level wave sit where "Ask MINT AI..." does, and the
+ * speakers / headphones switch and mute sit compact at the right, where the
+ * send arrow is. The push-to-talk mic, the route, the other tags and the bar's
+ * own close button are not shown during a call. Narrow screens drop the wave.
  * Colours are the Mint brand tokens from style.css, so all three themes follow.
  */
 .cc-live-only[hidden] { display: none !important; }
 .cc-dock.live-on #cc-vb-stop,
 .cc-dock.live-on .cc-vb-tags,
 .cc-dock.live-on .cc-voicebar .cc-static,
-.cc-dock.live-on #cc-vb-close { display: none; }
-.cc-dock.live-on .cc-voicebar { padding-left: 20px; gap: 10px; }
+.cc-dock.live-on #cc-vb-close,
+.cc-dock.live-on .cc-vb-text b { display: none; }
 .cc-dock.live-on .cc-vb-text { flex: 1 1 auto; min-width: 0; }
+.cc-dock.live-on .cc-vb-text span { font-size: 16px; line-height: 40px; }
 .cc-dock.live-on .cc-vb-wave { flex: 0 1 160px; min-width: 40px; }
-.cc-live-tag { flex: none; color: var(--on-brand, #0D1117); background: var(--brand); text-transform: none; letter-spacing: 0; font-family: var(--ui); cursor: default; }
-.cc-live-acts { display: inline-flex; align-items: center; gap: 6px; flex: none; }
-.cc-live-end { gap: 6px; border-color: var(--line-strong); }
-.cc-live-end:hover { border-color: var(--bad, #D1453B); color: var(--bad, #D1453B); }
-.cc-live-duplex { gap: 6px; border-color: var(--line-strong); }
+.cc-live-acts { display: inline-flex; align-items: center; gap: 4px; flex: none; }
+/* The end control: the mic button's own box, red with a white X (one strong red in every theme: white on it reads at 5:1). */
+.cc-dock { --cc-end-red: #C8322B; }
+.cc-c-mic.cc-live-end { background: var(--cc-end-red); color: #fff; box-shadow: 0 6px 18px color-mix(in srgb, var(--cc-end-red) 35%, transparent); animation: cc-endpulse 2.4s ease-in-out infinite; }
+.cc-c-mic.cc-live-end .cc-i { width: 22px; height: 22px; stroke-width: 2.4; }
+.cc-c-mic.cc-live-end:hover { transform: none; filter: brightness(1.08); }
+.cc-c-mic.cc-live-end:focus-visible { outline: 2px solid var(--cc-end-red); outline-offset: 3px; }
+@keyframes cc-endpulse { 50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--cc-end-red) 18%, transparent), 0 6px 18px color-mix(in srgb, var(--cc-end-red) 35%, transparent); } }
+/* Speakers / headphones and mute: compact round icons at the right. */
+.cc-live-acts .cc-live-duplex { width: 40px; height: 40px; padding: 0; border-radius: 50%; display: inline-grid; place-items: center; border-color: transparent; background: transparent; }
+.cc-live-acts .cc-live-duplex .cc-i { width: 18px; height: 18px; }
+.cc-live-acts .cc-live-duplex:hover { background: var(--cc-glass-2, transparent); }
+.cc-live-duplex .lbl { display: none; }
+#cc-live-mute { width: 40px; height: 40px; }
 .cc-live-duplex[data-duplex="speakers"] .dx-hp,
 .cc-live-duplex[data-duplex="full"] .dx-sp { display: none; }
 .cc-dock.live-on[data-live="speaking"] .cc-vb-text { cursor: pointer; }
@@ -39,24 +51,14 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .cc-dock[data-live="interrupted"] .cc-voicebar { animation: none; }
+  .cc-c-mic.cc-live-end { animation: none; }
 }
 
-/* Narrower: the wave goes, then End keeps only its icon, then the tag goes. */
+/* Narrower: the wave goes. */
 @media (max-width: 1000px) {
   .cc-dock.live-on .cc-vb-wave { display: none; }
 }
-@media (max-width: 1100px) {
-  .cc-live-duplex .lbl { display: none; }
-  .cc-live-duplex { padding: 5px 8px; }
-}
-@media (max-width: 720px) {
-  .cc-live-end .lbl { display: none; }
-  .cc-live-end { padding: 5px 8px; }
-  .cc-dock.live-on .cc-voicebar { padding-left: 16px; gap: 8px; }
-}
-@media (max-width: 420px) {
-  .cc-live-tag { display: none; }
-}
+
 
 /* The voice menu's third mode. */
 .cc-pop [data-vmode="live"] small b { color: var(--accent); font-weight: 600; }

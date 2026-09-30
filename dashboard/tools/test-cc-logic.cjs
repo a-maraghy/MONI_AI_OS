@@ -178,6 +178,20 @@ const KEEP = [
 ];
 KEEP.forEach(([name, ok]) => check("kept: " + name, !!ok));
 
+// The composer rests translucent when nothing is going on (hover and focus lift it in CSS).
+{
+  const b = { online: true, state: "idle", text: false, voice: false, live: false };
+  check("composer calm: idle, online, empty, no voice or call -> translucent", L.composerCalm(b) === true);
+  check("composer calm: solid with text, a voice turn, a live call, offline, or MINT AI thinking / speaking / listening / delegating / needing you",
+    !L.composerCalm({ ...b, text: true }) && !L.composerCalm({ ...b, voice: true }) && !L.composerCalm({ ...b, live: true }) && !L.composerCalm({ ...b, online: false }) &&
+    ["thinking", "speaking", "listening", "delegating", "needs"].every((st) => !L.composerCalm({ ...b, state: st })));
+  const css = read("public/moni-ai.css");
+  check("composer calm CSS: opacity only (0.6) on the pill and hint row, lifted by hover and focus-within, no transition under reduced motion, no hover lift on touch",
+    /\.cc-dock\.calm:not\(:hover\):not\(:focus-within\) \.cc-composer \{ opacity: \.6; \}/.test(css) && /\.cc-dock\.calm:not\(:hover\):not\(:focus-within\) \.cc-hint \{ opacity: \.6; \}/.test(css) &&
+    /@media \(hover: none\) \{ \.cc-dock\.calm:hover:not\(:focus-within\) \.cc-composer/.test(css) && /prefers-reduced-motion: reduce\) \{ \.cc-composer, \.cc-hint \{ transition: none; \}/.test(css) &&
+    /paintCalm\(st\);/.test(main));
+}
+
 // The last reply rests after 15 s of quiet (the administrator's ask, 2026-09-30).
 {
   const b = { state: "idle", online: true, hasReply: true, quietSince: 1000 };
@@ -189,7 +203,7 @@ KEEP.forEach(([name, ok]) => check("kept: " + name, !!ok));
     !L.captionRests({ ...b, typing: true, now: 1e9 }) && !L.captionRests({ ...b, voice: true, now: 1e9 }) && !L.captionRests({ ...b, replyOpen: true, now: 1e9 }) && !L.captionRests({ ...b, online: false, now: 1e9 }) && !L.captionRests({ ...b, hasReply: false, now: 1e9 }));
   check("caption rest: when to look again", L.captionRestIn({ ...b, now: 6000 }) === 10000 && L.captionRestIn({ ...b, now: 99999 }) === 0);
   check("the page: new caption / non-idle state / typing / focus / closing the reply restart the quiet spell; the line is aria-hidden while it rests; the control says See last reply",
-    /if \(c\.state !== "idle" \|\| sig !== capRestSig\) \{ capQuietSince = Date\.now\(\);/.test(main) && /input\.addEventListener\("focus", capActivity\);/.test(main) && /capActivity\(\);\n    \$\("cc-send"\)/.test(main) &&
+    /if \(c\.state !== "idle" \|\| sig !== capRestSig\) \{ capQuietSince = Date\.now\(\);/.test(main) && /input\.addEventListener\("focus", capActivity\);/.test(main) && /capActivity\(\);\n    paintCalm\(\);\n    \$\("cc-send"\)/.test(main) &&
     /line\.setAttribute\("aria-hidden", rest \? "true" : "false"\);/.test(main) && /rest \? "See last reply" : "Full reply"/.test(main) && /\.cc-caption\.rest \.cc-cap-line \{ opacity: 0; max-height: 0; \}/.test(read("public/moni-ai.css")) && /prefers-reduced-motion: reduce\) \{ \.cc-cap-line \{ transition: none; \}/.test(read("public/moni-ai.css")));
 }
 

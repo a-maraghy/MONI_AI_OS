@@ -481,6 +481,13 @@
     if (due != null && !rest) capRestTimer = setTimeout(function () { paintCaption(); }, due + 20);
     return c;
   }
+  /** Idle: the composer and its hint row sit translucent until you hover, focus or type, or something happens. */
+  var calmState = "idle";
+  function paintCalm(st) {
+    if (st) calmState = st;
+    $("cc-dock").classList.toggle("calm", ML.composerCalm({ online: S.online, state: calmState, text: !!$("cc-input").value.trim(),
+      voice: !!(typeof Voice !== "undefined" && Voice && Voice.on), live: liveActive() }));
+  }
   function reducedMotion() { return !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches); }
   function paintState() {
     if (!Voice.speaking) S.spoken = "";
@@ -488,6 +495,7 @@
     var st = ML.coreState(snap);
     Orb.setState(st);
     var capNow = paintCaption(snap);
+    paintCalm(st);
     if (window.MintShell) window.MintShell.feed({ state: st, pending: snap.pending, cap: capNow && capNow.text, live: liveActive(), muted: !!(liveActive() && window.VoiceLive && window.VoiceLive.muted && window.VoiceLive.muted()) });
     renderNeed();
     var pending = snap.pending;
@@ -940,6 +948,7 @@
   input.addEventListener("blur", capActivity);
   input.addEventListener("input", function () {
     capActivity();
+    paintCalm();
     $("cc-send").classList.toggle("ready", !!input.value.trim());
     var m = /^@(\S+)\s/.exec(input.value);
     if (!m) return;
@@ -2981,7 +2990,7 @@
     dock.setAttribute("data-live", on ? st : "");
     $("cc-c-mic").classList.toggle("live", on);
     $("cc-live-acts").hidden = !on;
-    $("cc-live-tag").hidden = !on;
+    $("cc-live-end").hidden = !on;
     var muted = on && st === "muted";
     var half = LiveUI.duplex !== "full", talkingOver = on && st === "speaking" && half;
     $("cc-live-mute").setAttribute("aria-pressed", muted ? "true" : "false");
@@ -2995,8 +3004,6 @@
         : "Headphones mode: talk over the voice to interrupt it. Click for speakers mode (if it hears itself through laptop speakers).";
       dx.setAttribute("aria-label", (half ? "Speakers mode" : "Headphones mode") + ": switch to " + (half ? "headphones" : "speakers") + " mode");
     }
-    // One tag says it all; the model and voice are in its tooltip.
-    $("cc-live-tag").title = "Live conversation (trial)" + (LiveUI.model ? " · " + LiveUI.model : "") + (LiveUI.voice ? " · voice " + LiveUI.voice : "") + " · " + (half ? "speakers mode" : "headphones mode") + (LiveUI.route ? " · playback " + LiveUI.route : "") + ".";
     paintLiveKeys();
     if (on) {
       if (!(LiveUI.who === "you" && st === "thinking")) $("cc-vb-text").textContent = (st === "speaking" && half ? LIVE_TEXT.speakingHalf : LIVE_TEXT[st]) || st;

@@ -230,6 +230,7 @@ function page(o) {
         <button type="submit" class="cc-c-send" id="cc-send" title="Send" aria-label="Send">${ic("up")}</button>
       </form>
       <div class="cc-voicebar" id="cc-voicebar">
+        <button type="button" class="cc-c-mic cc-live-end cc-live-only" id="cc-live-end" title="End the conversation (Esc)" aria-label="End conversation" hidden>${ic("close")}</button>
         <button type="button" class="cc-c-mic live" id="cc-vb-stop" title="Send what you said" aria-label="Stop and send">${ic("voice")}</button>
         <div class="cc-vb-text"><b>TALK TO MINT AI</b><span id="cc-vb-text">Listening…</span></div>
         <div class="cc-vb-wave" id="cc-vb-wave" aria-hidden="true"></div>
@@ -239,8 +240,7 @@ function page(o) {
             : "Voice goes straight to MINT AI: OpenAI only hears and reads aloud."
         }">${deskOn ? "Front desk · GPT" : "Direct · MINT AI"}</span><span class="cc-tag">OpenAI</span><span class="cc-tag" id="cc-voice-tag">${esc(voice.configured ? String(voice.voice || "voice") : "no key")}</span></span>
         <span class="cc-target cc-static">${ic("route")}<span id="cc-vb-target">Auto-route</span></span>
-        <span class="cc-tag cc-live-tag cc-live-only" id="cc-live-tag" title="Live conversation (trial)" hidden>Live · trial</span>
-        <span class="cc-live-acts cc-live-only" id="cc-live-acts" hidden><button type="button" class="cc-btn sm cc-live-duplex" id="cc-live-duplex" data-duplex="speakers" title="Speakers mode" aria-label="Speakers mode: switch to headphones mode">${ic("speaker", "dx-sp")}${ic("headphones", "dx-hp")}<span class="lbl" id="cc-live-duplex-lbl">Speakers</span></button><button type="button" class="cc-ibtn" id="cc-live-mute" title="Mute the microphone (the conversation stays open)" aria-label="Mute" aria-pressed="false">${ic("mute")}</button><button type="button" class="cc-btn sm cc-live-end" id="cc-live-end" title="End the live conversation" aria-label="End conversation">${ic("close")}<span class="lbl">End conversation</span></button></span>
+        <span class="cc-live-acts cc-live-only" id="cc-live-acts" hidden><button type="button" class="cc-btn sm cc-live-duplex" id="cc-live-duplex" data-duplex="speakers" title="Speakers mode" aria-label="Speakers mode: switch to headphones mode">${ic("speaker", "dx-sp")}${ic("headphones", "dx-hp")}<span class="lbl" id="cc-live-duplex-lbl">Speakers</span></button><button type="button" class="cc-ibtn" id="cc-live-mute" title="Mute the microphone (the conversation stays open)" aria-label="Mute" aria-pressed="false">${ic("mute")}</button></span>
         <button type="button" class="cc-ibtn" id="cc-vb-close" title="Back to typing" aria-label="Back to typing">${ic("close")}</button>
       </div>
       <div class="cc-hint" id="cc-hint"><button type="button" class="cc-vm" id="cc-vm" aria-haspopup="menu" aria-expanded="false" title="Voice and core settings">${ic("voice")}<span id="cc-mic-mode" data-mode="ptt">Push to talk</span>${ic("chevd")}</button>${

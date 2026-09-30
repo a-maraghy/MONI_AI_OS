@@ -212,8 +212,9 @@ html.cc-page .cc-sheet code, html.cc-page #cc-overlay code { background: none; b
   border: 0; padding: 0; box-shadow: 0 6px 18px var(--cc-mic-glow); transition: transform .15s, box-shadow .2s; }
 .cc-c-mic .cc-i { width: 22px; height: 22px; stroke-width: 2; }
 .cc-c-mic:hover { transform: scale(1.04); }
+.cc-voicebar .cc-c-mic:hover { transform: none; } /* held or live: the button keeps its exact box */
 .cc-c-mic:disabled { filter: grayscale(1); opacity: .5; cursor: not-allowed; transform: none; }
-.cc-c-mic.live { transform: scale(1.06); animation: cc-micpulse 1.2s infinite; }
+.cc-c-mic.live { animation: cc-micpulse 1.2s infinite; } /* no scale: the button keeps its exact box while it records */
 .cc-c-mic[data-mode="ptt"] { touch-action: none; user-select: none; -webkit-user-select: none; }
 @keyframes cc-micpulse { 50% { box-shadow: 0 0 0 10px var(--accent-soft), 0 6px 22px var(--cc-mic-glow); } }
 html.cc-page .cc-composer input { flex: 1; min-width: 0; height: 40px; border: 0; outline: 0; background: transparent; color: var(--ink); font: 400 16px var(--ui); padding: 0; box-shadow: none; }
@@ -239,9 +240,10 @@ html.cc-page .cc-composer input:focus-visible { outline: none; }
 .cc-c-stop { background: var(--bad-tint); color: var(--bad); }
 .cc-c-stop .cc-i { width: 16px; height: 16px; stroke-width: 2.2; }
 
-/* While the voice is live the pill shows what it hears. */
-.cc-voicebar { display: none; width: min(760px, 100%); align-items: center; gap: 12px; padding: 8px 10px 8px 8px; border-radius: 999px; background: var(--cc-glass);
-  border: 1px solid var(--accent-2); box-shadow: var(--cc-shadow), 0 0 36px -10px var(--glow); backdrop-filter: blur(18px); }
+/* While the voice is on the pill shows what it hears -- in exactly the composer's box: same width,
+   padding, gap, radius, 1px border (the focused composer's colour) and shadow (tested to 0 px). */
+.cc-voicebar { display: none; width: min(760px, 100%); align-items: center; gap: 10px; padding: 8px; border-radius: 999px; background: var(--cc-glass);
+  border: 1px solid var(--accent-2); box-shadow: var(--cc-shadow); backdrop-filter: blur(18px); }
 .cc-dock.voice-on .cc-composer { display: none; }
 .cc-dock.voice-on .cc-voicebar { display: flex; }
 .cc-voicebar { box-sizing: border-box; max-width: 100%; min-width: 0; }
@@ -254,6 +256,14 @@ html.cc-page .cc-composer input:focus-visible { outline: none; }
 .cc-vb-tags { display: flex; gap: 4px; flex: none; }
 .cc-static { cursor: default; }
 .cc-tag-mode { color: var(--accent); }
+
+/* Idle (cc-logic composerCalm): the pill and its hint row rest translucent; hover, focus (clicked to
+   type) or anything going on lifts them to the normal solid look. Opacity only: the box never moves. */
+.cc-composer, .cc-hint { transition: opacity .25s ease, border-color .25s, box-shadow .25s; }
+.cc-dock.calm:not(:hover):not(:focus-within) .cc-composer { opacity: .6; }
+.cc-dock.calm:not(:hover):not(:focus-within) .cc-hint { opacity: .6; }
+@media (hover: none) { .cc-dock.calm:hover:not(:focus-within) .cc-composer, .cc-dock.calm:hover:not(:focus-within) .cc-hint { opacity: .6; } } /* a tap's sticky hover is not interest; its focus is */
+@media (prefers-reduced-motion: reduce) { .cc-composer, .cc-hint { transition: none; } }
 
 /* The line under the composer: the voice menu and the shortcuts. */
 .cc-hint { font: 400 12px var(--ui); color: var(--dim); display: flex; gap: 14px; align-items: center; flex-wrap: wrap; justify-content: center; max-width: min(900px, 100%); }
@@ -1093,7 +1103,7 @@ html.cc-page .cc-tbl { width: 100%; border-collapse: collapse; font-size: 12px; 
   .cc-target.set #cc-target-label { display: inline; }
   .cc-dock { padding-bottom: 14px; gap: 8px; }
   .cc-hint .kb { display: none; }
-  .cc-voicebar { gap: 8px; }
+  .cc-voicebar { padding: 6px; gap: 6px; }
   .cc-vb-tags, .cc-voicebar .cc-static { display: none; }
   .cc-need { left: 12px; right: 12px; width: auto; top: auto; bottom: 150px; }
   .cc-reply { bottom: 136px; }
