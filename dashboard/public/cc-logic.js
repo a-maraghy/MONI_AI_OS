@@ -133,6 +133,12 @@
       if (s.queued > 0) out.label += " · " + s.queued + " queued";
       return out;
     }
+    if (s.pausedAtCap) {
+      // Its daily token cap (Settings > Usage & budget) holds every new turn until Resume.
+      out.label = "Paused";
+      out.text = "Paused at its daily cap — Resume from Decisions.";
+      return out;
+    }
     out.text = s.lastReply ? oneLine(s.lastReply, 220) : "Ready when you are.";
     return out;
   }

@@ -327,7 +327,7 @@ sections.usage = async (req, res, deps) => {
           : ""
       }</div></td></tr>`;
   };
-  const d = c.default || { cap: 5e6, at: "pause" };
+  const d = c.default || { cap: null, at: "warn" };
   const body =
     V.head(
       "Usage & budget",

@@ -436,6 +436,7 @@
       queued: (S.status && S.status.queue_depth) || 0,
       delegatingTo: dg ? S.delegTo : "", delegation: dg ? S.delegText : "",
       pending: q.length, needTitle: q.length ? (ML.card(q[0]) || {}).title : "",
+      pausedAtCap: !!(S.status && S.status.paused_at_cap),
       // Only a reply that arrived live in this page's life is the caption; an old one (a reload, the
       // event ring's replay, a trip through the shell) is not repainted -- "See last reply" reaches it.
       lastReply: last && S.liveReplies.has(last.id) ? ML.gist(aiText(last)) : "",

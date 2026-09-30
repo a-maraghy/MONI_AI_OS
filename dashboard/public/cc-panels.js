@@ -389,14 +389,19 @@
     }
     function decCard(d) {
       var st = d.status, done = !NEED[st] && !PROGRESS[st];
-      var head = (d.kind === "watcher" ? ic("eye") + "Watcher" + (d.watcher ? " · " + esc(watcherName(d.watcher)) : "") : ic("info") + esc(d.kind || "decision")) +
+      var head = (d.kind === "watcher" ? ic("eye") + "Watcher" + (d.watcher ? " · " + esc(watcherName(d.watcher)) : "") : d.kind === "cap" ? ic("gauge") + "Daily token cap" : ic("info") + esc(d.kind || "decision")) +
         (d.subject ? '<span class="cc-badge b-mute">' + esc(clip(d.subject, 40)) + "</span>" : "") +
         (d.count > 1 ? '<span class="cc-badge b-mute" title="Seen this many times">×' + esc(d.count) + "</span>" : "") +
         "<time>" + esc(decTime(d)) + "</time>";
       var b = "<p><b>" + esc(d.title || "") + "</b>" + (d.detail ? " " + esc(d.detail) : "") + "</p>";
       if (d.evidence) b += '<pre class="cc-ev">' + esc(d.evidence) + "</pre>";
       if (d.proposal || d.fix_command) b += '<div class="cc-fix"><b>Proposed fix</b>' + esc(d.proposal || "") + (d.fix_command ? "<code>$ " + esc(d.fix_command) + "</code>" : "") + "</div>";
-      if (st === "proposed") {
+      if (d.kind === "cap" && st === "open") {
+        // A session at its daily token cap (Settings > Usage & budget): Resume for today, or leave it.
+        var acts = d.actions || [];
+        b += '<div class="cc-dact">' + (acts.indexOf("resume") >= 0 ? '<button type="button" class="cc-btn pri sm" data-dact="resume">' + ic("play") + "Resume for today</button>" : "") +
+          '<button type="button" class="cc-btn sm" data-dact="dismiss">' + (acts.indexOf("resume") >= 0 ? "Leave paused" : "Dismiss") + "</button></div>";
+      } else if (st === "proposed") {
         b += '<div class="cc-dact"><button type="button" class="cc-btn pri sm" data-dact="approve">' + ic("check") + 'Approve fix</button><button type="button" class="cc-btn sm" data-dact="dismiss">Dismiss</button><button type="button" class="cc-btn sm" data-dact="ask">' + ic("message") + "Ask more</button></div>";
         if (d.fix_command) b += '<div class="cc-rule-hint">Approving asks MINT AI to run the fix through the gate; a destructive command still raises its own approval card.</div>';
       } else if (st === "investigating") {
@@ -475,11 +480,12 @@
         }).catch(fail);
         return;
       }
-      if (act === "approve" || act === "dismiss") {
+      if (act === "approve" || act === "dismiss" || act === "resume") {
         lock();
         api("decisions/" + encodeURIComponent(d.id) + "/" + act, { body: {} }).then(function (r) {
           if (r && r.decision) upsertDecision(r.decision, true);
-          toast(act === "approve" ? "Fix approved. MINT AI runs it through the gate." : "Dismissed.");
+          else if (act === "resume") { d.status = "done"; d.result = "Resumed for today"; renderDecisions(); }
+          toast(act === "approve" ? "Fix approved. MINT AI runs it through the gate." : act === "resume" ? "Resumed for the rest of today." : d.kind === "cap" ? "Left as it is." : "Dismissed.");
         }).catch(fail);
       }
     }

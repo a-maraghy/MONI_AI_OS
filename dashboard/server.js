@@ -4086,7 +4086,13 @@ app.get("/mint-ai/api/decisions", ...moniAiGuard, (req, res) => {
 });
 app.post("/mint-ai/api/decisions/:id/:action", ...moniAiWrite, (req, res) => {
   const action = req.params.action;
-  if (!["approve", "dismiss", "ask"].includes(action)) return res.status(404).json({ error: "No such action." });
+  if (!["approve", "dismiss", "ask", "resume"].includes(action)) return res.status(404).json({ error: "No such action." });
+  // Resume is a daily-token-cap card's (Settings > Usage & budget): the supervisor's budget-resume.
+  if (action === "resume") {
+    const id = moniAiClean(res, () => moniai.idOf(req.params.id, "decision"));
+    if (id !== undefined) moniAiOp(req, res, "budget-resume", { decision_id: id }, { log: `resumed past the daily cap (decision ${id})` });
+    return;
+  }
   const params = moniAiClean(res, () => {
     const p = { decision_id: moniai.idOf(req.params.id, "decision") };
     if (action === "ask") p.text = moniai.str(req.body && req.body.text, "Your question", { max: 4000 });
