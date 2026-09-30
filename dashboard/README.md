@@ -207,11 +207,13 @@ talks to OpenAI and never sees the key (the CSP still forbids it to).
   scheduled right after the last, one gain node per reading into the analyser
   that drives the seed core). The console still gets a whole WAV. `lib/voice.js` keeps
   WebSockets to `wss://api.openai.com/v1/realtime?model=<the reader>` warm and
-  reuses them. The reader is the selected voice model when the reader is
-  verified with it (`READER_MODELS`: `gpt-realtime-mini`, `gpt-realtime`),
-  else `gpt-realtime-mini` (`readerModelFor`; `gpt-realtime-2.1-mini`, the
-  default voice model, reads aloud with `gpt-realtime-mini` until a Test on the
-  real API shows it reads word for word). `gpt-live-1` is no longer offered. Each sentence is an **out-of-band** `response.create`
+  reuses them. The reader is the voice model itself (`READER_MODELS`:
+  `gpt-realtime-2.1-mini`, which read 18 of 18 test sentences word for word on
+  the real API on 2026-09-30, English and Egyptian, including the ones that
+  tempt a model to answer; `readerModelFor` keeps any other value off the
+  reader). A reading that still fails the verbatim check is read again by
+  `gpt-4o-mini-tts` -- a fixed safety net, not a setting. `gpt-live-1` is not
+  offered. Each sentence is an **out-of-band** `response.create`
   (`conversation: "none"`, empty input, the text quoted in that response's
   instructions): put in as a user message, the real model *answers* it ("Hello,
   can you hear me?" -> "Yes, I can hear you loud and clear. How can I assist
@@ -282,18 +284,35 @@ hands-free, Space held to talk and every "trial" label are gone.
   MINT AI group, implies `moniai.use`; administrators only by default). Live
   needs `moniai.use` + `voice.use`; `voice.manage` is for Settings ▸ Voice.
   Without `voice.use` there is no mic and no read-aloud anywhere.
-- **The voice model**: `gpt-realtime-2.1-mini` (default), `gpt-realtime-mini`,
-  `gpt-realtime` (`lib/voice.js` `VOICE_MODELS`). The live call's model is the
-  panel setting `voice_model`; the helper's options keep the reader's model
-  (`readerModelFor`), the voice and the listening model -- each Settings row
-  posts only its own field to `POST /mint-ai/settings/voice/options`. A change
-  reconnects open calls (`voiceLive.swapAll`, the model included).
+- **One voice model** (2026-09-30): `lib/voice.js` `VOICE_MODELS` holds only
+  the models that passed live conversation, read-aloud and Arabic on the real
+  API -- today `gpt-realtime-2.1-mini`. It is the panel setting `voice_model`
+  (the live call) and the reader. **Listening is not a setting**: no realtime
+  model can transcribe its own input (OpenAI refuses one as the session's
+  transcription model and on `/audio/transcriptions`), and a hand-off to MINT
+  AI must carry the server's own transcript, so the transcription model is the
+  voice model's fixed pair (prompting the voice model to transcribe its own
+  input was tested too and lost or changed about 1 turn in 5 -- see the note in
+  `lib/voice.js`) (`listenModelFor`: `gpt-4o-mini-transcribe`, which
+  keeps the English words of mixed Egyptian in Latin script, as the guards
+  expect; it retires 2027-02-26 -- move the pair to `gpt-transcribe` after
+  checking the guards, and widen the helper's `VOICE_TRANSCRIBE_RE`). The
+  helper's options hold the reader, the voice and the pair; each Settings row
+  posts only its own field to `POST /mint-ai/settings/voice/options` (a
+  `transcribe_model` field from an older page is ignored). At start
+  `migrateVoiceModelSetting` rewrites an old `voice_model` (`gpt-realtime-mini`,
+  `gpt-realtime`, ...) to the default and `migrateVoiceHelperModels` rewrites
+  the helper's reader/listening models when they differ -- both idempotent. A
+  change reconnects open calls (`voiceLive.swapAll`, the model included). The
+  summariser (`lib/voice-shared.js` `SUMMARY_MODEL`) is a text step and stays
+  on `gpt-realtime-mini` for now: on `gpt-realtime-2.1-mini` its 220-token cap
+  cut a sentence mid-way (2026-09-30).
 - **Voice cards** carry a gender (♀ Female / ♂ Male / ◌ Neutral) from one
   table, `lib/voice.js` `VOICE_META`: as each voice presents in OpenAI's own
   samples -- OpenAI labels none; alloy is Neutral; ballad and verse are the
   least certain.
 - **The rest of the section**: Arabic persona + Reset (`/persona`,
-  `/persona/reset`), listening model, *Read replies aloud* (this browser:
+  `/persona/reset`), *Read replies aloud* (this browser:
   `localStorage` `mint-read-aloud`, the Command Center's speaker button is the
   same switch), live audio (speakers / headphones default, noise reduction:
   `/live-audio`, each row its own field), call limits, spend, and the link to

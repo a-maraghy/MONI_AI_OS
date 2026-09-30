@@ -2112,20 +2112,62 @@ function voiceAllowed(perm) {
   return !!(perm && perm.can && perm.can("moniai.use") && perm.can("voice.use"));
 }
 /**
- * The voice model (the selector in Settings ▸ Voice): the live call's realtime
- * model, and -- when the reader is verified with it -- the model that reads
- * replies aloud (lib/voice.js readerModelFor). A panel setting, so the
- * helper's file keeps holding only what it always held.
+ * The voice model (the one selector in Settings ▸ Voice): the live call's
+ * realtime model AND the model that reads replies aloud (lib/voice.js
+ * READER_MODELS: only models that passed the verbatim check are offered). What
+ * the administrator said is written down by a transcription model paired with
+ * it (listenModelFor) -- fixed, not a setting. A panel setting; the helper's
+ * file holds the same reader model and transcription model, rewritten to match
+ * on every save and once at start (migrateVoiceModels).
  */
 const VOICE_MODEL_SETTING = "voice_model";
 function voiceModel() {
   try {
     const v = db.getSetting(VOICE_MODEL_SETTING, "");
-    return voice.VOICE_MODELS.some((m) => m.id === v) ? v : voiceLive.LIVE_MODEL;
+    return voice.VOICE_MODELS.some((m) => m.id === v) ? v : voice.VOICE_MODEL_DEFAULT;
   } catch (_) {
-    return voiceLive.LIVE_MODEL;
+    return voice.VOICE_MODEL_DEFAULT;
   }
 }
+/**
+ * One voice model (2026-09-30): the old choices -- gpt-realtime-mini and
+ * gpt-realtime as the voice model, a listening model of one's own, a reader
+ * model in the helper's file -- become the one model and its paired
+ * transcription model. Idempotent: a value already in the list is left alone,
+ * and the helper's file is rewritten only when it differs (and holds a key).
+ */
+function migrateVoiceModelSetting() {
+  try {
+    const raw = db.getSetting(VOICE_MODEL_SETTING, null);
+    if (raw === null || raw === undefined || raw === "" || voice.VOICE_MODELS.some((m) => m.id === raw)) return null;
+    const now = voice.VOICE_MODEL_DEFAULT;
+    db.setSetting(VOICE_MODEL_SETTING, now, "migration");
+    console.log(`voice: the voice model ${JSON.stringify(String(raw).slice(0, 40))} became "${now}" (one voice model for live, read-aloud and listening)`);
+    return now;
+  } catch (e) {
+    console.log("voice: could not migrate the voice model: " + e.message);
+    return null;
+  }
+}
+async function migrateVoiceHelperModels() {
+  try {
+    const d = await priv.voiceKeyRead();
+    if (!d || !d.key) return null; // nothing stored yet: the first save writes the pair
+    const model = voiceModel();
+    const reader = voice.readerModelFor(model);
+    const listen = voice.listenModelFor(model);
+    if (d.model === reader && d.transcribe_model === listen) return null;
+    const name = voice.VOICES.includes(d.voice) ? d.voice : voice.DEFAULTS.voice;
+    await priv.voiceOptionsSet(reader, name, listen);
+    voiceCache = { at: 0, cfg: null, pending: null };
+    console.log(`voice: the helper's voice options became ${reader} / ${name} / ${listen} (were ${String(d.model || "-").slice(0, 40)} / ${String(d.transcribe_model || "-").slice(0, 40)})`);
+    return { reader, listen };
+  } catch (e) {
+    console.log("voice: could not migrate the helper's voice options: " + priv.redact(String(e.message || e)));
+    return null;
+  }
+}
+migrateVoiceModelSetting();
 /**
  * How live conversation handles the speaker (a panel setting, JSON):
  *   duplex  "speakers" (half-duplex: the microphone is not heard while the
@@ -2244,18 +2286,19 @@ async function voiceConfig() {
       const live = voiceModel();
       const cfg = {
         key: d && d.key ? String(d.key) : null,
-        // The reader: the voice model when it is verified with it, else gpt-realtime-mini.
+        // One voice model: it talks live and reads aloud (readerModelFor keeps an
+        // unverified value off the reader); listening is its fixed pair.
         model: voice.readerModelFor(live),
         live_model: live,
         voice: (d && d.voice) || voice.DEFAULTS.voice,
-        transcribe_model: (d && d.transcribe_model) || voice.DEFAULTS.transcribe_model,
+        transcribe_model: voice.listenModelFor(live),
       };
       if (voiceCache.pending === pending) voiceCache = { at: Date.now(), cfg, pending: null };
       return cfg;
     })
     .catch((e) => {
       if (voiceCache.pending === pending) voiceCache.pending = null;
-      return { key: null, ...voice.DEFAULTS, live_model: voiceModel(), error: e.message };
+      return { key: null, ...voice.DEFAULTS, live_model: voiceModel(), transcribe_model: voice.listenModelFor(voiceModel()), error: e.message };
     });
   voiceCache.pending = pending;
   return pending;
@@ -2536,7 +2579,6 @@ settingsRoutes.sections.voice = async (req, res) => {
       voices: voice.VOICES,
       meta: voice.VOICE_META,
       transcribe: cfg.transcribe_model,
-      transcribeModels: voice.TRANSCRIBE_MODELS,
       persona: { ...voicePersona.describe(persona), mode: persona.mode, preset: persona.preset },
       liveAudio: liveAudio(),
       usage: voiceUsageSummary(),
@@ -2607,36 +2649,37 @@ app.post("/mint-ai/settings/voice/clear", ...voiceGuardSettings, async (req, res
 });
 
 /**
- * The voice model, the voice and the listening model. Each Settings row posts
- * only its own field; a confirmed voice.set from the Command Center posts all
- * three. The voice model is the panel's setting (the live call's model); the
- * helper keeps the reader's model (readerModelFor), the voice and the listening
- * model, as before.
+ * The voice model and the voice. Each Settings row posts only its own field; a
+ * confirmed voice.set from the Command Center posts the voice. The voice model
+ * is the panel's setting (live and read-aloud); the helper keeps the reader's
+ * model (the same model), the voice and the paired transcription model
+ * (listenModelFor). A `transcribe_model` field (an older page) is ignored:
+ * listening is not a setting any more.
  */
 app.post("/mint-ai/settings/voice/options", ...voiceGuardSettings, async (req, res) => {
   const cur = await voiceConfig();
   const has = (k) => typeof (req.body && req.body[k]) === "string" && req.body[k] !== "";
   const vmodel = has("model") ? field(req.body, "model") : cur.live_model;
   const name = has("voice") ? field(req.body, "voice") : cur.voice;
-  const tmodel = has("transcribe_model") ? field(req.body, "transcribe_model") : cur.transcribe_model;
-  if (!voice.VOICE_MODELS.some((m) => m.id === vmodel) || !voice.VOICES.includes(name) || !voice.TRANSCRIBE_MODELS.some((m) => m.id === tmodel)) {
-    return voiceReply(req, res, { err: "Pick a voice model, voice and listening model from the lists.", anchor: "v-voice" });
+  if (!voice.VOICE_MODELS.some((m) => m.id === vmodel) || !voice.VOICES.includes(name)) {
+    return voiceReply(req, res, { err: "Pick a voice model and a voice from the lists.", anchor: has("model") ? "v-model" : "v-voice" });
   }
   // The voice is locked while someone's confirm for a voice.set is open (their confirm applies it).
   const lock = uiConfirmsVoicePending();
   if (lock) return voiceReply(req, res, { err: "A voice change is waiting for a confirm on the Command Center; answer that first.", anchor: "v-voice" });
   try {
     const reader = voice.readerModelFor(vmodel);
-    await priv.voiceOptionsSet(reader, name, tmodel);
+    const listen = voice.listenModelFor(vmodel);
+    await priv.voiceOptionsSet(reader, name, listen);
     if (vmodel !== voiceModel()) db.setSetting(VOICE_MODEL_SETTING, vmodel, req.me.username);
     voiceForget("reconnect");
     const greet = (voiceGreet.get(req.me.username) || 0) > Date.now() ? req.me.username : null;
     voiceGreet.delete(req.me.username);
     // Open live calls reconnect with the new settings and go on; the one whose confirm this is says a line in it.
     voiceReconnect(greet).catch(() => {});
-    db.logLogin(req.ip, req.me.username, "voice", `voice settings ${vmodel} (reads aloud with ${reader}) / ${name} / ${tmodel}${voiceLive.activeCount() ? ` (${voiceLive.activeCount()} live call(s) reconnect with it)` : ""}`);
-    const what = has("model") ? `Voice model: ${vmodel}.` : has("voice") && !has("transcribe_model") ? `Voice: ${name}.` : has("transcribe_model") && !has("voice") ? `Listening model: ${tmodel}.` : "Voice settings saved.";
-    voiceReply(req, res, { msg: what, anchor: has("model") ? "v-model" : has("transcribe_model") && !has("voice") ? "v-listen" : "v-voice" });
+    db.logLogin(req.ip, req.me.username, "voice", `voice settings ${vmodel} (live and read-aloud; listens with ${listen}) / ${name}${voiceLive.activeCount() ? ` (${voiceLive.activeCount()} live call(s) reconnect with it)` : ""}`);
+    const what = has("model") && !has("voice") ? `Voice model: ${vmodel}.` : has("voice") && !has("model") ? `Voice: ${name}.` : "Voice settings saved.";
+    voiceReply(req, res, { msg: what, anchor: has("model") && !has("voice") ? "v-model" : "v-voice" });
   } catch (e) {
     voiceReply(req, res, { err: e.message, anchor: "v-voice" });
   }
@@ -2679,10 +2722,9 @@ app.post("/mint-ai/settings/voice/live-audio", ...voiceGuardSettings, (req, res)
 });
 
 /**
- * Test: one short line spoken with the voice model and transcribed back -- a
- * real call. It reads with the selected voice model even when read-aloud uses
- * gpt-realtime-mini (readerModelFor), so a passing Test is what shows a model
- * can be trusted to read aloud word for word.
+ * Test: one short line spoken by the voice model -- the reader MINT AI's
+ * replies are read with -- and transcribed back by its paired listening model.
+ * A real call; a passing Test shows the model reads aloud word for word.
  */
 app.post("/mint-ai/settings/voice/test", ...voiceGuardSettings, async (req, res) => {
   voiceForget("keep"); // test what is on disk now, not a cached copy; open calls are not touched
@@ -2695,8 +2737,7 @@ app.post("/mint-ai/settings/voice/test", ...voiceGuardSettings, async (req, res)
     text =
       `${out.model} (${out.voice}) spoke ${out.seconds != null ? out.seconds + " s of audio " : ""}in ${out.speak_ms} ms` +
       (out.faithful ? ", word for word" : `, but not as written — it said “${out.speak_transcript}”`) +
-      (out.heard != null ? `; listening heard “${out.heard}” in ${out.transcribe_ms} ms.` : ".") +
-      (cfg.model !== cfg.live_model ? ` Replies are read aloud with ${cfg.model}.` : "");
+      (out.heard != null ? `; listening (${cfg.transcribe_model}) heard “${out.heard}” in ${out.transcribe_ms} ms.` : ".");
   } catch (e) {
     text = e.message;
   }
@@ -5748,6 +5789,8 @@ const httpServer = app.listen(PORT, BIND, () => {
     getSetupToken();
     console.log("No admin account yet. Setup token is in " + DATA_DIR + "/setup.token");
   }
+  // One voice model: bring the helper's stored reader/listening models in line once.
+  migrateVoiceHelperModels();
 });
 httpServer.on("upgrade", liveUpgrade);
 

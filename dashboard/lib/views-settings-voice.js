@@ -15,8 +15,12 @@
  * os.js, a plain POST without JavaScript). The key is typed in a dialog and
  * posted once, to be handed to the helper on stdin; it is never shown again.
  *
- * Anchors (the page registry scans them): v-token, v-voice, v-persona,
- * v-listen, v-live-audio, v-spend.
+ * One voice model (2026-09-30): the model talks live and reads replies aloud;
+ * what the administrator said is written down by a transcription model paired
+ * with it -- named under the selector, not a setting of its own.
+ *
+ * Anchors (the page registry scans them): v-model, v-token, v-voice, v-persona,
+ * v-read, v-live-audio, v-spend.
  */
 
 const { esc, icon } = require("./ui");
@@ -65,7 +69,7 @@ function voiceCard(name, cur, meta) {
  *   model         the voice model now (lib/voice.js VOICE_MODELS id)
  *   models        [{id, label}]
  *   voice, voices, meta   the voice, the list, lib/voice.js VOICE_META
- *   transcribe, transcribeModels
+ *   transcribe    the paired transcription model (fixed; shown, not chosen)
  *   persona       voice-persona describe() + mode/preset
  *   liveAudio     { duplex, noise }
  *   usage         voice-usage summary (or { error })
@@ -95,14 +99,17 @@ function body(o) {
 
   const offnote = `<div class="offnote">${icon("info", 16)}<div>Voice is off for everyone: the microphone, read-aloud and live-call controls disappear from the Command Center and the dock, and MINT AI's voice screen actions are refused. Typing works as always. The token stays stored — you can still replace or remove it below.</div></div>`;
 
+  const listen = o.transcribe || "gpt-4o-mini-transcribe";
   const modelRow = V.row(
     "Voice model",
-    "The realtime model MINT AI talks with. It also reads replies aloud when you ask.",
+    `One model for the whole voice: it holds the live conversation and reads MINT AI's replies aloud, word for word. <span class="muted" id="voice-listen-note">Your words are written down by <code>${esc(
+      listen
+    )}</code>, paired with it: MINT AI always works from that transcript, never from the voice model's retelling. It is not a setting.</span>`,
     V.form(
       `${BASE}/options`,
       csrf,
       `<select name="model" aria-label="Voice model"${on ? "" : " disabled"}>${o.models
-        .map((m) => V.opt(m.id, m.id + (m.id === o.model ? " · current" : ""), o.model))
+        .map((m) => V.opt(m.id, (m.label || m.id) + (m.id === o.model ? " · current" : ""), o.model))
         .join("")}</select>`
     ),
     { dep: true, scope: "everyone", id: "v-model" }
@@ -141,7 +148,7 @@ function body(o) {
 
   const main = `<div class="group" id="v-main">${hero}${offnote}${modelRow}${tokenRow}${testRow}${test}</div>`;
 
-  const hiddenNote = `<p class="hidden-note">${icon("info", 16)}Voice, Listening, Live audio and Spend are hidden while voice is off. Their values are kept.</p>`;
+  const hiddenNote = `<p class="hidden-note">${icon("info", 16)}Voice, Live audio and Spend are hidden while voice is off. Their values are kept.</p>`;
 
   const cards = o.voices.map((n) => voiceCard(n, o.voice, o.meta[n])).join("");
   const p = o.persona || {};
@@ -169,27 +176,10 @@ function body(o) {
             confirmYes: "Reset",
           }),
         { scope: "you", id: "v-persona" }
-      )
-  );
-
-  const listenGroup = V.group(
-    "Listening",
-    "search",
-    V.row(
-      "Listening model",
-      "Writes down what you said, so MINT AI works on your own words — never the voice model's paraphrase.",
-      V.form(
-        `${BASE}/options`,
-        csrf,
-        `<select name="transcribe_model" aria-label="Listening model">${o.transcribeModels
-          .map((m) => V.opt(m.id, m.id + (m.id === o.transcribe ? " · current" : ""), o.transcribe))
-          .join("")}</select>`
-      ),
-      { scope: "everyone", id: "v-listen" }
-    ) +
+      ) +
       V.row(
         "Read replies aloud",
-        "Typed conversations too: MINT AI's replies are read in the same voice as they stream.",
+        "Typed conversations too: MINT AI's replies are read in the same voice, by the voice model, as they stream.",
         // This browser's choice (localStorage "mint-read-aloud"), set by public/mint-settings-voice.js
         // and read by the Command Center; the Command Center's speaker button switches the same one.
         `<label class="sw"><input type="checkbox" id="voice-read-aloud" data-read-aloud aria-label="Read replies aloud in this browser"><span class="tr"></span><span class="on-t">On</span><span class="off-t">Off</span></label>`,
@@ -250,7 +240,7 @@ function body(o) {
     ) +
     main +
     hiddenNote +
-    `<div class="dep-hide">${voiceGroup}${listenGroup}${liveGroup}${spendGroup}</div>` +
+    `<div class="dep-hide">${voiceGroup}${liveGroup}${spendGroup}</div>` +
     dialog
   );
 }

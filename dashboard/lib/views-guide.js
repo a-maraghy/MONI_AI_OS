@@ -115,9 +115,16 @@ exports.guide = ({ csrf, user, publicHost, publicPort, sshHost }) => {
         <li>Add the <b>Voice API token</b> (an OpenAI key). It is written to a root-only file
           and never shown again; <b>Replace</b> and <b>Remove</b> are next to it, and
           <b>Test</b> speaks one line and transcribes it back.</li>
-        <li>Pick the <b>Voice model</b> and a <b>voice</b> — each card says whether it sounds
-          female, male or neutral.</li>
+        <li>Check the <b>Voice model</b> and pick a <b>voice</b> — each card says whether it
+          sounds female, male or neutral.</li>
       </ol>
+      <h3>One voice model</h3>
+      <p>A single model does the voice: it holds the live conversation and reads MINT AI's
+        replies aloud, word for word. Only models that passed both on the real API are
+        offered — today <b>GPT Realtime 2.1 mini</b>. What you say is also written down by a
+        transcription model paired with it (<b>gpt-4o-mini-transcribe</b>); MINT AI always
+        acts on that transcript, never on the voice model's retelling of your words. The
+        transcription model is fixed, not a setting.</p>
       <h3>During a call</h3>
       <ul>
         <li>Say “stop listening”, press <kbd>Esc</kbd> or the red <b>End</b> to finish. A call
