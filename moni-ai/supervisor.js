@@ -73,6 +73,10 @@ const DEFAULTS = {
   ring_size: 2000,
   backoff_min_s: 2,
   backoff_max_s: 120,
+  // Compact the conversation once it reaches this many tokens (30% of the
+  // 1M window). A long context made every turn slower and the first turn
+  // after an idle hour cost ~$4; 0 leaves the CLI's own threshold.
+  auto_compact_window: 300000,
   // Command Center v3, phase 1
   tz: "Africa/Cairo",
   helper: "/usr/local/sbin/moni-helper",
@@ -409,6 +413,7 @@ function childEnv() {
     MONI_AI_CONFIG: CONFIG_FILE,
     MONI_AI_SOCKET: CONTROL_SOCKET,
   };
+  if (Number(cfg.auto_compact_window) > 0) env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(Math.round(cfg.auto_compact_window));
   if (cfg.runtime_dir && fs.existsSync(cfg.runtime_dir)) env.XDG_RUNTIME_DIR = cfg.runtime_dir;
   // Deliberately built from nothing: an inherited CLAUDE_CODE_MESSAGING_SOCKET
   // or session variable would make the child think it is someone else's
