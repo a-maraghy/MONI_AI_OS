@@ -45,8 +45,10 @@ check("landing: os.view without moniai.use -> /os", rbac.landing(A(["os.view", "
 check("landing: agents.view only -> /agents/dashboard", rbac.landing(A(["agents.view"])) === "/agents/dashboard");
 check("landing: nothing -> /account", rbac.landing(A([])) === "/account");
 check("landing: no actor at all -> /account", rbac.landing(null) === "/account");
-check("tab order: MINT AI, OS Dashboard, Agents Dashboard", ui.NAV.map((d) => d.href).join(" ") === "/mint-ai /os /agents/dashboard", ui.NAV.map((d) => d.href).join(" "));
-check("the OS sidebar's Dashboard item is /os", ui.NAV[1].home.href === "/os");
+check("sidebar group order: MINT AI, Agents & sessions, Machine, Access & security, Help", ui.NAV.map((g) => g.key).join(" ") === "mint-ai agents machine access help", ui.NAV.map((g) => g.key).join(" "));
+check("the Command Center is the first item, at /mint-ai", ui.NAV[0].items[0].href === "/mint-ai");
+check("Machine ▸ Overview is /os", ui.NAV.find((g) => g.key === "machine").items[0].href === "/os");
+check("Agents & sessions ▸ Overview is /agents/dashboard", ui.NAV.find((g) => g.key === "agents").items[0].href === "/agents/dashboard");
 {
   const hits = [];
   for (const f of fs.readdirSync(path.join(ROOT, "lib")).filter((f) => f.endsWith(".js"))) {
@@ -122,7 +124,9 @@ async function makeUser(username, roleName, permissions) {
   return { pw, secret };
 }
 
-const tabHrefs = (body) => [...body.matchAll(/<a href="([^"]+)" class="top-tab(?: ai)?( on)?"/g)].map((m) => m[1] + (m[2] ? "*" : ""));
+// The sidebar's items (the top-bar tabs are gone): href, "*" on the current one.
+const sideHrefs = (body) => [...body.matchAll(/<a href="([^"]+)" class="side-item( on)?"/g)].map((m) => m[1] + (m[2] ? "*" : ""));
+const noTabs = (body) => !/class="top-tab/.test(body);
 const brand = (body) => (body.match(/<a class="brand" href="([^"]+)"/) || [])[1];
 
 (async () => {
@@ -168,15 +172,15 @@ const brand = (body) => (body.match(/<a class="brand" href="([^"]+)"/) || [])[1]
     check("admin: /login while signed in -> /mint-ai", r.status === 302 && r.headers.location === "/mint-ai", r.status + " " + r.headers.location);
     r = await req("GET", "/os", { cookie: a.cookie });
     check("admin: /os renders the Machine core", r.status === 200 && /<h1>Machine core<\/h1>/.test(r.body) && /id="mc-hero"/.test(r.body) && /mycelium\.js/.test(r.body), r.status);
-    check("admin: on /os the tabs are MINT AI, OS (active), Agents", tabHrefs(r.body).join(" ") === "/mint-ai /os* /agents/dashboard", tabHrefs(r.body).join(" "));
+    check("admin: no top-bar tabs; the sidebar starts at the Command Center and marks /os current", noTabs(r.body) && sideHrefs(r.body)[0] === "/mint-ai" && sideHrefs(r.body).includes("/os*"), sideHrefs(r.body).join(" "));
     check("admin: the sidebar's Dashboard item on /os is /os and is current", /<a href="\/os" class="side-item on" aria-current="page"/.test(r.body));
     check("admin: the brand link goes to /mint-ai", brand(r.body) === "/mint-ai", brand(r.body));
     r = await req("GET", "/agents/dashboard", { cookie: a.cookie });
-    check("admin: /agents/dashboard unchanged, its tab active", r.status === 200 && tabHrefs(r.body).join(" ") === "/mint-ai /os /agents/dashboard*", r.status + " " + tabHrefs(r.body).join(" "));
+    check("admin: /agents/dashboard opens, its sidebar item current", r.status === 200 && sideHrefs(r.body).includes("/agents/dashboard*") && sideHrefs(r.body).filter((h) => h.endsWith("*")).length === 1, r.status + " " + sideHrefs(r.body).join(" "));
     r = await req("GET", "/mint-ai", { cookie: a.cookie });
-    check("admin: /mint-ai is the Command Center with its tab first and active", r.status === 200 && /id="cc"/.test(r.body) && tabHrefs(r.body)[0] === "/mint-ai*", tabHrefs(r.body).join(" "));
+    check("admin: /mint-ai is the Command Center, its sidebar item first and current", r.status === 200 && /id="cc"/.test(r.body) && sideHrefs(r.body)[0] === "/mint-ai*", sideHrefs(r.body).join(" "));
     r = await req("GET", "/services", { cookie: a.cookie });
-    check("admin: an OS page's crumb links the OS Dashboard at /os", r.status === 200 && /<nav class="crumbs"[^>]*><a href="\/os">OS Dashboard<\/a>/.test(r.body), r.status);
+    check("admin: a Machine page's crumb links the Machine group at /os", r.status === 200 && /<nav class="crumbs"[^>]*><a href="\/os">Machine<\/a>/.test(r.body), r.status);
     r = await req("GET", "/api/os/pulse?since=0", { cookie: a.cookie, headers: { Accept: "application/json" } });
     check("admin: the Mycelium feed still answers", r.status === 200 && /^\{/.test(r.body), r.status);
 
@@ -187,7 +191,7 @@ const brand = (body) => (body.match(/<a class="brand" href="([^"]+)"/) || [])[1]
     check("viewer: GET / -> 302 /os", r.status === 302 && r.headers.location === "/os", r.status + " " + r.headers.location);
     r = await req("GET", "/os", { cookie: v.cookie });
     check("viewer: /os renders the Machine core", r.status === 200 && /<h1>Machine core<\/h1>/.test(r.body), r.status);
-    check("viewer: no MINT AI tab, OS active", tabHrefs(r.body).join(" ") === "/os* /agents/dashboard", tabHrefs(r.body).join(" "));
+    check("viewer: no MINT AI group, no tabs, /os current", noTabs(r.body) && !/data-g="mint-ai"/.test(r.body) && !sideHrefs(r.body).some((h) => h.startsWith("/mint-ai")) && sideHrefs(r.body).includes("/os*"), sideHrefs(r.body).join(" "));
     check("viewer: the brand link goes to /os", brand(r.body) === "/os", brand(r.body));
 
     /* operator: os.view, no moniai.use */
