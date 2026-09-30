@@ -192,6 +192,18 @@ KEEP.forEach(([name, ok]) => check("kept: " + name, !!ok));
     /paintCalm\(st\);/.test(main));
 }
 
+// Reload / replay / shell trip: an old reply is never the caption (the administrator's ask, 2026-09-30).
+{
+  const snap = { online: true, busy: false, pending: 0, lastReply: "" };
+  check("no live reply: the caption is the idle line", L.caption(snap).text === "Ready when you are." && L.caption({ ...snap, lastReply: "You're welcome!" }).text === "You're welcome!");
+  check("the page: only replies that ended live (not a replay) feed the caption; a trip back from the shell clears them; See last reply stays",
+    /lastReply: last && S\.liveReplies\.has\(last\.id\) \? ML\.gist\(aiText\(last\)\) : ""/.test(main) && /if \(!replay\) S\.liveReplies\.add\(row\.id\);/.test(main) &&
+    /document\.addEventListener\("mint-shell-full", function \(\) \{ S\.liveReplies\.clear\(\); paintState\(\); \}\);/.test(main) &&
+    /document\.dispatchEvent\(new CustomEvent\("mint-shell-full"\)\)/.test(read("public/mint-shell.js")) && /rest \|\| !o\.hasReply \? "See last reply" : "Full reply"/.test(main));
+  check("replayed turns never speak: voice read-aloud only for turns this page sent, and only when not a replay",
+    /if \(!replay && voiceTurns\.has\(row\.id\)\) \{ Voice\.flush/.test(main) && /else if \(!replay && deskTurns\.has\(row\.id\)\)/.test(main) && /if \(!replay && voiceTurns\.has\(ta\.id\)\) Voice\.feed/.test(main));
+}
+
 // The last reply rests after 15 s of quiet (the administrator's ask, 2026-09-30).
 {
   const b = { state: "idle", online: true, hasReply: true, quietSince: 1000 };
@@ -204,7 +216,7 @@ KEEP.forEach(([name, ok]) => check("kept: " + name, !!ok));
   check("caption rest: when to look again", L.captionRestIn({ ...b, now: 6000 }) === 10000 && L.captionRestIn({ ...b, now: 99999 }) === 0);
   check("the page: new caption / non-idle state / typing / focus / closing the reply restart the quiet spell; the line is aria-hidden while it rests; the control says See last reply",
     /if \(c\.state !== "idle" \|\| sig !== capRestSig\) \{ capQuietSince = Date\.now\(\);/.test(main) && /input\.addEventListener\("focus", capActivity\);/.test(main) && /capActivity\(\);\n    paintCalm\(\);\n    \$\("cc-send"\)/.test(main) &&
-    /line\.setAttribute\("aria-hidden", rest \? "true" : "false"\);/.test(main) && /rest \? "See last reply" : "Full reply"/.test(main) && /\.cc-caption\.rest \.cc-cap-line \{ opacity: 0; max-height: 0; \}/.test(read("public/moni-ai.css")) && /prefers-reduced-motion: reduce\) \{ \.cc-cap-line \{ transition: none; \}/.test(read("public/moni-ai.css")));
+    /line\.setAttribute\("aria-hidden", rest \? "true" : "false"\);/.test(main) && /rest \|\| !o\.hasReply \? "See last reply" : "Full reply"/.test(main) && /\.cc-caption\.rest \.cc-cap-line \{ opacity: 0; max-height: 0; \}/.test(read("public/moni-ai.css")) && /prefers-reduced-motion: reduce\) \{ \.cc-cap-line \{ transition: none; \}/.test(read("public/moni-ai.css")));
 }
 
 // Hired sessions (M-6): MINT AI's retire question is the Keep / Retire consent; a hired session's own

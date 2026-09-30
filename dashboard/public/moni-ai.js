@@ -247,6 +247,7 @@
 
   var S = {
     online: false,
+    liveReplies: new Set(), // turn ids whose reply arrived live in this page's life (the only ones the caption shows)
     offlineMsg: "",
     status: null,          // the supervisor's status
     sessions: [],          // claude agents --json merged with the ledger
@@ -435,7 +436,9 @@
       queued: (S.status && S.status.queue_depth) || 0,
       delegatingTo: dg ? S.delegTo : "", delegation: dg ? S.delegText : "",
       pending: q.length, needTitle: q.length ? (ML.card(q[0]) || {}).title : "",
-      lastReply: last ? ML.gist(aiText(last)) : "",
+      // Only a reply that arrived live in this page's life is the caption; an old one (a reload, the
+      // event ring's replay, a trip through the shell) is not repainted -- "See last reply" reaches it.
+      lastReply: last && S.liveReplies.has(last.id) ? ML.gist(aiText(last)) : "",
     };
     return liveSnapshot(snap);
   }
@@ -475,7 +478,7 @@
     var rest = ML.captionRests(o);
     $("cc-caption").classList.toggle("rest", rest);
     line.setAttribute("aria-hidden", rest ? "true" : "false");
-    if (!$("cc-cap-more").classList.contains("open")) $("cc-cap-more-t").textContent = rest ? "See last reply" : "Full reply";
+    if (!$("cc-cap-more").classList.contains("open")) $("cc-cap-more-t").textContent = rest || !o.hasReply ? "See last reply" : "Full reply";
     clearTimeout(capRestTimer);
     var due = ML.captionRestIn(o);
     if (due != null && !rest) capRestTimer = setTimeout(function () { paintCaption(); }, due + 20);
@@ -488,6 +491,7 @@
     $("cc-dock").classList.toggle("calm", ML.composerCalm({ online: S.online, state: calmState, text: !!$("cc-input").value.trim(),
       voice: !!(typeof Voice !== "undefined" && Voice && Voice.on), live: liveActive() }));
   }
+  document.addEventListener("mint-shell-full", function () { S.liveReplies.clear(); paintState(); });
   function reducedMotion() { return !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches); }
   function paintState() {
     if (!Voice.speaking) S.spoken = "";
@@ -1931,6 +1935,7 @@
           st.busy = false;
           if (tr) {
             tr.partial = "";
+            if (!replay) S.liveReplies.add(row.id);
             if (!replay && voiceTurns.has(row.id)) { Voice.flush(row.id, aiText(tr)); voiceTurns.delete(row.id); }
             else if (!replay && deskTurns.has(row.id)) { deskTurns.delete(row.id); Voice.summary(row.id, aiText(tr)); }
           }

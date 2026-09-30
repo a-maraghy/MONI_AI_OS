@@ -194,6 +194,7 @@
       frame.hidden = true;
       D().show(false);
       document.title = baseTitle;
+      document.dispatchEvent(new CustomEvent("mint-shell-full")); // back on the Command Center: its caption starts from the idle line
     }
     paintFeed();
   }
