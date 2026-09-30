@@ -310,19 +310,18 @@
       if (s.self && s.cost_today_usd_est == null && st.cost_today) s.cost_today_usd_est = st.cost_today.moni_ai_usd;
     });
     S.sessions = list;
+    ALIAS.learnSessions(list);
   }
+  // Every name a session was known by (sessions events, delegation rows): an old name still finds it.
+  var ALIAS = ML.makeAliases();
   function selfSession() { return S.sessions.filter(function (s) { return s.self; })[0] || null; }
   function sessState(s) { return s.status === "busy" ? "working" : s.status === "waiting" ? "waiting" : "idle"; }
-  function sessionFor(d) {
-    var list = S.sessions;
-    for (var i = 0; i < list.length; i++) if (d.target_pid && list[i].pid === d.target_pid) return list[i];
-    for (var j = 0; j < list.length; j++) if (list[j].name && list[j].name === d.target_name && !list[j].self) return list[j];
-    return null;
-  }
+  /** The live session a delegation went to, by stable id first (cc-logic resolveTarget); null if none or ambiguous. */
+  function sessionFor(d) { return ML.resolveTarget(d, S.sessions, ALIAS).session; }
+  /** A live session by a UNIQUE normalised name (no [ref], case, spaces/dashes folded), or null. */
   function sessionNamed(name) {
-    name = String(name || "").replace(/\s*\[[0-9a-f]+\]$/, "");
-    for (var i = 0; i < S.sessions.length; i++) if (!S.sessions[i].self && S.sessions[i].name === name) return S.sessions[i];
-    return null;
+    var n = ML.normName(name), m = S.sessions.filter(function (s) { return !s.self && ML.normName(s.name) === n; });
+    return n && m.length === 1 ? m[0] : null;
   }
   function pendingApprovals() {
     var out = [];
@@ -613,8 +612,9 @@
     var subs = (s.subagents || []).filter(function (a) { return a && a.status !== "done" && a.status !== "failed" && a.status !== "completed"; });
     // What it said last: its latest message to MINT AI, else the last delegation it got.
     var last = "", lastAt = 0, dels = 0;
-    S.inbound.forEach(function (r) { if (r.from_name === s.name && Date.parse(r.received_at) > lastAt) { lastAt = Date.parse(r.received_at); last = String(r.text || "").replace(/\[Cross-session [a-z ]+\]/i, "").trim(); } });
-    S.delegations.forEach(function (d) { if ((d.target_pid && d.target_pid === s.pid) || (!d.target_pid && d.target_name === s.name)) { if (Date.parse(d.created_at) >= since) dels++; } });
+    S.inbound.forEach(function (r) { if (ML.resolveFrom(r, S.sessions) === s && Date.parse(r.received_at) > lastAt) { lastAt = Date.parse(r.received_at); last = String(r.text || "").replace(/\[Cross-session [a-z ]+\]/i, "").trim(); } });
+    // Today's delegations by who they really went to (session id first), so a restart (new pid) keeps them.
+    S.delegations.forEach(function (d) { if (Date.parse(d.created_at) >= since && ML.resolveTarget(d, S.sessions, ALIAS).session === s) dels++; });
     var d = s.last_delegation;
     var task = st === "waiting" ? "Waiting on you" + (s.waiting_for ? " — " + clip(s.waiting_for, 60) : "") :
       s.mission && s.mission.ref ? s.mission.ref + (s.mission.step_n ? " step " + s.mission.step_n : "") + (d && (d.status === "sent" || d.status === "working") ? ": " + clip(d.summary || firstLine(d.text) || "", 70) : "") :
@@ -629,7 +629,8 @@
       hired: s.hired === true,
     };
   }
-  function sessKey(s) { return String(s.pid || s.session_id || s.name); }
+  // A sphere's id: the session id first (it survives a restart), then the pid.
+  function sessKey(s) { return String(s.session_id || s.pid || s.name); }
   function sessIcon(s) {
     var w = String(s.where || "");
     if (s.self) return "core";
@@ -1528,17 +1529,20 @@
     var cur = S.delegations.get(d.id);
     if (cur && d.updated_at && cur.updated_at && d.updated_at < cur.updated_at) return;
     S.delegations.set(d.id, d);
-    var s = sessionFor(d);
+    ALIAS.learnDelegation(d);
+    var res = ML.resolveTarget(d, S.sessions, ALIAS), s = res.session;
     if (!replay && !cur && d.status === "sent") {
       S.delegatingUntil = Date.now() + 2600;
       S.delegTo = d.target_name || d.target || "a session";
       S.delegText = d.summary || firstLine(d.text) || "";
+      // Always (re)aim the stream: at its sphere, or -- with none here (remote, sub-agent, offline,
+      // ambiguous) -- at a marker at the edge; never at the last target or at empty space.
       if (s && Orb.send(sessKey(s), 2600)) highlightSess(sessKey(s));
+      else { Orb.send(null, 2600); if (Orb.ghost) Orb.ghost(d.target_name || d.target || "a session", ML.ghostWhere(d, res.why), 2600); }
       paintState();
       feedPush({ key: "d" + d.id + "sent", ts: d.created_at, kind: "live", label: "sent", html: "Delegated to <b>" + esc(d.target_name) + "</b> · " + esc(clip(d.summary || firstLine(d.text), 120)) });
     }
-    // An acknowledgement is the session answering: a reply bead comes back.
-    if (!replay && cur && cur.status !== d.status && d.status === "ack" && s) Orb.reply(sessKey(s));
+    // (The session's answer comes home once, with its inbound message -- inboundFeed -- not again on the ack.)
     if (!replay && cur && cur.status !== d.status && (d.status === "failed" || d.status === "held")) {
       feedPush({ key: "d" + d.id + d.status, ts: d.updated_at, kind: d.status === "failed" ? "failed" : "held", html: "<b>" + esc(d.target_name) + "</b> · delegation " + esc(d.status) + (d.note ? " — " + esc(clip(d.note, 120)) : "") });
     }
@@ -1585,7 +1589,7 @@
     }, quiet);
     // A session writing back to MINT AI: a reply bead comes home.
     if (!quiet) {
-      var s = sessionNamed(row.from_name);
+      var s = ML.resolveFrom(row, S.sessions);
       if (s) Orb.reply(sessKey(s));
     }
     renderSessions(); // a sphere's hover card shows its last message

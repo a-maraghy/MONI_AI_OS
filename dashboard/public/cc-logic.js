@@ -259,11 +259,82 @@
     return SHEETS.filter(function (s) { return s !== "-"; }).map(function (s) { return s.key; });
   }
 
+  /* ------------------------------------------------ who a delegation went to (the dot stream's target) */
+  /** A session name as the supervisor compares them (moni-ai/lib/names.js norm): no [ref], lower case, spaces/dashes/underscores folded. */
+  function normName(name) {
+    return String(name == null ? "" : name).replace(/\s*\[[0-9a-f]{4,12}\]\s*$/i, "").trim().toLowerCase().replace(/[\s_-]+/g, " ");
+  }
+  /**
+   * Names a session was known by: every session_id -> name pair seen (sessions events, delegation rows),
+   * so an old name ("MONI Agent OS") still finds the session it belonged to.
+   */
+  function makeAliases() {
+    var byName = {}; // normalised name -> { session_id: true }
+    function add(name, sid) {
+      var n = normName(name);
+      if (!n || !sid) return;
+      (byName[n] = byName[n] || {})[sid] = true;
+    }
+    return {
+      learnSessions: function (list) { (list || []).forEach(function (s) { if (s && !s.self) add(s.name, s.session_id); }); },
+      learnDelegation: function (d) { if (d) add(d.target_name || d.target, d.target_session); },
+      /** The one session id this name was seen with, or null (unknown, or seen with several). */
+      idFor: function (name) { var ids = Object.keys(byName[normName(name)] || {}); return ids.length === 1 ? ids[0] : null; },
+    };
+  }
+  function only(list) { return list.length === 1 ? list[0] : null; }
+  /**
+   * The live session a delegation went to, by stable id first:
+   *   target_session (= session_id), then target_pid, then a UNIQUE normalised name, then the alias table.
+   * Returns { session, why }: why is "ambiguous" (namesakes), "gone" (known id, not live) or "unknown".
+   */
+  function resolveTarget(d, sessions, aliases) {
+    var live = (sessions || []).filter(function (s) { return s && !s.self; });
+    if (!d) return { session: null, why: "unknown" };
+    if (d.target_session) {
+      var a = only(live.filter(function (s) { return s.session_id === d.target_session; }));
+      if (a) return { session: a, why: "session" };
+    }
+    if (d.target_pid) {
+      var b = only(live.filter(function (s) { return s.pid === d.target_pid; }));
+      if (b) return { session: b, why: "pid" };
+    }
+    var nm = normName(d.target_name || d.target);
+    if (nm) {
+      var byName = live.filter(function (s) { return normName(s.name) === nm; });
+      if (byName.length === 1) return { session: byName[0], why: "name" };
+      if (byName.length > 1) return { session: null, why: "ambiguous" };
+      var sid = aliases && aliases.idFor(nm);
+      if (sid) {
+        var c = only(live.filter(function (s) { return s.session_id === sid; }));
+        if (c) return { session: c, why: "alias" };
+      }
+    }
+    return { session: null, why: d.target_session || d.target_pid ? "gone" : "unknown" };
+  }
+  /** The live session an inbound message came from: from_pid first, then a unique normalised name. */
+  function resolveFrom(row, sessions) {
+    var live = (sessions || []).filter(function (s) { return s && !s.self; });
+    if (!row) return null;
+    if (row.from_pid) { var a = only(live.filter(function (s) { return s.pid === row.from_pid; })); if (a) return a; }
+    var nm = normName(row.from_name);
+    return nm ? only(live.filter(function (s) { return normName(s.name) === nm; })) : null;
+  }
+  /** What the ghost marker says for a target with no sphere. */
+  function ghostWhere(d, why) {
+    var k = d && d.target_kind;
+    if (k === "remote") return "Remote";
+    if (k === "subagent" || /^a?[0-9a-f]{12,20}$/.test(String((d && (d.target_name || d.target)) || ""))) return "sub-agent";
+    if (why === "ambiguous") return "more than one session has this name";
+    return "offline";
+  }
+
   return {
     CORES: CORES, CORE_DEFAULT: CORE_DEFAULT, normCore: normCore, isCore: isCore,
     SESS_VIEWS: SESS_VIEWS, SESS_VIEW_DEFAULT: SESS_VIEW_DEFAULT, normSessView: normSessView, isSessView: isSessView,
     STATES: STATES, LABEL: LABEL, coreState: coreState, caption: caption, lastSentence: lastSentence, gist: gist,
     needQueue: needQueue, card: card, doneText: doneText,
     SHEETS: SHEETS, sheetKeys: sheetKeys,
+    normName: normName, makeAliases: makeAliases, resolveTarget: resolveTarget, resolveFrom: resolveFrom, ghostWhere: ghostWhere,
   };
 });

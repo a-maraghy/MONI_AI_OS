@@ -35,7 +35,7 @@ console.log("\nthe view");
 check("CSP: no inline style attribute is ever written (CSSOM only)", !/style="/.test(fam) && !/setAttribute\("style"/.test(fam));
 check("classic orbit hides the spheres; spheres hide the orbit", /\.cc-shell:not\(\[data-sessview="orbit"\]\) \.cc-orbit \{ display: none; \}/.test(css) && /\[data-sessview="orbit"\] \.cc-family/.test(css));
 check("it rides the core's own frame and forwards delegations and replies", /family\.frame\(\)/.test(map) && /family\.send\(id\)/.test(map) && /family\.reply\(id\)/.test(map));
-check("the core's delegation stream aims at the sphere", /var fp = family\.positions\(\); if \(id && fp\[id\]\) return fp\[id\];/.test(map));
+check("the core's delegation stream aims at the sphere", /var fp = family\.positions\(\);\s*if \(id && fp\[id\]\) \{ lastPos\[id\] = fp\[id\]; return fp\[id\]; \}/.test(map));
 check("it stays clear of the top bar, caption, composer / voice bar, approval card, icon rail, reply, menus and an open sheet", ["top bar", "caption", "composer", "approval card", "icon rail", "reply", "menu"].every((n) => map.includes('"' + n + '"')) && /cc-sheet/.test(map));
 check("hard guarantees every frame: her edge, the chrome, each other, the screen", /function guarantee\(live\)/.test(fam) && /herMin\(k, dy, hd\)/.test(fam) && /rects\.forEach\(function \(rc\) \{ var p = pen\(kidBox/.test(fam));
 check("prefers-reduced-motion: settled once, still frames", /prefers-reduced-motion: reduce/.test(fam) && /if \(reduced\) settle\(160\);/.test(fam) && /if \(!on \|\| reduced\) return;/.test(fam));

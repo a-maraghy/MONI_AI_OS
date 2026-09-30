@@ -1117,3 +1117,6 @@ html.cc-page .topbar .cc-needpill .cc-dot { background: var(--on-brand); }
   .cc-kcard { display: none; }
 }
 @media (prefers-reduced-motion: reduce) { .cc-kid .badge::before { animation: none; } }
+/* A delegation's target with no sphere here (remote, sub-agent, offline): the marker at the edge (cc-family ghost) */
+.cc-ghost .nm { color: var(--muted); font-size: 11.5px; }
+.cc-ghost .st { color: var(--muted); }

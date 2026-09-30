@@ -10,7 +10,7 @@
  * Magic words in a user message:
  *   DESTROY   asks permission for `rm /tmp/moni-fake-victim`, then reports
  *             whether it was allowed or denied (and with what message)
- *   DELEGATE  "sends" a message to fake-target: posts the PostToolUse event to
+ *   DELEGATE  "sends" a message to fake-target (DELEGATE "<name>": to that name): posts the PostToolUse event to
  *             the hook socket the way hooks/ledger.js would, then a reply and
  *             an idle notice as UserPromptSubmit events
  *   SLOW <ms> takes that long (up to 30 s) before answering "slow done"
@@ -170,17 +170,19 @@ async function turn(msg) {
     out({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: toolUseId, content: allowed ? "removed" : resp.message, is_error: !allowed }] }, session_id: sessionId });
     reply = allowed ? "allowed" : "denied: " + resp.message;
   } else if (text.includes("DELEGATE")) {
+    // DELEGATE "<name>" sends to that session instead (the dashboard's dot-stream tests); the reply comes from it.
+    const who = (/DELEGATE\s+"([^"]{1,60})"/.exec(text) || [])[1] || "fake-target";
     const toolUseId = "toolu_" + crypto.randomBytes(6).toString("hex");
-    const input = { to: "fake-target [abc123]", message: "Please run the tests and report.", notify_when_idle: true };
+    const input = { to: who + " [abc123]", message: "Please run the tests and report.", notify_when_idle: true };
     out({ type: "assistant", message: { role: "assistant", content: [{ type: "tool_use", id: toolUseId, name: "SendMessage", input }] }, session_id: sessionId });
     const msgId = crypto.randomUUID();
     await hookPost({ event: "PostToolUse", tool_name: "SendMessage", tool_input: input, tool_use_id: toolUseId, tool_response: { success: true, message: "queued", msg_id: msgId } });
     out({ type: "user", message: { role: "user", content: [{ type: "tool_result", tool_use_id: toolUseId, content: JSON.stringify({ success: true, msg_id: msgId }) }] }, session_id: sessionId });
     reply = "sent " + msgId;
     setTimeout(async () => {
-      await hookPost({ event: "UserPromptSubmit", prompt: `<cross-session-message from="uds:/run/user/0/cc-socks/${process.ppid}.sock" from-name="fake-target" from-mode="prompting">\n42 passed\n</cross-session-message>` });
+      await hookPost({ event: "UserPromptSubmit", prompt: `<cross-session-message from="uds:/run/user/0/cc-socks/${process.ppid}.sock" from-name="${who}" from-mode="prompting">\n42 passed\n</cross-session-message>` });
       await sleep(300);
-      await hookPost({ event: "UserPromptSubmit", prompt: `[Cross-session idle notice] "fake-target", which you asked to be notified about, is idle now — it finished a turn at 14:05. Its harness reports: «Done. 42 passed.». This is an automated notice.` });
+      await hookPost({ event: "UserPromptSubmit", prompt: `[Cross-session idle notice] "${who}", which you asked to be notified about, is idle now — it finished a turn at 14:05. Its harness reports: «Done. 42 passed.». This is an automated notice.` });
     }, 400);
   }
   out({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: reply }] }, session_id: sessionId });

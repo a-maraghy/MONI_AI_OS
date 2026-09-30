@@ -82,6 +82,7 @@
     var L = { cx: 0, cy: 0, R: 100, rBase: 24, fax: 200, fay: 120, sceneR: 0, top: 60 };
     var kids = [];             // live and dissolving spheres
     var parts = [];            // delegation / reply dots
+    var ghosts = [];           // a delegation's target with no sphere (remote, sub-agent, offline, ambiguous): a marker at the edge
     var glow = 0;              // her glow when a sphere dissolves into her
     var first = true;          // the first list is placed, not born
     var hoverKid = null, mouse = { x: -1, y: -1, over: false };
@@ -301,6 +302,37 @@
       for (var i = 0; i < count; i++) parts.push({ kind: kind, k: k, t0: t + (i / count) * spread + rand() * 0.05, dur: dur * (0.85 + rand() * 0.3), jx: (rand() - 0.5) * (kind === "del" ? 0.9 : 0.3), w: rand() * TAU, p: 0, big: rand() < 0.2 });
     }
     function find(id) { for (var i = 0; i < kids.length; i++) if (kids[i].id === id && !kids[i].dis) return kids[i]; return null; }
+    /**
+     * A delegation whose target has no sphere here: the dots still land somewhere real -- a small
+     * marker at the scene's edge, named "<name> · Remote / offline / sub-agent", that flashes and fades.
+     */
+    function ghost(name, where) {
+      // The first free spot down the scene's right edge (clear of the spheres, their names and other markers).
+      var x = Math.max(90, (L.sceneR || W) - 120), y = (L.top || 60) + 96, tries = 0;
+      var clear = function (yy) {
+        return kids.every(function (k) { if (k.dead || k.dis) return true; var p = kidPos(k); return Math.hypot(p.x - x, p.y - yy) > p.r * 1.3 + 70; }) &&
+          ghosts.every(function (o) { return Math.abs(o.y - yy) > 54; });
+      };
+      while (!clear(y) && tries++ < 12) y += 54;
+      if (tries > 12) y = (L.top || 60) + 96;
+      var el = document.createElement("div");
+      el.className = "cc-kid cc-ghost";
+      el.setAttribute("aria-hidden", "true");
+      el.innerHTML = '<span class="nm">' + esc(name || "a session") + '<span class="st">' + esc(where || "not here") + "</span></span>";
+      labels.appendChild(el);
+      var gk = { ghost: true, id: "ghost:" + (name || ""), x: x, y: y, r: 11, lift: 0, hover: 0, bloom: 0, tint: "blue", age: 0, dead: false, glow: 1, catchK: 0, el: el, elN: el.firstChild };
+      ghosts.push(gk);
+      if (reduced) gk.catchK = 1; else stream("del", gk, 60, 1.2, 1.2);
+      placeGhost(gk);
+      if (reduced) { draw(); setTimeout(function () { gk.dead = true; el.remove(); ghosts = ghosts.filter(function (x) { return x !== gk; }); draw(); }, 4200); }
+      return gk;
+    }
+    function ghostAlpha(gk) { return gk.age < 0.25 ? gk.age / 0.25 : gk.age > 3.2 ? Math.max(0, 1 - (gk.age - 3.2) / 0.9) : 1; }
+    function placeGhost(gk) {
+      gk.el.style.transform = "translate(" + gk.x.toFixed(1) + "px," + gk.y.toFixed(1) + "px)";
+      gk.el.style.opacity = (reduced ? 1 : ghostAlpha(gk)).toFixed(2);
+      gk.elN.style.top = (gk.r * 1.2 + 10) + "px";
+    }
 
     /* ---------------------------------------------------------- per frame */
     function update(dt) {
@@ -329,6 +361,11 @@
           if (k.dis > 0.55) glow = Math.max(glow, (k.dis - 0.55) * 1.6);
         }
         for (var s = k.subs.length - 1; s >= 0; s--) { var sb = k.subs[s]; if (sb.dying) { sb.life -= dt / 1.4; if (sb.life <= 0) k.subs.splice(s, 1); } else sb.life = Math.min(1, sb.life + dt / 1.2); }
+      }
+      for (var gi = ghosts.length - 1; gi >= 0; gi--) {
+        var gk = ghosts[gi];
+        gk.age += dt; gk.catchK *= Math.exp(-dt * 2.2);
+        if (gk.age > 4.1) { gk.dead = true; gk.el.remove(); ghosts.splice(gi, 1); }
       }
       for (var q = parts.length - 1; q >= 0; q--) {
         var pt = parts[q]; pt.p = (t - pt.t0) / pt.dur;
@@ -397,6 +434,20 @@
       g.globalAlpha = 1;
       kids.forEach(function (k) { drawKid(k, c); });
       kids.forEach(place);
+      ghosts.forEach(function (gk) {
+        var a = reduced ? 1 : ghostAlpha(gk), fl = Math.min(1, gk.catchK * 3);
+        g.globalAlpha = a * (0.55 + 0.45 * fl);
+        g.strokeStyle = PAL.blue[18];
+        g.lineWidth = 1.5;
+        g.setLineDash([3, 4]);
+        g.beginPath(); g.arc(gk.x, gk.y, gk.r * (1 + 0.35 * fl), 0, TAU); g.stroke();
+        g.setLineDash([]);
+        g.globalAlpha = a * (0.35 + 0.65 * fl);
+        g.fillStyle = PAL.blue[20];
+        g.beginPath(); g.arc(gk.x, gk.y, 3 + 3 * fl, 0, TAU); g.fill();
+        g.globalAlpha = 1;
+        placeGhost(gk);
+      });
     }
     function drawKid(k, c) {
       var p = kidPos(k), r = p.r, fade = k.form < 1 ? k.form : 1;
@@ -529,6 +580,9 @@
       enabled: function () { return on; },
       setLight: function (l) { light = !!l; buildPalettes(); draw(); },
       send: function (id) { var k = find(id); if (k) stream("del", k, 90, 1.5, 1.35); return !!k; },
+      /** No sphere for this target: stream to a marker at the edge ("<name> · Remote"), which flashes and fades. */
+      ghost: function (name, where) { return !!ghost(name, where); },
+      ghosts: function () { return ghosts.map(function (gk) { return { name: gk.el.querySelector(".nm").firstChild.textContent, where: gk.el.querySelector(".st").textContent, x: gk.x, y: gk.y }; }); },
       reply: function (id) { var k = find(id); if (k) { k.glow = 1; stream("rep", k, 60, 1.6, 1.25); } return !!k; },
       positions: function () { var o = {}; kids.forEach(function (k) { if (!k.dis) { var p = kidPos(k); o[k.id] = [p.x, p.y]; } }); return o; },
       /** Checks: sphere/name boxes that overlap her, each other or the chrome (should be none). */

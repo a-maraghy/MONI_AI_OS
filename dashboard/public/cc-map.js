@@ -34,19 +34,16 @@
     var nodes = [];          // {id, label, st, subs, el}
     var pos = {};            // id -> [x, y] in CSS pixels
     var target = null, lastTarget = null, targetTimer = 0;
+    var lastPos = {};        // a sphere's last position (a stream keeps its aim if she dissolves mid-beam)
+    var ghostAt = null;      // the edge marker for a target with no sphere
     var micLevel = null, outLevel = null;
     var state = "idle";
 
+    var GHOST = "\u0000ghost";
     var core = window.MintCore(els.canvas, {
       concept: root.getAttribute("data-core"),
       points: window.innerWidth <= 720 ? 2600 : 4200,
-      dest: function () {
-        var id = target || lastTarget;
-        if (family && family.enabled()) { var fp = family.positions(); if (id && fp[id]) return fp[id]; }
-        if (id && pos[id]) return pos[id];
-        var first = nodes[0] && pos[nodes[0].id];
-        return first || [L.cx + L.rx * 0.8, L.cy - L.ry * 1.6];
-      },
+      dest: function () { return aimPoint(); },
       amp: function (st) {
         if (st === "listening" && micLevel) return Math.min(1, micLevel() * 7);
         if (st === "speaking" && outLevel) {
@@ -57,6 +54,22 @@
       },
       onFrame: onFrame,
     });
+    /** Where the delegation stream flies. */
+    function aimPoint() {
+        var id = target || lastTarget;
+        if (family && family.enabled()) {
+          // Spheres: only a sphere (or her last place, if she dissolved mid-beam) or the edge marker --
+          // never the hidden orbit's dots or a fixed point in empty space.
+          if (id === GHOST && ghostAt) return ghostAt;
+          var fp = family.positions();
+          if (id && fp[id]) { lastPos[id] = fp[id]; return fp[id]; }
+          if (id && lastPos[id]) return lastPos[id];
+          return [L.cx, L.cy];
+        }
+        if (id && pos[id]) return pos[id];
+        var first = nodes[0] && pos[nodes[0].id];
+        return first || [L.cx + L.rx * 0.8, L.cy - L.ry * 1.6];
+    }
     root.classList.toggle("core-2d", !core.isGL);
 
     /* ---------------------------------------------------------- the family of spheres */
@@ -236,13 +249,27 @@
         var n = node(id);
         clearTimeout(targetTimer);
         nodes.forEach(function (x) { x.el.classList.toggle("target", x.id === id); });
-        target = lastTarget = n ? id : null;
+        target = lastTarget = n || (family && family.enabled() && id && family.positions()[id]) ? id : null;
         targetTimer = setTimeout(function () {
           target = null;
           nodes.forEach(function (x) { x.el.classList.remove("target"); });
         }, ms || 2600);
         if (family && family.enabled()) family.send(id);
         return !!n;
+      },
+      /**
+       * A delegation to a target with no sphere (remote, sub-agent, offline, ambiguous): with the
+       * spheres on, the stream goes to a marker at the scene's edge named "<name> · <where>", which
+       * flashes and fades; never to empty space.
+       */
+      ghost: function (name, where, ms) {
+        if (!family || !family.enabled() || !family.ghost(name, where)) return false;
+        var gs = family.ghosts(), g0 = gs[gs.length - 1];
+        ghostAt = g0 ? [g0.x, g0.y] : null;
+        clearTimeout(targetTimer);
+        target = lastTarget = GHOST;
+        targetTimer = setTimeout(function () { target = null; }, ms || 2600);
+        return true;
       },
       /** A session answered: its point flashes (and a thread of dots comes home to her). */
       reply: function (id) { if (family && family.enabled()) family.reply(id); return flash(id, "reply", 1400); },
@@ -251,6 +278,8 @@
       micSource: function (fn) { micLevel = fn; },
       outSource: function (fn) { outLevel = fn; },
       positions: function () { return pos; },
+      /** Checks: where the stream is aimed now (the target id, and the point the core's beam flies to). */
+      aim: function () { var id = target || lastTarget; return { target: id === GHOST ? "ghost" : id, dest: aimPoint(), ghostAt: ghostAt }; },
       stats: function () { return core.stats(); },
       /** Hand the canvas to fn right after the next frame is drawn (for checks: the pixels are still there). */
       sample: function (fn) { sampler = fn; if (!core.S.running) { core.draw(); } },
