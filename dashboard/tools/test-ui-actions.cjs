@@ -25,17 +25,17 @@ function check(name, cond, detail) {
 }
 
 console.log("the allowlist");
-check("exactly the Phase 1 actions plus the three Tier-2 preferences", UA.names().sort().join() === ["call.end", "call.mute", "call.interrupt", "voice.mode", "sheet.open", "sheet.close", "view", "core.set", "reply.show", "reply.read", "decision.show", "settings.open", "page.open", "theme.set", "persona.set", "voice.set"].sort().join(), UA.names().join());
+check("exactly the Phase 1 actions plus the three Tier-2 preferences (voice.mode and settings.open are gone)", UA.names().sort().join() === ["call.end", "call.mute", "call.interrupt", "sheet.open", "sheet.close", "view", "core.set", "reply.show", "reply.read", "decision.show", "page.open", "theme.set", "persona.set", "voice.set"].sort().join(), UA.names().join());
+check("  voice.mode and settings.open are refused as unknown", !UA.validate("voice.mode", { mode: "live" }).ok && !UA.validate("settings.open", { page: "voice" }).ok && /no such screen action/.test(UA.validate("settings.open", { page: "voice" }).why));
+check("  MODES / PAGES / pageUrl / NAV_PAGES are no longer exported", UA.MODES === undefined && UA.PAGES === undefined && UA.pageUrl === undefined && UA.NAV_PAGES === undefined);
 const TIER3 = ["approve", "deny", "approval.approve", "decision.approve", "decision.deny", "credentials.set", "key.set", "users.add", "rules.add", "gate.off", "restart", "deploy", "voice.set", "theme.set", "persona.set", "settings.set", "call.unmute", "eval", "navigate"];
 check("no Tier-2 or Tier-3 name exists (approve, deny, keys, users, rules, gate, restart, deploy, settings values, unmute...)", TIER3.every((n) => !UA.validate(n, {}).ok), TIER3.filter((n) => UA.validate(n, {}).ok).join());
 check("nothing named like an approval at all", !UA.names().some((n) => /approv|deny|confirm|key|user|rule|gate|restart|deploy|unmute/.test(n)));
 check("the sheets are the dock's own (cc-logic) plus everything", Object.keys(UA.SHEETS).sort().join() === ML.sheetKeys().concat(["everything"]).sort().join());
 check("sheet.open takes a known sheet only", UA.validate("sheet.open", { key: "missions" }).ok && !UA.validate("sheet.open", { key: "credentials" }).ok && !UA.validate("sheet.open", {}).ok);
 check("the mic can be muted, never unmuted", UA.validate("call.mute", {}).ok && UA.validate("call.mute", { on: true }).ok && !UA.validate("call.mute", { on: false }).ok && /never unmuted/.test(UA.validate("call.mute", { on: false }).why));
-check("voice.mode: ptt, handsfree or live", ["ptt", "handsfree", "live"].every((m) => UA.validate("voice.mode", { mode: m }).ok) && !UA.validate("voice.mode", { mode: "off" }).ok);
 check("core.set: A, B or C", UA.validate("core.set", { core: "B" }).ok && !UA.validate("core.set", { core: "D" }).ok);
-check("settings.open: a fixed list of pages, never a URL", UA.validate("settings.open", { page: "voice" }).ok && !UA.validate("settings.open", { page: "/credentials/keys" }).ok && !UA.validate("settings.open", { page: "https://evil.example" }).ok && UA.pageUrl("voice") === "/credentials/openai-voice" && UA.pageUrl("keys") === null);
-check("  and none of them is a credentials-changing page", Object.values(UA.PAGES).every((p) => !/keys|totp|users|roles|rules/.test(p.url)));
+check("page.open's built-in map: no page with a side effect or a credentials form (keys/totp/rules sub-paths)", Object.values(UA.BUILTIN_PAGES).every((p) => !/\/(new|delete|clear|totp|rules|code)\b|\/keys\/|\/users\/|\/roles\//.test(p.url)));
 check("an action without arguments refuses stray ones", UA.validate("sheet.close", {}).ok && !UA.validate("sheet.close", { key: "x" }).ok);
 check("the toast says what Mint did", UA.toast("sheet.open", { key: "missions" }) === "Mint opened Missions" && UA.toast("call.end") === "Mint ended the call" && /approving it is yours/.test(UA.toast("decision.show")));
 
@@ -78,24 +78,46 @@ console.log("\nTier 2 (Phase 3): preferences, only after a confirm");
   const proto = fs.readFileSync(path.join(ROOT, "..", "moni-ai", "lib", "protocol.js"), "utf8");
   check("the supervisor's protocol takes exactly the same argument keys", proto.includes("const KEYS = " + JSON.stringify(UA.ARG_KEYS).replace(/,/g, ", ") + ";"));
 }
-console.log("\npage.open (M-5): another page of Mint OS, by a fixed key");
+console.log("\npage.open (M-5): another place in Mint OS, by a key of the page map");
 {
-  const KEYS = ["os-overview", "agents", "agents-fleet", "agents-channels", "agents-addons", "agents-services", "os-services", "os-audit", "os-firewall", "manage-credentials", "manage-ssh-keys", "manage-devices", "manage-users", "manage-roles", "claude-memory", "claude-sessions", "claude-running", "guide", "account", "voice-settings", "command-center"];
-  check("exactly the 21 allowlisted pages", Object.keys(UA.NAV_PAGES).sort().join() === KEYS.slice().sort().join(), Object.keys(UA.NAV_PAGES).join());
+  const BUILTIN = ["cc", "settings", "settings.voice", "agents", "sessions", "sessions.live", "telegram", "channels", "addons", "memory", "os", "services", "services.agents", "audit", "users", "roles", "devices", "keys", "firewall", "credentials", "guide", "account"];
+  const OLD = ["os-overview", "agents", "agents-fleet", "agents-channels", "agents-addons", "agents-services", "os-services", "os-audit", "os-firewall", "manage-credentials", "manage-ssh-keys", "manage-devices", "manage-users", "manage-roles", "claude-memory", "claude-sessions", "claude-running", "guide", "account", "voice-settings", "command-center"];
+  UA.setPages(null);
+  check("until the first scan: exactly the built-in pages", Object.keys(UA.pages()).join() === BUILTIN.join() && Object.keys(UA.BUILTIN_PAGES).join() === BUILTIN.join(), Object.keys(UA.pages()).join());
   check("tier 1, on the page, once per turn", UA.ACTIONS["page.open"].tier === 1 && UA.ACTIONS["page.open"].where === "page" && UA.ACTIONS["page.open"].once === true);
-  check("a key only, never a URL or a path (stray fields are not carried)", UA.validate("page.open", { page: "os-audit" }).ok && !UA.validate("page.open", { page: "/audit" }).ok && !UA.validate("page.open", { page: "https://evil.example" }).ok && !UA.validate("page.open", {}).ok && JSON.stringify(UA.validate("page.open", { page: "os-audit", key: "x" }).args) === '{"page":"os-audit"}');
-  check("every target is a same-site path with its permission (guide, account and your own devices need none)", Object.entries(UA.NAV_PAGES).every(([k, v]) => /^\/[a-z/-]*$/.test(v.url) && v.label && (v.perm === null ? ["guide", "account", "manage-devices"].includes(k) : /^[a-z.]+$/.test(v.perm))));
-  check("navPage / navKeysFor follow the role", UA.navPage("os-audit").url === "/audit" && UA.navPage("nope") === null && UA.navKeysFor((p) => p === "os.view").join() === "os-overview,manage-devices,guide,account");
-  check("the toast names the page", UA.toast("page.open", { page: "os-audit" }) === "Mint opened the audit log");
+  check("a key only, never a URL or a path (stray fields are not carried)", UA.validate("page.open", { page: "audit" }).ok && !UA.validate("page.open", { page: "/audit" }).ok && !UA.validate("page.open", { page: "https://evil.example" }).ok && !UA.validate("page.open", {}).ok && JSON.stringify(UA.validate("page.open", { page: "audit", key: "x" }).args) === '{"page":"audit"}');
+  check("every target is a same-site path with its permission (guide, account and your own devices need none)", Object.entries(UA.pages()).every(([k, v]) => /^\/[a-z/?=.-]*$/.test(v.url) && v.label && (v.perm === null ? ["guide", "account", "devices"].includes(k) : /^[a-z.]+$/.test(v.perm))));
+  check("all 21 old keys still validate, to their new key", OLD.every((k) => UA.validate("page.open", { page: k }).ok) && UA.validate("page.open", { page: "os-audit" }).args.page === "audit" && UA.validate("page.open", { page: "claude-running" }).args.page === "sessions.live" && UA.validate("page.open", { page: "voice-settings" }).args.page === "settings.voice", OLD.filter((k) => !UA.validate("page.open", { page: k }).ok).join());
+  check("  the legacy map names only keys of the built-in map", Object.values(UA.LEGACY_PAGES).every((k) => BUILTIN.includes(k)));
+  check("navPage / navKeysFor follow the role", UA.navPage("audit").url === "/audit" && UA.navPage("os-audit").url === "/audit" && UA.navPage("nope") === null && UA.navKeysFor((p) => p === "os.view").join() === "os,devices,guide,account", UA.navKeysFor((p) => p === "os.view").join());
+  check("the toast names the page", UA.toast("page.open", { page: "audit" }) === "Mint opened Audit log");
   const L = UA.limiter();
   check("once per turn", L.take("p1", "page.open", 1) === null && /already done/.test(L.take("p1", "page.open", 2)));
+
+  // The map changes as Mint OS grows (Settings > Screen control): setPages().
+  const n = UA.setPages([
+    { key: "os", url: "/os", label: "Machine overview", perm: "os.view", kind: "page" },
+    { key: "guide.voice", url: "/guide#voice", label: "Talking to MINT AI", perm: null, kind: "anchor", parent: "guide" },
+    { key: "evil", url: "https://evil.example/", label: "x" },
+    { key: "evil2", url: "//evil.example/", label: "x" },
+    { key: "Bad Key", url: "/x", label: "x" },
+    { key: "quote", url: '/x"onmouseover=1', label: "x" },
+  ]);
+  check("setPages takes a list, and skips entries whose url is not a path of this site or whose key is bad", n === 2 && Object.keys(UA.pages()).join() === "os,guide.voice", Object.keys(UA.pages()).join());
+  check("  page.open then validates against the new map only", UA.validate("page.open", { page: "guide.voice" }).ok && !UA.validate("page.open", { page: "audit" }).ok && !UA.validate("page.open", { page: "evil" }).ok);
+  check("  an old key still works when its new key is in the map, not otherwise", UA.validate("page.open", { page: "os-overview" }).ok && !UA.validate("page.open", { page: "os-audit" }).ok);
+  check("  the catalog lists the map in use", Object.keys(UA.catalog().actions.find((a) => a.action === "page.open").args.page.values).join() === "os,guide.voice");
+  check("  and the tool's description too", /guide\.voice/.test(UA.tool().description));
+  UA.setPages(null);
+  check("setPages(null) goes back to the built-in pages", Object.keys(UA.pages()).length === BUILTIN.length && UA.validate("page.open", { page: "audit" }).ok);
+
   const t = UA.tool();
-  check("the tool's page enum is settings.open's pages plus these keys", t.parameters.properties.page.enum.slice().sort().join() === [...new Set([...Object.keys(UA.PAGES), ...KEYS])].sort().join());
+  check("the tool's page argument is a free string (no enum): the schema stays stable as the map changes", t.parameters.properties.page.type === "string" && !t.parameters.properties.page.enum);
   check("  and the description says what page.open is for", /page\.open/.test(t.description));
   const page = fs.readFileSync(path.join(ROOT, "public", "moni-ai.js"), "utf8");
   check("the Command Center checks the role (data-pages) before moving", /case "page\.open"/.test(page) && /data-pages|dataset\.pages/.test(page));
-  check("the Command Center page carries data-pages", /data-pages=/.test(fs.readFileSync(path.join(ROOT, "lib", "views-moniai.js"), "utf8")));
-  for (const f of ["voice-live.js", "voice-desk.js"]) check(`lib/${f} tells the voice about page.open`, /page\.open/.test(fs.readFileSync(path.join(ROOT, "lib", f), "utf8")));
+  check("the Command Center page carries data-pages", /data-pages=/.test(fs.readFileSync(path.join(ROOT, "lib", "views-moniai.js"), "utf8")) || /data-pages=/.test(fs.readFileSync(path.join(ROOT, "lib", "ui.js"), "utf8")));
+  for (const f of ["voice-live.js", "voice-desk.js"]) if (fs.existsSync(path.join(ROOT, "lib", f))) check(`lib/${f} tells the voice about page.open`, /page\.open/.test(fs.readFileSync(path.join(ROOT, "lib", f), "utf8")));
   check("the supervisor's copy is byte-identical", fs.readFileSync(path.join(ROOT, "public", "ui-actions.js"), "utf8") === fs.readFileSync(path.join(ROOT, "..", "moni-ai", "lib", "ui-actions.js"), "utf8"));
 }
 
@@ -112,6 +134,13 @@ console.log("\nthe MCP catalog (ui_actions_list) and ui_do's stable schema");
   check("  a required argument it lists is really required", c.actions.every((a) => Object.entries(a.args).every(([k, spec]) => !spec.required || !UA.validate(a.action, {}).ok)));
   const sch = UA.stableSchema();
   check("ui_do's schema: action a plain string, every argument key, no enum", sch.properties.action.type === "string" && !/enum/.test(JSON.stringify(sch)) && Object.keys(sch.properties).join() === ["action"].concat(UA.ARG_KEYS).join() && sch.additionalProperties === false);
+  // A resumed claude CLI keeps the schema it first loaded: it must never change, whatever is added.
+  check("ARG_KEYS are fixed forever (\"mode\" stays though voice.mode is gone)", UA.ARG_KEYS.join() === "key,mode,name,core,page,on,theme,preset,voice", UA.ARG_KEYS.join());
+  const SNAPSHOT = '{"type":"object","properties":{"action":{"type":"string","description":"An action name from ui_actions_list."},"key":{"type":"string","description":"As ui_actions_list gives for the action."},"mode":{"type":"string","description":"As ui_actions_list gives for the action."},"name":{"type":"string","description":"As ui_actions_list gives for the action."},"core":{"type":"string","description":"As ui_actions_list gives for the action."},"page":{"type":"string","description":"As ui_actions_list gives for the action."},"on":{"type":"boolean","description":"call.mute only: true (muting; never unmuting)"},"theme":{"type":"string","description":"As ui_actions_list gives for the action."},"preset":{"type":"string","description":"As ui_actions_list gives for the action."},"voice":{"type":"string","description":"As ui_actions_list gives for the action."}},"required":["action"],"additionalProperties":false}';
+  check("stableSchema() is byte-for-byte the snapshot", JSON.stringify(sch) === SNAPSHOT, JSON.stringify(sch));
+  UA.setPages([{ key: "only", url: "/only", label: "Only" }]);
+  check("  and does not move when the page map does", JSON.stringify(UA.stableSchema()) === SNAPSHOT);
+  UA.setPages(null);
 }
 
 console.log("\nTier 3: never by voice or AI -- no action names at all");
@@ -123,7 +152,7 @@ console.log("\nrate limits");
   const r = [];
   for (let i = 0; i < 7; i++) r.push(L.take("t1", "sheet.open", 1000 + i));
   check("at most 6 per turn", r.slice(0, 6).every((x) => x === null) && /one turn/.test(r[6]));
-  check("call.end and settings.open once per turn", L.take("t2", "call.end", 2000) === null && /already done/.test(L.take("t2", "call.end", 2001)) && L.take("t3", "settings.open", 2002) === null && !!L.take("t3", "settings.open", 2003));
+  check("call.end and page.open once per turn", L.take("t2", "call.end", 2000) === null && /already done/.test(L.take("t2", "call.end", 2001)) && L.take("t3", "page.open", 2002) === null && !!L.take("t3", "page.open", 2003));
   const M = UA.limiter();
   let last = null;
   for (let i = 0; i < 21; i++) last = M.take("turn" + i, "sheet.open", 5000 + i);
