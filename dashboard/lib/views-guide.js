@@ -1,43 +1,236 @@
 "use strict";
 /**
- * The operator's manual, served from the panel itself.
+ * The operator's manual, served from the panel itself (Help ▸ Guide).
  *
  * It lives here rather than in a README because the moment you need it is the
- * moment you are looking at the panel wondering why the bot is silent.
+ * moment you are looking at the panel wondering why something is silent.
+ *
+ * Every section is a `<section id="…" class="card gd">` whose id is written out
+ * literally below: the page registry scans this file for section ids, so
+ * MINT AI can open `/guide#voice` and the like. Keep the ids stable, and keep
+ * them in step with GUIDE_TOC. Each section carries a "where" line naming its
+ * place in the sidebar. The search box and its highlighting live in
+ * public/guide.js, the styles in public/guide.css.
  */
 
-const { esc, shell, icon, docLayout } = require("./ui");
+const { esc, shell, docLayout, tocCard } = require("./ui");
 
-/** The sticky contents beside the guide. Labels are trusted markup (entities). */
+/** The contents list, in page order: [section id, label]. */
 const GUIDE_TOC = [
-  ["how", "How it works"],
-  ["bot", "1 · Create a Telegram bot"],
-  ["userid", "2 · Find your user ID"],
-  ["create", "3 · Create the agent and its channel"],
-  ["talk", "4 · Talk to it"],
-  ["addons", "Add-ons"],
-  ["topics", "Groups &amp; topics"],
-  ["whatsapp", "WhatsApp"],
-  ["channels", "Telegram broadcast"],
+  ["around", "Getting around"],
+  ["cc", "The Command Center"],
+  ["voice", "Talking to MINT AI"],
+  ["hire", "Hiring and retiring sessions"],
+  ["screen", "Screen control"],
+  ["budget", "Budgets and token caps"],
+  ["approvals", "Approvals, watchers and standing orders"],
+  ["agents", "Telegram agents"],
   ["memory", "Memory"],
-  ["obsidian", "Obsidian"],
+  ["machine", "The machine"],
+  ["access", "Users, roles and credentials"],
+  ["devices", "Devices and SSH keys"],
   ["trouble", "Troubleshooting"],
-  ["layout", "Where things live"],
+  ["where", "Where things live"],
 ];
 
+/** A section's place in the sidebar. */
+const where = (text) => `<p class="where">${esc(text)}</p>`;
+
+exports.GUIDE_TOC = GUIDE_TOC;
+
 exports.guide = ({ csrf, user, publicHost, publicPort, sshHost }) => {
-  const host = esc(publicHost);
   const ssh = esc(sshHost || publicHost);
 
-  return shell(
-    "Guide",
-    `${docLayout(`
-    <div class="card" id="how">
-      <h2>How it works</h2>
-      <p>Two things, kept separate. An <strong>agent</strong> is a Claude session with its
-        own workspace and its own memory. A <strong>channel</strong> is how people reach
-        it — a Telegram bot, or a linked WhatsApp number. Nothing is shared between
-        agents.</p>
+  const main = `
+    <section class="card gd-search-card">
+      <div class="guide-search"><input type="search" id="guide-q" placeholder="Search the guide — voice, retire, caps, devices…" aria-label="Search the guide" autocomplete="off" spellcheck="false"></div>
+      <p class="muted small gd-empty" id="gd-empty" role="status">Nothing matches.</p>
+    </section>
+
+    <section id="around" class="card gd">
+      <h2>Getting around</h2>
+      ${where("Everywhere")}
+      <div class="gd-body">
+      <p>Signing in lands on <b>MINT AI › Command Center</b> (a role without MINT AI lands on
+        the first page it may open, or on its account). Everything else is in the
+        <b>sidebar</b>, in five groups:</p>
+      <ul>
+        <li><b>MINT AI</b> — the Command Center and MINT AI's Settings.</li>
+        <li><b>Agents &amp; sessions</b> — the Overview, Sessions, Telegram agents, Channels,
+          Add-ons and Memory.</li>
+        <li><b>Machine</b> — the Overview, Services and the Audit log.</li>
+        <li><b>Access &amp; security</b> — Users, Roles, Devices, SSH keys, Firewall and
+          Credentials.</li>
+        <li><b>Help</b> — this guide.</li>
+      </ul>
+      <p>The top bar shows where you are, how many Decisions wait for you (the amber
+        <b>“N needs you”</b>), whether the machine is healthy, and your avatar. The avatar
+        menu holds <b>Account &amp; sign-in</b>, your <b>Signed-in devices</b>, <b>MINT AI
+        appearance</b>, the theme (System / Dark / Light) and <b>Sign out</b>.
+        <b>Collapse</b> at the foot of the sidebar shrinks it to icons; on a phone, the ☰
+        button opens it as a drawer.</p>
+      <p>In the Command Center, the sidebar is out of the way: its own icon bar sits on the
+        left as always, and the <b>☰ button at the bottom of that bar</b> opens the Mint OS
+        menu over it.</p>
+      </div>
+    </section>
+
+    <section id="cc" class="card gd">
+      <h2>The Command Center</h2>
+      ${where("MINT AI › Command Center")}
+      <div class="gd-body">
+      <p>MINT AI is the assistant that runs this machine. You talk to it in the composer (or
+        by voice); it answers, and hands work to the right session. Its icon bar opens the
+        panels behind the scenes:</p>
+      <ul>
+        <li><b>Conversation</b> — the whole chat and what MINT AI did step by step.</li>
+        <li><b>Sessions</b> — every live session, as a list; the same sessions drift round
+          MINT AI as spheres.</li>
+        <li><b>Missions</b> — multi-step jobs and where each stands.</li>
+        <li><b>Decisions</b> — anything that waits for you: an approval, a retire request, a
+          cap reached. The amber “needs you” count in the top bar opens it.</li>
+        <li><b>Timeline</b>, <b>Rules &amp; watchers</b>, <b>Standing orders</b>,
+          <b>Usage</b> and <b>Machine</b>.</li>
+        <li><b>Search or run</b> (<kbd>Ctrl K</kbd>) finds any panel, session or command.</li>
+      </ul>
+      <p>Type <kbd>@</kbd> to address a session directly. Destructive steps always wait for
+        your approval.</p>
+      </div>
+    </section>
+
+    <section id="voice" class="card gd">
+      <h2>Talking to MINT AI</h2>
+      ${where("MINT AI › Settings › Voice")}
+      <div class="gd-body">
+      <p>Voice is one thing: a <b>live conversation</b>. Press the microphone in the Command
+        Center or the dock and just talk; MINT AI answers at once and you can interrupt it.
+        It speaks as MINT AI, in the first person, and what it reports is read from MINT AI's
+        own results — the voice itself cannot run anything.</p>
+      <p>Only <b>administrators</b> may talk by voice: it takes the permission <b>Talk with
+        MINT AI by voice</b> (<code>voice.use</code>), which no other built-in role has.
+        Changing the voice settings is a separate permission.</p>
+      <h3>Turning it on</h3>
+      <ol>
+        <li>Open <b>Settings › Voice</b>. Switch <b>Voice</b> to <b>Enabled</b>.</li>
+        <li>Add the <b>Voice API token</b> (an OpenAI key). It is written to a root-only file
+          and never shown again; <b>Replace</b> and <b>Remove</b> are next to it, and
+          <b>Test</b> speaks one line and transcribes it back.</li>
+        <li>Pick the <b>Voice model</b> and a <b>voice</b> — each card says whether it sounds
+          female, male or neutral.</li>
+      </ol>
+      <h3>During a call</h3>
+      <ul>
+        <li>Say “stop listening”, press <kbd>Esc</kbd> or the red <b>End</b> to finish. A call
+          lasts at most 20 minutes; one call at a time.</li>
+        <li><b>Speakers mode</b> (default) pauses the microphone while MINT AI speaks — tap,
+          <kbd>Space</kbd> or <kbd>Esc</kbd> to interrupt. With headphones, <b>Headphones
+          mode</b> lets you talk over it.</li>
+        <li>Arabic: it follows how you speak, or the <b>Arabic persona</b> you pick in
+          Settings.</li>
+      </ul>
+      <p><b>Read replies aloud</b> reads typed replies in the same voice.</p>
+      <h3>Turning it off</h3>
+      <p>Switching <b>Voice</b> to <b>Disabled</b> turns off all voice for everyone — live
+        calls, read-aloud and every voice control. The token stays stored, so switching it
+        back on needs nothing else.</p>
+      </div>
+    </section>
+
+    <section id="hire" class="card gd">
+      <h2>Hiring and retiring sessions</h2>
+      ${where("Agents & sessions › Sessions · MINT AI › Settings › Sessions & hiring")}
+      <div class="gd-body">
+      <p>MINT AI may <b>hire</b> a worker session on its own when a job needs one — by
+        default up to 7 live sessions and 3 hires an hour. Both limits are editable in
+        <b>Settings › Sessions &amp; hiring</b>. A hired session runs as its own service,
+        survives restarts, and its first message is marked as coming from MINT AI.</p>
+      <ul>
+        <li><b>Keep</b> a hired session to make it permanent: MINT AI will never retire
+          it.</li>
+        <li><b>Retire</b> ends it gracefully; its transcript is kept. MINT AI may <i>ask</i>
+          to retire one — a Decision card — but retiring always needs your consent: only you
+          can say yes.</li>
+        <li>Your own sessions (started by you) are never hired, kept or retired by MINT
+          AI.</li>
+      </ul>
+      <p>Every tool a hired session runs passes the same destructive-action gate; anything
+        risky comes to you as a Decision naming that session.</p>
+      </div>
+    </section>
+
+    <section id="screen" class="card gd">
+      <h2>Screen control</h2>
+      ${where("MINT AI › Settings › Screen control")}
+      <div class="gd-body">
+      <p>When you ask, MINT AI can act on your screen: end or mute a call, open a panel,
+        switch the core, show the last reply, or take you to any page. These happen at once
+        with a note and a 60-second <b>Undo</b>. Changing a preference — the theme, the voice
+        persona or the voice — always asks you first. It never clicks anything on a page for
+        you, and approving stays yours. <b>Allow screen actions</b> switches all of this off
+        for you.</p>
+      <h3>The page map</h3>
+      <p>MINT AI can open any page, section, tab or anchor in the <b>page map</b> — this
+        guide's sections included. The map is built from the source itself; <b>Rescan
+        pages</b> rebuilds it and shows what is new, renamed or removed. Each entry has an
+        allow switch, and <b>New entries</b> decides whether newly found ones are allowed at
+        once (the default) or wait for you. MINT AI only ever sees entries your role may
+        open.</p>
+      </div>
+    </section>
+
+    <section id="budget" class="card gd">
+      <h2>Budgets and token caps</h2>
+      ${where("MINT AI › Settings › Usage & budget")}
+      <div class="gd-body">
+      <p>The budget is counted in tokens. Each session has a <b>daily token cap</b> — MINT
+        AI, every hired or kept session, your own sessions, and a default that each new hire
+        copies. The bar shows today's use against the cap, with the warning line (<b>Warn
+        at</b>, 80 % by default).</p>
+      <ul>
+        <li><b>Warn</b> — a Decision card tells you the cap was passed; the session keeps
+          going.</li>
+        <li><b>Pause</b> — the session stops at the end of its current step and takes no new
+          work until you <b>Resume</b> it or the day turns (Cairo time). When MINT AI itself
+          is paused it holds every new turn, your own messages included. Raising the cap above
+          today's use also releases it.</li>
+      </ul>
+      <p><b>Pause</b> is only for MINT AI and hired or kept sessions. Your own sessions were
+        not started by MINT AI and it has no hold on them, so they can only warn.</p>
+      <h3>What counts, and when it is checked</h3>
+      <p>A cap counts <b>all</b> tokens — input, output and cache — the same “N tok today”
+        figure the Usage panel shows. Caps are checked at the end of every MINT AI turn and
+        after each cost scan, so a session other than MINT AI can run past its cap by up to
+        one cost-scan interval before it is warned or paused.</p>
+      </div>
+    </section>
+
+    <section id="approvals" class="card gd">
+      <h2>Approvals, watchers and standing orders</h2>
+      ${where("MINT AI › Settings › Approvals & automations")}
+      <div class="gd-body">
+      <p>MINT AI waits up to 300 seconds for an approval before refusing. <b>Rules</b>
+        pre-answer common requests (allow, ask or deny). <b>Watchers</b> tell MINT AI when a
+        service fails, bans burst, the disk fills, an agent keeps failing or Odoo errors pile
+        up. <b>Standing orders</b> run on a schedule — the <b>Morning briefing</b> at 07:30 is
+        one. Switch each on or off in Settings; edit them in the Command Center.</p>
+      </div>
+    </section>
+
+    <section id="agents" class="card gd">
+      <h2>Telegram agents</h2>
+      ${where("Agents & sessions › Telegram agents · Channels · Add-ons")}
+      <div class="gd-body">
+      <p>An <b>agent</b> is a Claude session with its own workspace and memory; a
+        <b>channel</b> is how people reach it (a Telegram bot, or a linked WhatsApp number).
+        To make one: create a Telegram bot with BotFather, find your Telegram user ID, then
+        <b>New agent</b> — the mind first, then its channel. Only listed users are answered.
+        One channel per agent; swapping the channel keeps the agent's memory. Add-ons (voice
+        notes, files, …) are switched per agent and per channel. Groups with topics, WhatsApp
+        and broadcast channels are covered below.</p>
+
+      <div class="gd-sub" id="how">
+      <h3>How it works</h3>
+      <p>Two things, kept separate, and nothing is shared between agents.</p>
       <pre class="diagram">You, on Telegram or WhatsApp
       │
       ▼
@@ -65,16 +258,10 @@ exports.guide = ({ csrf, user, publicHost, publicPort, sshHost }) => {
         <li><strong>The channel is not the agent.</strong> Swap the bot, or move it to
           WhatsApp, and the agent keeps every word of its memory.</li>
       </ul>
-  <h3>Getting around</h3>
-      <p>Signing in, or opening the panel's address, lands on <strong>MINT AI</strong>
-        (<code>/mint-ai</code>). The top bar holds the three dashboards: MINT AI, the
-        <strong>OS Dashboard</strong> (<code>/os</code>) and the <strong>Agents
-        Dashboard</strong> (<code>/agents/dashboard</code>). A role without MINT AI lands
-        on the first of the others it may open, or on its account page.</p>
-    </div>
+      </div>
 
-    <div class="card" id="bot">
-      <h2>1 · Create a Telegram bot</h2>
+      <div class="gd-sub" id="bot">
+      <h3>1 · Create a Telegram bot</h3>
       <p>Every agent needs its own bot. This takes about a minute.</p>
       <ol class="steps">
         <li>Open Telegram and message <a href="https://t.me/botfather"><code>@BotFather</code></a>.</li>
@@ -86,11 +273,11 @@ exports.guide = ({ csrf, user, publicHost, publicPort, sshHost }) => {
           <code class="mono">8123456789:AAHk9x…</code>. That line is the bot. Copy it.</li>
       </ol>
       <div class="alert warn">The token is a password. Anyone holding it controls the bot
-        and can read everything sent to it. Paste it into the create-agent form and nowhere
+        and can read everything sent to it. Paste it into the add-channel form and nowhere
         else — not into a chat, not into a file. The panel stores it <code>0600</code> and
         never displays it again. If you ever leak one, <code>/revoke</code> in BotFather
         invalidates it immediately.</div>
-      <h3>Worth setting while you are there</h3>
+      <p><b>Worth setting while you are there:</b></p>
       <ul>
         <li><code>/setdescription</code> — shown on the bot's empty chat screen.</li>
         <li><code>/setuserpic</code> — makes agents distinguishable at a glance when you
@@ -98,10 +285,10 @@ exports.guide = ({ csrf, user, publicHost, publicPort, sshHost }) => {
         <li><code>/setprivacy</code> → <em>Disable</em> — only if you plan to use the bot in
           a group and want it to see all messages rather than only replies and mentions.</li>
       </ul>
-    </div>
+      </div>
 
-    <div class="card" id="userid">
-      <h2>2 · Find your Telegram user ID</h2>
+      <div class="gd-sub" id="userid">
+      <h3>2 · Find your Telegram user ID</h3>
       <p>The agent answers a whitelist of numeric user IDs and ignores everyone else. An
         agent with an empty whitelist talks to nobody — that is the safe default, not a bug.</p>
       <ol class="steps">
@@ -109,19 +296,17 @@ exports.guide = ({ csrf, user, publicHost, publicPort, sshHost }) => {
         <li>It replies with your ID — a number like <code class="mono">123456789</code>.</li>
       </ol>
       <p class="muted">Adding a colleague later is the same trick: they message that bot,
-        send you the number, you add it to the agent's allowed list in Settings.</p>
-    </div>
+        send you the number, you add it to the channel's allowed list.</p>
+      </div>
 
-    <div class="card" id="create">
-      <h2>3 · Create the agent and its channel</h2>
+      <div class="gd-sub" id="create">
+      <h3>3 · Create the agent and its channel</h3>
       <p>These are two separate things, on purpose. The <strong>agent</strong> is the mind:
         its brief, its workspace, its memory. The <strong>channel</strong> is how people
         reach it: a bot token, a list of who may talk to it. Keeping them apart means you
         can swap the bot an agent answers on, or move it to WhatsApp, without rebuilding
         the agent or losing a word of its memory.</p>
-
-      <h3>First the agent</h3>
-      <p><a href="/agents/new">Agents → New agent</a>:</p>
+      <p><b>First the agent</b> — <a href="/agents/new">Telegram agents › New agent</a>:</p>
       <table class="kv">
         <tr><td>Display name</td><td class="muted">What you call it. Cosmetic.</td></tr>
         <tr><td>Short name</td><td class="muted">Lowercase, becomes the folder and the
@@ -137,9 +322,7 @@ exports.guide = ({ csrf, user, publicHost, publicPort, sshHost }) => {
         <tr><td>Add-ons</td><td class="muted">What the agent can do — git, scheduled jobs,
           webhooks. Memory is always on.</td></tr>
       </table>
-
-      <h3>Then the channel</h3>
-      <p><a href="/channels/new">Channels → Add channel</a>:</p>
+      <p><b>Then the channel</b> — <a href="/channels/new">Channels › Add channel</a>:</p>
       <table class="kv">
         <tr><td>Type</td><td class="muted">Telegram or WhatsApp.</td></tr>
         <tr><td>Bot token</td><td class="muted">From step 1. Verified with Telegram before
@@ -151,39 +334,14 @@ exports.guide = ({ csrf, user, publicHost, publicPort, sshHost }) => {
       </table>
       <p>On save the panel writes the agent's environment, enables a systemd unit and
         starts it. An agent with no channel stays stopped rather than crash-looping.</p>
+      <div class="alert info">A good role brief beats every other setting. "You maintain the
+        Odoo 19 instance at /opt/projects/odoo; you may edit modules and run tests
+        unattended; ask before restarting the service during working hours" produces a far
+        better agent than "You are a helpful assistant".</div>
+      </div>
 
-      <div class="alert info">A good role brief beats every other setting on this page.
-        "You maintain the Odoo 17 instance at /opt/projects/odoo; you may edit modules and
-        run tests unattended; ask before restarting the service during working hours"
-        produces a far better agent than "You are a helpful assistant".</div>
-    </div>
-
-    <div class="card" id="addons">
-      <h2>Add-ons</h2>
-      <p>An add-on is a capability with a switch, not a plugin you install. Turning one on
-        writes configuration the runtime already understands and restarts the affected
-        process. Browse them all under <a href="/addons">Add-ons</a>.</p>
-      <table class="kv">
-        <tr><td><strong>Channel</strong></td><td class="muted">What arrives and how it
-          feels: voice notes, file capture, image capture, live typing, quick actions.</td></tr>
-        <tr><td><strong>Agent</strong></td><td class="muted">What the agent does with it:
-          memory (always on), git, scheduled jobs, webhooks, telemetry.</td></tr>
-      </table>
-      <h3>Voice notes</h3>
-      <p>Send a voice message and the agent hears it. Transcription runs on this server
-        with whisper.cpp — no API key, no per-minute cost, and the recording never leaves
-        the box.</p>
-      <h3>Files</h3>
-      <p>Send a spreadsheet, a PDF, a Word document, a photo, a CSV. The file is saved into
-        the agent's workspace under <code>attachments/inbox/</code> and the agent gets the
-        path, so it can open a spreadsheet with pandas or pull the text out of a PDF —
-        and it is still there tomorrow if you want to ask a follow-up question.</p>
-      <p class="muted small">Executables, libraries, installers and key material are
-        refused regardless of what is switched on.</p>
-    </div>
-
-    <div class="card" id="talk">
-      <h2>4 · Talk to it</h2>
+      <div class="gd-sub" id="talk">
+      <h3>4 · Talk to it</h3>
       <p>Open <code class="mono">https://t.me/&lt;your_bot_username&gt;</code>, press Start,
         and type normally. No commands needed — it is a conversation.</p>
       <table class="kv">
@@ -197,10 +355,32 @@ exports.guide = ({ csrf, user, publicHost, publicPort, sshHost }) => {
       </table>
       <p class="muted">Voice notes, photos and documents work too — it transcribes and reads
         them.</p>
-    </div>
+      </div>
 
-    <div class="card" id="topics">
-      <h2>Groups &amp; topics</h2>
+      <div class="gd-sub" id="addons">
+      <h3>Add-ons</h3>
+      <p>An add-on is a capability with a switch, not a plugin you install. Turning one on
+        writes configuration the runtime already understands and restarts the affected
+        process. Browse them all under <a href="/addons">Agents &amp; sessions › Add-ons</a>.</p>
+      <table class="kv">
+        <tr><td><strong>Channel</strong></td><td class="muted">What arrives and how it
+          feels: voice notes, file capture, image capture, live typing, quick actions.</td></tr>
+        <tr><td><strong>Agent</strong></td><td class="muted">What the agent does with it:
+          memory (always on), git, scheduled jobs, webhooks, telemetry.</td></tr>
+      </table>
+      <p><b>Voice notes.</b> Send a voice message and the agent hears it. Transcription runs
+        on this server with whisper.cpp — no API key, no per-minute cost, and the recording
+        never leaves the box.</p>
+      <p><b>Files.</b> Send a spreadsheet, a PDF, a Word document, a photo, a CSV. The file is
+        saved into the agent's workspace under <code>attachments/inbox/</code> and the agent
+        gets the path, so it can open a spreadsheet with pandas or pull the text out of a PDF
+        — and it is still there tomorrow if you want to ask a follow-up question.</p>
+      <p class="muted small">Executables, libraries, installers and key material are
+        refused regardless of what is switched on.</p>
+      </div>
+
+      <div class="gd-sub" id="topics">
+      <h3>Groups &amp; topics</h3>
       <p>Default is a private chat: you and one agent. Group topic mode instead puts the
         agent in a group where each project gets its own topic thread — useful when several
         people work with the same agent, or one agent covers several projects.</p>
@@ -223,10 +403,10 @@ exports.guide = ({ csrf, user, publicHost, publicPort, sshHost }) => {
         group. To let it read everything: BotFather → <code>/mybots</code> → your bot → Bot
         Settings → Group Privacy → Turn off, then remove and re-add the bot for the change
         to take effect.</div>
-    </div>
+      </div>
 
-    <div class="card" id="whatsapp">
-      <h2>WhatsApp</h2>
+      <div class="gd-sub" id="whatsapp">
+      <h3>WhatsApp</h3>
       <p>A WhatsApp channel links a real number the way WhatsApp Web does: you scan a QR
         code from your phone, and the server holds the linked-device session. The agent
         behind it is the same agent — same workspace, same memory, same voice and file
@@ -234,7 +414,7 @@ exports.guide = ({ csrf, user, publicHost, publicPort, sshHost }) => {
       <ol class="steps">
         <li>Install the bridge once:
           <code>sudo bash /opt/moni-ai-os/deploy/install-whatsapp.sh</code></li>
-        <li><a href="/channels/new">Channels → Add channel</a>, pick WhatsApp, name it, and
+        <li><a href="/channels/new">Channels › Add channel</a>, pick WhatsApp, name it, and
           connect it to an agent.</li>
         <li>Add the numbers allowed to talk to it, in international format.</li>
         <li>Press <strong>Start linking</strong>, then on your phone:
@@ -248,14 +428,12 @@ exports.guide = ({ csrf, user, publicHost, publicPort, sshHost }) => {
       <p class="muted small">A WhatsApp channel with no agent connected does not run at
         all — collecting messages with nothing to answer them is worse than being visibly
         off. Group chats are ignored by design.</p>
-    </div>
+      </div>
 
-    <div class="card" id="channels">
-      <h2>Telegram broadcast channels</h2>
+      <div class="gd-sub" id="channels">
+      <h3>Telegram broadcast channels</h3>
       <p class="muted">Not to be confused with a Mint OS <em>channel</em>, which is any way of
         reaching an agent. This is Telegram's own broadcast feature.</p>
-      <p>Telegram channels are broadcast, not conversation, and that difference matters
-        here:</p>
       <ul>
         <li>A bot added to a channel as admin <strong>can post</strong> to it.</li>
         <li>Channel subscribers cannot reply in a way the bot receives, so there is no
@@ -267,15 +445,27 @@ exports.guide = ({ csrf, user, publicHost, publicPort, sshHost }) => {
         summaries, CI results — add its bot to the channel as an admin with post rights and
         give it the channel ID in its role brief; it will post there when asked, while
         continuing to take instructions from you in private.</p>
-    </div>
+      </div>
+      </div>
+    </section>
 
-    <div class="card" id="memory">
+    <section id="memory" class="card gd">
       <h2>Memory</h2>
+      ${where("Agents & sessions › Memory · each Telegram agent's page")}
+      <div class="gd-body">
+      <p>Two kinds. <b>Claude Code's memory</b> on this machine — every conversation,
+        searchable, plus curated facts — is under <b>Memory</b>: search it, add, edit or
+        forget a fact, read a past session. Each <b>Telegram agent</b> has its own vault
+        (Markdown files and a vector index) on its page; press Reindex if search finds
+        nothing.</p>
+
+      <div class="gd-sub" id="vault">
+      <h3>A Telegram agent's vault</h3>
       <p>A Telegram session dies on timeout, restart, or <code>/new</code>. Nothing in the
         conversation survives it. Files do. Every agent therefore gets a vault:</p>
       <table class="kv">
         <tr><td><code>CLAUDE.md</code></td><td class="muted">Identity and standing rules.
-          Injected into the system prompt every request. Edit it in the panel under
+          Injected into the system prompt every request. Edit it on the agent's page under
           <em>Instructions</em>.</td></tr>
         <tr><td><code>MEMORY.md</code></td><td class="muted">Current state plus an index of
           every note. Also injected every request — so it is the map, not the territory.</td></tr>
@@ -284,30 +474,29 @@ exports.guide = ({ csrf, user, publicHost, publicPort, sshHost }) => {
         <tr><td><code>WORKLOG.md</code></td><td class="muted">Dated narrative of what was
           done.</td></tr>
       </table>
-      <h3>The vector index</h3>
-      <p>MEMORY.md cannot hold everything — it is in the prompt, so it has a budget. The
-        notes it points at are indexed instead: each is chunked by heading, embedded with a
-        small model running <strong>on this machine</strong>, and stored in a per-agent
-        SQLite database. The agent searches it with a <code>memory_search</code> tool before
-        answering anything that depends on prior work.</p>
+      <p><b>The vector index.</b> MEMORY.md cannot hold everything — it is in the prompt, so
+        it has a budget. The notes it points at are indexed instead: each is chunked by
+        heading, embedded with a small model running <strong>on this machine</strong>, and
+        stored in a per-agent SQLite database. The agent searches it with a
+        <code>memory_search</code> tool before answering anything that depends on prior
+        work.</p>
       <p class="muted">Search is hybrid — vector similarity for paraphrase ("how do we
         deploy" finding "release procedure"), keyword matching for the exact tokens
         embeddings lose (error codes, flag names, IDs) — and the two rankings are merged.
         The files are the source of truth; the index is a cache you can delete and rebuild
-        with the Reindex button at any time.</p>
-      <p class="muted">Nothing is sent anywhere to be embedded. The model is local.</p>
-      <h3>Curating it</h3>
-      <p>Memory rots if nobody prunes it. The single highest-value maintenance action is
-        correcting a wrong note — an agent that keeps repeating a mistake is usually reading
-        a stale memory, and fixing that one file fixes the behaviour permanently. Do it in
-        the panel under <em>Memory</em>, or in Obsidian.</p>
-    </div>
+        with the Reindex button at any time. Nothing is sent anywhere to be embedded.</p>
+      <p><b>Curating it.</b> Memory rots if nobody prunes it. The single highest-value
+        maintenance action is correcting a wrong note — an agent that keeps repeating a
+        mistake is usually reading a stale memory, and fixing that one file fixes the
+        behaviour permanently. Do it on the agent's page under <em>Memory</em>, or in
+        Obsidian.</p>
+      </div>
 
-    <div class="card" id="obsidian">
-      <h2>Obsidian</h2>
+      <div class="gd-sub" id="obsidian">
+      <h3>Obsidian</h3>
       <p>Every vault is a real Obsidian vault — backlinks, graph view, search, the lot.
-        Obsidian is installed on this server's desktop, so the quickest way in is over RDP.</p>
-      <p>RDP is not exposed to the internet. Tunnel it over SSH first:</p>
+        Obsidian is installed on this server's desktop, so the quickest way in is over RDP.
+        RDP is not exposed to the internet; tunnel it over SSH first:</p>
       <pre>ssh -N -L 13389:127.0.0.1:3389 ubuntu@${ssh}</pre>
       <p>Then point Remote Desktop at <code class="mono">127.0.0.1:13389</code>, log in, and
         open Obsidian. Each agent's vault is at:</p>
@@ -317,34 +506,100 @@ exports.guide = ({ csrf, user, publicHost, publicPort, sshHost }) => {
         single graph.</p>
       <p class="muted small">Editing notes by hand is expected and safe. The agent re-reads
         files on its next search; you never need to tell it you changed something.</p>
-    </div>
+      </div>
+      </div>
+    </section>
 
-    <div class="card" id="trouble">
+    <section id="machine" class="card gd">
+      <h2>The machine</h2>
+      ${where("Machine › Overview · Services · Audit log")}
+      <div class="gd-body">
+      <p>The <b>Overview</b> shows CPU, memory, disk, security and access at a glance.
+        <b>Services</b> lists every unit this panel tracks — restart one or read its logs;
+        the <b>Agents</b> tab shows the Telegram agent and hired-session units. The <b>Audit
+        log</b> records every sign-in and every change.</p>
+      </div>
+    </section>
+
+    <section id="access" class="card gd">
+      <h2>Users, roles and credentials</h2>
+      ${where("Access & security › Users · Roles · Credentials")}
+      <div class="gd-body">
+      <p>A user has exactly one <b>role</b>; the role carries the permissions and the agent /
+        channel scope. <b>Add user</b> sends them through authenticator enrolment (Microsoft
+        Authenticator: “Other account”). <b>Manage</b> changes a role, resets the
+        authenticator, disables or deletes, and lets an administrator sign out that user's
+        devices. Built-in roles cannot be deleted. Talking to MINT AI by voice is its own
+        permission (<code>voice.use</code>), given to administrators only.</p>
+      <p><b>Credentials</b> holds the secrets the agents share; the OpenAI voice token lives in
+        <b>MINT AI › Settings › Voice</b>.</p>
+      </div>
+    </section>
+
+    <section id="devices" class="card gd">
+      <h2>Devices and SSH keys</h2>
+      ${where("Access & security › Devices · SSH keys")}
+      <div class="gd-body">
+      <p><b>Devices</b> lists every browser signed in to Mint OS as you — device, browser,
+        IP, when it signed in and when it was last seen; <b>this device</b> is marked.
+        <b>Sign out</b> ends one at once (a live call on it ends too); <b>Sign out all other
+        devices</b> keeps only this one. A session also ends after 8 hours unused. The same
+        list is under the avatar menu's <b>Signed-in devices</b>, and an administrator can
+        sign out another user's devices from <b>Users › Manage</b>.</p>
+      <p>To let a laptop in over SSH, use <b>SSH keys › Pair a device</b>: a one-time code the
+        laptop enters at <span class="mono">/pair</span> installs its key.</p>
+      </div>
+    </section>
+
+    <section id="trouble" class="card gd">
       <h2>Troubleshooting</h2>
+      ${where("Everywhere")}
+      <div class="gd-body">
       <table class="kv">
-        <tr><td><strong>Bot never answers</strong></td><td class="muted">Check the agent is
-          <em>active</em> on its page, then check your Telegram user ID is in its allowed
-          list. An unlisted user is silently ignored — by design, but it looks like a dead
-          bot.</td></tr>
-        <tr><td><strong>Unit is <em>failed</em></strong></td><td class="muted">Open the Logs
-          tab. A rejected token and a missing Claude credential are the two usual causes and
-          both say so plainly.</td></tr>
-        <tr><td><strong>Answers, then goes quiet</strong></td><td class="muted">Two pollers
-          on one bot token. Make sure no other agent — and no bot running elsewhere — uses
-          the same token.</td></tr>
-        <tr><td><strong>Forgets things</strong></td><td class="muted">Look at MEMORY.md. If
-          it is empty, the agent is not writing memories: tighten the instruction in
-          CLAUDE.md that tells it to write before reporting work done.</td></tr>
-        <tr><td><strong>Search finds nothing</strong></td><td class="muted">Press Reindex on
-          the Memory tab and watch the chunk count.</td></tr>
-        <tr><td><strong>Cannot reach a file</strong></td><td class="muted">The agent is
-          confined to its workspace. To give it a project, set the project directory in
-          Settings rather than loosening anything.</td></tr>
+        <tr><td><b>No microphone</b></td><td class="muted">Voice is disabled, no token is
+          set (MINT AI › Settings › Voice), or your role may not talk by voice — only
+          administrators may.</td></tr>
+        <tr><td><b>It hears itself</b></td><td class="muted">Use Speakers mode, or
+          headphones.</td></tr>
+        <tr><td><b>A session stopped working</b></td><td class="muted">It may be paused at its
+          token cap — MINT AI › Settings › Usage &amp; budget, or the Decision card.</td></tr>
+        <tr><td><b>MINT AI cannot open a page</b></td><td class="muted">Rescan pages, and check
+          its allow switch — MINT AI › Settings › Screen control.</td></tr>
+        <tr><td><b>Signed out unexpectedly</b></td><td class="muted">Another device signed you
+          out, or 8 hours passed — Devices.</td></tr>
+        <tr><td><b>Bot never answers</b></td><td class="muted">Check the agent is
+          <em>active</em> on its page, then check your Telegram user ID is in its channel's
+          allowed list. An unlisted user is silently ignored — by design, but it looks like a
+          dead bot.</td></tr>
+        <tr><td><b>Unit is <em>failed</em></b></td><td class="muted">Open the Logs tab. A
+          rejected token and a missing Claude credential are the two usual causes and both
+          say so plainly.</td></tr>
+        <tr><td><b>Answers, then goes quiet</b></td><td class="muted">Two pollers on one bot
+          token. Make sure no other agent — and no bot running elsewhere — uses the same
+          token.</td></tr>
+        <tr><td><b>Forgets things</b></td><td class="muted">Look at MEMORY.md. If it is empty,
+          the agent is not writing memories: tighten the instruction in CLAUDE.md that tells
+          it to write before reporting work done.</td></tr>
+        <tr><td><b>Search finds nothing</b></td><td class="muted">Press Reindex on the agent's
+          Memory tab and watch the chunk count.</td></tr>
+        <tr><td><b>Cannot reach a file</b></td><td class="muted">The agent is confined to its
+          workspace. To give it a project, set the project directory in its Settings rather
+          than loosening anything.</td></tr>
       </table>
-    </div>
+      </div>
+    </section>
 
-    <div class="card" id="layout">
+    <section id="where" class="card gd">
       <h2>Where things live</h2>
+      ${where("On this machine")}
+      <div class="gd-body">
+      <pre>/opt/moni-dashboard/       this panel (Mint OS)
+/opt/moni-ai/              MINT AI's supervisor, its CLI and mint-session@ units
+/opt/moni-agents/          Telegram agents: runtime, vaults, vectors
+/etc/moni-ai/              MINT AI's config (read-only here)
+/var/lib/moni-dashboard/   users, roles, settings, sign-in sessions</pre>
+      <div class="gd-sub" id="layout">
+      <h3>Inside /opt/moni-agents</h3>
       <pre>/opt/moni-agents/
 ├── runtime/              shared Python runtime (the Telegram↔Claude bridge)
 ├── shared/
@@ -360,26 +615,25 @@ exports.guide = ({ csrf, user, publicHost, publicPort, sshHost }) => {
 │   ├── vectors/memory.db the vector index
 │   └── vault/            CLAUDE.md · MEMORY.md · WORKLOG.md · memory/
 └── archived/&lt;name&gt;-&lt;ts&gt;/  deleted agents, kept whole</pre>
+      </div>
       <h3>Privilege</h3>
       <p class="muted">This panel runs as an unprivileged account that can execute exactly
         one command as root: <code class="mono">moni-helper</code>, which validates every
         argument against a whitelist and never invokes a shell. Agents run as a separate
         account under a systemd sandbox with a read-only filesystem apart from their own
-        directory. Bot tokens go to the helper over stdin, never on a command line where
+        directory. Keys and tokens reach the helper over stdin, never on a command line where
         another local user could read them from <code>/proc</code>.</p>
       <p class="muted small">Full architecture and threat model: the repository README.</p>
-    </div>`, `<section class="card hud"><div class="card-head"><h2>${icon("guide")}Contents</h2></div>
-      <nav class="toc" aria-label="Guide contents"><ul class="toc-list" data-toc>
-      ${GUIDE_TOC.map(([id, label], i) => `<li><a href="#${id}"${i === 0 ? ' class="on"' : ""}>${label}</a></li>`).join("")}
-      </ul></nav></section>`)}`,
-    {
-      user,
-      csrf,
-      active: "guide",
-      pattern: "c",
-      heading: "Guide",
-      subtitle:
-        "How this system is put together, and how to get an agent talking to you.",
-    }
-  );
+      </div>
+    </section>`;
+
+  return shell("Guide", docLayout(main, tocCard(GUIDE_TOC, "Contents")), {
+    user,
+    csrf,
+    active: "guide",
+    pattern: "c",
+    heading: "Guide",
+    subtitle: "How Mint OS works, page by page.",
+    assets: ["guide.css", "guide.js"],
+  });
 };
