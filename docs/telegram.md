@@ -63,11 +63,40 @@ several people share an agent, or one agent covers several projects.
    renames threads itself.
 5. Get the chat ID: forward any group message to
    [@userinfobot](https://t.me/userinfobot). Supergroup IDs start with `-100`.
-6. In the agent's Settings, enable topic routing and paste the ID.
+6. In the channel's **Telegram Topics** card, enable topic routing and paste the ID.
 
 The panel pre-flights all of this before saving — that the chat exists, that it
 is a forum, that the bot is an admin with topic rights — and reports every
 problem at once rather than one per attempt.
+
+**The General topic** (Topics card → *General goes to*): off by default; pick one
+of the projects in the list and the group's General topic is answered in that
+project's folder. Only a project of the list, switched on, can be chosen.
+
+**Respond in groups** (channel Settings): *To every message* (the default) or
+*Only when asked* — an @mention, a reply to the bot, a command addressed to it,
+or one of its names as a word in the text. The names are one per line, at most
+10, and default to the agent's name. It applies in every topic of the group;
+private chats are always answered.
+
+**New topics get their own folder** (Topics card, off by default): a topic someone
+makes in the group gets `topics/<name>` inside the agent's folder, optionally
+announced with one line in the topic. The bot keeps these in its own
+`projects.auto.json`; the card lists them marked *auto* (edit or switch off, not
+remove). When such a topic is deleted, its folder goes to `.trash/topics/` for
+the days you choose (0 = deleted at once) or is kept as a folder without a topic.
+The card's Trash list can restore a folder or delete it now.
+Telegram sends bots no event when a topic is deleted, so the bot checks its
+topic folders at start-up, every 10 minutes and on `/sync_threads`, and acts
+only after two checks in a row say the topic does not exist: expect the folder
+in the trash 10 to 20 minutes after the topic is deleted. Network errors and
+missing rights never count.
+
+*Only when asked* and topic folders need the bot to see every message: make it
+an admin of the group (Topics already require that), or turn group privacy off.
+
+These options need the agent runtime (Claude_Agents) with them in it: update it
+with `sudo bash deploy/update-runtime.sh --only <agent>` (or `--no-restart`).
 
 > Group privacy mode is on by default, so the bot only sees messages that mention
 > it or reply to it. That is usually what you want in a busy group. To change it:
