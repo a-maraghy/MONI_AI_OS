@@ -173,16 +173,19 @@ module.exports = {
   /* ------------------------------------------------------------ channels -- */
   channelList: () => callHelper("channel-list", [], { timeout: 30000 }),
   channelGet: (slug) => callHelper("channel-get", [slug]),
+  // With Topics on, the helper waits for the bot to come up (up to 45 s) and,
+  // if it does not, puts the old settings back and waits again: allow for both.
   channelCreate: (config) =>
     callHelper("channel-create", [], {
       stdin: JSON.stringify(config),
-      timeout: 90000,
+      timeout: 180000,
     }),
   channelUpdate: (config) =>
     callHelper("channel-update", [], {
       stdin: JSON.stringify(config),
-      timeout: 90000,
+      timeout: 180000,
     }),
+  channelTopicsFolders: (slug) => callHelper("channel-topics-folders", [slug]),
   channelDelete: (slug) => callHelper("channel-delete", [slug], { timeout: 60000 }),
 
   /* ------------------------------------------------------------ whatsapp -- */

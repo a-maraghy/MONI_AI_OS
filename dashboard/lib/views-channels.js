@@ -11,6 +11,79 @@
 const { esc, shell, card, flashes, empty, icon, agentPill, stamp, can, steps } = require("./ui");
 const { byScope } = require("./catalog");
 const { renderAddons } = require("./views-addons");
+const topics = require("./topics");
+
+/**
+ * Telegram Topics: one forum topic per project, each mapped to a folder
+ * inside the agent's own folder (the runtime refuses anything else).
+ *
+ * The rows are plain inputs posted as parallel tp_name / tp_slug / tp_path
+ * fields; public/app.js adds and removes rows from the <template>. With no
+ * list stored yet, the rows show the helper's proposed default (one topic for
+ * the agent's own folder, named after the agent).
+ */
+function renderTopics(c, folders) {
+  const f = folders || {};
+  const stored = Array.isArray(c.topics_projects) ? c.topics_projects : [];
+  const proposed = !stored.length && Array.isArray(f.default_projects) ? f.default_projects : [];
+  const rows = stored.length ? stored : proposed;
+  const mode = c.topics_mode === "private" ? "private" : "group";
+  const root = f.approved_directory || "";
+  const row = (p) => `<tr data-topics-row>
+      <td data-label="Topic name"><input name="tp_name" value="${esc(p.name || "")}" maxlength="64" aria-label="Project name" placeholder="Client work"></td>
+      <td data-label="Short name"><input name="tp_slug" value="${esc(p.slug || "")}" maxlength="40" aria-label="Short name"
+                 pattern="[a-z0-9][a-z0-9_\-]{0,39}" placeholder="from the name"></td>
+      <td data-label="Folder"><input name="tp_path" value="${esc(p.path || "")}" maxlength="200" aria-label="Folder inside the agent's folder"
+                 list="tp-folders" pattern="[^/~].*" placeholder="." class="mono"></td>
+      <td class="right"><button class="btn danger small" type="button" data-topics-remove
+                 aria-label="Remove this project" title="Remove this project">${icon("trash")}</button></td>
+    </tr>`;
+  const options = (Array.isArray(f.folders) ? f.folders : [])
+    .map((d) => `<option value="${esc(d)}">${d === "." ? "the agent's own folder" : ""}</option>`)
+    .join("");
+  return `<div class="topics" data-topics>
+      <input type="hidden" name="tp_table" value="1">
+      <label class="check"><input type="checkbox" name="topics_enabled" value="1"
+        ${c.topics_enabled ? "checked" : ""}> Route conversations into topics, one topic per project</label>
+      <div class="grid topics-where">
+        <label>Where the topics live
+          <select name="topics_mode" data-topics-mode>
+            <option value="group" ${mode === "group" ? "selected" : ""}>A Telegram group with Topics turned on</option>
+            <option value="private" ${mode === "private" ? "selected" : ""}>The private chat with the bot</option>
+          </select></label>
+        <label data-topics-chat ${mode === "private" ? "hidden" : ""}>Group chat ID
+          <span class="hint">starts with -100; the group must have Topics on and the bot must be an admin with Manage Topics</span>
+          <input name="topics_chat_id" value="${esc(c.topics_chat_id || "")}" placeholder="-1001234567890"
+                 pattern="-100[0-9]{7,13}" inputmode="numeric"
+                 title="Starts with -100: a Telegram group with Topics turned on"></label>
+      </div>
+      <h3 class="topics-head">Projects</h3>
+      <p class="muted small">Each project becomes a topic, and the bot works in that project's folder.
+        Folders are inside the agent's folder${root ? ` <code>${esc(root)}</code>` : ""}; <code>.</code> is
+        the agent's folder itself.${
+          proposed.length
+            ? ` <strong>Proposed default:</strong> one topic for the agent's own folder, named after the
+               agent. Change it, or add projects, before turning Topics on.`
+            : ""
+        }</p>
+      ${
+        c.agent
+          ? ""
+          : `<div class="alert warn">${icon("alert")}<div>Connect an agent first: topic folders live
+              inside the agent's folder.</div></div>`
+      }
+      <div class="table-wrap"><table class="rows topics-projects">
+        <thead><tr><th>Topic name</th><th>Short name</th><th>Folder</th><th></th></tr></thead>
+        <tbody data-topics-body>${rows.map(row).join("")}</tbody>
+      </table></div>
+      <template data-topics-template>${row({ name: "", slug: "", path: "" })}</template>
+      <datalist id="tp-folders">${options}</datalist>
+      <button class="btn small mt-8" type="button" data-topics-add>${icon("plus")} Add project</button>
+      <p class="muted small mt-8">Saving checks every folder, the group and the bot's rights before anything
+        changes, then waits for the bot to come up in topic mode. If it does not, the previous settings are put
+        back and the bot's own error is shown here.</p>
+    </div>`;
+}
 
 /**
  * The people allowed to talk to this channel, in order.
@@ -292,8 +365,9 @@ exports.create = ({ csrf, user, agents, form = {}, errors = [], botInfo = null, 
           <input name="allowed_users" value="${v("allowed_users")}" placeholder="123456789" pattern="[0-9, ]*"></label>
         <label class="check"><input type="checkbox" name="topics_enabled" value="1"
           ${form.topics_enabled ? "checked" : ""}> Route conversations into group topics</label>
-        <label>Group chat ID <span class="hint">starts with -100; only for topic mode</span>
-          <input name="topics_chat_id" value="${v("topics_chat_id")}" placeholder="-1001234567890" pattern="-?[0-9]*"></label>
+        <label>Group chat ID <span class="hint">starts with -100; only for topic mode. The group needs Topics
+          turned on. One topic is made for the agent's own folder; add projects later in the channel's settings.</span>
+          <input name="topics_chat_id" value="${v("topics_chat_id")}" placeholder="-1001234567890" pattern="(-100[0-9]{7,13})?"></label>
         <p class="muted small">Don't know your user ID? Message <code>@userinfobot</code>.
           Full walkthrough in the <a href="/guide#bot">Guide</a>.</p>`,
         { icon: "telegram" , className: "only-telegram" }
@@ -467,7 +541,7 @@ function whatsappCard(csrf, c, wa) {
   );
 }
 
-exports.detail = ({ csrf, user, channel, agents, wa, flash, err }) => {
+exports.detail = ({ csrf, user, channel, agents, wa, topicFolders, flash, err }) => {
   const c = channel;
   const free = agents.filter((a) => !a.channel || a.channel.slug === c.slug);
   const isTelegram = c.type === "telegram";
@@ -513,11 +587,7 @@ exports.detail = ({ csrf, user, channel, agents, wa, flash, err }) => {
                      ? `<span class="pill ok">stored</span>`
                      : `<span class="pill bad">missing</span>`
                  }</td></tr>
-                 <tr><td>Topics</td><td>${
-                   c.topics_enabled
-                     ? `on · <span class="mono small">${esc(c.topics_chat_id)}</span>`
-                     : "off (private chat)"
-                 }</td></tr>`
+                 <tr><td>Topics</td><td>${esc(topics.describe(c))}</td></tr>`
               : `<tr><td>Linked</td><td>${
                   c.linked
                     ? `<span class="pill ok">linked</span>`
@@ -576,15 +646,13 @@ exports.detail = ({ csrf, user, channel, agents, wa, flash, err }) => {
             ? `<label>Replace bot token <span class="hint">leave empty to keep the stored one</span>
                 <input name="token" type="password" placeholder="${
                   c.token_set ? "•••••••• stored" : "no token stored"
-                }"></label>
-               <label class="check"><input type="checkbox" name="topics_enabled" value="1"
-                 ${c.topics_enabled ? "checked" : ""}> Route conversations into group topics</label>
-               <label>Group chat ID
-                 <input name="topics_chat_id" value="${esc(c.topics_chat_id || "")}" pattern="-?[0-9]*"></label>`
+                }"></label>`
             : ``
         }`,
         { icon: "settings" }
       )}
+
+      ${isTelegram ? card("Telegram Topics", renderTopics(c, topicFolders), { icon: "telegram", id: "topics" }) : ""}
 
       ${card(
         "Add-ons",

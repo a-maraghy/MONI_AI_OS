@@ -424,9 +424,13 @@ exports.guide = ({ csrf, user, publicHost, publicPort, sshHost }) => {
         <li>Get the group's chat ID: forward any message from the group to
           <a href="https://t.me/userinfobot"><code>@userinfobot</code></a>, or temporarily add
           <code>@RawDataBot</code>. Supergroup IDs start with <code class="mono">-100</code>.</li>
-        <li>In the agent's Settings, tick <em>Route conversations into group topics</em> and
-          paste that ID. The panel checks the group is a forum and the bot is an admin
-          before saving, and tells you exactly what is missing if not.</li>
+        <li>In the channel's <strong>Telegram Topics</strong> card, tick <em>Route
+          conversations into topics</em> and paste that ID. Each row under
+          <em>Projects</em> becomes one topic, working in a folder inside the agent's folder
+          (<code>.</code> is the agent's folder itself; that one row is the proposed default).</li>
+        <li>Save. The panel checks the folders, that the group is a forum and that the bot is
+          an admin before anything changes, then waits for the bot to start in topic mode. If it
+          does not, the previous settings are put back and the bot's own error is shown.</li>
       </ol>
       <div class="alert warn">Group privacy mode is on by default, so the bot only sees
         messages that mention it or reply to it. That is usually what you want in a busy

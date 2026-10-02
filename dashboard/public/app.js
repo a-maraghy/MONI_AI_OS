@@ -431,3 +431,34 @@ document.addEventListener("submit", function (ev) {
   });
   nav();
 })();
+
+/* Channel ▸ Telegram Topics (lib/views-channels.js renderTopics): add and remove
+ * project rows from the <template>, and show the group chat id only in group
+ * mode. The helper validates everything again on save. */
+(function () {
+  document.addEventListener("click", function (e) {
+    var t = e.target.closest && e.target.closest("[data-topics-add], [data-topics-remove]");
+    if (!t) return;
+    var box = t.closest("[data-topics]");
+    if (!box) return;
+    e.preventDefault();
+    if (t.hasAttribute("data-topics-remove")) {
+      var row = t.closest("[data-topics-row]");
+      if (row) row.remove();
+      return;
+    }
+    var tpl = box.querySelector("template[data-topics-template]");
+    var body = box.querySelector("[data-topics-body]");
+    if (!tpl || !body || body.children.length >= 20) return;
+    body.appendChild(tpl.content.cloneNode(true));
+    var inputs = body.querySelectorAll("input[name=tp_name]");
+    if (inputs.length) inputs[inputs.length - 1].focus();
+  });
+  document.addEventListener("change", function (e) {
+    var sel = e.target.closest && e.target.closest("[data-topics-mode]");
+    if (!sel) return;
+    var box = sel.closest("[data-topics]");
+    var chat = box && box.querySelector("[data-topics-chat]");
+    if (chat) chat.hidden = sel.value !== "group";
+  });
+})();

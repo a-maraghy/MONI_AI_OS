@@ -56,7 +56,7 @@ function makeCopy(o) {
   // fakeReads: canned answers for read-only subcommands (e.g. "service-list"), so a
   // page that lists things can be rendered; everything else is still refused.
   const reads = o.fakeReads && typeof o.fakeReads === "object" ? o.fakeReads : null;
-  const canned = reads ? "  { const F = " + JSON.stringify(reads) + "; if (Object.prototype.hasOwnProperty.call(F, subcommand) && /^(list|status|agent-list|channel-list|service-list|credential-list|system-probe|cc-)/.test(subcommand)) return Promise.resolve(JSON.parse(JSON.stringify(F[subcommand]))); }\n" : "";
+  const canned = reads ? "  { const F = " + JSON.stringify(reads) + "; if (Object.prototype.hasOwnProperty.call(F, subcommand) && /^(list|status|agent-list|channel-list|channel-get|channel-topics-folders|service-list|credential-list|system-probe|cc-)/.test(subcommand)) return Promise.resolve(JSON.parse(JSON.stringify(F[subcommand]))); }\n" : "";
   s = s.replace(head, head + canned + '  return Promise.reject(new Error("scratch copy: the helper is not called (" + subcommand + ")"));\n');
   const status = 'voiceStatus: () => callHelper("voice-status"),';
   const key = 'voiceKeyRead: () => callHelper("voice-key-read"),';

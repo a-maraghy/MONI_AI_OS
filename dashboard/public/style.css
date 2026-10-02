@@ -1864,3 +1864,22 @@ fieldset.radio-list legend { font-size: 12px; font-weight: 700; color: var(--ink
 .radio-row { display: grid; grid-template-columns: auto 1fr; column-gap: 8px; align-items: baseline; cursor: pointer; }
 .radio-row input { margin: 0; }
 .radio-row .muted { grid-column: 2; }
+
+/* ------------------------------------------------ channel ▸ telegram topics --- */
+
+.topics [hidden] { display: none !important; }
+.topics .topics-where { margin-top: 10px; }
+.topics .topics-head { font-size: 13px; margin: 14px 0 4px; }
+.topics .table-wrap { overflow-x: auto; }
+.topics-projects { width: 100%; }
+.topics-projects td { padding: 6px; }
+.topics-projects input { margin: 0; width: 100%; min-width: 0; }
+.topics-projects th:last-child, .topics-projects td:last-child { width: 1%; white-space: nowrap; }
+@media (max-width: 640px) {
+  .topics-projects thead { display: none; }
+  .topics-projects, .topics-projects tbody, .topics-projects tr, .topics-projects td { display: block; width: 100%; }
+  .topics-projects tr { border: 1px solid var(--line); border-radius: var(--radius); padding: 6px; margin-bottom: 8px; }
+  .topics-projects td, .topics-projects tr:last-child td { border-bottom: 0; padding: 4px; }
+  .topics-projects td:last-child { width: auto; text-align: right; }
+  .topics-projects td[data-label]::before { content: attr(data-label); display: block; font-size: 12px; color: var(--muted); margin-bottom: 2px; }
+}

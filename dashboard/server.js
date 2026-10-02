@@ -27,6 +27,7 @@ const telegram = require("./lib/telegram");
 const views = require("./lib/views");
 const agentViews = require("./lib/views-agents");
 const channelViews = require("./lib/views-channels");
+const topics = require("./lib/topics");
 const serviceViews = require("./lib/views-services");
 const firewallViews = require("./lib/views-firewall");
 const credentialViews = require("./lib/views-credentials");
@@ -1601,8 +1602,10 @@ app.post("/channels/new", requireAuth, requirePerm("channels.create"), requireCs
     topics_chat_id: field(req.body, "topics_chat_id"),
     addons,
   };
+  const topicsForm = topics.parseTopicsForm(req.body);
   const token = String(req.body.token || "").trim();
   const errors = [];
+  if (type === "telegram") errors.push(...topics.checkTopics(topicsForm));
 
   if (!SLUG_RE.test(form.slug))
     errors.push(
@@ -1662,7 +1665,7 @@ app.post("/channels/new", requireAuth, requirePerm("channels.create"), requireCs
   }
 
   try {
-    await priv.channelCreate({
+    const created = await priv.channelCreate({
       slug: form.slug,
       name: form.name,
       type,
@@ -1671,11 +1674,13 @@ app.post("/channels/new", requireAuth, requirePerm("channels.create"), requireCs
       telegram_bot_username: bot ? bot.username : "",
       allowed_users: form.allowed_users,
       allowed_numbers: form.allowed_numbers,
-      topics_enabled: form.topics_enabled,
-      topics_chat_id: form.topics_chat_id,
+      ...topics.topicsPayload(topicsForm),
       addons,
       addon_env: catalog.envFor(addons, "channel", req.body),
     });
+    // The channel exists either way; a Topics setting that did not start was
+    // switched off by the helper, which says why.
+    const topicsNote = created && created.topics_error ? " " + created.topics_error : "";
     // Finishing the wizard lands on the agent, not the channel: the thing you
     // set out to build was an agent that works, and its page is where you
     // check that it does.
@@ -1684,15 +1689,16 @@ app.post("/channels/new", requireAuth, requirePerm("channels.create"), requireCs
         agentRedirect(form.agent, "", {
           msg:
             "Agent and channel are ready." +
-            (bot ? " Say hello to @" + bot.username + " on Telegram." : ""),
+            (bot ? " Say hello to @" + bot.username + " on Telegram." : "") +
+            topicsNote,
         })
       );
     }
 
-    const msg = form.agent
+    const msg = (form.agent
       ? "Channel created and connected." +
         (bot ? " Say hello to @" + bot.username + " on Telegram." : "")
-      : "Channel created. Connect it to an agent to bring it to life.";
+      : "Channel created. Connect it to an agent to bring it to life.") + topicsNote;
     res.redirect(channelRedirect(form.slug, "", { msg }));
   } catch (e) {
     return rerender([e.message], bot);
@@ -1718,6 +1724,16 @@ app.get("/channels/:slug", requireAuth, requirePerm("channels.view"), requireCha
       /* the bridge may not be installed; the view handles that */
     }
   }
+  // The folders a topic may map to (inside the connected agent's folder), and
+  // the proposed default list for a channel that has none yet.
+  let topicFolders = null;
+  if (channel.type === "telegram" && channel.agent) {
+    try {
+      topicFolders = await priv.channelTopicsFolders(channel.slug);
+    } catch (_) {
+      /* the view falls back to a plain text field */
+    }
+  }
   res.send(
     channelViews.detail({
       csrf: res.locals.csrf,
@@ -1725,6 +1741,7 @@ app.get("/channels/:slug", requireAuth, requirePerm("channels.view"), requireCha
       channel,
       agents,
       wa,
+      topicFolders,
       flash: req.query.msg || null,
       err: req.query.err || null,
     })
@@ -1830,13 +1847,17 @@ app.post("/channels/:slug", requireAuth, requirePerm("channels.edit"), requireCh
     // string overrides the stored list. This form no longer carries those
     // fields, so posting them would have emptied the allow-list, silently,
     // every time somebody renamed a channel or changed an add-on.
-    topics_enabled: !!req.body.topics_enabled,
-    topics_chat_id: field(req.body, "topics_chat_id"),
     addons,
     addon_env: catalog.envFor(addons, "channel", req.body),
   };
 
   const bail = (msg) => res.redirect(channelRedirect(channel.slug, "", { err: msg }));
+  if (channel.type === "telegram") {
+    const t = topics.parseTopicsForm(req.body);
+    const problems = topics.checkTopics(t);
+    if (problems.length) return bail("Topics not saved: " + problems.join(" "));
+    Object.assign(update, topics.topicsPayload(t));
+  }
 
   if (token) {
     if (!telegram.looksLikeToken(token))
@@ -1849,12 +1870,20 @@ app.post("/channels/:slug", requireAuth, requirePerm("channels.edit"), requireCh
       return bail("Telegram rejected that token: " + e.message);
     }
   }
-  if (update.topics_enabled && !update.topics_chat_id)
-    return bail("Group topic mode needs the group chat id.");
-
   try {
-    await priv.channelUpdate(update);
-    res.redirect(channelRedirect(channel.slug, "", { msg: "Channel saved." }));
+    const saved = await priv.channelUpdate(update);
+    const check = saved && saved.topics_check;
+    res.redirect(
+      channelRedirect(channel.slug, "", {
+        msg:
+          "Channel saved." +
+          (check && check.ok
+            ? check.state === "slow"
+              ? " Topics are on; the bot is still starting, so check its log in a minute."
+              : " Topics are on and the bot started in topic mode."
+            : ""),
+      })
+    );
   } catch (e) {
     return bail(e.message);
   }

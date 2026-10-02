@@ -30,6 +30,10 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
 import uuid
 from datetime import datetime, timezone
 
@@ -715,10 +719,16 @@ PROTECTED_ENV_KEYS = {
     "ANTHROPIC_API_KEY",
     "ENVIRONMENT",
     "DEVELOPMENT_MODE",
+    # Telegram Topics: written together with the projects file they point at
+    # (see topic_plan), so an add-on cannot switch topic mode on half-way.
+    "ENABLE_PROJECT_THREADS",
+    "PROJECT_THREADS_MODE",
+    "PROJECT_THREADS_CHAT_ID",
+    "PROJECTS_CONFIG_PATH",
 }
 
 
-def render_env(cfg, channel=None):
+def render_env(cfg, channel=None, topics=None):
     """Build the agent's systemd EnvironmentFile.
 
     Three sources merge here, in increasing order of precedence:
@@ -731,7 +741,13 @@ def render_env(cfg, channel=None):
     another agent's vault or bot token, whatever the dashboard sends. Every
     value has been through validate_config, so none can contain a newline that
     would inject a second variable.
+
+    `topics` is the topic_plan() for this agent and channel. Topic mode is
+    written only when the plan is enabled, and then always as the full set --
+    including PROJECTS_CONFIG_PATH, which the runtime refuses to start without.
     """
+    if topics is None:
+        topics = topic_plan(cfg, channel)
     d = agent_dir(cfg["slug"])
     vault = os.path.join(d, "vault")
 
@@ -777,10 +793,12 @@ def render_env(cfg, channel=None):
         env["TELEGRAM_BOT_TOKEN"] = channel.get("_token", "")
         env["TELEGRAM_BOT_USERNAME"] = channel.get("telegram_bot_username", "")
         env["ALLOWED_USERS"] = channel.get("allowed_users", "")
-        if channel.get("topics_enabled"):
+        if topics.get("enabled"):
             env["ENABLE_PROJECT_THREADS"] = "true"
-            env["PROJECT_THREADS_MODE"] = "group"
-            env["PROJECT_THREADS_CHAT_ID"] = channel.get("topics_chat_id", "")
+            env["PROJECT_THREADS_MODE"] = topics["mode"]
+            if topics["mode"] == "group":
+                env["PROJECT_THREADS_CHAT_ID"] = topics["chat_id"]
+            env["PROJECTS_CONFIG_PATH"] = topics["path"]
         else:
             env["ENABLE_PROJECT_THREADS"] = "false"
 
@@ -844,25 +862,63 @@ def scaffold_vault(cfg, uid, gid):
 
 
 def write_agent_files(cfg, uid, gid, channel=None):
+    """Write the agent's environment, MCP config and (Topics on) projects file.
+
+    Returns the topic plan, so a caller can report a Topics configuration that
+    was left off because it would not have started (topic_plan's "skipped").
+
+    Order is what keeps the bot startable at every instant: with Topics on, the
+    projects file lands first and the env that points at it second; with Topics
+    off, the env stops pointing at it first and the file goes second. Each file
+    is replaced atomically, so the runtime never reads half of either.
+    """
     d = agent_dir(cfg["slug"])
     for sub in ("", "data", "logs", "vectors"):
         os.makedirs(os.path.join(d, sub), exist_ok=True)
 
     scaffold_vault(cfg, uid, gid)
 
+    plan = topic_plan(cfg, channel)
+    projects_path = os.path.join(d, PROJECTS_FILE)
+    if plan.get("enabled"):
+        write_projects_file(projects_path, plan["projects"], gid)
+
     env_path = os.path.join(d, "agent.env")
     fd, tmp = tempfile.mkstemp(dir=d)
     with os.fdopen(fd, "w") as fh:
-        fh.write(render_env(cfg, channel))
+        fh.write(render_env(cfg, channel, plan))
     os.chown(tmp, uid, gid)
     os.chmod(tmp, 0o600)  # holds the bot token
     os.replace(tmp, env_path)
+
+    if not plan.get("enabled") and os.path.lexists(projects_path):
+        os.unlink(projects_path)
 
     mcp_path = os.path.join(d, "mcp.json")
     with open(mcp_path, "w") as fh:
         fh.write(render_mcp(cfg))
     os.chown(mcp_path, uid, gid)
     os.chmod(mcp_path, 0o640)
+    return plan
+
+
+def seal_agent_files(slug, gid):
+    """Undo what chown_tree does to the two files that must not be agent-writable.
+
+    chown_tree makes everything in the agent's directory moniagent-owned and
+    group-writable (so the vault can be edited in Obsidian). agent.env holds the
+    bot token, so it goes back to 0600; the projects file is the panel's word on
+    which folders the topics map to, so it goes back to root-owned, readable by
+    the agent's group and writable by nobody but root.
+    """
+    d = agent_dir(slug)
+    env_path = os.path.join(d, "agent.env")
+    if os.path.isfile(env_path):
+        os.chmod(env_path, 0o600)
+    projects_path = os.path.join(d, PROJECTS_FILE)
+    if os.path.isfile(projects_path) and not os.path.islink(projects_path):
+        os.chown(projects_path, 0, gid)
+        os.chmod(projects_path, 0o640)
 
 
 def drop_in_path(slug):
@@ -967,7 +1023,7 @@ def cmd_agent_create(args):
         meta["created_at"] = now_iso()
         write_agent_json(slug, meta, uid, gid)
         chown_tree(agent_dir(slug), uid, gid)
-        os.chmod(os.path.join(agent_dir(slug), "agent.env"), 0o600)
+        seal_agent_files(slug, gid)
         write_drop_in(cfg)
     except Exception as exc:
         # A half-created agent is worse than none: it shows up in the list and
@@ -1013,20 +1069,24 @@ def cmd_agent_update(args):
 
     uid, gid = agent_ids()
     channel = channel_bound_to(slug)
-    write_agent_files(cfg, uid, gid, channel)
+    plan = write_agent_files(cfg, uid, gid, channel)
     meta = public_meta(cfg)
     meta["created_at"] = current.get("created_at", now_iso())
     write_agent_json(slug, meta, uid, gid)
     chown_tree(agent_dir(slug), uid, gid)
-    os.chmod(os.path.join(agent_dir(slug), "agent.env"), 0o600)
+    seal_agent_files(slug, gid)
     write_drop_in(cfg)
 
     run(["systemctl", "daemon-reload"])
     restarted = False
     if unit_state(slug)["active"] == "active":
         restarted = run(["systemctl", "restart", unit_name(slug)], timeout=30).returncode == 0
-    audit("agent-update", {"slug": slug, "restarted": restarted})
-    ok({"slug": slug, "restarted": restarted, "state": unit_state(slug)})
+    audit("agent-update", {"slug": slug, "restarted": restarted,
+                           "topics": plan.get("enabled", False), "topics_skipped": plan.get("skipped")})
+    out = {"slug": slug, "restarted": restarted, "state": unit_state(slug)}
+    if plan.get("skipped"):
+        out["topics_skipped"] = plan["skipped"]
+    ok(out)
 
 
 def read_stored_token(slug):
@@ -1584,6 +1644,586 @@ def principal_admin(channel):
     return parts[0] if parts else ""
 
 
+# ---------------------------------------------------------------- topics ----
+#
+# Telegram Topics: the runtime routes each forum topic to one project folder.
+# Everything below mirrors what the runtime (v1.6.0) checks before it will
+# start, so a configuration it would refuse is refused here, at save time, with
+# a sentence -- instead of at boot, as a crash loop. The runtime's rules:
+#
+#   src/config/settings.py
+#     - PROJECT_THREADS_MODE is "private" or "group".
+#     - PROJECT_THREADS_CHAT_ID parses as an int (blank = none).
+#     - PROJECTS_CONFIG_PATH, if set, exists and is a file.
+#     - ENABLE_PROJECT_THREADS needs PROJECTS_CONFIG_PATH, and group mode needs
+#       PROJECT_THREADS_CHAT_ID (model validator).
+#   src/config/loader.py (_validate_config): the same two again, and the
+#     projects file exists; APPROVED_DIRECTORY readable.
+#   src/projects/registry.py (load_project_registry, called by main at start):
+#     - the file is a YAML mapping with a non-empty `projects` list;
+#     - each entry is a mapping with non-blank slug, name and path;
+#     - path is relative, resolves (symlinks followed) inside
+#       APPROVED_DIRECTORY, and is an existing directory;
+#     - slugs, names and paths (as written) are each unique.
+#   src/main.py + src/projects/thread_manager.py (group mode only): at start
+#     the bot creates/reuses one forum topic per enabled project in the group.
+#     A chat that is not a forum ("chat is not a forum", "topics are not
+#     enabled", ...) raises out of startup and the process exits: an ordinary
+#     group, whose id does not start with -100, can never hold topics. Any
+#     other Telegram error only counts as a failed topic and the bot runs on,
+#     unable to route anything -- which agent_start_check treats as a failure.
+#
+# Private mode does no Telegram call at start, so it cannot crash the bot; it
+# needs Topics enabled for the bot in @BotFather to be of any use.
+
+PROJECTS_FILE = "projects.yaml"
+TOPICS_MODES = ("group", "private")
+TOPIC_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
+# Relative to the agent's folder. No control characters, quotes or
+# backslashes; "/" separates folders. Unicode letters are fine (vault folders
+# are named in Obsidian).
+TOPIC_PATH_RE = re.compile(r'^[^\x00-\x1f\x7f"\\]{1,200}$')
+# Topics live only in supergroups, whose Bot API ids are -100 followed by the
+# group's number. An ordinary group (e.g. -5597160241) becomes a supergroup,
+# with a new id, when Topics are switched on in its settings.
+SUPERGROUP_ID_RE = re.compile(r"^-100\d{7,13}$")
+MAX_TOPIC_PROJECTS = 20
+
+# The proposal for an agent with no projects list yet: one topic, for the
+# agent's own folder (APPROVED_DIRECTORY, i.e. its vault), named after the
+# agent. Change it here; the panel shows whatever this returns.
+DEFAULT_TOPIC_PROJECT_PATH = "."
+
+
+def default_topic_projects(agent_slug, agent_name=""):
+    name = str(agent_name or "").strip()
+    if not name or not NAME_RE.match(name):
+        name = agent_slug
+    return [{"slug": agent_slug, "name": name, "path": DEFAULT_TOPIC_PROJECT_PATH, "enabled": True}]
+
+
+def agent_vault(slug):
+    """The agent's APPROVED_DIRECTORY (render_env sets it to the vault)."""
+    return os.path.join(agent_dir(slug), "vault")
+
+
+class TopicError(ValueError):
+    pass
+
+
+def normalise_topic_projects(raw):
+    """Shape-check a projects list, or fail() with the reason."""
+    try:
+        return parse_topic_projects(raw)
+    except TopicError as e:
+        fail(str(e))
+
+
+def parse_topic_projects(raw):
+    """Shape-check a projects list; raises TopicError. Folder checks need the agent: see check_topic_projects."""
+    if raw in (None, ""):
+        return []
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            raise TopicError("Topics: the projects list is not valid JSON")
+    if not isinstance(raw, list):
+        raise TopicError("Topics: the projects must be a list")
+    if len(raw) > MAX_TOPIC_PROJECTS:
+        raise TopicError("Topics: at most " + str(MAX_TOPIC_PROJECTS) + " projects")
+    out = []
+    for i, item in enumerate(raw):
+        n = str(i + 1)
+        if not isinstance(item, dict):
+            raise TopicError("Topics: project " + n + " must be an object with slug, name and path")
+        slug = str(item.get("slug") or "").strip()
+        name = str(item.get("name") or "").strip()
+        path = str(item.get("path") or "").strip()
+        if not slug:
+            raise TopicError("Topics: project " + n + " needs a short name (slug)")
+        if not TOPIC_SLUG_RE.match(slug):
+            raise TopicError("Topics: the short name '" + slug[:40] + "' may use only lowercase letters, "
+                 "digits, '-' and '_', starting with a letter or digit (at most 40)")
+        if not name:
+            raise TopicError("Topics: project '" + slug + "' needs a name (it becomes the topic's title)")
+        if not NAME_RE.match(name):
+            raise TopicError("Topics: the name of project '" + slug + "' is too long or uses a character "
+                 "that is not allowed (quotes, angle brackets, backslashes)")
+        if not path:
+            raise TopicError("Topics: project '" + slug + "' needs a folder ('.' is the agent's own folder)")
+        if not TOPIC_PATH_RE.match(path):
+            raise TopicError("Topics: the folder of project '" + slug + "' contains a character that is not allowed")
+        if path.startswith("/") or path.startswith("~"):
+            raise TopicError("Topics: the folder of project '" + slug + "' must be relative to the agent's "
+                 "folder, not an absolute path like " + path[:60])
+        path = os.path.normpath(path)
+        if path == ".." or path.startswith("../"):
+            raise TopicError("Topics: the folder of project '" + slug + "' points outside the agent's folder")
+        enabled = item.get("enabled", True)
+        if isinstance(enabled, str):
+            enabled = enabled.strip().lower() not in ("", "0", "false", "off", "no")
+        out.append({"slug": slug, "name": name, "path": path, "enabled": bool(enabled)})
+    return out
+
+
+def check_topic_projects(projects, approved_dir):
+    """What registry.load_project_registry would refuse, as a sentence, or None."""
+    if not projects:
+        return "the projects list is empty; the bot needs at least one project to make a topic for"
+    root = os.path.realpath(approved_dir)
+    if not os.path.isdir(root):
+        return "the agent's folder " + root + " does not exist"
+    seen_slug, seen_name, seen_path = set(), set(), set()
+    for p in projects:
+        label = "project '" + p["name"] + "'"
+        target = os.path.realpath(os.path.join(root, p["path"]))
+        if not (target == root or target.startswith(root + "/")):
+            return (label + ": the folder '" + p["path"] + "' leads outside the agent's folder ("
+                    + root + "), probably through a link; the bot only accepts folders inside it")
+        if not os.path.isdir(target):
+            return label + ": there is no folder '" + p["path"] + "' in the agent's folder (" + root + ")"
+        if p["slug"] in seen_slug:
+            return "two projects share the short name '" + p["slug"] + "'"
+        if p["name"] in seen_name:
+            return "two projects share the name '" + p["name"] + "'"
+        if p["path"] in seen_path:
+            return "two projects use the same folder '" + p["path"] + "'"
+        seen_slug.add(p["slug"])
+        seen_name.add(p["name"])
+        seen_path.add(p["path"])
+    if not any(p["enabled"] for p in projects):
+        return "every project is switched off, so the bot would have no topic to answer in"
+    return None
+
+
+def topic_chat_error(mode, chat_id):
+    if mode not in TOPICS_MODES:
+        return "the topic mode must be 'group' or 'private'"
+    if mode != "group":
+        return None
+    if not chat_id:
+        return "group topic mode needs the group's chat id"
+    if not SUPERGROUP_ID_RE.match(chat_id):
+        return ("the group chat id " + chat_id + " is not a group with Topics. Topics live only in "
+                "supergroups, whose id starts with -100. Turn on Topics in the group's settings "
+                "(Telegram then gives the group a new id starting with -100) and use that id")
+    return None
+
+
+def topic_config_error(mode, chat_id, projects, approved_dir):
+    return topic_chat_error(mode, chat_id) or check_topic_projects(projects, approved_dir)
+
+
+def topic_plan(cfg, channel):
+    """Decide what Topics configuration this agent gets from its channel.
+
+    {"enabled": False} when Topics are off; {"enabled": False, "skipped": why}
+    when they are on but would not start (a folder removed since the save, say)
+    -- the agent then runs without topics rather than crash-looping; otherwise
+    the full plan: mode, chat id, projects and the path of the projects file.
+    """
+    if not channel or channel.get("type") != "telegram" or not channel.get("topics_enabled"):
+        return {"enabled": False}
+    slug = cfg["slug"]
+    mode = str(channel.get("topics_mode") or "group").strip().lower()
+    chat_id = str(channel.get("topics_chat_id") or "").strip()
+    try:
+        projects = parse_topic_projects(channel.get("topics_projects"))
+    except TopicError as e:
+        return {"enabled": False, "skipped": str(e)}
+    if not projects:
+        projects = default_topic_projects(slug, cfg.get("name"))
+    err = topic_config_error(mode, chat_id, projects, agent_vault(slug))
+    if err:
+        return {"enabled": False, "skipped": err}
+    return {
+        "enabled": True,
+        "mode": mode,
+        "chat_id": chat_id if mode == "group" else "",
+        "projects": projects,
+        "path": os.path.join(agent_dir(slug), PROJECTS_FILE),
+    }
+
+
+def render_projects_yaml(projects):
+    """The runtime's projects file. JSON-quoted scalars are valid YAML and need no escaping rules of their own."""
+    q = lambda v: json.dumps(v, ensure_ascii=True)
+    lines = [
+        "# Generated by the MONI dashboard (channel Topics). Edit in the panel, not by hand:",
+        "# the next save of the channel or the agent rewrites this file.",
+        "projects:",
+    ]
+    for p in projects:
+        lines.append("  - slug: " + q(p["slug"]))
+        lines.append("    name: " + q(p["name"]))
+        lines.append("    path: " + q(p["path"]))
+        lines.append("    enabled: " + ("true" if p["enabled"] else "false"))
+    return "\n".join(lines) + "\n"
+
+
+def write_projects_file(path, projects, gid):
+    """Atomic, root-owned, readable by the agent's group (0640 root:moniagent)."""
+    d = os.path.dirname(path)
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".projects-")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(render_projects_yaml(projects))
+        os.chown(tmp, 0, gid)
+        os.chmod(tmp, 0o640)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def topics_signature(cfg):
+    """What decides whether the Telegram pre-flight has to run again."""
+    if not cfg.get("topics_enabled"):
+        return None
+    return json.dumps([cfg.get("agent"), cfg.get("topics_mode"), cfg.get("topics_chat_id")])
+
+
+# --- Telegram pre-flight ----------------------------------------------------
+
+TELEGRAM_API = "https://api.telegram.org"
+TOKEN_IN_TEXT_RE = re.compile(r"\d{6,12}:[A-Za-z0-9_-]{30,60}")
+
+
+class TelegramUnreachable(Exception):
+    pass
+
+
+class TelegramRefused(Exception):
+    pass
+
+
+def redact_tokens(text):
+    return TOKEN_IN_TEXT_RE.sub("[token]", str(text))
+
+
+def telegram_call(token, method, params=None):
+    """One Bot API call. The token is in the URL, so no error text ever carries the URL."""
+    url = TELEGRAM_API + "/bot" + token + "/" + method
+    data = urllib.parse.urlencode(params or {}).encode()
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, data=data), timeout=10) as r:
+            body = json.loads(r.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as e:
+        try:
+            body = json.loads(e.read().decode("utf-8", "replace"))
+        except Exception:
+            raise TelegramUnreachable("HTTP " + str(e.code))
+    except Exception as e:
+        raise TelegramUnreachable(type(e).__name__)
+    if not isinstance(body, dict) or not body.get("ok"):
+        desc = body.get("description") if isinstance(body, dict) else ""
+        raise TelegramRefused(redact_tokens(desc or "refused"))
+    return body.get("result")
+
+
+def telegram_topic_problems(token, mode, chat_id):
+    """Ask Telegram whether topic mode can work. A list of sentences, or None if Telegram could not be reached.
+
+    Only what would stop the bot from starting, or leave it unable to make a
+    single topic, is reported.
+    """
+    try:
+        me = telegram_call(token, "getMe")
+        if mode == "private":
+            if isinstance(me, dict) and me.get("has_topics_enabled") is False:
+                return ["Topics are not turned on for this bot. In @BotFather: /mybots, the bot, "
+                        "Bot Settings, Topics, turn on. Then save again."]
+            return []
+        try:
+            chat = telegram_call(token, "getChat", {"chat_id": chat_id})
+        except TelegramRefused as e:
+            return ["Telegram cannot open chat " + chat_id + " for this bot (" + str(e) + "). "
+                    "Add the bot to the group as an administrator, then save again."]
+        problems = []
+        ctype = (chat or {}).get("type")
+        if ctype != "supergroup":
+            problems.append("Chat " + chat_id + " is a " + str(ctype) + ", not a group with Topics.")
+        elif not chat.get("is_forum"):
+            problems.append("Topics are switched off in that group: open the group's settings, "
+                            "turn on Topics, then save again.")
+        try:
+            member = telegram_call(token, "getChatMember", {"chat_id": chat_id, "user_id": me.get("id")})
+            status = (member or {}).get("status")
+            if status == "creator":
+                pass
+            elif status != "administrator":
+                problems.append("The bot is not an administrator of that group (it is '" + str(status)
+                                + "'); it needs to be one, with the Manage Topics right, to make topics.")
+            elif member.get("can_manage_topics") is False:
+                problems.append("The bot is an administrator of that group but lacks the Manage Topics right.")
+        except TelegramRefused as e:
+            problems.append("Could not read the bot's place in that group (" + str(e) + ").")
+        return problems
+    except TelegramUnreachable:
+        return None
+    except TelegramRefused as e:
+        return ["Telegram refused the bot's token (" + str(e) + ")."]
+
+
+# --- did it start? ------------------------------------------------------------
+
+TOPICS_START_TIMEOUT = 45
+FATAL_EVENTS = ("Configuration error", "Unexpected error", "Application error",
+                "Failed to load configuration", "Error running bot")
+
+
+def plain_bot_error(text):
+    """The bot's error, as one readable sentence with no token in it."""
+    t = redact_tokens(text or "")
+    m = re.search(r"Value error, (.*?)(?: \[type=|$)", t, re.S)
+    if m:
+        t = m.group(1)
+    t = re.sub(r"^(Configuration loading failed: )", "", t.strip())
+    t = t.splitlines()[0] if t else ""
+    if "Private chat topics are not enabled" in t:
+        # The runtime words every "this chat has no topics" refusal this way,
+        # group mode included -- which is how an ordinary group shows up.
+        t += (" -- Telegram says the chat has no Topics: in group mode the group needs Topics "
+              "turned on (its id then starts with -100); in private mode the bot needs Topics "
+              "turned on in @BotFather")
+    return t[:400]
+
+
+def unit_props(unit, props=("ActiveState", "SubState", "NRestarts")):
+    r = run(["systemctl", "show", unit, "-p", ",".join(props)])
+    out = {}
+    for line in r.stdout.splitlines():
+        k, _, v = line.partition("=")
+        out[k] = v
+    return out
+
+
+def agent_start_check(slug, since, timeout=TOPICS_START_TIMEOUT, sleep=None, clock=None):
+    """Watch the agent's journal from `since` (epoch seconds) until it is polling Telegram or has failed.
+
+    The runtime logs "Starting bot" only after configuration, the projects file
+    and the group's topic sync have all gone through; a fatal event, a process
+    exit or a failed unit means it did not. In group mode, a sync that made no
+    usable topic at all is a failure too: the bot would run, but answer nothing.
+    """
+    sleep = sleep or time.sleep
+    clock = clock or time.time
+    unit = unit_name(slug)
+    deadline = clock() + timeout
+    result = {"ok": False, "state": "timeout", "error": "", "sync": None}
+    sync_errors = []
+    while True:
+        r = run(["journalctl", "-u", unit, "--since", "@" + str(int(since)), "--no-pager", "-o", "cat"], timeout=20)
+        started = False
+        fatal = ""
+        exited = False
+        sync_errors = []
+        lines = [l.strip() for l in r.stdout.splitlines()]
+        # Whatever the old process said while it was being stopped is not this
+        # start's business: read from the first start of the unit on.
+        first = next((i for i, l in enumerate(lines) if l.startswith("Started " + unit)), None)
+        for line in (lines[first + 1:] if first is not None else []):
+            if line.startswith("{"):
+                try:
+                    ev = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(ev, dict):
+                    continue
+                name = ev.get("event")
+                if name == "Starting bot":
+                    started = True
+                elif name == "Project thread startup sync complete":
+                    result["sync"] = {k: ev.get(k) for k in ("created", "reused", "renamed", "failed", "deactivated")}
+                elif name == "Failed to sync project topic":
+                    sync_errors.append(plain_bot_error(ev.get("error")))
+                elif name in FATAL_EVENTS and not fatal:
+                    fatal = plain_bot_error(ev.get("error") or name)
+            elif "Main process exited" in line and "status=0" not in line:
+                exited = True
+        if fatal or exited:
+            result.update(state="crashed", error=fatal or "the bot's process exited during start-up")
+            return result
+        if started:
+            sync = result["sync"]
+            if sync and not (sync.get("created") or sync.get("reused")) and sync.get("failed"):
+                result.update(state="no-topics", error="no topic could be made in the group" + (
+                    ": " + sync_errors[0] if sync_errors else ""))
+                return result
+            result.update(ok=True, state="running")
+            return result
+        props = unit_props(unit)
+        if props.get("ActiveState") == "failed" or props.get("SubState") == "auto-restart":
+            result.update(state="crashed", error="the unit stopped during start-up")
+            return result
+        if clock() >= deadline:
+            # Still starting (Telegram slow?) but not crashed: leave it running.
+            result.update(ok=props.get("ActiveState") == "active", state="slow",
+                          error="" if props.get("ActiveState") == "active" else "the unit is " + str(props.get("ActiveState")))
+            return result
+        sleep(1)
+
+
+def snapshot_files(paths):
+    snap = {}
+    for p in paths:
+        try:
+            st = os.lstat(p)
+            with open(p, "rb") as fh:
+                snap[p] = (fh.read(), st.st_mode & 0o7777, st.st_uid, st.st_gid)
+        except FileNotFoundError:
+            snap[p] = None
+    return snap
+
+
+def restore_files(snap):
+    for p, saved in snap.items():
+        if saved is None:
+            if os.path.lexists(p):
+                os.unlink(p)
+            continue
+        data, mode, uid, gid = saved
+        d = os.path.dirname(p)
+        os.makedirs(d, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=d, prefix=".restore-")
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(data)
+        os.chown(tmp, uid, gid)
+        os.chmod(tmp, mode)
+        os.replace(tmp, p)
+
+
+def topic_files(agent_slug):
+    if not agent_slug:
+        return []
+    d = agent_dir(agent_slug)
+    return [os.path.join(d, "agent.env"), os.path.join(d, PROJECTS_FILE)]
+
+
+def restart_agent_unit(slug):
+    run(["systemctl", "reset-failed", unit_name(slug)])
+    run(["systemctl", "restart", unit_name(slug)], timeout=45)
+
+
+def topics_safety_net(cfg, previous, snap, since):
+    """After a save that leaves Topics on: make sure the agent came up; if not, put the old files back.
+
+    Returns None when all is well (or Topics are off), else a dict for the
+    caller to report: what the bot said, and what the agent is running now.
+    """
+    agent = cfg.get("agent")
+    if not agent or cfg.get("type") != "telegram" or not cfg.get("topics_enabled"):
+        return None
+    check = agent_start_check(agent, since)
+    if check["ok"]:
+        return {"ok": True, "check": check}
+
+    # Back to exactly what was there before this save: channel files, env and
+    # projects file. Then restart and make sure that comes up.
+    restore_files(snap)
+    since2 = time.time()
+    if previous.get("agent") and previous.get("agent") != agent:
+        # The channel moved agents in this save: rebuild both from the restored
+        # channel, which stops the one it no longer feeds.
+        reconfigure_agent(previous["agent"])
+        reconfigure_agent(agent)
+    else:
+        restart_agent_unit(agent)
+    bound = channel_bound_to(agent)
+    if bound and bound.get("type") == "telegram":
+        after = agent_start_check(agent, since2)
+    else:
+        after = {"ok": True, "state": "not connected"}
+    fallback = False
+    if not after["ok"]:
+        # The previous configuration does not start either. If Topics were on
+        # in it, switch them off: never leave the agent in a crash loop.
+        restored = read_channel_json(cfg["slug"])
+        if restored.get("topics_enabled"):
+            restored["topics_enabled"] = False
+            uid, gid = agent_ids()
+            write_channel_files(restored, uid, gid, keep_token=channel_token(cfg["slug"]))
+            since3 = time.time()
+            reconfigure_agent(agent)
+            fallback = True
+            after = agent_start_check(agent, since3)
+    return {"ok": False, "check": check, "after": after, "topics_forced_off": fallback}
+
+
+def topics_audit(cfg):
+    if not cfg.get("topics_enabled"):
+        return {"enabled": False}
+    return {"enabled": True, "mode": cfg.get("topics_mode"), "chat_id": cfg.get("topics_chat_id"),
+            "projects": [[p["slug"], p["path"]] for p in cfg.get("topics_projects") or []]}
+
+
+def topics_failure_text(net):
+    check, after = net["check"], net.get("after") or {}
+    text = "Topics were not turned on: the bot did not start in topic mode"
+    if check.get("error"):
+        text += " (it said: " + check["error"] + ")"
+    text += "."
+    if net.get("topics_forced_off"):
+        text += " The previous settings did not start either, so Topics are now off."
+    else:
+        text += " The previous settings are back."
+    text += (" The agent is running again." if after.get("ok")
+             else " The agent is still not running (" + str(after.get("error") or after.get("state")) + "); check its log.")
+    return text
+
+
+def preflight_topics(cfg, token):
+    """Refuse a Topics save Telegram says cannot work. Unreachable Telegram does not block: the safety net still runs."""
+    if cfg.get("type") != "telegram" or not cfg.get("topics_enabled") or not cfg.get("agent") or not token:
+        return
+    problems = telegram_topic_problems(token, cfg.get("topics_mode") or "group", cfg.get("topics_chat_id") or "")
+    if problems:
+        fail("Topics not saved: " + " ".join(problems))
+
+
+def cmd_channel_topics_folders(args):
+    """Folders a topic may map to: directories inside the bound agent's folder (APPROVED_DIRECTORY).
+
+    Read-only. Links are left out -- the runtime follows them, and one that
+    leaves the folder is refused -- as are hidden folders. Three levels deep.
+    """
+    if not args:
+        fail("usage: channel-topics-folders <slug>")
+    slug = check_channel_slug(args[0])
+    existing_channel(slug)
+    meta = read_channel_json(slug)
+    agent = meta.get("agent") or ""
+    if not agent or not os.path.isdir(agent_dir(agent)):
+        ok({"slug": slug, "agent": "", "approved_directory": "", "folders": [], "default_projects": []})
+    root = os.path.realpath(agent_vault(agent))
+    folders = ["."]
+    if os.path.isdir(root):
+        for cur, dirs, _files in os.walk(root):
+            depth = 0 if cur == root else os.path.relpath(cur, root).count("/") + 1
+            keep = []
+            for d in sorted(dirs):
+                full = os.path.join(cur, d)
+                if d.startswith(".") or os.path.islink(full):
+                    continue
+                folders.append(os.path.relpath(full, root))
+                keep.append(d)
+            dirs[:] = keep if depth < 2 else []
+            if len(folders) >= 300:
+                break
+    folders = ["."] + sorted(folders[1:])
+    ok({
+        "slug": slug,
+        "agent": agent,
+        "approved_directory": root,
+        "folders": folders[:300],
+        "default_projects": default_topic_projects(agent, read_agent_json(agent).get("name")),
+    })
+
+
 def validate_channel(cfg, creating):
     out = {}
     slug = cfg.get("slug", "")
@@ -1634,10 +2274,24 @@ def validate_channel(cfg, creating):
         chat_id = str(cfg.get("topics_chat_id") or "").strip()
         if chat_id and not CHAT_ID_RE.match(chat_id):
             fail("Telegram chat id must be numeric (groups start with -100)")
-        if topics and not chat_id:
-            fail("group topic mode needs the group chat id")
+        mode = str(cfg.get("topics_mode") or "group").strip().lower()
+        if mode not in TOPICS_MODES:
+            fail("Topics: the mode must be 'group' or 'private'")
+        projects = normalise_topic_projects(cfg.get("topics_projects"))
+        if topics:
+            # Everything the runtime checks before it starts in topic mode,
+            # checked now: a save it would refuse never reaches the agent.
+            if agent and not projects:
+                projects = default_topic_projects(agent, read_agent_json(agent).get("name"))
+            err = topic_chat_error(mode, chat_id)
+            if not err and agent:
+                err = check_topic_projects(projects, agent_vault(agent))
+            if err:
+                fail("Topics not saved: " + err + ".")
         out["topics_enabled"] = topics
         out["topics_chat_id"] = chat_id
+        out["topics_mode"] = mode
+        out["topics_projects"] = projects
 
         token = cfg.get("token") or ""
         if token and not BOT_TOKEN_RE.match(token):
@@ -1690,9 +2344,12 @@ def reconfigure_agent(agent_slug):
     cfg = validate_config(read_agent_json(agent_slug), creating=False)
     uid, gid = agent_ids()
     channel = channel_bound_to(agent_slug)
-    write_agent_files(cfg, uid, gid, channel)
+    plan = write_agent_files(cfg, uid, gid, channel)
     chown_tree(agent_dir(agent_slug), uid, gid)
-    os.chmod(os.path.join(agent_dir(agent_slug), "agent.env"), 0o600)
+    seal_agent_files(agent_slug, gid)
+    topics = {"enabled": bool(plan.get("enabled"))}
+    if plan.get("skipped"):
+        topics["skipped"] = plan["skipped"]
 
     run(["systemctl", "daemon-reload"])
     run(["systemctl", "reset-failed", unit_name(agent_slug)])
@@ -1705,7 +2362,7 @@ def reconfigure_agent(agent_slug):
         r = run(["systemctl", "enable", "--now", unit_name(agent_slug)], timeout=45)
         if unit_state(agent_slug)["active"] == "active":
             run(["systemctl", "restart", unit_name(agent_slug)], timeout=45)
-        return {"reconfigured": True, "running": r.returncode == 0}
+        return {"reconfigured": True, "running": r.returncode == 0, "topics": topics}
 
     run(["systemctl", "disable", "--now", unit_name(agent_slug)], timeout=45)
     run(["systemctl", "reset-failed", unit_name(agent_slug)])
@@ -1923,9 +2580,11 @@ def cmd_channel_create(args):
     slug = cfg["slug"]
     if os.path.exists(channel_dir(slug)):
         fail("a channel called " + slug + " already exists")
+    preflight_topics(cfg, cfg.get("_token"))
     uid, gid = agent_ids()
     os.makedirs(CHANNELS_DIR, exist_ok=True)
     os.chmod(CHANNELS_DIR, 0o750)
+    since = time.time()
     try:
         write_channel_files(cfg, uid, gid)
     except Exception as exc:
@@ -1933,7 +2592,20 @@ def cmd_channel_create(args):
         fail("could not create channel: " + type(exc).__name__ + ": " + str(exc))
     result = reconfigure_agent(cfg.get("agent"))
     result.update(reconcile_whatsapp(slug))
-    audit("channel-create", {"slug": slug, "type": cfg["type"], "agent": cfg.get("agent")})
+    if cfg.get("agent") and cfg["type"] == "telegram" and cfg.get("topics_enabled"):
+        check = agent_start_check(cfg["agent"], since)
+        if not check["ok"]:
+            # A new channel has no earlier Topics setting to go back to: keep
+            # the channel, with Topics off, and say why.
+            meta = read_channel_json(slug)
+            meta["topics_enabled"] = False
+            write_channel_files(meta, uid, gid, keep_token=cfg.get("_token") or "")
+            result = reconfigure_agent(cfg.get("agent"))
+            result["topics_error"] = ("The channel was created with Topics off: the bot did not start "
+                                      "in topic mode" + (" (it said: " + check["error"] + ")" if check.get("error") else "")
+                                      + ". Fix that and turn Topics on in the channel's settings.")
+    audit("channel-create", {"slug": slug, "type": cfg["type"], "agent": cfg.get("agent"),
+                             "topics": topics_audit(cfg), "topics_error": result.get("topics_error")})
     ok({"slug": slug, "agent": cfg.get("agent"), **result})
 
 
@@ -1947,8 +2619,16 @@ def cmd_channel_update(args):
     merged = dict(current)
     merged.update({k: v for k, v in payload.items() if v is not None})
     cfg = validate_channel(merged, creating=False)
+    if topics_signature(cfg) and topics_signature(cfg) != topics_signature(current):
+        # Topics newly on, or pointed somewhere new: ask Telegram first.
+        preflight_topics(cfg, cfg.get("_token") or channel_token(slug))
 
     uid, gid = agent_ids()
+    ch = channel_dir(slug)
+    snap = snapshot_files([os.path.join(ch, "channel.env"), os.path.join(ch, "channel.json")]
+                          + topic_files(cfg.get("agent"))
+                          + (topic_files(previous_agent) if previous_agent != cfg.get("agent") else []))
+    since = time.time()
     write_channel_files(cfg, uid, gid, keep_token=channel_token(slug))
 
     results = {}
@@ -1958,8 +2638,21 @@ def cmd_channel_update(args):
         results["previous"] = reconfigure_agent(previous_agent)
     results["current"] = reconfigure_agent(cfg.get("agent"))
     results["whatsapp"] = reconcile_whatsapp(slug)
-    audit("channel-update", {"slug": slug, "agent": cfg.get("agent"),
-                             "token_changed": bool(cfg.get("_token"))})
+
+    net = topics_safety_net(cfg, current, snap, since)
+    detail = {"slug": slug, "agent": cfg.get("agent"),
+              "token_changed": bool(cfg.get("_token")),
+              "topics": topics_audit(cfg)}
+    if net and not net["ok"]:
+        detail["topics_reverted"] = {"error": net["check"].get("error"),
+                                     "state": net["check"].get("state"),
+                                     "after": net["after"].get("state"),
+                                     "topics_forced_off": net["topics_forced_off"]}
+        audit("channel-update", detail)
+        fail(topics_failure_text(net))
+    if net:
+        results["topics_check"] = net["check"]
+    audit("channel-update", detail)
     ok({"slug": slug, **results})
 
 
@@ -5898,6 +6591,7 @@ COMMANDS = {
     "channel-create": cmd_channel_create,
     "channel-update": cmd_channel_update,
     "channel-delete": cmd_channel_delete,
+    "channel-topics-folders": cmd_channel_topics_folders,
     "channel-whatsapp-status": cmd_channel_whatsapp_status,
     "channel-whatsapp-link": cmd_channel_whatsapp_link,
     "channel-whatsapp-unlink": cmd_channel_whatsapp_unlink,
