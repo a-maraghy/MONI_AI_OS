@@ -433,9 +433,44 @@ document.addEventListener("submit", function (ev) {
 })();
 
 /* Channel ▸ Telegram Topics (lib/views-channels.js renderTopics): add and remove
- * project rows from the <template>, and show the group chat id only in group
- * mode. The helper validates everything again on save. */
+ * project rows from the <template>, show the group-only settings (chat id,
+ * General, new-topic folders, trash) only in group mode, and keep the
+ * "General goes to" choices in step with the list's own projects (rows marked
+ * auto and rows switched off are not choices). The helper validates everything
+ * again on save. */
 (function () {
+  function refreshGeneral(box) {
+    var sel = box && box.querySelector("[data-topics-general]");
+    if (!sel) return;
+    var current = sel.value;
+    var keep = sel.options[0] ? sel.options[0].cloneNode(true) : null;
+    var seen = {};
+    var choices = [];
+    box.querySelectorAll("[data-topics-row]:not([data-topics-auto])").forEach(function (row) {
+      if (row.closest("template")) return;
+      var name = (row.querySelector("input[name=tp_name]") || {}).value || "";
+      var slug = ((row.querySelector("input[name=tp_slug]") || {}).value || "").trim().toLowerCase();
+      var on = (row.querySelector("select[name=tp_on]") || {}).value !== "0";
+      if (!slug) slug = name.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase()
+        .replace(/[^a-z0-9_-]+/g, "-").replace(/^[-_]+|[-_]+$/g, "").replace(/-{2,}/g, "-").slice(0, 40).replace(/[-_]+$/g, "");
+      if (!slug || !on || seen[slug]) return;
+      seen[slug] = 1;
+      choices.push([slug, name.trim() || slug]);
+    });
+    sel.textContent = "";
+    if (keep) sel.appendChild(keep);
+    choices.forEach(function (c) {
+      var o = document.createElement("option");
+      o.value = c[0];
+      o.textContent = c[1];
+      sel.appendChild(o);
+    });
+    sel.value = seen[current] ? current : "";
+  }
+  document.addEventListener("input", function (e) {
+    var box = e.target.closest && e.target.closest("[data-topics]");
+    if (box && e.target.closest("[data-topics-row]")) refreshGeneral(box);
+  });
   document.addEventListener("click", function (e) {
     var t = e.target.closest && e.target.closest("[data-topics-add], [data-topics-remove]");
     if (!t) return;
@@ -445,6 +480,7 @@ document.addEventListener("submit", function (ev) {
     if (t.hasAttribute("data-topics-remove")) {
       var row = t.closest("[data-topics-row]");
       if (row) row.remove();
+      refreshGeneral(box);
       return;
     }
     var tpl = box.querySelector("template[data-topics-template]");
@@ -455,10 +491,14 @@ document.addEventListener("submit", function (ev) {
     if (inputs.length) inputs[inputs.length - 1].focus();
   });
   document.addEventListener("change", function (e) {
+    var on = e.target.closest && e.target.closest("[data-topics-row] select[name=tp_on]");
+    if (on) refreshGeneral(on.closest("[data-topics]"));
     var sel = e.target.closest && e.target.closest("[data-topics-mode]");
     if (!sel) return;
     var box = sel.closest("[data-topics]");
-    var chat = box && box.querySelector("[data-topics-chat]");
-    if (chat) chat.hidden = sel.value !== "group";
+    if (!box) return;
+    box.querySelectorAll("[data-topics-chat], [data-topics-group]").forEach(function (el) {
+      el.hidden = sel.value !== "group";
+    });
   });
 })();

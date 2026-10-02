@@ -1883,3 +1883,31 @@ fieldset.radio-list legend { font-size: 12px; font-weight: 700; color: var(--ink
   .topics-projects td:last-child { width: auto; text-align: right; }
   .topics-projects td[data-label]::before { content: attr(data-label); display: block; font-size: 12px; color: var(--muted); margin-bottom: 2px; }
 }
+
+/* ... General, new-topic folders, trash (2026-10-02), and "Respond in groups". */
+.topics .topics-group { margin-top: 6px; }
+.topics .topics-sub { margin: -6px 0 12px 26px; }
+.topics .topics-auto { margin-top: 4px; font-size: 11px; }
+.topics-projects select { margin: 0; width: auto; min-width: 64px; }
+.topics fieldset.radio-list, .respond fieldset.radio-list { margin: 8px 0 0; }
+.topics .radio-row, .respond .radio-row { margin: 0; font-weight: 400; }
+.topics .radio-row > span:not(.muted), .respond .radio-row > span:not(.muted) { display: inline-flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
+.topics .topics-days { width: 76px; margin: 0; padding-top: 4px; padding-bottom: 4px; }
+.topics-list { width: 100%; }
+.topics-list td { padding: 6px; vertical-align: middle; }
+.topics-trash-actions { white-space: nowrap; }
+.topics-trash-actions .btn + .btn { margin-left: 6px; }
+.respond { margin-bottom: 14px; }
+.respond textarea { min-height: 52px; }
+@media (max-width: 640px) {
+  .topics .topics-sub { margin-left: 0; }
+  .topics-projects td[data-label="On"] select { width: 100%; }
+  .topics-list thead { display: none; }
+  .topics-list, .topics-list tbody, .topics-list tr, .topics-list td { display: block; width: 100%; }
+  .topics-list tr { border: 1px solid var(--line); border-radius: var(--radius); padding: 6px; margin-bottom: 8px; }
+  .topics-list td, .topics-list tr:last-child td { border-bottom: 0; padding: 4px; }
+  .topics-list td[data-label]::before { content: attr(data-label); display: block; font-size: 12px; color: var(--muted); margin-bottom: 2px; }
+  .topics-trash-actions { white-space: normal; text-align: left !important; display: flex !important; flex-wrap: wrap; gap: 6px; }
+  .topics-trash-actions .btn + .btn { margin-left: 0; }
+}
+.topics [data-topics-general] { max-width: 420px; }

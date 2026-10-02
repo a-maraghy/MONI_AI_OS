@@ -1857,6 +1857,10 @@ app.post("/channels/:slug", requireAuth, requirePerm("channels.edit"), requireCh
     const problems = topics.checkTopics(t);
     if (problems.length) return bail("Topics not saved: " + problems.join(" "));
     Object.assign(update, topics.topicsPayload(t));
+    const r = topics.parseRespondForm(req.body);
+    const rProblems = topics.checkRespond(r);
+    if (r.has_respond && rProblems.length) return bail("Not saved: " + rProblems.join(" "));
+    Object.assign(update, topics.respondPayload(r));
   }
 
   if (token) {
@@ -1879,13 +1883,41 @@ app.post("/channels/:slug", requireAuth, requirePerm("channels.edit"), requireCh
           "Channel saved." +
           (check && check.ok
             ? check.state === "slow"
-              ? " Topics are on; the bot is still starting, so check its log in a minute."
-              : " Topics are on and the bot started in topic mode."
+              ? (update.topics_enabled ? " Topics are on; the" : " The") + " bot is still starting, so check its log in a minute."
+              : update.topics_enabled
+                ? " Topics are on and the bot started in topic mode."
+                : " The bot started with the new settings."
             : ""),
       })
     );
   } catch (e) {
     return bail(e.message);
+  }
+});
+
+/**
+ * Telegram Topics ▸ Trash: put a deleted topic's folder back in topics/, or
+ * delete it now. The helper checks the path against the bot's own list
+ * (projects.auto.json) under its lock; this only refuses the obviously wrong.
+ */
+app.post("/channels/:slug/topics/trash", requireAuth, requirePerm("channels.edit"), requireChannelScope, requireCsrf, async (req, res) => {
+  const channel = await loadChannel(req, res);
+  if (!channel) return;
+  const op = field(req.body, "op");
+  const trashPath = field(req.body, "trash_path");
+  const back = (params) => res.redirect(channelRedirect(channel.slug, "", params));
+  if (channel.type !== "telegram" || !channel.agent) return back({ err: "This channel has no topic folders." });
+  if (!["restore", "delete"].includes(op)) return back({ err: "Unknown action." });
+  if (!/^\.trash\/topics\/[^/\\\x00-\x1f]{1,120}$/.test(trashPath)) return back({ err: "That is not a folder in the trash." });
+  try {
+    const r = await priv.channelTopicsTrash(channel.slug, op, trashPath);
+    back({
+      msg: op === "restore"
+        ? "Folder restored to " + ((r && r.path) || "topics/") + ". A new topic with its name is linked to it again."
+        : "Folder deleted.",
+    });
+  } catch (e) {
+    back({ err: e.message });
   }
 });
 

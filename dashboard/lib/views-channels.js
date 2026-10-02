@@ -17,30 +17,111 @@ const topics = require("./topics");
  * Telegram Topics: one forum topic per project, each mapped to a folder
  * inside the agent's own folder (the runtime refuses anything else).
  *
- * The rows are plain inputs posted as parallel tp_name / tp_slug / tp_path
- * fields; public/app.js adds and removes rows from the <template>. With no
- * list stored yet, the rows show the helper's proposed default (one topic for
- * the agent's own folder, named after the agent).
+ * The rows are plain inputs posted as parallel tp_name / tp_slug / tp_path /
+ * tp_on / tp_auto fields; public/app.js adds and removes rows from the
+ * <template>. With no list stored yet, the rows show the helper's proposed
+ * default (one topic for the agent's own folder, named after the agent).
+ *
+ * With "new topics get their own folder" on, the bot makes a folder for every
+ * new forum topic and keeps those in its own file (projects.auto.json, read by
+ * channel-topics-folders as `auto`). They are listed here marked "auto": a
+ * row can be edited (the helper then keeps it as an override) or switched off,
+ * not removed. Folders of deleted topics are in the Trash list below, with
+ * Restore and Delete now (forms outside the settings form: topicsTrashForms).
  */
 function renderTopics(c, folders) {
   const f = folders || {};
+  const auto = f.auto && typeof f.auto === "object" ? f.auto : {};
+  const autoProjects = Array.isArray(auto.projects) ? auto.projects : [];
   const stored = Array.isArray(c.topics_projects) ? c.topics_projects : [];
   const proposed = !stored.length && Array.isArray(f.default_projects) ? f.default_projects : [];
-  const rows = stored.length ? stored : proposed;
+  const base = stored.length ? stored : proposed;
+  const autoBySlug = new Map(autoProjects.map((p) => [p.slug, p]));
+  const overridden = new Set(base.filter((p) => p.auto).map((p) => p.slug));
+  const rows = base
+    .map((p) => (p.auto ? Object.assign({}, p, { _entry: autoBySlug.get(p.slug) || null, _edited: true }) : p))
+    .concat(autoProjects.filter((p) => !overridden.has(p.slug)).map((p) => ({ slug: p.slug, name: p.name, path: p.path, enabled: true, auto: true, _entry: p })));
   const mode = c.topics_mode === "private" ? "private" : "group";
   const root = f.approved_directory || "";
-  const row = (p) => `<tr data-topics-row>
-      <td data-label="Topic name"><input name="tp_name" value="${esc(p.name || "")}" maxlength="64" aria-label="Project name" placeholder="Client work"></td>
+  const general = String(c.topics_general || "");
+  const deleted = c.topics_deleted === "keep" ? "keep" : "trash";
+  const days = Number.isInteger(c.topics_trash_days) ? c.topics_trash_days : 30;
+  const announce = c.topics_auto_announce !== false;
+  const row = (p) => {
+    const isAuto = !!p.auto;
+    const e = p._entry;
+    const tag = isAuto
+      ? `<span class="pill neutral nodot topics-auto" title="Made by the bot for a new topic${e && e.closed ? "; the topic is closed" : ""}">auto${p._edited ? " · edited" : ""}${e && e.closed ? " · closed" : ""}</span>`
+      : "";
+    return `<tr data-topics-row${isAuto ? " data-topics-auto" : ""}>
+      <td data-label="Topic name"><input name="tp_name" value="${esc(p.name || "")}" maxlength="64" aria-label="Project name" placeholder="Client work">${tag}</td>
       <td data-label="Short name"><input name="tp_slug" value="${esc(p.slug || "")}" maxlength="40" aria-label="Short name"
-                 pattern="[a-z0-9][a-z0-9_\-]{0,39}" placeholder="from the name"></td>
+                 pattern="[a-z0-9][a-z0-9_\\-]{0,39}" placeholder="from the name"${isAuto ? " readonly" : ""}></td>
       <td data-label="Folder"><input name="tp_path" value="${esc(p.path || "")}" maxlength="200" aria-label="Folder inside the agent's folder"
-                 list="tp-folders" pattern="[^/~].*" placeholder="." class="mono"></td>
-      <td class="right"><button class="btn danger small" type="button" data-topics-remove
-                 aria-label="Remove this project" title="Remove this project">${icon("trash")}</button></td>
+                 list="tp-folders" pattern="[^\\/~].*" placeholder="." class="mono"></td>
+      <td data-label="On"><select name="tp_on" aria-label="Topic on or off">
+          <option value="1" ${p.enabled === false ? "" : "selected"}>On</option>
+          <option value="0" ${p.enabled === false ? "selected" : ""}>Off</option>
+        </select><input type="hidden" name="tp_auto" value="${isAuto ? "1" : "0"}"></td>
+      <td class="right">${
+        isAuto
+          ? `<span class="muted small" title="A folder made for a new topic can be switched off, not removed">switch off only</span>`
+          : `<button class="btn danger small" type="button" data-topics-remove
+                 aria-label="Remove this project" title="Remove this project">${icon("trash")}</button>`
+      }</td>
     </tr>`;
+  };
   const options = (Array.isArray(f.folders) ? f.folders : [])
     .map((d) => `<option value="${esc(d)}">${d === "." ? "the agent's own folder" : ""}</option>`)
     .join("");
+  const manual = rows.filter((p) => !p.auto && p.enabled !== false);
+  const generalKnown = !general || manual.some((p) => p.slug === general);
+  const generalOptions =
+    `<option value="" ${general ? "" : "selected"}>Off (the bot does not answer in General)</option>` +
+    manual.map((p) => `<option value="${esc(p.slug)}" ${p.slug === general ? "selected" : ""}>${esc(p.name || p.slug)}</option>`).join("") +
+    (generalKnown ? "" : `<option value="${esc(general)}" selected>${esc(general)} (not in the list)</option>`);
+  const when = (iso, plus) => {
+    const t = Date.parse(iso || "");
+    if (!Number.isFinite(t)) return "";
+    return new Date(t + (plus || 0) * 86400000).toISOString().slice(0, 10);
+  };
+  const unlinked = Array.isArray(auto.unlinked) ? auto.unlinked : [];
+  const trash = Array.isArray(auto.trash) ? auto.trash : [];
+  const unlinkedHtml = unlinked.length
+    ? `<h3 class="topics-head">Folders without a topic</h3>
+       <p class="muted small">Kept folders of deleted topics, and folders restored from the trash. A new topic with the
+         same name is linked to its folder again.</p>
+       <div class="table-wrap"><table class="rows topics-list">
+         <thead><tr><th>Name</th><th>Folder</th><th>Why</th><th>Since</th></tr></thead>
+         <tbody>${unlinked
+           .map(
+             (u) => `<tr><td data-label="Name">${esc(u.name)}</td><td data-label="Folder" class="mono small">${esc(u.path)}</td>
+               <td data-label="Why">${esc(u.reason === "restored" ? "restored from the trash" : u.reason || "")}</td>
+               <td data-label="Since" class="mono small">${esc(when(u.since))}</td></tr>`
+           )
+           .join("")}</tbody></table></div>`
+    : "";
+  const trashHtml = trash.length
+    ? `<h3 class="topics-head">Trash</h3>
+       <p class="muted small">Folders of deleted topics. ${
+         deleted === "trash" && days > 0 ? `They are deleted for good ${days} ${days === 1 ? "day" : "days"} after the topic went.` : ""
+       } Restore puts a folder back in <code>topics/</code>, without a topic until one with its name is made.</p>
+       <div class="table-wrap"><table class="rows topics-list topics-trash">
+         <thead><tr><th>Name</th><th>Was</th><th>Deleted</th><th>Gone for good</th><th></th></tr></thead>
+         <tbody>${trash
+           .map(
+             (t) => `<tr><td data-label="Name">${esc(t.name)}${t.exists === false ? ` <span class="pill warn nodot">folder missing</span>` : ""}</td>
+               <td data-label="Was" class="mono small">${esc(t.original_path || "")}</td>
+               <td data-label="Deleted" class="mono small">${esc(when(t.trashed_at))}</td>
+               <td data-label="Gone for good" class="mono small">${esc(deleted === "trash" ? when(t.trashed_at, days) : "")}</td>
+               <td class="right topics-trash-actions">
+                 <button class="btn small" type="submit" form="topics-trash-restore" name="trash_path" value="${esc(t.trash_path)}"
+                   ${t.exists === false ? "disabled" : ""} title="Move the folder back to topics/">${icon("restart")} Restore</button>
+                 <button class="btn danger small" type="submit" form="topics-trash-delete" name="trash_path" value="${esc(t.trash_path)}"
+                   title="Delete the folder and everything in it now">${icon("trash")} Delete now</button></td></tr>`
+           )
+           .join("")}</tbody></table></div>`
+    : "";
   return `<div class="topics" data-topics>
       <input type="hidden" name="tp_table" value="1">
       <label class="check"><input type="checkbox" name="topics_enabled" value="1"
@@ -65,6 +146,11 @@ function renderTopics(c, folders) {
             ? ` <strong>Proposed default:</strong> one topic for the agent's own folder, named after the
                agent. Change it, or add projects, before turning Topics on.`
             : ""
+        }${
+          rows.some((p) => p.auto)
+            ? ` Rows marked <span class="pill neutral nodot">auto</span> are folders the bot made for new topics:
+               edit them or switch them off; they cannot be removed here.`
+            : ""
         }</p>
       ${
         c.agent
@@ -73,15 +159,80 @@ function renderTopics(c, folders) {
               inside the agent's folder.</div></div>`
       }
       <div class="table-wrap"><table class="rows topics-projects">
-        <thead><tr><th>Topic name</th><th>Short name</th><th>Folder</th><th></th></tr></thead>
+        <thead><tr><th>Topic name</th><th>Short name</th><th>Folder</th><th>On</th><th></th></tr></thead>
         <tbody data-topics-body>${rows.map(row).join("")}</tbody>
       </table></div>
       <template data-topics-template>${row({ name: "", slug: "", path: "" })}</template>
       <datalist id="tp-folders">${options}</datalist>
       <button class="btn small mt-8" type="button" data-topics-add>${icon("plus")} Add project</button>
+
+      <div class="topics-group" data-topics-group ${mode === "private" ? "hidden" : ""}>
+        <h3 class="topics-head">The group</h3>
+        <label>General goes to
+          <span class="hint">the group's General topic is answered in this project's folder</span>
+          <select name="topics_general" data-topics-general>${generalOptions}</select></label>
+        <label class="check"><input type="checkbox" name="topics_auto" value="1" ${c.topics_auto ? "checked" : ""}>
+          New topics get their own folder automatically</label>
+        <p class="muted small topics-sub">A topic someone makes in the group gets a folder in <code>topics/</code>
+          inside the agent's folder, and the bot works there.${
+            Number.isInteger(auto.count) && auto.count > 0
+              ? ` ${auto.count} of ${esc(String(auto.max || 100))} in use.`
+              : ""
+          }</p>
+        <div class="topics-sub">
+          <label class="check"><input type="checkbox" name="topics_auto_announce" value="1" ${announce ? "checked" : ""}>
+            Post a line in the new topic</label>
+          <fieldset class="radio-list topics-deleted">
+            <legend>When a topic is deleted</legend>
+            <label class="radio-row"><input type="radio" name="topics_deleted" value="trash" ${deleted === "trash" ? "checked" : ""}>
+              <span>Move its folder to trash for
+                <input class="topics-days" type="number" name="topics_trash_days" value="${esc(String(days))}" min="0" max="3650"
+                       inputmode="numeric" aria-label="Days in the trash"> days</span>
+              <span class="muted small">0 deletes it at once</span></label>
+            <label class="radio-row"><input type="radio" name="topics_deleted" value="keep" ${deleted === "keep" ? "checked" : ""}>
+              <span>Keep the folder</span>
+              <span class="muted small">listed below as a folder without a topic</span></label>
+          </fieldset>
+        </div>
+        ${auto.error ? `<div class="alert warn mt-8">${icon("alert")}<div>The bot's list of topic folders: ${esc(auto.error)}</div></div>` : ""}
+        ${unlinkedHtml}
+        ${trashHtml}
+      </div>
       <p class="muted small mt-8">Saving checks every folder, the group and the bot's rights before anything
         changes, then waits for the bot to come up in topic mode. If it does not, the previous settings are put
         back and the bot's own error is shown here.</p>
+    </div>`;
+}
+
+/** The Restore / Delete now forms the Trash list's buttons submit (outside the settings form). */
+function topicsTrashForms(csrf, c) {
+  const action = `/channels/${esc(c.slug)}/topics/trash`;
+  return `<form id="topics-trash-restore" method="post" action="${action}" hidden>
+      <input type="hidden" name="_csrf" value="${esc(csrf)}"><input type="hidden" name="op" value="restore"></form>
+    <form id="topics-trash-delete" method="post" action="${action}" hidden
+          data-confirm-dlg="Delete this folder now?" data-confirm-yes="Delete now"
+          data-confirm-body="The folder and everything in it are deleted for good. This cannot be undone.">
+      <input type="hidden" name="_csrf" value="${esc(csrf)}"><input type="hidden" name="op" value="delete"></form>`;
+}
+
+/** "Respond in groups", in the channel's settings. */
+function renderRespond(c) {
+  const mode = c.respond_mode === "mention" ? "mention" : "all";
+  const names = Array.isArray(c.name_aliases) && c.name_aliases.length ? c.name_aliases : [c.agent_name || c.agent || ""].filter(Boolean);
+  return `<div class="respond" data-respond>
+      <input type="hidden" name="respond_form" value="1">
+      <fieldset class="radio-list">
+        <legend>Respond in groups</legend>
+        <label class="radio-row"><input type="radio" name="respond_mode" value="mention" ${mode === "mention" ? "checked" : ""}>
+          <span>Only when asked</span>
+          <span class="muted small">an @mention, a reply to the bot, or one of its names below; in every topic of the group</span></label>
+        <label class="radio-row"><input type="radio" name="respond_mode" value="all" ${mode === "all" ? "checked" : ""}>
+          <span>To every message</span>
+          <span class="muted small">private chats are always answered</span></label>
+      </fieldset>
+      <label class="mt-8">Its names
+        <span class="hint">one per line, at most 10; a message with one of them as a word counts as asking</span>
+        <textarea name="name_aliases" rows="2" maxlength="500" autocomplete="off">${esc(names.join("\n"))}</textarea></label>
     </div>`;
 }
 
@@ -587,7 +738,8 @@ exports.detail = ({ csrf, user, channel, agents, wa, topicFolders, flash, err })
                      ? `<span class="pill ok">stored</span>`
                      : `<span class="pill bad">missing</span>`
                  }</td></tr>
-                 <tr><td>Topics</td><td>${esc(topics.describe(c))}</td></tr>`
+                 <tr><td>Topics</td><td>${esc(topics.describe(c))}</td></tr>
+                 <tr><td>In groups</td><td>${esc(topics.describeRespond(c))}</td></tr>`
               : `<tr><td>Linked</td><td>${
                   c.linked
                     ? `<span class="pill ok">linked</span>`
@@ -646,7 +798,8 @@ exports.detail = ({ csrf, user, channel, agents, wa, topicFolders, flash, err })
             ? `<label>Replace bot token <span class="hint">leave empty to keep the stored one</span>
                 <input name="token" type="password" placeholder="${
                   c.token_set ? "•••••••• stored" : "no token stored"
-                }"></label>`
+                }"></label>
+              ${renderRespond(c)}`
             : ``
         }`,
         { icon: "settings" }
@@ -682,7 +835,8 @@ exports.detail = ({ csrf, user, channel, agents, wa, topicFolders, flash, err })
         <button class="btn danger" type="submit">${icon("trash")} Delete channel</button>
       </form>`,
       { icon: "trash", className: "danger-zone" }
-    )}`,
+    )}
+    ${isTelegram && c.agent ? topicsTrashForms(csrf, c) : ""}`,
     {
       user,
       csrf,

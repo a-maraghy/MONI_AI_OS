@@ -18,6 +18,8 @@ Design rules:
 """
 
 import base64
+import errno
+import fcntl
 import grp
 import hashlib
 import ipaddress
@@ -725,6 +727,15 @@ PROTECTED_ENV_KEYS = {
     "PROJECT_THREADS_MODE",
     "PROJECT_THREADS_CHAT_ID",
     "PROJECTS_CONFIG_PATH",
+    # ... and the per-agent group options that go with them (see topic_plan
+    # and respond_settings): validated at save time, written by the helper only.
+    "PROJECT_THREADS_GENERAL_PROJECT",
+    "PROJECT_THREADS_AUTO_MAP",
+    "PROJECT_THREADS_AUTO_ANNOUNCE",
+    "PROJECT_THREADS_DELETED_TOPICS",
+    "PROJECT_THREADS_TRASH_DAYS",
+    "GROUP_RESPOND_MODE",
+    "BOT_NAME_ALIASES",
 }
 
 
@@ -793,12 +804,27 @@ def render_env(cfg, channel=None, topics=None):
         env["TELEGRAM_BOT_TOKEN"] = channel.get("_token", "")
         env["TELEGRAM_BOT_USERNAME"] = channel.get("telegram_bot_username", "")
         env["ALLOWED_USERS"] = channel.get("allowed_users", "")
+        respond = respond_settings(channel, cfg["slug"], cfg.get("name"))
+        env["GROUP_RESPOND_MODE"] = respond["mode"]
+        env["BOT_NAME_ALIASES"] = ",".join(respond["aliases"])
         if topics.get("enabled"):
             env["ENABLE_PROJECT_THREADS"] = "true"
             env["PROJECT_THREADS_MODE"] = topics["mode"]
             if topics["mode"] == "group":
                 env["PROJECT_THREADS_CHAT_ID"] = topics["chat_id"]
             env["PROJECTS_CONFIG_PATH"] = topics["path"]
+            # topic_plan() carries these; a plan built elsewhere may not, so
+            # the channel's own fields are the fallback (checked the same way).
+            extras = topic_extras(channel)
+            extras.update({k: topics[k] for k in extras if k in topics})
+            general = extras["general"]
+            if topics["mode"] != "group" or general_error(general, topics.get("projects") or []):
+                general = ""
+            env["PROJECT_THREADS_GENERAL_PROJECT"] = general or "off"
+            env["PROJECT_THREADS_AUTO_MAP"] = "true" if extras["auto"] else "false"
+            env["PROJECT_THREADS_AUTO_ANNOUNCE"] = "true" if extras["auto_announce"] else "false"
+            env["PROJECT_THREADS_DELETED_TOPICS"] = extras["deleted"]
+            env["PROJECT_THREADS_TRASH_DAYS"] = str(extras["trash_days"])
         else:
             env["ENABLE_PROJECT_THREADS"] = "false"
 
@@ -1688,6 +1714,28 @@ TOPIC_PATH_RE = re.compile(r'^[^\x00-\x1f\x7f"\\]{1,200}$')
 # with a new id, when Topics are switched on in its settings.
 SUPERGROUP_ID_RE = re.compile(r"^-100\d{7,13}$")
 MAX_TOPIC_PROJECTS = 20
+# Rows the panel may post: the 20 the panel manages plus every auto project the
+# runtime made (PROJECT_THREADS_AUTO_MAX is at most 500 on the runtime side).
+MAX_TOPIC_ROWS = MAX_TOPIC_PROJECTS + 500
+
+# --- group options (2026-10-02, mavix-bot) -----------------------------------
+# Where the forum's General topic goes, whether the bot answers every group
+# message or only when asked, and whether new forum topics get a folder of
+# their own (the runtime keeps those in projects.auto.json; see read_auto_file).
+RESPOND_MODES = ("all", "mention")
+TOPICS_DELETED = ("trash", "keep")
+DEFAULT_TRASH_DAYS = 30
+MAX_TRASH_DAYS = 3650
+MAX_NAME_ALIASES = 10
+MAX_ALIAS_LEN = 40
+ALIAS_BAD_RE = re.compile(r"[,\x00-\x1f\x7f]")
+AUTO_FILE = "projects.auto.json"
+AUTO_LOCK = "projects.auto.json.lock"
+AUTO_MAX = 100              # the runtime's PROJECT_THREADS_AUTO_MAX default; the helper does not write it
+AUTO_DIR = "topics"         # auto folders: <vault>/topics/<slug>
+AUTO_TRASH_DIR = ".trash/topics"
+AUTO_FILE_MAX_BYTES = 1024 * 1024
+AUTO_LOCK_TIMEOUT = 10
 
 # The proposal for an agent with no projects list yet: one topic, for the
 # agent's own folder (APPROVED_DIRECTORY, i.e. its vault), named after the
@@ -1730,7 +1778,10 @@ def parse_topic_projects(raw):
             raise TopicError("Topics: the projects list is not valid JSON")
     if not isinstance(raw, list):
         raise TopicError("Topics: the projects must be a list")
-    if len(raw) > MAX_TOPIC_PROJECTS:
+    if len(raw) > MAX_TOPIC_ROWS:
+        raise TopicError("Topics: at most " + str(MAX_TOPIC_PROJECTS) + " projects")
+    manual = sum(1 for item in raw if not (isinstance(item, dict) and parse_flag(item.get("auto"), False)))
+    if manual > MAX_TOPIC_PROJECTS:
         raise TopicError("Topics: at most " + str(MAX_TOPIC_PROJECTS) + " projects")
     out = []
     for i, item in enumerate(raw):
@@ -1760,11 +1811,128 @@ def parse_topic_projects(raw):
         path = os.path.normpath(path)
         if path == ".." or path.startswith("../"):
             raise TopicError("Topics: the folder of project '" + slug + "' points outside the agent's folder")
-        enabled = item.get("enabled", True)
-        if isinstance(enabled, str):
-            enabled = enabled.strip().lower() not in ("", "0", "false", "off", "no")
-        out.append({"slug": slug, "name": name, "path": path, "enabled": bool(enabled)})
+        row = {"slug": slug, "name": name, "path": path, "enabled": parse_flag(item.get("enabled", True), True)}
+        if parse_flag(item.get("auto"), False):
+            # A folder the runtime made for a new forum topic (projects.auto.json),
+            # shown in the panel; see fold_auto_rows for what is kept of it.
+            row["auto"] = True
+        out.append(row)
     return out
+
+
+def parse_flag(value, default):
+    """A form or JSON boolean: true/false, "1"/"0", "on"/"off", "yes"/"no"."""
+    if value is None:
+        return default
+    if isinstance(value, str):
+        v = value.strip().lower()
+        if v == "":
+            return default
+        return v not in ("0", "false", "off", "no")
+    return bool(value)
+
+
+def parse_aliases(raw):
+    """The names that count as asking the bot. A list (or one name per line); raises TopicError."""
+    if raw in (None, ""):
+        return []
+    if isinstance(raw, str):
+        raw = raw.split("\n")
+    if not isinstance(raw, (list, tuple)):
+        raise TopicError("Respond in groups: the names must be a list")
+    out, seen = [], set()
+    for item in raw:
+        name = str(item if item is not None else "").strip()
+        if not name:
+            continue
+        if ALIAS_BAD_RE.search(name):
+            raise TopicError("Respond in groups: the name '" + re.sub(r"[\x00-\x1f\x7f]", " ", name)[:40]
+                             + "' contains a comma or a line break; put each name on a line of its own")
+        if len(name) > MAX_ALIAS_LEN:
+            raise TopicError("Respond in groups: the name '" + name[:40] + "...' is longer than "
+                             + str(MAX_ALIAS_LEN) + " characters")
+        if name.casefold() in seen:
+            continue
+        seen.add(name.casefold())
+        out.append(name)
+    if len(out) > MAX_NAME_ALIASES:
+        raise TopicError("Respond in groups: at most " + str(MAX_NAME_ALIASES) + " names")
+    return out
+
+
+def default_aliases(agent_slug, agent_name=""):
+    """The agent's own name, for "only when asked" with no names given."""
+    name = str(agent_name or "").strip()
+    if not name or ALIAS_BAD_RE.search(name) or len(name) > MAX_ALIAS_LEN:
+        name = agent_slug
+    return [name] if name else []
+
+
+def respond_settings(channel, agent_slug="", agent_name=""):
+    """GROUP_RESPOND_MODE / BOT_NAME_ALIASES from a stored channel. Lenient: a bad value is the default."""
+    channel = channel or {}
+    mode = str(channel.get("respond_mode") or "all").strip().lower()
+    if mode not in RESPOND_MODES:
+        mode = "all"
+    try:
+        aliases = parse_aliases(channel.get("name_aliases"))
+    except TopicError:
+        aliases = []
+    if mode == "mention" and not aliases and agent_slug:
+        aliases = default_aliases(agent_slug, agent_name)
+    return {"mode": mode, "aliases": aliases}
+
+
+def parse_trash_days(raw):
+    if raw in (None, ""):
+        return DEFAULT_TRASH_DAYS
+    if isinstance(raw, bool):
+        raise TopicError("Topics: the days in the trash must be a whole number")
+    try:
+        days = int(str(raw).strip()) if not isinstance(raw, int) else raw
+    except ValueError:
+        raise TopicError("Topics: the days in the trash must be a whole number")
+    if days < 0 or days > MAX_TRASH_DAYS:
+        raise TopicError("Topics: deleted topics' folders stay in the trash 0 to " + str(MAX_TRASH_DAYS)
+                         + " days (0 deletes them at once), not " + str(days))
+    return days
+
+
+def topic_extras(channel):
+    """The General topic, auto-folder and deleted-topic options of a stored channel, with defaults."""
+    channel = channel or {}
+    general = str(channel.get("topics_general") or "").strip().lower()
+    if general == "off" or not TOPIC_SLUG_RE.match(general):
+        general = ""
+    deleted = str(channel.get("topics_deleted") or "trash").strip().lower()
+    if deleted not in TOPICS_DELETED:
+        deleted = "trash"
+    try:
+        days = parse_trash_days(channel.get("topics_trash_days"))
+    except TopicError:
+        days = DEFAULT_TRASH_DAYS
+    return {
+        "general": general,
+        "auto": parse_flag(channel.get("topics_auto"), False),
+        "auto_announce": parse_flag(channel.get("topics_auto_announce"), True),
+        "deleted": deleted,
+        "trash_days": days,
+    }
+
+
+def general_error(general, projects):
+    """Why the General topic cannot go to `general`, or None."""
+    if not general:
+        return None
+    for p in projects:
+        if p["slug"] == general:
+            if p.get("auto"):
+                return ("the General topic can only go to a project of the list above, not to a folder "
+                        "made for a new topic ('" + general + "')")
+            if not p["enabled"]:
+                return "the General topic goes to '" + p["name"] + "', which is switched off"
+            return None
+    return "the General topic goes to '" + general + "', which is not one of the projects"
 
 
 def check_topic_projects(projects, approved_dir):
@@ -1837,13 +2005,21 @@ def topic_plan(cfg, channel):
     err = topic_config_error(mode, chat_id, projects, agent_vault(slug))
     if err:
         return {"enabled": False, "skipped": err}
-    return {
+    extras = topic_extras(channel)
+    # The General topic exists only in a group; in private mode it is off. A
+    # target that no longer qualifies (cannot happen after a save, which checks
+    # it with the list) is dropped rather than left to stop the bot.
+    if mode != "group" or general_error(extras["general"], projects):
+        extras["general"] = ""
+    plan = {
         "enabled": True,
         "mode": mode,
         "chat_id": chat_id if mode == "group" else "",
         "projects": projects,
         "path": os.path.join(agent_dir(slug), PROJECTS_FILE),
     }
+    plan.update(extras)
+    return plan
 
 
 def render_projects_yaml(projects):
@@ -1859,6 +2035,10 @@ def render_projects_yaml(projects):
         lines.append("    name: " + q(p["name"]))
         lines.append("    path: " + q(p["path"]))
         lines.append("    enabled: " + ("true" if p["enabled"] else "false"))
+        if p.get("auto"):
+            # An edited folder of a new topic: this entry overrides the
+            # runtime's projects.auto.json one (same slug). The runtime ignores the key.
+            lines.append("    auto: true")
     return "\n".join(lines) + "\n"
 
 
@@ -1878,6 +2058,363 @@ def write_projects_file(path, projects, gid):
         except OSError:
             pass
         raise
+
+
+# --- the runtime's auto file (projects.auto.json) ------------------------------
+#
+# With "new topics get their own folder" on, the runtime makes <vault>/topics/<slug>
+# for every new forum topic and records it in <agent>/projects.auto.json; a
+# deleted topic's folder goes to <vault>/.trash/topics/<slug>-<UTC stamp>. The
+# runtime is that file's writer. The helper reads it for the panel and makes
+# exactly two changes to it -- restore a folder from the trash, delete one now --
+# both under the same flock the runtime takes (projects.auto.json.lock).
+#
+# The file and the folders are writable by the agent, so everything read from
+# them is untrusted: every entry is checked, every path resolved, links refused,
+# nothing outside <vault>/topics or <vault>/.trash/topics is ever touched, and a
+# damaged file shows as an error, never as a crash.
+
+class AutoFileError(Exception):
+    pass
+
+
+def _auto_root(agent):
+    """The agent's vault, resolved, and its two subtrees -- or AutoFileError when one is a link."""
+    root = os.path.realpath(agent_vault(agent))
+    topics_dir = os.path.join(root, AUTO_DIR)
+    trash_dir = os.path.join(root, AUTO_TRASH_DIR)
+    for sub in (topics_dir, os.path.join(root, ".trash"), trash_dir):
+        if os.path.islink(sub):
+            raise AutoFileError("the folder " + os.path.relpath(sub, root) + " in the agent's folder is a link; "
+                                "it must be a real folder")
+    return root
+
+
+def auto_entry_path(root, rel, subtree):
+    """Check one relative path from the auto file: exactly one folder below `subtree`, no link anywhere.
+
+    Returns (normalised relative path, absolute path, exists) or raises AutoFileError.
+    """
+    if not isinstance(rel, str) or not TOPIC_PATH_RE.match(rel) or rel.startswith(("/", "~")):
+        raise AutoFileError("not a folder inside the agent's folder")
+    norm = os.path.normpath(rel)
+    if norm == ".." or norm.startswith("../") or os.path.dirname(norm) != subtree or not os.path.basename(norm):
+        raise AutoFileError("the folder '" + rel[:80] + "' is not inside " + subtree + "/")
+    full = os.path.join(root, norm)
+    if os.path.islink(full):
+        raise AutoFileError("the folder '" + norm + "' is a link")
+    if not os.path.lexists(full):
+        return norm, full, False
+    if os.path.realpath(full) != full:
+        raise AutoFileError("the folder '" + norm + "' leads elsewhere through a link")
+    if not os.path.isdir(full):
+        raise AutoFileError("'" + norm + "' is not a folder")
+    return norm, full, True
+
+
+def _auto_text(v, limit=80):
+    return v.strip()[:limit] if isinstance(v, str) else ""
+
+
+def _auto_int(v):
+    return v if isinstance(v, int) and not isinstance(v, bool) else None
+
+
+def read_auto_raw(agent):
+    """The auto file's JSON as written, {} when there is none. Raises AutoFileError when it cannot be read."""
+    path = os.path.join(agent_dir(agent), AUTO_FILE)
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return {}
+    except OSError as e:
+        if e.errno == errno.ELOOP:
+            raise AutoFileError("the file " + AUTO_FILE + " is a link")
+        raise AutoFileError("the file " + AUTO_FILE + " could not be opened (" + type(e).__name__ + ")")
+    with os.fdopen(fd, "rb") as fh:
+        if not stat_is_file(os.fstat(fh.fileno())):
+            raise AutoFileError("the file " + AUTO_FILE + " is not a plain file")
+        data = fh.read(AUTO_FILE_MAX_BYTES + 1)
+    if len(data) > AUTO_FILE_MAX_BYTES:
+        raise AutoFileError("the file " + AUTO_FILE + " is too large")
+    if not data.strip():
+        return {}
+    try:
+        raw = json.loads(data.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        raise AutoFileError("the file " + AUTO_FILE + " is not valid JSON")
+    if not isinstance(raw, dict):
+        raise AutoFileError("the file " + AUTO_FILE + " is not a JSON object")
+    for key in ("projects", "unlinked", "trash"):
+        if key in raw and not isinstance(raw[key], list):
+            raise AutoFileError("'" + key + "' in " + AUTO_FILE + " is not a list")
+    return raw
+
+
+def stat_is_file(st):
+    import stat as _stat
+    return _stat.S_ISREG(st.st_mode)
+
+
+def validate_auto(raw, root):
+    """The checked entries of an auto file; anything doubtful is left out and counted in `ignored`."""
+    out = {"projects": [], "unlinked": [], "trash": [], "ignored": []}
+
+    def common(e):
+        slug = e.get("slug")
+        if not isinstance(slug, str) or not TOPIC_SLUG_RE.match(slug):
+            raise AutoFileError("a short name that is not allowed")
+        name = e.get("name")
+        name = name.strip() if isinstance(name, str) else ""
+        if not name or not NAME_RE.match(name):
+            name = slug
+        return slug, name
+
+    for e in raw.get("projects") or []:
+        try:
+            if not isinstance(e, dict):
+                raise AutoFileError("not an object")
+            slug, name = common(e)
+            rel, _full, exists = auto_entry_path(root, e.get("path"), AUTO_DIR)
+            out["projects"].append({"slug": slug, "name": name, "path": rel, "exists": exists,
+                                    "thread_id": _auto_int(e.get("thread_id")),
+                                    "created_at": _auto_text(e.get("created_at"), 40),
+                                    "closed": e.get("closed") is True})
+        except AutoFileError as err:
+            out["ignored"].append("projects: " + str(err))
+    for e in raw.get("unlinked") or []:
+        try:
+            if not isinstance(e, dict):
+                raise AutoFileError("not an object")
+            slug, name = common(e)
+            rel, _full, exists = auto_entry_path(root, e.get("path"), AUTO_DIR)
+            if not exists:
+                raise AutoFileError("the folder '" + rel + "' is gone")
+            out["unlinked"].append({"slug": slug, "name": name, "path": rel,
+                                    "since": _auto_text(e.get("since"), 40),
+                                    "reason": _auto_text(e.get("reason"), 40)})
+        except AutoFileError as err:
+            out["ignored"].append("unlinked: " + str(err))
+    for e in raw.get("trash") or []:
+        try:
+            if not isinstance(e, dict):
+                raise AutoFileError("not an object")
+            slug, name = common(e)
+            rel, _full, exists = auto_entry_path(root, e.get("trash_path"), AUTO_TRASH_DIR)
+            original = e.get("original_path")
+            original = os.path.normpath(original) if isinstance(original, str) and TOPIC_PATH_RE.match(original) else ""
+            out["trash"].append({"slug": slug, "name": name, "trash_path": rel, "exists": exists,
+                                 "original_path": original,
+                                 "thread_id": _auto_int(e.get("thread_id")),
+                                 "trashed_at": _auto_text(e.get("trashed_at"), 40)})
+        except AutoFileError as err:
+            out["ignored"].append("trash: " + str(err))
+    return out
+
+
+def read_auto_file(agent):
+    """The panel's view of the auto file. Never raises: a problem is in `error`."""
+    block = {"projects": [], "unlinked": [], "trash": [], "count": 0, "max": AUTO_MAX, "error": ""}
+    if not agent or not os.path.isdir(agent_dir(agent)):
+        return block
+    try:
+        root = _auto_root(agent)
+        checked = validate_auto(read_auto_raw(agent), root)
+    except AutoFileError as e:
+        block["error"] = str(e)
+        return block
+    except Exception as e:  # never let a damaged file take the channel page down
+        block["error"] = "the file " + AUTO_FILE + " could not be read (" + type(e).__name__ + ")"
+        return block
+    block.update({k: checked[k] for k in ("projects", "unlinked", "trash")})
+    block["count"] = sum(1 for p in checked["projects"] if not p["closed"])
+    if checked["ignored"]:
+        n = len(checked["ignored"])
+        block["error"] = (str(n) + (" entry" if n == 1 else " entries") + " of " + AUTO_FILE
+                          + " left out: " + "; ".join(checked["ignored"][:3]))
+    return block
+
+
+def fold_auto_rows(projects, auto_projects, stored):
+    """What of the panel's list goes to projects.yaml.
+
+    Rows flagged auto that still equal the runtime's entry stay out (they live
+    in the auto file). An edited one stays in, flagged, as an override. A row
+    flagged auto whose entry has gone is kept only if it was an override before.
+    """
+    by_slug = {p["slug"]: p for p in auto_projects}
+    before = {p.get("slug") for p in (stored or []) if isinstance(p, dict) and p.get("auto")}
+    out = []
+    for p in projects:
+        if not p.get("auto"):
+            out.append(p)
+            continue
+        entry = by_slug.get(p["slug"])
+        if entry is None:
+            if p["slug"] in before:
+                out.append(p)
+            continue
+        if p["name"] == entry["name"] and p["path"] == entry["path"] and p["enabled"]:
+            continue
+        out.append(p)
+    return out
+
+
+class AutoLock:
+    """Exclusive flock on <agent>/projects.auto.json.lock, as the runtime takes it.
+
+    Waits up to `timeout` seconds; a lock file that is a link is refused.
+    """
+
+    def __init__(self, agent, timeout=None):
+        self.path = os.path.join(agent_dir(agent), AUTO_LOCK)
+        self.timeout = AUTO_LOCK_TIMEOUT if timeout is None else timeout
+        self.fd = None
+
+    def __enter__(self):
+        try:
+            self.fd = os.open(self.path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o660)
+        except OSError as e:
+            raise AutoFileError("the lock file " + AUTO_LOCK + " could not be opened"
+                                + (" (it is a link)" if e.errno == errno.ELOOP else ""))
+        try:
+            uid, gid = agent_ids()
+            os.fchown(self.fd, uid, gid)
+            os.fchmod(self.fd, 0o660)
+        except (OSError, SystemExit):
+            pass
+        deadline = time.time() + self.timeout
+        while True:
+            try:
+                fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return self
+            except OSError as e:
+                if e.errno not in (errno.EAGAIN, errno.EACCES, errno.EWOULDBLOCK):
+                    raise
+            if time.time() >= deadline:
+                os.close(self.fd)
+                self.fd = None
+                raise AutoFileError("the agent is busy with its topics file; try again in a moment")
+            time.sleep(0.2)
+
+    def __exit__(self, *exc):
+        if self.fd is not None:
+            try:
+                fcntl.flock(self.fd, fcntl.LOCK_UN)
+            finally:
+                os.close(self.fd)
+                self.fd = None
+        return False
+
+
+def write_auto_raw(agent, raw):
+    """Replace the auto file atomically, owned by the agent (moniagent 0660), as the runtime writes it."""
+    d = agent_dir(agent)
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".projects.auto-")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(raw, fh, indent=2, ensure_ascii=False)
+            fh.write("\n")
+        uid, gid = agent_ids()
+        os.chown(tmp, uid, gid)
+        os.chmod(tmp, 0o660)
+        os.replace(tmp, os.path.join(d, AUTO_FILE))
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def free_topic_folder(root, slug):
+    """topics/<slug>, or <slug>-2, -3 ... when taken (the short name kept at most 40 characters)."""
+    for n in range(1, 100):
+        suffix = "" if n == 1 else "-" + str(n)
+        cand = slug[:40 - len(suffix)].rstrip("-_") + suffix
+        if TOPIC_SLUG_RE.match(cand) and not os.path.lexists(os.path.join(root, AUTO_DIR, cand)):
+            return cand
+    raise AutoFileError("no free folder name for '" + slug + "' in " + AUTO_DIR + "/")
+
+
+def cmd_channel_topics_trash(args):
+    """channel-topics-trash <channel> restore|delete <trash_path>
+
+    restore: <vault>/<trash_path> back to <vault>/topics/<slug> (or <slug>-2 ...),
+             the trash entry removed, an "unlinked" entry added (reason "restored");
+             the runtime links it again when a topic of that name is made.
+    delete:  <vault>/<trash_path> removed for good, the trash entry removed.
+    Both under the auto file's lock, re-reading the file under it.
+    """
+    if len(args) != 3 or args[1] not in ("restore", "delete"):
+        fail("usage: channel-topics-trash <slug> restore|delete <trash_path>")
+    slug = check_channel_slug(args[0])
+    existing_channel(slug)
+    action, wanted = args[1], args[2]
+    agent = read_channel_json(slug).get("agent") or ""
+    if not agent or not os.path.isdir(agent_dir(agent)):
+        fail("This channel is not connected to an agent, so it has no topic folders.")
+    try:
+        root = _auto_root(agent)
+        rel, full, exists = auto_entry_path(root, wanted, AUTO_TRASH_DIR)
+    except AutoFileError as e:
+        fail("Nothing changed: " + str(e) + ".")
+    detail = {"slug": slug, "agent": agent, "action": action, "trash_path": rel}
+    try:
+        with AutoLock(agent):
+            raw = read_auto_raw(agent)
+            trash = raw.get("trash") or []
+            index = None
+            for i, e in enumerate(trash):
+                if isinstance(e, dict) and isinstance(e.get("trash_path"), str) and os.path.normpath(e["trash_path"]) == rel:
+                    index = i
+                    break
+            if index is None:
+                raise AutoFileError("'" + rel + "' is not in the trash list (it may have been emptied already)")
+            entry = trash[index]
+            # Checked again under the lock: the runtime may have moved things.
+            rel, full, exists = auto_entry_path(root, rel, AUTO_TRASH_DIR)
+            result = {"action": action, "trash_path": rel}
+            if action == "restore":
+                if not exists:
+                    raise AutoFileError("the folder '" + rel + "' is no longer in the trash")
+                eslug = entry.get("slug") if isinstance(entry.get("slug"), str) and TOPIC_SLUG_RE.match(entry.get("slug")) else ""
+                if not eslug:
+                    raise AutoFileError("the trash entry has no usable short name")
+                name = entry.get("name") if isinstance(entry.get("name"), str) and NAME_RE.match(entry.get("name").strip()) else eslug
+                topics_dir = os.path.join(root, AUTO_DIR)
+                if not os.path.isdir(topics_dir):
+                    os.makedirs(topics_dir, exist_ok=True)
+                    uid, gid = agent_ids()
+                    os.chown(topics_dir, uid, gid)
+                    os.chmod(topics_dir, 0o770)
+                if os.path.islink(topics_dir) or os.path.realpath(topics_dir) != topics_dir:
+                    raise AutoFileError("the folder topics/ is a link")
+                new_slug = free_topic_folder(root, eslug)
+                dest = os.path.join(topics_dir, new_slug)
+                os.rename(full, dest)
+                new_rel = AUTO_DIR + "/" + new_slug
+                raw.setdefault("unlinked", []).append({"slug": new_slug, "name": name.strip(), "path": new_rel,
+                                                       "since": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                                                       "reason": "restored"})
+                result["path"] = new_rel
+                detail["restored_to"] = new_rel
+            else:
+                if exists:
+                    shutil.rmtree(full)
+                result["deleted"] = exists
+            del trash[index]
+            raw["trash"] = trash
+            write_auto_raw(agent, raw)
+    except AutoFileError as e:
+        fail("Nothing changed: " + str(e) + ".")
+    except OSError as e:
+        detail["error"] = type(e).__name__
+        audit("channel-topics-trash", detail)
+        fail("The folder could not be " + ("restored" if action == "restore" else "deleted")
+             + " (" + type(e).__name__ + (": " + e.strerror if getattr(e, "strerror", None) else "") + ").")
+    audit("channel-topics-trash", detail)
+    ok(result)
 
 
 def topics_signature(cfg):
@@ -2109,6 +2646,12 @@ def restart_agent_unit(slug):
     run(["systemctl", "restart", unit_name(slug)], timeout=45)
 
 
+def needs_start_check(cfg):
+    """Settings the bot can refuse to start on: Topics, or answering in groups only when asked."""
+    return bool(cfg.get("agent")) and cfg.get("type") == "telegram" and (
+        bool(cfg.get("topics_enabled")) or cfg.get("respond_mode") == "mention")
+
+
 def topics_safety_net(cfg, previous, snap, since):
     """After a save that leaves Topics on: make sure the agent came up; if not, put the old files back.
 
@@ -2116,7 +2659,7 @@ def topics_safety_net(cfg, previous, snap, since):
     caller to report: what the bot said, and what the agent is running now.
     """
     agent = cfg.get("agent")
-    if not agent or cfg.get("type") != "telegram" or not cfg.get("topics_enabled"):
+    if not needs_start_check(cfg):
         return None
     check = agent_start_check(agent, since)
     if check["ok"]:
@@ -2139,36 +2682,52 @@ def topics_safety_net(cfg, previous, snap, since):
     else:
         after = {"ok": True, "state": "not connected"}
     fallback = False
+    respond_forced_all = False
     if not after["ok"]:
         # The previous configuration does not start either. If Topics were on
         # in it, switch them off: never leave the agent in a crash loop.
         restored = read_channel_json(cfg["slug"])
-        if restored.get("topics_enabled"):
+        if restored.get("topics_enabled") or restored.get("respond_mode") == "mention":
+            respond_forced_all = restored.get("respond_mode") == "mention"
             restored["topics_enabled"] = False
+            restored["respond_mode"] = "all"
             uid, gid = agent_ids()
             write_channel_files(restored, uid, gid, keep_token=channel_token(cfg["slug"]))
             since3 = time.time()
             reconfigure_agent(agent)
             fallback = True
             after = agent_start_check(agent, since3)
-    return {"ok": False, "check": check, "after": after, "topics_forced_off": fallback}
+    return {"ok": False, "check": check, "after": after, "topics_forced_off": fallback,
+            "respond_forced_all": fallback and respond_forced_all}
 
 
 def topics_audit(cfg):
     if not cfg.get("topics_enabled"):
         return {"enabled": False}
-    return {"enabled": True, "mode": cfg.get("topics_mode"), "chat_id": cfg.get("topics_chat_id"),
-            "projects": [[p["slug"], p["path"]] for p in cfg.get("topics_projects") or []]}
+    out = {"enabled": True, "mode": cfg.get("topics_mode"), "chat_id": cfg.get("topics_chat_id"),
+           "projects": [[p["slug"], p["path"]] + (["auto"] if p.get("auto") else []) for p in cfg.get("topics_projects") or []]}
+    extras = topic_extras(cfg)
+    if extras != topic_extras({}):
+        out["options"] = extras
+    return out
 
 
-def topics_failure_text(net):
+def respond_audit(cfg):
+    return {"mode": cfg.get("respond_mode") or "all", "aliases": len(cfg.get("name_aliases") or [])}
+
+
+def topics_failure_text(net, cfg=None):
     check, after = net["check"], net.get("after") or {}
-    text = "Topics were not turned on: the bot did not start in topic mode"
+    if cfg is not None and not cfg.get("topics_enabled"):
+        text = "The settings were not saved: the bot did not start with them"
+    else:
+        text = "Topics were not turned on: the bot did not start in topic mode"
     if check.get("error"):
         text += " (it said: " + check["error"] + ")"
     text += "."
     if net.get("topics_forced_off"):
-        text += " The previous settings did not start either, so Topics are now off."
+        text += (" The previous settings did not start either, so Topics are now off"
+                 + (" and the bot answers every group message." if net.get("respond_forced_all") else "."))
     else:
         text += " The previous settings are back."
     text += (" The agent is running again." if after.get("ok")
@@ -2198,7 +2757,8 @@ def cmd_channel_topics_folders(args):
     meta = read_channel_json(slug)
     agent = meta.get("agent") or ""
     if not agent or not os.path.isdir(agent_dir(agent)):
-        ok({"slug": slug, "agent": "", "approved_directory": "", "folders": [], "default_projects": []})
+        ok({"slug": slug, "agent": "", "approved_directory": "", "folders": [], "default_projects": [],
+            "auto": read_auto_file("")})
     root = os.path.realpath(agent_vault(agent))
     folders = ["."]
     if os.path.isdir(root):
@@ -2221,6 +2781,8 @@ def cmd_channel_topics_folders(args):
         "approved_directory": root,
         "folders": folders[:300],
         "default_projects": default_topic_projects(agent, read_agent_json(agent).get("name")),
+        "default_aliases": default_aliases(agent, read_agent_json(agent).get("name")),
+        "auto": read_auto_file(agent),
     })
 
 
@@ -2278,6 +2840,31 @@ def validate_channel(cfg, creating):
         if mode not in TOPICS_MODES:
             fail("Topics: the mode must be 'group' or 'private'")
         projects = normalise_topic_projects(cfg.get("topics_projects"))
+        if any(p.get("auto") for p in projects):
+            # Folders the runtime made for new topics come back from the panel
+            # flagged: only edited ones are kept, as overrides (fold_auto_rows).
+            auto = read_auto_file(agent) if agent else {"projects": []}
+            projects = fold_auto_rows(projects, auto["projects"], cfg.get("_stored_projects"))
+        try:
+            general = str(cfg.get("topics_general") or "").strip().lower()
+            if general == "off":
+                general = ""
+            if general and not TOPIC_SLUG_RE.match(general):
+                raise TopicError("Topics: the General topic must go to one of the projects, or be off")
+            deleted = str(cfg.get("topics_deleted") or "trash").strip().lower()
+            if deleted not in TOPICS_DELETED:
+                raise TopicError("Topics: a deleted topic's folder is either moved to the trash or kept "
+                                 "('trash' or 'keep')")
+            trash_days = parse_trash_days(cfg.get("topics_trash_days"))
+            respond = str(cfg.get("respond_mode") or "all").strip().lower()
+            if respond not in RESPOND_MODES:
+                raise TopicError("Respond in groups: answer every message ('all') or only when asked "
+                                 "('mention'), not '" + respond[:20] + "'")
+            aliases = parse_aliases(cfg.get("name_aliases"))
+        except TopicError as e:
+            fail(str(e))
+        if respond == "mention" and not aliases and agent:
+            aliases = default_aliases(agent, read_agent_json(agent).get("name"))
         if topics:
             # Everything the runtime checks before it starts in topic mode,
             # checked now: a save it would refuse never reaches the agent.
@@ -2286,12 +2873,21 @@ def validate_channel(cfg, creating):
             err = topic_chat_error(mode, chat_id)
             if not err and agent:
                 err = check_topic_projects(projects, agent_vault(agent))
+            if not err and mode == "group":
+                err = general_error(general, projects)
             if err:
                 fail("Topics not saved: " + err + ".")
         out["topics_enabled"] = topics
         out["topics_chat_id"] = chat_id
         out["topics_mode"] = mode
         out["topics_projects"] = projects
+        out["topics_general"] = general
+        out["topics_auto"] = parse_flag(cfg.get("topics_auto"), False)
+        out["topics_auto_announce"] = parse_flag(cfg.get("topics_auto_announce"), True)
+        out["topics_deleted"] = deleted
+        out["topics_trash_days"] = trash_days
+        out["respond_mode"] = respond
+        out["name_aliases"] = aliases
 
         token = cfg.get("token") or ""
         if token and not BOT_TOKEN_RE.match(token):
@@ -2592,13 +3188,14 @@ def cmd_channel_create(args):
         fail("could not create channel: " + type(exc).__name__ + ": " + str(exc))
     result = reconfigure_agent(cfg.get("agent"))
     result.update(reconcile_whatsapp(slug))
-    if cfg.get("agent") and cfg["type"] == "telegram" and cfg.get("topics_enabled"):
+    if needs_start_check(cfg):
         check = agent_start_check(cfg["agent"], since)
         if not check["ok"]:
             # A new channel has no earlier Topics setting to go back to: keep
-            # the channel, with Topics off, and say why.
+            # the channel, with Topics off (and answering every message), and say why.
             meta = read_channel_json(slug)
             meta["topics_enabled"] = False
+            meta["respond_mode"] = "all"
             write_channel_files(meta, uid, gid, keep_token=cfg.get("_token") or "")
             result = reconfigure_agent(cfg.get("agent"))
             result["topics_error"] = ("The channel was created with Topics off: the bot did not start "
@@ -2617,7 +3214,8 @@ def cmd_channel_update(args):
     previous_agent = current.get("agent") or ""
 
     merged = dict(current)
-    merged.update({k: v for k, v in payload.items() if v is not None})
+    merged.update({k: v for k, v in payload.items() if v is not None and not str(k).startswith("_")})
+    merged["_stored_projects"] = current.get("topics_projects")
     cfg = validate_channel(merged, creating=False)
     if topics_signature(cfg) and topics_signature(cfg) != topics_signature(current):
         # Topics newly on, or pointed somewhere new: ask Telegram first.
@@ -2642,14 +3240,14 @@ def cmd_channel_update(args):
     net = topics_safety_net(cfg, current, snap, since)
     detail = {"slug": slug, "agent": cfg.get("agent"),
               "token_changed": bool(cfg.get("_token")),
-              "topics": topics_audit(cfg)}
+              "topics": topics_audit(cfg), "respond": respond_audit(cfg)}
     if net and not net["ok"]:
         detail["topics_reverted"] = {"error": net["check"].get("error"),
                                      "state": net["check"].get("state"),
                                      "after": net["after"].get("state"),
                                      "topics_forced_off": net["topics_forced_off"]}
         audit("channel-update", detail)
-        fail(topics_failure_text(net))
+        fail(topics_failure_text(net, cfg))
     if net:
         results["topics_check"] = net["check"]
     audit("channel-update", detail)
@@ -6592,6 +7190,7 @@ COMMANDS = {
     "channel-update": cmd_channel_update,
     "channel-delete": cmd_channel_delete,
     "channel-topics-folders": cmd_channel_topics_folders,
+    "channel-topics-trash": cmd_channel_topics_trash,
     "channel-whatsapp-status": cmd_channel_whatsapp_status,
     "channel-whatsapp-link": cmd_channel_whatsapp_link,
     "channel-whatsapp-unlink": cmd_channel_whatsapp_unlink,

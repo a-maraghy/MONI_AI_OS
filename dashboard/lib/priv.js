@@ -186,6 +186,9 @@ module.exports = {
       timeout: 180000,
     }),
   channelTopicsFolders: (slug) => callHelper("channel-topics-folders", [slug]),
+  // Telegram Topics ▸ Trash: restore|delete one folder of a deleted topic.
+  channelTopicsTrash: (slug, op, trashPath) =>
+    callHelper("channel-topics-trash", [slug, op, trashPath], { timeout: 60000 }),
   channelDelete: (slug) => callHelper("channel-delete", [slug], { timeout: 60000 }),
 
   /* ------------------------------------------------------------ whatsapp -- */

@@ -432,6 +432,16 @@ exports.guide = ({ csrf, user, publicHost, publicPort, sshHost }) => {
           an admin before anything changes, then waits for the bot to start in topic mode. If it
           does not, the previous settings are put back and the bot's own error is shown.</li>
       </ol>
+      <p><strong>General goes to</strong> (Topics card): the group's General topic is answered in
+        the folder of the project you pick from the list; <em>Off</em> by default.</p>
+      <p><strong>Respond in groups</strong> (channel Settings): <em>To every message</em>, or
+        <em>Only when asked</em> &mdash; an @mention, a reply to the bot, or one of its names
+        (one per line, the agent's name by default), in every topic of the group. Private chats
+        are always answered.</p>
+      <p><strong>New topics get their own folder</strong> (Topics card, off by default): a topic
+        made in the group gets <code>topics/&lt;name&gt;</code> in the agent's folder. They show in
+        the list marked <em>auto</em>: edit or switch off, not remove. A deleted topic's folder
+        goes to the Trash list for the days you choose (Restore or Delete now there), or is kept.</p>
       <div class="alert warn">Group privacy mode is on by default, so the bot only sees
         messages that mention it or reply to it. That is usually what you want in a busy
         group. To let it read everything: BotFather → <code>/mybots</code> → your bot → Bot
