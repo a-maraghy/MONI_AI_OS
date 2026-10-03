@@ -124,6 +124,44 @@ Behaviour → Send files to chat** (`ALLOW_FILE_SEND`; add-ons cannot set it).
 Needs the runtime with send_file in it and its document libraries, both
 installed by `sudo bash deploy/update-runtime.sh`.
 
+## Images (drawn in code)
+
+Agents make pictures by **drawing them in SVG** — logos, icons, badges, simple
+illustrations and scenes — not with an image-generation service. Nothing is
+paid per image and no key is involved. Ask it ("draw 4 logo ideas for MAVIX",
+"make a flat illustration of a basil field at sunrise").
+
+How it works: the agent writes an SVG in its folder, then calls `render_svg`,
+which renders it to PNG on the server (resvg) and **shows Claude the picture**
+plus a 32/64 px strip on light and dark, so it can critique its own drawing
+and refine it before anything is sent. For several ideas it lays them out on
+one **contact sheet** and sends that first. A final logo arrives as the real
+`.svg` file plus a PNG preview photo, in the same chat and topic. The system
+prompt carries a designer's playbook (concepts → draw → render → critique →
+refine; construction, gradients, masks, filters, typography incl. Arabic, a
+styles cookbook, palettes). For photo-realistic requests it says plainly that it
+draws vector art and offers an illustrated take.
+
+Safety: an SVG is checked before it is rendered or sent — no DOCTYPE/entities,
+scripts, event handlers, `<foreignObject>`/HTML, or links/`url()` leaving the
+file; only `#id` references and inline PNG/JPEG/GIF/WebP data. Rendering runs in
+a child process with memory, CPU and time limits. Limits: renders up to 2048 px,
+12 renders per reply, SVGs up to 2 MB; sends count against the 5 files per
+reply (an SVG with its preview counts as two). It can also send `.jpg`/`.webp`
+pictures, and post PNG/JPG as photos.
+
+Fonts available to drawings are the ones installed on the server (DejaVu,
+Liberation, Ubuntu, Quicksand, URW/Nimbus …); Arabic in drawings is shaped
+correctly with DejaVu Sans. For final logos the agent prefers lettering drawn
+as paths, so they look the same everywhere.
+
+On for every agent. Switch it off per agent in **Settings → Behaviour → Images
+(drawn in code)** (`ALLOW_DRAWING`; add-ons cannot set it, nor
+`DRAW_MAX_RENDER_PX`, `DRAW_MAX_RENDERS_PER_REPLY`, `SVG_MAX_KB`). It needs **Send
+files to chat**: with that off, drawing is off too. Needs the runtime with
+`src/claude/drawing.py` and `resvg-py`, both installed by
+`sudo bash deploy/update-runtime.sh`.
+
 ## Channels
 
 Channels are broadcast, not conversation, and that difference decides how they

@@ -210,6 +210,8 @@ function agentEnv(name, allow) {
     CLAUDE_CLI_PATH: cli,
     CLAUDE_TIMEOUT_SECONDS: "60",
     ALLOW_FILE_SEND: allow ? "true" : "false",
+    // drawing (render_svg, contact_sheet) has its own test, test-drawing.cjs
+    ALLOW_DRAWING: "false",
   };
   const envFile = path.join(TMP, name + ".env");
   fs.writeFileSync(envFile, Object.entries(env).map(([k, v]) => k + "=" + v).join("\n") + "\n");

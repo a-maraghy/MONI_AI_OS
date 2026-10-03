@@ -673,10 +673,10 @@ check("every save audited as channel-update, with the topics config", kinds.filt
 
 console.log("helper: General topic, respond in groups, new-topic folders, trash");
 if (R.legacy_off) {
-  check("defaults unchanged: an existing channel (Topics off) renders the same agent.env plus only GROUP_RESPOND_MODE=all and BOT_NAME_ALIASES= (and ALLOW_FILE_SEND=true, added later)",
-    JSON.stringify(R.legacy_off) === JSON.stringify({ added: ["ALLOW_FILE_SEND=true", "BOT_NAME_ALIASES=", "GROUP_RESPOND_MODE=all"], removed: [] }), JSON.stringify(R.legacy_off));
+  check("defaults unchanged: an existing channel (Topics off) renders the same agent.env plus only GROUP_RESPOND_MODE=all and BOT_NAME_ALIASES= (and ALLOW_FILE_SEND=true, ALLOW_DRAWING=true, added later)",
+    JSON.stringify(R.legacy_off) === JSON.stringify({ added: ["ALLOW_DRAWING=true", "ALLOW_FILE_SEND=true", "BOT_NAME_ALIASES=", "GROUP_RESPOND_MODE=all"], removed: [] }), JSON.stringify(R.legacy_off));
   check("defaults unchanged: Topics on adds only the two plus the five topic options at their defaults",
-    JSON.stringify(R.legacy_on) === JSON.stringify({ added: ["ALLOW_FILE_SEND=true", "BOT_NAME_ALIASES=", "GROUP_RESPOND_MODE=all", "PROJECT_THREADS_AUTO_ANNOUNCE=true",
+    JSON.stringify(R.legacy_on) === JSON.stringify({ added: ["ALLOW_DRAWING=true", "ALLOW_FILE_SEND=true", "BOT_NAME_ALIASES=", "GROUP_RESPOND_MODE=all", "PROJECT_THREADS_AUTO_ANNOUNCE=true",
       "PROJECT_THREADS_AUTO_MAP=false", "PROJECT_THREADS_DELETED_TOPICS=trash", "PROJECT_THREADS_GENERAL_PROJECT=off", "PROJECT_THREADS_TRASH_DAYS=30"], removed: [] }),
     JSON.stringify(R.legacy_on));
 } else {

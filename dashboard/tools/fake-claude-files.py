@@ -15,14 +15,21 @@ Prompts it understands (the runtime strips the bot's name first):
   "make a csv"        -> summary.csv, sent
   "try to escape"     -> asks to send a file outside the folder, a symlink to one,
                          a .sh file and six files (one over the per-reply limit)
+  "draw the logo"     -> writes two SVG logos, render_svg (looks at the returned
+                         PNG), contact_sheet, sends the sheet as a photo and the
+                         final SVG with a PNG preview
+  "draw something evil" -> an SVG with an external reference and one with a
+                         script: render and send must both refuse
   anything else       -> no tool call
 
 Every invocation appends one JSON line to $FAKE_CLAUDE_LOG: cwd, the MCP
 servers it was given, whether the system prompt carries the send_file guide,
 the prompt, and each tool call with the SDK's answer.
 """
+import base64
 import json
 import os
+import struct
 import sys
 import time
 
@@ -41,7 +48,8 @@ mcp_config = json.loads(arg("--mcp-config") or "{}").get("mcpServers", {})
 system_prompt = arg("--system-prompt") or ""
 LOG = {"cwd": os.getcwd(), "mcp": {k: v.get("type", "stdio") for k, v in mcp_config.items()},
        "allowed": arg("--allowedTools") or arg("--allowed-tools") or "",
-       "guide": "SENDING FILES" in system_prompt, "calls": [], "prompt": None}
+       "guide": "SENDING FILES" in system_prompt, "draw_guide": "DRAWING PICTURES" in system_prompt,
+       "calls": [], "prompt": None}
 HAS_TOOL = mcp_config.get("moni_files", {}).get("type") == "sdk"
 
 _req = [0]
@@ -102,6 +110,67 @@ def send_file(path, caption=""):
     text = " ".join(c.get("text", "") for c in result.get("content", []))
     LOG["calls"].append({"path": path, "caption": caption, "ok": not result.get("isError"), "text": text})
     return text
+
+
+PNG_SIG = b"\x89PNG\r\n\x1a\n"
+
+
+def tool(name, args, caption=""):
+    """Call any moni_files tool; record text and every image it returned."""
+    res = mcp("tools/call", {"name": name, "arguments": args})
+    result = res.get("result") or {}
+    content = result.get("content", [])
+    entry = {"tool": name, "caption": caption or name, "ok": not result.get("isError"),
+             "text": " ".join(c.get("text", "") for c in content if c.get("type") == "text"),
+             "images": []}
+    for c in content:
+        if c.get("type") == "image":
+            data = base64.b64decode(c.get("data", ""))
+            png = data[:8] == PNG_SIG
+            w, h = struct.unpack(">II", data[16:24]) if png else (0, 0)
+            entry["images"].append({"mime": c.get("mimeType"), "png": png, "w": w, "h": h})
+    LOG["calls"].append(entry)
+    return entry
+
+
+LOGO_A = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+<defs><linearGradient id="a" x1="96" y1="112" x2="416" y2="400" gradientUnits="userSpaceOnUse">
+<stop offset="0" stop-color="#3730A3"/><stop offset="1" stop-color="#7C3AED"/></linearGradient>
+<filter id="g" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="8"/></filter></defs>
+<path d="M96 400V112H176L256 248L336 112H416V400H352V222L256 368L160 222V400Z" fill="url(#a)" filter="url(#g)" opacity=".5"/>
+<path d="M96 400V112H176L256 248L336 112H416V400H352V222L256 368L160 222V400Z" fill="url(#a)"/>
+<path d="M204 112H308L256 200Z" fill="#10B981"/></svg>"""
+LOGO_B = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="-20 40 580 200">
+<g fill="none" stroke="#1E1B4B" stroke-width="24"><path d="M12 200V80L56 170L100 80V200"/>
+<path d="M142 200L194 80L246 200"/><path d="M242 80L294 200L346 80"/><path d="M386 80V200"/></g>
+<path d="M524 80L424 200M424 80L524 200" stroke="#10B981" stroke-width="24"/>
+<text x="270" y="236" text-anchor="middle" font-family="DejaVu Sans" font-size="18">مافيكس</text></svg>"""
+
+
+def draw_logo():
+    os.makedirs("drawings", exist_ok=True)
+    with open("drawings/mavix-geometric-v1.svg", "w", encoding="utf-8") as fh:
+        fh.write(LOGO_A)
+    with open("drawings/mavix-wordmark-v1.svg", "w", encoding="utf-8") as fh:
+        fh.write(LOGO_B)
+    tool("render_svg", {"path": "drawings/mavix-geometric-v1.svg", "size": 512}, "render")
+    tool("render_svg", {"path": "drawings/mavix-wordmark-v1.svg", "background": "dark", "small_sizes": False}, "render dark")
+    sheet = tool("contact_sheet", {"paths": ["drawings/mavix-geometric-v1.svg", "drawings/mavix-wordmark-v1.svg"],
+                                   "labels": ["Geometric", "Wordmark"], "out": "drawings/mavix-sheet.png"}, "sheet")
+    tool("send_file", {"path": "drawings/mavix-sheet.png", "caption": "Two directions", "as_photo": True}, "send sheet")
+    tool("send_file", {"path": "drawings/mavix-geometric-v1.svg", "caption": "MAVIX logo (SVG)", "preview": True}, "send svg")
+    return "Sent the contact sheet and the logo." if sheet["ok"] else "Could not draw."
+
+
+def draw_evil():
+    with open("ext.svg", "w") as fh:
+        fh.write('<svg xmlns="http://www.w3.org/2000/svg"><image href="file:///etc/passwd"/></svg>')
+    with open("script.svg", "w") as fh:
+        fh.write('<svg xmlns="http://www.w3.org/2000/svg" onload="fetch(1)"><script>alert(1)</script></svg>')
+    tool("render_svg", {"path": "ext.svg"}, "render ext")
+    tool("send_file", {"path": "ext.svg", "caption": "ext"}, "send ext")
+    tool("send_file", {"path": "script.svg", "caption": "script", "preview": True}, "send script")
+    return "Refused, as it should be."
 
 
 # --- the "model's" work -------------------------------------------------------
@@ -209,7 +278,7 @@ def main():
             tools = mcp("tools/list", {})
             LOG["tools"] = [t["name"] for t in tools.get("result", {}).get("tools", [])]
         low = prompt.lower()
-        if not HAS_TOOL and ("make" in low or "escape" in low):
+        if not HAS_TOOL and ("make" in low or "escape" in low or "draw" in low):
             text = "I have no way to send files here."
         elif "make the reports" in low:
             text = make_reports()
@@ -217,6 +286,10 @@ def main():
             text = make_csv()
         elif "try to escape" in low:
             text = try_escape()
+        elif "draw the logo" in low:
+            text = draw_logo()
+        elif "draw something evil" in low:
+            text = draw_evil()
         else:
             text = "FAKE-ANSWER " + prompt
         send({"type": "assistant", "message": {"role": "assistant", "model": "fake",

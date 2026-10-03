@@ -104,6 +104,9 @@ say "Checking it imports"
 (cd /tmp && "$RUNTIME/venv/bin/python" -c "import docx, openpyxl, reportlab, arabic_reshaper, bidi, pypdf" 2>/dev/null) \
   && echo "  document libraries: ok" \
   || echo "  document libraries: not all importable (agents can still send files, but cannot make Word/Excel/PDF)"
+(cd /tmp && "$RUNTIME/venv/bin/python" -c "import resvg_py; resvg_py.svg_to_bytes(svg_string='<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 8 8\"/>', width=8)" >/dev/null 2>&1) \
+  && echo "  SVG renderer (resvg-py): ok" \
+  || echo "  SVG renderer (resvg-py): missing (agents still send SVG files, but cannot render, preview or look at their drawings)"
 
 if [[ $RESTART -eq 0 ]]; then
   say "Not restarting any agent (--no-restart): each runs the new code from its next restart."

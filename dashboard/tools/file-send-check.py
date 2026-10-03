@@ -18,6 +18,14 @@ documents, "claude_log": path, "seconds": n}
   5. in the topic, not addressed            -> nothing
 "off" feeds only step 3 (with ALLOW_FILE_SEND=false the tool must not exist).
 
+"draw" (pictures drawn in code, test-drawing.cjs):
+  1. topic "Client X" is created
+  2. in it, "Mavix, draw the logo"   -> render_svg x2 (images back to Claude), a contact
+                                       sheet sent as a photo, the SVG + a PNG preview, all in topic 300
+  3. General, "@<bot> draw something evil" -> unsafe SVGs refused, nothing sent
+  4. in the topic, not addressed     -> nothing
+"drawoff" feeds only "@<bot> draw the logo" with ALLOW_DRAWING=false.
+
 Prints one JSON object on the last line.
 """
 import json
@@ -92,9 +100,18 @@ ALL_STEPS = {
     "off": [
         ("general-csv", m(12, text="@" + BOT_USERNAME + " make a csv"), 0),
     ],
+    "draw": [
+        ("topic-created", ROOT_300, 0),
+        ("topic-draw", topic(311, "Mavix, draw the logo"), 0),
+        ("general-evil", m(13, text="@" + BOT_USERNAME + " draw something evil"), 1),
+        ("topic-unaddressed", topic(312, "nice colours"), 2),
+    ],
+    "drawoff": [
+        ("general-draw", m(14, text="@" + BOT_USERNAME + " draw the logo"), 0),
+    ],
 }
 STEPS = ALL_STEPS[case.get("steps", "on")]
-EXPECT_RUNS = {"on": 3, "off": 1}[case.get("steps", "on")]
+EXPECT_RUNS = {"on": 3, "off": 1, "draw": 2, "drawoff": 1}[case.get("steps", "on")]
 
 STATE = {"next": 0, "update_id": 0, "sent": [], "docs": [], "calls": [], "mid": 5000, "current": None}
 LOCK = threading.Lock()
@@ -180,8 +197,10 @@ class FakeTelegram(BaseHTTPRequestHandler):
                 if method == "sendMessage":
                     rec["text"] = params.get("text", "")
                     STATE["sent"].append(rec)
-                elif method == "sendDocument":
-                    fname, data = files.get("document", (None, b""))
+                elif method in ("sendDocument", "sendPhoto"):
+                    field = "document" if method == "sendDocument" else "photo"
+                    fname, data = files.get(field, (None, b""))
+                    rec["kind"] = field
                     rec.update(filename=fname, caption=params.get("caption"), size=len(data),
                                reply_to=params.get("reply_parameters") or params.get("reply_to_message_id"))
                     if fname:
@@ -195,6 +214,9 @@ class FakeTelegram(BaseHTTPRequestHandler):
                       "text": params.get("text", "")}
             if method == "sendDocument":
                 result["document"] = {"file_id": "f%d" % mid, "file_unique_id": "u%d" % mid}
+            if method == "sendPhoto":
+                result["photo"] = [{"file_id": "p%d" % mid, "file_unique_id": "q%d" % mid,
+                                    "width": 1, "height": 1}]
         body = {"ok": True, "result": result} if ok else {
             "ok": False, "error_code": 400, "description": "Bad Request: TOPIC_NOT_MODIFIED"}
         data = json.dumps(body).encode()
@@ -211,7 +233,7 @@ FAKE = "http://127.0.0.1:%d" % srv.server_address[1]
 
 for k in list(os.environ):
     if k.startswith(("ENABLE_", "PROJECT", "TELEGRAM_", "APPROVED_", "CLAUDE_", "ANTHROPIC_", "GROUP_", "BOT_",
-                     "ALLOW_FILE", "FILE_SEND", "MCP_")):
+                     "ALLOW_FILE", "FILE_SEND", "MCP_", "ALLOW_DRAW", "DRAW_", "SVG_")):
         del os.environ[k]
 os.environ.update(load_env(case["env"]))
 os.environ["FAKE_CLAUDE_LOG"] = CLAUDE_LOG

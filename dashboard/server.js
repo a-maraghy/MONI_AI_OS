@@ -1117,6 +1117,12 @@ function fileSendField(body, missing) {
   return field(body, "file_send") === "1";
 }
 
+/** The "Images (drawn in code)" switch, read the same way as fileSendField. */
+function drawingField(body, missing) {
+  if (!body || field(body, "drawing_shown") !== "1") return missing;
+  return field(body, "drawing") === "1";
+}
+
 /** Checkbox groups arrive as a string when one is ticked, an array when several. */
 function multi(body, name) {
   const value = body && body[name];
@@ -1219,6 +1225,7 @@ app.post("/agents/new", requireAuth, requirePerm("agents.create"), requireCsrf, 
     verbose_level: field(req.body, "verbose_level") || "1",
     project_dir: field(req.body, "project_dir"),
     file_send: fileSendField(req.body, true),
+    drawing: drawingField(req.body, true),
     addons,
   };
   const errors = [];
@@ -1250,6 +1257,7 @@ app.post("/agents/new", requireAuth, requirePerm("agents.create"), requireCsrf, 
       verbose_level: Number(form.verbose_level),
       project_dir: form.project_dir,
       file_send: form.file_send,
+      drawing: form.drawing,
       addons,
       addon_env: catalog.envFor(addons, "agent", req.body),
     });
@@ -1521,6 +1529,7 @@ app.post("/agents/:slug/settings", requireAuth, requirePerm("agents.edit"), requ
       project_dir: field(req.body, "project_dir"),
       // undefined (form without the switch) leaves the stored value alone
       file_send: fileSendField(req.body, undefined),
+      drawing: drawingField(req.body, undefined),
       addons,
       addon_env: catalog.envFor(addons, "agent", req.body),
     });

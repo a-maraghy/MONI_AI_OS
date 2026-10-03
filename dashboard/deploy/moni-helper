@@ -656,6 +656,12 @@ def validate_config(cfg, creating):
     # wants it for every agent, and an agent.json from before this option
     # simply has no key.
     out["file_send"] = parse_flag(cfg.get("file_send"), True)
+    # Pictures drawn in code: the agent writes SVG and the runtime renders it
+    # to PNG (resvg) so Claude can look at its drawing, refine it and send the
+    # SVG with a PNG preview. Free -- no image API, no key. On unless switched
+    # off; it rides on file sending, so the environment says false whenever
+    # file_send is off, whatever is stored here.
+    out["drawing"] = parse_flag(cfg.get("drawing"), True)
 
     # Add-ons are named capabilities; the environment they imply is computed by
     # the dashboard from its catalogue and passed here as a flat map. The helper
@@ -747,6 +753,12 @@ PROTECTED_ENV_KEYS = {
     "ALLOW_FILE_SEND",
     "FILE_SEND_MAX_MB",
     "FILE_SEND_MAX_PER_REPLY",
+    # Pictures drawn in code: the agent's own switch and the runtime's limits
+    # (left at its defaults: 2048 px renders, 12 renders per reply, 2 MB SVG).
+    "ALLOW_DRAWING",
+    "DRAW_MAX_RENDER_PX",
+    "DRAW_MAX_RENDERS_PER_REPLY",
+    "SVG_MAX_KB",
 }
 
 
@@ -809,6 +821,9 @@ def render_env(cfg, channel=None, topics=None):
             "ENVIRONMENT": "production",
             "DEVELOPMENT_MODE": "false",
             "ALLOW_FILE_SEND": "true" if cfg.get("file_send", True) else "false",
+            "ALLOW_DRAWING": "true"
+            if cfg.get("file_send", True) and cfg.get("drawing", True)
+            else "false",
         }
     )
 
