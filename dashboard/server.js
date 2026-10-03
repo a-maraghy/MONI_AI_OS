@@ -1108,6 +1108,15 @@ function field(body, name) {
   return String((body && body[name]) || "").trim();
 }
 
+/**
+ * The "Send files to chat" switch. An unticked checkbox sends nothing, so the
+ * form also carries file_send_shown; without it the answer is `missing`.
+ */
+function fileSendField(body, missing) {
+  if (!body || field(body, "file_send_shown") !== "1") return missing;
+  return field(body, "file_send") === "1";
+}
+
 /** Checkbox groups arrive as a string when one is ticked, an array when several. */
 function multi(body, name) {
   const value = body && body[name];
@@ -1209,6 +1218,7 @@ app.post("/agents/new", requireAuth, requirePerm("agents.create"), requireCsrf, 
     effort: field(req.body, "effort") || "medium",
     verbose_level: field(req.body, "verbose_level") || "1",
     project_dir: field(req.body, "project_dir"),
+    file_send: fileSendField(req.body, true),
     addons,
   };
   const errors = [];
@@ -1239,6 +1249,7 @@ app.post("/agents/new", requireAuth, requirePerm("agents.create"), requireCsrf, 
       effort: form.effort,
       verbose_level: Number(form.verbose_level),
       project_dir: form.project_dir,
+      file_send: form.file_send,
       addons,
       addon_env: catalog.envFor(addons, "agent", req.body),
     });
@@ -1508,6 +1519,8 @@ app.post("/agents/:slug/settings", requireAuth, requirePerm("agents.edit"), requ
       max_turns: Number(field(req.body, "max_turns") || 100),
       timeout_seconds: Number(field(req.body, "timeout_seconds") || 1800),
       project_dir: field(req.body, "project_dir"),
+      // undefined (form without the switch) leaves the stored value alone
+      file_send: fileSendField(req.body, undefined),
       addons,
       addon_env: catalog.envFor(addons, "agent", req.body),
     });

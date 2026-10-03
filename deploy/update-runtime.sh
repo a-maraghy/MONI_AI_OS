@@ -70,8 +70,40 @@ if [[ -d "$REPO_DIR/memory" ]]; then
   "$RUNTIME/venv/bin/pip" install --quiet --no-deps "$REPO_DIR/memory"
 fi
 
+# --no-deps above keeps a deploy from upgrading or downgrading anything that is
+# already installed. The flip side is that a dependency the runtime newly
+# declares (python-docx, openpyxl, reportlab ... for the files the agents send)
+# would never arrive. So: install exactly the declared requirements that are
+# MISSING from the venv, at the declared version range, and leave every
+# installed package as it is. A missing one that will not install fails the
+# deploy here, before anything restarts.
+say "Adding any dependency the runtime declares and the venv lacks"
+missing="$(cd /tmp && "$RUNTIME/venv/bin/python" - <<'PY'
+import importlib.metadata as md
+from packaging.requirements import Requirement
+for raw in md.requires("claude-vps") or []:
+    req = Requirement(raw)
+    if req.marker is not None and not req.marker.evaluate({"extra": ""}):
+        continue  # an optional extra (voice ...)
+    try:
+        md.version(req.name)
+    except md.PackageNotFoundError:
+        print(str(req))
+PY
+)"
+if [[ -n "$missing" ]]; then
+  echo "$missing" | sed 's/^/  + /'
+  mapfile -t reqs <<<"$missing"
+  "$RUNTIME/venv/bin/pip" install --quiet "${reqs[@]}"
+else
+  echo "  none missing"
+fi
+
 say "Checking it imports"
 (cd /tmp && "$RUNTIME/venv/bin/python" -c "import src.main")
+(cd /tmp && "$RUNTIME/venv/bin/python" -c "import docx, openpyxl, reportlab, arabic_reshaper, bidi, pypdf" 2>/dev/null) \
+  && echo "  document libraries: ok" \
+  || echo "  document libraries: not all importable (agents can still send files, but cannot make Word/Excel/PDF)"
 
 if [[ $RESTART -eq 0 ]]; then
   say "Not restarting any agent (--no-restart): each runs the new code from its next restart."

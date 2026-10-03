@@ -183,7 +183,8 @@ from src.claude.sdk_integration import ClaudeResponse  # noqa: E402
 
 
 async def fake_run_command(self, prompt, working_directory, user_id, session_id=None, on_stream=None,
-                           force_new=False, interrupt_event=None, images=None):
+                           force_new=False, interrupt_event=None, images=None, **_later):
+    # **_later: arguments newer runtimes pass (file_sender=...), not used here.
     with LOCK:
         ASKED.append({"step": STATE["current"], "prompt": prompt, "cwd": str(working_directory),
                       "force_new": force_new, "session_in": session_id})

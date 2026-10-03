@@ -651,6 +651,12 @@ def validate_config(cfg, creating):
         project = real
     out["project_dir"] = project
 
+    # Whether the agent may post the files it makes (Word, PDF, Excel ...) into
+    # the chat and topic that asked. On unless switched off: the administrator
+    # wants it for every agent, and an agent.json from before this option
+    # simply has no key.
+    out["file_send"] = parse_flag(cfg.get("file_send"), True)
+
     # Add-ons are named capabilities; the environment they imply is computed by
     # the dashboard from its catalogue and passed here as a flat map. The helper
     # does not trust that map -- it revalidates every key and value, because
@@ -736,6 +742,11 @@ PROTECTED_ENV_KEYS = {
     "PROJECT_THREADS_TRASH_DAYS",
     "GROUP_RESPOND_MODE",
     "BOT_NAME_ALIASES",
+    # Sending files into the chat: the agent's own setting, and the runtime's
+    # limits (left at its defaults, 20 MB and 5 per reply) -- not an add-on's.
+    "ALLOW_FILE_SEND",
+    "FILE_SEND_MAX_MB",
+    "FILE_SEND_MAX_PER_REPLY",
 }
 
 
@@ -797,6 +808,7 @@ def render_env(cfg, channel=None, topics=None):
             "MONI_VECTOR_DB": os.path.join(d, "vectors", "memory.db"),
             "ENVIRONMENT": "production",
             "DEVELOPMENT_MODE": "false",
+            "ALLOW_FILE_SEND": "true" if cfg.get("file_send", True) else "false",
         }
     )
 

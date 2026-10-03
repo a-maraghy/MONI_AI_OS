@@ -105,6 +105,25 @@ with `sudo bash deploy/update-runtime.sh --only <agent>` (or `--no-restart`).
 
 ---
 
+## Files into the chat
+
+An agent can make Word (.docx), PDF and Excel (.xlsx) files — and .csv, .txt,
+.md and .png — and send them into the chat as documents: ask it ("make this a
+PDF and send it"). The file goes to the **same chat and topic** the request
+came from (General included), as a reply to it, with a short caption. The
+agent cannot choose another chat: the runtime fixes the target from the
+message it is answering.
+
+Limits: files from the agent's own folder only (no links out of it), 20 MB
+each, 5 per reply. Arabic works in all three formats; PDFs use the Arabic font
+on the server (DejaVu Sans today; install `fonts-noto-core` or `fonts-hosny-amiri`
+for a nicer one and the agents pick it up).
+
+It is on for every agent. To switch it off for one: the agent's **Settings →
+Behaviour → Send files to chat** (`ALLOW_FILE_SEND`; add-ons cannot set it).
+Needs the runtime with send_file in it and its document libraries, both
+installed by `sudo bash deploy/update-runtime.sh`.
+
 ## Channels
 
 Channels are broadcast, not conversation, and that difference decides how they

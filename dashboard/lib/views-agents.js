@@ -37,6 +37,12 @@ const EFFORTS = [
   ["max", "Max — everything it has, for genuinely hard reasoning"],
 ];
 
+/** Whether the agent may post the files it makes into the chat that asked. */
+const fileSendSwitch = (on) =>
+  `<input type="hidden" name="file_send_shown" value="1">
+  <label class="check"><input type="checkbox" name="file_send" value="1"${on === false ? "" : " checked"}>
+    Send files to chat <span class="hint">lets it post the Word, PDF and Excel files it makes into the same chat and topic that asked — files from its own folder only, up to 20&nbsp;MB each and 5 per reply</span></label>`;
+
 const effortSelect = (current) =>
   `<label>Thinking effort <span class="hint">higher levels cost noticeably more time and tokens on every turn, so raise it for agents that reason rather than agents that answer</span>
     <select name="effort">
@@ -366,7 +372,8 @@ exports.create = ({ csrf, user, form = {}, errors = [], probe }) => {
             <option value="2" ${form.verbose_level === "2" ? "selected" : ""}>Detailed — tools with inputs</option>
           </select></label>
         <label>Project directory <span class="hint">optional. Must be under /opt/projects, /srv or /opt/moni-agents/workspaces. Appears inside the vault as <code>project/</code>.</span>
-          <input name="project_dir" value="${v("project_dir")}" placeholder="/opt/projects/odoo"></label>`,
+          <input name="project_dir" value="${v("project_dir")}" placeholder="/opt/projects/odoo"></label>
+        ${fileSendSwitch(form.file_send)}`,
         { icon: "settings" }
       )}
 
@@ -503,6 +510,7 @@ exports.detail = ({ csrf, user, agent, notes = [], journal = null, journalErr = 
             <tr><td>Max turns</td><td>${esc(String(agent.max_turns || "—"))}</td></tr>
             <tr><td>Timeout</td><td>${esc(String(agent.timeout_seconds || "—"))}s</td></tr>
             <tr><td>Project</td><td class="mono small">${esc(agent.project_dir || "none")}</td></tr>
+            <tr><td>Send files to chat</td><td>${agent.file_send === false ? "Off" : "On"}</td></tr>
             <tr><td>Add-ons</td><td class="small">${
               (agent.addons || []).length ? (agent.addons || []).map(esc).join(", ") : "—"
             }</td></tr>
@@ -854,7 +862,8 @@ exports.settings = ({ csrf, user, agent, probe, flash, err }) =>
         <label>Request timeout (seconds)<input name="timeout_seconds" type="number" min="60" max="7200"
           value="${esc(String(agent.timeout_seconds || 1800))}"></label>
         <label>Project directory<input name="project_dir" value="${esc(agent.project_dir || "")}"
-          placeholder="/opt/projects/odoo"></label>`,
+          placeholder="/opt/projects/odoo"></label>
+        ${fileSendSwitch(agent.file_send)}`,
         { icon: "settings" }
       )}
 
