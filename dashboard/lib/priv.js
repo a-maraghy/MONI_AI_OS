@@ -307,6 +307,15 @@ module.exports = {
   ccFactForget: (request) => cc("cc-fact-forget", [], { stdin: JSON.stringify(request), timeout: 30000 }),
   ccSessionMemory: (uuid, page) =>
     cc("cc-session-memory", [uuid, String(page || 1)], { timeout: 30000 }),
+  // Memory by session (Memory > Sessions). Reads: the list and one session's facts and
+  // chunks. Writes (claude.memory.manage): hide / unhide / delete items or a whole session.
+  ccMmSessions: () => cc("cc-mm-sessions", [], { stdin: "{}", timeout: 60000 }),
+  ccMmSession: (params) => cc("cc-mm-session", [], { stdin: JSON.stringify(params || {}), timeout: 60000 }),
+  ccMmPreview: (request) => cc("cc-mm-preview", [], { stdin: JSON.stringify(request || {}), timeout: 60000 }),
+  ccMmApply: (request) => cc("cc-mm-apply", [], { stdin: JSON.stringify(request || {}), timeout: 120000 }),
+  ccMmDeleteSession: (request) =>
+    cc("cc-mm-delete-session", [], { stdin: JSON.stringify(request || {}), timeout: 120000 }),
+  ccMmReindex: (request) => cc("cc-mm-reindex", [], { stdin: JSON.stringify(request || {}), timeout: 30000 }),
   ccMemfilesList: () => cc("cc-memfiles-list"),
   ccMemfileRead: (project, name) => cc("cc-memfile-read", [project, name]),
   ccMemfileWrite: (project, name, content, actor) =>

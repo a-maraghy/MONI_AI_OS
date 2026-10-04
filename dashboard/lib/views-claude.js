@@ -389,7 +389,7 @@ function servicesCard(csrf, user, svc, err) {
  */
 exports.memory = (d) => {
   const { csrf, user, query, searchProject, filters, stats, facts, files, hooks, services, search, errors } = d;
-  const view = ["graph", "list", "overview"].includes(d.view) ? d.view : "graph";
+  const view = MEMORY_VIEWS.some((v) => v[0] === d.view) ? d.view : "graph";
   const f = facts || { rows: [], total: 0, page: 1, per_page: 25 };
   const pages = Math.max(1, Math.ceil((f.total || 0) / (f.per_page || 25)));
   const filterParams = {
@@ -434,6 +434,9 @@ exports.memory = (d) => {
           { icon: "memory" }
         )}
       </div>
+      <div data-view-panel="sessions"${hide("sessions")}>
+        ${sessionsPanel(d)}
+      </div>
       <div data-view-panel="overview"${hide("overview")}>
         ${memoryStats(stats, errors.stats)}
         <div class="grid cols-2">
@@ -450,11 +453,10 @@ exports.memory = (d) => {
       pattern: "a",
       assets: ["memgraph.css", "memgraph.js"],
       subtitle: "What Claude Code remembers across sessions on this machine — and how it connects.",
-      actions: viewSwitch(view, [
-        ["graph", "Graph", "network", "/claude/memory?view=graph"],
-        ["list", "List", "logs", "/claude/memory?view=list"],
-        ["overview", "Overview", "activity", "/claude/memory?view=overview"],
-      ]),
+      actions: viewSwitch(
+        view,
+        MEMORY_VIEWS.map(([key, label, ic]) => [key, label, ic, "/claude/memory?view=" + key])
+      ),
     }
   );
 };
@@ -580,39 +582,417 @@ exports.memfile = ({ csrf, user, file, flash, err }) => {
   );
 };
 
-exports.sessionMemory = ({ csrf, user, data, uuid, err }) => {
-  const d = data || { chunks: [], facts: [], total_chunks: 0, page: 1, per_page: 40 };
-  const pages = Math.max(1, Math.ceil((d.total_chunks || 0) / (d.per_page || 40)));
+/* ------------------------------------------------------ memory by session - */
+
+/**
+ * Memory > Sessions: every Claude Code session that left something in memory, and
+ * one session's facts and transcript chunks with hide / unhide / delete.
+ *
+ * Hiding keeps a row but takes it out of search, the injected memory (each prompt,
+ * session start, subagents), memory_session and the graph; it can be undone. Deleting
+ * removes it for good. The helper enforces the rules (one session per request, live
+ * sessions protected, counts re-checked, the name typed back); these pages only say
+ * them out loud.
+ */
+
+/** Memory's views, for the page's switch and the page map (lib/page-registry.js). */
+const MEMORY_VIEWS = [
+  ["graph", "Graph", "network"],
+  ["list", "List", "logs"],
+  ["sessions", "Sessions", "clock"],
+  ["overview", "Overview", "activity"],
+];
+exports.MEMORY_VIEWS = MEMORY_VIEWS;
+
+const MM_SORTS = {
+  name: (s) => String(s.name || "").toLowerCase(),
+  origin: (s) => String(s.origin || "").toLowerCase(),
+  project: (s) => String(s.project || "").toLowerCase(),
+  first: (s) => String(s.first || ""),
+  last: (s) => String(s.last || ""),
+  chunks: (s) => Number(s.chunks || 0),
+  facts: (s) => Number(s.facts || 0),
+  hidden: (s) => Number(s.chunks_hidden || 0) + Number(s.facts_hidden || 0),
+};
+exports.MM_SORTS = Object.keys(MM_SORTS);
+
+/** Search and sort the session list: { q, sort, dir } from the query string. */
+function mmSortSessions(rows, o) {
+  const q = String((o && o.q) || "").trim().toLowerCase();
+  const sort = MM_SORTS[o && o.sort] ? o.sort : "last";
+  const dir = o && o.dir === "asc" ? 1 : o && o.dir === "desc" ? -1 : sort === "name" || sort === "origin" || sort === "project" ? 1 : -1;
+  const key = MM_SORTS[sort];
+  const out = (rows || []).filter(
+    (s) =>
+      !q ||
+      [s.name, s.origin, s.project, s.machine_label, s.session_id, s.title]
+        .map((v) => String(v || "").toLowerCase())
+        .some((v) => v.includes(q))
+  );
+  out.sort((a, b) => {
+    const x = key(a);
+    const y = key(b);
+    return x < y ? -dir : x > y ? dir : String(a.session_id).localeCompare(String(b.session_id));
+  });
+  return { rows: out, sort, dir: dir === 1 ? "asc" : "desc", q };
+}
+exports.mmSortSessions = mmSortSessions;
+
+const mmHref = (uuid, params) => `/claude/memory/session/${encodeURIComponent(uuid)}${qs(params)}`;
+const day = (v) => (v ? `<span title="${esc(stamp(v))}">${esc(String(v).slice(0, 10))}</span>` : "—");
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many || one + "s"}`;
+
+const BACKUP_NOTE = `Deleted memory is gone from the live index at once, but the nightly backups
+  (<span class="mono">/root/backups/claude_memory_*.dump</span>, the last 14 kept) still hold it until they rotate out.`;
+
+function notReady(list) {
+  const caps = (list && list.caps) || {};
+  if (list && list.ready && caps.hidden && caps.excluded && caps.tombstones) return "";
+  return `<div class="alert warn">${icon("alert")}<div>Hiding and deleting need the claude-memory update
+    (<span class="mono">deploy/claude-memory-manage/install.sh</span>): a <span class="mono">hidden</span> flag on chunks, an
+    exclusion list for deleted sessions, and an ingest that honours both. Until it is installed this list is read-only.</div></div>`;
+}
+
+function livePill(s) {
+  return s.live ? `<span class="pill warn" title="${esc(s.live_reason || "")}">live</span>` : "";
+}
+
+function sessionsPanel(d) {
+  const { user, mm, mmErr } = d;
+  if (mmErr) return card("Sessions with memory", `<div class="alert bad">${icon("alert")}<div>${esc(mmErr)}</div></div>`, { icon: "clock" });
+  const list = mm || { sessions: [] };
+  const f = d.mmQuery || {};
+  const sorted = mmSortSessions(list.sessions, f);
+  const all = list.sessions || [];
+  const tot = (k) => all.reduce((n, s) => n + Number(s[k] || 0), 0);
+  const head = (key, label, cls) => {
+    const on = sorted.sort === key;
+    const next = on && sorted.dir === "desc" ? "asc" : on ? "desc" : key === "name" || key === "origin" || key === "project" ? "asc" : "desc";
+    return `<th${cls ? ` class="${cls}"` : ""} aria-sort="${on ? (sorted.dir === "asc" ? "ascending" : "descending") : "none"}"><a href="${esc(
+      "/claude/memory" + qs({ view: "sessions", sq: sorted.q, sort: key, dir: next })
+    )}">${esc(label)}${on ? (sorted.dir === "asc" ? " ▲" : " ▼") : ""}</a></th>`;
+  };
+  const rows = sorted.rows
+    .map(
+      (s) => `<tr>
+        <td class="cc-title-cell"><a href="${esc(mmHref(s.session_id))}">${esc(s.name)}</a> ${livePill(s)}${
+        s.excluded ? ` <span class="pill neutral" title="Deleted ${esc(String(s.excluded.excluded_at || "").slice(0, 10))}; never indexed again">excluded</span>` : ""
+      }<div class="mono small muted">${esc(String(s.session_id).slice(0, 8))}</div></td>
+        <td class="small">${esc(s.origin || "—")}</td>
+        <td class="small mono">${esc(s.project || "—")}</td>
+        <td class="small">${esc(s.machine_label || "—")}</td>
+        <td class="small nowrap">${day(s.first)}</td>
+        <td class="small nowrap">${day(s.last)}</td>
+        <td class="small right">${esc(s.chunks)}${s.chunks_hidden ? ` <span class="muted">(${esc(s.chunks_hidden)} hidden)</span>` : ""}</td>
+        <td class="small right nowrap">${esc(s.facts)}${s.facts_hidden ? ` <span class="muted">· ${esc(s.facts_hidden)} hidden</span>` : ""}${
+        s.facts_superseded ? ` <span class="muted">· ${esc(s.facts_superseded)} superseded</span>` : ""
+      }</td>
+      </tr>`
+    )
+    .join("");
+  return card(
+    "Sessions with memory",
+    `${notReady(list)}
+    <form method="get" action="/claude/memory" class="cc-filters" role="search">
+      <input type="hidden" name="view" value="sessions">
+      <label>Search <input type="search" name="sq" value="${esc(sorted.q)}" maxlength="120" placeholder="name, project, machine or id"></label>
+      <label>Sort by <select name="sort">${Object.keys(MM_SORTS)
+        .map((k) => `<option value="${k}"${k === sorted.sort ? " selected" : ""}>${esc(k === "last" ? "last active" : k === "first" ? "first seen" : k)}</option>`)
+        .join("")}</select></label>
+      <label>Order <select name="dir"><option value="desc"${sorted.dir === "desc" ? " selected" : ""}>descending</option>
+        <option value="asc"${sorted.dir === "asc" ? " selected" : ""}>ascending</option></select></label>
+      <button class="btn small" type="submit">${icon("search")} Show</button>
+      <a class="btn small" href="/claude/memory?view=sessions">Reset</a>
+    </form>
+    <p class="muted small">${esc(plural(sorted.rows.length, "session"))}${
+      sorted.rows.length !== all.length ? ` of ${esc(all.length)}` : ""
+    } · ${esc(tot("chunks"))} chunks (${esc(tot("chunks_hidden"))} hidden) · ${esc(tot("facts"))} current facts (${esc(
+      tot("facts_hidden")
+    )} hidden). Open a session to see its memory${can(user, "claude.memory.manage") ? " and to hide or delete it" : ""}.</p>
+    ${
+      rows
+        ? `<div class="cc-scroll"><table class="rows mm-sessions">
+        <thead><tr>${head("name", "Session")}${head("origin", "Origin")}${head("project", "Project")}<th>Machine</th>${head(
+            "first",
+            "First"
+          )}${head("last", "Last")}${head("chunks", "Chunks", "right")}${head("facts", "Facts", "right")}</tr></thead>
+        <tbody>${rows}</tbody></table></div>`
+        : `<p class="muted">No session matches.</p>`
+    }
+    <p class="muted small mt-12">${BACKUP_NOTE}</p>`,
+    { icon: "clock", id: "mm-sessions" }
+  );
+}
+exports.sessionsPanel = sessionsPanel;
+
+function mmFactStatus(f) {
+  if (f.superseded_by == null) return pill("ok", "active");
+  if (f.superseded_by === f.id) return `<span class="pill bad" title="${esc(f.forgotten || "")}">hidden</span>`;
+  return pill("neutral", "superseded");
+}
+
+/** The filters as hidden fields, so a bulk action acts on what the page shows. */
+function filterFields(f) {
+  return ["q", "topic", "status", "show"]
+    .map((k) => `<input type="hidden" name="f_${k}" value="${esc((f && f[k]) || "")}">`)
+    .join("");
+}
+
+exports.sessionMemory = ({ csrf, user, data, uuid, err, flash }) => {
+  const d = data || null;
+  const meta = (d && d.session) || { session_id: uuid, name: "Session " + String(uuid).slice(0, 8) };
+  const manage = can(user, "claude.memory.manage");
+  const ready = !!(d && d.ready && d.caps && d.caps.hidden && d.caps.excluded && d.caps.tombstones);
+  const act = manage && ready;
+  const f = (d && d.filters) || {};
+  const filterParams = { q: f.q, topic: f.topic, status: f.status, show: f.show };
+  const pages = d ? Math.max(1, Math.ceil((d.chunks_total || 0) / (d.per_page || 50))) : 1;
+  const crumbs = memCrumbs(meta.name);
+  if (!d) {
+    return page(meta.name, `${flashes({ msg: flash, err })}
+      <p><a class="btn small" href="/claude/memory?view=sessions">${icon("chevron")} All sessions</a></p>`, {
+      user,
+      csrf,
+      active: "memory",
+      pattern: "c",
+      crumbs,
+    });
+  }
+  const filtered = !!(f.q || f.topic || f.status || f.show);
+  const box = (name, id) => (act ? `<input type="checkbox" name="${name}" value="${esc(id)}" aria-label="Select ${name === "f" ? "fact" : "chunk"} ${esc(id)}">` : "");
+  const factRows = (d.facts || [])
+    .map(
+      (x) => `<tr>
+        ${act ? `<td>${box("f", x.id)}</td>` : ""}
+        <td class="mono small"><a href="/claude/memory/facts/${esc(x.id)}">#${esc(x.id)}</a></td>
+        <td class="mono small">${esc(x.topic || "—")}</td>
+        <td class="small">${esc(snippet(x.content, 260))}</td>
+        <td class="small">${esc(x.kind || "—")}</td>
+        <td class="small nowrap">${day(x.ts)}</td>
+        <td>${mmFactStatus(x)}</td>
+      </tr>`
+    )
+    .join("");
+  const chunkRows = (d.chunks || [])
+    .map(
+      (c) => `<li class="mm-chunk${c.hidden ? " is-hidden" : ""}">
+        ${act ? `<span class="mm-box">${box("c", c.id)}</span>` : ""}
+        <div class="mm-chunk-body">
+          <div class="hit-head">
+            ${pill(c.role === "summary" ? "warn" : "neutral", c.role || "chunk")}
+            ${c.hidden ? pill("bad", "hidden") : ""}
+            <span class="mono small muted">#${esc(c.id)} · turn ${esc(c.turn_index == null ? "—" : c.turn_index)}${
+        c.agent_type ? " · subagent " + esc(c.agent_type) : c.subagent_id ? " · subagent" : ""
+      }</span>
+            <span class="muted small right">${esc(stamp(c.ts))} · ${esc(c.chars)} chars</span>
+          </div>
+          <p class="small mm-preview">${esc(snippet(c.content, 320))}</p>
+        </div>
+      </li>`
+    )
+    .join("");
+  const topics = d.topics || [];
+  const liveNote = meta.live
+    ? `<div class="alert warn" id="mm-live">${icon("alert")}<div><strong>This session is live</strong> — ${esc(
+        meta.live_reason || "it is running now"
+      )}. Its memory is still being written. Hiding or deleting the <em>whole</em> session is refused while it runs;
+        single facts and chunks can still be hidden or deleted, but check twice: this may be the session you are working in.</div></div>`
+    : "";
+  const exNote = meta.excluded
+    ? `<div class="alert info">${icon("info")}<div>Deleted on ${esc(stamp(meta.excluded.excluded_at))}${
+        meta.excluded.excluded_by ? " by " + esc(meta.excluded.excluded_by) : ""
+      }. It is excluded from indexing, so a re-scan will not bring it back.${
+        act
+          ? ` <form method="post" action="${esc(mmHref(uuid) + "/reindex")}" class="inline"
+              data-confirm="Allow this session to be indexed again? The next re-scan indexes whatever transcript of it is still on disk.">
+              ${hidden(csrf)}<button class="btn small" type="submit">${icon("reindex")} Allow re-indexing</button></form>`
+          : ""
+      }</div></div>`
+    : "";
+  const summary = `<div class="statrow mm-stats">
+      ${stat(meta.facts || 0, "current facts", "memory")}
+      ${stat(meta.facts_hidden || 0, "hidden facts", "eye")}
+      ${stat(meta.chunks || 0, "chunks", "logs")}
+      ${stat(meta.chunks_hidden || 0, "hidden chunks", "eye")}
+    </div>
+    <p class="muted small cc-line">${esc(meta.origin || "")} · project <span class="mono">${esc(meta.project || "—")}</span> ·
+      ${esc(meta.machine_label || "—")} · ${day(meta.first)} → ${day(meta.last)} · ${esc(plural(meta.facts_superseded || 0, "superseded fact"))} ·
+      <span class="mono">${esc(meta.session_id)}</span></p>`;
+  const filterForm = `<form method="get" action="${esc(mmHref(uuid))}" class="cc-filters" role="search" id="mm-filter">
+      <label>Text <input type="search" name="q" value="${esc(f.q || "")}" maxlength="200" placeholder="words in a fact or chunk"></label>
+      <label>Topic <select name="topic"><option value="">any topic</option>${topics
+        .map((t) => `<option value="${esc(t.topic)}"${t.topic === f.topic ? " selected" : ""}>${esc(t.topic)} (${esc(t.n)})</option>`)
+        .join("")}</select></label>
+      <label>Status <select name="status">${[["", "any"], ["active", "active"], ["hidden", "hidden"], ["superseded", "superseded (facts)"]]
+        .map(([v, l]) => `<option value="${v}"${v === (f.status || "") ? " selected" : ""}>${l}</option>`)
+        .join("")}</select></label>
+      <label>Show <select name="show">${[["", "facts and chunks"], ["facts", "facts only"], ["chunks", "chunks only"]]
+        .map(([v, l]) => `<option value="${v}"${v === (f.show || "") ? " selected" : ""}>${l}</option>`)
+        .join("")}</select></label>
+      <button class="btn small" type="submit">${icon("search")} Filter</button>
+      ${filtered ? `<a class="btn small" href="${esc(mmHref(uuid))}">Reset</a>` : ""}
+    </form>
+    ${f.topic ? `<p class="muted small">A topic filter shows facts only: transcript chunks have no topic.</p>` : ""}`;
+  const nSel = d.facts_total + d.chunks_total;
+  const bar = act
+    ? `<div class="mm-bar" role="group" aria-label="Act on the selection">
+        <span class="small mm-count" data-mm-count>Select facts or chunks below</span>
+        <button class="btn small" type="submit" name="op" value="hide-items" data-mm-needs>${icon("eye")} Hide selected</button>
+        <button class="btn small" type="submit" name="op" value="unhide-items" data-mm-needs>Unhide selected</button>
+        <button class="btn danger small" type="submit" name="op" value="delete-items" data-mm-needs>${icon("trash")} Delete selected…</button>
+      </div>
+      ${
+        filtered && nSel
+          ? `<div class="mm-bar" role="group" aria-label="Act on everything the filter shows">
+        <span class="small">All ${esc(plural(d.facts_total, "fact"))} and ${esc(plural(d.chunks_total, "chunk"))} the filter matches:</span>
+        <button class="btn small" type="submit" name="op" value="hide-filtered">Hide all filtered</button>
+        <button class="btn small" type="submit" name="op" value="unhide-filtered">Unhide all filtered</button>
+        <button class="btn danger small" type="submit" name="op" value="delete-filtered">Delete all filtered…</button>
+      </div>`
+          : ""
+      }`
+    : "";
+  const body = `
+    ${act ? `<form method="post" action="${esc(mmHref(uuid) + "/apply")}" id="mm-form" data-mm-form>
+      ${hidden(csrf)}${filterFields(f)}` : `<div id="mm-form">`}
+      ${bar}
+      <h3 class="mm-h">Facts <span class="muted small">${esc(d.facts_total)}${d.facts_total > (d.facts || []).length ? `, the newest ${esc((d.facts || []).length)} shown` : ""}</span></h3>
+      ${
+        factRows
+          ? `<div class="cc-scroll"><table class="rows mm-facts"><thead><tr>${
+              act ? `<th><input type="checkbox" data-mm-all="f" aria-label="Select every fact shown"></th>` : ""
+            }<th>#</th><th>Topic</th><th>Fact</th><th>Kind</th><th>When</th><th>Status</th></tr></thead><tbody>${factRows}</tbody></table></div>`
+          : `<p class="muted">${f.show === "chunks" ? "Facts are not shown." : "No facts match."}</p>`
+      }
+      <h3 class="mm-h">Conversation chunks <span class="muted small">${esc(d.chunks_total)}${
+    pages > 1 ? ` · page ${esc(d.page)} of ${esc(pages)}` : ""
+  }</span>${act && chunkRows ? ` <label class="check small mm-allc"><input type="checkbox" data-mm-all="c"> select all on this page</label>` : ""}</h3>
+      ${chunkRows ? `<ul class="mm-chunks">${chunkRows}</ul>` : `<p class="muted">${f.show === "facts" || f.topic ? "Chunks are not shown." : "No chunks match."}</p>`}
+    ${act ? "</form>" : "</div>"}
+    ${pager(mmHref(uuid), filterParams, d.page, pages)}`;
+  const whole = act
+    ? card(
+        "Whole session",
+        `<p class="muted small">Hide keeps everything but takes it out of search, the injected memory, subagents' memory,
+          <span class="mono">memory_session</span> and the graph; Unhide brings it back. Delete is permanent: facts, chunks and
+          their embeddings go, and the session is put on an exclusion list so a re-scan never indexes it again.</p>
+        <div class="mm-bar">
+          ${
+            meta.live
+              ? `<span class="small muted">Live sessions cannot be hidden or deleted as a whole.</span>`
+              : `<form method="post" action="${esc(mmHref(uuid) + "/apply")}" class="inline"
+              data-confirm="Hide everything this session left in memory (${esc(meta.facts || 0)} facts, ${esc(meta.chunks || 0)} chunks)? It can be unhidden.">
+              ${hidden(csrf)}<input type="hidden" name="op" value="hide-session">
+              <button class="btn small" type="submit">${icon("eye")} Hide whole session</button></form>`
+          }
+          <form method="post" action="${esc(mmHref(uuid) + "/apply")}" class="inline">
+            ${hidden(csrf)}<input type="hidden" name="op" value="unhide-session">
+            <button class="btn small" type="submit">Unhide whole session</button></form>
+          ${
+            meta.live
+              ? ""
+              : `<form method="post" action="${esc(mmHref(uuid) + "/delete")}" class="inline">
+              ${hidden(csrf)}<button class="btn danger small" type="submit">${icon("trash")} Delete session…</button></form>`
+          }
+        </div>
+        <p class="muted small">${BACKUP_NOTE}</p>`,
+        { icon: "trash", id: "mm-whole" }
+      )
+    : "";
   return page(
-    "Memory for a session",
-    `    ${flashes({ err })}
-    ${card(
-      "Facts from this session",
-      factsTable(d.facts, "No facts were extracted from this session."),
-      { icon: "memory" }
-    )}
-    ${card(
-      "Indexed chunks",
-      d.chunks && d.chunks.length
-        ? `<div class="hits">${d.chunks
-            .map(
-              (c) => `<div class="hit">
-              <div class="hit-head">
-                ${pill("neutral", c.role || c.source)}
-                <span class="mono small muted">turn ${esc(c.turn_index == null ? "—" : c.turn_index)}${
-                c.agent_type ? " · subagent " + esc(c.agent_type) : ""
-              }</span>
-                <span class="muted small right">${esc(stamp(c.ts))} · ${esc(c.chars)} chars</span>
-              </div>
-              <pre class="snippet">${esc(c.content)}${c.chars > 1500 ? "…" : ""}</pre>
-            </div>`
-            )
-            .join("")}</div>
-          ${pager("/claude/memory/session/" + uuid, {}, d.page, pages)}`
-        : `<p class="muted">Nothing from this session is in the index.</p>`,
-      { icon: "logs" }
+    meta.name,
+    `    ${flashes({ msg: flash, err })}
+    ${manage && !ready ? notReady(d) : ""}
+    ${liveNote}${exNote}
+    ${summary}
+    ${card("Memory from this session", filterForm + body, { icon: "memory", id: "mm-items",
+      actions: `<a class="btn small" href="/claude/memory?view=sessions">${icon("chevron")} All sessions</a>` })}
+    ${whole}`,
+    {
+      user,
+      csrf,
+      active: "memory",
+      pattern: "c",
+      crumbs,
+      assets: ["memmanage.js"],
+      subtitle: `${esc(meta.origin || "Session")} ${meta.live ? `<span class="pill warn">live</span>` : ""}`,
+    }
+  );
+};
+
+/** Bulk delete: the counts, before anything happens. Re-posts the same selection with them. */
+exports.mmConfirmDelete = ({ csrf, user, uuid, preview, body }) => {
+  const p = preview || {};
+  const meta = p.session || { name: "Session " + String(uuid).slice(0, 8) };
+  const keep = Object.entries(body || {})
+    .filter(([k]) => k === "op" || k === "f" || k === "c" || k.startsWith("f_"))
+    .flatMap(([k, v]) => [].concat(v).map((x) => `<input type="hidden" name="${esc(k)}" value="${esc(x)}">`))
+    .join("");
+  const nothing = !p.facts && !p.chunks;
+  return page(
+    "Delete memory permanently?",
+    `${card(
+      meta.name,
+      `${meta.live ? `<div class="alert warn">${icon("alert")}<div><strong>This session is live</strong> — ${esc(meta.live_reason || "")}.
+        Make sure this is not memory the running session still needs.</div></div>` : ""}
+      ${
+        nothing
+          ? `<p>Nothing is selected any more.</p>`
+          : `<p>This deletes <strong>${esc(plural(p.facts || 0, "fact"))}</strong> (${esc(p.facts_active || 0)} active, ${esc(
+              p.facts_hidden || 0
+            )} hidden, ${esc(p.facts_superseded || 0)} superseded) and <strong>${esc(plural(p.chunks || 0, "chunk"))}</strong>
+            (${esc(p.chunks_active || 0)} visible, ${esc(p.chunks_hidden || 0)} hidden) from memory, with their embeddings.
+            It cannot be undone. Deleted chunks are remembered by fingerprint so the transcript is never re-indexed into them;
+            an older version of a deleted fact is hidden rather than brought back.</p>`
+      }
+      <p class="muted small">${BACKUP_NOTE}</p>
+      <form method="post" action="${esc(mmHref(uuid) + "/apply")}" class="mm-bar">
+        ${hidden(csrf)}${keep}
+        <input type="hidden" name="confirmed" value="1">
+        <input type="hidden" name="expect_facts" value="${esc(p.facts || 0)}">
+        <input type="hidden" name="expect_chunks" value="${esc(p.chunks || 0)}">
+        ${nothing ? "" : `<button class="btn danger" type="submit">${icon("trash")} Delete ${esc(plural((p.facts || 0) + (p.chunks || 0), "item"))}</button>`}
+        <a class="btn" href="${esc(mmHref(uuid))}">Cancel</a>
+      </form>`,
+      { icon: "trash", id: "mm-confirm" }
     )}`,
-    { user, csrf, active: "memory", pattern: "b", crumbs: memCrumbs("Session " + String(uuid).slice(0, 8)), subtitle: `<span class="mono">${esc(uuid)}</span>` }
+    { user, csrf, active: "memory", pattern: "c", crumbs: memCrumbs("Delete") }
+  );
+};
+
+/** Whole-session delete: the counts, the name typed back, and the transcript question. */
+exports.mmConfirmSession = ({ csrf, user, uuid, preview, err }) => {
+  const p = preview || {};
+  const meta = p.session || { name: "Session " + String(uuid).slice(0, 8) };
+  const files = Number(meta.transcripts_writable || 0);
+  const ro = Number(meta.transcripts || 0) - files;
+  return page(
+    "Delete this session's memory?",
+    `${flashes({ err })}
+    ${card(
+      meta.name,
+      `<p>This permanently deletes everything <strong>${esc(meta.name)}</strong> left in memory:
+        <strong>${esc(plural(p.facts || 0, "fact"))}</strong> and <strong>${esc(plural(p.chunks || 0, "chunk"))}</strong>, their embeddings,
+        and its indexing state. Older versions of these facts held by other sessions are hidden, not brought back.</p>
+      <p>So that a re-scan does not quietly index it again, the session is added to an <strong>exclusion list</strong>
+        (it can be lifted later from the session's page). Its transcript on disk is <em>not</em> touched unless you tick the box below.</p>
+      <p class="muted small">${BACKUP_NOTE}</p>
+      <form method="post" action="${esc(mmHref(uuid) + "/delete")}">
+        ${hidden(csrf)}<input type="hidden" name="step" value="confirm">
+        <label class="check"><input type="checkbox" name="delete_files" value="1"${files ? "" : " disabled"}>
+          Also delete the transcript file${files === 1 ? "" : "s"} (${esc(files)} on this server${
+        ro > 0 ? `; ${esc(ro)} read-only archive cop${ro === 1 ? "y is" : "ies are"} always kept` : ""
+      }). The conversation itself is then gone from the Sessions page too.</label>
+        <label>Type the session's name to confirm: <span class="mono">${esc(meta.name)}</span>
+          <input name="confirm" required autocomplete="off" spellcheck="false" maxlength="200" data-mm-typed="${esc(meta.name)}"></label>
+        <div class="mm-bar">
+          <button class="btn danger" type="submit">${icon("trash")} Delete permanently</button>
+          <a class="btn" href="${esc(mmHref(uuid))}">Cancel</a>
+        </div>
+      </form>`,
+      { icon: "trash", id: "mm-delete-session" }
+    )}`,
+    { user, csrf, active: "memory", pattern: "c", crumbs: memCrumbs("Delete session"), assets: ["memmanage.js"] }
   );
 };
 

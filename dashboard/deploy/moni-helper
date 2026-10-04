@@ -5184,7 +5184,9 @@ def cmd_console_dirs(args):
 # (the memory index is), so every string that leaves this section passes
 # through cc_redact() first -- and the dashboard's own redactDeep() after that.
 #
-# Nothing here deletes anything. Facts are superseded or soft-forgotten through
+# Nothing here deletes anything, except Memory > Sessions (the cc-mm-* commands below,
+# claude.memory.manage in the panel), which can delete memory rows and, when asked, a
+# session's transcript files. Elsewhere facts are superseded or soft-forgotten through
 # memlib; sessions are moved to an archive folder and can be moved back.
 
 import importlib.util
@@ -5426,6 +5428,7 @@ CC_BRIDGE = r'''
 import json, sys
 sys.path.insert(0, "/opt/claude-memory")
 from memlib import facts as F
+from memlib import db as D
 
 
 def iso(v):
@@ -5446,6 +5449,27 @@ FACT_COLS = ("id, content, topic, ts, source_session, superseded_by, confidence,
              "(embedding IS NOT NULL) AS embedded")
 
 
+# What this database supports, read once per bridge run. Memory management (hide a chunk,
+# exclude a deleted session from ingest, tombstone a deleted chunk) needs the migration in
+# deploy/claude-memory-manage/; until it runs, every read here behaves exactly as before.
+_CAPS = {}
+
+
+def caps(c):
+    if not _CAPS:
+        r = c.execute(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() "
+            "AND table_name = 'chunks' AND column_name = 'hidden'), "
+            "to_regclass('excluded_sessions') IS NOT NULL, to_regclass('memory_tombstones') IS NOT NULL").fetchone()
+        _CAPS.update(hidden=bool(r[0]), excluded=bool(r[1]), tombstones=bool(r[2]))
+    return _CAPS
+
+
+def hid(c, alias=""):
+    """SQL for "this chunk is hidden" (FALSE before the migration)."""
+    return alias + "hidden" if caps(c)["hidden"] else "FALSE"
+
+
 def stats(c, req):
     one = lambda sql: c.execute(sql).fetchone()
     cur, sup, forgot = one(
@@ -5458,6 +5482,7 @@ def stats(c, req):
             "SELECT source, count(*) FROM chunks GROUP BY 1 ORDER BY 1").fetchall()},
         "sessions_indexed": one(
             "SELECT count(DISTINCT session_id) FROM chunks WHERE source = 'transcript'")[0],
+        "chunks_hidden": one("SELECT count(*) FILTER (WHERE " + hid(c) + ") FROM chunks")[0],
         "db_bytes": one("SELECT pg_database_size(current_database())")[0],
         "last_ingest": iso(one("SELECT max(updated_at) FROM ingest_state "
                                "WHERE file_path NOT LIKE 'facts:%'")[0]),
@@ -5573,7 +5598,7 @@ def session_memory(c, req):
     total = c.execute("SELECT count(*) FROM chunks WHERE session_id = %s", (sid,)).fetchone()[0]
     chunks = rows(c,
         "SELECT id, source, ts, role, turn_index, project, left(content, 1500) AS content, "
-        "length(content) AS chars, meta->>'agent_type' AS agent_type, "
+        "length(content) AS chars, meta->>'agent_type' AS agent_type, " + hid(c) + " AS hidden, "
         "meta->>'subagent_id' AS subagent_id FROM chunks WHERE session_id = %s "
         "ORDER BY turn_index NULLS LAST, id LIMIT %s OFFSET %s", (sid, lim, off))
     facts = rows(c, "SELECT " + FACT_COLS + " FROM facts WHERE source_session = %s "
@@ -5655,9 +5680,9 @@ def graph(c, req):
     facts = rows(c, "SELECT id, topic, ts, source_session, superseded_by, meta->>'kind' AS kind, "
                     "meta->>'project' AS project, left(content, 360) AS content FROM facts WHERE " + fwhere +
                     " ORDER BY id DESC LIMIT %s", fargs + [lim_f])
-    cwhere, cargs = "TRUE", []
+    cwhere, cargs = "NOT " + hid(c), []
     if inc:
-        cwhere = "id > %s"
+        cwhere += " AND id > %s"
         cargs.append(int(after_c or 0))
     chunks = rows(c, "SELECT id, source, session_id, project, ts, role, left(content, 240) AS content, "
                      "meta->>'title' AS title, meta->>'heading' AS heading, meta->>'rel' AS rel, "
@@ -5668,7 +5693,7 @@ def graph(c, req):
     if sids:
         for r in rows(c, "SELECT session_id, min(ts) AS first, max(ts) AS last, count(*) AS n, "
                          "max(project) AS project, max(meta->>'title') AS title FROM chunks "
-                         "WHERE session_id = ANY(%s) GROUP BY session_id", (list(sids),)):
+                         "WHERE session_id = ANY(%s) AND NOT " + hid(c) + " GROUP BY session_id", (list(sids),)):
             sessions[r["session_id"]] = r
     sig = c.execute("SELECT count(*), coalesce(max(id), 0), coalesce(sum(superseded_by), 0) FROM facts").fetchone()
     alive = [r[0] for r in c.execute("SELECT id FROM facts WHERE superseded_by IS NULL OR superseded_by <> id "
@@ -5689,9 +5714,302 @@ def graph(c, req):
             "cur_ids": cur_ids, "incremental": inc}
 
 
+# ---- memory by session: list, detail, hide / unhide / delete (Memory > Sessions)
+#
+# Hide keeps a row but takes it out of every read path: a fact is retracted the way
+# memory_forget does it (superseded_by = id), a chunk gets chunks.hidden. Unhide undoes
+# exactly that. Delete removes the rows (and with them their embeddings); a deleted chunk
+# leaves a tombstone (its content_hash) so ingest never re-creates it, and a deleted session
+# is written to excluded_sessions so ingest never indexes it again. Every write is scoped
+# to one session: ids that are not that session's are ignored, never acted on.
+
+FACT_STATUS = {
+    "active": "superseded_by IS NULL",
+    "hidden": "superseded_by = id",
+    "superseded": "superseded_by IS NOT NULL AND superseded_by <> id",
+}
+
+
+def like_any(s):
+    return "%" + s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
+
+
+def mm_sessions(c, req):
+    one = req.get("session")
+    cw, fw, args = "", "", []
+    if one:
+        cw, fw, args = " AND session_id = %s", " AND source_session = %s", [one]
+    out = {}
+    for r in rows(c,
+            "SELECT session_id, min(ts) AS first, max(ts) AS last, count(*) AS chunks, "
+            "count(*) FILTER (WHERE " + hid(c) + ") AS chunks_hidden, "
+            "count(*) FILTER (WHERE role = 'summary') AS summaries, "
+            "mode() WITHIN GROUP (ORDER BY project) AS project, "
+            "mode() WITHIN GROUP (ORDER BY machine) AS machine, "
+            "(array_agg(meta->>'title' ORDER BY ts DESC) FILTER (WHERE meta ? 'title'))[1] AS title, "
+            "count(DISTINCT meta->>'subagent_id') AS subagents "
+            "FROM chunks WHERE source = 'transcript' AND session_id IS NOT NULL" + cw +
+            " GROUP BY session_id", args):
+        r.update(facts=0, facts_hidden=0, facts_superseded=0, excluded=None)
+        out[r["session_id"]] = r
+    for r in rows(c,
+            "SELECT source_session AS session_id, min(ts) AS first, max(ts) AS last, "
+            "count(*) FILTER (WHERE superseded_by IS NULL) AS active, "
+            "count(*) FILTER (WHERE superseded_by = id) AS hidden, "
+            "count(*) FILTER (WHERE superseded_by IS NOT NULL AND superseded_by <> id) AS superseded, "
+            "mode() WITHIN GROUP (ORDER BY meta->>'project') AS project "
+            "FROM facts WHERE source_session IS NOT NULL" + fw + " GROUP BY 1", args):
+        sid = r["session_id"]
+        cur = out.get(sid)
+        if cur is None:
+            cur = out[sid] = {"session_id": sid, "first": r["first"], "last": r["last"], "chunks": 0,
+                              "chunks_hidden": 0, "summaries": 0, "project": r["project"], "machine": None,
+                              "title": None, "subagents": 0, "excluded": None}
+        else:
+            cur["first"] = min(cur["first"], r["first"])
+            cur["last"] = max(cur["last"], r["last"])
+        cur.update(facts=r["active"], facts_hidden=r["hidden"], facts_superseded=r["superseded"])
+    if caps(c)["excluded"]:
+        for r in rows(c, "SELECT session_id, excluded_at, excluded_by, reason, files_deleted "
+                         "FROM excluded_sessions WHERE TRUE" + cw, args):
+            cur = out.get(r["session_id"])
+            if cur is None:
+                cur = out[r["session_id"]] = {"session_id": r["session_id"], "first": None, "last": r["excluded_at"],
+                                              "chunks": 0, "chunks_hidden": 0, "summaries": 0, "project": None,
+                                              "machine": None, "title": None, "subagents": 0, "facts": 0,
+                                              "facts_hidden": 0, "facts_superseded": 0}
+            cur["excluded"] = r
+    return {"sessions": list(out.values()), "caps": caps(c)}
+
+
+def _fact_where(c, req, filtered):
+    w, a = ["source_session = %s"], [req["session"]]
+    if filtered:
+        if req.get("show") == "chunks":
+            w.append("FALSE")
+        if req.get("q"):
+            w.append("content ILIKE %s")
+            a.append(like_any(req["q"]))
+        if req.get("topic"):
+            w.append("(topic = %s OR topic LIKE %s)")
+            a += [req["topic"], like_prefix(req["topic"] + ".")]
+        if req.get("status") in FACT_STATUS:
+            w.append(FACT_STATUS[req["status"]])
+    return " AND ".join(w), a
+
+
+def _chunk_where(c, req, filtered):
+    w, a = ["session_id = %s", "source = 'transcript'"], [req["session"]]
+    if filtered:
+        # Chunks have no topic: a topic filter is a filter on facts.
+        if req.get("show") == "facts" or req.get("topic") or req.get("status") == "superseded":
+            w.append("FALSE")
+        if req.get("q"):
+            w.append("content ILIKE %s")
+            a.append(like_any(req["q"]))
+        if req.get("status") == "active":
+            w.append("NOT " + hid(c))
+        elif req.get("status") == "hidden":
+            w.append(hid(c))
+    return " AND ".join(w), a
+
+
+def mm_session(c, req):
+    sid = req["session"]
+    fw, fa = _fact_where(c, req, True)
+    cw, ca = _chunk_where(c, req, True)
+    lim, off = int(req.get("limit", 50)), int(req.get("offset", 0))
+    flim = int(req.get("fact_limit", 300))
+    facts = rows(c, "SELECT id, topic, ts, superseded_by, meta->>'kind' AS kind, meta->>'forgotten' AS forgotten, "
+                    "left(content, 400) AS content, length(content) AS chars FROM facts WHERE " + fw +
+                 " ORDER BY ts DESC, id DESC LIMIT %s", fa + [flim])
+    chunks = rows(c, "SELECT id, role, ts, turn_index, " + hid(c) + " AS hidden, left(content, 320) AS content, "
+                     "length(content) AS chars, meta->>'agent_type' AS agent_type, "
+                     "meta->>'subagent_id' AS subagent_id FROM chunks WHERE " + cw +
+                  " ORDER BY turn_index NULLS LAST, ts, id LIMIT %s OFFSET %s", ca + [lim, off])
+    nf = c.execute("SELECT count(*) FROM facts WHERE " + fw, fa).fetchone()[0]
+    nc = c.execute("SELECT count(*) FROM chunks WHERE " + cw, ca).fetchone()[0]
+    topics = rows(c, "SELECT topic, count(*) AS n FROM facts WHERE source_session = %s AND topic IS NOT NULL "
+                     "GROUP BY topic ORDER BY count(*) DESC, topic LIMIT 300", (sid,))
+    return {"facts": facts, "facts_total": nf, "chunks": chunks, "chunks_total": nc, "topics": topics,
+            "caps": caps(c)}
+
+
+def _ids(v):
+    out = []
+    for x in v or []:
+        try:
+            n = int(x)
+        except (TypeError, ValueError):
+            continue
+        if 0 < n < 2 ** 62:
+            out.append(n)
+    return sorted(set(out))[:20000]
+
+
+def _resolve(c, req):
+    """(fact ids, chunk ids) the request means, always inside its one session."""
+    scope = req.get("scope")
+    if scope == "items":
+        fw, fa = _fact_where(c, req, False)
+        cw, ca = _chunk_where(c, req, False)
+        f = [r[0] for r in c.execute("SELECT id FROM facts WHERE " + fw + " AND id = ANY(%s)",
+                                     fa + [_ids(req.get("facts"))]).fetchall()]
+        ch = [r[0] for r in c.execute("SELECT id FROM chunks WHERE " + cw + " AND id = ANY(%s)",
+                                      ca + [_ids(req.get("chunks"))]).fetchall()]
+    elif scope in ("filtered", "session"):
+        filt = scope == "filtered"
+        fw, fa = _fact_where(c, req, filt)
+        cw, ca = _chunk_where(c, req, filt)
+        f = [r[0] for r in c.execute("SELECT id FROM facts WHERE " + fw, fa).fetchall()]
+        ch = [r[0] for r in c.execute("SELECT id FROM chunks WHERE " + cw, ca).fetchall()]
+    else:
+        raise ValueError("unknown scope")
+    return sorted(f), sorted(ch)
+
+
+def _breakdown(c, f, ch):
+    fs = c.execute("SELECT count(*) FILTER (WHERE superseded_by IS NULL), count(*) FILTER (WHERE superseded_by = id), "
+                   "count(*) FILTER (WHERE superseded_by IS NOT NULL AND superseded_by <> id) "
+                   "FROM facts WHERE id = ANY(%s)", (f,)).fetchone()
+    cs = c.execute("SELECT count(*) FILTER (WHERE NOT " + hid(c) + "), count(*) FILTER (WHERE " + hid(c) + ") "
+                   "FROM chunks WHERE id = ANY(%s)", (ch,)).fetchone()
+    return {"facts": len(f), "facts_active": fs[0], "facts_hidden": fs[1], "facts_superseded": fs[2],
+            "chunks": len(ch), "chunks_active": cs[0], "chunks_hidden": cs[1]}
+
+
+def mm_preview(c, req):
+    f, ch = _resolve(c, req)
+    return _breakdown(c, f, ch)
+
+
+def _need_caps(c):
+    k = caps(c)
+    if not (k["hidden"] and k["excluded"] and k["tombstones"]):
+        raise ValueError("the memory database has not been migrated for memory management yet "
+                         "(deploy/claude-memory-manage/install.sh)")
+
+
+def _delete_facts(c, ids, actor):
+    """Delete facts and keep the supersession chains honest.
+
+    facts.superseded_by is ON DELETE SET NULL, so deleting a newer version would silently
+    make every older version current again. Instead an older version is re-pointed at the
+    nearest surviving newer one, or, when none survives, hidden (retracted) with a note.
+    """
+    ids = sorted(set(ids))
+    if not ids:
+        return {"deleted": 0, "repointed": 0, "hidden_older": 0}
+    nxt = dict(c.execute("SELECT id, superseded_by FROM facts WHERE id = ANY(%s)", (ids,)).fetchall())
+    gone = set(nxt)
+
+    def survivor(t):
+        seen = set()
+        while t is not None and t in gone and t not in seen:
+            seen.add(t)
+            n = nxt.get(t)
+            t = None if n is None or n == t else n
+        return t
+
+    rep = hidden_older = 0
+    deps = c.execute("SELECT id, superseded_by FROM facts WHERE superseded_by = ANY(%s) AND NOT (id = ANY(%s))",
+                     (list(gone), list(gone))).fetchall()
+    for d, s in deps:
+        t = survivor(s)
+        if t is not None:
+            c.execute("UPDATE facts SET superseded_by = %s WHERE id = %s", (t, d))
+            rep += 1
+        else:
+            c.execute("UPDATE facts SET superseded_by = id, meta = meta || %s::jsonb WHERE id = %s",
+                      (json.dumps({"forgotten": "its newer version #%d was deleted" % s,
+                                   "forgotten_via": "dashboard", "forgotten_by": actor}), d))
+            hidden_older += 1
+    n = c.execute("DELETE FROM facts WHERE id = ANY(%s)", (list(gone),)).rowcount
+    return {"deleted": n, "repointed": rep, "hidden_older": hidden_older}
+
+
+def mm_apply(c, req):
+    _need_caps(c)
+    action, actor = req["action"], req["actor"]
+    f, ch = _resolve(c, req)
+    exp = req.get("expect")
+    if isinstance(exp, dict) and (int(exp.get("facts", -1)) != len(f) or int(exp.get("chunks", -1)) != len(ch)):
+        raise ValueError("the selection changed since it was confirmed (now %d facts and %d chunks); "
+                         "review it again" % (len(f), len(ch)))
+    out = {"action": action, "facts_selected": len(f), "chunks_selected": len(ch)}
+    if action == "hide":
+        out["facts"] = c.execute(
+            "UPDATE facts SET superseded_by = id, meta = meta || %s::jsonb "
+            "WHERE id = ANY(%s) AND superseded_by IS NULL",
+            (json.dumps({"forgotten": "hidden from the dashboard", "forgotten_via": "dashboard",
+                         "forgotten_by": actor}), f)).rowcount
+        out["chunks"] = c.execute("UPDATE chunks SET hidden = true WHERE id = ANY(%s) AND NOT hidden", (ch,)).rowcount
+    elif action == "unhide":
+        out["facts"] = c.execute(
+            "UPDATE facts SET superseded_by = NULL, "
+            "meta = (meta - 'forgotten' - 'forgotten_via' - 'forgotten_by') || %s::jsonb "
+            "WHERE id = ANY(%s) AND superseded_by = id",
+            (json.dumps({"unhidden_by": actor, "unhidden_via": "dashboard"}), f)).rowcount
+        out["chunks"] = c.execute("UPDATE chunks SET hidden = false WHERE id = ANY(%s) AND hidden", (ch,)).rowcount
+    elif action == "delete":
+        d = _delete_facts(c, f, actor)
+        c.execute("INSERT INTO memory_tombstones (content_hash, session_id, deleted_by) "
+                  "SELECT content_hash, session_id, %s FROM chunks WHERE id = ANY(%s) "
+                  "ON CONFLICT (content_hash) DO NOTHING", (actor, ch))
+        out["chunks"] = c.execute("DELETE FROM chunks WHERE id = ANY(%s)", (ch,)).rowcount
+        out["facts"] = d["deleted"]
+        out["repointed"], out["hidden_older"] = d["repointed"], d["hidden_older"]
+    else:
+        raise ValueError("unknown action")
+    c.commit()
+    return out
+
+
+def _facts_lock_key(sid):
+    import hashlib
+    return int.from_bytes(hashlib.sha1(("claude-memory-facts:" + sid).encode()).digest()[:8], "big", signed=True)
+
+
+def mm_delete_session(c, req):
+    """Everything one session left in memory, permanently, and keep ingest from bringing it back."""
+    _need_caps(c)
+    sid, actor = req["session"], req["actor"]
+    paths = [r[0] for r in c.execute(
+        "SELECT file_path FROM ingest_state WHERE file_path LIKE %s OR file_path LIKE %s",
+        ("%/" + sid + ".jsonl", "%/" + sid + "/%")).fetchall()]
+    # An ingest or a fact extraction running on this session right now holds these locks.
+    for key in [D.lock_key(p) for p in paths] + [_facts_lock_key(sid)]:
+        if not c.execute("SELECT pg_try_advisory_xact_lock(%s)", (key,)).fetchone()[0]:
+            raise ValueError("this session is being indexed right now; try again in a minute")
+    fids = [r[0] for r in c.execute("SELECT id FROM facts WHERE source_session = %s", (sid,)).fetchall()]
+    d = _delete_facts(c, fids, actor)
+    n_chunks = c.execute("DELETE FROM chunks WHERE session_id = %s", (sid,)).rowcount
+    c.execute("DELETE FROM memory_tombstones WHERE session_id = %s", (sid,))
+    n_state = c.execute("DELETE FROM ingest_state WHERE file_path = ANY(%s) OR file_path = %s",
+                        (paths, "facts:" + sid)).rowcount
+    c.execute("INSERT INTO excluded_sessions (session_id, excluded_by, reason, files_deleted) "
+              "VALUES (%s, %s, 'deleted from the dashboard', %s) ON CONFLICT (session_id) DO UPDATE SET "
+              "excluded_at = now(), excluded_by = EXCLUDED.excluded_by, reason = EXCLUDED.reason, "
+              "files_deleted = excluded_sessions.files_deleted OR EXCLUDED.files_deleted",
+              (sid, actor, bool(req.get("files_deleted"))))
+    c.commit()
+    return {"facts": d["deleted"], "repointed": d["repointed"], "hidden_older": d["hidden_older"],
+            "chunks": n_chunks, "ingest_state": n_state}
+
+
+def mm_reindex(c, req):
+    """Lift a deleted session's exclusion: the next ingest indexes its transcript, if any is left."""
+    _need_caps(c)
+    n = c.execute("DELETE FROM excluded_sessions WHERE session_id = %s", (req["session"],)).rowcount
+    c.commit()
+    return {"lifted": n}
+
+
 OPS = {"stats": stats, "facts_list": facts_list, "fact_get": fact_get, "fact_add": fact_add,
        "fact_edit": fact_edit, "fact_forget": fact_forget, "session_memory": session_memory,
-       "index_info": index_info, "graph": graph}
+       "index_info": index_info, "graph": graph, "mm_sessions": mm_sessions, "mm_session": mm_session,
+       "mm_preview": mm_preview, "mm_apply": mm_apply, "mm_delete_session": mm_delete_session,
+       "mm_reindex": mm_reindex}
 
 try:
     req = json.loads(sys.stdin.read() or "{}")
@@ -5705,11 +6023,18 @@ except Exception as exc:
 '''
 
 
+# Extra environment for the bridge. Empty in production (the bridge reads db.env itself);
+# the tests, which load this file as a module, point it at a scratch database here. Never
+# taken from the caller's environment: sudo would otherwise let it choose the database.
+CC_BRIDGE_ENV = {}
+
+
 def cc_bridge(op, **params):
     if not os.path.exists(CC_VENV_PY):
         raise CCError("the claude-memory venv is not installed")
     env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": "/root", "LANG": "C.UTF-8",
            "CLAUDE_MEMORY_INTERNAL": "1"}
+    env.update(CC_BRIDGE_ENV)
     params["op"] = op
     try:
         r = subprocess.run([CC_VENV_PY, "-I", "-c", CC_BRIDGE], input=json.dumps(params),
@@ -5882,6 +6207,324 @@ def cmd_cc_session_memory(args):
         data.update({"session": sid, "page": page, "per_page": 40})
         return data
     cc_ok(cc_run(go))
+
+
+# ---- memory by session (Memory > Sessions): list, detail, hide / unhide / delete
+#
+# Reads need claude.memory.read in the panel; every write here needs claude.memory.manage
+# (administrators only by default) and is audited with counts, never content. Three rules
+# the panel cannot get around, because they live here:
+#   * a session that is running now (a live Claude Code process, MINT AI's current
+#     session, or a transcript written in the last CC_MM_RECENT seconds) can never be
+#     hidden or deleted as a whole -- single items in it can, with a warning;
+#   * deleting a whole session needs its name typed back, and ingest.py must already
+#     honour exclusions (otherwise the next re-scan would quietly bring it back);
+#   * a bulk delete is only carried out if the selection still has the counts the
+#     administrator confirmed.
+
+CC_INGEST_PY = CC_MEM_ROOT + "/ingest.py"
+CC_MINT_STATE = "/var/lib/moni-ai/state.json"
+CC_MINT_LEDGER = "/var/lib/moni-ai/ledger.db"
+CC_MM_RECENT = 120
+CC_MM_ACTIONS = ("hide", "unhide", "delete")
+CC_MM_SCOPES = ("items", "filtered", "session")
+CC_MM_STATUSES = ("", "active", "hidden", "superseded")
+CC_MM_SHOW = ("", "facts", "chunks")
+CC_MACHINES = {"vps": "This server", "windows-laptop": "Windows laptop"}
+
+
+def cc_mm_ready():
+    """True once ingest.py skips excluded sessions and tombstoned chunks."""
+    try:
+        with open(CC_INGEST_PY) as fh:
+            src = fh.read()
+    except OSError:
+        return False
+    return "excluded_sessions" in src and "memory_tombstones" in src
+
+
+def cc_mint_sessions():
+    """(current MINT AI session id, {sid: label}) from the supervisor's state file."""
+    try:
+        with open(CC_MINT_STATE) as fh:
+            st = json.load(fh) or {}
+    except Exception:
+        st = {}
+    labels = {}
+    for h in st.get("session_history") or []:
+        sid = str((h or {}).get("session_id") or "")
+        if UUID_RE.match(sid):
+            labels[sid] = "MINT AI (retired %s)" % str(h.get("retired_at") or "")[:10]
+    cur = str(st.get("session_id") or "")
+    cur = cur if UUID_RE.match(cur) else None
+    if cur:
+        labels[cur] = "MINT AI"
+    return cur, labels
+
+
+def cc_hired_sessions():
+    """{sid: {name, status}} for the sessions MINT AI hired (read-only)."""
+    out = {}
+    if not os.path.isfile(CC_MINT_LEDGER):
+        return out
+    try:
+        import sqlite3
+        con = sqlite3.connect("file:" + CC_MINT_LEDGER + "?mode=ro", uri=True, timeout=2)
+        try:
+            for name, sid, status in con.execute("SELECT name, session_id, status FROM hired_sessions"):
+                if UUID_RE.match(str(sid or "")):
+                    out[sid] = {"name": str(name or "")[:80], "status": str(status or "")}
+        finally:
+            con.close()
+    except Exception:
+        pass
+    return out
+
+
+def cc_transcripts_of(sid):
+    """[(home key, path, archived)] of every <sid>.jsonl on this machine: copies in a writable
+    home first (they are the session's own), newest first within each."""
+    found = []
+    for key, home in CC_HOMES.items():
+        roots = [(home["projects"], False)]
+        if home["base"]:
+            roots.append((cc_archive_root(key), True))
+        for root, archived in roots:
+            if not root or not os.path.isdir(root):
+                continue
+            for slug in os.listdir(root):
+                if not CC_SLUG_RE.match(slug):
+                    continue
+                p = os.path.join(root, slug, sid + ".jsonl")
+                if os.path.isfile(p) and not os.path.islink(p):
+                    found.append((key, p, archived))
+    found.sort(key=lambda f: (not CC_HOMES[f[0]]["writable"], -os.path.getmtime(f[1])))
+    return found
+
+
+def cc_mm_describe(rows):
+    """Name, origin, machine and liveness for each session row from the bridge."""
+    mint_cur, mint = cc_mint_sessions()
+    hired = cc_hired_sessions()
+    live = {}
+    for (key, sid), row in cc_live_sessions().items():
+        live.setdefault(sid, row)
+    now = time.time()
+    for r in rows:
+        sid = r["session_id"]
+        files = cc_transcripts_of(sid)
+        r["transcripts"] = len(files)
+        r["transcripts_writable"] = len([f for f in files if CC_HOMES[f[0]]["writable"]])
+        title = title_src = None
+        if files:
+            try:
+                summ = cc_summary_cached(files[0][1], os.stat(files[0][1]))
+                title, title_src = summ.get("title"), summ.get("title_src")
+            except OSError:
+                pass
+        lrow = live.get(sid)
+        if sid in mint:
+            name, origin = mint[sid], "MINT AI"
+        elif sid in hired:
+            name = hired[sid]["name"] or ("Hired " + sid[:8])
+            origin = "Hired session" + (" (retired)" if hired[sid]["status"] == "retired" else "")
+        else:
+            name = (lrow or {}).get("name") or (title if title_src == "custom" else None) or r.get("title") \
+                or title or None
+            origin = CC_HOMES[files[0][0]]["label"] if files else "No transcript left"
+            if r.get("machine") == "windows-laptop":
+                origin = "Old Windows session"
+        if name:
+            name = cc_one_line(re.sub(r"</?[A-Za-z][A-Za-z_-]{0,30}>", " ", str(name)), 90)
+        r["name"] = name or "Session " + sid[:8]
+        r["origin"] = origin
+        r["machine_label"] = CC_MACHINES.get(r.get("machine") or "", r.get("machine") or "—")
+        why = None
+        if sid == mint_cur:
+            why = "MINT AI's current session"
+        elif lrow:
+            why = "a Claude Code process is running it now"
+        elif files and now - max(os.path.getmtime(f[1]) for f in files) < CC_MM_RECENT:
+            why = "its transcript was written in the last %d seconds" % CC_MM_RECENT
+        r["live"] = bool(why)
+        r["live_reason"] = why
+    return rows
+
+
+def cc_mm_one(sid):
+    data = cc_bridge("mm_sessions", session=sid)
+    got = [r for r in data["sessions"] if r["session_id"] == sid]
+    if not got:
+        raise CCError("nothing from this session is in memory")
+    return cc_mm_describe(got)[0], data["caps"]
+
+
+def cc_mm_sessions(payload):
+    data = cc_bridge("mm_sessions")
+    rows = cc_mm_describe(data["sessions"])
+    rows.sort(key=lambda r: r.get("last") or "", reverse=True)
+    return {"sessions": rows, "caps": data["caps"], "ready": cc_mm_ready()}
+
+
+def cc_mm_filters(payload):
+    q = str(payload.get("q") or "").strip()[:200]
+    topic = str(payload.get("topic") or "").strip()
+    if topic and not CC_TOPIC_RE.match(topic):
+        raise CCError("not a topic")
+    status = str(payload.get("status") or "")
+    show = str(payload.get("show") or "")
+    if status not in CC_MM_STATUSES or show not in CC_MM_SHOW:
+        raise CCError("unknown filter")
+    if "\x00" in q:
+        raise CCError("the text filter contains characters that are not allowed")
+    return {"q": q, "topic": topic, "status": status, "show": show}
+
+
+def cc_mm_session(payload):
+    sid = cc_uuid(payload.get("session"))
+    meta, caps = cc_mm_one(sid)
+    per = 50
+    page = cc_int(payload.get("page"), 1, 100000, 1)
+    f = cc_mm_filters(payload)
+    data = cc_bridge("mm_session", session=sid, limit=per, offset=(page - 1) * per, **f)
+    data.update({"session": meta, "filters": f, "page": page, "per_page": per, "ready": cc_mm_ready()})
+    return data
+
+
+def cc_mm_request(payload):
+    sid = cc_uuid(payload.get("session"))
+    action = str(payload.get("action") or "")
+    scope = str(payload.get("scope") or "")
+    if action not in CC_MM_ACTIONS:
+        raise CCError("unknown action")
+    if scope not in CC_MM_SCOPES:
+        raise CCError("unknown scope")
+    req = {"session": sid, "action": action, "scope": scope}
+    if scope == "items":
+        for k in ("facts", "chunks"):
+            v = payload.get(k) or []
+            if not isinstance(v, list) or len(v) > 20000:
+                raise CCError("bad selection")
+            req[k] = [int(x) for x in v if re.match(r"^\d{1,18}$", str(x))]
+        if not req["facts"] and not req["chunks"]:
+            raise CCError("nothing is selected")
+    elif scope == "filtered":
+        req.update(cc_mm_filters(payload))
+    return req
+
+
+def cc_mm_preview(payload):
+    req = cc_mm_request(payload)
+    meta, caps = cc_mm_one(req["session"])
+    out = cc_bridge("mm_preview", **req)
+    out.update({"session": meta, "request": req})
+    return out
+
+
+def cc_mm_apply(payload):
+    actor = cc_actor(payload)
+    req = cc_mm_request(payload)
+    sid = req["session"]
+    meta, caps = cc_mm_one(sid)
+    if req["scope"] == "session" and req["action"] != "unhide" and meta["live"]:
+        raise CCError("refused: this session is live (%s). Hide or delete single items instead, "
+                      "or wait until it has stopped." % meta["live_reason"])
+    if req["action"] == "delete":
+        exp = payload.get("expect")
+        ok_n = lambda v: isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 10 ** 9
+        if not isinstance(exp, dict) or not ok_n(exp.get("facts")) or not ok_n(exp.get("chunks")):
+            raise CCError("a delete must carry the counts that were confirmed")
+        req["expect"] = {"facts": exp["facts"], "chunks": exp["chunks"]}
+    out = cc_bridge("mm_apply", actor=actor, **req)
+    audit("cc-memory-" + req["action"], {
+        "by": actor, "session": sid, "scope": req["scope"], "facts": out.get("facts", 0),
+        "chunks": out.get("chunks", 0), "live": meta["live"]})
+    out["live"] = meta["live"]
+    return out
+
+
+def cc_mm_remove_files(sid):
+    """Delete the session's transcripts in the writable Claude homes. Read-only copies stay."""
+    removed, kept = 0, 0
+    for key, path, archived in cc_transcripts_of(sid):
+        home = CC_HOMES[key]
+        if not home["writable"]:
+            kept += 1
+            continue
+        root = cc_archive_root(key) if archived else home["projects"]
+        real = cc_under(path, root)
+        base = real[:-len(".jsonl")]
+        for p in (real, base + ".desktop-released.json"):
+            if os.path.isfile(p) and not os.path.islink(p):
+                for cache in (cc_cache_path(p), cc_cache_path(p) + ".sum"):
+                    try:
+                        os.unlink(cache)
+                    except OSError:
+                        pass
+                os.unlink(p)
+                removed += 1
+        if os.path.isdir(base) and not os.path.islink(base):
+            cc_under(base, root)
+            shutil.rmtree(base)
+            removed += 1
+    return removed, kept
+
+
+def cc_mm_delete_session(payload):
+    actor = cc_actor(payload)
+    sid = cc_uuid(payload.get("session"))
+    meta, caps = cc_mm_one(sid)
+    if meta["live"]:
+        raise CCError("refused: this session is live (%s). Stop it first." % meta["live_reason"])
+    if str(payload.get("confirm") or "").strip() != meta["name"]:
+        raise CCError("type the session's name exactly to delete it")
+    if not cc_mm_ready():
+        raise CCError("refused: claude-memory's ingest.py does not honour exclusions yet, so the next "
+                      "re-scan would index this session again. Install deploy/claude-memory-manage first.")
+    files = bool(payload.get("delete_files"))
+    out = cc_bridge("mm_delete_session", session=sid, actor=actor, files_deleted=files)
+    out["files_removed"], out["files_kept_readonly"] = 0, 0
+    if files:
+        try:
+            out["files_removed"], out["files_kept_readonly"] = cc_mm_remove_files(sid)
+        except (OSError, CCError) as exc:
+            out["files_error"] = str(exc)[:200]
+    audit("cc-memory-delete-session", {
+        "by": actor, "session": sid, "facts": out["facts"], "chunks": out["chunks"],
+        "ingest_state": out["ingest_state"], "files_removed": out["files_removed"]})
+    return out
+
+
+def cc_mm_reindex(payload):
+    actor = cc_actor(payload)
+    sid = cc_uuid(payload.get("session"))
+    out = cc_bridge("mm_reindex", session=sid)
+    audit("cc-memory-reindex", {"by": actor, "session": sid, "lifted": out["lifted"]})
+    return out
+
+
+def cmd_cc_mm_sessions(args):
+    cc_ok(cc_run(lambda: cc_mm_sessions(cc_read_payload())))
+
+
+def cmd_cc_mm_session(args):
+    cc_ok(cc_run(lambda: cc_mm_session(cc_read_payload())))
+
+
+def cmd_cc_mm_preview(args):
+    cc_ok(cc_run(lambda: cc_mm_preview(cc_read_payload())))
+
+
+def cmd_cc_mm_apply(args):
+    cc_ok(cc_run(lambda: cc_mm_apply(cc_read_payload())))
+
+
+def cmd_cc_mm_delete_session(args):
+    cc_ok(cc_run(lambda: cc_mm_delete_session(cc_read_payload())))
+
+
+def cmd_cc_mm_reindex(args):
+    cc_ok(cc_run(lambda: cc_mm_reindex(cc_read_payload())))
 
 
 # ---- auto-memory files: /root/.claude/projects/<slug>/memory/*.md
@@ -7257,6 +7900,12 @@ COMMANDS = {
     "cc-fact-edit": cmd_cc_fact_edit,
     "cc-fact-forget": cmd_cc_fact_forget,
     "cc-session-memory": cmd_cc_session_memory,
+    "cc-mm-sessions": cmd_cc_mm_sessions,
+    "cc-mm-session": cmd_cc_mm_session,
+    "cc-mm-preview": cmd_cc_mm_preview,
+    "cc-mm-apply": cmd_cc_mm_apply,
+    "cc-mm-delete-session": cmd_cc_mm_delete_session,
+    "cc-mm-reindex": cmd_cc_mm_reindex,
     "cc-memfiles-list": cmd_cc_memfiles_list,
     "cc-memfile-read": cmd_cc_memfile_read,
     "cc-memfile-write": cmd_cc_memfile_write,

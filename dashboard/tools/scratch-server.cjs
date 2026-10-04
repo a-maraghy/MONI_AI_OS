@@ -43,6 +43,8 @@ const FAKE_KEY = "sk-proj-SCRATCHFAKEKEY-not-real-0000000000000000";
  * /keys renders. With fakeVoiceOptions,
  * saving the voice settings writes a file in the scratch data dir (and the key
  * read answers from it) -- never the helper -- so a test can change the voice.
+ * With recordCalls, each canned (fakeReads) answer is logged to
+ * <data>/helper-calls.jsonl with the stdin the route sent.
  * With fakeWhisper ({ installed: ["small-q8_0"] }) the local transcription
  * server's status and start/stop are answered from fake-whisper.json.
  */
@@ -56,7 +58,12 @@ function makeCopy(o) {
   // fakeReads: canned answers for read-only subcommands (e.g. "service-list"), so a
   // page that lists things can be rendered; everything else is still refused.
   const reads = o.fakeReads && typeof o.fakeReads === "object" ? o.fakeReads : null;
-  const canned = reads ? "  { const F = " + JSON.stringify(reads) + "; if (Object.prototype.hasOwnProperty.call(F, subcommand) && /^(list|status|agent-list|channel-list|channel-get|channel-topics-folders|service-list|credential-list|system-probe|cc-)/.test(subcommand)) return Promise.resolve(JSON.parse(JSON.stringify(F[subcommand]))); }\n" : "";
+  // recordCalls: every canned answer also appends {subcommand, args, stdin} to
+  // helper-calls.jsonl in the scratch data dir, so a test can see what a route asked for.
+  const record = o.recordCalls
+    ? "require('fs').appendFileSync(" + JSON.stringify(path.join(DATA, "helper-calls.jsonl")) + ", JSON.stringify({ subcommand, args, stdin: opts && opts.stdin != null ? String(opts.stdin) : null }) + '\\n'); "
+    : "";
+  const canned = reads ? "  { const F = " + JSON.stringify(reads) + "; if (Object.prototype.hasOwnProperty.call(F, subcommand) && /^(list|status|agent-list|channel-list|channel-get|channel-topics-folders|service-list|credential-list|system-probe|cc-)/.test(subcommand)) { " + record + "return Promise.resolve(JSON.parse(JSON.stringify(F[subcommand]))); } }\n" : "";
   s = s.replace(head, head + canned + '  return Promise.reject(new Error("scratch copy: the helper is not called (" + subcommand + ")"));\n');
   const status = 'voiceStatus: () => callHelper("voice-status"),';
   const key = 'voiceKeyRead: () => callHelper("voice-key-read"),';

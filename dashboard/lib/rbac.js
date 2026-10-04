@@ -139,6 +139,13 @@ const PERMISSION_GROUPS = [
         label: "Change Claude memory",
         hint: "Add, edit and forget facts, edit memory files, restart and re-ingest. Never deletes.",
       },
+      {
+        key: "claude.memory.manage",
+        label: "Hide and delete Claude memory",
+        hint:
+          "Memory > Sessions: hide, unhide and permanently delete facts, transcript chunks or a whole " +
+          "session's memory. Deleting cannot be undone; administrators only by default.",
+      },
       { key: "claude.sessions.view", label: "Read session transcripts", hint: "Whole conversations, redacted on the way out." },
       { key: "claude.sessions.manage", label: "Rename and archive sessions", hint: "Refused while a session runs. Never deletes." },
       { key: "claude.running.view", label: "See running sessions", hint: "Live CLI processes, subagents, memory jobs." },
@@ -195,6 +202,7 @@ const IMPLIES = {
   "roles.manage": ["roles.view"],
   "console.full": ["console.use"],
   "claude.memory.write": ["claude.memory.read"],
+  "claude.memory.manage": ["claude.memory.write", "claude.memory.read"],
   "claude.sessions.manage": ["claude.sessions.view"],
   "claude.running.stop": ["claude.running.view"],
 };

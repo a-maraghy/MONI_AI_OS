@@ -5,3 +5,6 @@
 *.ps1 text eol=crlf
 *.png binary
 *.jpg binary
+
+# Patches for files kept with CRLF on the server: applied byte for byte.
+deploy/claude-memory-manage/*.patch -text

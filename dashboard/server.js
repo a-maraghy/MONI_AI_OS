@@ -5347,14 +5347,22 @@ app.get("/claude/memory", requireAuth, requirePerm("claude.memory.read"), async 
     hooks: () => priv.ccHooksTail(50),
     services: () => priv.ccMemoryServices(),
     search: () => (query ? priv.ccMemorySearch(query, 12, searchProject || null) : Promise.resolve(null)),
+    mm: () => priv.ccMmSessions(),
   });
   const asked = String(req.query.view || "");
+  const mmQuery = {
+    q: String(req.query.sq || "").slice(0, 120).trim(),
+    sort: String(req.query.sort || ""),
+    dir: String(req.query.dir || ""),
+  };
   const filtered = query || filters.topic || filters.project || filters.q || filters.superseded || filters.page > 1;
   res.send(
     claudeViews.memory({
       csrf: res.locals.csrf,
       user: ctx(req),
-      view: ["graph", "list", "overview"].includes(asked) ? asked : filtered ? "list" : "graph",
+      view: claudeViews.MEMORY_VIEWS.some((v) => v[0] === asked) ? asked : filtered ? "list" : "graph",
+      mmQuery,
+      mmErr: data.errors && data.errors.mm,
       query,
       searchProject,
       filters,
@@ -5496,17 +5504,166 @@ app.post("/claude/memory/ingest", requireAuth, requirePerm("claude.memory.write"
   }
 });
 
+/* ------------------------------------------------- memory by session --- */
+
+/**
+ * Memory > Sessions: one session's facts and chunks (claude.memory.read), and
+ * hide / unhide / delete over them (claude.memory.manage, administrators only by
+ * default). Every write goes through the helper, which keeps it inside the one
+ * session, refuses whole-session changes to a live session, re-checks the
+ * confirmed counts and audits counts only. A delete never happens on the first
+ * POST: that renders the confirm page with the counts (or, for a whole session,
+ * the name to type back), and only its own POST deletes.
+ */
+const MM_STATUS = ["", "active", "hidden", "superseded"];
+const MM_SHOW = ["", "facts", "chunks"];
+const MM_OPS = {
+  "hide-items": ["hide", "items"],
+  "unhide-items": ["unhide", "items"],
+  "delete-items": ["delete", "items"],
+  "hide-filtered": ["hide", "filtered"],
+  "unhide-filtered": ["unhide", "filtered"],
+  "delete-filtered": ["delete", "filtered"],
+  "hide-session": ["hide", "session"],
+  "unhide-session": ["unhide", "session"],
+};
+
+function mmFilters(src, prefix) {
+  const g = (k) => String((src && src[(prefix || "") + k]) || "");
+  const status = g("status");
+  const show = g("show");
+  const topic = g("topic").slice(0, 121).trim();
+  return {
+    q: g("q").slice(0, 200).trim(),
+    topic: /^[A-Za-z0-9][A-Za-z0-9_.\-]{0,120}$/.test(topic) ? topic : "",
+    status: MM_STATUS.includes(status) ? status : "",
+    show: MM_SHOW.includes(show) ? show : "",
+  };
+}
+
+const mmIds = (v) =>
+  []
+    .concat(v == null ? [] : v)
+    .map(String)
+    .filter((x) => /^\d{1,15}$/.test(x))
+    .map(Number)
+    .slice(0, 20000);
+
+function mmPath(uuid, filters) {
+  const p = new URLSearchParams();
+  for (const [k, v] of Object.entries(filters || {})) if (v) p.set(k, v);
+  const q = p.toString();
+  return "/claude/memory/session/" + uuid + (q ? "?" + q : "");
+}
+
+function mmMessage(out) {
+  const n = (x, one) => `${x || 0} ${one}${x === 1 ? "" : "s"}`;
+  if (out.action === "hide")
+    return `Hidden: ${n(out.facts, "fact")} and ${n(out.chunks, "chunk")}. They stay in the database and can be unhidden.`;
+  if (out.action === "unhide") return `Unhidden: ${n(out.facts, "fact")} and ${n(out.chunks, "chunk")}. They are recalled again.`;
+  let m = `Deleted permanently: ${n(out.facts, "fact")} and ${n(out.chunks, "chunk")}.`;
+  if (out.hidden_older) m += ` ${n(out.hidden_older, "older version")} of deleted facts hidden.`;
+  if (out.repointed) m += ` ${n(out.repointed, "older version")} now point at the surviving newer fact.`;
+  return m;
+}
+
 app.get("/claude/memory/session/:uuid", requireAuth, requirePerm("claude.memory.read"), async (req, res) => {
   const uuid = req.params.uuid;
   if (!CC_UUID.test(uuid)) return res.status(404).send(views.error("Not found", "No such session."));
   let data = null;
   let err = null;
   try {
-    data = await priv.ccSessionMemory(uuid, qint(req.query.page, 1));
+    data = await priv.ccMmSession(Object.assign({ session: uuid, page: qint(req.query.page, 1) }, mmFilters(req.query)));
   } catch (e) {
     err = e.message;
   }
-  res.send(claudeViews.sessionMemory({ csrf: res.locals.csrf, user: ctx(req), data, uuid, err }));
+  res.send(
+    claudeViews.sessionMemory({
+      csrf: res.locals.csrf,
+      user: ctx(req),
+      data,
+      uuid,
+      err: err || req.query.err || null,
+      flash: req.query.msg || null,
+    })
+  );
+});
+
+app.post("/claude/memory/session/:uuid/apply", requireAuth, requirePerm("claude.memory.manage"), requireCsrf, async (req, res) => {
+  const uuid = req.params.uuid;
+  if (!CC_UUID.test(uuid)) return res.status(404).send(views.error("Not found", "No such session."));
+  const filters = mmFilters(req.body, "f_");
+  const back = mmPath(uuid, filters);
+  const op = MM_OPS[String(req.body.op || "")];
+  if (!op) return res.redirect(withMsg(back, "err", "Choose what to do with the selection."));
+  const [action, scope] = op;
+  const request = Object.assign({ session: uuid, action, scope }, scope === "filtered" ? filters : {});
+  if (scope === "items") {
+    request.facts = mmIds(req.body.f);
+    request.chunks = mmIds(req.body.c);
+    if (!request.facts.length && !request.chunks.length) return res.redirect(withMsg(back, "err", "Nothing is selected."));
+  }
+  try {
+    if (action === "delete" && req.body.confirmed !== "1") {
+      const preview = await priv.ccMmPreview(request);
+      return res.send(claudeViews.mmConfirmDelete({ csrf: res.locals.csrf, user: ctx(req), uuid, preview, body: req.body }));
+    }
+    if (action === "delete") {
+      const count = (v) => (/^\d{1,9}$/.test(String(v)) ? Number(v) : -1);
+      request.expect = { facts: count(req.body.expect_facts), chunks: count(req.body.expect_chunks) };
+    }
+    const out = await priv.ccMmApply(Object.assign(request, { actor: ccActor(req) }));
+    res.redirect(withMsg(back, "msg", mmMessage(out)));
+  } catch (e) {
+    res.redirect(withMsg(back, "err", e.message));
+  }
+});
+
+app.post("/claude/memory/session/:uuid/delete", requireAuth, requirePerm("claude.memory.manage"), requireCsrf, async (req, res) => {
+  const uuid = req.params.uuid;
+  if (!CC_UUID.test(uuid)) return res.status(404).send(views.error("Not found", "No such session."));
+  const back = mmPath(uuid);
+  const confirmPage = async (err) => {
+    const preview = await priv.ccMmPreview({ session: uuid, action: "delete", scope: "session" });
+    if (preview.session && preview.session.live) throw new Error("This session is live (" + preview.session.live_reason + "); it cannot be deleted.");
+    return claudeViews.mmConfirmSession({ csrf: res.locals.csrf, user: ctx(req), uuid, preview, err });
+  };
+  try {
+    if (req.body.step !== "confirm") return res.send(await confirmPage(null));
+    const out = await priv.ccMmDeleteSession({
+      session: uuid,
+      actor: ccActor(req),
+      confirm: String(req.body.confirm || "").slice(0, 200),
+      delete_files: req.body.delete_files === "1",
+    });
+    let m = `Session deleted from memory: ${out.facts} facts and ${out.chunks} chunks. It will not be indexed again.`;
+    if (out.files_removed) m += ` ${out.files_removed} transcript file(s) deleted.`;
+    if (out.files_kept_readonly) m += ` ${out.files_kept_readonly} read-only archive cop${out.files_kept_readonly === 1 ? "y" : "ies"} kept.`;
+    if (out.files_error) m += " Transcript files: " + out.files_error;
+    res.redirect(withMsg("/claude/memory?view=sessions", "msg", m));
+  } catch (e) {
+    if (req.body.step === "confirm" && /type the session's name/.test(e.message)) {
+      try {
+        return res.send(await confirmPage(e.message));
+      } catch (_) {
+        /* fall through to the redirect */
+      }
+    }
+    res.redirect(withMsg(back, "err", e.message));
+  }
+});
+
+app.post("/claude/memory/session/:uuid/reindex", requireAuth, requirePerm("claude.memory.manage"), requireCsrf, async (req, res) => {
+  const uuid = req.params.uuid;
+  if (!CC_UUID.test(uuid)) return res.status(404).send(views.error("Not found", "No such session."));
+  try {
+    const out = await priv.ccMmReindex({ session: uuid, actor: ccActor(req) });
+    res.redirect(
+      withMsg(mmPath(uuid), "msg", out.lifted ? "It may be indexed again: the next re-scan picks up any transcript left on disk." : "It was not excluded.")
+    );
+  } catch (e) {
+    res.redirect(withMsg(mmPath(uuid), "err", e.message));
+  }
 });
 
 /**

@@ -1692,6 +1692,26 @@ fieldset.scope legend { font-size: 12px; font-weight: 700; color: var(--ink); pa
 .nowrap { white-space: nowrap; }
 .cc-cmd, .cc-log { white-space: pre-wrap; word-break: break-all; font-size: 12px; }
 .cc-fact { font-size: 14px; }
+/* Memory > Sessions: one session's memory, with hide / unhide / delete. */
+.mm-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0 0 12px; }
+.mm-bar .mm-count { color: var(--muted); margin-right: 4px; }
+.mm-h { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; font-size: 14px; margin: 18px 0 8px; }
+.mm-h .mm-allc { margin: 0 0 0 auto; font-weight: 400; }
+.card ul.mm-chunks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.card ul.mm-chunks li { margin: 0; }
+.mm-chunk { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r); }
+.mm-chunk.is-hidden { border-style: dashed; opacity: .72; }
+.mm-chunk-body { flex: 1; min-width: 0; }
+.mm-box { padding-top: 2px; }
+.mm-preview { margin: 0; color: var(--body); overflow-wrap: anywhere; }
+.mm-stats { margin-bottom: 10px; }
+.mm-sessions td .pill { margin-left: 4px; }
+.mm-sessions th a { color: inherit; text-decoration: none; }
+.mm-facts td:nth-child(4) { min-width: 220px; }
+/* Phones: the tables keep readable columns and scroll inside their card, never the page. */
+.mm-sessions { min-width: 820px; }
+.mm-facts { min-width: 720px; }
+.mm-facts td.mono { white-space: nowrap; }
 .cc-ex { display: flex; flex-direction: column; gap: 8px; padding: 14px 0; border-top: 1px solid var(--line); }
 .cc-ex-meta { opacity: 1; animation: none; }
 .cc-ex .msg { animation: none; }

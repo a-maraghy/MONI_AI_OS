@@ -9,7 +9,7 @@
  *   1. pages      ui.NAV (every sidebar item) plus the avatar menu's Account
  *   2. sections   MINT AI Settings' sections (views-settings.js SETTINGS_SECTIONS)
  *   3. sheets     the Command Center's sheets (public/cc-logic.js SHEETS), /mint-ai#<sheet>
- *   4. tabs       the tabs a view exports (Sessions, Services), <url>?<param>=<tab>
+ *   4. tabs       the tabs a view exports (Sessions, Memory, Services), <url>?<param>=<tab>
  *   5. anchors    a static scan of lib/views-*.js (and routes-settings.js) for the
  *                 ids of cards, rows and <section>s, under the page ANCHOR_HOMES
  *                 names for that file and id prefix; the label is the card's or
@@ -234,6 +234,12 @@ function defaultTabs() {
   const out = [];
   try {
     for (const [key, label, perm] of require("./views-claude").SESSION_TABS) out.push({ parent: "sessions", key, label, url: "/claude/sessions?tab=" + key, perm });
+  } catch (_) {
+    /* no tabs */
+  }
+  try {
+    for (const [key, label] of require("./views-claude").MEMORY_VIEWS)
+      out.push({ parent: "memory", key, label, url: "/claude/memory?view=" + key, perm: "claude.memory.read" });
   } catch (_) {
     /* no tabs */
   }

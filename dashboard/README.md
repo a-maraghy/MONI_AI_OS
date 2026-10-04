@@ -65,12 +65,28 @@ All data comes from the helper's `cc-*` subcommands. Memory reads and writes go
 through memlib, run by the claude-memory venv inside the helper, so the database
 credentials in `/root/.claude-memory/db.env` never reach this process. Output is
 redacted by the helper (its own rules plus memlib's) and again by
-`priv.redactDeep`. Nothing is deleted: editing a fact supersedes it, forgetting
+`priv.redactDeep`. Outside Memory ▸ Sessions nothing is deleted: editing a fact supersedes it, forgetting
 is memlib's soft delete, archiving a session moves it to
 `<home>/.claude/archive/dashboard-archived/`. Rename and archive are refused
 while a session runs; Stop sends SIGINT only to a pid registered in a
 `sessions/<pid>.json` whose process is the claude binary, and SIGTERM only 10 s
 after that. Every write is in the audit log with the panel user.
+
+**Memory ▸ Sessions** (`/claude/memory?view=sessions`, `/claude/memory/session/<uuid>`) lists every
+session that left memory (name from MINT AI's state, the hired-sessions ledger, a live session's
+name or the transcript title; origin, project, machine, dates, chunk and fact counts) and, for
+`claude.memory.manage` (administrators only by default), hides, unhides or permanently deletes
+facts and chunks -- selected, everything a filter matches, or the whole session. Helper
+subcommands `cc-mm-*`; the rules live there: one session per request, no whole-session hide or
+delete of a live session (a running process, MINT AI's current session, or a transcript written
+in the last 2 minutes), deletes only with the counts the confirm page showed, a whole-session
+delete only with its name typed back and only once claude-memory's ingest honours exclusions.
+A deleted session goes on `excluded_sessions` (lifted with *Allow re-indexing*), deleted chunks
+leave a tombstone, and *also delete the transcript file* removes the copies in writable homes
+(read-only Windows-archive copies stay). Hiding needs claude-memory's update:
+`deploy/claude-memory-manage/install.sh` (until then the list is read-only). Audit: counts only.
+Tests: `tools/test-memory-manage.cjs`; every read path against a scratch copy of the database:
+`/opt/claude-memory/venv/bin/python tools/test-memory-manage-db.py --make --drop`.
 
 Known follow-up: the memory search service on 127.0.0.1:8765 takes no token, so
 any local process can query it. Adding one is deliberately left for later.
