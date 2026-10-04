@@ -135,7 +135,7 @@ check("migrate.sql runs twice on the scratch copy (idempotent)", r.returncode ==
 TMP = tempfile.mkdtemp(prefix="mm-db-test-")
 CM = os.path.join(TMP, "claude-memory")
 os.makedirs(CM)
-for name in ("app.py", "ingest.py", "mcp_server.py", "schema.sql", "extract_facts.py", "config.json", "embedder.py"):
+for name in ("app.py", "ingest.py", "mcp_server.py", "schema.sql", "extract_facts.py", "config.json", "embedder.py", "README.md"):
     shutil.copy2(os.path.join(LIVE_ROOT, name), CM)
 for sub in ("memlib", "hooks"):
     os.makedirs(os.path.join(CM, sub))
@@ -309,11 +309,14 @@ def in_hooks(fact_mark, chunk_mark):
     pre = hook_text("PreToolUse", {"tool_name": "Agent", "session_id": OTHER, "cwd": "/root/moni",
                                    "tool_input": {"description": "check", "prompt": PROMPT_F + "\n" + CQ}})
     pre = pre.split("## Memory for this task", 1)[1] if "## Memory for this task" in pre else ""   # the injected block only
-    return {"ups_chunk": chunk_mark in " ".join(ups_c.split()), "ups_fact": fact_mark in ups_f,
-            "pre_fact": fact_mark in pre, "pre_chunk": chunk_mark in " ".join(pre.split())}
+    # A fact hit is a line "- [fact #N | ..."; chunk text is collapsed onto its own line, so a
+    # chunk that merely quotes an old search result cannot look like one.
+    fact_re = re.compile(r"^- " + re.escape(fact_mark), re.M)
+    return {"ups_chunk": chunk_mark in " ".join(ups_c.split()), "ups_fact": bool(fact_re.search(ups_f)),
+            "pre_fact": bool(fact_re.search(pre)), "pre_chunk": chunk_mark in " ".join(pre.split())}
 
 
-FMARK = "fact #%d " % FID
+FMARK = "[fact #%d |" % FID   # the header of an injected or returned fact, not a mention in a chunk
 before_hooks = in_hooks(FMARK, CMARK[:80])
 print("  hooks before hiding:", before_hooks)
 check("the hooks inject the target before it is hidden (at least one path)", any(before_hooks.values()), before_hooks)
@@ -346,12 +349,19 @@ check("the MCP server under test loads the patched memlib", F.__file__.startswit
 
 
 def mcp_view():
-    ms_f = MCP.memory_search(FQ, k=20)
-    ms_c = MCP.memory_search(CQ, k=20)
+    # Judge memory_search by its hit headers only: this copy of live holds transcripts that quote
+    # earlier search results, so a chunk's text may contain "[fact #N | ...".
+    clip = MCP._clip
+    MCP._clip = lambda s_, n: ""
+    try:
+        ms_f = MCP.memory_search(FQ, k=20)
+        ms_c = MCP.memory_search(CQ, k=20)
+    finally:
+        MCP._clip = clip
     fb = MCP._fts_fallback(" ".join(sorted(set(re.findall(r"[A-Za-z]{6,}", CQ)), key=len)[-3:]), 200)
     sess = MCP.memory_session(SID)
     sid, rows, _ = F.session_chunks(SID, None, max_chars=10 ** 9)
-    return {"search_fact": ("fact #%d " % FID) in ms_f, "search_chunk": CMARK[:80] in " ".join(ms_c.split()),
+    return {"search_fact": ("[fact #%d |" % FID) in ms_f, "search_chunk": ("[chunk #%d |" % CID) in ms_c,
             "fallback_chunk": any(h["kind"] == "chunk" and h["id"] == CID for h in fb),
             "session_chunk": CMARK[:80] in " ".join(sess.split()) or any(CMARK[:80] in " ".join(r["content"].split()) for r in rows)}
 
