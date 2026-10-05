@@ -339,9 +339,9 @@
     onOpen: function (key) { if (P && P.openDeep && findSess(key)) P.openDeep(key); else { openSheet("sessions"); highlightSess(key); } },
     onMenu: function (key, x, y) { sessMenu(key, x, y); },
   });
-  window.__mintCC = { core: Orb.core, orbit: Orb, S: S, renderSessions: function (f) { renderSessions(f); } };
+  window.__mintCC = { get core() { return Orb.core; }, orbit: Orb, S: S, renderSessions: function (f) { renderSessions(f); } };
 
-  /* ---- the core setting: A dotted sphere, B Siri fluid, C hybrid. The
+  /* ---- the core setting: A dotted sphere, B Siri fluid, C hybrid, D mesh (the default). The
      server rendered the saved one as data-core; this browser remembers it too
      (the fallback if the attribute is ever missing), and a switch here saves it
      for the person and swaps the running core in place, no reload. ---- */

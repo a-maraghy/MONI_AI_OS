@@ -29,6 +29,13 @@
  * draws a still frame per change. Positions are set through the CSSOM (the CSP
  * refuses style attributes).
  *
+ * With core D (the mesh, mint-core-d.js) the spheres themselves are small mesh
+ * replicas drawn by the core, on its own WebGL2 canvas, in one batch: setMesh(true)
+ * stops the dotted 2D sphere here and meshKids() hands the core, each frame,
+ * where each one is and how it looks (size, tint, dim / shimmer, amber, born /
+ * dissolving, catching a delegation). Everything else -- names, badges, rings,
+ * sub-agents, streams, hover, click, drift -- stays here, unchanged.
+ *
  * window.MintFamily(els, opts) -> instance. els: { root, canvas, labels, card };
  * opts: { layout() -> {cx, cy, R}, obstacles() -> [rects], light() -> bool,
  * sceneRight() -> px, onClick(id) }.
@@ -89,6 +96,7 @@
     var first = true;          // the first list is placed, not born
     var hoverKid = null, mouse = { x: -1, y: -1, over: false };
     var cost = [], iv = [];
+    var mesh = false;          // core D draws the spheres (meshKids); this canvas keeps the rest
 
     function buildPalettes() {
       var c = light ? C.light : C.dark;
@@ -224,7 +232,7 @@
       labels.appendChild(el);
       var k = {
         id: d.id, x: 0, y: 0, vx: 0, vy: 0, r: L.rBase, rot: rand() * TAU, ph: [rand() * TAU, rand() * TAU, rand() * TAU, rand() * TAU],
-        glow: 0, catchK: 0, bloom: 0, amb: 0, lift: 0, bright: 1, form: born && !reduced ? 0 : 1, dis: 0, dead: false, hover: 0,
+        glow: 0, catchK: 0, bloom: 0, fold: 0, amb: 0, lift: 0, bright: 1, form: born && !reduced ? 0 : 1, dis: 0, dead: false, hover: 0,
         subs: [], doneUntil: 0, lw: 110, el: el, elB: el.firstChild, elN: el.lastChild, badge: "",
       };
       apply(k, d, true);
@@ -357,6 +365,7 @@
         k.catchK *= Math.exp(-dt * 2.2); k.glow *= Math.exp(-dt * 1.5);
         k.bloom = Math.max(0, k.bloom - dt * 0.7);
         k.rot += dt * (0.12 + 0.55 * (k.st === "working" ? 1 : 0) + 0.12 * (k.st === "waiting" ? 1 : 0));
+        k.fold += dt * (0.05 + 0.25 * (k.st === "working" ? 1 : 0));
         if (k.form < 1) k.form = Math.min(1, k.form + dt / 2.6);
         if (k.dis > 0) {
           k.dis += dt / 3.0;
@@ -414,6 +423,7 @@
     }
     function draw() {
       if (!W) return;
+      if (mesh && reduced && opts.meshRedraw) opts.meshRedraw();
       var c = light ? C.light : C.dark;
       g.setTransform(DPR, 0, 0, DPR, 0, 0);
       g.clearRect(0, 0, W, H);
@@ -467,7 +477,7 @@
       }
       if (k.bloom > 0) { g.strokeStyle = rgba(c.mint, 0.6 * k.bloom); g.lineWidth = 1.5; g.beginPath(); g.arc(p.x, p.y, r * (1.05 + (1 - k.bloom) * 0.9), 0, TAU); g.stroke(); }
       subs(k, p, -1);
-      drawSphere(PC, {
+      if (!mesh) drawSphere(PC, {
         cx: p.x, cy: p.y, R: r * (1 + 0.035 * pulse * k.amb), rot: k.rot, tilt: 0.3 + 0.12 * k.lift, t: t + k.ph[0] * 3, pal: PAL[k.tint], ambPal: PAL.amb, ambK: k.amb,
         size: 1.35 * clamp(r / 32, 0.8, 1.35), alpha: alpha, shimmer: k.st === "working" && !reduced ? 1 : 0, breath: reduced ? 0 : 0.03, bph: k.ph[1], form: k.form, dis: k.dis,
       });
@@ -585,6 +595,30 @@
       frame: frame,
       draw: draw,
       resize: resize,
+      /** Core D draws the spheres as meshes (true), or this canvas draws the dotted ones (false). */
+      setMesh: function (yes) { mesh = !!yes; draw(); },
+      /**
+       * For core D: each sphere this frame, in CSS px -- position, size, tint (dark and light), how
+       * bright (idle dims, a delegation landing brightens), shimmer (working: faster folds, brighter rim),
+       * amber (waiting on you, pulsing), and its birth / dissolve progress.
+       */
+      meshKids: function () {
+        if (!on || !mesh) return null;
+        var out = [], pulse = reduced ? 0.5 : 0.5 + 0.5 * Math.sin(t * 2.6);
+        kids.forEach(function (k) {
+          if (k.dead) return;
+          var p = kidPos(k), tc = TINTS[k.tint] || TINTS.teal;
+          var alpha = (light ? 0.62 : 0.5) + (1 - (light ? 0.62 : 0.5)) * k.bright + 0.35 * k.glow + 0.5 * k.bloom + 0.2 * k.hover;
+          out.push({
+            x: p.x, y: p.y, r: p.r * (1 + 0.035 * pulse * k.amb), alpha: alpha * 0.85,
+            rot: k.rot, phase: k.ph[0] + k.fold,
+            amb: k.amb * (0.55 + 0.45 * pulse), shimmer: k.st === "working" && !reduced ? 1 : 0,
+            form: k.form, dis: k.dis || 0, catchK: Math.min(1, k.catchK * 1.4), seed: k.ph[2],
+            tint: tc.dark, tintL: tc.light,
+          });
+        });
+        return out;
+      },
       /** Spheres on (true) or the classic orbit (false). */
       enable: function (yes) {
         on = !!yes;

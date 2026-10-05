@@ -1,6 +1,7 @@
 /* Account > Appearance: the MINT AI core picker with live previews
    (lib/views-moniai.js appearance(), public/mint-settings.js). Tokens only. */
-.mint-core-opts { border: 0; margin: 12px 0; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.mint-core-opts { border: 0; margin: 12px 0; padding: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+@media (max-width: 1100px) { .mint-core-opts { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .mint-core-opt { position: relative; display: flex; flex-direction: column; gap: 6px; padding: 10px; border-radius: 14px; border: 1px solid var(--line); background: var(--panel); cursor: pointer; transition: border-color .2s, box-shadow .2s; }
 .mint-core-opt:hover { border-color: var(--line-strong); }
 .mint-core-opt input { position: absolute; opacity: 0; pointer-events: none; }

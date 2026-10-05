@@ -182,9 +182,11 @@ function addColumn(table, column, definition) {
 addColumn("users", "email", "TEXT NOT NULL DEFAULT ''");
 
 // The MINT AI core each person chose for the Command Center: "A" (dotted
-// sphere), "B" (Siri fluid) or "C" (hybrid). Empty means never chosen, which
-// reads as the default, C (public/cc-logic.js normCore) -- so every existing
-// account gets the default without a value being written for it.
+// sphere), "B" (Siri fluid), "C" (hybrid) or "D" (mesh). Empty means never
+// chosen, which reads as the default -- D since 2026-10-06, C before -- in
+// public/cc-logic.js normCore, so a new account gets the default without a
+// value being written for it. (SQLite cannot change a column's DEFAULT in
+// place; '' meaning "the default" is what makes D the default for new users.)
 addColumn("users", "mint_core", "TEXT NOT NULL DEFAULT ''");
 addColumn("users", "sessions_view", "TEXT NOT NULL DEFAULT ''"); // '' = spheres (the default), or "orbit"
 
@@ -277,9 +279,41 @@ function migrateRenamedPermissions() {
   }
 }
 
+/**
+ * Core D ("Mesh") became the default on 2026-10-06, and everyone was moved to
+ * it once: every existing account's users.mint_core becomes "D", whatever it
+ * was ('' or A/B/C). Recorded in settings ("migration.mint_core_d") so it never
+ * runs again -- after it, a person who switches back to A, B or C keeps that.
+ * One audit line per account that changed ("account": "MINT AI core X -> D
+ * (Mesh) (new default, migration)"), like a change made in Settings.
+ */
+const CORE_D_MIGRATION = "migration.mint_core_d";
+function migrateCoreDefaultD() {
+  if (db.prepare("SELECT 1 FROM settings WHERE key = ?").get(CORE_D_MIGRATION)) return null;
+  const run = db.transaction(() => {
+    const rows = db.prepare("SELECT id, username, mint_core FROM users WHERE mint_core <> 'D'").all();
+    const upd = db.prepare("UPDATE users SET mint_core = 'D' WHERE id = ?");
+    const log = db.prepare("INSERT INTO login_log (ts, ip, username, outcome, detail) VALUES (?, ?, ?, 'account', ?)");
+    const ts = nowIso();
+    for (const r of rows) {
+      upd.run(r.id);
+      const was = ["A", "B", "C"].includes(r.mint_core) ? r.mint_core : "C";
+      log.run(ts, null, r.username, `MINT AI core ${was} -> D (Mesh) (new default, migration)`);
+    }
+    db.prepare("INSERT INTO settings (key, value, updated_at, updated_by) VALUES (?, ?, ?, 'migration')").run(
+      CORE_D_MIGRATION,
+      JSON.stringify({ moved: rows.length, at: ts }),
+      ts
+    );
+    return rows.length;
+  });
+  return run();
+}
+
 seedRoles();
 migrateLegacyAdmin();
 migrateRenamedPermissions();
+migrateCoreDefaultD();
 
 /* --------------------------------------------------------------- users --- */
 

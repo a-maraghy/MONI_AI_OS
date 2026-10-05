@@ -3,9 +3,13 @@
  * The Command Center's stage: the MINT AI core in the middle (mint-core.js)
  * and the live sessions as small points on a faint orbit round it.
  *
- * The core's concept (A dotted sphere, B Siri fluid, C hybrid) is the viewer's
- * saved choice, rendered by the server as data-core on #cc before first paint
- * and switchable at any time without a reload (setConcept). Its state comes
+ * The core's concept (A dotted sphere, B Siri fluid, C hybrid -- mint-core.js;
+ * D mesh, the default -- mint-core-d.js) is the viewer's saved choice, rendered
+ * by the server as data-core on #cc before first paint and switchable at any
+ * time without a reload (setConcept). A/B/C share one WebGL canvas; D draws
+ * with WebGL2, which a canvas that once gave out a WebGL1 context can never
+ * give, so crossing between D and A/B/C stops the running core, releases its
+ * context and starts the other on a fresh copy of the canvas. Its state comes
  * from real events through moni-ai.js: thinking while a turn runs, delegating
  * when a SendMessage lands (a stream of dots flies to that session's point),
  * listening with the real microphone level, speaking with the real output
@@ -40,20 +44,52 @@
     var state = "idle";
 
     var GHOST = "\u0000ghost";
-    var core = window.MintCore(els.canvas, {
-      concept: root.getAttribute("data-core"),
-      points: window.innerWidth <= 720 ? 2600 : 4200,
-      dest: function () { return aimPoint(); },
-      amp: function (st) {
-        if (st === "listening" && micLevel) return Math.min(1, micLevel() * 7);
-        if (st === "speaking" && outLevel) {
-          var v = outLevel();
-          return v < 0 ? null : Math.min(1, v * 4.5);
-        }
-        return null;
-      },
-      onFrame: onFrame,
-    });
+    function wantsD(c) { return (window.MintLogic ? window.MintLogic.normCore(c) : String(c == null ? "" : c).trim().toUpperCase()) === "D"; }
+    function coreOpts(c) {
+      return {
+        concept: c,
+        points: window.innerWidth <= 720 ? 2600 : 4200,
+        dest: function () { return aimPoint(); },
+        amp: function (st) {
+          if (st === "listening" && micLevel) return Math.min(1, micLevel() * 7);
+          if (st === "speaking" && outLevel) {
+            var v = outLevel();
+            return v < 0 ? null : Math.min(1, v * 4.5);
+          }
+          return null;
+        },
+        onFrame: onFrame,
+        backdrop: "glow", // D: only the glow round the core; the page keeps its own background
+        // D draws the family's spheres as meshes on its own canvas, after the family has moved this frame.
+        kids: function () { return family && family.enabled() ? family.meshKids() : null; },
+        beforeDraw: function () { if (family && family.enabled()) family.frame(); },
+      };
+    }
+    function makeCore(c) {
+      var k = wantsD(c) && window.MintCoreD ? window.MintCoreD(els.canvas, coreOpts("D")) : window.MintCore(els.canvas, coreOpts(c));
+      els.canvas = k.canvas || els.canvas; // a core that fell back to 2D drew on a fresh copy of the canvas
+      return k;
+    }
+    var core = makeCore(root.getAttribute("data-core"));
+    /** Hand the canvas to the other renderer (D <-> A/B/C): stop, release the context, fresh canvas, same state. */
+    function swapCore(c) {
+      var wasOn = !!(core.S.running || core.S.wanted);
+      core.stop();
+      if (core.destroy) core.destroy();
+      else {
+        try { var g1 = els.canvas.getContext("webgl"), lc = g1 && g1.getExtension("WEBGL_lose_context"); if (lc) lc.loseContext(); } catch (e) { /* no context to give back */ }
+      }
+      var fresh = els.canvas.cloneNode(false);
+      els.canvas.parentNode.replaceChild(fresh, els.canvas);
+      els.canvas = fresh;
+      core = makeCore(c);
+      root.classList.toggle("core-2d", !core.isGL);
+      meshFamily();
+      palette();
+      core.setState(state);
+      resize();
+      if (wasOn) core.start();
+    }
     /** Where the delegation stream flies. */
     function aimPoint() {
         var id = target || lastTarget;
@@ -103,9 +139,14 @@
         top: function () { var tb = document.querySelector(".topbar"); return tb ? tb.getBoundingClientRect().bottom : 60; },
         onClick: function (id) { if (opts.onOpen) opts.onOpen(id); else if (opts.onClick) opts.onClick(id); },
         onMenu: function (id, x, y) { if (opts.onMenu) opts.onMenu(id, x, y); },
+        // Reduced motion: the family redraws on a change; the core draws its meshes still.
+        meshRedraw: function () { if (core.S.concept === "D" && (core.S.still || !core.S.running)) core.draw(); },
       });
     }
     function spheresOn() { return root.getAttribute("data-sessview") !== "orbit"; }
+    /** With core D (and WebGL2) the session spheres are meshes the core draws; else the family's dotted ones. */
+    function meshFamily() { if (family) family.setMesh(core.S.concept === "D" && core.isGL); }
+    meshFamily();
 
     function isLight() {
       var t = document.documentElement.getAttribute("data-theme");
@@ -200,7 +241,7 @@
     /* ---------------------------------------------------------- per frame */
     function onFrame(S, W) {
       if (!reduced) place(S.t);
-      if (family && family.enabled()) family.frame();
+      if (family && family.enabled() && core.S.concept !== "D") family.frame(); // D moved it before drawing (beforeDraw)
       if (core.S.concept === "C") {
         var talk = W.wave + W.line;
         var k = (1 + 0.35 * S.amp * talk + 0.08 * Math.sin(S.t * 1.1)) * (1 - 0.45 * talk);
@@ -222,7 +263,8 @@
     }
 
     return {
-      core: core,
+      /** The running core (a getter: switching D <-> A/B/C replaces it). */
+      get core() { return core; },
       layout: L,
       palette: palette,
       resize: resize,
@@ -242,7 +284,8 @@
         root.setAttribute("data-state", name);
       },
       setConcept: function (c) {
-        core.setConcept(c);
+        if (wantsD(c) !== (core.S.concept === "D") && (window.MintCoreD || core.S.concept === "D")) swapCore(c);
+        else core.setConcept(c);
         root.setAttribute("data-core", core.S.concept);
       },
       /** A delegation went out to this session: the stream of dots flies there. */

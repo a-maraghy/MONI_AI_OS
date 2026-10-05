@@ -47,5 +47,13 @@ check("names are buttons (keyboard) with an aria-label; the canvas is aria-hidde
 check("an overlap audit and frame stats are exposed for the checks", /audit: function \(\)/.test(fam) && /stats: function \(\)/.test(fam));
 check("real data only in the page: task from waiting_for / mission / delegation, last from its messages, size from today's tokens and delegations", /function familyNode\(s\)/.test(page) && /S\.inbound\.forEach/.test(page) && /s\.tokens_today && s\.tokens_today\.total/.test(page) && !/cost_today_usd_est/.test(page));
 
+console.log("\nwith core D (the mesh)");
+const coreD = read("public/mint-core-d.js");
+check("the spheres become mesh replicas drawn by core D in ONE batch on its canvas (setMesh / meshKids), not 7 contexts", /setMesh: function \(yes\)/.test(fam) && /meshKids: function \(\)/.test(fam) && /if \(!mesh\) drawSphere\(PC,/.test(fam) && /kids: function \(\) \{ return family && family\.enabled\(\) \? family\.meshKids\(\) : null; \}/.test(map) && /gl\.drawArrays\(gl\.POINTS, 0, n \* KPER\)/.test(coreD) && (coreD.match(/getContext\("webgl2"/g) || []).length === 1);
+check("the family moves before the core draws (beforeDraw), so meshes and names agree; never twice a frame", /beforeDraw: function \(\) \{ if \(family && family\.enabled\(\)\) family\.frame\(\); \}/.test(map) && /family\.enabled\(\) && core\.S\.concept !== "D"\) family\.frame\(\)/.test(map) && /if \(opts\.beforeDraw\) opts\.beforeDraw\(S, W\)/.test(coreD));
+check("each sphere keeps its state in the mesh: tint, dim / shimmer (faster folds), amber, born / dissolving, catching a delegation", ["tint: tc.dark", "shimmer:", "amb:", "form: k.form", "dis: k.dis", "catchK:"].every((x) => fam.includes(x)) && /k\.fold \+= dt \* \(0\.05 \+ 0\.25 \* \(k\.st === "working"/.test(fam));
+check("only with D and WebGL2; A/B/C (or no WebGL2) keep the dotted spheres", /family\.setMesh\(core\.S\.concept === "D" && core\.isGL\)/.test(map));
+check("reduced motion: a change redraws the core's still meshes", /if \(mesh && reduced && opts\.meshRedraw\) opts\.meshRedraw\(\);/.test(fam) && /meshRedraw: function \(\)/.test(map));
+
 console.log(`\n${passes} passed, ${failures} failed`);
 process.exit(failures ? 1 : 0);

@@ -393,6 +393,7 @@ function ctx(req, dash) {
     dash: dash || null,
     chrome: req.chrome || null,
     voice: !!req.voiceMic, // the dock's mic: voice on, a key, and voice.use (see voiceDockOk)
+    core: req.me ? mintLogic.normCore(req.me.mint_core) : null, // the dock draws the same core (D: mint-core-d.js)
   };
 }
 
@@ -4172,8 +4173,9 @@ app.get("/mint-ai", requireAuth, async (req, res) => {
 });
 
 /**
- * The MINT AI core, per person: A (dotted sphere), B (Siri fluid) or C
- * (hybrid, the default). Saved on the user row (users.mint_core) and written
+ * The MINT AI core, per person: A (dotted sphere), B (Siri fluid), C (hybrid)
+ * or D (mesh, the default since 2026-10-06; lib/db.js migrateCoreDefaultD moved
+ * everyone to it once). Saved on the user row (users.mint_core) and written
  * into the Command Center as data-core, so the page paints the right core from
  * its first frame. Two ways to change it, one rule: the Command Center's quick
  * switch (JSON, below) and Account > Appearance (a form, further down; its page
@@ -4206,7 +4208,7 @@ app.post("/mint-ai/api/prefs/sessions", ...moniAiWrite, (req, res) => {
 
 app.post("/mint-ai/api/prefs/core", ...moniAiWrite, (req, res) => {
   const core = req.body && req.body.core;
-  if (!mintLogic.isCore(core)) return res.status(400).json({ error: "The core must be A, B or C.", code: "invalid" });
+  if (!mintLogic.isCore(core)) return res.status(400).json({ error: "The core must be A, B, C or D.", code: "invalid" });
   setMintCore(req, core);
   res.json({ core, name: mintLogic.CORES[core] });
 });
@@ -5272,7 +5274,7 @@ app.post("/account/appearance", requireAuth, requirePerm("moniai.use"), requireC
   const view = req.body && req.body.sessions_view !== undefined ? String(req.body.sessions_view) : null;
   // The no-JavaScript path of Settings > Appearance: back there with a note.
   const back = "/mint-ai/settings/appearance";
-  if (!mintLogic.isCore(core)) return res.redirect(back + "?err=" + encodeURIComponent("Choose core A, B or C.") + "#a-core");
+  if (!mintLogic.isCore(core)) return res.redirect(back + "?err=" + encodeURIComponent("Choose core A, B, C or D.") + "#a-core");
   if (view !== null && !mintLogic.isSessView(view)) return res.redirect(back + "?err=" + encodeURIComponent("Choose Spheres or Classic orbit.") + "#a-sessions");
   setMintCore(req, core);
   if (view !== null) setSessionsView(req, view);

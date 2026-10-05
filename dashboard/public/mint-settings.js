@@ -2,7 +2,8 @@
 /*
  * Account > Appearance: the MINT AI core, chosen with a live preview of each.
  *
- * Each option draws its core in a small canvas (mint-core.js), cycling through
+ * Each option draws its core in a small canvas (mint-core.js; D, the mesh, is
+ * mint-core-d.js), cycling through
  * the states so the difference shows. Choosing one saves it at once through
  * the Command Center's own route (POST /mint-ai/api/prefs/core, CSRF in a
  * header), no reload; the form still posts without JavaScript. The previews
@@ -26,7 +27,11 @@
   var canvases = form.querySelectorAll("canvas[data-prev-core]");
   for (var i = 0; i < canvases.length; i++) {
     (function (cv, k) {
-      var core = window.MintCore(cv, { concept: cv.getAttribute("data-prev-core"), points: 1500, points2d: 500, autoAmp: true });
+      var k0 = cv.getAttribute("data-prev-core");
+      var core = k0 === "D" && window.MintCoreD
+        ? window.MintCoreD(cv, { autoAmp: true })
+        : window.MintCore(cv, { concept: k0, points: 1500, points2d: 500, autoAmp: true });
+      cv = core.canvas || cv; // a core without its GPU context draws on a fresh copy of the canvas
       var p = { cv: cv, core: core, n: k, on: false };
       p.fit = function () {
         var w = cv.clientWidth || 180, h = cv.clientHeight || 120;

@@ -27,6 +27,7 @@ function check(name, cond, detail) {
 const permOf = (list) => ({ can: (p) => list === "*" || list.includes(p), canDash: () => true });
 // voice: the dock's mic -- voice on, a key and voice.use (server.js ctx(): req.voiceMic)
 const render = (perms, extra, voiceOk) => ui.shell("Test", "<p>body</p>", Object.assign({ user: { name: "demo-admin", perm: permOf(perms), voice: voiceOk !== false }, csrf: "demo-csrf-token", active: "home" }, extra || {}));
+const renderCore = (core) => ui.shell("Test", "<p>body</p>", { user: { name: "demo-admin", perm: permOf("*"), voice: true, core }, csrf: "demo-csrf-token", active: "home" });
 
 console.log("where the dock appears");
 {
@@ -85,7 +86,9 @@ console.log("\npublic/mint-dock.js");
   check("a Tier-2 change is withdrawn here (cancel), never applied", /api\("ui\/confirm", \{ id: ev\.confirm, decision: "cancel" \}\)/.test(code) && !/decision: "confirm"/.test(code));
   check("anything else is refused: it needs the Command Center", /needs the Command Center open/.test(code));
   check("no live call of its own (the Command Center holds it; in the shell the mic is the Command Center's)", !/voice\/live|getUserMedia/.test(code) && /window\.__mintLive/.test(code));
-  check("the core pauses when the tab is hidden, and draws one still frame under reduced motion", /document\.hidden/.test(code) && /prefers-reduced-motion: reduce/.test(code) && /if \(reduced\) \{ t = 2\.4; drawOrb\(\); \}/.test(code));
+  check("the core pauses when the tab is hidden, and draws one still frame under reduced motion", /document\.hidden/.test(code) && /prefers-reduced-motion: reduce/.test(code) && /if \(reduced\) \{ t = 2\.4; drawOrb\(\); if \(meshCore\) meshCore\.start\(\); \}/.test(code));
+  check("core D: the dock root says D and mint-core-d.js loads before mint-dock.js; with C neither", /id="mint-dock-root" data-core="D"/.test(renderCore("D")) && renderCore("D").indexOf("mint-core-d.js") > 0 && renderCore("D").indexOf("mint-core-d.js") < renderCore("D").indexOf("mint-dock.js") && /data-core="dots"/.test(renderCore("C")) && !/mint-core-d\.js/.test(renderCore("C")));
+  check("core D (the default): the dock draws the mesh at dock size (mint-core-d.js, loaded before mint-dock.js), the dotted 2D core otherwise", /root\.getAttribute\("data-core"\) === "D" && window\.MintCoreD/.test(code) && /meshCore\.resize\(34, 34, 21, 68, 68\)/.test(code) && /dockCoreD \? \["mint-core-d\.js"\] : \[\], \["mint-dock\.js"\]/.test(fs.readFileSync(path.join(ROOT, "lib", "ui.js"), "utf8")) && /data-core="\$\{opts\.core === "D" \? "D" : "dots"\}"/.test(fs.readFileSync(path.join(ROOT, "lib", "ui.js"), "utf8")));
   check("no Space to talk (it went with push to talk)", !/"Space"/.test(code));
 }
 
@@ -109,7 +112,7 @@ console.log("\nthe Command Center as a shell (M-5 part 2)");
   const pageDock = ui.dockMarkup("demo-csrf-token", permOf("*"));
   check("  an ordinary page's dock has none of that", !/md-frame|md-hero|md-end|data-shell/.test(pageDock));
   const vsrc = fs.readFileSync(path.join(ROOT, "lib", "views-moniai.js"), "utf8");
-  check("the Command Center page renders the shell's dock and loads mint-dock.css/js and mint-shell.js after moni-ai.js", /dockMarkup\(o\.csrf, perm, \{ shell: true, noVoice: !vOk \}\)/.test(vsrc) && /"moni-ai\.js", "mint-dock\.js", "mint-shell\.js"\]/.test(vsrc) && /"mint-dock\.css"/.test(vsrc));
+  check("the Command Center page renders the shell's dock and loads mint-dock.css/js and mint-shell.js after moni-ai.js", /dockMarkup\(o\.csrf, perm, \{ shell: true, noVoice: !vOk, core \}\)/.test(vsrc) && /"moni-ai\.js", "mint-dock\.js", "mint-shell\.js"\]/.test(vsrc) && /"mint-dock\.css"/.test(vsrc));
   const sh = fs.readFileSync(path.join(ROOT, "public", "mint-shell.js"), "utf8").replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
   check("mint-shell.js: only paths of this site open in the frame (not /mint-ai, /login, /logout, the API, //host)", /x\.origin !== ORIGIN/.test(sh) && /\/\^\\\/\(\?!\\\/\)\//.test(sh) && /logout\|login\|mint-ai\\\/api/.test(sh) && /isCC\(x\.pathname\)/.test(sh));
   check("  messages only from this origin and from the frame's own window; posts only to this origin", /e\.origin !== ORIGIN \|\| e\.source !== frame\.contentWindow/.test(sh) && /postMessage\(\{ mint: "theme", theme: [^}]*\}, ORIGIN\)/.test(sh) && !/postMessage\([^)]*"\*"\)/.test(sh));

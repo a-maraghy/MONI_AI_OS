@@ -21,9 +21,10 @@
 })(typeof self !== "undefined" ? self : this, function () {
   /* ------------------------------------------------------------ the core */
 
-  var CORES = { A: "Dotted sphere", B: "Siri fluid", C: "Hybrid" };
-  var CORE_DEFAULT = "C";
-  /** A saved or requested core, as one of A / B / C; anything else is the default. */
+  // D (Mesh, mint-core-d.js) is the default since 2026-10-06; A/B/C stay one switch away.
+  var CORES = { A: "Dotted sphere", B: "Siri fluid", C: "Hybrid", D: "Mesh" };
+  var CORE_DEFAULT = "D";
+  /** A saved or requested core, as one of A / B / C / D; anything else is the default. */
   function normCore(c) {
     c = String(c == null ? "" : c).trim().toUpperCase();
     return Object.prototype.hasOwnProperty.call(CORES, c) ? c : CORE_DEFAULT;

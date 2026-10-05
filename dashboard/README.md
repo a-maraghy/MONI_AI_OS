@@ -219,13 +219,47 @@ The top bar's MINT AI tab opens it. Someone with `console.use` but not
   running sub-agents are specks circling it; a session that appears condenses
   out of her, one that goes away dissolves back (nothing here retires
   anything). Hover: a card with its task, last message and cost today; click,
-  or Tab to its name and Enter, opens its deep view. Same with cores A, B and
-  C. On a phone the core is smaller so the spheres fit round her. It rides the
+  or Tab to its name and Enter, opens its deep view. Same with cores A, B,
+  C and D. On a phone the core is smaller so the spheres fit round her. It rides the
   core's own frame (about 1 ms of JS a frame for 7 spheres, 60 fps); under
   reduced motion it is placed once and drawn still. **Account › Appearance ›
   Sessions view** picks Spheres (new, the default) or Classic orbit, stored
   per user (`users.sessions_view`, `POST /mint-ai/api/prefs/sessions`,
   audited like the core) and rendered as `data-sessview` on `#cc`.
+
+- **Core D, "Mesh" -- the default core since 2026-10-06** (`public/mint-core-d.js`,
+  approved mockup `mockups/ai-core-v4/`): a sphere made of dots -- a fine
+  lat/long grid drawn as rows of dots with brighter crossings -- whose surface
+  folds like a liquid, cyan -> blue -> violet -> magenta across the screen,
+  with a glow hugging the silhouette (magenta lower right, blue upper left) and
+  a halo of fine dots. States live in the mesh: idle drifts and breathes;
+  listening sends ripples in toward the front with the voice level; thinking
+  deepens and twists the folds and turns the gradient; speaking swells a ring
+  out from the front per syllable; delegating peels a stream of dots off the
+  side facing the session and flows it to that session's sphere (or the edge
+  marker); needs-you warms the rim to amber with a double pulse. WebGL2, with a
+  2D wireframe if WebGL2 is missing; DPR <= 2; stops while hidden; one still
+  frame per change under reduced motion; frames slower than ~45 fps for 2 s
+  drop to 0.7x resolution once. The canvas stays transparent away from the
+  core (`backdrop: "glow"`), so the page keeps its own background; the shared
+  CSS halo is hidden for D (it paints its own glow). A, B and C are unchanged
+  and one switch away (Settings > Appearance, the voice menu, `core.set`):
+  crossing between D and A/B/C stops the running core, releases its GPU
+  context and starts the other on a fresh copy of the canvas (a canvas that
+  gave out WebGL1 can never give WebGL2). With D the **session spheres are
+  small mesh replicas** drawn by the core on its own canvas in one batch
+  (cc-family.js `setMesh` / `meshKids`): the session's tint woven into the
+  gradient, faster folds and a brighter rim while working, dimmer when idle,
+  an amber rim pulse when it needs you, born out of MINT AI and dissolved back
+  into her as mesh dots, brightening as a delegation lands; names, badges,
+  rings, sub-agents, hover, click and drift are the family's, unchanged. The
+  dock on other pages draws the mesh at dock size (`data-core="D"` on
+  `#mint-dock-root`, `mint-core-d.js` loaded before `mint-dock.js`). **Default
+  and migration:** `users.mint_core` '' reads as D (`cc-logic.js`
+  `CORE_DEFAULT`); `lib/db.js migrateCoreDefaultD` moved every existing account
+  to D once at start, one audit line each ("MINT AI core X -> D (Mesh) (new
+  default, migration)"), recorded in `settings` as `migration.mint_core_d` so
+  it never runs again -- a later switch back to A/B/C sticks.
 
 Everything is built in `public/moni-ai.js` from the API; the frame is
 `lib/views-moniai.js`, the styles `public/moni-ai.css`. No inline script or
@@ -922,7 +956,7 @@ front end here as well."* The live voice has a third tool,
 the server and loaded by the page, so both refuse the same things):
 `call.end`, `call.mute` (mute only -- **unmute is by hand**), `call.interrupt`,
 `voice.mode` (ptt / handsfree / live), `sheet.open` (the dock's sheets and
-Everything), `sheet.close`, `view` (map / missions), `core.set` (A/B/C),
+Everything), `sheet.close`, `view` (map / missions), `core.set` (A/B/C/D),
 `reply.show`, `reply.read`, `decision.show` (shows the card; **Approve stays a
 human click**), `settings.open` (a fixed list -- voice, account, voice-eval --
 offered as a link in the toast, never navigated to by itself). Nothing else has

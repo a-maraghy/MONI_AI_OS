@@ -34,7 +34,7 @@ check("nothing named like an approval at all", !UA.names().some((n) => /approv|d
 check("the sheets are the dock's own (cc-logic) plus everything", Object.keys(UA.SHEETS).sort().join() === ML.sheetKeys().concat(["everything"]).sort().join());
 check("sheet.open takes a known sheet only", UA.validate("sheet.open", { key: "missions" }).ok && !UA.validate("sheet.open", { key: "credentials" }).ok && !UA.validate("sheet.open", {}).ok);
 check("the mic can be muted, never unmuted", UA.validate("call.mute", {}).ok && UA.validate("call.mute", { on: true }).ok && !UA.validate("call.mute", { on: false }).ok && /never unmuted/.test(UA.validate("call.mute", { on: false }).why));
-check("core.set: A, B or C", UA.validate("core.set", { core: "B" }).ok && !UA.validate("core.set", { core: "D" }).ok);
+check("core.set: A, B, C or D", UA.validate("core.set", { core: "B" }).ok && UA.validate("core.set", { core: "D" }).ok && !UA.validate("core.set", { core: "E" }).ok);
 check("page.open's built-in map: no page with a side effect or a credentials form (keys/totp/rules sub-paths)", Object.values(UA.BUILTIN_PAGES).every((p) => !/\/(new|delete|clear|totp|rules|code)\b|\/keys\/|\/users\/|\/roles\//.test(p.url)));
 check("an action without arguments refuses stray ones", UA.validate("sheet.close", {}).ok && !UA.validate("sheet.close", { key: "x" }).ok);
 check("the toast says what Mint did", UA.toast("sheet.open", { key: "missions" }) === "Mint opened Missions" && UA.toast("call.end") === "Mint ended the call" && /approving it is yours/.test(UA.toast("decision.show")));

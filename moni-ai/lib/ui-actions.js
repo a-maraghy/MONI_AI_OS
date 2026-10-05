@@ -46,7 +46,7 @@
     "machine = the machine / server (الماشين، السيرفر)",
     "everything (كل حاجة)",
   ].join("; ");
-  var CORES = { A: "A", B: "B", C: "C" };
+  var CORES = { A: "A", B: "B", C: "C", D: "D" };
   // Tier 2 (UI control Phase 3): preferences, applied only after a confirm the server checks.
   var THEMES = { system: "the system theme", dark: "the dark theme", light: "the light theme" };
   // lib/voice-persona.js PRESETS plus "learned" (tested to match).

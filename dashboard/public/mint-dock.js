@@ -225,8 +225,15 @@
     return { openPage: openPage };
   }
 
-  /* ---------------------------------------------------------- the small core (concept C, 2D) */
-  var cv = $("md-orb-c"), g = cv.getContext("2d"), PI = Math.PI;
+  /* ---------------------------------------------------------- the small core (concept C, 2D; or the mesh, D) */
+  // Core D (data-core="D", the default): the mesh itself at dock size (mint-core-d.js, WebGL2, its own
+  // loop -- started and stopped with this one). Anything else, or no WebGL2: the dotted 2D core below.
+  var cv = $("md-orb-c"), PI = Math.PI, meshCore = null;
+  if (root.getAttribute("data-core") === "D" && window.MintCoreD) {
+    meshCore = window.MintCoreD(cv, { noGuard: true, backdrop: "none" });
+    if (!meshCore.isGL) { meshCore.destroy(); meshCore = null; cv = $("md-orb-c"); } else cv = meshCore.canvas || cv;
+  }
+  var g = meshCore ? null : cv.getContext("2d");
   function points(n, s) {
     var dir = new Float32Array(n * 3), rnd = new Float32Array(n), ga = PI * (3 - Math.sqrt(5)), sd = s;
     function r_() { sd = (sd * 16807) % 2147483647; return sd / 2147483647; }
@@ -237,7 +244,7 @@
     return { dir: dir, rnd: rnd, n: n };
   }
   var P = points(420, 7), DPR = Math.min(2, window.devicePixelRatio || 1), t = 0, last = 0, W = { rip: 0, gal: 0, need: 0 }, rot = 0;
-  cv.width = 68 * DPR; cv.height = 68 * DPR;
+  if (meshCore) meshCore.resize(34, 34, 21, 68, 68); else { cv.width = 68 * DPR; cv.height = 68 * DPR; }
   function isLight() {
     var th = document.documentElement.getAttribute("data-theme");
     if (th) return th === "light";
@@ -246,6 +253,7 @@
   function mix3(a, b, k) { return [a[0] + (b[0] - a[0]) * k, a[1] + (b[1] - a[1]) * k, a[2] + (b[2] - a[2]) * k]; }
   function col(c) { return "rgb(" + (c[0] | 0) + "," + (c[1] | 0) + "," + (c[2] | 0) + ")"; }
   function drawOrb() {
+    if (meshCore) { meshCore.setLight(isLight()); meshCore.setState(stateNow()); return; }
     var light = isLight(), M = light ? [0, 143, 102] : [0, 230, 165], V = light ? [115, 33, 196] : [153, 77, 255], A = light ? [204, 115, 0] : [250, 189, 77];
     g.setTransform(DPR, 0, 0, DPR, 0, 0);
     g.clearRect(0, 0, 68, 68);
@@ -275,11 +283,12 @@
     rot += dt * (0.13 + 0.25 * W.gal);
     drawOrb();
     if (!document.hidden && !(SHELL && dock.classList.contains("off"))) raf = requestAnimationFrame(frame);
-    else raf = 0;
+    else { raf = 0; if (meshCore) meshCore.stop(); }
   }
   var raf = 0;
-  if (reduced) { t = 2.4; drawOrb(); } else if (!(SHELL && dock.classList.contains("off"))) raf = requestAnimationFrame(frame);
-  document.addEventListener("visibilitychange", function () { if (!document.hidden && !raf && !reduced && !(SHELL && dock.classList.contains("off"))) { last = 0; raf = requestAnimationFrame(frame); } });
+  function kick() { last = 0; raf = requestAnimationFrame(frame); if (meshCore) meshCore.start(); }
+  if (reduced) { t = 2.4; drawOrb(); if (meshCore) meshCore.start(); } else if (!(SHELL && dock.classList.contains("off"))) kick();
+  document.addEventListener("visibilitychange", function () { if (!document.hidden && !raf && !reduced && !(SHELL && dock.classList.contains("off"))) kick(); });
   document.addEventListener("moni-theme", function () { if (reduced) drawOrb(); });
 
   /* ---------------------------------------------------------- the live call's line (shell only) */
@@ -348,7 +357,7 @@
     api_.show = function (on) {
       dock.classList.toggle("off", !on);
       if (!on) { $("md-bubble").classList.remove("on"); $("md-toast").classList.remove("on"); }
-      if (on && !raf && !reduced) { last = 0; raf = requestAnimationFrame(frame); }
+      if (on && !raf && !reduced) kick();
       if (on && reduced) drawOrb();
     };
     /**

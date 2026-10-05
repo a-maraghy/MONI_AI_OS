@@ -2,8 +2,8 @@
 /**
  * The MINT AI Command Center, simplified (Mint, 2026-09-29).
  *
- * One quiet screen: the MINT AI core in the middle (a WebGL canvas, three
- * concepts -- A dotted sphere, B Siri fluid, C hybrid -- chosen per person in
+ * One quiet screen: the MINT AI core in the middle (a WebGL canvas, four
+ * concepts -- A dotted sphere, B Siri fluid, C hybrid, D mesh (the default) -- chosen per person in
  * Settings and switchable any time), the live sessions as points on a faint
  * orbit round it, a one-line caption under it saying what is happening, and
  * one pill composer with voice. Everything else is one tap away: the faint
@@ -147,7 +147,7 @@ function dock() {
   );
 }
 
-/** The core choice as three buttons (the voice menu and the Everything sheet use the same markup). */
+/** The core choice as four buttons (the voice menu and the Everything sheet use the same markup). */
 function coreSwitch(core, cls) {
   return `<div class="cc-core-seg${cls ? " " + cls : ""}" role="radiogroup" aria-label="MINT AI core">${Object.keys(logic.CORES)
     .map((k) => `<button type="button" role="radio" data-core-set="${k}" aria-checked="${k === core}"><b>${k}</b><span>${esc(logic.CORES[k])}</span></button>`)
@@ -354,7 +354,7 @@ function page(o) {
   )}
 </aside>
 <div id="cc-overlay"></div>
-${perm ? dockMarkup(o.csrf, perm, { shell: true, noVoice: !vOk }) : ""}
+${perm ? dockMarkup(o.csrf, perm, { shell: true, noVoice: !vOk, core }) : ""}
 <noscript><div class="cc-noscript">The Command Center needs JavaScript.</div></noscript>`;
 
   return shell("MINT AI", body, {
@@ -365,7 +365,7 @@ ${perm ? dockMarkup(o.csrf, perm, { shell: true, noVoice: !vOk }) : ""}
     brand: "ai",
     heading: null,
     pageClass: "cc-page",
-    assets: ["voice-live.css", "mint-dock.css", "console.js", "cc-logic.js", "mint-core.js", "cc-family.js", "cc-map.js", "cc-panels.js", "voice-live-detect.js", "voice-live.js", "ui-actions.js", "moni-ai.js", "mint-dock.js", "mint-shell.js"],
+    assets: ["voice-live.css", "mint-dock.css", "console.js", "cc-logic.js", "mint-core.js", "mint-core-d.js", "cc-family.js", "cc-map.js", "cc-panels.js", "voice-live-detect.js", "voice-live.js", "ui-actions.js", "moni-ai.js", "mint-dock.js", "mint-shell.js"],
     topExtra: topExtra(),
     topEnd: TOP_CLOCK,
   });
@@ -401,7 +401,8 @@ function appearance(o) {
   const desc = {
     A: "A sphere of dots that ripples when you talk, knots while it thinks and gathers into rings when it needs you.",
     B: "A glassy fluid orb that melts into voice waves when it listens and speaks.",
-    C: "The dotted sphere with the brand spark at its heart. The default.",
+    C: "The dotted sphere with the brand spark at its heart.",
+    D: "A folding sphere of dots, cyan to magenta, with a glowing rim and a halo of dots. The default.",
   };
   const opts = Object.keys(logic.CORES)
     .map(
@@ -426,7 +427,7 @@ function appearance(o) {
       </form>`,
       { icon: "eye", id: "appearance" }
     ),
-    assets: ["mint-settings.css", "mint-core.js", "mint-settings.js"],
+    assets: ["mint-settings.css", "mint-core.js", "mint-core-d.js", "mint-settings.js"],
   };
 }
 

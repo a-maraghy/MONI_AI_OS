@@ -124,7 +124,8 @@ sections.appearance = async (req, res) => {
   const desc = {
     A: "A sphere of dots that ripples when you talk, knots while it thinks and gathers into rings when it needs you.",
     B: "A glassy fluid orb that melts into voice waves when it listens and speaks.",
-    C: "The dotted sphere with the brand spark at its heart. The default.",
+    C: "The dotted sphere with the brand spark at its heart.",
+    D: "A folding sphere of dots, cyan to magenta, with a glowing rim and a halo of dots. The default.",
   };
   const cores = Object.keys(L.CORES)
     .map(
@@ -160,7 +161,7 @@ sections.appearance = async (req, res) => {
         `<div class="lr set-note"><span class="muted small" id="mint-appearance-note" role="status"></span><noscript><button class="btn small primary" type="submit">Save</button></noscript></div>`
     ) +
     `</form>`;
-  return { body, assets: ["mint-settings.css", "mint-core.js", "mint-settings.js"] };
+  return { body, assets: ["mint-settings.css", "mint-core.js", "mint-core-d.js", "mint-settings.js"] };
 };
 
 function themeButtons() {

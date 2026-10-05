@@ -125,6 +125,8 @@ html.cc-page .cc-sheet code, html.cc-page #cc-overlay code { background: none; b
 .cc-halo { position: fixed; left: 50%; top: 50%; width: 10px; height: 10px; border-radius: 50%; pointer-events: none; z-index: 1; transform: translate(-50%, -50%);
   background: radial-gradient(closest-side, var(--cc-halo-a), var(--cc-halo-b) 55%, transparent 100%); filter: blur(8px); opacity: .8; transition: opacity .8s; }
 .cc-shell:not([data-state="idle"]) .cc-halo { opacity: 1; }
+/* Core D (mesh) paints its own glow round the core: the shared halo would wash it out. */
+.cc-shell[data-core="D"] .cc-halo, .cc-shell[data-core="D"]:not([data-state="idle"]) .cc-halo { opacity: 0; }
 .cc-core { position: fixed; inset: 0; width: 100vw; height: 100vh; z-index: 1; pointer-events: none; display: block; }
 .cc-spark { position: fixed; left: 50%; top: 50%; width: 40px; height: 40px; z-index: 2; pointer-events: none; transform: translate(-50%, -50%); opacity: 0; transition: opacity .6s; }
 .cc-spark svg { width: 100%; height: 100%; overflow: visible; filter: drop-shadow(0 0 6px rgba(0, 165, 122, .35)); }
@@ -290,7 +292,7 @@ html.cc-page .cc-composer input:focus-visible { outline: none; }
 .cc-pop .line { display: flex; align-items: center; gap: 10px; padding: 6px 10px; font-size: 12.5px; color: var(--muted); }
 .cc-pop .line a { margin-left: auto; color: var(--accent); font-weight: 600; }
 .cc-pop .line small { margin-left: auto; color: var(--dim); }
-.cc-core-seg { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; padding: 2px 6px 6px; }
+.cc-core-seg { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; padding: 2px 6px 6px; }
 .cc-core-seg button { display: flex; flex-direction: column; align-items: center; gap: 1px; padding: 7px 4px; border-radius: 10px; border: 1px solid var(--cc-glass-line); background: transparent; color: var(--muted); font-size: 11px; }
 .cc-core-seg button b { font: 700 13px var(--brand-font); color: var(--ink); }
 .cc-core-seg button:hover { border-color: var(--cc-glass-line-2); color: var(--ink); }
