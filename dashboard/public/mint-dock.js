@@ -321,6 +321,8 @@
   }
 
   var api_ = { tab: TAB_ID, state: stateNow, toast: toast };
+  /** The dock's mesh core (core D), for the shell's flight to hand over to and take from; null otherwise. */
+  api_.mesh = function () { return meshCore; };
   if (!SHELL) {
     var drv = pageDriver();
     api_.openPage = function (k) { var np = UA && UA.navPage(k); if (np) drv.openPage(k, np, 0); };

@@ -103,6 +103,8 @@
 .md-hero { position: fixed; left: 0; top: 0; width: 100vw; height: 100vh; pointer-events: none; z-index: 1001; display: none; }
 .md-hero.on { display: block; }
 html.md-flying #cc-core, html.md-flying #cc-spark, html.md-flying #cc-halo { visibility: hidden; }
+/* Core D: the mesh itself flies (mint-shell.js); the dock's small mesh hides until it lands there. */
+html.md-fly-mesh #md-orb-c { visibility: hidden; }
 
 @media (max-width: 600px) {
   .md-dock { right: 12px; bottom: calc(12px + env(safe-area-inset-bottom)); height: 60px; gap: 6px; padding: 5px; }

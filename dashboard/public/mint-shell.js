@@ -26,6 +26,16 @@
  *
  * Nothing here changes how the Command Center looks while it is the one shown:
  * every class and inline style set for a flight is removed when it lands.
+ *
+ * With core D (the mesh) the core in flight is the mesh itself: a core D on a
+ * canvas of its own (made for the flight, its GPU context released when it
+ * lands) that adopts the running core's state and every phase at take-off and
+ * hands them on at landing -- to the dock's mesh going down, to the Command
+ * Center's core coming back up -- so neither end shows a swap. It is driven
+ * by this file's frame (place / tick), and carries the session spheres (fading
+ * with the Command Center) so they do not blink out. The Command Center's core
+ * stops for the flight (one WebGL context draws at a time, besides the dock's
+ * small one). A, B and C keep the dotted 2D flight below.
  */
 (function () {
   var root = document.getElementById("mint-dock-root");
@@ -136,6 +146,37 @@
     };
   }
 
+  /* ------------------------------------------------------------ the mesh in flight (core D) */
+  var heroD = null, heroCv = null, kidsA = 1;
+  function famNow() { var c = CCx(); return c && c.orbit && c.orbit.family; }
+  function coreIsD() { var c = CCx(); return !!(window.MintCoreD && c && c.core && c.core.S && c.core.S.concept === "D" && c.core.isGL); }
+  /** A core D for this flight, carrying on from `src` (the Command Center's core, or the dock's). */
+  function meshUp(src) {
+    heroCv = document.createElement("canvas");
+    heroCv.className = "md-hero md-hero-d on";
+    heroCv.setAttribute("aria-hidden", "true");
+    hero.parentNode.insertBefore(heroCv, hero.nextSibling);
+    heroD = window.MintCoreD(heroCv, {
+      noGuard: true,
+      backdrop: "glow",
+      // the session spheres ride along, fading with the Command Center
+      kids: function () { var f = famNow(), k = f && f.enabled() && f.meshKids ? f.meshKids() : null; if (!k) return null; return k.map(function (x) { x.alpha *= kidsA; return x; }); },
+      beforeDraw: function () { var f = famNow(); if (f && f.enabled()) f.frame(); },
+    });
+    if (!heroD.isGL) { meshDown(); return false; }
+    heroD.resize(innerWidth / 2, innerHeight / 2, 100, innerWidth, innerHeight);
+    heroD.adopt(src);
+    heroD.setLight(isLight(), true);
+    return true;
+  }
+  /** Hand the state on (to the core that takes over) and free the flight's canvas and context. */
+  function meshDown(dst) {
+    if (heroD && dst && dst.adopt) dst.adopt(heroD);
+    if (heroD) heroD.destroy();
+    if (heroCv && heroCv.parentNode) heroCv.parentNode.removeChild(heroCv);
+    heroD = heroCv = null;
+  }
+
   /* ------------------------------------------------------------ the flights */
   function setOp(el, o) { if (el) el.style.opacity = o === "" ? "" : String(o); }
   function step(now) {
@@ -154,33 +195,57 @@
       setOp(dockEl, 1 - clamp(p / 0.25, 0, 1));
       if (p > 0.35 && !frame.hidden) frame.hidden = true;
       setOp(cc, clamp((p - 0.55) / 0.4, 0, 1));
-      if (p > 0.9 && html.classList.contains("md-flying")) html.classList.remove("md-flying"); // the real core takes over
+      if (p > 0.9 && !heroD && html.classList.contains("md-flying")) html.classList.remove("md-flying"); // the real core takes over (the mesh hands over at landing)
     }
-    g.setTransform(DPR, 0, 0, DPR, 0, 0);
-    g.clearRect(0, 0, VW, VH);
-    var q = pose(), fade = fl.dir === "up" ? 1 - clamp((p - 0.9) / 0.1, 0, 1) : 1;
-    drawCore(q.R > 90 ? PBIG : q.R > 40 ? PMID : PSMALL, q.cx, q.cy, q.R, q.R > 90 ? 1.5 : 1.15, fade);
+    var q = pose();
+    if (heroD) {
+      // the mesh itself flies: the same look all the way, scaled along the path; no fade at either end
+      kidsA = fl.dir === "down" ? 1 - clamp(p / 0.38, 0, 1) : clamp((p - 0.55) / 0.4, 0, 1);
+      heroD.place(q.cx, q.cy, q.R);
+      heroD.tick(dt);
+    } else {
+      g.setTransform(DPR, 0, 0, DPR, 0, 0);
+      g.clearRect(0, 0, VW, VH);
+      var fade = fl.dir === "up" ? 1 - clamp((p - 0.9) / 0.1, 0, 1) : 1;
+      drawCore(q.R > 90 ? PBIG : q.R > 40 ? PMID : PSMALL, q.cx, q.cy, q.R, q.R > 90 ? 1.5 : 1.15, fade);
+    }
     if (p >= 1) return land();
     raf = requestAnimationFrame(step);
   }
   function fly(dir) {
     heroSize();
     fl = { dir: dir, p: 0, dur: dir === "down" ? 1.05 : 1.0 };
+    var dm = D().mesh ? D().mesh() : null, mesh = false;
+    if (coreIsD()) {
+      var c = CCx();
+      mesh = meshUp(dir === "down" ? c.core : dm || c.core);
+      if (mesh) coreStop(); // the flight's mesh draws; the Command Center's core waits for its hand-over
+    }
     if (dir === "down") { fl.from = coreLayout(); fl.to = D().orbRect(); }
-    else { fl.from = D().orbRect(); coreStart(); fl.to = coreLayout(); }
+    else { fl.from = D().orbRect(); if (!mesh) coreStart(); else { var c2 = CCx(); if (c2 && c2.orbit && c2.orbit.resize) c2.orbit.resize(); } fl.to = coreLayout(); }
+    // the dock's mesh is drawn at R 21 in its 68 px canvas: land on (and leave from) exactly that size
+    if (mesh && dm) { if (dir === "down") fl.to.R = 21; else fl.from.R = 21; }
     html.classList.add("md-flying");
-    hero.classList.add("on");
+    html.classList.toggle("md-fly-mesh", mesh); // the dock's own small mesh hides while the flying one is on its way
+    if (!mesh) hero.classList.add("on");
     last = 0;
     if (!raf) raf = requestAnimationFrame(step);
   }
   function land() {
     var dir = fl ? fl.dir : mode === "down" ? "down" : "up";
+    var wasMesh = !!heroD;
     fl = null;
     raf = 0;
+    if (wasMesh) {
+      // hand the mesh on: down to the dock's mesh, up to the Command Center's core (then start it)
+      if (dir === "down") meshDown(D().mesh ? D().mesh() : null);
+      else { var c = CCx(); meshDown(c && c.core); }
+    }
     hero.classList.remove("on");
     g.setTransform(1, 0, 0, 1, 0, 0);
     g.clearRect(0, 0, hero.width, hero.height);
     html.classList.remove("md-flying");
+    html.classList.remove("md-fly-mesh");
     setOp(cc, ""); setOp(frame, ""); setOp(dockEl, "");
     if (dir === "down") {
       mode = "dock";
@@ -191,6 +256,7 @@
       if (!root.contains(document.activeElement)) { try { frame.focus(); } catch (e) { /* fine */ } }
     } else {
       mode = "full";
+      if (wasMesh) coreStart(); // the Command Center's core, carrying on from the mesh that flew
       frame.hidden = true;
       D().show(false);
       document.title = baseTitle;

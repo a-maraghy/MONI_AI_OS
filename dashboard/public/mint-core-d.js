@@ -626,6 +626,28 @@
       resize: resize, start: start, stop: function () { stop(false); }, still: stillFrame, stats: stats, draw: draw,
       resetStats: function () { S.frames = []; },
       setGuard: function (on) { opts.noGuard = !on; },
+      /**
+       * Driven from outside (mint-shell.js's flight between the Command Center and the dock): move
+       * without drawing (place), then advance and draw one frame (tick) -- no loop of its own.
+       */
+      place: function (cx, cy, R) {
+        lastSize = [cx, cy, R, S.cssW, S.cssH];
+        S.c = [cx * S.dpr, (S.cssH - cy) * S.dpr]; S.R = R * S.dpr;
+      },
+      tick: function (dt) {
+        if (!gl && !ctx) return;
+        step(Math.max(0, Math.min(0.05, dt || 0.016)));
+        if (opts.beforeDraw) opts.beforeDraw(S, W);
+        draw();
+      },
+      /** Carry on exactly where another core D left off: state, weights, voice level and every phase. */
+      adopt: function (o) {
+        if (!o || !o.S || o.S.concept !== "D") return;
+        var a = o.S;
+        ["t", "flow", "rot", "ripple", "grad", "twPh", "bead", "amp", "ampSlow", "arrive", "lastRing", "light", "lightT"].forEach(function (k) { if (typeof a[k] === "number") S[k] = a[k]; });
+        S.rings = a.rings.slice(); S.ringAmp = a.ringAmp.slice(); S.state = a.state;
+        KEYS.forEach(function (k) { if (typeof o.W[k] === "number") W[k] = o.W[k]; });
+      },
       /** Only one core lives here; the other concepts are mint-core.js (cc-map.js swaps the canvas). */
       setConcept: function () {},
       /** Stop and give the GPU context back (cc-map.js calls it before swapping to A/B/C). */
