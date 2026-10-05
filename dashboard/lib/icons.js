@@ -74,6 +74,9 @@ const PATHS = {
   webhook:
     '<circle cx="12" cy="7" r="3"/><circle cx="6" cy="17" r="3"/><circle cx="18" cy="17" r="3"/><path d="M10.5 9.6 7.6 14.4"/><path d="M13.5 9.6l2.9 4.8"/><path d="M9 17h6"/>',
   cpu: '<rect x="7" y="7" width="10" height="10" rx="2"/><path d="M10 3v4M14 3v4M10 17v4M14 17v4M3 10h4M3 14h4M17 10h4M17 14h4"/>',
+  // A passkey: Windows Hello's fingerprint.
+  fingerprint:
+    '<path d="M7.5 4.6A8 8 0 0 1 20 11.5v1"/><path d="M4.4 8.2A8 8 0 0 0 4 11.5V14"/><path d="M8 19.5a12 12 0 0 0 1-6V11.5a3 3 0 0 1 6 0v2a16 16 0 0 1-.8 5"/><path d="M12 11.5v2.5a20 20 0 0 1-1.6 7"/><path d="M17.8 15.5a22 22 0 0 1-.9 4.5"/>',
   shield: '<path d="M12 3l8 3v6c0 4.5-3.2 8-8 9-4.8-1-8-4.5-8-9V6Z"/><path d="M9 12l2 2 4-4"/>',
   users:
     '<circle cx="9" cy="8" r="3.4"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16.5 5.2a3.4 3.4 0 0 1 0 5.6"/><path d="M17.5 14.2A6.5 6.5 0 0 1 21.5 20"/>',

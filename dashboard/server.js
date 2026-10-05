@@ -41,6 +41,8 @@ const claudeViews = require("./lib/views-claude");
 const moniai = require("./lib/moniai");
 const rbac = require("./lib/rbac");
 const totp = require("./lib/totp");
+// Passkeys (Windows Hello) as the sign-in's second step; the authenticator stays as the fallback.
+const passkeys = require("./lib/passkeys");
 const voice = require("./lib/voice");
 const voiceShared = require("./lib/voice-shared"); // the guard, the supervisor door, the summaries (was voice-desk.js)
 const voiceUsage = require("./lib/voice-usage");
@@ -449,6 +451,17 @@ const loginLimiter = rateLimit({
   message: "Too many login attempts. Try again later.",
 });
 
+// The passkey half of the second step: the options call and the answer are two
+// requests per sign-in, so they get their own, roomier budget. A passkey cannot
+// be guessed; this is about load, and the per-attempt cap below is the guard.
+const passkeyLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 40,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many attempts. Try again later." },
+});
+
 const pairLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   limit: 20,
@@ -581,10 +594,13 @@ app.post("/setup/confirm", requireCsrf, async (req, res) => {
 app.get("/login", (req, res) => {
   if (noUsersYet()) return res.redirect("/setup");
   if (req.me) return res.redirect(rbac.landing(req.perm));
+  // A half-finished sign-in is abandoned by coming back here.
+  if (req.session) delete req.session.pendingLogin;
   res.send(
     views.login({
       csrf: res.locals.csrf,
-      error: req.query.revoked ? "Your access has been changed. Sign in again." : null,
+      error: req.query.revoked ? "Your access has been changed. Sign in again." : req.query.again ? "Invalid credentials." : null,
+      passkeys: !!passkeys.rpFor(req),
     })
   );
 });
@@ -602,8 +618,32 @@ app.post("/login", loginLimiter, requireCsrf, async (req, res) => {
       .send(views.login({ csrf: res.locals.csrf, error: "Invalid credentials." }));
   };
 
-  if (!username || !password || !token) return reject("missing field");
+  // `second=passkey` (set by public/passkey.js when the page offers it): no code
+  // now, the second step comes next. Without it a missing code is a missing
+  // field, exactly as before passkeys existed.
+  const viaPasskey = !String(token || "").trim() && req.body.second === "passkey" && !!passkeys.rpFor(req);
+  if (!username || !password || (!token && !viaPasskey)) return reject("missing field");
   const account = db.getUserByName(String(username));
+
+  /**
+   * The passkey step is reached whatever happened to the password.
+   *
+   * Asking for the code on the same form meant a wrong password and a wrong
+   * code got the same answer, so a password could not be tested on its own.
+   * A second step must not give that up: the next page looks the same for a
+   * right password, a wrong one and an unknown user, and the passkey prompt it
+   * starts names no credentials (a discoverable-credential request), so
+   * nothing on it says which case this is. Only the end of the step tells,
+   * and it tells "Invalid credentials" for all of them.
+   */
+  const toSecondStep = (userId, pwOk, reason) => {
+    if (!pwOk) {
+      db.logLogin(ip, username || "", "fail", reason);
+      logAuthFailure(ip, reason);
+    }
+    req.session.pendingLogin = { userId: pwOk ? userId : null, username: String(username).slice(0, 64), at: Date.now(), fails: 0 };
+    return res.redirect("/login/verify");
+  };
 
   // Verify a throwaway hash for an unknown username so a missing account and a
   // wrong password take the same time. Argon2 is slow enough that skipping it
@@ -611,9 +651,9 @@ app.post("/login", loginLimiter, requireCsrf, async (req, res) => {
   if (!account) {
     const decoy = await decoyHash;
     if (decoy) await argon2.verify(decoy, String(password)).catch(() => false);
-    return reject("unknown user");
+    return viaPasskey ? toSecondStep(null, false, "unknown user") : reject("unknown user");
   }
-  if (account.disabled) return reject("account disabled");
+  if (account.disabled) return viaPasskey ? toSecondStep(null, false, "account disabled") : reject("account disabled");
 
   let passwordOk = false;
   try {
@@ -621,7 +661,8 @@ app.post("/login", loginLimiter, requireCsrf, async (req, res) => {
   } catch (_) {
     passwordOk = false;
   }
-  if (!passwordOk) return reject("bad password");
+  if (!passwordOk) return viaPasskey ? toSecondStep(null, false, "bad password") : reject("bad password");
+  if (viaPasskey) return toSecondStep(account.id, true, null);
 
   // Checked and spent in one step. A code stayed usable for its whole
    // ninety-second life before, so one seen over a shoulder -- or in a screen
@@ -633,25 +674,143 @@ app.post("/login", loginLimiter, requireCsrf, async (req, res) => {
   // First successful sign-in also completes enrolment: producing a valid code
   // is the proof that the authenticator was set up correctly.
   if (!account.totp_confirmed) db.confirmUserTotp(account.id);
+  completeLogin(req, res, account, null, (err, to) =>
+    err ? res.status(500).send(views.error("Session error", String(err))) : res.redirect(to)
+  );
+});
+
+/**
+ * Both factors are in: make this browser signed in. `done(err, landing)`.
+ * `how` is the audit detail (null for the code, as it always was).
+ */
+function completeLogin(req, res, account, how, done) {
+  const ip = req.ip;
   db.touchUserLogin(account.id);
 
   // Regenerate the session on privilege change to prevent fixation.
   const csrf = req.session.csrf;
   req.session.regenerate((err) => {
-    if (err) return res.status(500).send(views.error("Session error", String(err)));
+    if (err) return done(err);
     req.session.authed = true;
     req.session.userId = account.id;
     req.session.username = account.username;
     req.session.csrf = csrf;
+    // When both factors were last shown: adding a passkey soon after needs no code again.
+    req.session.authAt = Date.now();
     // What Devices shows for this browser. The user agent is capped: it is
     // the client's own text, stored until the session ends.
     req.session.device = { ua: String(req.get("user-agent") || "").slice(0, 300), ip, at: Date.now() };
     req.session.seenAt = Date.now();
     deviceSessions.forget(account.id);
-    db.logLogin(ip, account.username, "success", null);
+    db.logLogin(ip, account.username, "success", how);
     const actor = rbac.actor(account.role);
-    res.redirect(rbac.landing(actor));
+    done(null, rbac.landing(actor));
   });
+}
+
+/* --- the second step: a passkey, or the authenticator code ------------- */
+
+// A half-finished sign-in lasts this long, and survives this many failed tries.
+const PENDING_LOGIN_MS = 5 * 60 * 1000;
+const PENDING_LOGIN_TRIES = 5;
+
+/** The pending sign-in of this browser, or null (expired or none). */
+function pendingLogin(req) {
+  const p = req.session && req.session.pendingLogin;
+  if (!p || !(Date.now() - p.at < PENDING_LOGIN_MS) || p.fails >= PENDING_LOGIN_TRIES) {
+    if (req.session) delete req.session.pendingLogin;
+    return null;
+  }
+  return p;
+}
+
+/** The account a pending sign-in may finish as: password right, still enabled. */
+function pendingAccount(p) {
+  if (!p || !p.userId) return null;
+  const a = db.getUser(p.userId);
+  return a && !a.disabled ? a : null;
+}
+
+/** One failed second step: logged, counted, and the sign-in dropped at the cap. */
+function secondStepFailed(req, p, reason) {
+  p.fails = (p.fails || 0) + 1;
+  // A wrong password was logged at the first step; the step itself is logged
+  // only for a sign-in that could have succeeded, so one attempt is one line.
+  if (p.userId) {
+    db.logLogin(req.ip, p.username, "fail", reason);
+    logAuthFailure(req.ip, reason);
+  }
+  if (p.fails >= PENDING_LOGIN_TRIES) delete req.session.pendingLogin;
+}
+
+app.get("/login/verify", (req, res) => {
+  if (req.me) return res.redirect(rbac.landing(req.perm));
+  const p = pendingLogin(req);
+  if (!p) return res.redirect("/login");
+  const rp = passkeys.rpFor(req);
+  res.send(
+    views.loginVerify({
+      csrf: res.locals.csrf,
+      username: p.username,
+      passkeys: !!rp,
+      primary: passkeys.primaryOrigin(),
+      error: req.query.err ? "That did not work. Try again, or use your authenticator code." : null,
+    })
+  );
+});
+
+/** Options for navigator.credentials.get(): the same shape for every pending sign-in. */
+app.post("/login/passkey/options", passkeyLimiter, requireCsrf, async (req, res) => {
+  const p = pendingLogin(req);
+  if (!p) return res.status(409).json({ error: "Start again.", restart: true });
+  const rp = passkeys.rpFor(req);
+  if (!rp) return res.status(400).json({ error: "Passkeys do not work at this address. Use your authenticator code." });
+  req.session.pendingLogin.slot = req.session.pendingLogin.slot || {};
+  res.json({ options: await passkeys.loginOptions(rp, req.session.pendingLogin.slot) });
+});
+
+app.post("/login/passkey", passkeyLimiter, requireCsrf, async (req, res) => {
+  const p = pendingLogin(req);
+  if (!p) return res.status(409).json({ error: "Start again.", restart: true });
+  const rp = passkeys.rpFor(req);
+  const account = pendingAccount(p);
+  const fail = (reason) => {
+    secondStepFailed(req, p, "bad passkey: " + reason);
+    // One answer for every failure: which part was wrong is not said.
+    return res.status(401).json({ error: "Invalid credentials.", restart: !req.session.pendingLogin });
+  };
+  if (!rp) return fail("address not allowed (" + passkeys.hostOf(req) + ")");
+  p.slot = p.slot || {};
+  if (!account) {
+    // A wrong password: spend the challenge all the same, then refuse.
+    passkeys.discardChallenge(p.slot);
+    return fail("password was not accepted");
+  }
+  const r = await passkeys.verifyAuthentication(account, rp, p.slot, req.body && req.body.response);
+  if (!r.ok) return fail(r.error);
+  delete req.session.pendingLogin;
+  completeLogin(req, res, account, `passkey "${r.passkey.name}" (${rp.rpID})`, (err, to) =>
+    err ? res.status(500).json({ error: "Session error." }) : res.json({ ok: true, redirect: to })
+  );
+});
+
+/** The fallback: the authenticator code, on the same pending sign-in. */
+app.post("/login/code", loginLimiter, requireCsrf, (req, res) => {
+  const p = pendingLogin(req);
+  if (!p) return res.redirect("/login");
+  const account = pendingAccount(p);
+  if (!account || !totp.verifyAndConsume(account, req.body.token)) {
+    if (account) secondStepFailed(req, p, "bad totp");
+    // As on the one-step form: a wrong code and a wrong password look the
+    // same, so the sign-in starts again rather than offering another try here.
+    delete req.session.pendingLogin;
+    return res.redirect("/login?again=1");
+  }
+  if (!account.totp_confirmed) db.confirmUserTotp(account.id);
+  delete req.session.pendingLogin;
+  completeLogin(req, res, account, null, (err, to) =>
+    err ? res.status(500).send(views.error("Session error", String(err))) : res.redirect(to)
+  );
 });
 
 app.post("/logout", requireCsrf, (req, res) => {
@@ -4768,6 +4927,7 @@ app.get("/users/:id", requireAuth, requirePerm("users.view"), (req, res) => {
       csrf: res.locals.csrf,
       user: ctx(req, "os"),
       ...c,
+      passkeyCount: passkeys.countFor(c.target.id),
       roles: db.listRoles(),
       flash: req.query.msg || null,
       err: req.query.err || null,
@@ -4833,7 +4993,15 @@ app.post("/users/:id/totp", requireAuth, requirePerm("users.manage"), requireCsr
   if (!c) return res.status(404).send(views.error("Not found", "No such user."));
   const secret = authenticator.generateSecret();
   db.setUserTotp(c.target.id, secret, false);
-  db.logLogin(req.ip, req.me.username, "admin", "reset 2FA for " + c.target.username);
+  // A reset is for a lost or compromised device, and a passkey is a device:
+  // every one of theirs goes with the old authenticator.
+  const cleared = passkeys.clearFor(c.target.id);
+  db.logLogin(
+    req.ip,
+    req.me.username,
+    "admin",
+    "reset 2FA for " + c.target.username + (cleared ? ` and removed ${cleared} passkey${cleared === 1 ? "" : "s"}` : "")
+  );
   const qr = await enrolQr(c.target, secret);
   res.send(
     accessViews.userEnrol({
@@ -4843,6 +5011,7 @@ app.post("/users/:id/totp", requireAuth, requirePerm("users.manage"), requireCsr
       qr,
       secret,
       password: "(unchanged — reset it separately if they also lost that)",
+      reset: { passkeys: cleared },
     })
   );
 });
@@ -5018,7 +5187,82 @@ app.get("/account", requireAuth, (req, res) => {
       err: req.query.err || null,
       // A pointer to Settings > Appearance, for those who can open the Command Center.
       appearance: req.perm.can("moniai.use"),
+      passkeys: accountPasskeys(req),
     })
+  );
+});
+
+/* --- passkeys (Windows Hello) on your own account ------------------------ */
+
+/**
+ * Adding a passkey adds a way past the second step, so it asks for the second
+ * factor again: a current authenticator code, unless both factors were shown
+ * within the last few minutes (a fresh sign-in, or a code given here).
+ */
+const PASSKEY_REAUTH_MS = Number(process.env.MONI_PASSKEY_REAUTH_MS) > 0 ? Number(process.env.MONI_PASSKEY_REAUTH_MS) : 5 * 60 * 1000;
+const freshAuth = (req) => Date.now() - Number(req.session.authAt || 0) < PASSKEY_REAUTH_MS;
+
+/** What the account page shows: this address, its passkeys and the rest. */
+function accountPasskeys(req) {
+  const rp = passkeys.rpFor(req);
+  const all = passkeys.listFor(req.me.id);
+  return {
+    host: passkeys.hostOf(req),
+    rpID: rp ? rp.rpID : null,
+    primary: passkeys.primaryOrigin(),
+    list: all,
+    here: rp ? all.filter((p) => p.rp_id === rp.rpID).length : 0,
+    fresh: freshAuth(req),
+    suggestedName: ((l) => (l === "Unknown browser" ? "" : l))(deviceSessions.parseUA(req.get("user-agent")).label),
+  };
+}
+
+app.post("/account/passkeys/options", requireAuth, passkeyLimiter, requireCsrf, async (req, res) => {
+  const rp = passkeys.rpFor(req);
+  if (!rp) return res.status(400).json({ error: "Passkeys cannot be added at this address. Open " + (passkeys.primaryOrigin() || "the panel's main address") + " and add it there." });
+  if (!freshAuth(req)) {
+    if (!totp.verifyAndConsume(req.me, req.body && req.body.code)) {
+      logAuthFailure(req.ip, "bad code adding a passkey");
+      db.logLogin(req.ip, req.me.username, "fail", "bad code adding a passkey");
+      return res.status(403).json({ error: "That code was not accepted. Try the next one.", code: true });
+    }
+    req.session.authAt = Date.now();
+  }
+  req.session.passkeyReg = {};
+  res.json({ options: await passkeys.registrationOptions(req.me, rp, req.session.passkeyReg) });
+});
+
+app.post("/account/passkeys", requireAuth, passkeyLimiter, requireCsrf, async (req, res) => {
+  const rp = passkeys.rpFor(req);
+  const slot = req.session.passkeyReg || {};
+  delete req.session.passkeyReg;
+  if (!rp) return res.status(400).json({ error: "Passkeys cannot be added at this address." });
+  const name = passkeys.cleanName(req.body && req.body.name, deviceSessions.parseUA(req.get("user-agent")).label);
+  const r = await passkeys.verifyRegistration(req.me, rp, slot, req.body && req.body.response, name);
+  if (!r.ok) {
+    db.logLogin(req.ip, req.me.username, "fail", "passkey not added: " + r.error);
+    return res.status(400).json({ error: "The passkey was not added (" + r.error + ")." });
+  }
+  db.logLogin(req.ip, req.me.username, "account", `added passkey "${r.passkey.name}" for ${rp.rpID}`);
+  res.json({ ok: true, msg: `Passkey "${r.passkey.name}" added. Next time, sign in with Windows Hello on this device.` });
+});
+
+app.post("/account/passkeys/:id/rename", requireAuth, requireCsrf, (req, res) => {
+  const was = passkeys.listFor(req.me.id).find((p) => p.id === Number(req.params.id));
+  const pk = passkeys.rename(req.me.id, req.params.id, req.body.name);
+  if (!pk) return res.redirect("/account?err=" + encodeURIComponent("No such passkey.") + "#passkeys");
+  db.logLogin(req.ip, req.me.username, "account", `renamed passkey "${was.name}" to "${pk.name}"`);
+  res.redirect("/account?msg=" + encodeURIComponent(`Renamed to "${pk.name}".`) + "#passkeys");
+});
+
+app.post("/account/passkeys/:id/delete", requireAuth, requireCsrf, (req, res) => {
+  const pk = passkeys.remove(req.me.id, req.params.id);
+  if (!pk) return res.redirect("/account?err=" + encodeURIComponent("No such passkey.") + "#passkeys");
+  db.logLogin(req.ip, req.me.username, "account", `removed passkey "${pk.name}" (${pk.rp_id})`);
+  res.redirect(
+    "/account?msg=" +
+      encodeURIComponent(`Passkey "${pk.name}" removed. Remove it from Windows too (Settings ▸ Accounts ▸ Passkeys) so it stops being offered.`) +
+      "#passkeys"
   );
 });
 

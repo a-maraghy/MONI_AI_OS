@@ -43,6 +43,34 @@ It syntax-checks every file before restarting. Doing it by hand instead, always
 `node --check` first — a syntax error otherwise leaves the service in a restart
 loop with the panel down.
 
+## Passkeys (Windows Hello)
+
+The sign-in's second step can be a passkey instead of the authenticator code
+(`lib/passkeys.js`, `@simplewebauthn/server`; the browser half is
+`public/simplewebauthn-browser.js`, the library's own bundle, vendored because
+the CSP allows no CDN, and `public/passkey.js`). The code stays enrolled and is
+offered on every sign-in; root unlock and approvals still ask for it.
+
+- **Account ▸ Passkeys**: add this device (needs a code unless you signed in
+  within 5 minutes), rename, remove. Table `passkeys` (+ `passkey_handles`, the
+  per-account WebAuthn user handle) in `moni.db`, created at start.
+- **Sign-in**: on a browser that has used a passkey here, the form hides the code
+  field and sends `second=passkey`; `/login/verify` then starts Windows Hello, with
+  "Use authenticator code instead" beside it. The second step looks the same for a
+  right password, a wrong one and an unknown user (the request names no
+  credentials), so it cannot be used to test a password; every failure ends in
+  "Invalid credentials". Challenges are single-use (checked against an in-memory
+  set, so two concurrent answers cannot both pass), expire after 2 minutes, and a
+  pending sign-in dies after 5 minutes or 5 failures. Sign counters must go up.
+- **Addresses**: a passkey belongs to one domain. `MONI_PASSKEY_ORIGINS`
+  (comma-separated origins) is the allow-list; default
+  `https://os.mint-stack.com,https://vmi3567127.contaboserver.net:8443`. The RP is
+  chosen from the raw `Host` header (never `X-Forwarded-Host`); any other host gets
+  no passkeys and the old form.
+- An administrator's **Reset two-factor** removes the user's passkeys too.
+- Test: `tools/test-passkeys.cjs` (Chromium's virtual authenticator; set
+  `PLAYWRIGHT=` to a playwright module).
+
 ## Where you land
 
 `/` is not a page: it 302s to the signed-in role's default landing,

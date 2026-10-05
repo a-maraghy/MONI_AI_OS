@@ -327,3 +327,22 @@ b.ink { color: var(--ink); }
 /* A stacked cell's later lines stay in the value column (the label is ::before). */
 @media (max-width: 640px) { table.stack td:not(.first):not(.nolabel) > * { grid-column: 2; } }
 .me-menu .theme-seg button span { display: inline; }
+
+/* ---- Passkeys (Windows Hello): sign-in steps and Account ▸ Passkeys ---- */
+.lg-code[hidden], .lg-pk-note[hidden], .lg-switch[hidden], .lg-err[hidden], .lg-code-form[hidden], .pk-add[hidden], .pk-nojs[hidden], .lg-switch [hidden] { display: none; }
+.lg-pk-note { display: flex; align-items: center; gap: 6px; margin: 2px 0 14px; }
+.lg-switch { margin: 12px 0 0; text-align: center; font-size: 13px; }
+.lg-who { margin: -6px 0 14px; }
+.lg-pk .btn .ico { flex: none; }
+.lg-pk-status { margin: 8px 0 0; text-align: center; min-height: 1.4em; }
+.lg-code-form { margin-top: 14px; }
+.pk-add { margin: 12px 0 4px; }
+.pk-add .grid { align-items: end; }
+.pk-fresh { display: flex; align-items: center; gap: 6px; margin: 0 0 10px; }
+.pk-fresh .ico { color: var(--accent); }
+.pk-msg { flex: 1 1 200px; }
+.pk-table { margin-top: 12px; }
+.pk-rename { display: flex; gap: 8px; align-items: center; margin: 0; }
+.pk-rename input { flex: 1 1 auto; min-width: 0; margin: 0; }
+.pk-rename .btn { flex: none; }
+@media (max-width: 640px) { .pk-rename { flex-wrap: wrap; } .pk-rename input { flex-basis: 100%; } }

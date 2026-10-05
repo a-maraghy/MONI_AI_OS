@@ -103,7 +103,7 @@ exports.users = ({ csrf, user, users, roles, missingEmail = 0, flash, err, meId,
                     }</p>`
               }
             </form>
-            <form method="post" action="/users/${u.id}/totp" id="f-user-totp-${u.id}" data-confirm-dlg="Reset ${esc(u.username)}'s authenticator?" data-confirm-body="Their current authenticator stops working at once, and they enrol again at their next sign-in." data-confirm-yes="Reset"><input type="hidden" name="_csrf" value="${esc(csrf)}"></form>
+            <form method="post" action="/users/${u.id}/totp" id="f-user-totp-${u.id}" data-confirm-dlg="Reset ${esc(u.username)}'s authenticator?" data-confirm-body="Their current authenticator stops working at once and any passkeys (Windows Hello) are removed; they enrol again at their next sign-in." data-confirm-yes="Reset"><input type="hidden" name="_csrf" value="${esc(csrf)}"></form>
             ${isSelf || lastAdmin ? "" : `<form method="post" action="/users/${u.id}/delete" id="f-user-del-${u.id}" data-confirm-dlg="Delete ${esc(u.username)}?" data-confirm-body="They lose access at once. The audit log keeps what they did." data-confirm-yes="Delete"><input type="hidden" name="_csrf" value="${esc(csrf)}"></form>`}
             ${n ? `<form method="post" action="/users/${u.id}/signout-all" id="f-user-out-${u.id}" data-confirm-dlg="Sign ${esc(u.username)} out everywhere?" data-confirm-body="Every browser signed in as them ends its session now, and any live voice call on it ends too." data-confirm-yes="Sign out"><input type="hidden" name="_csrf" value="${esc(csrf)}"></form>` : ""}`,
             `<button type="submit" class="btn small" form="f-user-totp-${u.id}">Reset authenticator</button>${
@@ -241,12 +241,22 @@ exports.userNew = ({ csrf, user, roles, form = {}, errors = [] }) =>
     }
   );
 
-exports.userEnrol = ({ csrf, user, target, qr, secret, password }) =>
+exports.userEnrol = ({ csrf, user, target, qr, secret, password, reset }) =>
   shell(
     "Enrol " + target.username,
-    `<div class="alert good">${icon("check")}<div>
+    `${
+      reset
+        ? `<div class="alert good">${icon("check")}<div>
+      Two-factor for <strong>${esc(target.username)}</strong> has been reset: their old authenticator
+      stopped working${
+        reset.passkeys
+          ? `, and their ${reset.passkeys} passkey${reset.passkeys === 1 ? " was" : "s were"} removed (Windows Hello no longer signs them in)`
+          : " (they had no passkeys)"
+      }. Everything on this page is shown once.</div></div>`
+        : `<div class="alert good">${icon("check")}<div>
       <strong>${esc(target.username)}</strong> has been created. Everything on this page is
-      shown once — leave it before handing it over and you will have to reset both.</div></div>
+      shown once — leave it before handing it over and you will have to reset both.</div></div>`
+    }
 
     ${card(
       "Hand these over",
@@ -285,7 +295,7 @@ exports.userEnrol = ({ csrf, user, target, qr, secret, password }) =>
     }
   );
 
-exports.userDetail = ({ csrf, user, target, roles, isSelf, lastAdmin, flash, err }) =>
+exports.userDetail = ({ csrf, user, target, roles, isSelf, lastAdmin, flash, err, passkeyCount = 0 }) =>
   shell(
     target.username,
     `${flashes({ msg: flash, err })}
@@ -319,6 +329,11 @@ exports.userDetail = ({ csrf, user, target, roles, isSelf, lastAdmin, flash, err
                <div class="muted small">A secret exists and the QR can be scanned; this
                  turns to enrolled the first time a code from it is accepted —
                  ${isSelf ? "confirm one on your account page, or just sign in again" : "which happens at their next sign-in"}.</div>`
+        }</td></tr>
+        <tr><td>Passkeys</td><td>${
+          passkeyCount
+            ? `<span class="pill ok">${passkeyCount} registered</span>`
+            : `<span class="muted small">none — signs in with the authenticator code</span>`
         }</td></tr>
         <tr><td>Created</td><td class="mono small">${esc(stamp(target.created_at))}${
           target.created_by ? ` by ${esc(target.created_by)}` : ""
@@ -380,10 +395,10 @@ exports.userDetail = ({ csrf, user, target, roles, isSelf, lastAdmin, flash, err
           <button class="btn" type="submit">${icon("lock")} Reset password</button>
         </form>
         <form method="post" action="/users/${target.id}/totp"
-              data-confirm="Reset two-factor for ${esc(target.username)}? Their current authenticator stops working immediately.">
+              data-confirm="Reset two-factor for ${esc(target.username)}? Their current authenticator stops working immediately${passkeyCount ? `, and their ${passkeyCount} passkey${passkeyCount === 1 ? " is" : "s are"} removed` : ""}.">
           <input type="hidden" name="_csrf" value="${esc(csrf)}">
-          <p class="muted small">Resetting two-factor issues a new secret and blocks sign-in until
-            they enrol again.</p>
+          <p class="muted small">Resetting two-factor issues a new secret, removes their passkeys
+            (Windows Hello), and blocks sign-in until they enrol again.</p>
           <button class="btn" type="submit">${icon("reindex")} Reset two-factor</button>
         </form>
       </div>`,
@@ -705,7 +720,88 @@ exports.roleEdit = ({ csrf, user, role, agents, channels, isNew, readOnly, error
 
 /* -------------------------------------------------------------- account --- */
 
-exports.account = ({ csrf, user, me, flash, err, appearance }) =>
+/**
+ * Passkeys on the account page: this address first (can one be used here, how
+ * many are registered for it), then every passkey of the account with its
+ * domain, dates and rename / remove. Adding one is done by public/passkey.js;
+ * without JavaScript the card explains rather than offering a dead button.
+ */
+function passkeyCard(csrf, pk) {
+  if (!pk) return "";
+  const here = pk.rpID;
+  const status = !here
+    ? `<div class="alert warn">${icon("alert")}<div>Passkeys do not work at this address
+         (<span class="mono">${esc(pk.host || "unknown")}</span>).${
+           pk.primary ? ` Open <a href="${esc(pk.primary)}/account#passkeys">${esc(pk.primary.replace(/^https:\/\//, ""))}</a> to add or use one.` : ""
+         } Sign in here with your authenticator code.</div></div>`
+    : pk.here
+      ? `<p class="muted">You can sign in at <span class="mono">${esc(here)}</span> with Windows Hello
+           (face, fingerprint or PIN) instead of typing the code. The authenticator code always
+           stays available as a fallback, and still guards root unlock and approvals.</p>`
+      : `<div class="alert info">${icon("info")}<div>No passkey is registered for
+           <span class="mono">${esc(here)}</span> yet${pk.list.length ? " — the ones below belong to another address, and a passkey only works where it was added" : ""}.
+           Add this device and the next sign-in here asks for Windows Hello instead of the code.</div></div>`;
+
+  const add = here
+    ? `<form class="pk-add" id="pk-add" data-csrf="${esc(csrf)}" data-here="${pk.here}" autocomplete="off" hidden>
+        <div class="grid cols-2">
+          <label>Name for this device
+            <input name="name" maxlength="60" value="${esc(pk.suggestedName || "")}" placeholder="e.g. Office laptop"></label>
+          ${
+            pk.fresh
+              ? `<p class="muted small pk-fresh">${icon("check", 14)} You signed in a moment ago, so no code is needed.</p>`
+              : `<label>Code from your authenticator
+                   <span class="hint">confirms it is you before a new key is added</span>
+                   <input name="code" inputmode="numeric" pattern="[0-9 ]*" placeholder="000000" autocomplete="one-time-code" required></label>`
+          }
+        </div>
+        <div class="btn-row">
+          <button class="btn primary" type="submit">${icon("fingerprint")} Add this device (Windows Hello)</button>
+          <span class="muted small pk-msg" role="status" aria-live="polite"></span>
+        </div>
+      </form>
+      <p class="muted small pk-nojs" data-pk-nojs>Adding a passkey needs JavaScript and a browser with passkey support
+        (Edge or Chrome on Windows).</p>`
+    : "";
+
+  const rows = pk.list
+    .map(
+      (p) => `<tr>
+        <td class="first" data-h="Name"><form method="post" action="/account/passkeys/${p.id}/rename" class="pk-rename" autocomplete="off">
+            <input type="hidden" name="_csrf" value="${esc(csrf)}">
+            <input name="name" value="${esc(p.name)}" maxlength="60" aria-label="Name of this passkey" required>
+            <button class="btn small" type="submit">${icon("save", 14)} Rename</button>
+          </form></td>
+        <td data-h="Address"><div class="l1 mono small">${esc(p.rp_id)}</div>${p.rp_id === here ? `<div class="l2"><span class="pill ok">this address</span></div>` : ""}</td>
+        <td data-h="Added"><div class="l1 mono small">${esc(stamp(p.created_at))}</div></td>
+        <td data-h="Last used"><div class="l1 mono small">${p.last_used_at ? esc(stamp(p.last_used_at)) : "never"}</div></td>
+        <td class="right nolabel"><div class="l1"><form method="post" action="/account/passkeys/${p.id}/delete" class="inline"
+              data-confirm-dlg="Remove the passkey &quot;${esc(p.name)}&quot;?"
+              data-confirm-body="Windows Hello on that device stops signing you in here. Your authenticator code keeps working."
+              data-confirm-yes="Remove">
+            <input type="hidden" name="_csrf" value="${esc(csrf)}">
+            <button class="btn small danger" type="submit">${icon("trash", 14)} Remove</button>
+          </form></div></td>
+      </tr>`
+    )
+    .join("");
+
+  return card(
+    "Passkeys (Windows Hello)",
+    `${status}
+    ${add}
+    ${
+      pk.list.length
+        ? `<table class="rows stack aligned pk-table">
+            <thead><tr><th>Name</th><th>Address</th><th>Added</th><th>Last used</th><th></th></tr></thead>
+            <tbody>${rows}</tbody></table>`
+        : `<p class="muted small">No passkeys yet.</p>`
+    }`,
+    { icon: "fingerprint", id: "passkeys" }
+  );
+}
+
+exports.account = ({ csrf, user, me, flash, err, appearance, passkeys }) =>
   shell(
     "Your account",
     `${flashes({ msg: flash, err })}
@@ -787,6 +883,8 @@ exports.account = ({ csrf, user, me, flash, err, appearance }) =>
       { icon: "devices" }
     )}
 
+    ${passkeyCard(csrf, passkeys)}
+
     ${card(
       "What you can do",
       me.role && me.role.permissions.includes("*")
@@ -805,7 +903,8 @@ exports.account = ({ csrf, user, me, flash, err, appearance }) =>
       active: null,
       crumbs: [["Account", null]],
       heading: me.display_name || me.username,
-      subtitle: "Your own sign-in, authenticator and role.",
+      subtitle: "Your own sign-in, authenticator, passkeys and role.",
+      assets: passkeys && passkeys.rpID ? ["simplewebauthn-browser.js", "passkey.js"] : [],
     }
   );
 

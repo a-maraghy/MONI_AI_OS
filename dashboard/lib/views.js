@@ -32,23 +32,81 @@ exports.error = (title, msg) =>
 
 /* ----------------------------------------------------------------- auth --- */
 
-exports.login = ({ csrf, error }) =>
+/**
+ * Step one. Unchanged unless this address takes passkeys: then
+ * public/passkey.js may switch the form to "password now, Windows Hello next"
+ * (it does so by itself on a browser that has signed in with one here before),
+ * which hides the code field and sends second=passkey. Without JavaScript the
+ * form is the old one exactly: username, password, code.
+ */
+exports.login = ({ csrf, error, passkeys }) =>
   shell(
     "Sign in",
     `<div class="card">
       <h2 class="mb-14">Sign in</h2>
       ${error ? `<div class="alert bad">${icon("alert")}<div>${esc(error)}</div></div>` : ""}
-      <form method="post" action="/login" autocomplete="off">
+      <form method="post" action="/login" autocomplete="off"${passkeys ? ` id="login-form" data-passkeys="1"` : ""}>
         <input type="hidden" name="_csrf" value="${esc(csrf)}">
+        ${passkeys ? `<input type="hidden" name="second" value="">` : ""}
         <label>Username<input name="username" autocomplete="username" required autofocus></label>
         <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
-        <label>Authenticator code
+        <label class="lg-code">Authenticator code
           <input name="token" inputmode="numeric" pattern="[0-9 ]*" placeholder="000000"
                  autocomplete="one-time-code" required></label>
+        ${
+          passkeys
+            ? `<p class="lg-pk-note muted small" hidden>${icon("fingerprint", 14)} Windows Hello confirms it is you on the next step.</p>`
+            : ""
+        }
         <button class="btn primary w-full" type="submit">Sign in</button>
+        ${
+          passkeys
+            ? `<p class="lg-switch" hidden>
+                 <button type="button" class="linkish" data-pk-mode="passkey">Sign in with a passkey (Windows Hello) instead</button>
+                 <button type="button" class="linkish" data-pk-mode="code" hidden>Use authenticator code instead</button>
+               </p>`
+            : ""
+        }
       </form>
       <p class="auth-foot">${icon("lock", 14)}<span>Two-factor required · sessions end after 8 h idle</span></p>
-    </div>`
+    </div>`,
+    { assets: passkeys ? ["simplewebauthn-browser.js", "passkey.js"] : [] }
+  );
+
+/**
+ * Step two, after "password now, passkey next". The same page whatever the
+ * password was (see POST /login): Windows Hello starts by itself, and the
+ * authenticator code is one click away.
+ */
+exports.loginVerify = ({ csrf, username, passkeys, primary, error }) =>
+  shell(
+    "Confirm it is you",
+    `<div class="card">
+      <h2 class="mb-14">Confirm it is you</h2>
+      <p class="muted small lg-who">Signing in as <strong class="mono">${esc(username)}</strong></p>
+      ${error ? `<div class="alert bad">${icon("alert")}<div>${esc(error)}</div></div>` : ""}
+      <div class="alert bad lg-err" role="alert" hidden>${icon("alert")}<div></div></div>
+      ${
+        passkeys
+          ? `<div class="lg-pk" id="lg-pk" data-csrf="${esc(csrf)}">
+              <button class="btn primary w-full" type="button" id="lg-pk-go">${icon("fingerprint")} <span>Use Windows Hello</span></button>
+              <p class="muted small lg-pk-status" role="status" aria-live="polite">Face, fingerprint or PIN on this device.</p>
+            </div>
+            <p class="lg-switch"><button type="button" class="linkish" id="lg-code-show">Use authenticator code instead</button></p>`
+          : `<div class="alert info">${icon("info")}<div>Passkeys do not work at this address${
+              primary ? ` — they work at <span class="mono">${esc(primary.replace(/^https:\/\//, ""))}</span>` : ""
+            }. Use your authenticator code.</div></div>`
+      }
+      <form method="post" action="/login/code" autocomplete="off" class="lg-code-form"${passkeys ? " hidden" : ""}>
+        <input type="hidden" name="_csrf" value="${esc(csrf)}">
+        <label>Authenticator code
+          <input name="token" inputmode="numeric" pattern="[0-9 ]*" placeholder="000000"
+                 autocomplete="one-time-code" required${passkeys ? "" : " autofocus"}></label>
+        <button class="btn primary w-full" type="submit">Sign in</button>
+      </form>
+      <p class="auth-foot">${icon("lock", 14)}<span><a href="/login">Start again</a> · the authenticator code always works</span></p>
+    </div>`,
+    { assets: passkeys ? ["simplewebauthn-browser.js", "passkey.js"] : [] }
   );
 
 exports.setup = ({ csrf, token, form = {}, errors = [] }) =>
