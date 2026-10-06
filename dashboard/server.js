@@ -112,7 +112,8 @@ function moniCall(op, params, actor, opts) {
 }
 const voiceEval = require("./lib/voice-live-eval");
 const voiceEvalViews = require("./lib/views-voice-eval");
-const { asset } = require("./lib/ui");
+const ui = require("./lib/ui");
+const { asset } = ui;
 const { WebSocketServer } = require("ws");
 const voiceGuard = require("./lib/voice-guard");
 const voiceIntake = require("./lib/voice-intake");
@@ -246,11 +247,24 @@ app.use(
 // what the document declares, so serve it there rather than let it 404 on every
 // page load. Public on purpose: it is a logo, and requiring a session for it
 // would put a 302 in the console instead of a 404.
+// Pages link the stamped /static copy; this unstamped one is kept a day, not a
+// week, so a new icon replaces the old one in bookmarks within a day.
 app.get("/favicon.ico", (req, res) => {
   res.sendFile(path.join(__dirname, "public", "favicon.ico"), {
-    maxAge: "7d",
+    maxAge: "1d",
     headers: { "Content-Type": "image/x-icon" },
   });
+});
+
+// The web app manifest (lib/ui.js manifest()): what an installed Mint OS app is
+// called and which icon it wears. Public for the same reason as the icon -- the
+// browser fetches it without the session cookie. Pages link it with a stamp
+// built from its content, so it is cached long when stamped and briefly when not.
+app.get("/manifest.webmanifest", (req, res) => {
+  const stamped = req.query.v === ui.MANIFEST_VERSION();
+  res.set("Content-Type", "application/manifest+json; charset=utf-8");
+  res.set("Cache-Control", stamped ? "public, max-age=2592000, immutable" : "public, max-age=300");
+  res.send(JSON.stringify(ui.manifest(), null, 2));
 });
 
 // Kept as a value: the live conversation's WebSocket upgrade reads the same

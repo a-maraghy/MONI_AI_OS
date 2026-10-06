@@ -5,7 +5,7 @@
  * Agents nursery.
  *
  * Every shape comes from lib/marks.js, the one source of the leaf geometry
- * (the same module writes the SVG files and favicons, see tools/make-brand.cjs).
+ * (the same module writes the mark SVG files, see tools/make-brand.cjs; the favicons and app icons are the Mesh icon, tools/make-app-icon.cjs).
  * Inline SVG is allowed by the CSP -- it is markup, not a style or a script --
  * as long as it carries no style="" attribute, which none of these do.
  *

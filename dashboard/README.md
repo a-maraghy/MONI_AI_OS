@@ -26,6 +26,9 @@ and [docs/agents.md](../docs/agents.md).
     public/moni-ai.css     the Command Center's styles and HUD palette
     public/moni-ai.js      the Command Center: API, event stream, seed core, voice
     tools/test-*.cjs       standalone tests (node tools/test-claude.cjs)
+    tools/make-app-icon.cjs  the Mint OS icon ("Mesh"): favicons (16 lines, 32 dots, any,
+                           .ico), app-icon PNGs, regenerated with --raster (Playwright);
+                           every page links it via ui.iconLinks(), plus /manifest.webmanifest
 
     deploy/moni-helper             privileged helper -> /usr/local/sbin/
     deploy/moni-agent@.service     systemd template, one instance per agent

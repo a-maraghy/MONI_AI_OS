@@ -490,6 +490,59 @@ function themeSwitch() {
     </div>`;
 }
 
+/**
+ * The Mint OS icon ("Mesh", tools/make-app-icon.cjs), the same on every page.
+ * 16 px is the pixel-fitted lines drawing, 32 px the dots one, `any` the full
+ * drawing (light SVG); the .ico carries all three for whatever asks for one.
+ * Everything is stamped by asset(), so a new icon reaches a browser on its next
+ * page load instead of when a month-long cache runs out. The manifest makes the
+ * panel installable as an app with the same icon (manifest() below).
+ */
+function iconLinks() {
+  return [
+    `<link rel="icon" href="${asset("brand/favicon-16.svg")}" type="image/svg+xml" sizes="16x16">`,
+    `<link rel="icon" href="${asset("brand/favicon-32.svg")}" type="image/svg+xml" sizes="32x32">`,
+    `<link rel="icon" href="${asset("favicon.svg")}" type="image/svg+xml" sizes="any">`,
+    `<link rel="alternate icon" href="${asset("favicon.ico")}" type="image/x-icon" sizes="16x16 32x32 48x48">`,
+    `<link rel="apple-touch-icon" href="${asset("brand/app-icon-180.png")}" sizes="180x180">`,
+    `<link rel="manifest" href="/manifest.webmanifest?v=${MANIFEST_VERSION()}">`,
+  ].join("\n");
+}
+
+/**
+ * The web app manifest, served at /manifest.webmanifest (server.js) -- public,
+ * because a browser fetches it without the session cookie. Its icon URLs are
+ * stamped like every other asset, and its own URL carries a stamp built from
+ * them, so a new icon changes the manifest URL too.
+ */
+const APP_COLOURS = { background: "#0D1117", theme: "#0D1117" }; // Obsidian
+function manifest() {
+  return {
+    id: "/",
+    name: "Mint OS",
+    short_name: "Mint OS",
+    description: "Mint OS and MINT AI",
+    start_url: "/",
+    scope: "/",
+    display: "standalone",
+    background_color: APP_COLOURS.background,
+    theme_color: APP_COLOURS.theme,
+    icons: [
+      { src: asset("brand/app-icon-192.png"), sizes: "192x192", type: "image/png", purpose: "any" },
+      { src: asset("brand/app-icon-512.png"), sizes: "512x512", type: "image/png", purpose: "any" },
+      { src: asset("brand/app-icon-maskable-512.png"), sizes: "512x512", type: "image/png", purpose: "maskable" },
+      { src: asset("favicon.svg"), sizes: "any", type: "image/svg+xml", purpose: "any" },
+    ],
+  };
+}
+let manifestVersion = null;
+function MANIFEST_VERSION() {
+  if (manifestVersion === null) {
+    manifestVersion = require("crypto").createHash("sha1").update(JSON.stringify(manifest())).digest("hex").slice(0, 10);
+  }
+  return manifestVersion;
+}
+
 function page(title, inner, opts = {}) {
   // Every page carries the Command Center's stylesheet too: its confirm
   // (.cc-sdlg), form dialog (.cc-modal), buttons and tags are the whole OS's.
@@ -501,19 +554,15 @@ function page(title, inner, opts = {}) {
   // light. A blocking external script because the CSP forbids inline ones.
   const theme = `<script src="${asset("theme-init.js")}"></script>\n`;
   const cls = opts.pageClass && /^[a-z0-9 -]+$/.test(opts.pageClass) ? ` class="${opts.pageClass}"` : "";
-  // The AI's own pages (the Command Center) carry the AI favicon and title;
-  // everything else is the OS.
+  // The AI's own pages (the Command Center) carry the MINT AI title; every page,
+  // theirs included, carries the one Mint OS icon (see iconLinks).
   const ai = opts.brand === "ai";
   return `<!doctype html>
 <html lang="en"${cls}><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${ai && title === "MINT AI" ? "MINT AI" : `${esc(title)} — ${ai ? "MINT AI" : "Mint OS"}`}</title>
-<link rel="icon" href="${asset(`brand/favicon-${ai ? "ai" : "os"}-16.svg`)}" type="image/svg+xml" sizes="16x16">
-<link rel="icon" href="${asset(`brand/favicon-${ai ? "ai" : "os"}-32.svg`)}" type="image/svg+xml" sizes="32x32">
-<link rel="icon" href="${asset(ai ? "favicon-ai.svg" : "favicon.svg")}" type="image/svg+xml" sizes="any">
-<link rel="alternate icon" href="${ai ? asset("favicon-ai.ico") : "/favicon.ico"}" sizes="48x48 32x32 16x16">
-<link rel="apple-touch-icon" href="${asset(ai ? "favicon-ai.svg" : "favicon.svg")}">
+${iconLinks()}
 <link rel="preload" href="/static/fonts/inter-latin-400-normal.woff2?v=5.3.0" as="font" type="font/woff2" crossorigin>
 <link rel="preload" href="/static/fonts/space-grotesk-latin-700-normal.woff2?v=5.3.0" as="font" type="font/woff2" crossorigin>
 ${theme}<link rel="stylesheet" href="${asset("style.css")}">
@@ -679,6 +728,9 @@ function empty(iconName, title, body) {
 
 module.exports = {
   dockMarkup,
+  iconLinks,
+  manifest,
+  MANIFEST_VERSION,
   pageMapFor,
   asset,
   docLayout,

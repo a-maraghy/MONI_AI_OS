@@ -10,7 +10,8 @@
  *  - the SVG marks and favicons are current with lib/marks.js (tools/make-brand.cjs);
  *  - the three OFL fonts are self-hosted with their licences, latin woff2 only;
  *  - style.css declares them and holds the approved palette in both themes;
- *  - OS pages carry the OS favicon, MINT AI's pages the AI one; every top bar
+ *  - every page (MINT AI's too) carries the one Mint OS "Mesh" icon set and the
+ *    web app manifest (tools/make-app-icon.cjs); every top bar
  *    (MINT AI's too) carries the same lockup: the OS leaf and MINT, no [OS]/[AI] tag;
  *  - the sign-in page carries the full lockup and the faint leaf;
  *  - the nursery's seedlings are built from the leaf; no style="" anywhere.
@@ -49,10 +50,25 @@ for (const [name, body] of Object.entries(make.files())) {
   const f = path.join(PUB, name);
   check(`${name} is current with lib/marks.js`, fs.existsSync(f) && fs.readFileSync(f, "utf8") === body);
 }
-for (const kind of ["os", "ai"]) {
-  const f = path.join(PUB, kind === "os" ? "favicon.ico" : "favicon-ai.ico");
-  const b = fs.readFileSync(f);
-  check(`${path.basename(f)} is an icon with 16/32/48 PNGs, current with the leaf`, b.readUInt16LE(2) === 1 && b.readUInt16LE(4) === 3 && b.equals(make.icoFor(kind)));
+// The Mint OS icon ("Mesh"), the same on every page: tools/make-app-icon.cjs.
+const appIcon = require("./make-app-icon.cjs");
+for (const [name, body] of Object.entries(appIcon.files())) {
+  const f = path.join(PUB, name);
+  check(`${name} is current with tools/make-app-icon.cjs`, fs.existsSync(f) && fs.readFileSync(f, "utf8") === body);
+}
+check("the light favicon.svg stays small (every page fetches it)", fs.statSync(path.join(PUB, "favicon.svg")).size < 48 * 1024, fs.statSync(path.join(PUB, "favicon.svg")).size);
+check("the icon SVGs embed no raster, font or outside reference", Object.values(appIcon.files()).every((b) => !/<image|<text|@import|url\((?!#)|href="(?!#)/.test(b.replace(/xmlns="[^"]*"/, ""))));
+for (const r of appIcon.RASTERS) {
+  const b = fs.existsSync(path.join(PUB, r.file)) ? fs.readFileSync(path.join(PUB, r.file)) : null;
+  const sz = b && appIcon.pngSize(b);
+  check(`${r.file} is a ${r.size}x${r.size} PNG`, !!sz && sz.w === r.size && sz.h === r.size, JSON.stringify(sz));
+}
+{
+  const entries = appIcon.readIco(fs.readFileSync(path.join(PUB, "favicon.ico")));
+  check("favicon.ico holds 16/32/48 PNGs", !!entries && entries.map((e) => `${e.size}:${e.png && e.png.w}x${e.png && e.png.h}`).join(",") === "16:16x16,32:32x32,48:48x48", JSON.stringify(entries));
+}
+for (const gone of ["favicon-ai.svg", "favicon-ai.ico", "brand/favicon-os-16.svg", "brand/favicon-os-32.svg", "brand/favicon-ai-16.svg", "brand/favicon-ai-32.svg"]) {
+  check(`the old leaf favicon ${gone} is gone`, !fs.existsSync(path.join(PUB, gone)));
 }
 const osMark = fs.readFileSync(path.join(PUB, "brand/mint-os-mark.svg"), "utf8");
 check("the OS mark is the two leaf tones, #6DEBA8 / #248273", osMark.includes('fill="#6DEBA8"') && osMark.includes('fill="#248273"'));
@@ -109,12 +125,26 @@ const views = require(path.join(ROOT, "lib", "views.js"));
 const osPage = ui.shell("Services", "<p>x</p>", { user: { name: "desk" }, active: "services", csrf: "c" });
 const TOP_LOCKUP = /<a class="brand" href="[^"]*" aria-label="Mint OS">\s*<span class="lockup os brand-text" aria-label="MINT"><span class="lk-mk" aria-hidden="true"><svg class="mark mark-os"[\s\S]*?<\/svg><\/span><span class="lk-wm"><span class="lk-row"><span class="lk-mint">MINT<\/span><\/span><\/span><\/span>\s*<\/a>/;
 check("an OS page's top bar is the OS leaf + MINT, no [OS] tag", TOP_LOCKUP.test(osPage) && !/pill-brand/.test(osPage));
-check("an OS page carries the OS favicons (16, 32, any, .ico)", /brand\/favicon-os-16\.svg\?v=/.test(osPage) && /brand\/favicon-os-32\.svg\?v=/.test(osPage) && /\/static\/favicon\.svg\?v=/.test(osPage) && /href="\/favicon\.ico"/.test(osPage));
+const ICON_LINKS = (pg) =>
+  /<link rel="icon" href="\/static\/brand\/favicon-16\.svg\?v=[^"]+" type="image\/svg\+xml" sizes="16x16">/.test(pg) &&
+  /<link rel="icon" href="\/static\/brand\/favicon-32\.svg\?v=[^"]+" type="image\/svg\+xml" sizes="32x32">/.test(pg) &&
+  /<link rel="icon" href="\/static\/favicon\.svg\?v=[^"]+" type="image\/svg\+xml" sizes="any">/.test(pg) &&
+  /<link rel="alternate icon" href="\/static\/favicon\.ico\?v=[^"]+"/.test(pg) &&
+  /<link rel="apple-touch-icon" href="\/static\/brand\/app-icon-180\.png\?v=[^"]+" sizes="180x180">/.test(pg) &&
+  /<link rel="manifest" href="\/manifest\.webmanifest\?v=[0-9a-f]{10}">/.test(pg) &&
+  !/favicon-(os|ai)/.test(pg);
+check("an OS page carries the Mint OS icon (16 lines, 32 dots, any, .ico, apple-touch, manifest)", ICON_LINKS(osPage));
 check("an OS page's title ends Mint OS", /<title>Services — Mint OS<\/title>/.test(osPage));
 // MINT AI's own page is the Command Center (brand "ai"); the classic chat is gone.
 const aiPage = ui.shell("MINT AI", "<p>x</p>", { user: { name: "desk" }, active: "moni-ai", bare: true, brand: "ai", csrf: "c" });
 check("MINT AI's pages carry the same top-bar lockup (OS leaf + MINT, no [AI] tag)", TOP_LOCKUP.test(aiPage) && !/pill-brand/.test(aiPage) && !/lockup ai/.test(aiPage));
-check("MINT AI's pages carry the AI favicons", /brand\/favicon-ai-16\.svg\?v=/.test(aiPage) && /favicon-ai\.svg\?v=/.test(aiPage) && /favicon-ai\.ico\?v=/.test(aiPage) && !/favicon-os/.test(aiPage));
+check("MINT AI's pages carry the same Mint OS icon (no AI favicon any more)", ICON_LINKS(aiPage) && ui.iconLinks() === ui.iconLinks());
+{
+  const m = ui.manifest();
+  check("the manifest names Mint OS, starts at / and carries 192, 512 and a maskable 512", m.name === "Mint OS" && m.start_url === "/" && m.display === "standalone" &&
+    m.icons.some((i) => i.sizes === "192x192" && /app-icon-192\.png\?v=/.test(i.src)) && m.icons.some((i) => i.sizes === "512x512" && i.purpose === "any") &&
+    m.icons.some((i) => i.purpose === "maskable" && /app-icon-maskable-512\.png\?v=/.test(i.src)) && /^#[0-9A-F]{6}$/i.test(m.theme_color) && /^#[0-9A-F]{6}$/i.test(m.background_color));
+}
 check("the sidebar's Command Center item carries the spark (the top-bar tabs are gone)", /<a href="\/mint-ai" class="side-item[^"]*"[^>]*><svg class="ico spark"/.test(osPage) && !/class="top-tab/.test(osPage));
 check("the fonts are preloaded from the panel", /<link rel="preload" href="\/static\/fonts\/inter-latin-400-normal\.woff2\?v=5\.3\.0" as="font" type="font\/woff2" crossorigin>/.test(osPage));
 const login = views.login({ csrf: "c" });
@@ -163,16 +193,37 @@ function req(p) {
       ["/static/fonts/OFL-Inter.txt", "text/plain"],
       ["/static/brand/mint-os-mark.svg", "image/svg+xml"],
       ["/static/brand/mint-ai-mark.svg", "image/svg+xml"],
-      ["/static/brand/favicon-os-16.svg", "image/svg+xml"],
-      ["/static/brand/favicon-ai-32.svg", "image/svg+xml"],
+      ["/static/brand/favicon-16.svg", "image/svg+xml"],
+      ["/static/brand/favicon-32.svg", "image/svg+xml"],
       ["/static/favicon.svg", "image/svg+xml"],
-      ["/static/favicon-ai.svg", "image/svg+xml"],
-      ["/static/favicon-ai.ico", "image/x-icon"],
+      ["/static/favicon.ico", "image/x-icon"],
+      ["/static/brand/app-icon-180.png", "image/png"],
+      ["/static/brand/app-icon-192.png", "image/png"],
+      ["/static/brand/app-icon-512.png", "image/png"],
+      ["/static/brand/app-icon-maskable-512.png", "image/png"],
       ["/favicon.ico", "image/x-icon"],
+      ["/manifest.webmanifest", "application/manifest+json"],
     ];
     for (const [p, type] of TYPES) {
       const r = await req(p);
       check(`${p} -> 200 ${type}`, r.status === 200 && String(r.headers["content-type"] || "").startsWith(type), r.status + " " + r.headers["content-type"]);
+    }
+    {
+      const ico = await req("/favicon.ico");
+      check("/favicon.ico is the Mesh icon, cached a day", ico.body.equals(fs.readFileSync(path.join(PUB, "favicon.ico"))) && /max-age=86400/.test(ico.headers["cache-control"] || ""), ico.headers["cache-control"]);
+      const plain = await req("/manifest.webmanifest");
+      const stamped = await req("/manifest.webmanifest?v=" + ui.MANIFEST_VERSION());
+      let m = null; try { m = JSON.parse(stamped.body.toString()); } catch (_) {}
+      check("the manifest is public JSON, long-cached when stamped and briefly when not", stamped.status === 200 && !!m && m.name === "Mint OS" && /max-age=2592000/.test(stamped.headers["cache-control"] || "") && /max-age=300/.test(plain.headers["cache-control"] || ""), stamped.status + " " + stamped.headers["cache-control"] + " / " + plain.headers["cache-control"]);
+      for (const i of (m && m.icons) || []) {
+        const r = await req(i.src);
+        check(`the manifest icon ${i.src.split("?")[0]} loads (${i.type})`, r.status === 200 && String(r.headers["content-type"] || "").startsWith(i.type), r.status + " " + r.headers["content-type"]);
+      }
+      // A scratch panel has no users yet, so /login sends to /setup, which without its
+      // token is the panel's own 404 page -- an error page, rendered by page() like the rest.
+      let first = await req("/login");
+      if (first.status >= 300 && first.status < 400) first = await req(new URL(first.headers.location, "http://x").pathname);
+      check("a served error page (setup without its token) carries the Mint OS icon links", first.status === 404 && ICON_LINKS(first.body.toString()), first.status);
     }
     const r = await req("/static/fonts/inter-latin-400-normal.woff2?v=5.3.0");
     check("a stamped font is cached long", /max-age=2592000/.test(r.headers["cache-control"] || ""), r.headers["cache-control"]);
