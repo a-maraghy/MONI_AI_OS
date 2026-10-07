@@ -115,6 +115,8 @@ function moniCall(op, params, actor, opts) {
 }
 const voiceEval = require("./lib/voice-live-eval");
 const voiceEvalViews = require("./lib/views-voice-eval");
+const voiceprintTrial = require("./lib/voiceprint-trial");
+const voiceprintTrialViews = require("./lib/views-voiceprint-trial");
 const ui = require("./lib/ui");
 const { asset } = ui;
 const { WebSocketServer } = require("ws");
@@ -6389,6 +6391,13 @@ app.post("/mint-ai/api/voice-eval/run", ...evalGuard, requireApiCsrf, async (req
     })
     .catch((e) => Object.assign(job, { running: false, error: voice.scrub(e.message) }));
 });
+
+/* ------------------------------------ voiceprint trial (admin) -------- */
+
+// Phase 1 of the voiceprint: the administrator records a trial set in their
+// own voice for the offline evaluation (tools/voiceprint/). Recordings only;
+// nothing verifies anyone yet. See lib/voiceprint-trial.js.
+voiceprintTrial.mount(app, { requireAuth, requirePerm, requireApiPerm, requireApiCsrf, rateLimit, express, db, ctx, views: voiceprintTrialViews, asset, dataDir: DATA_DIR });
 
 /* --------------------------------------------------------------- misc ----- */
 

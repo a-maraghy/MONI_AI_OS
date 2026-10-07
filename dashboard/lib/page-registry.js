@@ -227,6 +227,7 @@ function build(o = {}) {
   }
   // Settings > Voice > Compare voices opens its own page.
   if (keys.has("settings.voice")) add({ key: "settings.voice.eval", parent: "settings.voice", kind: "anchor", label: "Voice evaluation", url: "/mint-ai/voice-eval", perm: "voice.manage" });
+  if (keys.has("settings.voice")) add({ key: "settings.voice.voiceprint", parent: "settings.voice", kind: "anchor", label: "Voiceprint trial", url: "/mint-ai/voiceprint-trial", perm: "voice.manage" });
   return out;
 }
 
