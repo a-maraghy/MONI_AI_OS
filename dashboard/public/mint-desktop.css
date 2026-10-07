@@ -194,3 +194,30 @@ html.cc-desk .cc-cap-state[data-vp="ok"] { color: var(--dk-accent); }
 html.cc-desk .cc-cap-state[data-vp="bad"] { color: var(--dk-red); }
 html.cc-desk .cc-cap-state[data-vp="mid"] { color: var(--dk-tx2); }
 html.cc-desk .cc-cap-state[data-vp] .dk-meter { display: none; }
+
+/* ---- real blur (the app's acrylic windows behind the glass surfaces; desktop/src-tauri/src/blur.rs) ----
+   With html.dk-acrylic the app draws real blur under every surface the page reports as glass
+   (mint-desktop.js GLASS); a surface takes the lighter tint only once its blur is there
+   ([data-dk-glass]), so it never sits light over a sharp, busy wallpaper. Lighter, not clear: text keeps
+   its contrast over a blurred bright patch (cards about 6:1, pills about 3:1 at worst; the ink already
+   follows the wallpaper). The approval card stays near-solid: nobody misreads a destructive command
+   because of what is behind it. Without real blur (Windows 10 before 1809, transparency effects or the
+   setting off, high contrast, a faint opacity) none of this applies: the tinted look above. */
+html.cc-desk {
+  --dk-glass-pill: rgba(10, 12, 30, .46);
+  --dk-glass-card: rgba(16, 18, 40, .70);
+  --dk-glass-alert: rgba(16, 18, 40, .88);
+}
+html.cc-desk[data-theme="light"] {
+  --dk-glass-pill: rgba(255, 255, 255, .50);
+  --dk-glass-card: rgba(255, 255, 255, .70);
+  --dk-glass-alert: rgba(255, 255, 255, .90);
+}
+html.cc-desk.dk-acrylic [data-dk-glass] { transition: background-color .18s ease-out; }
+html.cc-desk.dk-acrylic [data-dk-glass="pill"]:not(.on) { background: var(--dk-glass-pill) !important; }
+html.cc-desk.dk-acrylic [data-dk-glass="card"] { background: var(--dk-glass-card) !important; }
+html.cc-desk.dk-acrylic [data-dk-glass="alert"] { background: var(--dk-glass-alert) !important; }
+@media (prefers-contrast: more) {
+  html.cc-desk.dk-acrylic [data-dk-glass="pill"]:not(.on) { background: var(--dk-pill) !important; }
+  html.cc-desk.dk-acrylic [data-dk-glass="card"], html.cc-desk.dk-acrylic [data-dk-glass="alert"] { background: var(--dk-card) !important; }
+}

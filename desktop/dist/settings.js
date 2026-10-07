@@ -59,6 +59,12 @@
     $("focus").checked = !!S.focus;
     $("dnd").checked = !!S.do_not_disturb;
     $("batt").checked = !!S.battery_saver;
+    $("blur").checked = S.real_blur !== false;
+    // Why real blur cannot be drawn here (the setting still saves; the tinted look is used meanwhile).
+    var bn = $("blur-note");
+    if (!bn.getAttribute("data-base")) bn.setAttribute("data-base", bn.textContent);
+    bn.textContent = v.blurNote ? v.blurNote : bn.getAttribute("data-base");
+    bn.classList.toggle("warn", !!v.blurNote);
     $("autostart").checked = !!S.autostart;
     $("updates").checked = !!S.check_updates;
     $("icons").checked = !!S.experimental_behind_icons;
@@ -75,7 +81,7 @@
   /** The form's values into S (segments, hotkeys and opacity are written as they change). */
   function collect() {
     S.monitor = $("monitor").value;
-    S.focus = $("focus").checked; S.do_not_disturb = $("dnd").checked; S.battery_saver = $("batt").checked;
+    S.focus = $("focus").checked; S.do_not_disturb = $("dnd").checked; S.battery_saver = $("batt").checked; S.real_blur = $("blur").checked;
     S.autostart = $("autostart").checked; S.check_updates = $("updates").checked; S.experimental_behind_icons = $("icons").checked;
   }
   function save() {

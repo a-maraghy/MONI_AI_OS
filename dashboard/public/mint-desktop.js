@@ -54,7 +54,10 @@
     mode: Q.get("mode") || "floating", focus: Q.get("focus") === "1", size: Q.get("size") || "M", pos: Q.get("pos") || "",
     ink: Q.get("ink") === "dark" ? "dark" : "light", opacity: 100, still: Q.get("still") === "1", peekOpen: Q.get("open") !== "0",
     talkKey: Q.get("talk") || "Ctrl+Space", liveKey: T ? "" : Q.get("livekey") || "Ctrl+Alt+L", hidden: false, host: !!T,
+    glass: !T && Q.get("glass") === "1",
   };
+  // What the app's state carries (mint://state, get_state).
+  var STATE_KEYS = ["mode", "focus", "size", "pos", "ink", "opacity", "still", "peekOpen", "talkKey", "liveKey", "hidden", "glass"];
   html.classList.toggle("dk-host", !!T);
 
   /* ---------------------------------------------------------------- applying the app's state */
@@ -63,6 +66,7 @@
     html.classList.toggle("dk-focus", !!st.focus);
     html.classList.toggle("dk-peek-open", st.mode === "peek" && !!st.peekOpen);
     html.classList.toggle("dk-still", !!st.still);
+    html.classList.toggle("dk-acrylic", !!st.glass);
     // Ink follows the wallpaper: light ink (the dark theme) on a dark or busy wallpaper, dark ink on a light one.
     html.setAttribute("data-theme", st.ink === "dark" ? "light" : "dark");
     try { document.dispatchEvent(new CustomEvent("moni-theme")); } catch (e) { /* old engine */ }
@@ -155,6 +159,7 @@
     state: function () { return st; },
     layout: function () { return L; },
     regions: function () { return lastRegions; },
+    glass: function () { return JSON.parse(glassSig || "[]"); },
   };
 
   /* ---------------------------------------------------------------- the chat panel
@@ -329,8 +334,64 @@
     // The core is a circle that catches the mouse; the sign-in pages have no core.
     return LAY.regions($("cc") ? L : { W: L.W, H: L.H, R: 0 }, els);
   }
+  /* ---------------------------------------------------------------- real blur behind the glass surfaces
+     When the app draws real blur (st.glass: Windows 10 1809+ / 11, transparency effects on, the setting
+     on), it puts a native acrylic window under each surface reported here (set_blur_rects, CSS px, only
+     settled ones -- MintDesktopLayout.glass -- and only when the list changes). A surface gets its lighter
+     glass tint (data-dk-glass, mint-desktop.css) only once its blur is there; until then, and whenever
+     there is no blur, it keeps the tinted look. Only surfaces that do not move: the session-name pills
+     follow their spheres and stay tinted. Every one of them is also a hit region (HIT / FULL above), so
+     the cursor over a blur window is always the page's. The approval card keeps a near-solid tint. */
+  var GLASS = [
+    ["#dk-panel", "card"], ["#cc-need", "alert"], ["#cc-cap-state", "pill"], ["#dk-chatbtn", "pill"], ["#dk-livebtn", "pill"],
+    ["#dk-tools", "card"], [".cc-smenu", "card"], [".dk-auth .auth-wrap .card", "card"], ["#cc-offline", "card"],
+    [".cc-deep", "card"], [".cc-modal:not([hidden])", "card"], [".cc-sdlg", "card"],
+  ];
+  var glassIds = typeof WeakMap === "function" ? new WeakMap() : null, glassN = 0, glassState = null, glassSig = "", glassMarked = [];
+  function glassKey(el) { if (!glassIds) return null; var k = glassIds.get(el); if (!k) { k = "g" + ++glassN; glassIds.set(el, k); } return k; }
+  /** Fully there: shown, and neither it nor anything round it (bar the user's own opacity on #cc) fading. */
+  function solid(el) {
+    if (!shown(el)) return false;
+    for (var e = el; e && e !== html; e = e.parentElement) {
+      if (e.id === "cc") continue;
+      if (Number(getComputedStyle(e).opacity) < 0.95) return false;
+    }
+    return true;
+  }
+  function glassReport() {
+    var rects = [], keys = [], els = {};
+    if (st.glass && L) {
+      var items = [];
+      GLASS.forEach(function (g) {
+        var list = document.querySelectorAll(g[0]);
+        for (var i = 0; i < list.length; i++) {
+          var el = list[i], key = glassKey(el);
+          if (!key || els[key] || !solid(el)) continue;
+          var r = el.getBoundingClientRect(), rad = parseFloat(getComputedStyle(el).borderTopLeftRadius) || 0;
+          els[key] = { el: el, kind: g[1] };
+          items.push({ key: key, x: r.left, y: r.top, w: r.width, h: r.height, r: Math.min(rad, r.width / 2, r.height / 2) });
+        }
+      });
+      var step = LAY.glass(glassState, items, Date.now());
+      glassState = step.state;
+      rects = step.rects;
+      keys = step.keys;
+    } else glassState = null;
+    var sig = JSON.stringify(rects);
+    if (sig !== glassSig) {
+      glassSig = sig;
+      invoke("set_blur_rects", { rects: rects, dpr: window.devicePixelRatio || 1 });
+    }
+    // The lighter tint only where the blur now is.
+    var on = keys.map(function (k) { return els[k].el; });
+    glassMarked.forEach(function (el) { if (on.indexOf(el) < 0) el.removeAttribute("data-dk-glass"); });
+    keys.forEach(function (k) { var o = els[k]; if (o.el.getAttribute("data-dk-glass") !== o.kind) o.el.setAttribute("data-dk-glass", o.kind); });
+    glassMarked = on;
+  }
+
   var lastRegions = [], lastSig = "", lastSent = 0;
   function report(force) {
+    glassReport();
     var regs = measure();
     var sig = JSON.stringify(regs);
     if (!force && sig === lastSig) return;
@@ -391,7 +452,7 @@
   /* ---------------------------------------------------------------- the app's hotkeys and state, in */
   listen("mint://state", function (p) {
     var was = JSON.stringify(st);
-    ["mode", "focus", "size", "pos", "ink", "opacity", "still", "peekOpen", "talkKey", "liveKey", "hidden"].forEach(function (k) { if (p[k] !== undefined) st[k] = p[k]; });
+    STATE_KEYS.forEach(function (k) { if (p[k] !== undefined) st[k] = p[k]; });
     if (JSON.stringify(st) !== was) apply();
     if (p.focusComposer) setTimeout(function () { openChat(true); }, 120);
   });
@@ -480,7 +541,7 @@
   apply(); // from the address (or the defaults) at once; the app's own state follows
   function boot() {
     invoke("get_state").then(function (p) {
-      if (p) ["mode", "focus", "size", "pos", "ink", "opacity", "still", "peekOpen", "talkKey", "liveKey", "hidden"].forEach(function (k) { if (p[k] !== undefined) st[k] = p[k]; });
+      if (p) STATE_KEYS.forEach(function (k) { if (p[k] !== undefined) st[k] = p[k]; });
       apply();
       invoke("page_ready", { signedIn: !!$("cc") });
     });

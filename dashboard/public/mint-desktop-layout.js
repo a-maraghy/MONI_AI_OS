@@ -139,5 +139,32 @@
     return out;
   }
 
-  return { layout: layout, windowSize: windowSize, regions: regions, SIZES: SIZES, HEADROOM: HEADROOM };
+  /**
+   * Real blur (the app's acrylic windows, desktop/src-tauri/src/blur.rs): which glass surfaces to
+   * report. A surface is reported only once it holds still -- the same rectangle on two measurements
+   * at least GLASS_SETTLE_MS apart -- so a card sliding in or a menu fading never has a native window
+   * chasing it; one that goes away (or starts to move) is dropped at once, so no blur outlives its card.
+   *   glass(prev, items, now) -> { state, rects: [{ x, y, w, h, r }], keys: [key, …] }
+   * prev: the last call's state (or null); items: [{ key, x, y, w, h, r }] measured now (CSS px).
+   */
+  var GLASS_SETTLE_MS = 80;
+  function glass(prev, items, now) {
+    var seen = (prev && prev.seen) || {};
+    var next = {}, rects = [], keys = [];
+    function q(v) { return Math.round(v * 2) / 2; }
+    (items || []).forEach(function (it) {
+      if (!it || it.key == null || !(it.w > 0) || !(it.h > 0)) return;
+      var sig = [q(it.x), q(it.y), q(it.w), q(it.h), q(it.r || 0)].join(",");
+      var was = seen[it.key];
+      var since = was && was.sig === sig ? was.since : now;
+      next[it.key] = { sig: sig, since: since };
+      if (now - since >= GLASS_SETTLE_MS) {
+        rects.push({ x: q(it.x), y: q(it.y), w: q(it.w), h: q(it.h), r: Math.max(0, Math.min(q(it.r || 0), q(it.w) / 2, q(it.h) / 2)) });
+        keys.push(it.key);
+      }
+    });
+    return { state: { seen: next }, rects: rects, keys: keys };
+  }
+
+  return { layout: layout, windowSize: windowSize, regions: regions, glass: glass, GLASS_SETTLE_MS: GLASS_SETTLE_MS, SIZES: SIZES, HEADROOM: HEADROOM };
 });

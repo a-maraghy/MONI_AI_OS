@@ -47,6 +47,11 @@ windows = { version = "0.61", features = [
   "Win32_System_Com",
   "Win32_System_SystemServices",
   "Win32_System_StationsAndDesktops",
+  # real blur (acrylic.rs)
+  "Win32_System_LibraryLoader",
+  "Win32_System_Registry",
+  "Win32_UI_Accessibility",
+  "Win32_UI_Controls",
 ] }
 
 [profile.release]

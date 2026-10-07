@@ -81,6 +81,29 @@ GPU, and the scale (Settings ▸ Display) of each monitor. Prerequisite: the ser
 - [ ] Start the app with Wi-Fi off: the "Offline — retrying in N s" card; Retry now works.
 - [ ] Measure: Task Manager ▸ GPU for MINT AI's WebView2 idle (Floating, Desktop layer), note % on each laptop.
 
+## 9b. Real blur behind cards (acrylic)
+Note `winver` (build). Settings ▸ Behaviour ▸ "Real blur behind cards" is on by default. Log lines start "acrylic:".
+- [ ] The log says "acrylic: ready (Windows build …, transparency true, …)". If not: the log line says why.
+- [ ] Open the chat panel over a **busy photo wallpaper**: after a moment the panel is **frosted** (the wallpaper behind it blurred), and its tint lightens a little; the state pill and the chat / live buttons are frosted too. The session-name pills stay tinted (by design: they move).
+- [ ] Floating over an **app window** (a browser page with text): the text behind the panel is blurred, not readable through it.
+- [ ] The blur's corners **match the card's rounded corners** at 100 %, 125 %, 150 % (no blurred square corners sticking out; a slightly jagged inner edge under the border is expected).
+- [ ] The blur is **under** the card, never over it: the card's own text is sharp in Floating, Peek and Desktop layer; switch modes back and forth (tray) and check again.
+- [ ] **Desktop layer**: click the core while another app has the focus, then click another app: the card text stays sharp (the blur windows follow the layer to the bottom of the stack).
+- [ ] **Click-through unchanged**: everything in section 3 (empty parts pass clicks, the core / buttons / composer / card catch them). Move the mouse quickly onto the chat button and click at once: the click lands on the button (not lost).
+- [ ] The blur windows never take the focus: typing in another app while the panel is open keeps going there; no extra entries in Alt+Tab, Task view or the taskbar.
+- [ ] Close the panel: the blur goes at once with it (no blurred rectangle left on the desktop). Same for the approval card when it is answered, a menu, a dialog.
+- [ ] Drag the Floating box: the blur disappears while it moves and comes back when it snaps.
+- [ ] Hide (box tool, Ctrl+Alt+M), Peek closed, focus mode, a minimised layer: no blur left anywhere.
+- [ ] Move the box to a monitor at another scale: the blur comes back the right size within a moment.
+- [ ] An **approval card** (ask a session for something destructive) is near-solid and fully readable over the busiest wallpaper.
+- [ ] Settings ▸ Opacity below 70 %: the blur goes, the tinted look comes back; 70 % and up: frosted again.
+- [ ] Settings ▸ "Real blur behind cards" off + Save: tinted look at once (no blur windows); on: frosted again.
+- [ ] Windows ▸ Personalization ▸ Colours ▸ **Transparency effects off**: within ~5 s the tinted look; Settings shows the reason under the switch. On again: frosted.
+- [ ] **High contrast** on: no blur, Windows' colours. Off: frosted.
+- [ ] **Energy saver / battery saver** on: note whether Windows still draws the blur or paints the cards solid. (If solid: tell the builder — one constant, `OFF_IN_ENERGY_SAVER`, switches to the tinted look under energy saver.) The core holds still as before; Task Manager shows no extra GPU while idle.
+- [ ] **Windows 10** (1809 or later, e.g. 22H2): the same frosting. Windows 10 before 1809: tinted look, Settings says why.
+- [ ] Note any lag of the blur behind the card when the panel opens (expected: the blur arrives ~0.1–0.3 s after the card, then the tint lightens).
+
 ## 10. Updates
 - [ ] Publish a 0.1.1 feed (`build-windows.sh --feed`, bump the version): within 6 h or Settings ▸ Check for updates now, a notification; tray ▸ "Update to 0.1.1 and restart" installs and restarts.
 - [ ] A feed whose signature does not match is refused (rename a .sig) — the app says it could not update.
