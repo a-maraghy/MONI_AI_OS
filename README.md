@@ -15,8 +15,6 @@ Keeping them apart means you can swap the bot an agent answers on, or move it
 from Telegram to WhatsApp, without rebuilding the agent or losing a word of its
 memory.
 
-**Live at** https://vmi3567127.contaboserver.net:8443/
-
 ```
 You, on Telegram or WhatsApp
       │
