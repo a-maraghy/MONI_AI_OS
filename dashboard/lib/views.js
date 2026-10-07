@@ -39,7 +39,24 @@ exports.error = (title, msg) =>
  * which hides the code field and sends second=passkey. Without JavaScript the
  * form is the old one exactly: username, password, code.
  */
-exports.login = ({ csrf, error, passkeys }) =>
+/**
+ * The MINT AI desktop app shows the same sign-in pages in its transparent
+ * window (lib/desktop.js): `desktop` makes the card float there
+ * (public/mint-desktop.css / .js) and offers the browser hand-off, for when
+ * Windows Hello cannot show inside the app. `days`: how long the app stays
+ * signed in.
+ */
+const DESK_ASSETS = ["mint-desktop.css", "mint-core-d.js", "mint-desktop-layout.js", "mint-desktop.js"];
+function deskOpts(desktop, assets) {
+  return desktop ? { pageClass: "cc-desk dk-auth", assets: assets.concat(DESK_ASSETS) } : { assets };
+}
+function deskHandOff(desktop) {
+  return desktop
+    ? `<p class="dk-browser"><button type="button" class="linkish" id="dk-browser-signin">Windows Hello does not show? Sign in in your browser</button><span class="dk-browser-note muted" id="dk-browser-note" role="status"></span></p>`
+    : "";
+}
+
+exports.login = ({ csrf, error, passkeys, desktop, days }) =>
   shell(
     "Sign in",
     `<div class="card">
@@ -68,9 +85,10 @@ exports.login = ({ csrf, error, passkeys }) =>
             : ""
         }
       </form>
-      <p class="auth-foot">${icon("lock", 14)}<span>Two-factor required · sessions end after 8 h idle</span></p>
+      ${deskHandOff(desktop)}
+      <p class="auth-foot">${icon("lock", 14)}<span>${desktop ? `Two-factor required · the app stays signed in for ${esc(String(days || 14))} days` : "Two-factor required · sessions end after 8 h idle"}</span></p>
     </div>`,
-    { assets: passkeys ? ["simplewebauthn-browser.js", "passkey.js"] : [] }
+    deskOpts(desktop, passkeys ? ["simplewebauthn-browser.js", "passkey.js"] : [])
   );
 
 /**
@@ -78,7 +96,7 @@ exports.login = ({ csrf, error, passkeys }) =>
  * password was (see POST /login): Windows Hello starts by itself, and the
  * authenticator code is one click away.
  */
-exports.loginVerify = ({ csrf, username, passkeys, primary, error }) =>
+exports.loginVerify = ({ csrf, username, passkeys, primary, error, desktop }) =>
   shell(
     "Confirm it is you",
     `<div class="card">
@@ -104,9 +122,10 @@ exports.loginVerify = ({ csrf, username, passkeys, primary, error }) =>
                  autocomplete="one-time-code" required${passkeys ? "" : " autofocus"}></label>
         <button class="btn primary w-full" type="submit">Sign in</button>
       </form>
+      ${deskHandOff(desktop)}
       <p class="auth-foot">${icon("lock", 14)}<span><a href="/login">Start again</a> · the authenticator code always works</span></p>
     </div>`,
-    { assets: passkeys ? ["simplewebauthn-browser.js", "passkey.js"] : [] }
+    deskOpts(desktop, passkeys ? ["simplewebauthn-browser.js", "passkey.js"] : [])
   );
 
 exports.setup = ({ csrf, token, form = {}, errors = [] }) =>

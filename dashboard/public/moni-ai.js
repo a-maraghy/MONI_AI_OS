@@ -46,6 +46,8 @@
   // Voice works for this viewer: switched on in Settings ▸ Voice, a key set, and voice.use.
   var READY = root.getAttribute("data-voice-ready") === "1";
   var VOICE = root.getAttribute("data-voice") || "";
+  // The desktop app's render mode (/mint-ai?shell=desktop; public/mint-desktop.js lays it out).
+  var DESKTOP = root.getAttribute("data-shell") === "desktop";
 
   /* ================================================================ helpers */
 
@@ -338,8 +340,16 @@
     // A sphere: its conversation (the existing deep view), or the sessions sheet if that is not there.
     onOpen: function (key) { if (P && P.openDeep && findSess(key)) P.openDeep(key); else { openSheet("sessions"); highlightSess(key); } },
     onMenu: function (key, x, y) { sessMenu(key, x, y); },
+    // The desktop app's render mode (?shell=desktop) places the core itself (public/mint-desktop.js).
+    layoutOverride: function () { return DESKTOP && window.MintDesktop ? window.MintDesktop.coreLayout() : null; },
   });
-  window.__mintCC = { get core() { return Orb.core; }, orbit: Orb, S: S, renderSessions: function (f) { renderSessions(f); } };
+  window.__mintCC = {
+    get core() { return Orb.core; }, orbit: Orb, S: S, renderSessions: function (f) { renderSessions(f); },
+    /* For the desktop render mode: the last n exchanges as plain text ({id, me, ai}), oldest first. */
+    recent: function (n) { return recentTurns(n); },
+    /* For the desktop app's toast: Deny, through the same call the card's Deny makes (never approve). */
+    decide: function (id, how) { return how === "deny" ? denyApproval(id) : Promise.resolve(null); },
+  };
 
   /* ---- the core setting: A dotted sphere, B Siri fluid, C hybrid, D mesh (the default). The
      server rendered the saved one as data-core; this browser remembers it too
@@ -1251,6 +1261,7 @@
       tickApprovals();
       toBottom(stick);
       renderSay();
+      if (DESKTOP) document.dispatchEvent(new CustomEvent("mint-turns"));
     });
   }
   function paintTurn(tr) {
@@ -1315,6 +1326,31 @@
     });
   }
   function visibleTurn(row) { return row && row.source !== "system"; }
+
+  /** The last n exchanges, as text: what came in (yours only) and MINT AI's answer, oldest first. */
+  function recentTurns(n) {
+    var out = [];
+    for (var i = S.turnOrder.length - 1; i >= 0 && out.length < (n || 3); i--) {
+      var tr = S.turns.get(S.turnOrder[i]);
+      if (!tr || !visibleTurn(tr) || isOrderTurn(tr)) continue;
+      var mine = tr.source === "dashboard" || tr.source === "voice-desk" || tr.source === "remote" || tr.source === "mission-request";
+      var ai = plain(aiText(tr));
+      if (!ai && tr.status === "running") ai = "…";
+      if (!mine && !ai) continue;
+      out.unshift({ id: tr.id, me: mine ? String(tr.text || "") : "", ai: ai });
+    }
+    return out;
+  }
+  /** Deny one approval (the desktop app's toast): the card's own call, and the card follows. */
+  function denyApproval(id) {
+    var a = S.approvals.get(Number(id));
+    if (!a || a.status !== "pending") return Promise.resolve(null);
+    return api("approvals/" + Number(id) + "/deny", { body: {} }).then(function (r) {
+      if (r && r.approval) upsertApproval(r.approval, false);
+      renderNeed();
+      return r;
+    });
+  }
 
   /* ---------------------------------------------------------- the last reply
      Under the caption, "Full reply" opens MINT AI's last answer in full, with
@@ -2583,6 +2619,7 @@
     LiveUI.startedAt = Date.now();
     LiveUI.wasReady = false;
     LiveUI.resuming = o.resume === "restart";
+    LiveUI.ptt = !!o.ptt;
     Voice.stop(); // a reply being read aloud gives way to the call
     paintLive("connecting");
     paintLiveMode();
@@ -2592,6 +2629,8 @@
       duplex: LiveUI.duplex,
       resume: o.resume,
       lang: LiveUI.lang,
+      // Hold-to-talk (the desktop app): the call's turns are the key's press and release, not voice detection.
+      turn: o.ptt ? "ptt" : undefined,
       worklet: root.getAttribute("data-live-worklet") || undefined,
       onState: function (st) { if (LiveUI.active) paintLive(st); },
       onCaption: function (c) {
@@ -2599,6 +2638,7 @@
         if (c.who === "you" && c.text) LiveUI.lang = /[\u0600-\u06FF]/.test(c.text) ? "ar" : "en";
         LiveUI.caption = c.text;
         if (c.who === "you") $("cc-vb-text").textContent = c.text;
+        if (DESKTOP) document.dispatchEvent(new CustomEvent("mint-live-caption", { detail: { who: c.who, text: c.text, final: c.final } }));
         paintState();
       },
       onLevel: function (l) { LiveUI.mic = l.mic || 0; LiveUI.out = l.out || 0; },
@@ -2606,6 +2646,7 @@
         if (m.type === "ready") {
           LiveUI.model = m.model || ""; LiveUI.voice = m.voice || ""; LiveUI.route = window.VoiceLive.route ? window.VoiceLive.route() : "";
           LiveUI.wasReady = true; LiveUI.retry = 0;
+          if (LiveUI.ptt) pttReady();
           if (LiveUI.resuming) toast("Reconnected.");
           LiveUI.resuming = false;
           paintLive(LiveUI.state);
@@ -2648,6 +2689,9 @@
     var resuming = LiveUI.resuming;
     LiveUI.active = false;
     LiveUI.caption = "";
+    LiveUI.ptt = false;
+    LiveUI.held = false;
+    clearTimeout(LiveUI.warmT);
     LiveUI.resuming = false;
     paintLive("idle");
     paintLiveMode();
@@ -2744,6 +2788,8 @@
     if (!liveActive()) return snap;
     var st = LiveUI.state;
     snap.listening = st === "listening" || st === "talking" || st === "interrupted" || st === "connecting";
+    // Hold-to-talk: the core listens only while the key is held; between turns the call is just warm.
+    if (LiveUI.ptt) snap.listening = !!LiveUI.held || st === "talking";
     snap.speaking = st === "speaking";
     snap.voiceLive = st === "thinking";
     snap.voiceText = $("cc-vb-text").textContent;
@@ -2754,6 +2800,8 @@
   // The mic starts and ends a call; the voice bar belongs to the call while one is on.
   window.addEventListener("click", function (e) {
     if (!e.target.closest) return;
+    // The desktop app: a mic held down was a hold-to-talk turn, not a tap.
+    if (DESKTOP && pttMic.swallow && e.target.closest("#cc-c-mic")) { pttMic.swallow = false; e.stopPropagation(); e.preventDefault(); return; }
     // The mic starts a call; during one it mutes (only the red X ends it).
     if (LIVE_OK && e.target.closest("#cc-c-mic")) { e.stopPropagation(); e.preventDefault(); return LiveUI.active ? liveMuteToggle() : liveStart(); }
     if (LiveUI.active && e.target.closest("#cc-live-end")) { e.stopPropagation(); return liveStop("button"); }
@@ -2815,7 +2863,65 @@
   })();
   /** For the dock (mint-dock.js in the shell): the mic there is this one. */
   // toggle(): the dock's mic -- it starts a call, and during one it mutes (it never ends it).
-  window.__mintLive = { ok: function () { return LIVE_OK; }, active: function () { return LiveUI.active; }, toggle: function () { if (!LIVE_OK) return false; if (LiveUI.active) liveMuteToggle(); else liveStart(); return true; }, end: function (why) { return liveStop(why || "button"); } };
+  window.__mintLive = { ok: function () { return LIVE_OK; }, active: function () { return LiveUI.active; }, toggle: function () { if (!LIVE_OK) return false; if (LiveUI.active) liveMuteToggle(); else liveStart(); return true; }, end: function (why) { return liveStop(why || "button"); },
+    // Hold-to-talk (the desktop app's key, or holding the mic there): down / up.
+    ptt: function (down) { return down ? pttPress() : pttRelease(); }, held: function () { return !!LiveUI.held; } };
+  /*
+   * Hold-to-talk, for the desktop app (DESIGN.md, "Voice"). The first press
+   * opens a live call in its "ptt" turn mode (the server commits a turn when
+   * the key comes up, instead of detecting speech); the call then stays warm
+   * for PTT_WARM_MS after the last release, so a follow-up starts at once, and
+   * hangs up by itself after that. A press while the voice speaks interrupts
+   * it. A hands-free call (the mic tapped) is never turned into one.
+   */
+  var PTT_WARM_MS = 60 * 1000;
+  // The desktop app's mic: held for PTT_HOLD_MS it is hold-to-talk; a tap is a hands-free call, as on the web.
+  var PTT_HOLD_MS = 280;
+  var pttMic = { t: 0, on: false, swallow: false };
+  if (DESKTOP) {
+    window.addEventListener("pointerdown", function (e) {
+      if (!LIVE_OK || e.button !== 0 || !e.target.closest || !e.target.closest("#cc-c-mic") || (LiveUI.active && !LiveUI.ptt)) return;
+      clearTimeout(pttMic.t);
+      pttMic.on = false;
+      pttMic.t = setTimeout(function () { pttMic.on = true; pttPress(); }, PTT_HOLD_MS);
+    }, true);
+    var micUp = function () {
+      clearTimeout(pttMic.t);
+      if (pttMic.on) { pttMic.on = false; pttMic.swallow = true; pttRelease(); setTimeout(function () { pttMic.swallow = false; }, 400); }
+    };
+    window.addEventListener("pointerup", micUp, true);
+    window.addEventListener("pointercancel", micUp, true);
+  }
+  function pttPress() {
+    if (!LIVE_OK) return false;
+    if (LiveUI.held) return true;
+    LiveUI.held = true;
+    clearTimeout(LiveUI.warmT);
+    if (!LiveUI.active) { liveStart({ ptt: true }); paintState(); return true; }
+    if (!LiveUI.ptt) { if (liveSpeaking()) window.VoiceLive.interrupt(); LiveUI.held = false; return false; }
+    if (window.VoiceLive.press) window.VoiceLive.press();
+    paintState();
+    return true;
+  }
+  function pttRelease() {
+    if (!LiveUI.held) return false;
+    LiveUI.held = false;
+    if (LiveUI.active && LiveUI.ptt && window.VoiceLive.release) window.VoiceLive.release();
+    pttWarm();
+    paintState();
+    return true;
+  }
+  /** The call is ready: a key still held starts its turn now (the first press opened the call). */
+  function pttReady() { if (LiveUI.held && window.VoiceLive.press) window.VoiceLive.press(); else pttWarm(); }
+  function pttWarm() {
+    clearTimeout(LiveUI.warmT);
+    LiveUI.warmT = setTimeout(function warm() {
+      if (!LiveUI.active || !LiveUI.ptt) return;
+      // Still answering, or the voice still speaking: wait for it to finish, then the full spell.
+      if (LiveUI.held || liveSpeaking() || LiveUI.state === "thinking" || LiveUI.state === "waiting") { LiveUI.warmT = setTimeout(warm, 5000); return; }
+      liveStop("ptt-idle");
+    }, PTT_WARM_MS);
+  }
   /* ---------------------------------------------------------- screen actions
      What MINT AI's voice may change on this screen (UI control Phase 1): the
      shared allowlist public/ui-actions.js, checked again here, run through

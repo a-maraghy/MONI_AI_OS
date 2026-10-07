@@ -176,6 +176,8 @@ const TOP_CLOCK = `<div class="cc-clock" aria-hidden="true"><b id="cc-clock">--:
  */
 function page(o) {
   const voice = o.voice || {};
+  // The desktop app's render mode (?shell=desktop): the same Command Center, no page round it.
+  const desk = o.shell === "desktop";
   const core = logic.normCore(o.core);
   const sessview = logic.normSessView(o.sessview);
   const perm = o.user && o.user.perm;
@@ -197,7 +199,7 @@ function page(o) {
 
   const pageMap = require("./ui").pageMapFor(perm);
   const body = `${sprite()}
-<div class="cc-shell" id="cc"
+<div class="cc-shell" id="cc"${desk ? ' data-shell="desktop"' : ""}
      data-core="${core}" data-state="idle" data-sessview="${sessview}"
      data-pages="${esc(pageMap.keys)}" data-page-map="${esc(pageMap.map)}"
      data-csrf="${esc(o.csrf)}"
@@ -217,6 +219,7 @@ function page(o) {
   <canvas class="cc-family" id="cc-family" aria-hidden="true"></canvas>
   <div class="cc-kids" id="cc-kids" role="group" aria-label="Live sessions"></div>
   <div class="cc-kcard" id="cc-kcard" aria-hidden="true"></div>
+${desk ? deskParts() : ""}
 
   <main class="cc-main" id="cc-center" aria-label="MINT AI">
     <h1 class="cc-sr">MINT AI Command Center</h1>
@@ -232,7 +235,7 @@ function page(o) {
         <button type="button" class="cc-target" id="cc-target" aria-haspopup="menu" aria-expanded="false" title="MINT AI picks the session">${ic("route")}<span id="cc-target-label">Auto-route</span></button>
         <input id="cc-input" name="text" placeholder="Ask MINT AI…" aria-label="Message MINT AI" maxlength="20000" autocomplete="off">
         <button type="button" class="cc-c-stop" id="cc-stop" title="Interrupt the current turn" aria-label="Interrupt" hidden>${ic("stop")}</button>
-        <button type="submit" class="cc-c-send" id="cc-send" title="Send" aria-label="Send">${ic("up")}</button>
+        ${desk ? `<span class="kb dk-kb" id="dk-kb">hold <b>Ctrl</b><b>Space</b> to talk</span>` : ""}<button type="submit" class="cc-c-send" id="cc-send" title="Send" aria-label="Send">${ic("up")}</button>
       </form>
       <div class="cc-voicebar" id="cc-voicebar">
         <button type="button" class="cc-c-mic cc-live-end cc-live-only" id="cc-live-end" title="End the conversation" aria-label="End conversation" hidden>${ic("close")}</button>
@@ -354,7 +357,7 @@ function page(o) {
   )}
 </aside>
 <div id="cc-overlay"></div>
-${perm ? dockMarkup(o.csrf, perm, { shell: true, noVoice: !vOk, core }) : ""}
+${perm && !desk ? dockMarkup(o.csrf, perm, { shell: true, noVoice: !vOk, core }) : ""}
 <noscript><div class="cc-noscript">The Command Center needs JavaScript.</div></noscript>`;
 
   return shell("MINT AI", body, {
@@ -364,11 +367,30 @@ ${perm ? dockMarkup(o.csrf, perm, { shell: true, noVoice: !vOk, core }) : ""}
     bare: true,
     brand: "ai",
     heading: null,
-    pageClass: "cc-page",
-    assets: ["voice-live.css", "mint-dock.css", "console.js", "cc-logic.js", "mint-core.js", "mint-core-d.js", "cc-family.js", "cc-map.js", "cc-panels.js", "voice-live-detect.js", "voice-live.js", "ui-actions.js", "moni-ai.js", "mint-dock.js", "mint-shell.js"],
+    pageClass: desk ? "cc-page cc-desk" : "cc-page",
+    assets: desk
+      ? ["voice-live.css", "mint-desktop.css", "console.js", "cc-logic.js", "mint-core.js", "mint-core-d.js", "cc-family.js", "cc-map.js", "cc-panels.js", "voice-live-detect.js", "voice-live.js", "ui-actions.js", "mint-desktop-layout.js", "moni-ai.js", "mint-desktop.js"]
+      : ["voice-live.css", "mint-dock.css", "console.js", "cc-logic.js", "mint-core.js", "mint-core-d.js", "cc-family.js", "cc-map.js", "cc-panels.js", "voice-live-detect.js", "voice-live.js", "ui-actions.js", "moni-ai.js", "mint-dock.js", "mint-shell.js"],
     topExtra: topExtra(),
     topEnd: TOP_CLOCK,
   });
+}
+
+/**
+ * What only the desktop render mode adds (public/mint-desktop.js places it):
+ * the bubbles of the last exchanges, the core's own click target (in Floating
+ * the core is the handle you drag the box by), and the Floating box's tools.
+ */
+function deskParts() {
+  const b = (k, t, d) => `<button type="button" data-dk="${k}" title="${esc(t)}" aria-label="${esc(t)}"><svg class="cc-i" viewBox="0 0 24 24" aria-hidden="true">${d}</svg></button>`;
+  return `<div class="dk-chat" id="dk-chat" aria-live="polite"></div>
+  <div class="dk-corehit" id="dk-corehit" title="MINT AI" aria-hidden="true"></div>
+  <div class="dk-tools" id="dk-tools" role="toolbar" aria-label="MINT AI window" hidden>${
+    b("drag", "Drag to move", '<circle cx="9" cy="6" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="18" r="1.4"/>') +
+    b("focus", "Focus: just the core", '<circle cx="12" cy="12" r="3.5"/><circle cx="12" cy="12" r="8.5"/>') +
+    b("size", "Size S / M / L", '<path d="M4 20 20 4M4 20h6M4 20v-6M20 4h-6M20 4v6"/>') +
+    b("hide", "Hide (Ctrl Alt M brings it back)", '<path d="M5 12h14"/>')
+  }</div>`;
 }
 
 /* ------------------------------------------------ Account ▸ Appearance --- */

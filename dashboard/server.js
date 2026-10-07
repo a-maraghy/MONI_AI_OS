@@ -50,6 +50,9 @@ const voicePersona = require("./lib/voice-persona");
 const voiceLive = require("./lib/voice-live");
 // MINT AI ▸ Settings; the Voice section is rendered and handled with the voice code below.
 const settingsRoutes = require("./lib/routes-settings");
+// The MINT AI desktop app for Windows: its render mode, session length, sign-in hand-off and update feed.
+const desktopLib = require("./lib/desktop");
+const desktopViews = require("./lib/views-desktop");
 const UiActions = require("./public/ui-actions.js");
 // UI control Phase 2: the ui tokens this server minted, in memory only (lib/ui-relay.js).
 const uiRelay = require("./lib/ui-relay").createRelay();
@@ -200,6 +203,19 @@ app.use(
   })
 );
 
+/*
+ * The desktop app (lib/desktop.js) talks to its own window through Tauri's IPC,
+ * which on Windows is a fetch to http://ipc.localhost. Only a request from the
+ * app (its user agent) gets that one extra connect-src; everything else in the
+ * policy is the same, and a browser never sees it.
+ */
+app.use((req, res, next) => {
+  if (!desktopLib.isApp(req)) return next();
+  const h = res.getHeader("Content-Security-Policy");
+  if (typeof h === "string") res.setHeader("Content-Security-Policy", h.replace("connect-src 'self'", "connect-src 'self' http://ipc.localhost ipc:"));
+  next();
+});
+
 app.use(express.urlencoded({ extended: false, limit: "64kb" }));
 
 /**
@@ -272,6 +288,8 @@ app.get("/manifest.webmanifest", (req, res) => {
 // The store and the secret are also handed to lib/sessions.js, which lists a
 // user's signed-in browsers (Devices) and signs them out through this store.
 const SESSION_MAX_AGE = 1000 * 60 * 60 * 8;
+// The desktop app's sessions last longer (14 days by default, Settings > General; lib/desktop.js).
+const desktop = desktopLib.create({ db, dir: process.env.MONI_DESKTOP_DIR || path.join(DATA_DIR, "desktop") });
 const sessionStore = new SQLiteStore({ db: "sessions.db", dir: DATA_DIR });
 const sessionMw = session({
     store: sessionStore,
@@ -347,6 +365,14 @@ function requireCsrf(req, res, next) {
 function loadActor(req, res, next) {
   req.me = null;
   req.perm = rbac.actor(null);
+  // The desktop app's session, past its days: signed out here (its call too); the app asks for the password and Windows Hello again.
+  if (desktop.checkSession(req) === "expired") {
+    endLiveCallsForSession(req.sessionID, "signed-out");
+    db.logLogin(req.ip, req.session.username || "", "desktop", `desktop app session ended after ${desktop.days()} days`);
+    req.session.authed = false;
+    delete req.session.userId;
+    req.session.desktopExpired = true;
+  }
   if (req.session && req.session.authed && req.session.userId) {
     const me = db.getUser(req.session.userId);
     if (!me || me.disabled) {
@@ -396,6 +422,12 @@ app.use(chrome.middleware());
 function requireAuth(req, res, next) {
   if (req.me) return next();
   return res.redirect("/login");
+}
+
+/** Where a signed-in person lands: the app always on its own render mode of the Command Center. */
+function landingFor(req, perm) {
+  const to = rbac.landing(perm || req.perm);
+  return desktopLib.isApp(req) && (perm || req.perm).can("moniai.use") ? "/mint-ai?shell=desktop" : to;
 }
 
 /** The viewer context every view forwards into the page shell. */
@@ -608,14 +640,18 @@ app.post("/setup/confirm", requireCsrf, async (req, res) => {
 
 app.get("/login", (req, res) => {
   if (noUsersYet()) return res.redirect("/setup");
-  if (req.me) return res.redirect(rbac.landing(req.perm));
+  if (req.me) return res.redirect(landingFor(req));
   // A half-finished sign-in is abandoned by coming back here.
   if (req.session) delete req.session.pendingLogin;
+  const app_ = desktopLib.isApp(req);
+  const expired = app_ && req.session && req.session.desktopExpired;
   res.send(
     views.login({
       csrf: res.locals.csrf,
-      error: req.query.revoked ? "Your access has been changed. Sign in again." : req.query.again ? "Invalid credentials." : null,
+      error: req.query.revoked ? "Your access has been changed. Sign in again." : req.query.again ? "Invalid credentials." : expired ? `The app's ${desktop.days()} days are up. Sign in again: your password, then Windows Hello.` : null,
       passkeys: !!passkeys.rpFor(req),
+      desktop: app_,
+      days: desktop.days(),
     })
   );
 });
@@ -704,6 +740,8 @@ function completeLogin(req, res, account, how, done) {
 
   // Regenerate the session on privilege change to prevent fixation.
   const csrf = req.session.csrf;
+  // A sign-in started from the desktop app's browser hand-off comes back to it (lib/desktop.js).
+  const after = /^\/desktop\/link\?c=[A-Za-z0-9_-]{43}&p=\d{4,5}$/.test(String(req.session.afterLogin || "")) ? req.session.afterLogin : null;
   req.session.regenerate((err) => {
     if (err) return done(err);
     req.session.authed = true;
@@ -717,9 +755,11 @@ function completeLogin(req, res, account, how, done) {
     req.session.device = { ua: String(req.get("user-agent") || "").slice(0, 300), ip, at: Date.now() };
     req.session.seenAt = Date.now();
     deviceSessions.forget(account.id);
-    db.logLogin(ip, account.username, "success", how);
+    // Signed in inside the desktop app: its session lasts the app's days, from now.
+    const inApp = desktop.markSession(req);
+    db.logLogin(ip, account.username, "success", (how ? how : "") + (inApp ? (how ? ", " : "") + "desktop app (" + desktop.days() + " days)" : "") || null);
     const actor = rbac.actor(account.role);
-    done(null, rbac.landing(actor));
+    done(null, after || landingFor(req, actor));
   });
 }
 
@@ -759,7 +799,7 @@ function secondStepFailed(req, p, reason) {
 }
 
 app.get("/login/verify", (req, res) => {
-  if (req.me) return res.redirect(rbac.landing(req.perm));
+  if (req.me) return res.redirect(landingFor(req));
   const p = pendingLogin(req);
   if (!p) return res.redirect("/login");
   const rp = passkeys.rpFor(req);
@@ -770,6 +810,7 @@ app.get("/login/verify", (req, res) => {
       passkeys: !!rp,
       primary: passkeys.primaryOrigin(),
       error: req.query.err ? "That did not work. Try again, or use your authenticator code." : null,
+      desktop: desktopLib.isApp(req),
     })
   );
 });
@@ -831,6 +872,85 @@ app.post("/login/code", loginLimiter, requireCsrf, (req, res) => {
 app.post("/logout", requireCsrf, (req, res) => {
   endLiveCallsForSession(req.sessionID, "signed-out"); // this device's live call ends with its session
   req.session.destroy(() => res.redirect("/login"));
+});
+
+/* ------------------------------------------------------ the desktop app --- */
+
+/*
+ * The MINT AI desktop app (lib/desktop.js). The feed and the files are public:
+ * the app's updater has no cookie, and every file there is signed. The
+ * download page and the sign-in hand-off are for signed-in people.
+ */
+app.get("/desktop/latest.json", (req, res) => {
+  const j = desktop.latest();
+  res.set("Cache-Control", "no-cache");
+  if (!j) return res.status(404).json({ error: "No release has been published." });
+  res.json(j);
+});
+app.get("/desktop/files/:name", (req, res) => {
+  const p = desktop.feedPath(req.params.name);
+  if (!p || !fs.existsSync(p)) return res.status(404).send("Not found");
+  res.set("Cache-Control", "public, max-age=300");
+  res.set("X-Content-Type-Options", "nosniff");
+  res.download(p, req.params.name);
+});
+app.get(["/desktop", "/desktop/"], requireAuth, (req, res) => {
+  res.send(desktopViews.download({ csrf: res.locals.csrf, user: ctx(req), offer: desktop.offer(), days: desktop.days() }));
+});
+
+/** The hand-off's two values, checked: the app's challenge and its loopback port. */
+function linkArgs(q) {
+  const c = String((q && q.c) || "");
+  const p = Number((q && q.p) || 0);
+  return desktopLib.CHALLENGE_RE.test(c) && Number.isInteger(p) && p >= 1024 && p <= 65535 ? { c, p } : null;
+}
+// The hand-off's own budget: a link page, its Link and the app's redeem are three requests per sign-in.
+const desktopLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 30, standardHeaders: true, legacyHeaders: false });
+app.get("/desktop/link", desktopLimiter, (req, res) => {
+  const a = linkArgs(req.query);
+  if (!a) return res.status(400).send(desktopViews.link({ error: "This link is not complete. Press \u201cSign in in your browser\u201d in the app again." }));
+  if (!req.me) {
+    // Sign in here first (both factors), then back to this page.
+    req.session.afterLogin = `/desktop/link?c=${a.c}&p=${a.p}`;
+    return res.redirect("/login");
+  }
+  const fresh = Date.now() - Number(req.session.authAt || 0) < desktopLib.LINK_FRESH_MS;
+  res.send(desktopViews.link({ csrf: res.locals.csrf, username: req.me.username, challenge: a.c, port: a.p, stale: !fresh, days: desktop.days() }));
+});
+app.post("/desktop/link", desktopLimiter, requireAuth, requireCsrf, (req, res) => {
+  const a = linkArgs(req.body);
+  if (!a) return res.status(400).send(desktopViews.link({ error: "This link is not complete. Press \u201cSign in in your browser\u201d in the app again." }));
+  if (!(Date.now() - Number(req.session.authAt || 0) < desktopLib.LINK_FRESH_MS)) return res.redirect(`/desktop/link?c=${a.c}&p=${a.p}`);
+  const code = desktop.issue(req.me.id, a.c);
+  if (!code) return res.status(429).send(desktopViews.link({ error: "Too many links are waiting. Try again in two minutes." }));
+  db.logLogin(req.ip, req.me.username, "desktop", "desktop app sign-in: a one-time link code issued in the browser (2 min)");
+  res.send(desktopViews.linked({ to: `http://127.0.0.1:${a.p}/mint-callback?code=${code}` }));
+});
+/** "Sign in again" on a stale browser session: this browser signs out, then signs in and comes back. */
+app.post("/desktop/link/again", requireCsrf, (req, res) => {
+  const a = linkArgs(req.body);
+  if (!a) return res.redirect("/login");
+  endLiveCallsForSession(req.sessionID, "signed-out");
+  const csrf = req.session.csrf;
+  req.session.regenerate(() => {
+    req.session.csrf = csrf;
+    req.session.afterLogin = `/desktop/link?c=${a.c}&p=${a.p}`;
+    res.redirect("/login");
+  });
+});
+/** The app redeems the code with its secret (only from the app). */
+app.get("/desktop/redeem", desktopLimiter, (req, res) => {
+  if (!desktopLib.isApp(req)) return res.status(403).send(views.error("Not here", "This address is for the MINT AI desktop app."));
+  const userId = desktop.redeem(req.query.code, req.query.v);
+  const account = userId != null ? db.getUser(userId) : null;
+  if (!account || account.disabled) {
+    db.logLogin(req.ip, "", "fail", "desktop app hand-off code refused");
+    logAuthFailure(req.ip, "desktop hand-off code refused");
+    return res.redirect("/login?again=1");
+  }
+  completeLogin(req, res, account, "browser hand-off", (err, to) =>
+    err ? res.status(500).send(views.error("Session error", String(err))) : res.redirect(to)
+  );
 });
 
 /* ----------------------------------------------------------- dashboard ---- */
@@ -917,7 +1037,7 @@ function primeFrame(req, services) {
 // `/` is the default landing, not a page: MINT AI for those who may use it,
 // else the first dashboard the role can open (rbac.landing). A 302 so the
 // default can change again; the OS overview itself lives at /os.
-app.get("/", requireAuth, (req, res) => res.redirect(302, rbac.landing(req.perm)));
+app.get("/", requireAuth, (req, res) => res.redirect(302, landingFor(req)));
 
 app.get("/os", requireAuth, requirePerm("os.view"), async (req, res) => {
   const data = await gather({
@@ -4182,6 +4302,8 @@ app.get("/mint-ai", requireAuth, async (req, res) => {
       voice: await moniAiVoice(req),
       core: req.me.mint_core,
       sessview: req.me.sessions_view,
+      // The desktop app's render mode: the same page, no page round it (public/mint-desktop.js).
+      shell: req.query.shell === "desktop" ? "desktop" : null,
     })
   );
 });
@@ -6150,7 +6272,7 @@ try {
 } catch (e) {
   console.error("page map: the scan failed, page.open keeps its built-in pages: " + e.message);
 }
-settingsRoutes.mount(app, { requireAuth, requireCsrf, ctx, db, moniai, pageMap });
+settingsRoutes.mount(app, { requireAuth, requireCsrf, ctx, db, moniai, pageMap, desktopDays: () => desktop.days(), desktopSetDays: (d, by) => desktop.setDays(d, by) });
 
 /* ------------------------------------ live voice evaluation (admin) ---- */
 
@@ -6349,7 +6471,9 @@ function liveUpgrade(req, socket, head) {
       const sid = req.sessionID || null; // the device's session: signing it out ends this call (endLiveCallsForSession)
       // The page coming back after the dashboard restarted (it was told "restarting"): the voice says it is back.
       const resume = q.get("resume") === "restart" ? { lang: q.get("lang") === "ar" ? "ar" : "en" } : null;
-      liveWss.handleUpgrade(req, socket, head, (ws) => liveConnected(ws, { me, cfg, ip, duplex, noise: audio.noise, route, tab, canVoice: perm.can("voice.manage"), sid, resume }));
+      // Hold-to-talk turns (the desktop app's key): "ptt"; anything else is the live conversation as always.
+      const turn = q.get("turn") === "ptt" ? "ptt" : "vad";
+      liveWss.handleUpgrade(req, socket, head, (ws) => liveConnected(ws, { me, cfg, ip, duplex, noise: audio.noise, route, tab, canVoice: perm.can("voice.manage"), sid, resume, turn }));
     } catch (e) {
       console.log("live: upgrade failed: " + e.message);
       refuseUpgrade(socket, 500, "Server error");
@@ -6357,7 +6481,7 @@ function liveUpgrade(req, socket, head) {
   });
 }
 
-function liveConnected(ws, { me, cfg, ip, duplex, noise, route, tab, canVoice, sid, resume }) {
+function liveConnected(ws, { me, cfg, ip, duplex, noise, route, tab, canVoice, sid, resume, turn }) {
   const actor = me.username;
   const json = (o) => ws.readyState === 1 && ws.send(JSON.stringify(o));
   if (voiceLive.callFor(actor)) {
@@ -6404,11 +6528,11 @@ function liveConnected(ws, { me, cfg, ip, duplex, noise, route, tab, canVoice, s
     // The confirm's 30 s start when the voice has finished asking.
     armConfirm: (id) => uiConfirms.arm(actor, id),
     log: (m) => console.log(m),
-    opts: { duplex },
+    opts: { duplex, turn: turn === "ptt" ? "ptt" : "vad" },
   });
   call.sid = sid || null;
   voiceLive.register(actor, call);
-  db.logLogin(ip, actor, "voice", `live conversation started (${duplex === "full" ? "headphones" : "speakers"} mode, playback ${route}, noise reduction ${noise})`);
+  db.logLogin(ip, actor, "voice", `live conversation started (${turn === "ptt" ? "hold-to-talk, " : ""}${duplex === "full" ? "headphones" : "speakers"} mode, playback ${route}, noise reduction ${noise})`);
   console.log(`live: call ${call.id} started: ${duplex} mode, playback ${route}, noise reduction ${noise}${resume ? ", resumed after a restart" : ""}`);
   // Twice real time is the most a microphone can send; more is not a microphone.
   let window0 = Date.now();
@@ -6456,7 +6580,7 @@ function liveConnected(ws, { me, cfg, ip, duplex, noise, route, tab, canVoice, s
   call
     .connect()
     .then(() => {
-      json({ type: "ready", call: call.id, model: call.model, voice: cfg.voice, max_s: Math.round(call.opts.maxMs / 1000), rate: voiceLive.RATE, duplex: call.duplex, noise, resumed: !!resume });
+      json({ type: "ready", call: call.id, model: call.model, voice: cfg.voice, max_s: Math.round(call.opts.maxMs / 1000), rate: voiceLive.RATE, duplex: call.duplex, noise, resumed: !!resume, turn: call.turnMode });
       if (resume) call.sayReconnected(resume.lang);
     })
     .catch((e) => {

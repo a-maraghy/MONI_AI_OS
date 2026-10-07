@@ -163,12 +163,20 @@
     function resize() {
       var r = stage.getBoundingClientRect();
       var phone = window.innerWidth <= 720;
-      if (!r.width || !r.height) return;
-      L.cx = r.left + r.width / 2;
-      L.cy = r.top + r.height / 2 + (phone ? 4 : 14);
-      L.R = Math.max(80, Math.min(r.width * (phone ? 0.34 : 0.36), r.height * 0.36, 275));
-      // Phone with the family of spheres (the mockup's phone layout): a smaller core, so the spheres fit round her.
-      if (phone && family && spheresOn()) L.R = Math.max(62, Math.min(92, r.width * 0.22, r.height * 0.2));
+      // The desktop app's render mode places the core itself (public/mint-desktop-layout.js).
+      var ov = opts.layoutOverride ? opts.layoutOverride() : null;
+      if (ov && ov.R > 0) {
+        L.cx = ov.cx;
+        L.cy = ov.cy;
+        L.R = ov.R;
+      } else {
+        if (!r.width || !r.height) return;
+        L.cx = r.left + r.width / 2;
+        L.cy = r.top + r.height / 2 + (phone ? 4 : 14);
+        L.R = Math.max(80, Math.min(r.width * (phone ? 0.34 : 0.36), r.height * 0.36, 275));
+        // Phone with the family of spheres (the mockup's phone layout): a smaller core, so the spheres fit round her.
+        if (phone && family && spheresOn()) L.R = Math.max(62, Math.min(92, r.width * 0.22, r.height * 0.2));
+      }
       L.rx = Math.min(L.R * 1.62, window.innerWidth / 2 - 20);
       L.ry = L.R * 0.34;
       core.resize(L.cx, L.cy, L.R, window.innerWidth, window.innerHeight);

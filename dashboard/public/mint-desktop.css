@@ -1,0 +1,137 @@
+/*
+ * The Command Center's desktop render mode (/mint-ai?shell=desktop) and the
+ * sign-in pages as the MINT AI desktop app shows them: no page, no frame, a
+ * transparent background, the pieces placed by public/mint-desktop.js.
+ * Text that sits straight on the wallpaper gets a tinted pill (the approved
+ * mockup's choice); cards and the composer are always solid. The ink follows
+ * the wallpaper: the app sets data-theme (dark theme = light ink on a dark or
+ * busy wallpaper, light theme = dark ink on a light one).
+ */
+html.cc-desk {
+  --dk-pill: rgba(10, 12, 30, .60);
+  --dk-pill-b: rgba(255, 255, 255, .12);
+  --dk-card: rgba(16, 18, 40, .92);
+  --dk-card-b: rgba(255, 255, 255, .14);
+  --dk-tx: #F2F3FA;
+  --dk-tx2: rgba(235, 238, 255, .72);
+  --dk-accent: #5FF0C8;
+  --dk-amber: #FABD4D;
+  --dk-shadow: 0 10px 36px rgba(0, 0, 0, .30);
+  background: transparent !important;
+}
+html.cc-desk[data-theme="light"] {
+  --dk-shadow: 0 8px 28px rgba(40, 20, 90, .14);
+  --dk-pill: rgba(255, 255, 255, .74);
+  --dk-pill-b: rgba(20, 10, 60, .10);
+  --dk-card: rgba(255, 255, 255, .95);
+  --dk-card-b: rgba(20, 10, 60, .12);
+  --dk-tx: #17142B;
+  --dk-tx2: rgba(30, 26, 60, .72);
+  --dk-accent: #007A57;
+  --dk-amber: #9A5A00;
+}
+html.cc-desk, html.cc-desk body { margin: 0; height: 100%; overflow: hidden; background: transparent !important; }
+html.cc-desk body { background-image: none !important; }
+
+/* No page round it: no top bar, sidebar, icon rail, page background, hint row or routing chip. */
+html.cc-desk .topbar, html.cc-desk .sidebar, html.cc-desk .nav-scrim, html.cc-desk .os-scrim, html.cc-desk .dock-band,
+html.cc-desk #cc-rail, html.cc-desk .cc-bg, html.cc-desk #cc-hint, html.cc-desk #cc-target, html.cc-desk .cc-vb-tags,
+html.cc-desk .cc-static, html.cc-desk #cc-cap, html.cc-desk #cc-cap-more, html.cc-desk #cc-reply, html.cc-desk .auth-wrap .watermark,
+html.cc-desk .cc-sheet-scrim, html.cc-desk #cc-ring, html.cc-desk .cc-orbit, html.cc-desk .auth-leaf { display: none !important; }
+html.cc-desk .layout, html.cc-desk .layout.bare, html.cc-desk main.content { background: transparent !important; padding: 0 !important; margin: 0 !important; border: 0 !important; }
+html.cc-desk .cc-shell { background: transparent; }
+html.cc-desk .cc-main { top: 0; display: block; pointer-events: none; }
+html.cc-desk .cc-main > * { pointer-events: none; }
+html.cc-desk .cc-stage { position: fixed; inset: 0; }
+
+/* The state under the core: a pill. */
+html.cc-desk .cc-caption { position: fixed; z-index: 6; transform: translateX(-50%); padding: 0; min-height: 0; gap: 0; display: block; pointer-events: none; }
+html.cc-desk .cc-cap-state { padding: 5px 12px; border-radius: 14px; background: var(--dk-pill); border: 1px solid var(--dk-pill-b); color: var(--dk-tx); box-shadow: 0 2px 14px rgba(0, 0, 0, .16); pointer-events: auto; }
+html.cc-desk .cc-cap-state[data-s="listening"], html.cc-desk .cc-cap-state[data-s="speaking"] { color: var(--dk-accent); }
+html.cc-desk .cc-cap-state[data-s="needs"] { color: var(--dk-amber); }
+
+/* The composer and the live call's bar: always solid. */
+html.cc-desk .cc-dock { position: fixed; z-index: 8; padding: 0; gap: 0; display: block; pointer-events: none; }
+html.cc-desk .cc-dock > * { pointer-events: auto; }
+html.cc-desk .cc-composer, html.cc-desk .cc-voicebar { width: 100%; box-sizing: border-box; background: var(--dk-card); border: 1px solid var(--dk-card-b); color: var(--dk-tx); box-shadow: var(--dk-shadow); }
+html.cc-desk .cc-composer { height: 48px; padding: 0 6px 0 8px; }
+html.cc-desk .cc-composer input { color: var(--dk-tx); }
+html.cc-desk .cc-composer input::placeholder { color: var(--dk-tx2); }
+html.cc-desk .cc-dock.calm:not(:hover):not(:focus-within) .cc-composer { opacity: 1; }
+html.cc-desk .dk-kb { font: 600 10.5px var(--mono); color: var(--dk-tx2); white-space: nowrap; order: 3; }
+html.cc-desk .dk-kb b { border: 1px solid var(--dk-pill-b); border-radius: 4px; padding: 1px 5px; margin: 0 1px; font-weight: 600; }
+html.cc-desk[data-dk-mode="floating"] .dk-kb { display: none; }
+html.cc-desk .cc-composer input { order: 2; }
+html.cc-desk .cc-composer .cc-c-mic { order: 4; }
+html.cc-desk .cc-composer .cc-c-stop, html.cc-desk .cc-composer .cc-c-send { order: 5; }
+
+/* The last exchanges: bubbles on tinted pills, older ones faded. */
+.dk-chat { display: none; }
+html.cc-desk .dk-chat { position: fixed; z-index: 7; display: flex; flex-direction: column; gap: 8px; justify-content: flex-end; overflow: hidden; pointer-events: none; }
+html.cc-desk .dk-bub { max-width: 100%; padding: 9px 14px 10px; border-radius: 16px; font: 14px/1.4 var(--ui); color: var(--dk-tx); background: var(--dk-pill); border: 1px solid var(--dk-pill-b); box-shadow: 0 2px 14px rgba(0, 0, 0, .16); pointer-events: auto; animation: dk-in .35s ease-out; overflow-wrap: anywhere; }
+html.cc-desk .dk-bub b { display: block; font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; margin-bottom: 2px; }
+html.cc-desk .dk-bub.ai { align-self: flex-start; border-bottom-left-radius: 5px; }
+html.cc-desk .dk-bub.ai b { color: var(--dk-accent); }
+html.cc-desk .dk-bub.me { align-self: flex-end; border-bottom-right-radius: 5px; }
+html.cc-desk .dk-bub.me b { opacity: .6; text-align: right; }
+html.cc-desk .dk-bub.old { opacity: .55; }
+html.cc-desk .dk-bub.ghost { opacity: .8; font-style: italic; }
+@keyframes dk-in { from { opacity: 0; transform: translateY(8px); } }
+
+/* Offline: the note under the core instead of the bubbles and the state pill (DESIGN.md "Signed out and offline"). */
+html.cc-desk .cc-shell:has(#cc-offline:not([hidden])) .dk-chat, html.cc-desk .cc-shell:has(#cc-offline:not([hidden])) .cc-caption { display: none; }
+html.cc-desk .cc-shell:has(#cc-offline:not([hidden])) .cc-composer { opacity: .6; }
+html.cc-desk .cc-shell:has(#cc-offline:not([hidden])) #cc-core { filter: saturate(.25) brightness(.8); }
+html.cc-desk .cc-offline { background: var(--dk-card); border: 1px solid var(--dk-card-b); color: var(--dk-tx); width: 320px; box-sizing: border-box; text-align: center; }
+
+/* The decision card: the Command Center's own, solid, where the mode puts it. */
+html.cc-desk .cc-need { position: fixed; right: auto; z-index: 12; overflow: auto; background: var(--dk-card); border: 1px solid var(--dk-card-b); color: var(--dk-tx); box-shadow: 0 0 0 1px rgba(250, 189, 77, .55), 0 10px 40px rgba(250, 140, 40, .25); }
+html.cc-desk .cc-need h3, html.cc-desk .cc-need .why { color: var(--dk-tx); }
+html.cc-desk .cc-need .meta { color: var(--dk-tx2); }
+html.cc-desk #cc-needpill { position: fixed; z-index: 9; }
+
+/* The session names under the spheres, on tinted pills. */
+html.cc-desk .cc-kids > * { color: var(--dk-tx); }
+html.cc-desk .cc-kids .nm, html.cc-desk .cc-kids [class*="lab"] { background: var(--dk-pill); border: 1px solid var(--dk-pill-b); border-radius: 12px; padding: 3px 10px 4px; }
+
+/* The core's own click target (in Floating: the handle the box is dragged by), and the box's tools. */
+.dk-corehit, .dk-tools { display: none; }
+html.cc-desk .dk-corehit { display: block; position: fixed; z-index: 4; border-radius: 50%; cursor: pointer; }
+html.cc-desk[data-dk-mode="floating"] .dk-corehit { cursor: grab; }
+html.cc-desk .dk-tools:not([hidden]) { display: flex; position: fixed; z-index: 10; gap: 2px; padding: 3px; border-radius: 12px; background: var(--dk-card); border: 1px solid var(--dk-card-b); opacity: 0; transition: opacity .2s; }
+html.cc-desk .dk-tools:hover, html.cc-desk[data-dk-mode="floating"] body:hover .dk-tools { opacity: 1; }
+html.cc-desk .dk-tools button { width: 28px; height: 26px; border: 0; border-radius: 8px; background: transparent; display: grid; place-items: center; color: var(--dk-tx); padding: 0; }
+html.cc-desk .dk-tools button:hover { background: rgba(128, 128, 128, .25); }
+html.cc-desk .dk-tools .cc-i { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; }
+
+/* Notes the page raises: above the composer, inside the window. */
+html.cc-desk .cc-toast { bottom: 84px !important; max-width: calc(100vw - 32px); }
+
+/* Focus mode: only the core (its colour and motion still say the state). */
+html.cc-desk.dk-focus .dk-chat, html.cc-desk.dk-focus .cc-dock, html.cc-desk.dk-focus .cc-kids, html.cc-desk.dk-focus .cc-family,
+html.cc-desk.dk-focus .cc-kcard, html.cc-desk.dk-focus .dk-tools, html.cc-desk.dk-focus #cc-needpill, html.cc-desk.dk-focus #cc-offline { display: none !important; }
+
+/* Peek: a light dim behind it while it shows. */
+html.cc-desk.dk-peek-open body { background: rgba(4, 6, 16, .34) !important; }
+html.cc-desk.dk-peek-open[data-theme="light"] body { background: rgba(235, 238, 250, .40) !important; }
+
+/* Battery saver: no transitions or animations beyond the still core. */
+html.cc-desk.dk-still *, html.cc-desk.dk-still *::before, html.cc-desk.dk-still *::after { animation: none !important; transition: none !important; }
+
+/* ---- the sign-in pages, as the app shows them: one solid card on the desktop ---- */
+html.cc-desk.dk-auth .auth-wrap { position: fixed; inset: 0; display: block; padding: 0; min-height: 0; background: transparent !important; }
+html.cc-desk.dk-auth .auth-lockup { display: none; }
+html.cc-desk.dk-auth .auth-wrap .card { position: fixed; z-index: 2; margin: 0; background: var(--dk-card); border: 1px solid var(--dk-card-b); color: var(--dk-tx); box-shadow: var(--dk-shadow); border-radius: 14px; }
+/* Signed out: the core grey and still above the card. */
+.dk-auth-core { display: none; }
+html.cc-desk.dk-auth .dk-auth-core { display: block; position: fixed; inset: 0; width: 100vw; height: 100vh; z-index: 1; pointer-events: none; filter: grayscale(1) brightness(.75); }
+html.cc-desk.dk-auth .auth-wrap .card label, html.cc-desk.dk-auth .auth-wrap .card h2 { color: var(--dk-tx); }
+html.cc-desk.dk-auth .auth-wrap .card .muted, html.cc-desk.dk-auth .auth-foot { color: var(--dk-tx2); }
+.dk-browser { margin-top: 10px; text-align: center; }
+.dk-browser .linkish { font-size: 12.5px; }
+.dk-browser-note { display: block; margin-top: 6px; font-size: 12px; }
+html:not(.dk-host) .dk-browser { display: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  html.cc-desk .dk-bub { animation: none; }
+}

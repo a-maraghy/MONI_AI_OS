@@ -17,6 +17,7 @@
  */
 
 const V = require("./views-settings");
+const DK = require("./desktop");
 const { esc, icon, flashes } = require("./ui");
 
 /** Section renderers: async (req, res) -> { body, secClass?, assets?, status? }. */
@@ -105,6 +106,20 @@ sections.general = async (req, res, deps) => {
           V.form("/mint-ai/settings/general/rc", csrf, V.sw('name="enabled" value="1"' + (st._error ? " disabled" : ""), !!rc.enabled), { noSave: false }),
           { scope: "everyone", id: "g-rc" }
         )
+    ) +
+    V.group(
+      "Desktop app",
+      "monitor",
+      V.row(
+        "Stay signed in",
+        `How long the MINT AI desktop app for Windows stays signed in after the password and Windows Hello; then it asks again. A browser keeps its 8 hours idle. ${DK.MIN_DAYS} to ${DK.MAX_DAYS} days.`,
+        V.form(
+          "/mint-ai/settings/general/desktop",
+          csrf,
+          `<input type="number" name="days" min="${DK.MIN_DAYS}" max="${DK.MAX_DAYS}" value="${esc(deps.desktopDays ? deps.desktopDays() : DK.DEFAULT_DAYS)}" aria-label="Days the desktop app stays signed in"><span class="unit">days</span>`
+        ),
+        { scope: "everyone", id: "g-desktop" }
+      ) + V.row("Download", "The installer, and how to trust its certificate on your computers.", `<a class="btn small" href="/desktop/">Open the download page</a>`)
     ) +
     (charter
       ? `<section class="cc-modal os wide" id="m-charter" role="dialog" aria-modal="true" aria-labelledby="m-charter-t" hidden>
@@ -558,6 +573,13 @@ function mount(app, deps) {
   });
 
   /* ---- General ---- */
+  app.post("/mint-ai/settings/general/desktop", requireAuth, guard("general"), requireCsrf, (req, res) => {
+    const d = DK.cleanDays(req.body.days);
+    if (d == null || !deps.desktopSetDays) return reply(req, res, "general", { err: `Stay signed in: ${DK.MIN_DAYS} to ${DK.MAX_DAYS} days.`, anchor: "g-desktop" });
+    deps.desktopSetDays(d, req.me.username);
+    audit(req, `desktop app stays signed in ${d} days`);
+    reply(req, res, "general", { msg: `The desktop app stays signed in for ${d} days (new sign-ins and the ones already there).`, anchor: "g-desktop" });
+  });
   app.post("/mint-ai/settings/general/rc", requireAuth, guard("general"), requireCsrf, async (req, res) => {
     const enabled = req.body.enabled === "1" || req.body.enabled === "on";
     try {

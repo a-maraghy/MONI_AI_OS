@@ -151,13 +151,17 @@ function listFor(userId, currentSid) {
   const rows = rawFor(userId).map((r) => {
     const dev = r.sess.device && typeof r.sess.device === "object" ? r.sess.device : null;
     const ua = parseUA(dev ? dev.ua : "");
-    const lastUse = r.expired - cfg.maxAge; // rolling: the store's expiry moves with every request
+    // rolling: the store's expiry moves with every request, by the session's own lifetime
+    // (the desktop app's sessions carry a longer one than the panel's 8 h).
+    const own = r.sess.cookie && Number(r.sess.cookie.originalMaxAge) > 0 ? Number(r.sess.cookie.originalMaxAge) : cfg.maxAge;
+    const lastUse = r.expired - own;
     const seen = Number(r.sess.seenAt) || null;
     return {
       id: idOf(r.sid),
       current: currentSid != null && r.sid === currentSid,
       known: !!dev,
-      label: dev ? ua.label : "Unknown browser",
+      label: dev ? (/\bMintDesktop\/\d/.test(String(dev.ua || "")) ? "MINT AI desktop app" + (ua.os ? " on " + ua.os : "") : ua.label) : "Unknown browser",
+      desktop: !!(dev && /\bMintDesktop\/\d/.test(String(dev.ua || ""))),
       browser: ua.browser,
       os: ua.os,
       mobile: ua.mobile,
