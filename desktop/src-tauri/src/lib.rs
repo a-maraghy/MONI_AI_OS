@@ -68,6 +68,9 @@ pub struct App {
     talk_key: String,
     talk_fallback: bool,
     talking: bool,
+    /// The talk key's events, numbered (the page drops one older than one it has seen), and when it went down.
+    key_seq: u64,
+    pressed_at: Option<Instant>,
     signed_in: bool,
     behind_icons: bool,
     raised_for_desktop: bool,
@@ -387,22 +390,44 @@ fn on_hotkey(app: &AppHandle, sc: &Shortcut, ev_state: ShortcutState) {
     if talk.as_ref() == Some(sc) {
         match ev_state {
             ShortcutState::Pressed => {
-                let need_show = {
+                // Every down goes to the page, even one with no up since the last (that up was lost: the
+                // page ends the turn on it), numbered and timed by this clock (the page judges taps by it).
+                let (need_show, seq, again) = {
                     let mut a = shared.lock().unwrap();
-                    if a.talking {
-                        return;
-                    }
+                    let again = a.talking;
                     a.talking = true;
-                    (a.settings.mode == Mode::Peek && !a.peek_open) || (a.settings.mode == Mode::Floating && a.hidden)
+                    a.key_seq += 1;
+                    a.pressed_at = Some(Instant::now());
+                    ((a.settings.mode == Mode::Peek && !a.peek_open) || (a.settings.mode == Mode::Floating && a.hidden), a.key_seq, again)
                 };
+                mlog!("talk key down (#{}){}", seq, if again { ", with no up since the last down" } else { "" });
                 if need_show {
                     show(app, &shared, false);
                 }
-                let _ = app.emit_to(MAIN, "mint://ptt", serde_json::json!({ "down": true }));
+                let _ = app.emit_to(MAIN, "mint://ptt", serde_json::json!({ "down": true, "at": epoch_ms(), "seq": seq }));
             }
             ShortcutState::Released => {
-                shared.lock().unwrap().talking = false;
-                let _ = app.emit_to(MAIN, "mint://ptt", serde_json::json!({ "down": false }));
+                let (held, key) = {
+                    let a = shared.lock().unwrap();
+                    (a.pressed_at.map(|t| t.elapsed().as_millis()).unwrap_or(0), a.talk_key.clone())
+                };
+                // The release comes from the hotkey library polling the key; Windows is asked again here.
+                // A key still down means the release was early: wait for the real one (never on the main thread).
+                if let Some(vk) = platform::vk_of(&key) {
+                    if platform::key_down(vk) {
+                        mlog!("talk key: release reported after {} ms but Windows says the key is still down; waiting for it", held);
+                        let (h, sh) = (app.clone(), shared.clone());
+                        std::thread::spawn(move || {
+                            let t0 = Instant::now();
+                            while platform::key_down(vk) && t0.elapsed() < Duration::from_secs(120) {
+                                std::thread::sleep(Duration::from_millis(20));
+                            }
+                            talk_up(&h, &sh);
+                        });
+                        return;
+                    }
+                }
+                talk_up(app, &shared);
             }
         }
         return;
@@ -415,6 +440,26 @@ fn on_hotkey(app: &AppHandle, sc: &Shortcut, ev_state: ShortcutState) {
     } else if focus_k.as_ref() == Some(sc) {
         toggle_focus(app, &shared);
     }
+}
+
+/// The talk key is up: numbered, timed and logged like the down.
+fn talk_up(app: &AppHandle, shared: &Shared) {
+    let (seq, held) = {
+        let mut a = shared.lock().unwrap();
+        if !a.talking {
+            return; // already sent (an early release that was waited out, then the library's own)
+        }
+        a.talking = false;
+        a.key_seq += 1;
+        (a.key_seq, a.pressed_at.map(|t| t.elapsed().as_millis()).unwrap_or(0))
+    };
+    mlog!("talk key up (#{}) after {} ms", seq, held);
+    let _ = app.emit_to(MAIN, "mint://ptt", serde_json::json!({ "down": false, "at": epoch_ms(), "seq": seq }));
+}
+
+/// Milliseconds since 1970 (the page's Date.now() reads the same clock).
+fn epoch_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
 /* ------------------------------------------------------------ the tray */
@@ -1305,6 +1350,8 @@ pub fn run() {
                 talk_key: settings::DEFAULT_TALK.into(),
                 talk_fallback: false,
                 talking: false,
+                key_seq: 0,
+                pressed_at: None,
                 signed_in: false,
                 behind_icons: false,
                 raised_for_desktop: false,

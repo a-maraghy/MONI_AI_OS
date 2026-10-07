@@ -239,6 +239,11 @@ mod imp {
     pub fn minimized(ours: isize) -> bool {
         unsafe { windows::Win32::UI::WindowsAndMessaging::IsIconic(hwnd_of(ours)) }.as_bool()
     }
+
+    /// Is this virtual key down now (the physical state, from any thread)?
+    pub fn key_down(vk: u16) -> bool {
+        (unsafe { windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(vk as i32) } as u16) & 0x8000 != 0
+    }
 }
 
 #[cfg(not(windows))]
@@ -275,13 +280,54 @@ mod imp {
     pub fn minimized(_ours: isize) -> bool {
         false
     }
+    pub fn key_down(_vk: u16) -> bool {
+        false
+    }
 }
 
 pub use imp::*;
 
+/// The Windows virtual-key code of a shortcut's main key ("Ctrl+Space" -> 0x20), for the ones the
+/// settings offer: Space, A-Z, 0-9, F1-F24, Enter, Tab, Backquote. None for anything else.
+pub fn vk_of(shortcut: &str) -> Option<u16> {
+    let k = shortcut.rsplit('+').next()?.trim();
+    let u = k.to_ascii_uppercase();
+    match u.as_str() {
+        "SPACE" => return Some(0x20),
+        "ENTER" | "RETURN" => return Some(0x0D),
+        "TAB" => return Some(0x09),
+        "BACKQUOTE" | "`" => return Some(0xC0),
+        _ => {}
+    }
+    let k = u.strip_prefix("KEY").or_else(|| u.strip_prefix("DIGIT")).unwrap_or(&u);
+    if k.len() == 1 {
+        let c = k.as_bytes()[0];
+        if c.is_ascii_uppercase() || c.is_ascii_digit() {
+            return Some(c as u16);
+        }
+    }
+    if let Some(n) = u.strip_prefix('F').and_then(|n| n.parse::<u16>().ok()) {
+        if (1..=24).contains(&n) {
+            return Some(0x70 + n - 1);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn talk_key_codes() {
+        assert_eq!(vk_of("Ctrl+Space"), Some(0x20));
+        assert_eq!(vk_of("Ctrl+Alt+Space"), Some(0x20));
+        assert_eq!(vk_of("Ctrl+Shift+K"), Some(b'K' as u16));
+        assert_eq!(vk_of("Alt+KeyT"), Some(b'T' as u16));
+        assert_eq!(vk_of("Ctrl+F9"), Some(0x78));
+        assert_eq!(vk_of("Ctrl+7"), Some(b'7' as u16));
+        assert_eq!(vk_of("Ctrl+PageUp"), None);
+    }
 
     #[test]
     fn ink_follows_the_wallpaper() {

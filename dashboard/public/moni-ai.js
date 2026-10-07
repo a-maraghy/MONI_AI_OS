@@ -2641,7 +2641,7 @@
         if (DESKTOP) document.dispatchEvent(new CustomEvent("mint-live-caption", { detail: { who: c.who, text: c.text, final: c.final } }));
         paintState();
       },
-      onLevel: function (l) { LiveUI.mic = l.mic || 0; LiveUI.out = l.out || 0; },
+      onLevel: function (l) { LiveUI.mic = l.mic || 0; LiveUI.out = l.out || 0; if (LiveUI.latched) latchVad(LiveUI.mic); },
       onEvent: function (m) {
         if (m.type === "ready") {
           LiveUI.model = m.model || ""; LiveUI.voice = m.voice || ""; LiveUI.route = window.VoiceLive.route ? window.VoiceLive.route() : "";
@@ -2694,6 +2694,7 @@
     LiveUI.latched = false;
     LiveUI.skipUp = false;
     clearTimeout(LiveUI.latchT);
+    clearInterval(LiveUI.paintT);
     clearTimeout(LiveUI.warmT);
     LiveUI.resuming = false;
     paintLive("idle");
@@ -2785,6 +2786,8 @@
     var el = document.querySelector(".cc-live-suggest");
     if (el) el.remove();
   }
+  var MIC_WHY = { off: "starting the call", asking: "waiting for the microphone", refused: "the microphone was refused", ended: "the microphone went away", muted: "Windows has the microphone muted",
+    "audio suspended": "the browser paused audio", "audio closed": "audio is closed", "no audio": "no sound from the microphone", "muted here": "muted — unmute to talk" };
   function liveSpeaking() { return LiveUI.active && window.VoiceLive.speaking && window.VoiceLive.speaking(); }
   /** What the core and the caption show while a call is on (see snapshot()). */
   function liveSnapshot(snap) {
@@ -2793,6 +2796,11 @@
     snap.listening = st === "listening" || st === "talking" || st === "interrupted" || st === "connecting";
     // Hold-to-talk: the core listens only while the key is held; between turns the call is just warm.
     if (LiveUI.ptt) snap.listening = !!LiveUI.held || st === "talking";
+    // ...and only while the microphone's audio really flows: otherwise the pill says so, and why.
+    if (LiveUI.ptt && LiveUI.held && window.VoiceLive.micState) {
+      var ms = window.VoiceLive.micState();
+      if (!ms.ok) { snap.listening = false; snap.micNotReady = MIC_WHY[ms.why] || ms.why || "starting"; }
+    }
     snap.speaking = st === "speaking";
     snap.voiceLive = st === "thinking";
     snap.voiceText = $("cc-vb-text").textContent;
@@ -2868,7 +2876,8 @@
   // toggle(): the dock's mic -- it starts a call, and during one it mutes (it never ends it).
   window.__mintLive = { ok: function () { return LIVE_OK; }, active: function () { return LiveUI.active; }, toggle: function () { if (!LIVE_OK) return false; if (LiveUI.active) liveMuteToggle(); else liveStart(); return true; }, end: function (why) { return liveStop(why || "button"); },
     // Hold-to-talk (the desktop app's key, or holding the mic there): down / up.
-    ptt: function (down) { return down ? pttPress(true) : pttRelease(true); }, held: function () { return !!LiveUI.held; },
+    // at / seq: the app's own time of the key event (ms since 1970) and its order; see pttKey.
+    ptt: function (down, at, seq) { return pttKey(!!down, at, seq); }, held: function () { return !!LiveUI.held; },
     latched: function () { return !!LiveUI.latched; },
     // The microphone's level (0..1) while a call is on: the desktop page's state pill shows it.
     level: function () { return LiveUI.active ? LiveUI.mic || 0 : 0; } };
@@ -2905,42 +2914,88 @@
    * at once looks like, so the key works either way.
    */
   var PTT_TAP_MS = 300;
-  var PTT_LATCH_MS = 60 * 1000;
-  function pttPress(key) {
+  var PTT_LATCH_MS = 30 * 1000;
+  // A latched turn is sent by itself after this much quiet, once something was said (latchVad).
+  var LATCH_QUIET_MS = 1200, LATCH_SPOKEN_MS = 300;
+  var keySeq = 0;
+  /*
+   * The app's key events, in its own order and with its own clock: a tap is
+   * judged by when the key really went down and up (WebView2 may hand the two
+   * events over late and together), an event older than one already seen is
+   * dropped, and a second "down" with no "up" between (an up that was lost)
+   * ends the turn instead of being ignored -- a held turn can never get stuck.
+   */
+  function pttKey(down, at, seq) {
+    if (typeof seq === "number") {
+      if (seq <= keySeq) { if (window.VoiceLive.note) window.VoiceLive.note({ k: "stale", at: at, seq: seq }); return false; }
+      keySeq = seq;
+    }
+    var t = typeof at === "number" && isFinite(at) ? at : Date.now();
+    var r = down ? pttPress(true, t) : pttRelease(true, t);
+    if (window.VoiceLive.note) window.VoiceLive.note({ k: down ? "down" : "up", at: t, seq: seq });
+    return r;
+  }
+  function pttPress(key, at) {
     if (!LIVE_OK) return false;
     if (LiveUI.latched) { LiveUI.skipUp = true; pttSend(); return true; } // the press that sends a latched turn
-    if (LiveUI.held) return true;
+    if (LiveUI.held) {
+      // The key went down again with no "up" seen: that up was lost. This press ends the turn.
+      if (key && LiveUI.byKey) { LiveUI.skipUp = true; pttSend(); }
+      return true;
+    }
     LiveUI.held = true;
-    LiveUI.pressAt = Date.now();
+    LiveUI.pressAt = at || Date.now();
     LiveUI.byKey = !!key;
     clearTimeout(LiveUI.warmT);
     if (!LiveUI.active) liveStart({ ptt: true });
     else if (!LiveUI.ptt) { if (liveSpeaking()) window.VoiceLive.interrupt(); LiveUI.held = false; return false; }
     // Pressed at once, even while the call is still opening: voice-live.js keeps what is said until it is ready.
     if (LiveUI.active && window.VoiceLive.press) window.VoiceLive.press();
+    // While the key is held the pill follows the microphone (Listening, or Mic not ready and why).
+    clearInterval(LiveUI.paintT);
+    LiveUI.paintT = setInterval(paintState, 250);
     paintState();
     return true;
   }
-  function pttRelease(key) {
+  function pttRelease(key, at) {
     if (key && LiveUI.skipUp) { LiveUI.skipUp = false; return false; }
     if (!LiveUI.held || LiveUI.latched) return false;
-    if (key && LiveUI.byKey && Date.now() - (LiveUI.pressAt || 0) < PTT_TAP_MS) {
+    if (key && LiveUI.byKey && (at || Date.now()) - (LiveUI.pressAt || 0) < PTT_TAP_MS) {
       LiveUI.latched = true;
+      LiveUI.lv = null;
       LiveUI.latchT = setTimeout(pttSend, PTT_LATCH_MS);
-      toast("Listening — press the talk key again to send.");
+      toast("Listening — speak, then pause to send (or press the talk key again).");
       paintState();
       return true;
     }
     pttSend();
     return true;
   }
+  /*
+   * Latched (a tap): the turn ends by itself after LATCH_QUIET_MS of quiet once
+   * the person has spoken for LATCH_SPOKEN_MS -- the microphone's level against
+   * a floor that follows the room's noise. No key-up needed.
+   */
+  function latchVad(level) {
+    var now = Date.now();
+    var v = LiveUI.lv || (LiveUI.lv = { floor: 0.004, spoken: 0, quietAt: 0, last: now });
+    var dt = Math.min(100, Math.max(0, now - v.last));
+    v.last = now;
+    if (level < v.floor * 3) v.floor = Math.max(0.001, v.floor * 0.97 + level * 0.03);
+    if (level > Math.max(0.012, v.floor * 4)) { v.spoken += dt; v.quietAt = 0; }
+    else if (!v.quietAt) v.quietAt = now;
+    if (v.spoken >= LATCH_SPOKEN_MS && v.quietAt && now - v.quietAt >= LATCH_QUIET_MS) pttSend();
+  }
   /** The turn is over: the server commits it (voice-live.js release). */
   function pttSend() {
     clearTimeout(LiveUI.latchT);
+    clearInterval(LiveUI.paintT);
     LiveUI.latched = false;
+    LiveUI.lv = null;
     if (!LiveUI.held) return;
     LiveUI.held = false;
     if (LiveUI.active && LiveUI.ptt && window.VoiceLive.release) window.VoiceLive.release();
+    if (window.VoiceLive.note) window.VoiceLive.note({ k: "send" });
     pttWarm();
     paintState();
   }

@@ -4609,6 +4609,8 @@ app.post("/mint-ai/api/live/end", ...moniAiWrite, (req, res) => {
   const why = typeof b.why === "string" && /^(?:unload|navigate|button|error:[^\u0000-\u001f]{0,80})$/.test(b.why) ? b.why : "unspecified";
   const id = typeof b.call === "string" && /^lv[a-z0-9]{1,40}$/.test(b.call) ? b.call : null;
   const call = voiceLive.callFor(req.me.username);
+  const rep = voiceLive.pageReport(b.diag);
+  if (rep) console.log(`live: call ${id || "?"} page report (beacon): ${rep}`);
   if (call && id && call.id === id) call.close("hung-up", undefined, why);
   else console.log(`live: call ${id || "?"} end reason from the page (beacon): ${why}${call ? "" : " (already ended)"}`);
   res.status(204).end();

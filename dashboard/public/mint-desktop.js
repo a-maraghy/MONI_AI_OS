@@ -349,7 +349,8 @@
   });
   listen("mint://ptt", function (p) {
     var lv = window.__mintLive;
-    if (lv && lv.ptt) lv.ptt(!!p.down);
+    // at / seq: the app's time of the key event and its order (moni-ai.js pttKey judges taps by them).
+    if (lv && lv.ptt) lv.ptt(!!p.down, typeof p.at === "number" ? p.at : undefined, typeof p.seq === "number" ? p.seq : undefined);
   });
   listen("mint://escape", function () { escape(); });
   // The tray's Talk: a hands-free live call, as a tap of the mic starts.

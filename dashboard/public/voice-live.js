@@ -103,6 +103,8 @@
       ptt: o.turn === "ptt", held: false,
       // Hold-to-talk before the call is ready: what is said is kept here and sent once it is (pttFlush).
       live: false, early: null, earlyBytes: 0, pressed: false, released: false,
+      // The microphone's frames from the worklet (counted, never kept): is audio really flowing?
+      framesIn: 0, framesSent: 0, lastFrameAt: 0, gum: "asking", ring: [],
       det: window.MintLiveDetect ? window.MintLiveDetect.create() : null };
     var me = S;
     diag.duplex = S.duplex;
@@ -112,6 +114,7 @@
       .then(function (stream) {
         if (me !== S) { stream.getTracks().forEach(function (t) { t.stop(); }); throw new Error("stopped"); }
         me.stream = stream;
+        me.gum = "granted";
         watchMic(me);
         me.ctx = new AC({ latencyHint: "interactive" });
         return me.ctx.audioWorklet.addModule(o.worklet || "/static/voice-live-worklet.js");
@@ -278,7 +281,7 @@
         try { m = JSON.parse(e.data); } catch (_) { return; }
         if (m.type === "ready") me.callId = m.call || null;
         onMessage(me, m);
-        if (m.type === "ready") { me.live = true; settle(); pttFlush(me); }
+        if (m.type === "ready") { me.live = true; note({ k: "ready" }); settle(); pttFlush(me); }
         // Refused, or the server could not open its upstream, before the call was ready: start() fails, with the reason.
         if ((m.type === "error" || m.type === "ended") && !ready) settle(new Error(m.error || m.text || "The live conversation could not start (" + (m.code || m.why || "refused") + ")."));
       };
@@ -293,6 +296,8 @@
 
   function onFrame(me, m) {
     if (m.type !== "frame") return;
+    me.framesIn++;
+    me.lastFrameAt = performance.now();
     me.mic = m.level || 0;
     emit(me.o.onLevel, { mic: me.mic, out: me.out });
     if (me.det && !me.muted) {
@@ -311,6 +316,7 @@
     }
     if (me.muted || !me.ws || me.ws.readyState !== 1) return;
     me.ws.send(m.pcm);
+    me.framesSent++;
     diag.frames++;
     diag.bytesIn += m.pcm.byteLength;
   }
@@ -434,13 +440,55 @@
   }
 
   var END_WHY = /^(?:button|esc|mic|navigate|unload|track-ended|devicechange|voice-changed|ptt-idle|error:.{0,80})$/;
+  /*
+   * Is the microphone's audio really flowing? { ok, why } -- why, when not:
+   * "asking" (the browser has not answered for the microphone), "refused",
+   * "ended" (the device went away), "muted" (by the system or the device),
+   * "audio suspended" / "audio closed" (the AudioContext), "no audio" (no
+   * frame from the worklet for 600 ms), "muted here" (the call's own mute).
+   */
+  function micState() {
+    var me = S;
+    if (!me) return { ok: false, why: "off" };
+    if (!me.stream) return { ok: false, why: me.gum === "asking" ? "asking" : "refused" };
+    var tr = me.stream.getAudioTracks ? me.stream.getAudioTracks()[0] : null;
+    if (!tr || tr.readyState !== "live") return { ok: false, why: "ended" };
+    if (tr.muted) return { ok: false, why: "muted" };
+    if (me.ctx && me.ctx.state !== "running") return { ok: false, why: "audio " + me.ctx.state };
+    if (!me.lastFrameAt || performance.now() - me.lastFrameAt > 600) return { ok: false, why: "no audio" };
+    if (me.muted) return { ok: false, why: "muted here" };
+    return { ok: true, why: "" };
+  }
+  /*
+   * A small ring of what happened to the key and the microphone (counts and
+   * times only, never audio or words), sent with the call's end so the server
+   * log says why a press was or was not heard: note({k: "down"|"up"|..., at}).
+   */
+  function note(ev) {
+    var me = S;
+    if (!me) return;
+    var ms = micState();
+    var tr = me.stream && me.stream.getAudioTracks ? me.stream.getAudioTracks()[0] : null;
+    var e = { k: String(ev.k || "").slice(0, 16), t: Math.round(performance.now() - me.t0), app: typeof ev.at === "number" ? Math.round(ev.at) : undefined, seq: typeof ev.seq === "number" ? ev.seq : undefined,
+      in: me.framesIn, sent: me.framesSent, early: me.earlyBytes, ctx: me.ctx ? me.ctx.state : "none", track: tr ? tr.readyState + (tr.muted ? "/muted" : "") : "none", live: me.live, held: me.held, mic: ms.ok ? "ok" : ms.why };
+    me.ring.push(e);
+    if (me.ring.length > 40) me.ring.shift();
+  }
+  /** The ring and the totals, for the end message (bounded: the server refuses big frames). */
+  function report(me) {
+    // At most 20 entries: the server takes JSON messages of up to 4 KB.
+    return { ring: me.ring.slice(-20), in: me.framesIn, sent: me.framesSent, early: me.earlyBytes, gum: me.gum, ctx: me.ctx ? me.ctx.state : "none", route: me.route, ms: Math.round(performance.now() - me.t0) };
+  }
+
   function stop(why) {
     if (!S) return;
     var w = END_WHY.test(String(why || "")) ? String(why) : "button";
-    try { if (S.ws && S.ws.readyState === 1) S.ws.send(JSON.stringify({ type: "end", why: w })); } catch (e) { /* closed */ }
+    note({ k: "end" });
+    var rep = report(S);
+    try { if (S.ws && S.ws.readyState === 1) S.ws.send(JSON.stringify({ type: "end", why: w, diag: rep })); } catch (e) { /* closed */ }
     // Leaving the page: the socket may not get its message out, the beacon does (the server logs it).
     if ((w === "unload" || w === "navigate") && S.callId && navigator.sendBeacon && S.o.csrf) {
-      try { navigator.sendBeacon("/mint-ai/api/live/end", new Blob([JSON.stringify({ _csrf: S.o.csrf, call: S.callId, why: w })], { type: "application/json" })); } catch (e) { /* best effort */ }
+      try { navigator.sendBeacon("/mint-ai/api/live/end", new Blob([JSON.stringify({ _csrf: S.o.csrf, call: S.callId, why: w, diag: rep })], { type: "application/json" })); } catch (e) { /* best effort */ }
     }
     end("hung-up");
   }
@@ -541,6 +589,8 @@
     press: press,
     release: release,
     ptt: function () { return !!(S && S.ptt); },
+    micState: micState,
+    note: note,
     ack: function (nonce, ok, why) {
       if (!S || !S.ws || S.ws.readyState !== 1 || !nonce) return;
       try { S.ws.send(JSON.stringify({ type: "ui-ack", nonce: String(nonce), ok: !!ok, why: why ? String(why).slice(0, 200) : undefined })); } catch (e) { /* closed */ }

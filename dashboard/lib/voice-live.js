@@ -96,7 +96,9 @@ const SILENCE_MS = 700;
 const MAX_CALL_MS = 20 * 60 * 1000;
 const KEEP_INPUT_MS = 90 * 1000; // the relayed audio kept for full-turn transcripts
 const HEARD_WAIT_MS = 6000; // how long a hand-off waits for the turn's transcript
-const REPLY_POLL_MS = 2000;
+// How often a hand-off's reply is looked for (a local socket call to the supervisor): 0.5 s, so a reply
+// is picked up 0.25 s after it is written on average (was 2 s: 1 s on average).
+const REPLY_POLL_MS = 500;
 const REPLY_WATCH_MS = 30 * 60 * 1000;
 const TRUNCATE_WAIT_MS = 400;
 const ECHO_WINDOW_MS = 30 * 1000;
@@ -314,6 +316,9 @@ class LiveCall {
     this.ptt = null; // { startMs, at }: the turn being held
     this.pttCommits = []; // [{ startMs, endMs, at }]: released turns waiting for their committed item
     this.pttSeenAt = 0; // set when the call opens (this.now is set just below)
+    this.press = null; // the press being held: { n, at, frames, bytes } (counts only, for the log)
+    this.pressN = 0;
+    this.idleFrames = 0; // audio frames from the page between presses (dropped)
     this.now = d.now || Date.now;
     this.pttSeenAt = this.now();
     this.log = d.log || (() => {});
@@ -743,7 +748,14 @@ class LiveCall {
   audioIn(buf) {
     if (this.closed || this.muted || !buf || !buf.length || buf.length % 2) return;
     // Hold-to-talk: only what is said while the key is held is heard (the press stopped the voice).
-    if (this.turnMode === "ptt" && !this.held) return;
+    if (this.turnMode === "ptt" && !this.held) {
+      this.idleFrames++;
+      return;
+    }
+    if (this.press) {
+      this.press.frames++;
+      this.press.bytes += buf.length;
+    }
     const audible = this.turnMode === "ptt" ? false : this.audibleNow();
     if (this.duplex === "speakers" && (audible || this.now() - this.lastAudibleAt < TAIL_MS) && this.turnMode !== "ptt") {
       // Half-duplex: the microphone is not heard while the voice speaks.
@@ -812,6 +824,8 @@ class LiveCall {
       case "end": {
         // The page says why ({type: "end", why}): the red button, a mic track that ended, leaving the page...
         const w = typeof m.why === "string" ? m.why.replace(/[\u0000-\u001f]/g, " ").slice(0, 90) : "";
+        const rep = pageReport(m.diag);
+        if (rep) this.log(`live: call ${this.id} page report: ${rep}`);
         this.close("hung-up", undefined, END_WHY.test(w) ? w : "unspecified");
         break;
       }
@@ -832,6 +846,7 @@ class LiveCall {
     }
     this.send({ type: "input_audio_buffer.clear" });
     this.ptt = { startMs: this.inputMs, at: this.now() };
+    this.press = { n: ++this.pressN, at: this.now(), frames: 0, bytes: 0, upstream: !!(this.ws && this.ws.readyState === WebSocket.OPEN) };
     this.setState("talking");
   }
   pttUp() {
@@ -840,12 +855,21 @@ class LiveCall {
     this.pttSeenAt = this.now();
     const p = this.ptt;
     this.ptt = null;
+    const pr = this.press;
+    this.press = null;
+    // One line per press, counts and times only: was anything heard? (2026-10-07: presses that showed
+    // "Listening" and heard nothing could not be told apart in the log.)
+    const pressLine = (what) =>
+      pr &&
+      this.log(`live: call ${this.id} press ${pr.n}: held ${this.now() - pr.at} ms, ${pr.frames} frames (${Math.round(pr.bytes / 1024)} KB, ${Math.round(pr.bytes / BYTES_PER_MS)} ms of audio) from the page${pr.upstream ? "" : ", pressed before the session was open"}, ${this.idleFrames} frames between presses; ${what}`);
     if (!p || this.inputMs - p.startMs < PTT_MIN_MS) {
+      pressLine(`too short (< ${PTT_MIN_MS} ms of audio): nothing sent`);
       this.send({ type: "input_audio_buffer.clear" });
       this.setState(this.anyPending() ? "waiting" : "listening");
       return;
     }
-    this.pttCommits.push({ startMs: p.startMs, endMs: this.inputMs, at: p.at });
+    pressLine("committed");
+    this.pttCommits.push({ startMs: p.startMs, endMs: this.inputMs, at: p.at, upAt: this.now() });
     this.send({ type: "input_audio_buffer.commit" });
     this.setState("thinking");
   }
@@ -859,6 +883,8 @@ class LiveCall {
     t.overVoice = false;
     t.bargeConfirmed = true;
     t.ptt = true;
+    t.upAt = c.upAt;
+    t.committedAt = this.now();
     this.speechStopped({ item_id: ev.item_id, audio_end_ms: c.endMs });
   }
   /** Nobody has pressed for PTT_IDLE_MS and nothing is being said or waited for: the warm call ends. */
@@ -1068,7 +1094,8 @@ class LiveCall {
     // Anything heard over the voice, or too short to be sure of, waits for the transcript guard.
     // Not while an undo or a confirm is waiting: that turn may be its answer ("undo", "yes"), which the model must not hear.
     const awaiting = this.undoUntil > this.now() || !!(this.d.confirmPending && this.d.confirmPending());
-    if (!this.suspect(t) && !awaiting && this.opts.fastAnswer !== false && t.endMs - t.startMs >= FAST_MIN_MS) this.answer(t);
+    // A hold-to-talk turn is the key's press and release, never the voice's leak: answered at once whatever its length.
+    if (!this.suspect(t) && !awaiting && this.opts.fastAnswer !== false && (t.ptt || t.endMs - t.startMs >= FAST_MIN_MS)) this.answer(t);
     // No transcript in time: a real turn is answered anyway (the model hears the audio); a suspect one is dropped.
     this.timer(() => {
       if (t.dropped || t.answered || this.closed) return;
@@ -1474,6 +1501,7 @@ class LiveCall {
     if (!r || (r.id && resp.id && r.id !== resp.id)) return;
     if (r.done) return;
     r.done = true;
+    this.timingLine(r);
     if (this.queued) {
       const q = this.queued;
       this.queued = null;
@@ -1515,6 +1543,27 @@ class LiveCall {
     if (this.endAfterSpeech) return this.endWhenQuiet();
     if (r.turn && r.turn.asked) this.setState("waiting");
     else if (this.state !== "talking") this.setState("listening");
+  }
+
+  /**
+   * One line per response, times only: where a voice turn's time went. For a hold-to-talk turn from
+   * the key's release; otherwise from the end of speech. "held by the guard" is how long the first
+   * audio waited for its sentence to pass the transcript guard.
+   */
+  timingLine(r) {
+    const t = r.turn;
+    if (!t) return;
+    const from = t.upAt || t.stoppedAt;
+    if (!from) return;
+    const ms = (x) => (x ? x - from + " ms" : "-");
+    const parts = [];
+    if (t.upAt) parts.push(`release→commit ${ms(t.committedAt)}`);
+    parts.push(`→response ${ms(r.createdAt)}`, `→first model audio ${ms(r.firstAudioIn)}`, `→first audio played ${ms(r.firstAudioOut)}`);
+    if (r.firstAudioIn && r.firstAudioOut) parts.push(`held by the guard ${r.firstAudioOut - r.firstAudioIn} ms`);
+    parts.push(`→done ${ms(this.now())}`);
+    const tr = this.diag.transcripts.find((x) => x.turn === t.n && x.kind === "session");
+    if (tr && tr.ms != null) parts.push(`session transcript after ${tr.ms} ms`);
+    this.log(`live: call ${this.id} turn ${t.n}${r.round ? " round " + r.round : ""}${t.ptt ? " (hold-to-talk)" : ""}: ${parts.join(", ")}${r.trip ? ", cut by the guard" : ""}${r.cancelled ? ", cancelled" : ""}`);
   }
 
   /** call.end: once the goodbye has been played, the call ends. */
@@ -1806,7 +1855,9 @@ class LiveCall {
     const mine = this.requests.get(id);
     if (!mine || mine.answered) return;
     mine.answered = true;
+    mine.repliedAt = this.now();
     this.toClient({ type: "replied", turn: id });
+    this.firstSpokenFor = { id, at: mine.repliedAt, askedAt: mine.askedAt };
     const lines = [];
     // A result for an older request (the administrator has said more since, or it took a while): say which.
     const vt0 = this.id + "r" + id;
@@ -1900,6 +1951,11 @@ class LiveCall {
         start: () => {},
         audio: (b) => {
           if (!live()) return;
+          const f = kind === "mint" ? this.firstSpokenFor : null;
+          if (f) {
+            this.firstSpokenFor = null;
+            this.log(`live: call ${this.id} request ${f.id}: asked→reply ${f.askedAt ? f.at - f.askedAt + " ms (MINT AI)" : "-"}, reply→first word spoken ${this.now() - f.at} ms (summary + speech)`);
+          }
           this.sentAudio(s, b.length);
           this.d.client.audio(seg, b);
         },
@@ -1921,6 +1977,34 @@ class LiveCall {
       this.toClient({ type: "segend", seg });
     }
   }
+}
+
+/**
+ * The page's report at the end of a call (public/voice-live.js report()): the key and microphone
+ * ring and totals. Only numbers, booleans and short plain words go into the log -- never audio or
+ * anything said -- at most 30 ring entries and 3,000 characters (the oldest entries dropped).
+ */
+function pageReport(d) {
+  if (!d || typeof d !== "object") return "";
+  const word = (v) => (typeof v === "string" ? v.replace(/[^a-z0-9 /_-]/gi, "").slice(0, 24) : undefined);
+  const num = (v) => (typeof v === "number" && isFinite(v) ? Math.round(v) : undefined);
+  // Only these fields (public/voice-live.js note() and report()); anything else is dropped.
+  const KEYS = new Set(["in", "sent", "early", "gum", "ctx", "route", "ms", "k", "t", "app", "seq", "track", "live", "held", "mic"]);
+  const clean = (o) => {
+    const out = {};
+    for (const [k, v] of Object.entries(o || {})) {
+      if (!KEYS.has(k)) continue;
+      const x = typeof v === "boolean" ? v : typeof v === "number" ? num(v) : word(v);
+      if (x !== undefined && x !== "") out[k] = x;
+    }
+    return out;
+  };
+  const top = clean(d);
+  let ring = Array.isArray(d.ring) ? d.ring.slice(-30).map((e) => clean(e)) : [];
+  // Whole JSON, never cut mid-way: the oldest entries go first.
+  let out = JSON.stringify({ ...top, ring });
+  while (out.length > 3000 && ring.length) out = JSON.stringify({ ...top, ring: (ring = ring.slice(1)) });
+  return out;
 }
 
 /** Every text the live voice model was given as instructions (the echo guard's sources). */
@@ -2049,6 +2133,7 @@ function status() {
 }
 
 module.exports = {
+  pageReport,
   LIVE_MODEL,
   RATE,
   SILENCE_MS,

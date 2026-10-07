@@ -569,7 +569,7 @@ let WS_NOPONG;
     const vl = fs.readFileSync(path.join(ROOT, "public", "voice-live.js"), "utf8");
     const cc = fs.readFileSync(path.join(ROOT, "public", "moni-ai.js"), "utf8");
     const dock = fs.readFileSync(path.join(ROOT, "public", "mint-dock.js"), "utf8");
-    check("stop(why) sends {type: 'end', why}, and a beacon when leaving the page", /JSON\.stringify\(\{ type: "end", why: w \}\)/.test(vl) && /navigator\.sendBeacon\("\/mint-ai\/api\/live\/end"/.test(vl));
+    check("stop(why) sends {type: 'end', why} (with the page's report since 0.1.3), and a beacon when leaving the page", /JSON\.stringify\(\{ type: "end", why: w, diag: rep \}\)/.test(vl) && /navigator\.sendBeacon\("\/mint-ai\/api\/live\/end"/.test(vl));
     check("a failure before 'ready' (error or ended) rejects start() with the reason: never silent", /if \(\(m\.type === "error" \|\| m\.type === "ended"\) && !ready\) settle\(new Error/.test(vl) && /liveEnded\(\{ type: "error", why: "start", error:/.test(cc));
     check("the microphone's track ending and devicechange are caught (reopened once, else the call ends with that reason)", /t\.onended = function \(\) \{ if \(me === S\) micLost\(me, "track-ended"\); \}/.test(vl) && /addEventListener\("devicechange", me\.onDev\)/.test(vl) && /if \(me === S\) stop\(why\);/.test(vl));
     check("only the red X ends a call, and not within 1.5 s of its start", /var LIVE_END_GUARD_MS = 1500;/.test(cc) && /if \(why === "button" && LiveUI\.active && Date\.now\(\) - \(LiveUI\.startedAt \|\| 0\) < LIVE_END_GUARD_MS\) return false;/.test(cc) && /e\.target\.closest\("#cc-live-end"\)\) \{ e\.stopPropagation\(\); return liveStop\("button"\); \}/.test(cc));

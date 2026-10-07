@@ -91,6 +91,7 @@
    *   queued      turns waiting behind the running one
    *   lastReply   the gist of MINT AI's last answer
    *   offlineMsg  why the supervisor is unreachable
+   *   micNotReady hold-to-talk held but no audio flowing: why ("waiting for the microphone")
    */
   function caption(s) {
     s = s || {};
@@ -99,6 +100,13 @@
     if (!s.online) {
       out.label = "Offline";
       out.text = oneLine(s.offlineMsg || "MINT AI is not reachable right now.");
+      return out;
+    }
+    // Hold-to-talk with the key down but no audio flowing: never a silent "Listening".
+    if (s.micNotReady) {
+      out.state = "needs";
+      out.label = "Mic not ready";
+      out.text = oneLine(s.micNotReady);
       return out;
     }
     if (st === "listening") {

@@ -1233,6 +1233,32 @@ let WS_BASE;
     c.close("test");
   }
   {
+    // 0.1.3: a short hold-to-talk turn ("yes", 0.3 s) is answered at once -- it used to wait for its
+    // transcript (TRANSCRIPT_WAIT_MS, 3 s) like a short turn heard by voice detection. Counts and times are logged.
+    const { c } = makeCall({ opts: { turn: "ptt" } });
+    const logs = [];
+    c.log = (m) => logs.push(m);
+    await c.open();
+    const s = lastSession();
+    c.message({ type: "ptt", on: true });
+    c.audioIn(pcm(300));
+    c.message({ type: "ptt", on: false });
+    await sleep(10);
+    const t0 = Date.now();
+    s.push({ type: "input_audio_buffer.committed", item_id: "item_short" });
+    await until(() => s.of("response.create").length === 1, 4000, "the short turn's answer");
+    const lag = Date.now() - t0;
+    check("ptt: a 0.3 s turn is answered at once, not after the 3 s transcript wait (" + lag + " ms)", s.of("response.create").length === 1 && lag < 500, lag);
+    check("  one log line per press: held time, frames and audio from the page, committed", logs.some((l) => /press 1: held \d+ ms, 1 frames \(14 KB, 300 ms of audio\) from the page, 0 frames between presses; committed/.test(l)), logs.join(" / "));
+    await respond(s, "Okay.");
+    await until(() => logs.some((l) => /turn \d+ \(hold-to-talk\): release→commit \d+ ms, →response \d+ ms/.test(l)), 1500, "the timing line");
+    check("  and one timing line per turn, from the key's release", logs.some((l) => /turn \d+ \(hold-to-talk\): release→commit \d+ ms, →response \d+ ms, →first model audio \d+ ms, →first audio played \d+ ms, held by the guard \d+ ms, →done \d+ ms/.test(l)), logs.filter((l) => /turn/.test(l)).join(" / "));
+    c.message({ type: "end", why: "button", diag: { in: 120, sent: 40, gum: "granted", ctx: "running", secret: "x", ring: [{ k: "down", app: 1791390807588, seq: 3, ctx: "running", text: "what I said <b>", mic: "ok" }] } });
+    const rl = logs.find((l) => /page report: /.test(l)) || "";
+    check("the page's end report is logged as counts and plain words only (no long keys, no markup, nothing said)", /"in":120/.test(rl) && /"k":"down"/.test(rl) && !/text|said|secret/.test(rl), rl);
+    check("  pageReport refuses anything that is not an object", live.pageReport("x") === "" && live.pageReport(null) === "");
+  }
+  {
     const { c, client } = makeCall({ opts: { turn: "ptt", pttIdleMs: 60 } });
     await c.open();
     c.pttSeenAt = c.now() - 100;

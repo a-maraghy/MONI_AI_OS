@@ -79,7 +79,17 @@ function mockServer() {
           s.update = ev.session;
           setTimeout(() => s.push({ type: "session.updated", session: ev.session }), mock.delay || 0);
         }
+        ev.at = Date.now();
         if (ev.type === "input_audio_buffer.commit") s.push({ type: "input_audio_buffer.committed", item_id: "item_" + s.events.length, previous_item_id: null });
+        // A response: created, a little audio with its transcript, done (enough for the server's timing line).
+        if (ev.type === "response.create") {
+          const id = "resp_" + s.events.length;
+          setTimeout(() => s.push({ type: "response.created", response: { id } }), 120);
+          setTimeout(() => s.push({ type: "response.output_item.added", item: { id: "out_" + id, type: "message" } }), 160);
+          setTimeout(() => s.push({ type: "response.output_audio.delta", item_id: "out_" + id, delta: Buffer.alloc(4800).toString("base64") }), 220);
+          setTimeout(() => s.push({ type: "response.output_audio_transcript.done", item_id: "out_" + id, transcript: "Okay." }), 260);
+          setTimeout(() => s.push({ type: "response.done", response: { id, output: [{ type: "message", content: [{ transcript: "Okay." }] }] } }), 300);
+        }
       });
       mock.sessions.push(s);
     });
@@ -101,8 +111,8 @@ function mockServer() {
     const { cookie } = await s.signIn("pttadmin");
     const SITE = "http://127.0.0.1:" + s.port;
 
-    async function open() {
-      const browser = await chromium.launch({ args: ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"] });
+    async function open(wavFile) {
+      const browser = await chromium.launch({ args: ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream"].concat(wavFile ? ["--use-file-for-fake-audio-capture=" + wavFile] : []) });
       const ctx = await browser.newContext({ viewport: { width: 480, height: 860 }, userAgent: APP_UA, extraHTTPHeaders: { "X-Forwarded-Proto": "https" } });
       await ctx.grantPermissions(["microphone"], { origin: SITE });
       await ctx.addCookies(String(cookie).split("; ").filter(Boolean).map((kv) => ({ name: kv.split("=")[0], value: kv.slice(kv.indexOf("=") + 1), url: SITE })));
@@ -115,6 +125,11 @@ function mockServer() {
         window.WebSocket = function (u, p) { const w = new WS(u, p); w.addEventListener("message", (e) => window.__wsIn.push(typeof e.data === "string" ? e.data : "<bin " + (e.data.byteLength || e.data.size) + ">")); return w; };
         window.WebSocket.prototype = WS.prototype; window.WebSocket.OPEN = 1;
         window.__emit = (name, payload) => (L[name] || []).forEach((f) => f({ payload }));
+        // The AudioContexts the page makes (the test suspends one to see the pill tell the truth).
+        const AC = window.AudioContext;
+        window.__ctxs = [];
+        window.AudioContext = function (o) { const c = new AC(o); window.__ctxs.push(c); return c; };
+        window.AudioContext.prototype = AC.prototype;
         window.__TAURI__ = {
           core: { invoke: (cmd, args) => { window.__calls.push(cmd); return Promise.resolve(null); } },
           event: { listen: (name, f) => { (L[name] = L[name] || []).push(f); return Promise.resolve(() => {}); } },
@@ -137,9 +152,11 @@ function mockServer() {
       await page.run(() => { const S = window.__mintCC && window.__mintCC.S; if (S) S.online = true; const o = document.getElementById("cc-offline"); if (o) o.hidden = true; });
       return { browser, page };
     }
-    const ptt = (page, down) => page.run((d) => window.__emit("mint://ptt", { down: d }), down);
+    // The app's event: {down, at (its clock, ms since 1970), seq}; o.at / o.seq override (late, out of order).
+    let appSeq = 0;
+    const ptt = (page, down, o) => { o = o || {}; const seq = o.seq != null ? o.seq : ++appSeq; if (o.seq != null) appSeq = Math.max(appSeq, o.seq); return page.run((p) => window.__emit("mint://ptt", p), { down, at: o.at != null ? o.at : Date.now(), seq }); };
     const live = async (page) => { await page.run(() => { const S = window.__mintCC && window.__mintCC.S; if (S) S.online = true; }); await sleep(250); return liveNow(page); };
-    const liveNow = (page) => page.run(() => ({ active: !!(window.VoiceLive && window.VoiceLive.active()), state: window.VoiceLive && window.VoiceLive.state(), latched: !!(window.__mintLive.latched && window.__mintLive.latched()), held: !!window.__mintLive.held(), pill: (document.getElementById("cc-cap-label") || {}).textContent, note: [].map.call(document.querySelectorAll(".cc-toast"), (t) => t.textContent).join(" | ") }));
+    const liveNow = (page) => page.run(() => ({ active: !!(window.VoiceLive && window.VoiceLive.active()), state: window.VoiceLive && window.VoiceLive.state(), latched: !!(window.__mintLive.latched && window.__mintLive.latched()), held: !!window.__mintLive.held(), mic: window.VoiceLive && window.VoiceLive.micState ? window.VoiceLive.micState() : null, pill: (document.getElementById("cc-cap-label") || {}).textContent, note: [].map.call(document.querySelectorAll(".cc-toast"), (t) => t.textContent).join(" | ") }));
 
     const commits = (ses) => ses.events.filter((e) => e.type === "input_audio_buffer.commit").length;
     const pttOn = (ses) => ses.events.filter((e) => e.type === "input_audio_buffer.clear").length; // the server clears the buffer on each press (pttDown)
@@ -201,7 +218,7 @@ function mockServer() {
       await sleep(1500);
       const st3 = await live(page);
       check("after a tap MINT AI keeps listening: audio moves, no commit yet, the key counts as held", ses.audioBytes > b3 + 48000 && commits(ses) === c3 && st3.latched && st3.held, JSON.stringify(st3) + " bytes " + (ses.audioBytes - b3));
-      check("  and the page says how to send it", /again to send/.test(st3.note), JSON.stringify(st3));
+      check("  and the page says how to send it", /pause to send/.test(st3.note), JSON.stringify(st3));
       await ptt(page, true);
       const sent = await until(() => commits(ses) === c3 + 1, 3000);
       await ptt(page, false); // that press's own key-up: nothing more
@@ -213,6 +230,110 @@ function mockServer() {
       await until(() => ses.closed, 3000);
       check("Esc ends it (why esc; only the red X is 'button')", ses.closed && /ended \(hung-up: esc\)/.test(s.out()), s.out().split("\n").filter((l) => /live/.test(l)).slice(-4).join(" / "));
       check("  the server's log names the turn mode", /started: hold-to-talk,/.test(s.out()), s.out().split("\n").filter((l) => /started:/.test(l)).join(" / "));
+      await browser.close();
+    }
+    section("the app's events late, out of order, or with an up lost (timestamps and order from the app)");
+    {
+      const { browser, page } = await open();
+      const out0 = s.out().length;
+      // Down and up handed over together, 1.5 s late: judged by the app's clock, a hold -- not a latched tap.
+      const t = Date.now();
+      await ptt(page, true, { at: t - 1500 });
+      await ptt(page, false, { at: t });
+      await sleep(300);
+      let st = await liveNow(page);
+      check("down and up delivered together but 1.5 s apart by the app's clock: a hold, not a tap (no latch, nothing left held)", !st.latched && !st.held, JSON.stringify(st));
+      await until(() => /press \d+: held/.test(s.out().slice(out0)), 6000);
+      // Out of order: an up numbered after a down that arrives later -- the late down is dropped.
+      const k = 1000;
+      await ptt(page, false, { seq: k + 2 });
+      await ptt(page, true, { seq: k + 1 });
+      await sleep(300);
+      st = await liveNow(page);
+      check("  an up numbered after a down that arrives later: the stale down is dropped, nothing held", !st.held && !st.latched, JSON.stringify(st));
+      // An up that never arrives: the next down ends the turn instead of being ignored.
+      const ses0 = mock.sessions[mock.sessions.length - 1];
+      const c0 = commits(ses0);
+      await ptt(page, true);
+      await until(() => ses0.audioBytes > 0, 3000);
+      await sleep(1200);
+      await ptt(page, true);
+      const ended = await until(() => commits(ses0) > c0, 3000);
+      st = await liveNow(page);
+      check("  a second down with no up between (the up was lost): it ends the turn (committed), nothing stuck", ended && !st.held, JSON.stringify(st) + " commits " + commits(ses0));
+      await ptt(page, false); // that down's own up: nothing more
+
+      section("response time: where a turn's time goes, logged per turn");
+      const ses = mock.sessions[mock.sessions.length - 1];
+      const r0 = ses.events.filter((e) => e.type === "response.create").length;
+      await ptt(page, true);
+      await sleep(700);
+      await ptt(page, false);
+      await until(() => ses.events.filter((e) => e.type === "response.create").length > r0, 5000);
+      const commit = ses.events.filter((e) => e.type === "input_audio_buffer.commit").pop();
+      const create = ses.events.filter((e) => e.type === "response.create").pop();
+      const lag = create && commit ? create.at - commit.at : null;
+      check("a held turn: response.create follows the commit at once (no wait for its transcript)", lag != null && lag < 300, "commit→create " + lag + " ms");
+      const tl = await until(() => /turn \d+ \(hold-to-talk\): release→commit \d+ ms, →response \d+ ms, →first model audio \d+ ms, →first audio played \d+ ms/.test(s.out()), 4000);
+      check("  the server logs one timing line per turn: release→commit, →response, →first model audio, →first audio played", tl, s.out().split("\n").filter((l) => /turn \d+/.test(l)).slice(-3).join(" / "));
+      const pl = s.out().split("\n").filter((l) => /press \d+: held \d+ ms, \d+ frames/.test(l));
+      check("  and one line per press: how long, how many frames and how much audio came from the page", pl.length >= 3 && pl.some((l) => /committed/.test(l)) && pl.every((l) => !/[a-z]{3,} [a-z]{3,} [a-z]{3,} said/i.test(l)), pl.slice(-3).join(" / "));
+
+      section("the pill tells the truth: Listening only while audio flows");
+      await ptt(page, true);
+      await until(async () => (await liveNow(page)).mic && (await liveNow(page)).mic.ok, 3000);
+      let lv = null;
+      await until(async () => /Listening/.test((lv = await live(page)).pill || ""), 3000);
+      check("key held, frames flowing: the pill says Listening", /Listening/.test(lv.pill || "") && lv.mic.ok, JSON.stringify(lv));
+      await page.run(() => Promise.all(window.__ctxs.map((c) => (c.state === "running" ? c.suspend() : null))));
+      await sleep(700);
+      // (the scratch copy keeps falling offline -- no supervisor -- so the pill is read until online)
+      await until(async () => /Mic not ready/.test((lv = await live(page)).pill || ""), 3000);
+      check("  audio stops (the AudioContext suspended): the pill says Mic not ready, and why", /Mic not ready/.test(lv.pill || "") && lv.mic && !lv.mic.ok, JSON.stringify(lv));
+      await page.run(() => Promise.all(window.__ctxs.map((c) => (c.state === "suspended" ? c.resume() : null))));
+      await sleep(700);
+      await until(async () => /Listening/.test((lv = await live(page)).pill || ""), 3000);
+      check("  audio back: Listening again", /Listening/.test(lv.pill || ""), JSON.stringify(lv));
+      await ptt(page, false);
+      await sleep(300);
+      const o1 = s.out().length;
+      await page.run(() => window.__mintLive.end("esc"));
+      await until(() => /page report: /.test(s.out().slice(o1)), 3000);
+      const repLine = (s.out().slice(o1).split("\n").find((l) => /page report: /.test(l)) || "");
+      let rep = null;
+      try { rep = JSON.parse(repLine.slice(repLine.indexOf("page report: ") + 13)); } catch (e) { rep = null; }
+      check("the call's end carries the page's report (counts and times only): key downs and ups with the app's clock, frames in and sent, the AudioContext", rep && rep.in > 0 && rep.sent > 0 && rep.ring.some((e) => e.k === "down" && e.app > 1e12) && rep.ring.some((e) => e.k === "up") && rep.ring.every((e) => typeof e.ctx === "string"), repLine.slice(0, 600));
+      await browser.close();
+    }
+
+    section("a tap latches, then the turn sends itself after a pause (speech then quiet, from a file)");
+    {
+      // 1.2 s of speech-like bursts, then 2.8 s of near silence, looped by the fake microphone.
+      const RATE_ = 48000, wavPath = path.join(scratch.DATA, "speech-pause.wav");
+      const n = RATE_ * 4, pcm = Buffer.alloc(n * 2);
+      for (let i = 0; i < n; i++) {
+        const t = i / RATE_;
+        let v = (Math.random() - 0.5) * 0.002;
+        if (t < 1.2 && (t * 1000) % 180 < 120) v += 0.35 * (Math.sin(2 * Math.PI * 220 * t) + 0.6 * Math.sin(2 * Math.PI * 440 * t) + 0.3 * Math.sin(2 * Math.PI * 660 * t)) / 1.9;
+        pcm.writeInt16LE(Math.max(-32767, Math.min(32767, Math.round(v * 32767))), i * 2);
+      }
+      const h = Buffer.alloc(44);
+      h.write("RIFF", 0); h.writeUInt32LE(36 + pcm.length, 4); h.write("WAVE", 8); h.write("fmt ", 12); h.writeUInt32LE(16, 16); h.writeUInt16LE(1, 20); h.writeUInt16LE(1, 22);
+      h.writeUInt32LE(RATE_, 24); h.writeUInt32LE(RATE_ * 2, 28); h.writeUInt16LE(2, 32); h.writeUInt16LE(16, 34); h.write("data", 36); h.writeUInt32LE(pcm.length, 40);
+      require("fs").writeFileSync(wavPath, Buffer.concat([h, pcm]));
+      const { browser, page } = await open(wavPath);
+      const n0 = mock.sessions.length;
+      await ptt(page, true);
+      await sleep(80);
+      await ptt(page, false);
+      await until(() => mock.sessions.length > n0 && mock.sessions[mock.sessions.length - 1].update, 8000);
+      const ses = mock.sessions[mock.sessions.length - 1];
+      const st0 = await liveNow(page);
+      const sent = await until(() => commits(ses) >= 1, 9000);
+      const st1 = await liveNow(page);
+      check("tapped: it latches (listening), then sends the turn by itself after the speaker pauses -- no second press", st0.latched && sent && !st1.latched && !st1.held && ses.audioBytes > 24000, JSON.stringify({ st0, st1, bytes: ses.audioBytes, commits: commits(ses) }));
+      await page.run(() => window.__mintLive.end("esc"));
+      await sleep(300);
       await browser.close();
     }
     check("zero page errors and CSP violations", errs.length === 0, errs.join("\n"));
