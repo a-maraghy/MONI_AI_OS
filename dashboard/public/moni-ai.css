@@ -1207,3 +1207,14 @@ html.cc-page .topbar .cc-needpill .cc-dot { background: var(--on-brand); }
 /* A delegation's target with no sphere here (remote, sub-agent, offline): the marker at the edge (cc-family ghost) */
 .cc-ghost .nm { color: var(--muted); font-size: 11.5px; }
 .cc-ghost .st { color: var(--muted); }
+/* The voiceprint's verdict on the state pill (moni-ai.js showVoiceprint; cc-logic.js vpBadge). */
+.cc-cap-state[data-vp] { text-transform: none; letter-spacing: .02em; font-size: 11.5px; }
+.cc-cap-state[data-vp] .d { display: none; }
+.cc-cap-state[data-vp="ok"] { color: var(--accent); }
+.cc-cap-state[data-vp="bad"] { color: var(--bad); }
+.cc-cap-state[data-vp="mid"] { color: var(--dim); }
+.cc-vp-ico { display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; border-radius: 50%; border: 1.5px solid currentColor; font: 700 9px/1 var(--mono); flex: none; }
+.cc-vp-ico[hidden] { display: none; }
+.cc-vp-ico[data-i="you"]::before { content: "✓"; }
+.cc-vp-ico[data-i="no"]::before { content: "✕"; }
+.cc-vp-ico[data-i="q"]::before { content: "?"; }

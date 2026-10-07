@@ -43,6 +43,25 @@
   }
   function isSessView(v) { return typeof v === "string" && Object.prototype.hasOwnProperty.call(SESS_VIEWS, v); }
 
+  /**
+   * The voiceprint's verdict on the state pill (the relay's {type: "voiceprint", kind, gated}):
+   * { label, tone: "ok" | "bad" | "mid", icon: "you" | "no" | "q" } -- never a score.
+   *   you    recognised (or the call's voice)
+   *   other  another voice; echo: MINT AI's own voice coming back
+   *   unsure doubtful (gate: not answered; nothing is ever spoken); short: too little speech to check (let through)
+   * gated: "Only respond to my voice" is on (what it did) or off (what it would have done).
+   */
+  var VP_SHOW_MS = 2600; // shown this long at most...
+  var VP_MIN_MS = 1500; // ...and at least this long, even if the state moves on (an ignored turn goes straight back to listening)
+  function vpBadge(kind, gated) {
+    if (kind === "you") return { label: "Recognised", tone: "ok", icon: "you" };
+    if (kind === "other") return { label: "Voice not recognised — " + (gated ? "ignored" : "would be ignored"), tone: "bad", icon: "no" };
+    if (kind === "echo") return { label: "MINT AI's own voice — " + (gated ? "ignored" : "would be ignored"), tone: "bad", icon: "no" };
+    if (kind === "unsure") return { label: "Not sure it's you — " + (gated ? "not answered" : "would not be answered"), tone: "mid", icon: "q" };
+    if (kind === "short") return { label: "Not sure it's you", tone: "mid", icon: "q" };
+    return null;
+  }
+
   var STATES = ["idle", "listening", "thinking", "delegating", "speaking", "needs"];
   var LABEL = { idle: "Ready", listening: "Listening", thinking: "Thinking", delegating: "Delegating", speaking: "Speaking", needs: "Needs you" };
 
@@ -437,7 +456,7 @@
   return {
     CORES: CORES, CORE_DEFAULT: CORE_DEFAULT, normCore: normCore, isCore: isCore,
     SESS_VIEWS: SESS_VIEWS, SESS_VIEW_DEFAULT: SESS_VIEW_DEFAULT, normSessView: normSessView, isSessView: isSessView,
-    STATES: STATES, LABEL: LABEL, coreState: coreState, caption: caption, CAPTION_REST_MS: CAPTION_REST_MS, captionRests: captionRests, captionRestIn: captionRestIn, composerCalm: composerCalm, lastSentence: lastSentence, gist: gist,
+    STATES: STATES, LABEL: LABEL, coreState: coreState, caption: caption, vpBadge: vpBadge, VP_SHOW_MS: VP_SHOW_MS, VP_MIN_MS: VP_MIN_MS, CAPTION_REST_MS: CAPTION_REST_MS, captionRests: captionRests, captionRestIn: captionRestIn, composerCalm: composerCalm, lastSentence: lastSentence, gist: gist,
     needQueue: needQueue, card: card, doneText: doneText, approvalFrom: approvalFrom, approvalNoRule: approvalNoRule,
     TOK_KEYS: TOK_KEYS, tokens: tokens, tokLine: tokLine, tokTip: tokTip,
     SHEETS: SHEETS, sheetKeys: sheetKeys,

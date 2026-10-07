@@ -109,7 +109,7 @@ function voiceprintGroup(o) {
     { id: "v-voiceprint", scope: "everyone" }
   );
   const canGate = en && enrolled;
-  const gateHelp = `When on: your voice → it answers as always. Not sure → it says “Sorry, say that again?”. Another voice (people in the room, a TV) → ignored, never spoken to; the page shows “Not your voice — ignored”, and a “yes” in such a turn confirms nothing. MINT AI's own voice coming back through the speakers → dropped. If the check fails, the turn goes through.${
+  const gateHelp = `When on: your voice → it answers as always. Once a turn in a call is recognised as yours, the call's later doubtful or very short turns count as yours too. Not sure it's you (and nothing recognised yet in this call) → not answered. Another voice (people in the room, a TV) → ignored, and a “yes” in such a turn confirms nothing. MINT AI never speaks about either: the state pill shows “Not sure it's you” or “Voice not recognised — ignored”. MINT AI's own voice coming back through the speakers → dropped. If the check fails, the turn goes through.${
     canGate ? "" : en ? ` <span class="muted" id="vp-gate-why">Enrol your voiceprint first.</span>` : ` <span class="muted" id="vp-gate-why">The voiceprint is off.</span>`
   }`;
   const sw2 = V.row(
@@ -167,9 +167,9 @@ function voiceprintGroup(o) {
   const st = vp.stats || { checked: 0, by: {} };
   const by = st.by || {};
   const statsBody = st.checked
-    ? `<div class="vp-stats" id="vp-stats"><div class="vp-nums"><span><b>${st.checked}</b> turns checked</span><span><b>${by.accept || 0}</b> yours (${pct(by.accept || 0, st.checked)})</span><span><b>${
+    ? `<div class="vp-stats" id="vp-stats"><div class="vp-nums"><span><b>${st.checked}</b> turns checked</span><span><b>${st.answered || 0}</b> yours (${pct(st.answered || 0, st.checked)}${by.sticky || by.unverified ? `; ${by.accept || 0} recognised, ${by.sticky || 0} by the call's earlier turn, ${by.unverified || 0} too short to check` : ""})</span><span><b>${
         st.would_ask
-      }</b> would ask again</span><span class="${st.would_ignore ? "vp-attn" : ""}"><b>${st.would_ignore}</b> would ignore${by.echo ? ` (${by.echo} MINT AI's echo)` : ""}</span>${
+      }</b> would not answer (unsure)</span><span class="${st.would_ignore ? "vp-attn" : ""}"><b>${st.would_ignore}</b> would ignore${by.echo ? ` (${by.echo} MINT AI's echo)` : ""}</span>${
         by.error ? `<span class="vp-attn"><b>${by.error}</b> not checked (service)</span>` : ""
       }<span class="muted">median score ${st.score_p50 == null ? "—" : st.score_p50} · check ${st.ms_p50 == null ? "—" : Math.round(st.ms_p50) + " ms"} (p95 ${st.ms_p95 == null ? "—" : Math.round(st.ms_p95) + " ms"})</span></div>${vpHistogram(
         st,

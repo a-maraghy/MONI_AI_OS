@@ -64,15 +64,23 @@ def fbank(wave, rate=16000, num_bins=80, frame_ms=25, shift_ms=10, preemph=0.97)
     return np.log(np.maximum(mel, EPS)).astype(np.float32)
 
 
-def speech_mask(x, rate=16000, frame_ms=20):
-    """A plain energy VAD (the trial harness's): frames within 30 dB of the loudest, above a floor."""
+# Frames quieter than this are never speech. The browser's noise suppression + auto gain put the
+# administrator's speech at about -20..-27 dBFS (95th percentile) and the room at -67..-70 (the
+# trial's recordings). Without it, a window with no speech in it -- the misaligned turns of
+# 2026-10-07 -- had its noise floor called "speech" (within 30 dB of its own loudest frame) and
+# scored as a voice (0.05-0.25). The trial harness used -60.
+ABS_FLOOR_DB = -50.0
+
+
+def speech_mask(x, rate=16000, frame_ms=20, abs_floor=ABS_FLOOR_DB):
+    """A plain energy VAD: frames within 30 dB of the loudest, above a relative and an absolute floor."""
     n = int(rate * frame_ms / 1000)
     if len(x) < n:
         return np.zeros(0, dtype=bool), n
     frames = x[: len(x) // n * n].reshape(-1, n)
     db = 10 * np.log10(np.mean(frames.astype(np.float64) ** 2, axis=1) + 1e-10)
     top = np.percentile(db, 95)
-    floor = max(top - 30.0, np.percentile(db, 10) + 6.0, -60.0)
+    floor = max(top - 30.0, np.percentile(db, 10) + 6.0, abs_floor)
     return db > floor, n
 
 

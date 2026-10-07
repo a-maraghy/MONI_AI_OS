@@ -225,7 +225,8 @@ ${desk ? deskParts() : ""}
     <h1 class="cc-sr">MINT AI Command Center</h1>
     <div class="cc-stage" id="cc-stage"><div class="cc-offline" id="cc-offline" hidden><b>MINT AI is not reachable</b><span id="cc-offline-msg"></span></div></div>
     <div class="cc-caption" id="cc-caption">
-      <span class="cc-cap-state" id="cc-cap-state" data-s="idle"><span class="d" aria-hidden="true"></span><span id="cc-cap-label">Connecting</span></span>
+      <span class="cc-cap-state" id="cc-cap-state" data-s="idle"><span class="d" aria-hidden="true"></span><span class="cc-vp-ico" id="cc-cap-vp" aria-hidden="true" hidden></span><span id="cc-cap-label">Connecting</span></span>
+      <span class="cc-sr" id="cc-vp-live" aria-live="polite"></span>
       <div class="cc-cap-line" id="cc-cap" aria-live="polite">Connecting to MINT AI…</div>
       <button type="button" class="cc-cap-more" id="cc-cap-more" aria-expanded="false" aria-controls="cc-reply" hidden>${ic("chev")}<span id="cc-cap-more-t">Full reply</span> · <span id="cc-cap-at"></span></button>
     </div>

@@ -11,7 +11,7 @@
  *                                     the gate below.
  *
  * Per turn (a hold-to-talk press, a hands-free VAD segment) the relay
- * (lib/voice-live.js) sends the first ~1.2 s of speech to moni-voiceprint
+ * (lib/voice-live.js) sends the turn's speech (the first 3 s of it) to moni-voiceprint
  * (voiceprint/server.py: WeSpeaker ResNet34-LM in ONNX Runtime on a Unix
  * socket) and compares the embedding it gets back with the enrolled print
  * (cosine). Verdicts, thresholds from the trial on the administrator's own
@@ -19,10 +19,15 @@
  * user's lowest phrase scored 0.41, the best impostor 0.455):
  *
  *   accept     score >= accept                         -> the turn goes on
- *   uncertain  reject <= score < accept, or too little  -> "Sorry, say that again?"
- *              speech (< 0.3 s), or a reject on < 0.8 s
- *   reject     score < reject                          -> ignored, never spoken; the
- *                                                         page shows "Not your voice -- ignored"
+ *   uncertain  reject <= score < accept, nothing        -> not answered; never spoken about: the
+ *              verified yet in this call                   page's pill says "Not sure it's you"
+ *   sticky     reject <= score < accept (or too short), -> the turn goes on: the call's voice
+ *              and a turn of this call was accepted        (not when heard over MINT AI's voice,
+ *              within stickyMs (10 min)                    unless too short to judge)
+ *   unverified under 0.8 s of speech (or < 0.3 s: no     -> the turn goes on;
+ *              embedding at all), not below reject         below reject it is still "reject"
+ *   reject     score < reject                          -> ignored, never spoken; the page's
+ *                                                         pill says "Voice not recognised -- ignored"
  *   echo       heard over MINT AI's own playback and   -> dropped silently
  *              closer to MINT AI's TTS voice than to the user's
  *   none       no voiceprint enrolled                  -> not checked at all
@@ -52,7 +57,12 @@ const SOCKET = process.env.MONI_VOICEPRINT_SOCKET || "/run/moni-voiceprint/voice
 const ENABLED_SETTING = "voiceprint_enabled";
 const GATE_SETTING = "voiceprint_gate";
 const THRESHOLDS_SETTING = "voiceprint_thresholds";
-const DEFAULTS = Object.freeze({ accept: 0.31, reject: 0.2, echo: 0.45, first: 1.2, min: 0.8, timeoutMs: 400 });
+// first: the seconds of a turn's speech scored (whole turns up to 3 s; 2026-10-07: 1.2 s from a
+// misaligned window left 0.5-0.7 s). min: less speech than this is "unverified" (let through).
+// stickyMs: after a turn verified as the administrator's, doubtful turns in the same call are theirs.
+// stickyMin: the lowest score a doubtful turn may have to count as the call's voice (default = reject;
+// raise it, e.g. 0.25, to let fewer other people through in a call where you were recognised).
+const DEFAULTS = Object.freeze({ accept: 0.31, reject: 0.2, echo: 0.45, first: 3, min: 0.8, timeoutMs: 400, stickyMs: 10 * 60 * 1000, stickyMin: 0.2 });
 const MODEL = "WeSpeaker ResNet34-LM (VoxCeleb2), CC-BY-4.0";
 const MIC_RE = /^[a-z][a-z0-9-]{0,23}$/;
 const MIN_ENROL_MS = 30000; // speech needed for a microphone's print
@@ -402,14 +412,22 @@ function createVoiceprint(deps) {
       return { verdict: "error", error: String(e.message).slice(0, 120), ms: now() - t0 };
     }
     const out = { speech_ms: j.speech_ms, used_ms: j.used_ms, svc_ms: j.ms, ms: now() - t0 };
-    if (!j.embedding) return { ...out, verdict: "short" };
+    const recent = !!(o && o.verifiedAt && now() - o.verifiedAt <= th.stickyMs);
+    const over = !!(o && o.overVoice);
+    if (!j.embedding) return { ...out, verdict: "unverified", why: "under 0.3 s of speech" };
     const score = dot(pr.vec, j.embedding);
     const tp = o && o.voice ? ttsPrint(o.voice) : null;
     const tts = tp ? dot(tp, j.embedding) : null;
-    let verdict = score >= th.accept ? "accept" : score < th.reject ? "reject" : "uncertain";
-    if (verdict === "reject" && j.speech_ms < th.min * 1000) verdict = "uncertain"; // too little speech to refuse outright
-    if (o && o.overVoice && tts != null && tts >= th.echo && tts > score) verdict = "echo";
-    return { ...out, verdict, score: r3(score), tts_score: r3(tts) };
+    const res = (verdict, why) => ({ ...out, verdict, score: r3(score), tts_score: r3(tts), ...(why ? { why } : {}) });
+    const sticky = recent && score >= Math.max(th.reject, th.stickyMin);
+    // MINT AI's own voice coming back while it plays.
+    if (over && tts != null && tts >= th.echo && tts > score) return res("echo");
+    if (score >= th.accept) return res("accept");
+    if (score < th.reject) return res("reject"); // clearly another voice, however short
+    // In between: too little speech to judge, or doubtful.
+    if (j.speech_ms < th.min * 1000) return res(sticky ? "sticky" : "unverified", sticky ? "this call's voice" : "too short to check");
+    if (sticky && !over) return res("sticky", "this call's voice");
+    return res("uncertain");
   }
 
   /* ---- the ledger ---- */
@@ -428,7 +446,7 @@ function createVoiceprint(deps) {
   /** The last `days` days: counts per verdict, what the gate would have done, a score histogram. */
   function stats(days, actor) {
     const rows = db.voiceprintChecksSince(now() - (days || 7) * DAY, actor || null);
-    const by = { accept: 0, uncertain: 0, reject: 0, echo: 0, short: 0, error: 0 };
+    const by = { accept: 0, sticky: 0, unverified: 0, uncertain: 0, reject: 0, echo: 0, short: 0, error: 0 };
     const acted = {};
     const bins = Math.round((HIST.to - HIST.from) / HIST.step);
     const hist = new Array(bins).fill(0);
@@ -453,7 +471,8 @@ function createVoiceprint(deps) {
       by,
       acted,
       would_ignore: by.reject + by.echo,
-      would_ask: by.uncertain + by.short,
+      would_ask: by.uncertain,
+      answered: by.accept + by.sticky + by.unverified + by.short,
       hist,
       hist_from: HIST.from,
       hist_step: HIST.step,

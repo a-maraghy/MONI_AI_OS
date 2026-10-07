@@ -354,6 +354,8 @@
     sessMenu: function (key, x, y) { return sessMenu(key, x, y); },
     retire: function (key) { var s = findSess(key); if (s && s.hire) retireDialog(s); },
     openSheet: function (id) { return openSheet(id); },
+    /* The voiceprint's verdict as the live socket delivers it ({kind, gated}); the checks drive the pill with it. */
+    voiceprint: function (m) { showVoiceprint(m || {}); },
   };
 
   /* ---- the core setting: A dotted sphere, B Siri fluid, C hybrid, D mesh (the default). The
@@ -450,12 +452,40 @@
   var capSig = "", capRestSig = "", capQuietSince = Date.now(), capRestTimer = 0;
   /** Activity: the caption's reply line comes back and the quiet spell starts again. */
   function capActivity() { capQuietSince = Date.now(); if (capSig) paintCaption(); }
+  /* The voiceprint's verdict for the turn just heard (the relay's "voiceprint" event; only while the
+     voiceprint is on): on the state pill for VP_SHOW_MS or until the state changes, then the state again. */
+  var vpShown = null; // { badge, state, until }
+  var vpTimer = 0;
+  function showVoiceprint(m) {
+    var b = ML.vpBadge(m.kind, !!m.gated);
+    if (!b) return;
+    var c = ML.caption(snapshot());
+    vpShown = { badge: b, state: S.online ? c.state : "offline", at: Date.now(), until: Date.now() + ML.VP_SHOW_MS };
+    var live = $("cc-vp-live");
+    if (live) live.textContent = b.label + ".";
+    clearTimeout(vpTimer);
+    vpTimer = setTimeout(function () { vpShown = null; paintState(); }, ML.VP_SHOW_MS + 20);
+    setTimeout(function () { if (vpShown) paintState(); }, ML.VP_MIN_MS + 20); // a state change meanwhile ends it then
+    paintState();
+  }
   function paintCaption(snap) {
     snap = snap || snapshot();
     var c = ML.caption(snap);
     var cs = $("cc-cap-state");
-    cs.setAttribute("data-s", S.online ? c.state : "offline");
-    $("cc-cap-label").textContent = c.label;
+    var sNow = S.online ? c.state : "offline";
+    cs.setAttribute("data-s", sNow);
+    // A verdict stays until it times out, the state changes, or the call ends.
+    if (vpShown && (Date.now() > vpShown.until || (vpShown.state !== sNow && Date.now() >= vpShown.at + ML.VP_MIN_MS))) vpShown = null;
+    var vi = $("cc-cap-vp");
+    if (vpShown) {
+      cs.setAttribute("data-vp", vpShown.badge.tone);
+      if (vi) { vi.hidden = false; vi.setAttribute("data-i", vpShown.badge.icon); }
+      $("cc-cap-label").textContent = vpShown.badge.label;
+    } else {
+      cs.removeAttribute("data-vp");
+      if (vi) vi.hidden = true;
+      $("cc-cap-label").textContent = c.label;
+    }
     var line = $("cc-cap"), sig = c.state + "|" + c.text + "|" + c.interim;
     if (sig !== capSig) {
       capSig = sig;
@@ -2671,8 +2701,8 @@
           if (m.nonce) window.VoiceLive.ack(m.nonce, res.ok, res.why);
         }
         if (m.type === "ui-undo") uiUndoNow("voice"); // "undo" said in the call, caught by the server
-        // The voiceprint's gate ignored a turn that was not the administrator's voice: shown, never spoken.
-        if (m.type === "voiceprint" && m.verdict === "reject") toast("Not your voice — ignored.");
+        // The voiceprint's verdict on the turn just heard: on the state pill, never spoken, no score.
+        if (m.type === "voiceprint") showVoiceprint(m);
         // The voice settings changed and the call reconnected with them (the voice is global).
         if (m.type === "voice-changed") {
           var vt = $("cc-voice-tag"); if (vt && m.voice) vt.textContent = m.voice;
@@ -2694,6 +2724,7 @@
    */
   function liveEnded(m) {
     if (!LiveUI.active) return;
+    vpShown = null; // a verdict belongs to its call
     m = m || {};
     var resuming = LiveUI.resuming;
     LiveUI.active = false;

@@ -187,3 +187,10 @@ html.cc-desk .cc-sheet.wide { left: var(--dk-ov-x) !important; width: var(--dk-o
 html.cc-desk .cc-scrim, html.cc-desk .cc-sheet-scrim, html.cc-desk .cc-sdlg-back { background: transparent !important; backdrop-filter: none !important; }
 html.cc-desk .cc-sdlg { background: var(--dk-card); color: var(--dk-tx); border-color: var(--dk-card-b); box-shadow: var(--dk-shadow); }
 html.cc-desk .cc-smenu { background: var(--dk-card); color: var(--dk-tx); border-color: var(--dk-card-b); }
+/* The voiceprint's verdict on the pill (moni-ai.js showVoiceprint): mint when it is you, red when it is not. */
+html.cc-desk { --dk-red: #FF8A8A; }
+html.cc-desk[data-theme="light"] { --dk-red: #B3261E; }
+html.cc-desk .cc-cap-state[data-vp="ok"] { color: var(--dk-accent); }
+html.cc-desk .cc-cap-state[data-vp="bad"] { color: var(--dk-red); }
+html.cc-desk .cc-cap-state[data-vp="mid"] { color: var(--dk-tx2); }
+html.cc-desk .cc-cap-state[data-vp] .dk-meter { display: none; }

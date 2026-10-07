@@ -50,7 +50,7 @@ function mount(app, deps) {
     const was = vprint.gate();
     vprint.setGate(want, req.me.username);
     audit(req, `voiceprint: only respond to my voice ${want ? "on" : "off"}${was === want ? " (unchanged)" : ""}`);
-    reply(req, res, { msg: want ? "Only your voice is answered from the next turn. Other voices are ignored; unsure turns are asked again." : "Back to watching only: every turn is answered, and checked.", anchor: "v-vp-gate", reload: true });
+    reply(req, res, { msg: want ? "Only your voice is answered from the next turn. Other voices and unsure turns are not answered; the screen says why, MINT AI never speaks about it." : "Back to watching only: every turn is answered, and checked.", anchor: "v-vp-gate", reload: true });
   });
 
   app.post(SET + "/from-trial", ...settingsGuard, async (req, res) => {

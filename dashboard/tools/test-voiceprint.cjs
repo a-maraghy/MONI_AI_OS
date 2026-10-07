@@ -20,7 +20,7 @@
  *   2. the relay: OFF = no service call at all and calls as before; SHADOW =
  *      every turn checked and logged, none blocked; the GATE = yours answered,
  *      another voice ignored (page note, never spoken, its "yes" confirms
- *      nothing), unsure asked again, MINT AI's echo dropped; switching on, off
+ *      nothing), unsure not answered and never spoken about, MINT AI's echo dropped; switching on, off
  *      and gating mid-call (the next turn follows); fail-open with the gate on;
  *      hold-to-talk presses;
  *   3. the routes on a scratch copy of server.js: the switch (audited),
@@ -102,7 +102,8 @@ function startFakeService(sock) {
     req.on("data", (c) => parts.push(c));
     req.on("end", async () => {
       const body = Buffer.concat(parts);
-      svc.calls.push({ path: req.url, bytes: body.length });
+      const who0 = speakerOf(body);
+      svc.calls.push({ path: req.url, bytes: body.length, who: who0 === U ? "user" : who0 === O ? "other" : who0 === M ? "unsure" : who0 ? "tts" : "silence" });
       if (svc.delay) await sleep(svc.delay);
       if (svc.mode === "broken") return res.writeHead(500, { "Content-Type": "application/json" }), res.end(JSON.stringify({ ok: false, error: "boom" }));
       if (svc.mode === "nonsense") return res.writeHead(200), res.end("not json");
@@ -191,9 +192,16 @@ async function library(sock) {
   const c3 = await vp2.check(me, tone(2500, 1500), {});
   const c4 = await vp2.check(me, tone(100, 1500), {});
   const c5 = await vp2.check(me, tone(2000, 600), {});
-  check("verdicts: yours accept (1.0), another reject (0.0), unsure (0.25) uncertain, silence short", c1.verdict === "accept" && c1.score === 1 && c2.verdict === "reject" && c3.verdict === "uncertain" && c4.verdict === "short", JSON.stringify([c1, c2, c3, c4]));
-  check("  another voice on < 0.8 s of speech is only 'uncertain'", c5.verdict === "uncertain", JSON.stringify(c5));
-  check("  the service was sent the first 1.2 s setting and 24 kHz", svc.calls.some((x) => /\/embed\?rate=24000&first=1.2/.test(x.path)));
+  const c6 = await vp2.check(me, tone(2500, 600), {});
+  check("verdicts: yours accept (1.0), another reject (0.0), unsure (0.25) uncertain, no speech unverified (let through)", c1.verdict === "accept" && c1.score === 1 && c2.verdict === "reject" && c3.verdict === "uncertain" && c4.verdict === "unverified", JSON.stringify([c1, c2, c3, c4]));
+  check("  under 0.8 s of speech: clearly another voice is still reject; doubtful is 'unverified' (let through)", c5.verdict === "reject" && c6.verdict === "unverified", JSON.stringify([c5, c6]));
+  const now0 = Date.now();
+  const s1 = await vp2.check(me, tone(2500, 1500), { verifiedAt: now0 - 1000 });
+  const s2 = await vp2.check(me, tone(2500, 1500), { verifiedAt: now0 - 1000, overVoice: true });
+  const s3 = await vp2.check(me, tone(2000, 1500), { verifiedAt: now0 - 1000 });
+  const s4 = await vp2.check(me, tone(2500, 1500), { verifiedAt: now0 - 11 * 60 * 1000 });
+  check("sticky: after a verified turn in the call, doubtful turns are the call's voice; not over MINT AI's voice; not another voice; not after 10 min", s1.verdict === "sticky" && s2.verdict === "uncertain" && s3.verdict === "reject" && s4.verdict === "uncertain", JSON.stringify([s1, s2, s3, s4].map((x) => x.verdict)));
+  check("  the service is asked for the turn's first 3 s of speech, at 24 kHz", svc.calls.some((x) => /\/embed\?rate=24000&first=3/.test(x.path)));
 
   check("MINT AI's voice: learned from what was played (>= 1.5 s), then not again within a minute", (await vp2.learnTts("marin", tone(3000, 2000))) === true && (await vp2.learnTts("marin", tone(3000, 2000))) === false && !!vp2.ttsPrint("marin"));
   const ec = await vp2.check(me, tone(4000, 1500), { overVoice: true, voice: "marin" });
@@ -335,6 +343,7 @@ async function relay(sock) {
     const before = svc.calls.length;
     await turn(s, c, 2000, "what is the disk usage?");
     check("OFF: the service is never called", svc.calls.length === before);
+    check("  and the page gets no voiceprint event (the pill shows nothing)", !client.json.some((m) => m.type === "voiceprint"));
     check("  and the turn is answered as always", created(s) === 1 && client.json.some((m) => m.type === "caption" && m.who === "you"));
     check("  nothing in the ledger", db.voiceprintChecksSince(0, "relayuser").length === 0);
     c.close("test");
@@ -351,8 +360,10 @@ async function relay(sock) {
     await turn(s, c, 2500, "maybe me");
     await until(() => db.voiceprintChecksSince(0, "relayuser").length >= 3, 1500);
     const rows = db.voiceprintChecksSince(0, "relayuser");
-    check("SHADOW: every turn checked and logged", rows.length === 3 && rows.map((r) => r.verdict).join() === "accept,reject,uncertain" && rows.every((r) => r.acted === "shadow" && !r.gated), JSON.stringify(rows.map((r) => [r.verdict, r.acted])));
-    check("  nothing blocked: all three answered, no note on the page", created(s) === 3 && !client.json.some((m) => m.type === "voiceprint"));
+    check("SHADOW: every turn checked and logged (the unsure one after a recognised turn is the call's voice)", rows.length === 3 && rows.map((r) => r.verdict).join() === "accept,reject,sticky" && rows.every((r) => r.acted === "shadow" && !r.gated), JSON.stringify(rows.map((r) => [r.verdict, r.acted])));
+    check("  nothing blocked: all three answered", created(s) === 3);
+    const ev = client.json.filter((m) => m.type === "voiceprint");
+    check("  the page's pill is told each verdict, as 'would' (gated false), never a score", ev.map((m) => m.kind).join() === "you,other,you" && ev.every((m) => m.gated === false && !("score" in m) && !("tts_score" in m)), JSON.stringify(ev));
     check("  the log names the verdict and score per turn, nothing else of the voice", logs.some((l) => /turn \d+ voiceprint: accept 1\.000/.test(l)) && logs.some((l) => /voiceprint: reject 0\.000.*\(shadow\)/.test(l)), logs.filter((l) => /voiceprint/.test(l)).join("\n"));
     c.close("test");
   }
@@ -368,14 +379,71 @@ async function relay(sock) {
     check("GATE: your voice is answered", created(s) === 1 && client.json.filter((m) => m.type === "caption" && m.who === "you").length === 1);
     const other = await turn(s, c, 2000, "turn off the lights");
     check("  another voice: not answered, forgotten upstream, its words never shown", created(s) === 1 && deleted(s, other) && client.json.filter((m) => m.type === "caption" && m.who === "you").length === 1);
-    check("  the page is told (shown, never spoken)", client.json.some((m) => m.type === "voiceprint" && m.verdict === "reject") && !spoke.some((t) => /not your voice/i.test(t)));
-    const unsure = await turn(s, c, 2500, "maybe me");
-    await until(() => spoke.length > 0, 1000);
-    check("  unsure: not answered; it says “Sorry, say that again?”", created(s) === 1 && deleted(s, unsure) && spoke.includes("Sorry, say that again?"), JSON.stringify(spoke));
-    await turn(s, c, 2500, "maybe me again");
-    check("  not twice in a row (at most every 6 s)", spoke.filter((t) => /say that again/.test(t)).length === 1);
+    check("  the page is told (shown on the pill, never spoken), gated", client.json.some((m) => m.type === "voiceprint" && m.kind === "other" && m.gated === true) && !spoke.some((t) => /not your voice/i.test(t)));
+    await turn(s, c, 2500, "maybe me");
+    check("  a doubtful turn after a recognised one in the same call: answered (the call's voice)", created(s) === 2 && spoke.length === 0, JSON.stringify(spoke));
     const rows = db.voiceprintChecksSince(0, "relayuser");
-    check("  the ledger says what was done", rows.map((r) => r.acted).join("|") === "answered|ignored|asked again|ignored (asked lately)" && rows.every((r) => r.gated === 1), JSON.stringify(rows.map((r) => r.acted)));
+    check("  the ledger says what was done", rows.map((r) => r.acted).join("|") === "answered|ignored|answered (this call's voice)" && rows.every((r) => r.gated === 1), JSON.stringify(rows.map((r) => r.acted)));
+    c.close("test");
+  }
+  db.voiceprintChecksDelete("relayuser");
+  {
+    const dbgLogs = relayCall(vp, me);
+    const { c, spoke } = dbgLogs;
+    await c.open();
+    const s = mock.sessions[mock.sessions.length - 1];
+    const unsure = await turn(s, c, 2500, "maybe me");
+    await sleep(300);
+    check("GATE, nothing recognised yet in the call: unsure is not answered, and MINT AI says nothing", created(s) === 0 && deleted(s, unsure) && spoke.length === 0 && c.diag.created === 0, JSON.stringify(spoke));
+    check("  the page's pill is told (unsure, gated)", dbgLogs.client.json.some((m) => m.type === "voiceprint" && m.kind === "unsure" && m.gated === true));
+    await turn(s, c, 2500, "maybe me again");
+    check("  again: still silent", created(s) === 0 && spoke.length === 0);
+    await turn(s, c, 2500, "go on please", { ms: 400 }); // the fake counts the padding as speech: ~750 ms
+    check("  a very short doubtful turn is let through (too short to check)", created(s) === 1 && spoke.length === 0, created(s) + " " + dbgLogs.logs.slice(-6).join("\n"));
+    await turn(s, c, 1000, "it's me");
+    await turn(s, c, 2500, "and now?");
+    check("  once a turn is recognised, the next doubtful one is answered", created(s) === 3);
+    const rows = db.voiceprintChecksSince(0, "relayuser");
+    check("  the ledger says what was done", rows.map((r) => r.acted).join("|") === "not answered (unsure)|not answered (unsure)|answered (too short to check)|answered|answered (this call's voice)", JSON.stringify(rows.map((r) => r.acted)) + "\n" + dbgLogs.logs.filter((l) => /voiceprint/.test(l)).join("\n"));
+    c.close("test");
+  }
+  {
+    // 2026-10-07: the page streams audio before the upstream session is open; OpenAI times turns on its
+    // own session's audio. The scored audio must be the turn's, not audio from before it.
+    db.voiceprintChecksDelete("relayuser");
+    const { c } = relayCall(vp, me);
+    c.audioIn(tone(2000, 1200)); // someone else, BEFORE the session is open (not sent upstream)
+    c.audioIn(tone(0, 300));
+    await c.open();
+    const s = mock.sessions[mock.sessions.length - 1];
+    const upAt = c.inputMs; // our timeline; upstream's starts at 0 here
+    c.audioIn(tone(0, 500));
+    c.audioIn(tone(1000, 1500)); // the administrator's turn
+    c.audioIn(tone(0, 300));
+    const before = svc.calls.length;
+    s.push({ type: "input_audio_buffer.speech_started", audio_start_ms: 500 - 300, item_id: "item_al" });
+    s.push({ type: "input_audio_buffer.speech_stopped", audio_end_ms: 2000, item_id: "item_al" });
+    s.push({ type: "input_audio_buffer.committed", item_id: "item_al" });
+    s.push({ type: "conversation.item.input_audio_transcription.completed", item_id: "item_al", content_index: 0, transcript: "what is the disk usage?" });
+    await sleep(150);
+    const call = svc.calls.slice(before).find((x) => /\/embed/.test(x.path));
+    check("timeline: a turn's audio is the turn's, though the page sent audio before the session opened", call && call.who === "user" && created(s) === 1, JSON.stringify({ call, upAt, base: c.upBase }));
+    check("  upBase is where this session's audio began", c.upBase === upAt, c.upBase + " vs " + upAt);
+    // after a reconnect, the new session counts from 0 again
+    await c.swapUpstream({}, { reason: "drop" });
+    await sleep(1800); // the "I'm back" line plays first (speakers mode: the microphone waits)
+    const s2 = mock.sessions[mock.sessions.length - 1];
+    const up2 = c.inputMs;
+    c.audioIn(tone(0, 400));
+    c.audioIn(tone(1000, 1500));
+    c.audioIn(tone(0, 300));
+    const before2 = svc.calls.length;
+    s2.push({ type: "input_audio_buffer.speech_started", audio_start_ms: 100, item_id: "item_al2" });
+    s2.push({ type: "input_audio_buffer.speech_stopped", audio_end_ms: 1900, item_id: "item_al2" });
+    s2.push({ type: "conversation.item.input_audio_transcription.completed", item_id: "item_al2", content_index: 0, transcript: "and the memory?" });
+    await sleep(150);
+    const call2 = svc.calls.slice(before2).find((x) => /\/embed/.test(x.path));
+    check("  and after the upstream session was replaced (its count starts again at 0)", call2 && call2.who === "user" && c.upBase === up2, JSON.stringify({ call2, base: c.upBase, up2 }));
     c.close("test");
   }
   {
@@ -385,6 +453,8 @@ async function relay(sock) {
     const s = mock.sessions[mock.sessions.length - 1];
     await turn(s, c, 2000, "yes");
     check("GATE: a “yes” in another voice confirms nothing", heardConfirm.length === 0 && !client.json.some((m) => m.type === "ui-confirmed"));
+    await turn(s, c, 2000, "yes", { ms: 600 });
+    check("  not even a short one", heardConfirm.length === 0);
     await turn(s, c, 1000, "yes");
     check("  your “yes” does", heardConfirm.length === 1 && client.json.some((m) => m.type === "ui-confirmed"), JSON.stringify({ heardConfirm, logs: dbg.logs.filter((l) => /voiceprint|dropped/.test(l)), json: client.json.map((m) => m.type) }));
     c.close("test");
@@ -403,7 +473,7 @@ async function relay(sock) {
     s.push({ type: "conversation.item.input_audio_transcription.completed", item_id: item, content_index: 0, transcript: "the disk is forty one percent full and odoo is running" });
     await sleep(150);
     const row = db.voiceprintChecksSince(0, "relayuser").pop();
-    check("GATE: MINT AI's own voice heard over its playback is dropped silently", created(s) === 0 && row.verdict === "echo" && row.acted === "dropped (echo)" && !client.json.some((m) => m.type === "voiceprint"), JSON.stringify(row));
+    check("GATE: MINT AI's own voice heard over its playback is dropped, never spoken to (the pill says it was its own voice)", created(s) === 0 && row.verdict === "echo" && row.acted === "dropped (echo)" && client.json.filter((m) => m.type === "voiceprint").every((m) => m.kind === "echo"), JSON.stringify(row));
     c.close("test");
   }
 
@@ -614,6 +684,97 @@ async function routes(sock) {
   }
 }
 
+/* ------------------------------ the pill's words (public/cc-logic.js) ---- */
+
+function pure() {
+  section("the state pill's words (public/cc-logic.js vpBadge)");
+  const ML = require(path.join(ROOT, "public", "cc-logic.js"));
+  const b = (k, g) => ML.vpBadge(k, g);
+  check("recognised: mint, a check", b("you", true).label === "Recognised" && b("you", false).tone === "ok" && b("you", true).icon === "you");
+  check("another voice: red; gate on '— ignored', shadow '— would be ignored'", b("other", true).label === "Voice not recognised — ignored" && b("other", false).label === "Voice not recognised — would be ignored" && b("other", true).tone === "bad");
+  check("unsure: neutral; gate on '— not answered', shadow '— would not be answered'; too short: no suffix (let through)", b("unsure", true).label === "Not sure it's you — not answered" && b("unsure", false).label === "Not sure it's you — would not be answered" && b("short", true).label === "Not sure it's you" && b("unsure", true).tone === "mid");
+  check("MINT AI's own voice: red, ignored / would be", /own voice — ignored$/.test(b("echo", true).label) && /would be ignored$/.test(b("echo", false).label));
+  check("nothing for an unknown kind; no number anywhere", b("error", true) === null && ["you", "other", "echo", "unsure", "short"].every((k) => !/\d/.test(b(k, true).label + b(k, false).label)));
+  check("shown 1.5-2.6 s", ML.VP_MIN_MS === 1500 && ML.VP_SHOW_MS === 2600);
+}
+
+/* -------------------------------------------- the pill in the browser ---- */
+
+const APP_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36 Edg/129.0.0.0 MintDesktop/0.1.4";
+async function pill(s, ad, chromium) {
+  section("the state pill: the verdict per turn (web Command Center and the desktop app)");
+  const b = await chromium.launch();
+  const cookies = ad.cookie.split("; ").map((c) => ({ name: c.slice(0, c.indexOf("=")), value: c.slice(c.indexOf("=") + 1), domain: "127.0.0.1", path: "/" }));
+  const views = [
+    { name: "web 1440", W: 1440, H: 900, q: "/mint-ai", ua: null },
+    { name: "web 390", W: 390, H: 844, q: "/mint-ai", ua: null },
+    { name: "app floating M", W: 480, H: 860, q: "/mint-ai?shell=desktop&mode=floating", ua: APP_UA },
+    { name: "app floating S", W: 384, H: 744, q: "/mint-ai?shell=desktop&mode=floating&size=S", ua: APP_UA },
+    { name: "app floating L", W: 586, H: 1050, q: "/mint-ai?shell=desktop&mode=floating&size=L", ua: APP_UA },
+    { name: "app desktop layer", W: 1440, H: 852, q: "/mint-ai?shell=desktop&mode=desktop", ua: APP_UA },
+    { name: "app peek", W: 1440, H: 852, q: "/mint-ai?shell=desktop&mode=peek", ua: APP_UA },
+  ];
+  const verdicts = [
+    ["you", true, "Recognised", "ok"],
+    ["other", true, "Voice not recognised — ignored", "bad"],
+    ["other", false, "Voice not recognised — would be ignored", "bad"],
+    ["unsure", true, "Not sure it's you — not answered", "mid"],
+    ["short", false, "Not sure it's you", "mid"],
+  ];
+  const shots = process.env.VP_SHOTS || null;
+  try {
+    for (const v of views) {
+      for (const scheme of ["light", "dark"]) {
+        const tag = `${v.name} ${scheme}`;
+        const ctx = await b.newContext({ viewport: { width: v.W, height: v.H }, colorScheme: scheme, extraHTTPHeaders: { "X-Forwarded-Proto": "https" }, ...(v.ua ? { userAgent: v.ua } : {}) });
+        await ctx.addCookies(cookies);
+        const page = await ctx.newPage();
+        const errs = [];
+        page.on("pageerror", (x) => errs.push(x.message));
+        page.on("console", (m) => {
+          const t = m.text();
+          if ((m.type() === "error" && !/Failed to load resource|net::ERR|EventSource|503|502/.test(t)) || /Content Security Policy|Refused to/.test(t)) errs.push(t);
+        });
+        const q = v.q + (v.ua ? "&ink=" + (scheme === "light" ? "dark" : "light") : "");
+        await page.goto(`http://127.0.0.1:${s.port}${q}`, { waitUntil: "load" });
+        await page.waitForTimeout(500);
+        const base = await page.textContent("#cc-cap-label");
+        let ok = true;
+        const bad = [];
+        for (const [kind, gated, label, tone] of verdicts) {
+          // The scratch copy has no MINT AI supervisor (offline): the app hides its caption then. Stand it in.
+          await page.evaluate((m) => {
+            const off = document.getElementById("cc-offline");
+            if (off) off.hidden = true;
+            window.__mintCC.S.online = true;
+            window.__mintCC.voiceprint(m);
+          }, { kind, gated });
+          const r = await page.evaluate(() => {
+            const p = document.getElementById("cc-cap-state"), r = p.getBoundingClientRect(), ic = document.getElementById("cc-cap-vp");
+            return { label: document.getElementById("cc-cap-label").textContent, tone: p.getAttribute("data-vp"), live: document.getElementById("cc-vp-live").textContent, icon: !ic.hidden && ic.getAttribute("data-i"), visible: r.width > 0 && getComputedStyle(p).visibility !== "hidden" && getComputedStyle(p).display !== "none", inWin: r.left >= 0 && r.right <= innerWidth + 0.5 && r.top >= 0 && r.bottom <= innerHeight, color: getComputedStyle(p).color };
+          });
+          if (!(r.label === label && r.tone === tone && r.live === label + "." && r.icon && r.visible && r.inWin)) {
+            ok = false;
+            bad.push({ kind, gated, ...r });
+          }
+          if (shots && scheme === (v.ua ? "dark" : "light")) await page.screenshot({ path: path.join(shots, `pill-${v.name.replace(/\s+/g, "-")}-${kind}-${gated ? "gate" : "shadow"}.png`), clip: await page.evaluate(() => { const r = document.getElementById("cc-cap-state").getBoundingClientRect(); return { x: Math.max(0, r.left - 40), y: Math.max(0, r.top - 30), width: Math.min(innerWidth - Math.max(0, r.left - 40), r.width + 80), height: r.height + 60 }; }) }).catch(() => {});
+        }
+        check(`${tag}: each verdict on the pill (words, colour, icon, read out politely), inside the window`, ok, JSON.stringify(bad));
+        await page.waitForTimeout(2800);
+        await page.evaluate(() => { window.__mintCC.S.online = true; const o = document.getElementById("cc-offline"); if (o) o.hidden = true; });
+        const base2 = await page.evaluate(() => { return document.getElementById("cc-cap-label").textContent; });
+        void base2;
+        const after = await page.evaluate(() => ({ label: document.getElementById("cc-cap-label").textContent, vp: document.getElementById("cc-cap-state").getAttribute("data-vp"), ic: document.getElementById("cc-cap-vp").hidden }));
+        check(`${tag}: after ~2.6 s back to the state (${after.label})`, !verdicts.some((x) => x[2] === after.label) && after.vp === null && after.ic === true && !!after.label, JSON.stringify({ after, base }));
+        check(`${tag}: zero page errors and CSP violations`, errs.length === 0, errs.join("\n"));
+        await ctx.close();
+      }
+    }
+  } finally {
+    await b.close();
+  }
+}
+
 /* -------------------------------------------- 4. the pages -------------- */
 
 async function browser(s, ad) {
@@ -689,6 +850,7 @@ async function browser(s, ad) {
   } finally {
     await b.close();
   }
+  await pill(s, ad, chromium);
 }
 
 /* ------------------------------- 5. the real service, the real voice ---- */
@@ -779,6 +941,7 @@ async function real() {
   try {
     await library(sock);
     await relay(sock);
+    pure();
     await routes(sock);
     await real();
   } catch (x) {
