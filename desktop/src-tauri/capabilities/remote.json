@@ -1,9 +1,15 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "remote-site",
-  "description": "What the site (os.mint-stack.com, the Command Center's desktop render mode and its sign-in pages) may ask of the app: report its hit regions and status, ask for a toast, hide Peek, drag the box, use the box's tools, open the full Command Center, start the browser sign-in. Nothing that runs a program, reads a file or changes the app's settings.",
-  "windows": ["mint"],
-  "remote": { "urls": ["https://os.mint-stack.com/*"] },
+  "description": "What the site (os.mint-stack.com, the Command Center's desktop render mode and its sign-in pages) may ask of the app: report its hit regions and status, ask for a toast, hide Peek, drag the box, use the box's tools, open the full Command Center, start the browser sign-in, say a Windows Hello sign-in starts or ends. Nothing that runs a program, reads a file or changes the app's settings.",
+  "windows": [
+    "mint"
+  ],
+  "remote": {
+    "urls": [
+      "https://os.mint-stack.com/*"
+    ]
+  },
   "permissions": [
     "core:event:allow-listen",
     "core:event:allow-unlisten",
@@ -16,6 +22,7 @@
     "allow-tool",
     "allow-open-full-cc",
     "allow-page-ready",
-    "allow-browser-signin"
+    "allow-browser-signin",
+    "allow-webauthn-ceremony"
   ]
 }

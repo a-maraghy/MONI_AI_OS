@@ -220,6 +220,25 @@ mod imp {
             let _ = SetParent(hwnd_of(ours), None);
         }
     }
+
+    /// The cursor in screen pixels -- straight from Windows, from any thread, without asking the
+    /// app's main thread (the click-through loop runs 30 times a second and must never wait on it).
+    pub fn cursor() -> Option<(i32, i32)> {
+        let mut p = windows::Win32::Foundation::POINT::default();
+        unsafe { windows::Win32::UI::WindowsAndMessaging::GetCursorPos(&mut p) }.ok()?;
+        Some((p.x, p.y))
+    }
+
+    /// The window's outer rectangle in screen pixels (same: from any thread, no main-thread call).
+    pub fn window_rect(ours: isize) -> Option<(i32, i32, i32, i32)> {
+        let mut r = windows::Win32::Foundation::RECT::default();
+        unsafe { windows::Win32::UI::WindowsAndMessaging::GetWindowRect(hwnd_of(ours), &mut r) }.ok()?;
+        Some((r.left, r.top, r.right, r.bottom))
+    }
+
+    pub fn minimized(ours: isize) -> bool {
+        unsafe { windows::Win32::UI::WindowsAndMessaging::IsIconic(hwnd_of(ours)) }.as_bool()
+    }
 }
 
 #[cfg(not(windows))]
@@ -247,6 +266,15 @@ mod imp {
         false
     }
     pub fn leave_icons(_ours: isize) {}
+    pub fn cursor() -> Option<(i32, i32)> {
+        None
+    }
+    pub fn window_rect(_ours: isize) -> Option<(i32, i32, i32, i32)> {
+        None
+    }
+    pub fn minimized(_ours: isize) -> bool {
+        false
+    }
 }
 
 pub use imp::*;

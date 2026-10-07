@@ -48,11 +48,12 @@ exports.error = (title, msg) =>
  */
 const DESK_ASSETS = ["mint-desktop.css", "mint-core-d.js", "mint-desktop-layout.js", "mint-desktop.js"];
 function deskOpts(desktop, assets) {
-  return desktop ? { pageClass: "cc-desk dk-auth", assets: assets.concat(DESK_ASSETS) } : { assets };
+  // mint-desktop-webauthn.js first: it must wrap navigator.credentials before passkey.js starts Windows Hello.
+  return desktop ? { pageClass: "cc-desk dk-auth", assets: ["mint-desktop-webauthn.js"].concat(assets, DESK_ASSETS) } : { assets };
 }
 function deskHandOff(desktop) {
   return desktop
-    ? `<p class="dk-browser"><button type="button" class="linkish" id="dk-browser-signin">Windows Hello does not show? Sign in in your browser</button><span class="dk-browser-note muted" id="dk-browser-note" role="status"></span></p>`
+    ? `<div class="dk-browser"><div class="dk-or"><span>or</span></div><button type="button" class="btn w-full dk-browser-btn" id="dk-browser-signin">${icon("external", 16)} <span>Sign in in your browser</span></button><span class="dk-browser-note muted" id="dk-browser-note" role="status">Easiest with Windows Hello: your browser shows it, and the app is signed in when you are.</span></div>`
     : "";
 }
 

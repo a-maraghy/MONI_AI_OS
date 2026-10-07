@@ -19,6 +19,8 @@
 //! (capabilities/remote.json); none can run a program or read a file. The
 //! webview is locked to the site: any other address opens in the browser.
 
+#[macro_use]
+pub mod log;
 pub mod hit;
 pub mod layout;
 pub mod platform;
@@ -69,6 +71,9 @@ pub struct App {
     signed_in: bool,
     behind_icons: bool,
     raised_for_desktop: bool,
+    /// A passkey / Windows Hello sign-in is in progress (the page said so): the window is a normal,
+    /// focusable, clickable window on top until it ends.
+    ceremony: bool,
     ignoring: Option<bool>,
     dragging: Option<Instant>,
     last_moved: Option<Instant>,
@@ -153,8 +158,13 @@ fn mon_of(m: &tauri::Monitor) -> Mon {
 
 /// The monitor MINT AI lives on: the chosen one if it is still there, else the primary.
 /// Peek opens on the monitor the mouse is on.
-fn monitor_for(app: &AppHandle, a: &App) -> Option<Mon> {
-    if a.settings.mode == Mode::Peek {
+///
+/// RULE (the 0.1.0 freeze): never call this -- or any AppHandle / window / menu method -- while
+/// holding the `Shared` lock. Those calls are answered by the main thread; the main thread takes the
+/// same lock in commands and in the navigation handler, so holding it there deadlocks the window
+/// (it froze on the "Connecting" card while the site's first page had already arrived).
+fn monitor_for(app: &AppHandle, settings: &Settings) -> Option<Mon> {
+    if settings.mode == Mode::Peek {
         if let Ok(c) = app.cursor_position() {
             if let Ok(Some(m)) = app.monitor_from_point(c.x, c.y) {
                 return Some(mon_of(&m));
@@ -162,8 +172,8 @@ fn monitor_for(app: &AppHandle, a: &App) -> Option<Mon> {
         }
     }
     let all = app.available_monitors().unwrap_or_default();
-    if !a.settings.monitor.is_empty() {
-        if let Some(m) = all.iter().find(|m| m.name().map(|n| n == &a.settings.monitor).unwrap_or(false)) {
+    if !settings.monitor.is_empty() {
+        if let Some(m) = all.iter().find(|m| m.name().map(|n| n == &settings.monitor).unwrap_or(false)) {
             return Some(mon_of(m));
         }
     }
@@ -182,9 +192,10 @@ fn main_window(app: &AppHandle) -> Option<WebviewWindow> {
 /// Put the window where its mode says, at the right size and level, shown or not; tell the page.
 fn apply(app: &AppHandle, shared: &Shared, focus_composer: bool) {
     let Some(w) = main_window(app) else { return };
+    let snapshot = shared.lock().unwrap().settings.clone();
+    let Some(m) = monitor_for(app, &snapshot) else { return };
     let (rect, mode, visible, on_top, key, payload, behind) = {
         let mut a = shared.lock().unwrap();
-        let Some(m) = monitor_for(app, &a) else { return };
         let pm = a.settings.monitor_prefs(&m.key);
         let rect = layout::window_rect(a.settings.mode, m.work, m.scale, pm.size, a.settings.focus, pm.corner);
         let mode = a.settings.mode;
@@ -193,10 +204,12 @@ fn apply(app: &AppHandle, shared: &Shared, focus_composer: bool) {
             Mode::Peek => a.peek_open,
             Mode::Desktop => true,
         };
-        let on_top = match mode {
-            Mode::Floating | Mode::Peek => true,
-            Mode::Desktop => a.peek_open || a.raised_for_desktop,
-        };
+        // A Windows Hello sign-in in progress keeps it on top whatever the mode (webauthn_ceremony).
+        let on_top = a.ceremony
+            || match mode {
+                Mode::Floating | Mode::Peek => true,
+                Mode::Desktop => a.peek_open || a.raised_for_desktop,
+            };
         let behind = mode == Mode::Desktop && a.settings.experimental_behind_icons && !a.peek_open;
         a.seen.mode = Some(mode);
         a.seen.peek_open = a.peek_open;
@@ -264,8 +277,8 @@ fn hwnd(_w: &WebviewWindow) -> isize {
 }
 
 fn current_monitor_key(app: &AppHandle, shared: &Shared) -> String {
-    let a = shared.lock().unwrap();
-    monitor_for(app, &a).map(|m| m.key).unwrap_or_default()
+    let snapshot = shared.lock().unwrap().settings.clone();
+    monitor_for(app, &snapshot).map(|m| m.key).unwrap_or_default()
 }
 
 fn save(shared: &Shared) {
@@ -426,8 +439,22 @@ fn refresh_tray(app: &AppHandle, shared: &Shared) {
     }
 }
 
+/// What the menu shows, copied out of the lock (see the rule at monitor_for).
+struct MenuSnap {
+    state: String,
+    needs: u32,
+    sessions: u32,
+    talk_key: String,
+    signed_in: bool,
+    settings: Settings,
+    update: Option<String>,
+}
+
 fn build_menu(app: &AppHandle, shared: &Shared) -> tauri::Result<Menu<tauri::Wry>> {
-    let a = shared.lock().unwrap();
+    let a = {
+        let g = shared.lock().unwrap();
+        MenuSnap { state: g.state.clone(), needs: g.needs, sessions: g.sessions, talk_key: g.talk_key.clone(), signed_in: g.signed_in, settings: g.settings.clone(), update: g.update.clone() }
+    };
     let line = policy::status_line(&a.state, a.needs, a.sessions);
     let talk = if a.talk_key.is_empty() { "Talk".to_string() } else { format!("Talk (hold {})", a.talk_key) };
     let head = MenuItem::with_id(app, "head", format!("MINT AI — {}", line), false, None::<&str>)?;
@@ -625,7 +652,8 @@ fn check_update(app: AppHandle) {
                 a.update = Some(u.version.clone());
                 first
             };
-            refresh_tray(&app, &shared);
+            let sh = shared.clone();
+            on_main(&app, move |app| refresh_tray(app, &sh));
             if first {
                 notify_plain(&app, &format!("MINT AI {} is ready", u.version), "Choose \"Update and restart\" in the tray menu when it suits you.");
             }
@@ -763,6 +791,50 @@ fn page_ready(app: AppHandle, signed_in: bool, shared: State<'_, Shared>) {
     refresh_tray(&app, &shared);
 }
 
+/// The start card (dist/index.html) found the site answering: open the Command Center.
+///
+/// The navigation is made here, by the app (WebView2's Navigate), not by the card's own
+/// `location`: a page on http://tauri.localhost sending the window to os.mint-stack.com is a
+/// cross-site navigation, and the site's session cookie is SameSite=Strict, so it would not be
+/// sent -- every start would land on the sign-in page and the new session's cookie would replace
+/// the one that was still valid. A navigation the app makes has no initiating site, like a typed
+/// address, and the cookie goes with it.
+#[tauri::command]
+fn go_site(app: AppHandle, shared: State<'_, Shared>) -> bool {
+    let o = origin(&shared.lock().unwrap().settings);
+    let Ok(u) = o.join("/mint-ai?shell=desktop") else { return false };
+    shared.lock().unwrap().awaiting_ready = Some(Instant::now());
+    match main_window(&app) {
+        Some(w) => w.navigate(u).is_ok(),
+        None => false,
+    }
+}
+
+/// The site's sign-in page says a passkey / Windows Hello ceremony starts (`on`) or ends.
+///
+/// Windows Hello's dialog belongs to the window that asked: a window that is click-through,
+/// bottom-most (Desktop layer) or not allowed to take the focus gets no dialog, or one hidden
+/// behind everything. While it runs the window is made a plain one: clicks reach it, it is on top
+/// and it has the focus. When it ends the mode's own placement comes back (apply).
+#[tauri::command]
+fn webauthn_ceremony(app: AppHandle, shared: State<'_, Shared>, on: bool) {
+    mlog!("webauthn ceremony {}", if on { "starts" } else { "ends" });
+    shared.lock().unwrap().ceremony = on;
+    if on {
+        if let Some(w) = main_window(&app) {
+            let _ = w.set_ignore_cursor_events(false);
+            shared.lock().unwrap().ignoring = Some(false);
+            let _ = w.set_always_on_bottom(false);
+            let _ = w.set_always_on_top(true);
+            let _ = w.unminimize();
+            let _ = w.show();
+            let _ = w.set_focus();
+        }
+    } else {
+        apply(&app, &shared, false);
+    }
+}
+
 #[derive(Serialize)]
 struct SigninResult {
     ok: bool,
@@ -813,13 +885,14 @@ struct SettingsView {
 #[tauri::command]
 fn settings_get(app: AppHandle, shared: State<'_, Shared>) -> SettingsView {
     let monitor_key = current_monitor_key(&app, &shared);
+    let monitors: Vec<String> = app.available_monitors().unwrap_or_default().iter().filter_map(|m| m.name().cloned()).collect();
     let a = shared.lock().unwrap();
     SettingsView {
         settings: a.settings.clone(),
         version: VERSION,
         talk_key: a.talk_key.clone(),
         talk_fallback: a.talk_fallback,
-        monitors: app.available_monitors().unwrap_or_default().iter().filter_map(|m| m.name().cloned()).collect(),
+        monitors,
         monitor_key,
         update: a.update.clone(),
     }
@@ -874,15 +947,37 @@ fn set_autostart(app: &AppHandle, on: bool) {
 
 /* ------------------------------------------------------------- the loops */
 
+/// Run `f` on the app's main thread, without waiting for it. Background loops use this for
+/// every window change, so they never block on the main thread (and it never on them).
+fn on_main<F: FnOnce(&AppHandle) + Send + 'static>(app: &AppHandle, f: F) {
+    let h = app.clone();
+    if let Err(e) = app.run_on_main_thread(move || f(&h)) {
+        mlog!("run_on_main_thread failed: {}", e);
+    }
+}
+
 /// About 30 times a second: is the cursor on something interactive? Switch click-through to match.
 /// Also: a Floating box that was dragged snaps to the nearest corner when the mouse is let go.
+///
+/// It reads the cursor and the window's rectangle straight from Windows (platform.rs) -- never
+/// through the app, whose getters wait for the main thread -- and posts the one change it makes
+/// (set_ignore_cursor_events) to the main thread without waiting.
 fn hit_loop(app: AppHandle, shared: Shared) {
+    let mut raw: isize = 0;
     loop {
         std::thread::sleep(Duration::from_millis(33));
-        let Some(w) = main_window(&app) else { continue };
-        let (regions, dpr, behind, mode, peek_open, dragging, was) = {
-            let a = shared.lock().unwrap();
-            (a.regions.clone(), a.dpr, a.behind_icons, a.settings.mode, a.peek_open, a.dragging, a.ignoring)
+        if raw == 0 {
+            match main_window(&app) {
+                Some(w) => raw = hwnd(&w),
+                None => continue,
+            }
+            if raw == 0 && cfg!(windows) {
+                continue;
+            }
+        }
+        let (regions, dpr, behind, mode, peek_open, dragging, was, ceremony) = {
+            let Ok(a) = shared.try_lock() else { continue };
+            (a.regions.clone(), a.dpr, a.behind_icons, a.settings.mode, a.peek_open, a.dragging, a.ignoring, a.ceremony)
         };
         if behind {
             continue;
@@ -892,20 +987,31 @@ fn hit_loop(app: AppHandle, shared: Shared) {
             let moved = shared.lock().unwrap().last_moved;
             let quiet = moved.map(|m| m.elapsed() > Duration::from_millis(350)).unwrap_or(t.elapsed() > Duration::from_millis(1500));
             if quiet && t.elapsed() > Duration::from_millis(300) {
-                snap(&app, &shared, &w);
+                shared.lock().unwrap().dragging = None;
+                let sh = shared.clone();
+                on_main(&app, move |app| {
+                    if let Some(w) = main_window(app) {
+                        snap(app, &sh, &w);
+                    }
+                });
             }
             continue;
         }
-        let want_ignore = if mode == Mode::Peek && peek_open {
+        // Peek showing, or Windows Hello asking (the dialog needs an ordinary window under it): all of it catches the mouse.
+        let want_ignore = if (mode == Mode::Peek && peek_open) || ceremony {
             false
         } else {
-            let (Ok(c), Ok(p)) = (app.cursor_position(), w.outer_position()) else { continue };
-            !hit::hit(&regions, c.x - p.x as f64, c.y - p.y as f64, dpr)
+            let Some((cx, cy)) = platform::cursor() else { continue };
+            let Some((x0, y0, _, _)) = platform::window_rect(raw) else { continue };
+            !hit::hit(&regions, (cx - x0) as f64, (cy - y0) as f64, dpr)
         };
         if was != Some(want_ignore) {
-            if w.set_ignore_cursor_events(want_ignore).is_ok() {
-                shared.lock().unwrap().ignoring = Some(want_ignore);
-            }
+            shared.lock().unwrap().ignoring = Some(want_ignore);
+            on_main(&app, move |app| {
+                if let Some(w) = main_window(app) {
+                    let _ = w.set_ignore_cursor_events(want_ignore);
+                }
+            });
         }
     }
 }
@@ -939,13 +1045,21 @@ fn snap(app: &AppHandle, shared: &Shared, w: &WebviewWindow) {
 
 /// Once a second: what is in front, full-screen apps, power, the lock screen, monitors plugged in or
 /// out, the wallpaper's brightness; the page is told when its stillness or ink changes.
+///
+/// Everything it reads comes straight from Windows (platform.rs); everything it changes is posted
+/// to the main thread (on_main) without waiting. It asks the app for its monitor list only every
+/// 5 s, and never while holding the lock.
 fn env_loop(app: AppHandle, shared: Shared) {
     let mut tick: u64 = 0;
+    let mut raw: isize = 0;
     loop {
         std::thread::sleep(Duration::from_millis(1000));
         tick += 1;
-        let Some(w) = main_window(&app) else { continue };
-        let raw = hwnd(&w);
+        if raw == 0 {
+            if let Some(w) = main_window(&app) {
+                raw = hwnd(&w);
+            }
+        }
         let front = platform::front(raw);
         let fullscreen = platform::fullscreen();
         let (on_battery, energy_saver) = platform::power();
@@ -953,6 +1067,12 @@ fn env_loop(app: AppHandle, shared: Shared) {
         let reduce = platform::reduce_motion();
         let mut reapply = false;
         let mut repaint = false;
+        let sig: Option<String> = if tick % 5 == 1 {
+            Some(app.available_monitors().unwrap_or_default().iter().map(|m| format!("{:?}{:?}{:?}{}", m.name(), m.position(), m.size(), m.scale_factor())).collect())
+        } else {
+            None
+        };
+        let mut stuck = false;
         {
             let mut a = shared.lock().unwrap();
             a.seen.fullscreen = fullscreen;
@@ -960,7 +1080,7 @@ fn env_loop(app: AppHandle, shared: Shared) {
             a.seen.covered = a.settings.mode == Mode::Desktop && !a.peek_open && front == Front::Other;
             // Desktop layer and "show desktop" (Win+D) or a click on the wallpaper: up on top while the
             // desktop has the focus, back to the bottom when anything else does (Rainmeter's approach).
-            if a.settings.mode == Mode::Desktop && !a.settings.experimental_behind_icons {
+            if a.settings.mode == Mode::Desktop && !a.settings.experimental_behind_icons && !a.ceremony {
                 // Our own window in front (typing in the raised layer) keeps it as it is.
                 let raise = match front {
                     Front::Desktop => true,
@@ -971,7 +1091,7 @@ fn env_loop(app: AppHandle, shared: Shared) {
                     a.raised_for_desktop = raise;
                     reapply = true;
                 }
-            } else if a.raised_for_desktop {
+            } else if a.raised_for_desktop && a.settings.mode != Mode::Desktop {
                 a.raised_for_desktop = false;
             }
             let still = policy::hold_still(a.settings.battery_saver, on_battery, energy_saver, &a.seen, reduce);
@@ -980,57 +1100,105 @@ fn env_loop(app: AppHandle, shared: Shared) {
                 repaint = true;
             }
             // Monitors plugged in or out, or a resolution change: place it again.
-            let sig: String = app.available_monitors().unwrap_or_default().iter().map(|m| format!("{:?}{:?}{:?}{}", m.name(), m.position(), m.size(), m.scale_factor())).collect();
-            if sig != a.monitors_sig {
-                if !a.monitors_sig.is_empty() {
-                    reapply = true;
+            if let Some(sig) = sig {
+                if sig != a.monitors_sig {
+                    if !a.monitors_sig.is_empty() {
+                        reapply = true;
+                    }
+                    a.monitors_sig = sig;
                 }
-                a.monitors_sig = sig;
             }
-            // The page never said it was ready (a failed load shows Windows' error page): back to the offline card.
+            // The page never said it was ready (a failed load shows Windows' error page): back to the start card.
             if let Some(t) = a.awaiting_ready {
                 if t.elapsed() > Duration::from_secs(25) {
                     a.awaiting_ready = None;
-                    drop(a);
-                    if let Ok(u) = Url::parse("tauri://localhost/index.html?offline=1") {
-                        let _ = w.navigate(local_url(&u));
-                    }
-                    continue;
+                    stuck = true;
                 }
             }
         }
+        if stuck {
+            mlog!("the site's page did not report ready in 25 s: back to the start card");
+            on_main(&app, |app| {
+                if let (Some(w), Ok(u)) = (main_window(app), Url::parse("tauri://localhost/index.html?stuck=1")) {
+                    let _ = w.navigate(local_url(&u));
+                }
+            });
+            continue;
+        }
         // The wallpaper's brightness: at start, then every half minute (a changed wallpaper is caught then).
-        if tick == 1 || tick % 30 == 0 {
-            if let Some(ink) = wallpaper_ink(&app, &shared, &w) {
-                let mut a = shared.lock().unwrap();
-                if a.ink != ink {
-                    a.ink = ink;
-                    repaint = true;
+        if tick == 2 || tick % 30 == 0 {
+            if let Some(w) = main_window(&app) {
+                if let Some(ink) = wallpaper_ink(&app, &shared, &w) {
+                    let mut a = shared.lock().unwrap();
+                    if a.ink != ink {
+                        a.ink = ink;
+                        repaint = true;
+                    }
                 }
             }
         }
         if reapply {
-            apply(&app, &shared, false);
+            let sh = shared.clone();
+            on_main(&app, move |app| apply(app, &sh, false));
         } else if repaint {
-            let key = current_monitor_key(&app, &shared);
-            let payload = page_state(&shared.lock().unwrap(), &key, false);
-            let _ = w.emit_to(MAIN, "mint://state", payload);
+            let sh = shared.clone();
+            on_main(&app, move |app| {
+                let key = current_monitor_key(app, &sh);
+                let payload = page_state(&sh.lock().unwrap(), &key, false);
+                let _ = app.emit_to(MAIN, "mint://state", payload);
+            });
         }
         // A minimised layer (Win+D, Win+M) comes back.
-        if w.is_minimized().unwrap_or(false) {
-            let a = shared.lock().unwrap();
-            let should = match a.settings.mode {
-                Mode::Floating => !a.hidden,
-                Mode::Desktop => true,
-                Mode::Peek => a.peek_open,
+        if raw != 0 && platform::minimized(raw) {
+            let should = {
+                let a = shared.lock().unwrap();
+                match a.settings.mode {
+                    Mode::Floating => !a.hidden,
+                    Mode::Desktop => true,
+                    Mode::Peek => a.peek_open,
+                }
             };
-            drop(a);
             if should {
-                let _ = w.unminimize();
+                on_main(&app, |app| {
+                    if let Some(w) = main_window(app) {
+                        let _ = w.unminimize();
+                    }
+                });
             }
         }
         if tick % (6 * 3600) == 30 && shared.lock().unwrap().settings.check_updates {
             check_update(app.clone());
+        }
+    }
+}
+
+/// Every second the main thread is asked to stamp a heartbeat; if it has not for more than
+/// 2 s, the stall is logged (and when it ends, how long it lasted). Windows calls a window
+/// that stops answering "Not Responding" after 5 s; this says when, and around what.
+fn watchdog(app: AppHandle) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static BEAT: AtomicU64 = AtomicU64::new(0);
+    let t0 = Instant::now();
+    let now_ms = move || t0.elapsed().as_millis() as u64;
+    BEAT.store(now_ms(), Ordering::Relaxed);
+    let mut stalled_since: Option<u64> = None;
+    loop {
+        std::thread::sleep(Duration::from_millis(1000));
+        let n = now_ms();
+        let _ = app.run_on_main_thread(move || BEAT.store(t0.elapsed().as_millis() as u64, Ordering::Relaxed));
+        let last = BEAT.load(Ordering::Relaxed);
+        let lag = n.saturating_sub(last);
+        match (lag > 2000, stalled_since) {
+            (true, None) => {
+                stalled_since = Some(last);
+                mlog!("WATCHDOG: the main thread has not answered for {} ms", lag);
+            }
+            (true, Some(_)) if lag % 10000 < 1000 => mlog!("WATCHDOG: still stalled, {} ms", lag),
+            (false, Some(since)) => {
+                mlog!("WATCHDOG: the main thread answered again after {} ms", n.saturating_sub(since));
+                stalled_since = None;
+            }
+            _ => {}
         }
     }
 }
@@ -1048,7 +1216,9 @@ fn local_url(u: &Url) -> Url {
 }
 
 fn wallpaper_ink(app: &AppHandle, shared: &Shared, w: &WebviewWindow) -> Option<Ink> {
-    let (pos, size) = (w.outer_position().ok()?, w.outer_size().ok()?);
+    let (l, t, r, btm) = platform::window_rect(hwnd(w))?;
+    let pos = PhysicalPosition::new(l, t);
+    let size = PhysicalSize::new((r - l).max(0) as u32, (btm - t).max(0) as u32);
     let (cx, cy) = (pos.x + size.width as i32 / 2, pos.y + size.height as i32 / 2);
     let m = app.monitor_from_point(cx as f64, cy as f64).ok().flatten()?;
     let (mx, my, mw, mh) = (m.position().x as f64, m.position().y as f64, m.size().width as f64, m.size().height as f64);
@@ -1101,6 +1271,8 @@ pub fn run() {
             start_drag,
             tool,
             open_full_cc,
+            go_site,
+            webauthn_ceremony,
             page_ready,
             browser_signin,
             settings_get,
@@ -1109,6 +1281,11 @@ pub fn run() {
         ])
         .setup(|app| {
             let handle = app.handle().clone();
+            let log_path = log::init();
+            std::panic::set_hook(Box::new(|info| {
+                mlog!("PANIC: {}", info);
+            }));
+            mlog!("MINT AI {} starting (log {:?})", VERSION, log_path);
             let dir = app.path().app_config_dir().unwrap_or_else(|_| PathBuf::from("."));
             let path = dir.join("settings.json");
             let settings = std::fs::read_to_string(&path).map(|s| Settings::from_json(&s)).unwrap_or_default();
@@ -1131,6 +1308,7 @@ pub fn run() {
                 signed_in: false,
                 behind_icons: false,
                 raised_for_desktop: false,
+                ceremony: false,
                 ignoring: None,
                 dragging: None,
                 last_moved: None,
@@ -1170,6 +1348,8 @@ pub fn run() {
                 .on_navigation(move |u| {
                     // Locked to the site (and the app's own pages). Anything else opens in the browser.
                     let local = u.scheme() == "tauri" || u.host_str() == Some("tauri.localhost");
+                    // Scheme, host and path only: the query can carry a sign-in code.
+                    mlog!("navigate {}://{}{}", u.scheme(), u.host_str().unwrap_or(""), u.path());
                     if local || same_site(u, &site_nav) {
                         if !local {
                             if let Some(s) = h_nav.try_state::<Shared>() {
@@ -1238,6 +1418,8 @@ pub fn run() {
                 std::thread::spawn(move || hit_loop(a1, s1));
                 let (a2, s2) = (handle.clone(), shared.clone());
                 std::thread::spawn(move || env_loop(a2, s2));
+                let a3 = handle.clone();
+                std::thread::spawn(move || watchdog(a3));
             }
             if shared.lock().unwrap().settings.check_updates {
                 let h = handle.clone();

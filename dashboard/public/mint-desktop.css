@@ -107,6 +107,9 @@ html.cc-desk .dk-tools .cc-i { width: 15px; height: 15px; fill: none; stroke: cu
 /* Notes the page raises: above the composer, inside the window. */
 html.cc-desk .cc-toast { bottom: 84px !important; max-width: calc(100vw - 32px); }
 
+/* The session spheres' hover card: shown in the app's box too (moni-ai.css hides it under 720 px, for phones). */
+html.cc-desk .cc-kcard { display: block; width: min(290px, calc(100vw - 24px)); }
+
 /* Focus mode: only the core (its colour and motion still say the state). */
 html.cc-desk.dk-focus .dk-chat, html.cc-desk.dk-focus .cc-dock, html.cc-desk.dk-focus .cc-kids, html.cc-desk.dk-focus .cc-family,
 html.cc-desk.dk-focus .cc-kcard, html.cc-desk.dk-focus .dk-tools, html.cc-desk.dk-focus #cc-needpill, html.cc-desk.dk-focus #cc-offline { display: none !important; }
@@ -127,8 +130,12 @@ html.cc-desk.dk-auth .auth-wrap .card { position: fixed; z-index: 2; margin: 0; 
 html.cc-desk.dk-auth .dk-auth-core { display: block; position: fixed; inset: 0; width: 100vw; height: 100vh; z-index: 1; pointer-events: none; filter: grayscale(1) brightness(.75); }
 html.cc-desk.dk-auth .auth-wrap .card label, html.cc-desk.dk-auth .auth-wrap .card h2 { color: var(--dk-tx); }
 html.cc-desk.dk-auth .auth-wrap .card .muted, html.cc-desk.dk-auth .auth-foot { color: var(--dk-tx2); }
-.dk-browser { margin-top: 10px; text-align: center; }
-.dk-browser .linkish { font-size: 12.5px; }
+.dk-browser { margin-top: 12px; text-align: center; }
+.dk-or { display: flex; align-items: center; gap: 10px; margin: 0 0 12px; color: var(--dk-tx2); font-size: 12px; }
+.dk-or::before, .dk-or::after { content: ""; flex: 1; height: 1px; background: var(--dk-card-b); }
+/* The browser hand-off is a full, big button: Windows Hello inside the app's window is not certain. */
+.dk-browser .dk-browser-btn { min-height: 44px; font-size: 14.5px; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+.dk-browser .dk-browser-btn.dk-urge { background: var(--accent, #14B8A6); border-color: transparent; color: #fff; }
 .dk-browser-note { display: block; margin-top: 6px; font-size: 12px; }
 html:not(.dk-host) .dk-browser { display: none; }
 

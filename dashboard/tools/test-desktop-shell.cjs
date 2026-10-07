@@ -140,6 +140,30 @@ const near = (a, b, e) => Math.abs(a - b) <= (e || 0.5);
     check("the app's sign-in page: the floating card, the browser hand-off, 14 days", /<html lang="en" class="cc-desk dk-auth">/.test(la.body) && /id="dk-browser-signin"/.test(la.body) && /stays signed in for 14 days/.test(la.body) && /mint-desktop\.js\?v=/.test(la.body));
     check("  its CSP adds only Tauri's IPC to connect-src; a browser's does not", /connect-src 'self' http:\/\/ipc\.localhost ipc:(;|$)/.test(la.headers["content-security-policy"]) && /connect-src 'self'(;|$)/.test(lw.headers["content-security-policy"]) && /script-src 'self';/.test(la.headers["content-security-policy"]), la.headers["content-security-policy"] + " | " + lw.headers["content-security-policy"]);
 
+    // COOP same-origin stays for the app too: the start card's page and the site never share an opener, and 0.1.0 showed the site fine with it.
+    check("  COOP is the same for the app and a browser (left as it is: it did not stop the app)", la.headers["cross-origin-opener-policy"] === lw.headers["cross-origin-opener-policy"]);
+    const ping = await s.req("GET", "/desktop/ping", { headers: { "User-Agent": APP_UA } });
+    check("/desktop/ping (the start card's probe): 204, CORP cross-origin, no-store, no cookie, no session", ping.status === 204 && ping.headers["cross-origin-resource-policy"] === "cross-origin" && /no-store/.test(ping.headers["cache-control"] || "") && !ping.headers["set-cookie"]);
+    const startJs = fs.readFileSync(path.join(ROOT, "..", "desktop", "dist", "index.js"), "utf8");
+    check("  the start card probes /desktop/ping and asks the app to navigate (go_site); it never sends the window to the site itself", /\/desktop\/ping/.test(startJs) && /invoke\("go_site"\)/.test(startJs) && !/location\.(replace|assign|href\s*=)\s*\(?\s*origin/.test(startJs));
+    const libRs = fs.readFileSync(path.join(ROOT, "..", "desktop", "src-tauri", "src", "lib.rs"), "utf8");
+    check("  the app: go_site is a command, granted to the local pages only", /fn go_site\(/.test(libRs) && /"allow-go-site"/.test(fs.readFileSync(path.join(ROOT, "..", "desktop", "src-tauri", "capabilities", "local.json"), "utf8")) && !/go-site/.test(fs.readFileSync(path.join(ROOT, "..", "desktop", "src-tauri", "capabilities", "remote.json"), "utf8")));
+    // The 0.1.0 freeze: the lock held across a call the main thread answers. No `monitor_for(app, &a)` on a guard,
+    // and nothing asks the main thread for monitors while the env loop's guard is held.
+    check("  the app never asks the main thread for monitors while holding its lock (the 0.1.0 freeze)", !/monitor_for\(app, &a\)/.test(libRs) && !/let a = shared\.lock\(\)\.unwrap\(\);\s*monitor_for/.test(libRs) && /fn monitor_for\(app: &AppHandle, settings: &Settings\)/.test(libRs));
+    // The "Not Responding" hang: the background loops never wait on the main thread.
+    const fnBody = (name) => { const i = libRs.indexOf("fn " + name + "("); const j = libRs.indexOf("\nfn ", i + 3); return i < 0 ? "" : libRs.slice(i, j < 0 ? undefined : j); };
+    const hitBody = fnBody("hit_loop"), envBody = fnBody("env_loop");
+    check("  the click-through loop takes the lock with try_lock, reads the cursor and window from Windows, posts its changes (on_main)", /shared\.try_lock\(\)/.test(hitBody) && /platform::cursor\(\)/.test(hitBody) && /platform::window_rect\(raw\)/.test(hitBody) && /on_main\(/.test(hitBody) && !/cursor_position\(|outer_position\(|outer_size\(/.test(hitBody));
+    check("  the environment loop posts window changes (on_main) and reads 'minimised' from Windows", /on_main\(/.test(envBody) && /platform::minimized\(raw\)/.test(envBody) && !/is_minimized\(/.test(envBody) && !/\bapply\(&app/.test(envBody));
+    check("  a watchdog logs a main thread that stalls more than 2 s; the log is %LOCALAPPDATA%\\MINT AI\\logs\\mint-desktop.log", /fn watchdog\(/.test(libRs) && /lag > 2000/.test(libRs) && /std::thread::spawn\(move \|\| watchdog\(/.test(libRs) && /"MINT AI"\)\.join\("logs"\)/.test(fs.readFileSync(path.join(ROOT, "..", "desktop", "src-tauri", "src", "log.rs"), "utf8")) && /mint-desktop\.log/.test(fs.readFileSync(path.join(ROOT, "..", "desktop", "src-tauri", "src", "log.rs"), "utf8")));
+    check("  Windows Hello: webauthn_ceremony is a command the site may call (it makes the window clickable, on top, focused)", /fn webauthn_ceremony\(/.test(libRs) && /"allow-webauthn-ceremony"/.test(fs.readFileSync(path.join(ROOT, "..", "desktop", "src-tauri", "capabilities", "remote.json"), "utf8")) && /"webauthn_ceremony"/.test(fs.readFileSync(path.join(ROOT, "..", "desktop", "src-tauri", "build.rs"), "utf8")) && /set_ignore_cursor_events\(false\)[\s\S]{0,400}set_focus\(\)/.test(fnBody("webauthn_ceremony")));
+    const aIdx = (b, f) => b.indexOf(f + "?v=");
+    check("the app's sign-in page loads mint-desktop-webauthn.js before every other script; a browser's does not load it", aIdx(la.body, "mint-desktop-webauthn.js") > 0 && aIdx(la.body, "mint-desktop-webauthn.js") < aIdx(la.body, "mint-desktop.js") && (aIdx(la.body, "passkey.js") < 0 || aIdx(la.body, "mint-desktop-webauthn.js") < aIdx(la.body, "passkey.js")) && !/mint-desktop-webauthn/.test(lw.body));
+    check("  'Sign in in your browser' is a full-width button, not a small link", /class="btn w-full dk-browser-btn" id="dk-browser-signin"/.test(la.body) && /Sign in in your browser/.test(la.body));
+    const fam = fs.readFileSync(path.join(ROOT, "public", "cc-family.js"), "utf8");
+    const mdj = fs.readFileSync(path.join(ROOT, "public", "mint-desktop.js"), "utf8");
+    check("session spheres: hover works in the app's small box (not taken for a phone), the card is in the hit regions, the sphere's region is the hover radius", /phone = W <= 720 && !document\.documentElement\.classList\.contains\("cc-desk"\)/.test(fam) && /"#cc-kcard\.on"/.test(mdj) && /q\.r \* 1\.25 \+ 8/.test(mdj) && /html\.cc-desk \.cc-kcard \{ display: block/.test(fs.readFileSync(path.join(ROOT, "public", "mint-desktop.css"), "utf8")));
     const A = await signIn("deskadmin", APP_UA);
     const maxAge = Number(((A.res.headers["set-cookie"] || []).join(";").match(/Max-Age=(\d+)/i) || [])[1] || (Date.parse(((A.res.headers["set-cookie"] || []).join(";").match(/Expires=([^;]+)/i) || [])[1]) - Date.now()) / 1000);
     check("signed in in the app: it lands on the desktop render mode", A.res.status === 302 && A.res.headers.location === "/mint-ai?shell=desktop", A.res.status + " " + A.res.headers.location);
@@ -319,6 +343,72 @@ const near = (a, b, e) => Math.abs(a - b) <= (e || 0.5);
         const a = await alphaAt(page, [[2, 2], [470, 10]]);
         check("  transparent round it (the grey core's glow fades out)", a.every((x) => x <= 12), a.join("/"));
         if (SHOTS) await page.screenshot({ path: path.join(SHOTS, "desk-signin.png"), omitBackground: true });
+        await ctx.close();
+      }
+      // Windows Hello inside the app: the page tells the app when a passkey ceremony starts and ends,
+      // and a failed one lights up the browser sign-in. (Tauri's IPC is stood in for; the ceremony fails at once: wrong rpId.)
+      {
+        const ctx = await browser.newContext({ viewport: { width: 480, height: 860 }, userAgent: APP_UA, extraHTTPHeaders: { "X-Forwarded-Proto": "https" } });
+        await ctx.addInitScript(() => {
+          window.__calls = [];
+          window.__TAURI__ = { core: { invoke: (cmd, args) => { window.__calls.push(cmd === "webauthn_ceremony" ? "ceremony:" + args.on : cmd); return Promise.resolve(null); } }, event: { listen: () => Promise.resolve(() => {}) } };
+        });
+        const page = await ctx.newPage();
+        page.on("pageerror", (e) => errs.push("webauthn: " + e.message));
+        await page.goto("http://127.0.0.1:" + s.port + "/login?mode=floating", { waitUntil: "load" });
+        const r = await page.evaluate(async () => {
+          let err = null;
+          try { await navigator.credentials.get({ publicKey: { challenge: new Uint8Array(32), rpId: "example.com", timeout: 2000, userVerification: "preferred" } }); } catch (e) { err = e.name; }
+          await new Promise((ok) => setTimeout(ok, 50));
+          const b = document.getElementById("dk-browser-signin");
+          return { err, calls: window.__calls.filter((c) => /^ceremony/.test(c)), urge: b && b.classList.contains("dk-urge"), note: (document.getElementById("dk-browser-note") || {}).textContent || "", h: b && b.getBoundingClientRect().height, w: b && b.getBoundingClientRect().width, card: document.querySelector(".auth-wrap .card button[type=submit]").getBoundingClientRect().width };
+        });
+        check("a passkey ceremony in the app: the app is told it starts and ends; when it fails the browser sign-in is lit up", !!r.err && JSON.stringify(r.calls) === JSON.stringify(["ceremony:true", "ceremony:false"]) && r.urge && /did not finish inside the app/.test(r.note), JSON.stringify(r));
+        check("  the browser sign-in button is big: at least 40 px tall, as wide as the Sign in button", r.h >= 40 && Math.abs(r.w - r.card) < 2, JSON.stringify(r));
+        if (SHOTS) await page.screenshot({ path: path.join(SHOTS, "desk-signin-hello-failed.png"), omitBackground: true });
+        await ctx.close();
+      }
+      // The start path, as the app's start card meets it: a page of another origin (the app's is
+      // http://tauri.localhost; here a second server on another port, same address space).
+      {
+        const http = require("http");
+        const other = http.createServer((q, r) => { r.writeHead(200, { "Content-Type": "text/html" }); r.end("<!doctype html><title>start</title>"); });
+        await new Promise((r) => other.listen(0, "127.0.0.1", r));
+        const oport = other.address().port;
+        const SITE = "http://127.0.0.1:" + s.port;
+        const ctx = await browser.newContext({ userAgent: APP_UA, extraHTTPHeaders: { "X-Forwarded-Proto": "https" } });
+        const page = await ctx.newPage();
+        await page.goto("http://localhost:" + oport + "/");
+        const probe = await page.evaluate(async (site) => {
+          const one = (u) => fetch(u, { mode: "no-cors", cache: "no-store" }).then(() => "ok", (e) => "refused: " + e.message);
+          return { ping: await one(site + "/desktop/ping"), manifest: await one(site + "/manifest.webmanifest"), login: await one(site + "/login") };
+        }, SITE);
+        check("cross-origin probe from the start card's origin: /desktop/ping and /manifest.webmanifest answer; an ordinary page is refused by CORP (the 0.1.0 'Offline' trap)", probe.ping === "ok" && probe.manifest === "ok" && /refused/.test(probe.login), JSON.stringify(probe));
+        // The session cookie is SameSite=Strict: a navigation the start page makes is cross-site and goes without it.
+        const jar = String(A.cookie).split("; ").filter(Boolean).map((kv) => ({ name: kv.split("=")[0], value: kv.slice(kv.indexOf("=") + 1), domain: "127.0.0.1", path: "/", httpOnly: true, secure: false, sameSite: "Strict" }));
+        await ctx.addCookies(jar);
+        await Promise.all([page.waitForURL(/127\.0\.0\.1/, { waitUntil: "load" }), page.evaluate((u) => { location.href = u; }, SITE + "/mint-ai?shell=desktop")]);
+        const viaPage = page.url();
+        // ...and the sign-in page it lands on starts a new session, whose cookie replaces the signed-in one.
+        const anon = await s.req("GET", "/login", { headers: { "User-Agent": APP_UA } });
+        check("  (and its second half: that sign-in page sets a new moni.sid, which would replace the still-valid one)", /^moni\.sid=/.test((anon.headers["set-cookie"] || [""])[0]) && /SameSite=Strict/i.test((anon.headers["set-cookie"] || [""])[0]));
+        await ctx.addCookies(jar);
+        await page.goto(SITE + "/mint-ai?shell=desktop"); // what the app's go_site does: a navigation with no initiating site
+        const viaApp = page.url();
+        const shell = await page.evaluate(() => !!document.querySelector('#cc[data-shell="desktop"]'));
+        check("SameSite=Strict: the start page's own navigation lands on sign-in although signed in; the app's navigation (go_site) opens the Command Center", /\/login/.test(viaPage) && /\/mint-ai\?shell=desktop$/.test(viaApp) && shell, viaPage + " | " + viaApp);
+        await ctx.close();
+        other.close();
+      }
+      // Signed out in the app: the sign-in page renders visibly, with its assets, and only its card catches the mouse.
+      {
+        const { ctx, page } = await view(480, 860, "/mint-ai?shell=desktop", APP_UA, "");
+        const r = await page.evaluate(() => {
+          const c = document.querySelector(".auth-wrap .card");
+          const b = c && c.getBoundingClientRect();
+          return { url: location.pathname, css: [].some.call(document.styleSheets, (x) => /mint-desktop\.css/.test(x.href || "")), core: !!window.MintCoreD, card: b && { y: b.y, h: b.height, vis: getComputedStyle(c).visibility, op: getComputedStyle(c).opacity }, hand: !!document.getElementById("dk-browser-signin"), regs: window.MintDesktop && window.MintDesktop.regions() };
+        });
+        check("signed out, /mint-ai?shell=desktop -> the app's sign-in page: its stylesheet and scripts load, the card is visible inside the window", r.url === "/login" && r.css && r.core && r.card && r.card.y >= 0 && r.card.y + r.card.h <= 860 && r.card.vis === "visible" && r.card.op === "1" && r.regs && r.regs.length >= 1, JSON.stringify(r));
         await ctx.close();
       }
       for (const [w, h, theme] of [[1440, 900, "light"], [390, 844, "light"], [1440, 900, "dark"], [390, 844, "dark"]]) {

@@ -287,6 +287,19 @@ app.get("/manifest.webmanifest", (req, res) => {
   res.send(JSON.stringify(ui.manifest(), null, 2));
 });
 
+/*
+ * The app's start card (desktop/dist, served at http://tauri.localhost) checks the site is there
+ * with a no-cors fetch before it asks the app to open the Command Center. helmet marks every
+ * response Cross-Origin-Resource-Policy: same-origin, which makes the browser refuse that probe
+ * (the 0.1.0 app sat on "Offline" for ever). This one answer is cross-origin, says nothing and
+ * sets nothing: 204, never cached. Registered before the session middleware, so a probe
+ * creates no session and sets no cookie.
+ */
+app.get("/desktop/ping", (req, res) => {
+  res.set("Cross-Origin-Resource-Policy", "cross-origin");
+  res.set("Cache-Control", "no-store");
+  res.status(204).end();
+});
 // Kept as a value: the live conversation's WebSocket upgrade reads the same
 // session (see liveUpgrade), and an upgrade never passes through app.use.
 // The store and the secret are also handed to lib/sessions.js, which lists a

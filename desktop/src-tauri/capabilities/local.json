@@ -8,6 +8,8 @@
     "core:window:allow-close",
     "allow-get-state",
     "allow-set-hit-regions",
+    "allow-go-site",
+    "allow-open-full-cc",
     "allow-settings-get",
     "allow-settings-set",
     "allow-settings-check-update"

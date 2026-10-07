@@ -10,6 +10,8 @@ fn main() {
         "start_drag",
         "tool",
         "open_full_cc",
+        "go_site",
+        "webauthn_ceremony",
         "page_ready",
         "browser_signin",
         "settings_get",

@@ -1,4 +1,7 @@
 //! See Cargo.toml: the app's pure modules, by path.
+#[macro_use]
+#[path = "../src-tauri/src/log.rs"]
+pub mod log;
 #[path = "../src-tauri/src/hit.rs"]
 pub mod hit;
 #[path = "../src-tauri/src/layout.rs"]

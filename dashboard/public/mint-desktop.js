@@ -192,7 +192,7 @@
   /* ---------------------------------------------------------------- click-through: what catches the mouse */
   var HIT = [
     "#cc-compose", "#cc-voicebar", "#cc-cap-state", "#cc-cap-more", "#dk-chat .dk-bub", "#cc-need", "#dk-tools", "#cc-kids > *",
-    "#cc-reply", "#cc-pop", ".cc-smenu", ".cc-toast", ".dk-auth .auth-wrap .card", "#dk-gate", "#cc-offline", "#cc-needpill",
+    "#cc-reply", "#cc-pop", "#cc-kcard.on", ".cc-smenu", ".cc-toast", ".dk-auth .auth-wrap .card", "#dk-gate", "#cc-offline", "#cc-needpill",
   ];
   // Open over everything: the whole window catches the mouse while one shows.
   var FULL = [".cc-sdlg-back", ".cc-modal:not([hidden])", "#cc-sheet.open", ".cc-palette:not([hidden])", "#md-frame:not([hidden])"];
@@ -222,7 +222,7 @@
     var cc = window.__mintCC, fam = cc && cc.orbit && cc.orbit.family;
     if (fam && fam.enabled && fam.enabled() && !st.focus) {
       var mk = fam.meshKids ? fam.meshKids() : null;
-      (mk || []).forEach(function (q) { if (q && q.r > 2 && (q.form == null || q.form > 0.3)) els.push({ left: q.x - q.r, top: q.y - q.r, width: 2 * q.r, height: 2 * q.r, r: q.r }); });
+      (mk || []).forEach(function (q) { if (q && q.r > 2 && (q.form == null || q.form > 0.3)) { var h = q.r * 1.25 + 8; els.push({ left: q.x - h, top: q.y - h, width: 2 * h, height: 2 * h, r: h }); } }); // the family's own hover radius (cc-family.js hit)
     }
     // The core is a circle that catches the mouse; the sign-in pages have no core.
     return LAY.regions($("cc") ? L : { W: L.W, H: L.H, R: 0 }, els);

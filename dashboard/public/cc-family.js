@@ -108,7 +108,7 @@
     /* ---------------------------------------------------------- layout */
     function computeLayout() {
       var lay = opts.layout ? opts.layout() : { cx: innerWidth / 2, cy: innerHeight / 2, R: 150 };
-      W = innerWidth; H = innerHeight; phone = W <= 720;
+      W = innerWidth; H = innerHeight; phone = W <= 720 && !document.documentElement.classList.contains("cc-desk"); // the desktop app's box is small, but has a mouse
       L.cx = lay.cx; L.cy = lay.cy; L.R = lay.R;
       L.sceneR = opts.sceneRight ? opts.sceneRight() : W;
       L.top = opts.top ? opts.top() : 60;
@@ -347,6 +347,7 @@
 
     /* ---------------------------------------------------------- per frame */
     function update(dt) {
+      lastFrame = Date.now();
       t += dt;
       if (t - rectsAt > 0.25) { rectsAt = t; computeLayout(); refreshRects(); }
       glow *= Math.exp(-dt * 1.6);
@@ -552,7 +553,8 @@
     }
     var UI = "button, a, input, textarea, select, form, label, .cc-sheet, .cc-need, .cc-pop, .cc-reply, .cc-rail, .topbar, .cc-dock, .cc-caption, [role=dialog], [role=alertdialog], #cc-ov";
     function uiTarget(el) { return !!(el && el.closest && el.closest(UI)); }
-    document.addEventListener("pointermove", function (e) { if (!on) return; mouse.x = e.clientX; mouse.y = e.clientY; mouse.over = !uiTarget(e.target); if (reduced) { var hk = mouse.over && !phone ? hit(mouse.x, mouse.y) : null; if (hk !== hoverKid) { hoverKid = hk; if (hk) { showCard(hk); placeCard(hk); } else hideCard(); els.root.classList.toggle("kid-hover", !!hk); } } });
+    var lastFrame = 0; // no frames (reduced motion, or the desktop app's still core): hover is worked out on the move itself
+    document.addEventListener("pointermove", function (e) { if (!on) return; mouse.x = e.clientX; mouse.y = e.clientY; mouse.over = !uiTarget(e.target); if (reduced || Date.now() - lastFrame > 250) { var hk = mouse.over && !phone ? hit(mouse.x, mouse.y) : null; if (hk !== hoverKid) { hoverKid = hk; if (hk) { showCard(hk); placeCard(hk); } else hideCard(); els.root.classList.toggle("kid-hover", !!hk); } } });
     document.addEventListener("pointerleave", function () { mouse.over = false; });
     document.addEventListener("click", function (e) {
       if (!on) return;

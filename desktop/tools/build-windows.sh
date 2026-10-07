@@ -11,6 +11,9 @@
 # updater's minisign key), codesign.pfx + codesign.password (the code-signing certificate).
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
+# --feed DIR is taken relative to where the script was started (it cds into src-tauri below).
+FEED=""
+if [ "${1:-}" = "--feed" ]; then FEED="$(mkdir -p "$2" && cd "$2" && pwd)"; fi
 KEYS="${MINT_DESKTOP_KEYS:-$HOME/.local/mint-desktop-keys}"
 TOOLS="${MINT_WINTOOLS:-$HOME/.local/wintools}"
 export PATH="$TOOLS/bin:$HOME/.cargo/bin:$PATH"
@@ -32,6 +35,6 @@ cfg=$(printf '{"bundle":{"windows":{"signCommand":{"cmd":"%s","args":["%%1"]}}}}
 cargo tauri build --runner cargo-xwin --target x86_64-pc-windows-msvc --bundles nsis --config "$cfg"
 out="$HERE/src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis"
 ls -la "$out"
-if [ "${1:-}" = "--feed" ]; then
-  node "$HERE/tools/make-feed.cjs" --bundle "$out" --cert "$KEYS/mint-desktop-codesign.cer" --out "$2"
+if [ -n "$FEED" ]; then
+  node "$HERE/tools/make-feed.cjs" --bundle "$out" --cert "$KEYS/mint-desktop-codesign.cer" --out "$FEED"
 fi
