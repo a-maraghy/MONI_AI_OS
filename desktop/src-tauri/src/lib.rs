@@ -1,0 +1,1253 @@
+//! MINT AI on the Windows desktop (design: MONI_AI_OS/mockups/desktop-app/DESIGN.md).
+//!
+//! One transparent, frameless window shows the real Command Center in its
+//! desktop render mode (https://os.mint-stack.com/mint-ai?shell=desktop), so the
+//! core, the sessions, the chat, the voice and the approval cards are the
+//! site's own, and sign-in is the site's (password, then Windows Hello). This
+//! process adds only what a web page cannot do:
+//!   - the three modes: Floating (a box in a corner, on top), Peek (hidden until
+//!     called, then on top), Desktop layer (at the bottom of the window stack,
+//!     above the icons; behind the icons only as an Experimental switch);
+//!   - per-pixel click-through (hit.rs), from the regions the page reports;
+//!   - global hotkeys, remappable: hold Ctrl+Space to talk, Ctrl+Alt+M show /
+//!     hide, Ctrl+Alt+F focus mode (Esc is the page's, when it has focus);
+//!   - the tray icon and menu, Windows toasts (Open / Deny, never Approve),
+//!     battery saver, several monitors, autostart, one instance, updates;
+//!   - the browser hand-off for signing in when Windows Hello cannot show here.
+//!
+//! The page talks to this process through a fixed list of commands
+//! (capabilities/remote.json); none can run a program or read a file. The
+//! webview is locked to the site: any other address opens in the browser.
+
+pub mod hit;
+pub mod layout;
+pub mod platform;
+pub mod policy;
+pub mod settings;
+pub mod signin;
+pub mod site;
+pub mod trayicon;
+
+use hit::Region;
+use layout::{Corner, Mode, Rect};
+use platform::{Front, Ink};
+use serde::Serialize;
+use settings::Settings;
+use site::{same_site, user_agent};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tauri::tray::{TrayIcon, TrayIconBuilder};
+use tauri::webview::{NewWindowResponse, PermissionKind, PermissionResponse};
+use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize, Position, Size as WSize, State, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
+
+pub use site::VERSION;
+const MAIN: &str = "mint";
+const SETTINGS_WIN: &str = "settings";
+
+/* ------------------------------------------------------------------ state */
+
+pub struct App {
+    pub settings: Settings,
+    settings_path: PathBuf,
+    regions: Vec<Region>,
+    dpr: f64,
+    /// Peek is showing (in Desktop layer: raised on top for a moment).
+    peek_open: bool,
+    /// Floating put away with its tool; the tray or Ctrl+Alt+M brings it back.
+    hidden: bool,
+    state: String,
+    needs: u32,
+    sessions: u32,
+    ink: Ink,
+    still: bool,
+    talk_key: String,
+    talk_fallback: bool,
+    talking: bool,
+    signed_in: bool,
+    behind_icons: bool,
+    raised_for_desktop: bool,
+    ignoring: Option<bool>,
+    dragging: Option<Instant>,
+    last_moved: Option<Instant>,
+    awaiting_ready: Option<Instant>,
+    update: Option<String>,
+    monitors_sig: String,
+    wallpaper_sig: String,
+    seen: policy::Seen,
+    toasted: Vec<i64>,
+}
+
+type Shared = Arc<Mutex<App>>;
+
+fn origin(s: &Settings) -> Url {
+    Url::parse(&s.origin).unwrap_or_else(|_| Url::parse(settings::DEFAULT_ORIGIN).unwrap())
+}
+
+
+/* ------------------------------------------------------------- the payloads */
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct PageState {
+    mode: &'static str,
+    focus: bool,
+    size: &'static str,
+    pos: &'static str,
+    ink: &'static str,
+    opacity: u8,
+    still: bool,
+    peek_open: bool,
+    talk_key: String,
+    hidden: bool,
+    focus_composer: bool,
+}
+
+fn page_state(a: &App, monitor: &str, focus_composer: bool) -> PageState {
+    let pm = a.settings.monitor_prefs(monitor);
+    let pos = match a.settings.mode {
+        Mode::Floating => match pm.corner {
+            Corner::Tl => "tl",
+            Corner::Tr => "tr",
+            Corner::Bl => "bl",
+            Corner::Br => "br",
+        },
+        Mode::Desktop => pm.across.as_str(),
+        Mode::Peek => "centre",
+    };
+    PageState {
+        mode: a.settings.mode.as_str(),
+        focus: a.settings.focus,
+        size: pm.size.as_str(),
+        pos,
+        ink: a.ink.as_str(),
+        opacity: pm.opacity,
+        still: a.still,
+        // A raised Desktop layer is not Peek's dimmed overlay: the page only needs to know Peek's.
+        peek_open: a.peek_open && a.settings.mode == Mode::Peek,
+        talk_key: a.talk_key.clone(),
+        hidden: a.hidden,
+        focus_composer,
+    }
+}
+
+/* --------------------------------------------------------------- monitors */
+
+struct Mon {
+    key: String,
+    work: Rect,
+    scale: f64,
+}
+
+fn mon_of(m: &tauri::Monitor) -> Mon {
+    let wa = m.work_area();
+    let name = m.name().cloned().unwrap_or_else(|| "display".into());
+    Mon {
+        key: format!("{} {}x{}", name, m.size().width, m.size().height),
+        work: Rect { x: wa.position.x, y: wa.position.y, w: wa.size.width, h: wa.size.height },
+        scale: m.scale_factor(),
+    }
+}
+
+/// The monitor MINT AI lives on: the chosen one if it is still there, else the primary.
+/// Peek opens on the monitor the mouse is on.
+fn monitor_for(app: &AppHandle, a: &App) -> Option<Mon> {
+    if a.settings.mode == Mode::Peek {
+        if let Ok(c) = app.cursor_position() {
+            if let Ok(Some(m)) = app.monitor_from_point(c.x, c.y) {
+                return Some(mon_of(&m));
+            }
+        }
+    }
+    let all = app.available_monitors().unwrap_or_default();
+    if !a.settings.monitor.is_empty() {
+        if let Some(m) = all.iter().find(|m| m.name().map(|n| n == &a.settings.monitor).unwrap_or(false)) {
+            return Some(mon_of(m));
+        }
+    }
+    if let Ok(Some(m)) = app.primary_monitor() {
+        return Some(mon_of(&m));
+    }
+    all.first().map(mon_of)
+}
+
+/* ----------------------------------------------------- placing the window */
+
+fn main_window(app: &AppHandle) -> Option<WebviewWindow> {
+    app.get_webview_window(MAIN)
+}
+
+/// Put the window where its mode says, at the right size and level, shown or not; tell the page.
+fn apply(app: &AppHandle, shared: &Shared, focus_composer: bool) {
+    let Some(w) = main_window(app) else { return };
+    let (rect, mode, visible, on_top, key, payload, behind) = {
+        let mut a = shared.lock().unwrap();
+        let Some(m) = monitor_for(app, &a) else { return };
+        let pm = a.settings.monitor_prefs(&m.key);
+        let rect = layout::window_rect(a.settings.mode, m.work, m.scale, pm.size, a.settings.focus, pm.corner);
+        let mode = a.settings.mode;
+        let visible = match mode {
+            Mode::Floating => !a.hidden,
+            Mode::Peek => a.peek_open,
+            Mode::Desktop => true,
+        };
+        let on_top = match mode {
+            Mode::Floating | Mode::Peek => true,
+            Mode::Desktop => a.peek_open || a.raised_for_desktop,
+        };
+        let behind = mode == Mode::Desktop && a.settings.experimental_behind_icons && !a.peek_open;
+        a.seen.mode = Some(mode);
+        a.seen.peek_open = a.peek_open;
+        a.seen.focus = a.settings.focus;
+        a.seen.hidden = !visible;
+        let payload = page_state(&a, &m.key, focus_composer);
+        (rect, mode, visible, on_top, m.key, payload, behind)
+    };
+    let _ = key;
+    let _ = w.set_position(Position::Physical(PhysicalPosition::new(rect.x, rect.y)));
+    let _ = w.set_size(WSize::Physical(PhysicalSize::new(rect.w, rect.h)));
+    // Bottom of the stack (Desktop layer): Windows keeps it there (tao answers WM_WINDOWPOSCHANGING with HWND_BOTTOM).
+    if on_top {
+        let _ = w.set_always_on_bottom(false);
+        let _ = w.set_always_on_top(true);
+    } else {
+        let _ = w.set_always_on_top(false);
+        let _ = w.set_always_on_bottom(mode == Mode::Desktop);
+    }
+    behind_icons(&w, shared, behind);
+    if visible {
+        // Only when hidden: showing an already visible window would take the focus from whatever has it.
+        if !w.is_visible().unwrap_or(false) {
+            let _ = w.show();
+        }
+        if w.is_minimized().unwrap_or(false) {
+            let _ = w.unminimize();
+        }
+        if focus_composer || (mode == Mode::Peek) {
+            let _ = w.set_focus();
+        }
+    } else {
+        let _ = w.hide();
+    }
+    let _ = w.emit_to(MAIN, "mint://state", payload);
+    refresh_tray(app, shared);
+}
+
+/// Experimental: behind the desktop icons (platform::behind_icons). Nothing can be clicked there.
+fn behind_icons(w: &WebviewWindow, shared: &Shared, on: bool) {
+    let raw = hwnd(w);
+    let was = shared.lock().unwrap().behind_icons;
+    if on == was || raw == 0 {
+        return;
+    }
+    if on {
+        let ok = platform::behind_icons(raw);
+        shared.lock().unwrap().behind_icons = ok;
+        if ok {
+            let _ = w.set_ignore_cursor_events(true);
+        }
+    } else {
+        platform::leave_icons(raw);
+        shared.lock().unwrap().behind_icons = false;
+    }
+}
+
+#[cfg(windows)]
+fn hwnd(w: &WebviewWindow) -> isize {
+    w.hwnd().map(|h| h.0 as isize).unwrap_or(0)
+}
+#[cfg(not(windows))]
+fn hwnd(_w: &WebviewWindow) -> isize {
+    0
+}
+
+fn current_monitor_key(app: &AppHandle, shared: &Shared) -> String {
+    let a = shared.lock().unwrap();
+    monitor_for(app, &a).map(|m| m.key).unwrap_or_default()
+}
+
+fn save(shared: &Shared) {
+    let a = shared.lock().unwrap();
+    if let Some(dir) = a.settings_path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let tmp = a.settings_path.with_extension("json.tmp");
+    if std::fs::write(&tmp, a.settings.to_json()).is_ok() {
+        let _ = std::fs::rename(&tmp, &a.settings_path);
+    }
+}
+
+/* ---------------------------------------------------------- show and hide */
+
+/// Ctrl+Alt+M and the tray's "Show MINT AI": Peek opens or closes; Floating comes back (or goes);
+/// the Desktop layer is raised on top for a moment (Esc or a second press lowers it).
+fn toggle_show(app: &AppHandle, shared: &Shared) {
+    let focus = {
+        let mut a = shared.lock().unwrap();
+        match a.settings.mode {
+            Mode::Peek | Mode::Desktop => {
+                a.peek_open = !a.peek_open;
+                a.peek_open
+            }
+            Mode::Floating => {
+                a.hidden = !a.hidden;
+                !a.hidden
+            }
+        }
+    };
+    apply(app, shared, focus);
+}
+
+/// Bring MINT AI into view (a toast's Open, a second launch, a hotkey that needs it).
+fn show(app: &AppHandle, shared: &Shared, focus_composer: bool) {
+    {
+        let mut a = shared.lock().unwrap();
+        match a.settings.mode {
+            Mode::Peek | Mode::Desktop => a.peek_open = true,
+            Mode::Floating => a.hidden = false,
+        }
+    }
+    apply(app, shared, focus_composer);
+}
+
+fn set_mode(app: &AppHandle, shared: &Shared, mode: Mode) {
+    {
+        let mut a = shared.lock().unwrap();
+        a.settings.mode = mode;
+        a.peek_open = mode == Mode::Peek;
+        a.hidden = false;
+        a.ignoring = None;
+    }
+    save(shared);
+    apply(app, shared, mode == Mode::Peek);
+}
+
+fn toggle_focus(app: &AppHandle, shared: &Shared) {
+    shared.lock().unwrap().settings.focus ^= true;
+    save(shared);
+    apply(app, shared, false);
+}
+
+/* -------------------------------------------------------------- hotkeys */
+
+/// Register the three hotkeys. Ctrl+Space can be taken by another app (an input method, an editor):
+/// then the talk key falls back to Ctrl+Alt+Space and the person is told.
+fn register_hotkeys(app: &AppHandle, shared: &Shared) {
+    let gs = app.global_shortcut();
+    let _ = gs.unregister_all();
+    let hk = shared.lock().unwrap().settings.hotkeys.clone();
+    let mut talk = hk.talk.clone();
+    let mut fallback = false;
+    if gs.register(talk.as_str()).is_err() {
+        if talk == settings::DEFAULT_TALK && gs.register(settings::FALLBACK_TALK).is_ok() {
+            talk = settings::FALLBACK_TALK.into();
+            fallback = true;
+        } else {
+            talk = String::new();
+        }
+    }
+    let show_ok = gs.register(hk.show.as_str()).is_ok();
+    let focus_ok = gs.register(hk.focus.as_str()).is_ok();
+    {
+        let mut a = shared.lock().unwrap();
+        a.talk_key = talk.clone();
+        a.talk_fallback = fallback;
+    }
+    if fallback {
+        notify_plain(app, "Hold Ctrl+Alt+Space to talk", "Ctrl+Space is taken by another app on this computer, so MINT AI listens on Ctrl+Alt+Space. You can change it in Settings.");
+    } else if talk.is_empty() {
+        notify_plain(app, "The talk key could not be set", &format!("{} is taken by another app. Pick another in MINT AI's Settings.", hk.talk));
+    }
+    if !show_ok || !focus_ok {
+        notify_plain(app, "A MINT AI hotkey is taken", "Another app holds one of MINT AI's hotkeys. Pick another in Settings.");
+    }
+}
+
+fn on_hotkey(app: &AppHandle, sc: &Shortcut, ev_state: ShortcutState) {
+    let shared = app.state::<Shared>().inner().clone();
+    let (talk, show_k, focus_k) = {
+        let a = shared.lock().unwrap();
+        (a.talk_key.parse::<Shortcut>().ok(), a.settings.hotkeys.show.parse::<Shortcut>().ok(), a.settings.hotkeys.focus.parse::<Shortcut>().ok())
+    };
+    if talk.as_ref() == Some(sc) {
+        match ev_state {
+            ShortcutState::Pressed => {
+                let need_show = {
+                    let mut a = shared.lock().unwrap();
+                    if a.talking {
+                        return;
+                    }
+                    a.talking = true;
+                    (a.settings.mode == Mode::Peek && !a.peek_open) || (a.settings.mode == Mode::Floating && a.hidden)
+                };
+                if need_show {
+                    show(app, &shared, false);
+                }
+                let _ = app.emit_to(MAIN, "mint://ptt", serde_json::json!({ "down": true }));
+            }
+            ShortcutState::Released => {
+                shared.lock().unwrap().talking = false;
+                let _ = app.emit_to(MAIN, "mint://ptt", serde_json::json!({ "down": false }));
+            }
+        }
+        return;
+    }
+    if ev_state != ShortcutState::Pressed {
+        return;
+    }
+    if show_k.as_ref() == Some(sc) {
+        toggle_show(app, &shared);
+    } else if focus_k.as_ref() == Some(sc) {
+        toggle_focus(app, &shared);
+    }
+}
+
+/* ------------------------------------------------------------ the tray */
+
+fn tray_base() -> (Vec<u8>, u32, u32) {
+    let img = tauri::image::Image::from_bytes(include_bytes!("../icons/32x32.png")).expect("tray icon");
+    (img.rgba().to_vec(), img.width(), img.height())
+}
+
+fn refresh_tray(app: &AppHandle, shared: &Shared) {
+    let Some(tray) = app.tray_by_id("main") else { return };
+    let (dot, line) = {
+        let a = shared.lock().unwrap();
+        (policy::tray_dot(&a.state, a.needs), policy::status_line(&a.state, a.needs, a.sessions))
+    };
+    let (base, w, h) = tray_base();
+    let px = trayicon::with_dot(&base, w, h, dot);
+    let _ = tray.set_icon(Some(tauri::image::Image::new_owned(px, w, h)));
+    let _ = tray.set_tooltip(Some(format!("MINT AI · {}", line)));
+    if let Ok(menu) = build_menu(app, shared) {
+        let _ = tray.set_menu(Some(menu));
+    }
+}
+
+fn build_menu(app: &AppHandle, shared: &Shared) -> tauri::Result<Menu<tauri::Wry>> {
+    let a = shared.lock().unwrap();
+    let line = policy::status_line(&a.state, a.needs, a.sessions);
+    let talk = if a.talk_key.is_empty() { "Talk".to_string() } else { format!("Talk (hold {})", a.talk_key) };
+    let head = MenuItem::with_id(app, "head", format!("MINT AI — {}", line), false, None::<&str>)?;
+    let show_i = MenuItem::with_id(app, "show", format!("Show MINT AI\t{}", a.settings.hotkeys.show), true, None::<&str>)?;
+    let talk_i = MenuItem::with_id(app, "talk", talk, a.signed_in, None::<&str>)?;
+    let m_desk = CheckMenuItem::with_id(app, "mode:desktop", "On the desktop", true, a.settings.mode == Mode::Desktop, None::<&str>)?;
+    let m_float = CheckMenuItem::with_id(app, "mode:floating", "Floating, always on top", true, a.settings.mode == Mode::Floating, None::<&str>)?;
+    let m_peek = CheckMenuItem::with_id(app, "mode:peek", "Hidden until called (peek)", true, a.settings.mode == Mode::Peek, None::<&str>)?;
+    let focus_i = CheckMenuItem::with_id(app, "focus", format!("Focus mode: just the core\t{}", a.settings.hotkeys.focus), true, a.settings.focus, None::<&str>)?;
+    let dnd = CheckMenuItem::with_id(app, "dnd", "Do not disturb (no toasts)", true, a.settings.do_not_disturb, None::<&str>)?;
+    let full = MenuItem::with_id(app, "open", "Open the full Command Center", true, None::<&str>)?;
+    let sett = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
+    let sign = MenuItem::with_id(app, "signout", if a.signed_in { "Sign out" } else { "Sign in with Windows Hello" }, true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Quit MINT AI", true, None::<&str>)?;
+    let sep = || PredefinedMenuItem::separator(app);
+    // Several monitors: which one MINT AI lives on.
+    let mons = app.available_monitors().unwrap_or_default();
+    let mon_items: Vec<CheckMenuItem<tauri::Wry>> = mons
+        .iter()
+        .enumerate()
+        .filter_map(|(i, m)| {
+            let name = m.name().cloned().unwrap_or_else(|| format!("Display {}", i + 1));
+            let chosen = if a.settings.monitor.is_empty() { i == 0 } else { a.settings.monitor == name };
+            CheckMenuItem::with_id(app, format!("monitor:{}", name), format!("{} · {}×{}", name.trim_start_matches("\\\\.\\"), m.size().width, m.size().height), true, chosen, None::<&str>).ok()
+        })
+        .collect();
+    let mut items: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = vec![&head];
+    let s1 = sep()?;
+    let s2 = sep()?;
+    let s3 = sep()?;
+    let s4 = sep()?;
+    items.extend([&s1 as &dyn tauri::menu::IsMenuItem<tauri::Wry>, &show_i, &talk_i, &s2, &m_desk, &m_float, &m_peek, &focus_i]);
+    let mon_sub;
+    if mon_items.len() > 1 {
+        let refs: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = mon_items.iter().map(|x| x as &dyn tauri::menu::IsMenuItem<tauri::Wry>).collect();
+        mon_sub = Submenu::with_items(app, "Monitor", true, &refs)?;
+        items.push(&mon_sub);
+    }
+    items.extend([&s3 as &dyn tauri::menu::IsMenuItem<tauri::Wry>, &dnd, &full, &sett]);
+    let upd;
+    if let Some(v) = &a.update {
+        upd = MenuItem::with_id(app, "update", format!("Update to {} and restart", v), true, None::<&str>)?;
+        items.push(&upd);
+    }
+    items.extend([&s4 as &dyn tauri::menu::IsMenuItem<tauri::Wry>, &sign, &quit]);
+    Menu::with_items(app, &items)
+}
+
+fn on_menu(app: &AppHandle, id: &str) {
+    let shared = app.state::<Shared>().inner().clone();
+    match id {
+        "show" => toggle_show(app, &shared),
+        "talk" => {
+            show(app, &shared, false);
+            let _ = app.emit_to(MAIN, "mint://talk", serde_json::json!({}));
+        }
+        "mode:desktop" => set_mode(app, &shared, Mode::Desktop),
+        "mode:floating" => set_mode(app, &shared, Mode::Floating),
+        "mode:peek" => set_mode(app, &shared, Mode::Peek),
+        "focus" => toggle_focus(app, &shared),
+        "dnd" => {
+            shared.lock().unwrap().settings.do_not_disturb ^= true;
+            save(&shared);
+            refresh_tray(app, &shared);
+        }
+        "open" => open_full(app, &shared),
+        "settings" => open_settings(app),
+        "update" => install_update(app.clone()),
+        "signout" => {
+            let signed_in = shared.lock().unwrap().signed_in;
+            if signed_in {
+                let _ = app.emit_to(MAIN, "mint://signout", serde_json::json!({}));
+            } else {
+                show(app, &shared, true);
+            }
+        }
+        "quit" => {
+            let _ = app.emit_to(MAIN, "mint://quit", serde_json::json!({}));
+            let h = app.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(400));
+                h.exit(0);
+            });
+        }
+        other => {
+            if let Some(name) = other.strip_prefix("monitor:") {
+                shared.lock().unwrap().settings.monitor = name.to_string();
+                save(&shared);
+                apply(app, &shared, false);
+            }
+        }
+    }
+}
+
+/* -------------------------------------------------------------- toasts */
+
+/// A toast with no buttons (a note to the person).
+fn notify_plain(app: &AppHandle, title: &str, body: &str) {
+    #[cfg(windows)]
+    {
+        let id = app.config().identifier.clone();
+        let _ = tauri_winrt_notification::Toast::new(&id).title(title).text1(body).show();
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (app, title, body);
+    }
+}
+
+/// Something needs you and MINT AI cannot be seen: a toast with Open and Deny. Never Approve:
+/// a one-click approve of a destructive step from a notification is too easy to hit by accident.
+fn notify_needs(app: &AppHandle, id: i64, title: &str, body: &str) {
+    #[cfg(windows)]
+    {
+        let app_id = app.config().identifier.clone();
+        let h = app.clone();
+        let _ = tauri_winrt_notification::Toast::new(&app_id)
+            .title(title)
+            .text1(body)
+            .add_button("Open", &format!("open:{}", id))
+            .add_button("Deny", &format!("deny:{}", id))
+            .on_activated(move |action| {
+                let shared = h.state::<Shared>().inner().clone();
+                match action.as_deref() {
+                    Some(a) if a.starts_with("deny:") => {
+                        let n: i64 = a[5..].parse().unwrap_or(0);
+                        let _ = h.emit_to(MAIN, "mint://toast-deny", serde_json::json!({ "id": n }));
+                    }
+                    _ => show(&h, &shared, false),
+                }
+                Ok(())
+            })
+            .show();
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (app, id, title, body);
+    }
+}
+
+/* ---------------------------------------------------- browser and windows */
+
+fn open_url(u: &str) {
+    #[cfg(windows)]
+    {
+        use windows::core::HSTRING;
+        use windows::Win32::UI::Shell::ShellExecuteW;
+        use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+        if let Ok(p) = Url::parse(u) {
+            if p.scheme() == "https" || p.scheme() == "http" || p.scheme() == "mailto" {
+                unsafe {
+                    ShellExecuteW(None, &HSTRING::from("open"), &HSTRING::from(p.as_str()), None, None, SW_SHOWNORMAL);
+                }
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = u;
+    }
+}
+
+fn open_full(_app: &AppHandle, shared: &Shared) {
+    let o = origin(&shared.lock().unwrap().settings);
+    if let Ok(u) = o.join("/mint-ai") {
+        open_url(u.as_str());
+    }
+}
+
+fn open_settings(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window(SETTINGS_WIN) {
+        let _ = w.show();
+        let _ = w.set_focus();
+        return;
+    }
+    let _ = WebviewWindowBuilder::new(app, SETTINGS_WIN, WebviewUrl::App("settings.html".into()))
+        .title("MINT AI — Settings")
+        .inner_size(560.0, 760.0)
+        .resizable(true)
+        .center()
+        .build();
+}
+
+/* ------------------------------------------------------------- updates */
+
+fn check_update(app: AppHandle) {
+    use tauri_plugin_updater::UpdaterExt;
+    tauri::async_runtime::spawn(async move {
+        let Ok(up) = app.updater() else { return };
+        if let Ok(Some(u)) = up.check().await {
+            let shared = app.state::<Shared>().inner().clone();
+            let first = {
+                let mut a = shared.lock().unwrap();
+                let first = a.update.as_deref() != Some(u.version.as_str());
+                a.update = Some(u.version.clone());
+                first
+            };
+            refresh_tray(&app, &shared);
+            if first {
+                notify_plain(&app, &format!("MINT AI {} is ready", u.version), "Choose \"Update and restart\" in the tray menu when it suits you.");
+            }
+        }
+    });
+}
+
+fn install_update(app: AppHandle) {
+    use tauri_plugin_updater::UpdaterExt;
+    tauri::async_runtime::spawn(async move {
+        let Ok(up) = app.updater() else { return };
+        match up.check().await {
+            Ok(Some(u)) => {
+                // The installer is checked against the update key before it runs; Windows closes the app for it.
+                if let Err(e) = u.download_and_install(|_, _| {}, || {}).await {
+                    notify_plain(&app, "The update did not install", &e.to_string());
+                } else {
+                    app.restart();
+                }
+            }
+            Ok(None) => notify_plain(&app, "MINT AI is up to date", &format!("Version {}.", VERSION)),
+            Err(e) => notify_plain(&app, "Could not check for updates", &e.to_string()),
+        }
+    });
+}
+
+/* ------------------------------------------------------- commands (page) */
+
+#[tauri::command]
+fn get_state(app: AppHandle, shared: State<'_, Shared>) -> PageState {
+    let key = current_monitor_key(&app, &shared);
+    let a = shared.lock().unwrap();
+    page_state(&a, &key, false)
+}
+
+#[tauri::command]
+fn set_hit_regions(regions: Vec<Region>, dpr: f64, shared: State<'_, Shared>) {
+    let mut a = shared.lock().unwrap();
+    a.regions = hit::clean(regions);
+    a.dpr = if dpr.is_finite() && dpr > 0.0 && dpr < 8.0 { dpr } else { 1.0 };
+}
+
+#[tauri::command]
+fn set_status(app: AppHandle, state: String, needs: u32, sessions: u32, shared: State<'_, Shared>) {
+    const STATES: [&str; 8] = ["idle", "listening", "thinking", "speaking", "delegating", "needs", "offline", "signedout"];
+    {
+        let mut a = shared.lock().unwrap();
+        a.state = if STATES.contains(&state.as_str()) { state } else { "idle".into() };
+        a.needs = needs.min(999);
+        a.sessions = sessions.min(999);
+    }
+    refresh_tray(&app, &shared);
+}
+
+#[tauri::command]
+fn needs_you(app: AppHandle, id: i64, title: String, body: String, shared: State<'_, Shared>) -> bool {
+    let go = {
+        let mut a = shared.lock().unwrap();
+        if a.toasted.contains(&id) {
+            return false;
+        }
+        a.toasted.push(id);
+        if a.toasted.len() > 200 {
+            a.toasted.remove(0);
+        }
+        policy::should_toast(&a.seen, a.settings.do_not_disturb)
+    };
+    if go {
+        let t: String = title.chars().take(120).collect();
+        let b: String = body.chars().take(300).collect();
+        notify_needs(&app, id, &t, &b);
+    }
+    go
+}
+
+#[tauri::command]
+fn hide_peek(app: AppHandle, shared: State<'_, Shared>) {
+    let changed = {
+        let mut a = shared.lock().unwrap();
+        let was = a.peek_open;
+        a.peek_open = false;
+        was
+    };
+    if changed {
+        apply(&app, &shared, false);
+    }
+}
+
+#[tauri::command]
+fn start_drag(window: WebviewWindow, shared: State<'_, Shared>) {
+    if shared.lock().unwrap().settings.mode != Mode::Floating {
+        return;
+    }
+    shared.lock().unwrap().dragging = Some(Instant::now());
+    let _ = window.start_dragging();
+}
+
+#[tauri::command]
+fn tool(app: AppHandle, name: String, shared: State<'_, Shared>) {
+    match name.as_str() {
+        "focus" => toggle_focus(&app, &shared),
+        "size" => {
+            let key = current_monitor_key(&app, &shared);
+            {
+                let mut a = shared.lock().unwrap();
+                let pm = a.settings.monitor_prefs_mut(&key);
+                pm.size = pm.size.next();
+            }
+            save(&shared);
+            apply(&app, &shared, false);
+        }
+        "hide" => {
+            shared.lock().unwrap().hidden = true;
+            apply(&app, &shared, false);
+        }
+        _ => {}
+    }
+}
+
+#[tauri::command]
+fn open_full_cc(app: AppHandle, shared: State<'_, Shared>) {
+    open_full(&app, &shared);
+}
+
+#[tauri::command]
+fn page_ready(app: AppHandle, signed_in: bool, shared: State<'_, Shared>) {
+    {
+        let mut a = shared.lock().unwrap();
+        a.awaiting_ready = None;
+        a.signed_in = signed_in;
+        if !signed_in {
+            a.state = "signedout".into();
+        }
+    }
+    refresh_tray(&app, &shared);
+}
+
+#[derive(Serialize)]
+struct SigninResult {
+    ok: bool,
+    error: Option<String>,
+}
+
+/// "Sign in in your browser": the PKCE hand-off (signin.rs).
+#[tauri::command]
+fn browser_signin(app: AppHandle, shared: State<'_, Shared>) -> SigninResult {
+    let o = origin(&shared.lock().unwrap().settings);
+    let p = signin::pkce();
+    let w = match signin::listen() {
+        Ok(w) => w,
+        Err(e) => return SigninResult { ok: false, error: Some(format!("Could not open the sign-in listener: {}", e)) },
+    };
+    let mut link = o.join("/desktop/link").unwrap();
+    link.query_pairs_mut().append_pair("c", &p.challenge).append_pair("p", &w.port.to_string());
+    open_url(link.as_str());
+    let verifier = p.verifier;
+    std::thread::spawn(move || {
+        if let Some(code) = w.code(signin::WAIT) {
+            let mut r = o.join("/desktop/redeem").unwrap();
+            r.query_pairs_mut().append_pair("code", &code).append_pair("v", &verifier);
+            if let Some(win) = main_window(&app) {
+                let _ = win.navigate(r);
+                let _ = win.set_focus();
+            }
+        }
+    });
+    SigninResult { ok: true, error: None }
+}
+
+/* -------------------------------------------------- commands (settings) */
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SettingsView {
+    settings: Settings,
+    version: &'static str,
+    talk_key: String,
+    talk_fallback: bool,
+    monitors: Vec<String>,
+    /// The per-monitor key of the monitor MINT AI is on now (size, corner, opacity are kept per monitor).
+    monitor_key: String,
+    update: Option<String>,
+}
+
+#[tauri::command]
+fn settings_get(app: AppHandle, shared: State<'_, Shared>) -> SettingsView {
+    let monitor_key = current_monitor_key(&app, &shared);
+    let a = shared.lock().unwrap();
+    SettingsView {
+        settings: a.settings.clone(),
+        version: VERSION,
+        talk_key: a.talk_key.clone(),
+        talk_fallback: a.talk_fallback,
+        monitors: app.available_monitors().unwrap_or_default().iter().filter_map(|m| m.name().cloned()).collect(),
+        monitor_key,
+        update: a.update.clone(),
+    }
+}
+
+/// Save the Settings window's values: checked here (hotkeys valid and distinct), then applied.
+#[tauri::command]
+fn settings_set(app: AppHandle, value: Settings, shared: State<'_, Shared>) -> Result<(), String> {
+    let mut v = value;
+    for (label, k) in [("Talk", &v.hotkeys.talk), ("Show / hide", &v.hotkeys.show), ("Focus mode", &v.hotkeys.focus)] {
+        if settings::normalize_hotkey(k).is_none() {
+            return Err(format!("{}: \"{}\" is not a hotkey here. Use Ctrl or Alt with one key, e.g. Ctrl+Alt+M.", label, k));
+        }
+    }
+    v.fix();
+    if !settings::hotkeys_distinct(&v.hotkeys) {
+        return Err("The three hotkeys must be different.".into());
+    }
+    let autostart = v.autostart;
+    {
+        let mut a = shared.lock().unwrap();
+        let mode_changed = a.settings.mode != v.mode;
+        a.settings = v;
+        if mode_changed {
+            a.peek_open = a.settings.mode == Mode::Peek;
+            a.hidden = false;
+        }
+        a.ignoring = None;
+    }
+    save(&shared);
+    set_autostart(&app, autostart);
+    register_hotkeys(&app, &shared);
+    apply(&app, &shared, false);
+    Ok(())
+}
+
+#[tauri::command]
+fn settings_check_update(app: AppHandle) {
+    install_update(app);
+}
+
+fn set_autostart(app: &AppHandle, on: bool) {
+    use tauri_plugin_autostart::ManagerExt;
+    let al = app.autolaunch();
+    let now = al.is_enabled().unwrap_or(false);
+    if on && !now {
+        let _ = al.enable();
+    } else if !on && now {
+        let _ = al.disable();
+    }
+}
+
+/* ------------------------------------------------------------- the loops */
+
+/// About 30 times a second: is the cursor on something interactive? Switch click-through to match.
+/// Also: a Floating box that was dragged snaps to the nearest corner when the mouse is let go.
+fn hit_loop(app: AppHandle, shared: Shared) {
+    loop {
+        std::thread::sleep(Duration::from_millis(33));
+        let Some(w) = main_window(&app) else { continue };
+        let (regions, dpr, behind, mode, peek_open, dragging, was) = {
+            let a = shared.lock().unwrap();
+            (a.regions.clone(), a.dpr, a.behind_icons, a.settings.mode, a.peek_open, a.dragging, a.ignoring)
+        };
+        if behind {
+            continue;
+        }
+        if let Some(t) = dragging {
+            // The drag ends when the window has not moved for a moment (the button is up by then).
+            let moved = shared.lock().unwrap().last_moved;
+            let quiet = moved.map(|m| m.elapsed() > Duration::from_millis(350)).unwrap_or(t.elapsed() > Duration::from_millis(1500));
+            if quiet && t.elapsed() > Duration::from_millis(300) {
+                snap(&app, &shared, &w);
+            }
+            continue;
+        }
+        let want_ignore = if mode == Mode::Peek && peek_open {
+            false
+        } else {
+            let (Ok(c), Ok(p)) = (app.cursor_position(), w.outer_position()) else { continue };
+            !hit::hit(&regions, c.x - p.x as f64, c.y - p.y as f64, dpr)
+        };
+        if was != Some(want_ignore) {
+            if w.set_ignore_cursor_events(want_ignore).is_ok() {
+                shared.lock().unwrap().ignoring = Some(want_ignore);
+            }
+        }
+    }
+}
+
+fn snap(app: &AppHandle, shared: &Shared, w: &WebviewWindow) {
+    let (pos, size) = match (w.outer_position(), w.outer_size()) {
+        (Ok(p), Ok(s)) => (p, s),
+        _ => {
+            shared.lock().unwrap().dragging = None;
+            return;
+        }
+    };
+    let win = Rect { x: pos.x, y: pos.y, w: size.width, h: size.height };
+    // The monitor it was dropped on becomes its monitor; there it takes the nearest corner.
+    let (cx, cy) = win.centre();
+    let mon = app.monitor_from_point(cx as f64, cy as f64).ok().flatten().map(|m| (mon_of(&m), m.name().cloned().unwrap_or_default()));
+    {
+        let mut a = shared.lock().unwrap();
+        a.dragging = None;
+        a.last_moved = None;
+        if let Some((m, name)) = mon {
+            let pm = a.settings.monitor_prefs(&m.key);
+            let corner = layout::nearest_corner(win, m.work, m.scale, pm.size, a.settings.focus, pm.corner);
+            a.settings.monitor_prefs_mut(&m.key).corner = corner;
+            a.settings.monitor = name;
+        }
+    }
+    save(shared);
+    apply(app, shared, false);
+}
+
+/// Once a second: what is in front, full-screen apps, power, the lock screen, monitors plugged in or
+/// out, the wallpaper's brightness; the page is told when its stillness or ink changes.
+fn env_loop(app: AppHandle, shared: Shared) {
+    let mut tick: u64 = 0;
+    loop {
+        std::thread::sleep(Duration::from_millis(1000));
+        tick += 1;
+        let Some(w) = main_window(&app) else { continue };
+        let raw = hwnd(&w);
+        let front = platform::front(raw);
+        let fullscreen = platform::fullscreen();
+        let (on_battery, energy_saver) = platform::power();
+        let locked = platform::locked();
+        let reduce = platform::reduce_motion();
+        let mut reapply = false;
+        let mut repaint = false;
+        {
+            let mut a = shared.lock().unwrap();
+            a.seen.fullscreen = fullscreen;
+            a.seen.locked = locked;
+            a.seen.covered = a.settings.mode == Mode::Desktop && !a.peek_open && front == Front::Other;
+            // Desktop layer and "show desktop" (Win+D) or a click on the wallpaper: up on top while the
+            // desktop has the focus, back to the bottom when anything else does (Rainmeter's approach).
+            if a.settings.mode == Mode::Desktop && !a.settings.experimental_behind_icons {
+                // Our own window in front (typing in the raised layer) keeps it as it is.
+                let raise = match front {
+                    Front::Desktop => true,
+                    Front::Ours | Front::Unknown => a.raised_for_desktop,
+                    Front::Other => false,
+                };
+                if raise != a.raised_for_desktop && !a.peek_open {
+                    a.raised_for_desktop = raise;
+                    reapply = true;
+                }
+            } else if a.raised_for_desktop {
+                a.raised_for_desktop = false;
+            }
+            let still = policy::hold_still(a.settings.battery_saver, on_battery, energy_saver, &a.seen, reduce);
+            if still != a.still {
+                a.still = still;
+                repaint = true;
+            }
+            // Monitors plugged in or out, or a resolution change: place it again.
+            let sig: String = app.available_monitors().unwrap_or_default().iter().map(|m| format!("{:?}{:?}{:?}{}", m.name(), m.position(), m.size(), m.scale_factor())).collect();
+            if sig != a.monitors_sig {
+                if !a.monitors_sig.is_empty() {
+                    reapply = true;
+                }
+                a.monitors_sig = sig;
+            }
+            // The page never said it was ready (a failed load shows Windows' error page): back to the offline card.
+            if let Some(t) = a.awaiting_ready {
+                if t.elapsed() > Duration::from_secs(25) {
+                    a.awaiting_ready = None;
+                    drop(a);
+                    if let Ok(u) = Url::parse("tauri://localhost/index.html?offline=1") {
+                        let _ = w.navigate(local_url(&u));
+                    }
+                    continue;
+                }
+            }
+        }
+        // The wallpaper's brightness: at start, then every half minute (a changed wallpaper is caught then).
+        if tick == 1 || tick % 30 == 0 {
+            if let Some(ink) = wallpaper_ink(&app, &shared, &w) {
+                let mut a = shared.lock().unwrap();
+                if a.ink != ink {
+                    a.ink = ink;
+                    repaint = true;
+                }
+            }
+        }
+        if reapply {
+            apply(&app, &shared, false);
+        } else if repaint {
+            let key = current_monitor_key(&app, &shared);
+            let payload = page_state(&shared.lock().unwrap(), &key, false);
+            let _ = w.emit_to(MAIN, "mint://state", payload);
+        }
+        // A minimised layer (Win+D, Win+M) comes back.
+        if w.is_minimized().unwrap_or(false) {
+            let a = shared.lock().unwrap();
+            let should = match a.settings.mode {
+                Mode::Floating => !a.hidden,
+                Mode::Desktop => true,
+                Mode::Peek => a.peek_open,
+            };
+            drop(a);
+            if should {
+                let _ = w.unminimize();
+            }
+        }
+        if tick % (6 * 3600) == 30 && shared.lock().unwrap().settings.check_updates {
+            check_update(app.clone());
+        }
+    }
+}
+
+/// The local pages (dist/): on Windows Tauri serves them at http://tauri.localhost.
+fn local_url(u: &Url) -> Url {
+    if cfg!(windows) {
+        let mut x = Url::parse("http://tauri.localhost/").unwrap();
+        x.set_path(u.path());
+        x.set_query(u.query());
+        x
+    } else {
+        u.clone()
+    }
+}
+
+fn wallpaper_ink(app: &AppHandle, shared: &Shared, w: &WebviewWindow) -> Option<Ink> {
+    let (pos, size) = (w.outer_position().ok()?, w.outer_size().ok()?);
+    let (cx, cy) = (pos.x + size.width as i32 / 2, pos.y + size.height as i32 / 2);
+    let m = app.monitor_from_point(cx as f64, cy as f64).ok().flatten()?;
+    let (mx, my, mw, mh) = (m.position().x as f64, m.position().y as f64, m.size().width as f64, m.size().height as f64);
+    // The part of the wallpaper under the core: the window's middle third.
+    let fx0 = (pos.x as f64 + size.width as f64 / 3.0 - mx) / mw;
+    let fx1 = (pos.x as f64 + size.width as f64 * 2.0 / 3.0 - mx) / mw;
+    let fy0 = (pos.y as f64 + size.height as f64 / 4.0 - my) / mh;
+    let fy1 = (pos.y as f64 + size.height as f64 * 3.0 / 4.0 - my) / mh;
+    let sig = format!("{:?}{}{}{}{}", platform_wallpaper_sig(), fx0 as f32, fx1 as f32, fy0 as f32, fy1 as f32);
+    {
+        let mut a = shared.lock().unwrap();
+        if a.wallpaper_sig == sig {
+            return None;
+        }
+        a.wallpaper_sig = sig;
+    }
+    platform::wallpaper_ink(fx0, fy0, fx1, fy1)
+}
+
+#[cfg(windows)]
+fn platform_wallpaper_sig() -> Option<(String, Option<std::time::SystemTime>)> {
+    let p = platform::wallpaper_path()?;
+    let t = std::fs::metadata(&p).and_then(|m| m.modified()).ok();
+    Some((p, t))
+}
+#[cfg(not(windows))]
+fn platform_wallpaper_sig() -> Option<(String, Option<std::time::SystemTime>)> {
+    None
+}
+
+/* ------------------------------------------------------------------ run */
+
+pub fn run() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            // A second launch (the Start menu, autostart twice): show the one that runs.
+            let shared = app.state::<Shared>().inner().clone();
+            show(app, &shared, true);
+        }))
+        .plugin(tauri_plugin_autostart::init(tauri_plugin_autostart::MacosLauncher::LaunchAgent, Some(vec!["--autostart"])))
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_global_shortcut::Builder::new().with_handler(|app, sc, ev| on_hotkey(app, sc, ev.state)).build())
+        .invoke_handler(tauri::generate_handler![
+            get_state,
+            set_hit_regions,
+            set_status,
+            needs_you,
+            hide_peek,
+            start_drag,
+            tool,
+            open_full_cc,
+            page_ready,
+            browser_signin,
+            settings_get,
+            settings_set,
+            settings_check_update
+        ])
+        .setup(|app| {
+            let handle = app.handle().clone();
+            let dir = app.path().app_config_dir().unwrap_or_else(|_| PathBuf::from("."));
+            let path = dir.join("settings.json");
+            let settings = std::fs::read_to_string(&path).map(|s| Settings::from_json(&s)).unwrap_or_default();
+            let first_run = !path.exists();
+            let shared: Shared = Arc::new(Mutex::new(App {
+                peek_open: false,
+                settings,
+                settings_path: path,
+                regions: Vec::new(),
+                dpr: 1.0,
+                hidden: false,
+                state: "idle".into(),
+                needs: 0,
+                sessions: 0,
+                ink: Ink::Light,
+                still: false,
+                talk_key: settings::DEFAULT_TALK.into(),
+                talk_fallback: false,
+                talking: false,
+                signed_in: false,
+                behind_icons: false,
+                raised_for_desktop: false,
+                ignoring: None,
+                dragging: None,
+                last_moved: None,
+                awaiting_ready: None,
+                update: None,
+                monitors_sig: String::new(),
+                wallpaper_sig: String::new(),
+                seen: policy::Seen::default(),
+                toasted: Vec::new(),
+            }));
+            app.manage(shared.clone());
+            if first_run {
+                save(&shared);
+            }
+            let (site, autostart) = {
+                let a = shared.lock().unwrap();
+                (origin(&a.settings), a.settings.autostart)
+            };
+            set_autostart(&handle, autostart);
+
+            // The window: transparent, frameless, no taskbar button (the tray is its home), not focused on start.
+            // It starts on the local card (dist/index.html), which goes to the site once it answers.
+            let site_nav = site.clone();
+            let h_nav = handle.clone();
+            let w = WebviewWindowBuilder::new(app, MAIN, WebviewUrl::App("index.html".into()))
+                .title("MINT AI")
+                .transparent(true)
+                .decorations(false)
+                .shadow(false)
+                .resizable(false)
+                .skip_taskbar(true)
+                .always_on_top(true)
+                .focused(false)
+                .visible(false)
+                .user_agent(&user_agent())
+                .zoom_hotkeys_enabled(false)
+                .on_navigation(move |u| {
+                    // Locked to the site (and the app's own pages). Anything else opens in the browser.
+                    let local = u.scheme() == "tauri" || u.host_str() == Some("tauri.localhost");
+                    if local || same_site(u, &site_nav) {
+                        if !local {
+                            if let Some(s) = h_nav.try_state::<Shared>() {
+                                s.lock().unwrap().awaiting_ready = Some(Instant::now());
+                            }
+                        }
+                        return true;
+                    }
+                    open_url(u.as_str());
+                    false
+                })
+                .on_new_window(|u, _| {
+                    open_url(u.as_str());
+                    NewWindowResponse::Deny
+                })
+                .on_permission_request({
+                    let site = site.clone();
+                    move |wv, kind| {
+                        // The microphone, for the site only (voice); nothing else is granted.
+                        let ours = wv.url().map(|u| same_site(&u, &site)).unwrap_or(false);
+                        match kind {
+                            PermissionKind::Microphone if ours => PermissionResponse::Allow,
+                            PermissionKind::ClipboardRead => PermissionResponse::Default,
+                            _ => PermissionResponse::Deny,
+                        }
+                    }
+                })
+                .build()?;
+            let _ = w.set_ignore_cursor_events(true);
+            shared.lock().unwrap().ignoring = Some(true);
+
+            // A dragged Floating box: note each move (hit_loop snaps it when the moves stop).
+            let sh = shared.clone();
+            let h2 = handle.clone();
+            w.on_window_event(move |ev| match ev {
+                tauri::WindowEvent::Moved(_) => {
+                    let mut a = sh.lock().unwrap();
+                    if a.dragging.is_some() {
+                        a.last_moved = Some(Instant::now());
+                    }
+                }
+                tauri::WindowEvent::ScaleFactorChanged { .. } => {
+                    let dragging = sh.lock().unwrap().dragging.is_some();
+                    if !dragging {
+                        apply(&h2, &sh, false);
+                    }
+                }
+                _ => {}
+            });
+
+            // The tray: the round Mesh icon, a click shows the menu (either button).
+            let menu = build_menu(&handle, &shared)?;
+            let (base, iw, ih) = tray_base();
+            let _tray: TrayIcon = TrayIconBuilder::with_id("main")
+                .icon(tauri::image::Image::new_owned(base, iw, ih))
+                .tooltip("MINT AI")
+                .menu(&menu)
+                .show_menu_on_left_click(true)
+                .on_menu_event(|app, ev| on_menu(app, ev.id().as_ref()))
+                .build(app)?;
+
+            register_hotkeys(&handle, &shared);
+            apply(&handle, &shared, false);
+            {
+                let (a1, s1) = (handle.clone(), shared.clone());
+                std::thread::spawn(move || hit_loop(a1, s1));
+                let (a2, s2) = (handle.clone(), shared.clone());
+                std::thread::spawn(move || env_loop(a2, s2));
+            }
+            if shared.lock().unwrap().settings.check_updates {
+                let h = handle.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_secs(30));
+                    check_update(h);
+                });
+            }
+            Ok(())
+        })
+        .run(tauri::generate_context!())
+        .expect("error while running MINT AI");
+}

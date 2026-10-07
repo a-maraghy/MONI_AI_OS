@@ -1,0 +1,18 @@
+# The app's pure modules (no Tauri, no Windows), compiled on their own so their tests run on any
+# machine -- the build box is Linux. The files are the app's own (src-tauri/src/*.rs), not copies.
+[package]
+name = "mint-desktop-core-tests"
+version = "0.1.0" # keep equal to src-tauri (site::VERSION reads it)
+edition = "2021"
+publish = false
+
+[lib]
+path = "lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+base64 = "0.22"
+rand = "0.8"
+url = "2"
