@@ -99,6 +99,8 @@
     diag.calls++;
     S = { o: o, serverState: "connecting", shown: "", muted: false, playing: false, ended: false, flash: 0, anyAsked: false, ws: null, ctx: null, stream: null, cap: null, player: null, src: null, mic: 0, out: 0, lastPos: null,
       duplex: DUPLEX[o.duplex] ? o.duplex : "speakers", route: "", lagMs: 0, t0: performance.now(),
+      // Hold-to-talk (the desktop app): the microphone is relayed only while the key is held.
+      ptt: o.turn === "ptt", held: false,
       det: window.MintLiveDetect ? window.MintLiveDetect.create() : null };
     var me = S;
     diag.duplex = S.duplex;
@@ -259,7 +261,7 @@
 
   function openSocket(me) {
     var o = me.o;
-    var url = o.url || (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/mint-ai/api/live?csrf=" + encodeURIComponent(o.csrf || "") + "&duplex=" + me.duplex + "&route=" + me.route + (o.tab ? "&tab=" + encodeURIComponent(o.tab) : "") +
+    var url = o.url || (location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/mint-ai/api/live?csrf=" + encodeURIComponent(o.csrf || "") + "&duplex=" + me.duplex + "&route=" + me.route + (o.tab ? "&tab=" + encodeURIComponent(o.tab) : "") + (me.ptt ? "&turn=ptt" : "") +
       (o.resume === "restart" ? "&resume=restart&lang=" + (o.lang === "ar" ? "ar" : "en") : "");
     return new Promise(function (resolve, reject) {
       var ws = (me.ws = new WebSocket(url));
@@ -300,6 +302,7 @@
       }
     }
     if (me.muted || !me.ws || me.ws.readyState !== 1) return;
+    if (me.ptt && !me.held) return; // hold-to-talk: nothing is relayed between turns
     me.ws.send(m.pcm);
     diag.frames++;
     diag.bytesIn += m.pcm.byteLength;
@@ -408,6 +411,7 @@
     if (!me) return;
     clearTimeout(me.flashT);
     clearTimeout(me.muteT);
+    clearTimeout(me.relT);
     clearInterval(me.lagT);
     try { if (me.ws && me.ws.readyState <= 1) me.ws.close(1000, "hung up"); } catch (e) { /* closed */ }
     try { if (me.pcA) me.pcA.close(); } catch (e) { /* closed */ }
@@ -422,7 +426,7 @@
     if (me.ctx && me.ctx.close) me.ctx.close().catch(function () {});
   }
 
-  var END_WHY = /^(?:button|esc|mic|navigate|unload|track-ended|devicechange|voice-changed|error:.{0,80})$/;
+  var END_WHY = /^(?:button|esc|mic|navigate|unload|track-ended|devicechange|voice-changed|ptt-idle|error:.{0,80})$/;
   function stop(why) {
     if (!S) return;
     var w = END_WHY.test(String(why || "")) ? String(why) : "button";
@@ -461,6 +465,33 @@
     return true;
   }
 
+  /*
+   * Hold-to-talk: the key went down (the voice, if it speaks, stops at once)
+   * and up. The release keeps relaying for PTT_TAIL_MS, so the last syllable
+   * the worklet still holds is in the turn, then tells the server to commit.
+   */
+  var PTT_TAIL_MS = 140;
+  function press() {
+    if (!S || !S.ptt) return false;
+    clearTimeout(S.relT);
+    if (S.held) return true;
+    if (S.playing) { silenceTail(S); S.player.port.postMessage({ type: "flush", at: Date.now() }); }
+    S.held = true;
+    try { if (S.ws && S.ws.readyState === 1) S.ws.send(JSON.stringify({ type: "ptt", on: true })); } catch (e) { /* closed */ }
+    return true;
+  }
+  function release() {
+    if (!S || !S.ptt || !S.held) return false;
+    var me = S;
+    clearTimeout(me.relT);
+    me.relT = setTimeout(function () {
+      if (me !== S || !me.held) return;
+      me.held = false;
+      try { if (me.ws && me.ws.readyState === 1) me.ws.send(JSON.stringify({ type: "ptt", on: false })); } catch (e) { /* closed */ }
+    }, PTT_TAIL_MS);
+    return true;
+  }
+
   function duplex(mode) {
     if (!S) return DUPLEX[mode] ? mode : "";
     if (DUPLEX[mode] && mode !== S.duplex) {
@@ -477,6 +508,9 @@
     mute: mute,
     interrupt: interrupt,
     duplex: duplex,
+    press: press,
+    release: release,
+    ptt: function () { return !!(S && S.ptt); },
     ack: function (nonce, ok, why) {
       if (!S || !S.ws || S.ws.readyState !== 1 || !nonce) return;
       try { S.ws.send(JSON.stringify({ type: "ui-ack", nonce: String(nonce), ok: !!ok, why: why ? String(why).slice(0, 200) : undefined })); } catch (e) { /* closed */ }

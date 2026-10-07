@@ -136,7 +136,23 @@ const OPEN_RETRY_MS = 800;
 const RECAP_LINES = 6;
 const EARLIER_MS = 45 * 1000; // a result arriving this long after its ask (or after newer words) is introduced
 // What the page may say when it ends a call ({type: "end", why}); anything else is logged as "unspecified".
-const END_WHY = /^(?:button|esc|mic|navigate|unload|track-ended|devicechange|voice-changed|error:[^\u0000-\u001f]{0,80})$/;
+const END_WHY = /^(?:button|esc|mic|navigate|unload|track-ended|devicechange|voice-changed|ptt-idle|error:[^\u0000-\u001f]{0,80})$/;
+/*
+ * Hold-to-talk ("ptt", the desktop app only; the web Command Center does not
+ * ask for it). The page relays the microphone only while the key is held and
+ * says when it goes down and up ({type: "ptt", on}). Here: no voice detection
+ * upstream (turn_detection null); a press stops the voice if it is speaking
+ * (a barge-in, as a tap is) and starts a clean input buffer; a release
+ * commits it, and the committed item is answered through the same path as a
+ * detected turn (transcript guard, echo and stop checks, hand-off to MINT AI)
+ * -- except that it is never treated as the speaker's leak: holding a key is
+ * not an echo. A press shorter than PTT_MIN_MS is a slip, not a turn. A call
+ * nobody presses for PTT_IDLE_MS ends (the page hangs up warm calls itself
+ * after a minute; this is the server's backstop).
+ */
+const TURNS = ["vad", "ptt"];
+const PTT_MIN_MS = 200;
+const PTT_IDLE_MS = 3 * 60 * 1000;
 const BACK_LINE = { en: "The line dropped for a second — I'm back.", ar: "الخط قطع لثانية، وأنا معاك تاني." };
 const RECONNECTED_LINE = { en: "Reconnected.", ar: "الاتصال رجع، وأنا معاك." };
 const EARLIER_LINE = { en: "About your earlier question:", ar: "بخصوص سؤالك اللي فات:" };
@@ -293,7 +309,13 @@ class LiveCall {
     this.cfg = d.cfg || {};
     this.model = this.cfg.live_model || LIVE_MODEL;
     this.opts = { maxMs: MAX_CALL_MS, silenceMs: SILENCE_MS, handoff: "turn", pollMs: REPLY_POLL_MS, ...(d.opts || {}) };
+    this.turnMode = TURNS.includes(this.opts.turn) ? this.opts.turn : "vad";
+    this.held = false; // hold-to-talk: the key is down
+    this.ptt = null; // { startMs, at }: the turn being held
+    this.pttCommits = []; // [{ startMs, endMs, at }]: released turns waiting for their committed item
+    this.pttSeenAt = 0; // set when the call opens (this.now is set just below)
     this.now = d.now || Date.now;
+    this.pttSeenAt = this.now();
     this.log = d.log || (() => {});
     this.id = "lv" + (++callSeq).toString(36) + Math.random().toString(36).slice(2, 6);
     this.ws = null;
@@ -584,6 +606,13 @@ class LiveCall {
             opened = true;
             this.sessionAt = this.now();
             if (!this.maxTimer) this.maxTimer = this.timer(() => this.close("max-length", "The live conversation reached its 20-minute limit."), this.opts.maxMs);
+            if (this.turnMode === "ptt" && !this.pttIdleT) {
+              const tick = () => {
+                this.pttIdleCheck();
+                if (!this.closed) this.pttIdleT = this.timer(tick, 15000);
+              };
+              this.pttIdleT = this.timer(tick, 15000);
+            }
             this.startKeepalive(ws, up);
             this.setState("listening");
             return resolve(this);
@@ -670,7 +699,8 @@ class LiveCall {
         input: {
           format: { type: "audio/pcm", rate: RATE },
           noise_reduction: this.noise === "off" ? null : { type: this.noise },
-          turn_detection: { type: "server_vad", threshold: this.opts.vadThreshold || VAD_THRESHOLD, silence_duration_ms: this.opts.silenceMs, prefix_padding_ms: 300, create_response: false, interrupt_response: false },
+          // Hold-to-talk: no detection; the key's release commits the turn (pttUp).
+          turn_detection: this.turnMode === "ptt" ? null : { type: "server_vad", threshold: this.opts.vadThreshold || VAD_THRESHOLD, silence_duration_ms: this.opts.silenceMs, prefix_padding_ms: 300, create_response: false, interrupt_response: false },
           // Always an OpenAI model (a realtime session takes no other); a pinned language goes with it.
           transcription: { model: this.cfg.transcribe_model || "gpt-4o-mini-transcribe", ...(this.cfg.transcribe_language === "ar" || this.cfg.transcribe_language === "en" ? { language: this.cfg.transcribe_language } : {}) },
         },
@@ -712,8 +742,10 @@ class LiveCall {
   /** PCM16 mono 24 kHz from the page's microphone. */
   audioIn(buf) {
     if (this.closed || this.muted || !buf || !buf.length || buf.length % 2) return;
-    const audible = this.audibleNow();
-    if (this.duplex === "speakers" && (audible || this.now() - this.lastAudibleAt < TAIL_MS)) {
+    // Hold-to-talk: only what is said while the key is held is heard (the press stopped the voice).
+    if (this.turnMode === "ptt" && !this.held) return;
+    const audible = this.turnMode === "ptt" ? false : this.audibleNow();
+    if (this.duplex === "speakers" && (audible || this.now() - this.lastAudibleAt < TAIL_MS) && this.turnMode !== "ptt") {
       // Half-duplex: the microphone is not heard while the voice speaks.
       this.diag.gatedMs += buf.length / BYTES_PER_MS;
       return;
@@ -765,6 +797,10 @@ class LiveCall {
       case "duplex":
         this.setDuplex(m.mode);
         break;
+      case "ptt":
+        if (m.on) this.pttDown();
+        else this.pttUp();
+        break;
       case "ui-undoable":
         this.undoUntil = Number(m.ms) > 0 ? this.now() + Math.min(60000, Number(m.ms)) : 0;
         break;
@@ -782,6 +818,55 @@ class LiveCall {
       default:
         break;
     }
+  }
+
+  /* ---- hold-to-talk ---- */
+
+  pttDown() {
+    if (this.closed || this.turnMode !== "ptt" || this.held) return;
+    this.held = true;
+    this.pttSeenAt = this.now();
+    if (this.audibleNow() || this.resp_active()) {
+      this.log(`live: hold-to-talk pressed over the voice (+${this.sincePlay()} ms into playback)`);
+      this.bargeIn("ptt");
+    }
+    this.send({ type: "input_audio_buffer.clear" });
+    this.ptt = { startMs: this.inputMs, at: this.now() };
+    this.setState("talking");
+  }
+  pttUp() {
+    if (this.closed || this.turnMode !== "ptt" || !this.held) return;
+    this.held = false;
+    this.pttSeenAt = this.now();
+    const p = this.ptt;
+    this.ptt = null;
+    if (!p || this.inputMs - p.startMs < PTT_MIN_MS) {
+      this.send({ type: "input_audio_buffer.clear" });
+      this.setState(this.anyPending() ? "waiting" : "listening");
+      return;
+    }
+    this.pttCommits.push({ startMs: p.startMs, endMs: this.inputMs, at: p.at });
+    this.send({ type: "input_audio_buffer.commit" });
+    this.setState("thinking");
+  }
+  /** The released turn's item exists upstream: answer it as a detected turn would be (never a leak). */
+  pttCommitted(ev) {
+    const c = this.pttCommits.shift();
+    if (!c || !ev || !ev.item_id) return;
+    const t = this.turnFor(ev.item_id);
+    t.startMs = c.startMs;
+    t.startedAt = c.at;
+    t.overVoice = false;
+    t.bargeConfirmed = true;
+    t.ptt = true;
+    this.speechStopped({ item_id: ev.item_id, audio_end_ms: c.endMs });
+  }
+  /** Nobody has pressed for PTT_IDLE_MS and nothing is being said or waited for: the warm call ends. */
+  pttIdleCheck() {
+    if (this.closed || this.turnMode !== "ptt" || this.held) return;
+    const idle = this.opts.pttIdleMs || PTT_IDLE_MS;
+    if (this.now() - this.pttSeenAt < idle || this.anythingAudible() || this.resp_active() || this.anyPending()) return;
+    this.close("ptt-idle", undefined, "no press for " + Math.round(idle / 1000) + " s");
   }
 
   setDuplex(mode) {
@@ -803,6 +888,9 @@ class LiveCall {
 
   onUpstream(ev) {
     switch (ev.type) {
+      case "input_audio_buffer.committed":
+        if (this.turnMode === "ptt") return this.pttCommitted(ev);
+        return;
       case "input_audio_buffer.speech_started":
         return this.speechStarted(ev);
       case "input_audio_buffer.speech_stopped":
@@ -1969,6 +2057,9 @@ module.exports = {
   DUPLEX,
   TAIL_MS,
   MAX_CALL_MS,
+  TURNS,
+  PTT_MIN_MS,
+  PTT_IDLE_MS,
   TOOLS,
   TOOL_NAMES,
   INSTRUCTIONS,

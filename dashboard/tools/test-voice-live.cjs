@@ -1187,6 +1187,68 @@ let WS_BASE;
     x.c.close("test");
   }
 
+  section("hold-to-talk (the desktop app): manual turns on the same live call");
+  {
+    const { c, client, sup } = makeCall({ opts: { turn: "ptt" }, turnText: "what is waiting for me today" });
+    await c.open();
+    const s = lastSession();
+    check("ptt: no voice detection upstream (turn_detection null)", s.session.audio.input.turn_detection === null && c.turnMode === "ptt");
+    const a0 = s.appended;
+    c.audioIn(pcm(200));
+    await sleep(15);
+    check("  nothing is relayed while the key is up", s.appended === a0);
+    c.message({ type: "ptt", on: true });
+    await sleep(10);
+    check("  a press clears the input buffer and the state is 'talking'", s.of("input_audio_buffer.clear").length === 1 && states(client).pop() === "talking");
+    c.audioIn(pcm(900));
+    await sleep(15);
+    check("  while held, the microphone is relayed", s.appended === a0 + 900 * 48);
+    c.message({ type: "ptt", on: false });
+    await sleep(10);
+    check("  the release commits the turn, and the state is 'thinking'", s.of("input_audio_buffer.commit").length === 1 && states(client).pop() === "thinking");
+    s.push({ type: "input_audio_buffer.committed", item_id: "item_ptt1" });
+    s.push({ type: "conversation.item.input_audio_transcription.completed", item_id: "item_ptt1", content_index: 0, transcript: "what is waiting for me today", usage: { type: "tokens", total_tokens: 20, input_tokens: 15, input_token_details: { text_tokens: 0, audio_tokens: 15 }, output_tokens: 5 } });
+    await until(() => s.of("response.create").length === 1, 1500, "the answer");
+    const t = c.turns.get("item_ptt1");
+    check("  the committed item is answered once, through the normal path (never a suspected leak)", s.of("response.create").length === 1 && t && t.ptt && !c.suspect(t) && t.endMs - t.startMs === 900, JSON.stringify(t && { s: t.startMs, e: t.endMs }));
+    await respond(s, null, { calls: [{ name: "look_into", args: { text: "what is waiting" } }] });
+    await until(() => sup.calls.some((x) => x[0] === "send"), 2000, "the hand-off");
+    check("  and handed to MINT AI with this server's own transcript", (sup.calls.find((x) => x[0] === "send") || [])[1].text === "what is waiting for me today");
+    // A press while the voice speaks stops it at once (a barge-in, as a tap is).
+    await respond(s, "Two things are waiting: the invoice audit and the freight quotes. Both can wait an hour.");
+    await until(() => client.audio.length > 0, 1500, "the voice's audio");
+    c.message({ type: "played", seg: client.audio[client.audio.length - 1].seg, ms: 20 });
+    c.message({ type: "ptt", on: true });
+    await sleep(20);
+    check("  a press over the voice: flush, cancel, a barge-in 'ptt'", client.json.some((m) => m.type === "flush") && s.of("response.cancel").length >= 1 && c.diag.bargeIns.some((b) => b.how === "ptt"));
+    const a1 = s.appended;
+    c.audioIn(pcm(100));
+    await sleep(15);
+    check("  and the microphone is heard at once (no speakers-mode gate while held)", s.appended === a1 + 4800);
+    c.audioIn(pcm(50));
+    // A slip of the key (shorter than PTT_MIN_MS of audio) is not a turn... this one is 150 ms: still a slip.
+    c.message({ type: "ptt", on: false });
+    await sleep(10);
+    check("  a press shorter than " + live.PTT_MIN_MS + " ms is a slip: cleared, not committed", s.of("input_audio_buffer.commit").length === 1 && s.of("input_audio_buffer.clear").length === 3);
+    c.close("test");
+  }
+  {
+    const { c, client } = makeCall({ opts: { turn: "ptt", pttIdleMs: 60 } });
+    await c.open();
+    c.pttSeenAt = c.now() - 100;
+    c.pttIdleCheck();
+    check("ptt: a warm call nobody presses ends by itself ('ptt-idle')", c.closed && client.json.some((m) => m.type === "ended" && m.why === "ptt-idle"));
+  }
+  {
+    const { c } = makeCall({ opts: { turn: "anything" } });
+    await c.open();
+    const s = lastSession();
+    check("any other turn mode is the live conversation as always (server VAD)", c.turnMode === "vad" && s.session.audio.input.turn_detection.type === "server_vad");
+    c.message({ type: "ptt", on: true });
+    check("  and 'ptt' messages do nothing there", !c.held && s.of("input_audio_buffer.clear").length === 0);
+    c.close("test");
+  }
+
   section("the maximum length");
   {
     const { c, client } = makeCall({ opts: { maxMs: 150 } });
@@ -1350,6 +1412,19 @@ let WS_BASE;
     check("  this browser's own choice (speakers) wins over the default; noise reduction near field upstream", r.got.some((m) => m.type === "ready" && m.duplex === "speakers" && m.noise === "near_field") && lastSession().session.audio.input.noise_reduction.type === "near_field");
     r.ws.send(JSON.stringify({ type: "duplex", mode: "full" }));
     check("  switching mode from the bar mid-call is echoed back", await until(() => r.got.some((m) => m.type === "duplex" && m.mode === "full"), 1000));
+    r.ws.close();
+    await until(() => r.closed != null, 2000);
+    await sleep(250);
+    // Hold-to-talk (the desktop app's ?turn=ptt): the same route, manual turns upstream.
+    r = await open(A.cookie, "?csrf=" + tok + "&turn=ptt");
+    await until(() => r.got.some((m) => m.type === "ready"), 3000);
+    check("?turn=ptt: the call is ready in hold-to-talk mode, no voice detection upstream", r.got.some((m) => m.type === "ready" && m.turn === "ptt") && lastSession().session.audio.input.turn_detection === null, JSON.stringify(r.got.filter((m) => m.type === "ready")));
+    r.ws.close();
+    await until(() => r.closed != null, 2000);
+    await sleep(250);
+    r = await open(A.cookie, "?csrf=" + tok + "&turn=bogus");
+    await until(() => r.got.some((m) => m.type === "ready"), 3000);
+    check("  any other ?turn is the live conversation as always", r.got.some((m) => m.type === "ready" && m.turn === "vad") && lastSession().session.audio.input.turn_detection.type === "server_vad");
     r.ws.close();
     // The evaluation page and its API: administrators only; a recording must be PCM16 mono 24 kHz.
     const evp = await s.req("GET", "/mint-ai/voice-eval", { cookie: A.cookie });
