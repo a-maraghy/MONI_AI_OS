@@ -6547,6 +6547,11 @@ function liveConnected(ws, { me, cfg, ip, duplex, noise, route, tab, canVoice, s
     // The confirm's 30 s start when the voice has finished asking.
     armConfirm: (id) => uiConfirms.arm(actor, id),
     log: (m) => console.log(m),
+    // MINT AI's text as it is written (the supervisor's event stream), for speaking a hand-off's reply
+    // while it is written; the whole text so far is redacted again (a secret can straddle two deltas).
+    // (since: the largest seq, so the supervisor replays none of its past events: only what comes next.)
+    watchTurns: (onEvent) => moniai.subscribe(Number.MAX_SAFE_INTEGER, actor, onEvent, () => {}),
+    redact: (text) => priv.redact(String(text || "")),
     opts: { duplex, turn: turn === "ptt" ? "ptt" : "vad" },
   });
   call.sid = sid || null;

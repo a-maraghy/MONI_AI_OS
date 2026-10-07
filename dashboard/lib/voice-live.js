@@ -158,6 +158,26 @@ const PTT_IDLE_MS = 3 * 60 * 1000;
 const BACK_LINE = { en: "The line dropped for a second — I'm back.", ar: "الخط قطع لثانية، وأنا معاك تاني." };
 const RECONNECTED_LINE = { en: "Reconnected.", ar: "الاتصال رجع، وأنا معاك." };
 const EARLIER_LINE = { en: "About your earlier question:", ar: "بخصوص سؤالك اللي فات:" };
+/*
+ * Speaking MINT AI's reply while it is written (2026-10-07): the supervisor
+ * already relays MINT AI's text as it streams ("text" events: {turn_id,
+ * delta}; "tool" when a message turns into a tool call; "result" at the end).
+ * For a hand-off from this call, those of its turn are fed to a guard
+ * (desk.Releaser, the summary rules: every sentence judged against what MINT
+ * AI has written so far, a sentence held while the next could change it) and
+ * each sentence it releases is read at once. Only prose: the stream stops at
+ * the first list, code, table or heading ("the details are on screen"), after
+ * STREAM_MAX_SENTENCES, at a guard cut, or when the administrator talks over
+ * it. A message that turns into a tool call drops its unread tail (what was
+ * already read -- "let me look at the logs" -- stays true); the next message
+ * streams afresh. When the reply is final: if what was read is how the final
+ * text begins, the rest of it is read; if the final text differs, nothing
+ * more is read (no contradiction) beyond "the details are on screen". A
+ * reply with nothing streamed goes the old way (summary or verbatim).
+ */
+const STREAM_MAX_SENTENCES = 6;
+const STREAM_HOLD_EVENTS = 2000; // events kept while the hand-off's turn id is not known yet
+const NOT_PROSE = /^[ \t]*(?:[-*+][ \t]|\d+\.[ \t]|```|\||#{1,6}[ \t]|>)/m;
 
 const TOOLS = [
   {
@@ -722,6 +742,7 @@ class LiveCall {
    */
   close(why, text, detail) {
     if (this.closed) return;
+    for (const st of [...(this.streams || [])]) this.closeStream(st);
     this.endWhy = { why: why || "ended", detail: detail ? String(detail).slice(0, 120) : "" };
     this.toClient({ type: "ended", why: why || "ended", text: text || undefined });
     this.closed = true;
@@ -1614,6 +1635,8 @@ class LiveCall {
   }
 
   async passOn(t, request) {
+    // Listen for MINT AI's text before asking: the turn may start (and stream) before the ask returns.
+    const stream = this.openStream(request);
     let ut = null;
     try {
       ut = this.d.uiTicket ? this.d.uiTicket() : null; // UI control Phase 2: MINT AI may change this tab's screen, in this turn
@@ -1631,7 +1654,11 @@ class LiveCall {
       mine.text += "\n" + request;
       this.diag.merged++;
       this.log(`live: call ${this.id} turn ${t.n} folded into the queued request ${tt.id}`);
-    } else if (tt && tt.id) this.requests.set(tt.id, { text: request, answered: false, askedAt: this.now(), turnN: t.n });
+    } else if (tt && tt.id) this.requests.set(tt.id, { text: request, answered: false, askedAt: this.now(), turnN: t.n, stream });
+    if (stream) {
+      if (tt && tt.id && !merged) this.attachStream(stream, tt.id);
+      else this.closeStream(stream);
+    }
     this.diag.handoffs.push({ turn: t.n, chars: request.length, merged });
     this.toClient({ type: "asked", turn: tt ? { id: tt.id, status: tt.status } : null, merged: merged || undefined });
     this.setState("waiting");
@@ -1846,9 +1873,15 @@ class LiveCall {
       }
       const row = snap && (snap.requests_to_moni_ai || []).find((x) => x.id === id);
       if (row && row.answered) return this.deliverReply(id, String(row.reply || ""), request);
-      this.timer(poll, this.opts.pollMs);
+      next = this.timer(poll, this.opts.pollMs);
     };
-    this.timer(poll, this.opts.pollMs);
+    let next = this.timer(poll, this.opts.pollMs);
+    // The supervisor's "result" for this turn: look now rather than at the next poll.
+    const mine = this.requests.get(id);
+    if (mine) mine.pollNow = () => {
+      if (next) clearTimeout(next), this.timers.delete(next);
+      next = this.timer(poll, 30);
+    };
   }
 
   async deliverReply(id, reply, request) {
@@ -1857,6 +1890,9 @@ class LiveCall {
     mine.answered = true;
     mine.repliedAt = this.now();
     this.toClient({ type: "replied", turn: id });
+    const st = mine.stream;
+    if (st) this.closeStream(st);
+    if (st && st.msgRead.length) return this.finishStream(id, mine, st, reply);
     this.firstSpokenFor = { id, at: mine.repliedAt, askedAt: mine.askedAt };
     const lines = [];
     // A result for an older request (the administrator has said more since, or it took a while): say which.
@@ -1903,6 +1939,142 @@ class LiveCall {
     this.send({
       type: "conversation.item.create",
       item: { type: "message", role: "system", content: [{ type: "input_text", text: `Your result for request ${id} arrived (the administrator heard${fallback ? " it read aloud" : " this summary of it"}: "${spoken.slice(0, 600)}", and has the full text on screen):\n${clipped}` }] },
+    });
+  }
+
+  /* ---- MINT AI's reply, spoken while it is written ---- */
+
+  openStream(request) {
+    if (!this.d.watchTurns || this.opts.streamReplies === false || this.closed) return null;
+    const st = { id: null, held: [], raw: "", rel: null, msgRead: [], read: [], more: false, stopped: false, gen: this.speechGen, request: String(request || ""), close: null, at: this.now() };
+    try {
+      st.close = this.d.watchTurns((ev) => this.streamEvent(st, ev));
+    } catch (e) {
+      this.log("live: could not follow MINT AI's reply as it is written: " + scrub(e.message));
+      return null;
+    }
+    this.streams = this.streams || new Set();
+    this.streams.add(st);
+    return st;
+  }
+  attachStream(st, id) {
+    st.id = id;
+    const held = st.held;
+    st.held = null;
+    for (const ev of held) this.streamEvent(st, ev);
+  }
+  closeStream(st) {
+    if (!st || st.closed) return;
+    st.closed = true;
+    if (this.streams) this.streams.delete(st);
+    try {
+      if (st.close) st.close();
+    } catch (_) {
+      /* closed */
+    }
+  }
+  streamEvent(st, ev) {
+    if (st.closed || !ev || this.closed) return;
+    if (st.id == null) {
+      if (st.held.length < STREAM_HOLD_EVENTS) st.held.push(ev);
+      return;
+    }
+    const tid = ev.turn_id != null ? ev.turn_id : ev.turn && ev.turn.id; // "result" carries the whole turn
+    if (tid !== st.id) return;
+    if (ev.type === "text" && typeof ev.delta === "string") {
+      st.raw += ev.delta;
+      return this.streamPump(st, false);
+    }
+    if (ev.type === "assistant" && !ev.parent_tool_use_id && typeof ev.text === "string") {
+      st.raw = ev.text; // the finished message: authoritative over the deltas
+      return this.streamPump(st, false);
+    }
+    if (ev.type === "tool") {
+      // This message became a tool call: its unread tail is dropped; the next message streams afresh.
+      st.raw = "";
+      st.rel = null;
+      st.msgRead = [];
+      return;
+    }
+    if (ev.type === "result") {
+      const mine = this.requests.get(st.id);
+      if (mine && mine.pollNow) mine.pollNow();
+    }
+  }
+  /** The prose MINT AI has written so far in this message, cleaned for speech; `cut` when a list/code/... began. */
+  streamText(raw) {
+    const m = NOT_PROSE.exec(raw);
+    const prose = m ? raw.slice(0, m.index) : raw;
+    const clean = prose
+      .replace(/`[^`\n]+`/g, (x) => x.replace(/`/g, ""))
+      .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+      .replace(/https?:\/\/\S+/g, " ")
+      .replace(/[*_~]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    // A sentence that has ended (its stop and a space are written) is finished now, not when the next one starts.
+    const ended = /[.!?…؟]["'”’)]?\s+$/.test(prose) ? " " : "";
+    return { clean: clean + ended, cut: !!m };
+  }
+  streamPump(st, final) {
+    if (st.stopped) return;
+    if (st.gen !== this.speechGen) return this.streamStop(st, "talked over");
+    const { clean, cut } = this.streamText(this.d.redact ? this.d.redact(st.raw) : st.raw);
+    if (cut) st.more = true;
+    // Only whole sentences go to the guard while MINT AI is still writing (its reply model is built from them).
+    const text = final || cut ? clean : desk.sentencesOf(clean, false).join(" ");
+    st.ctx = { summary: true, replyText: text, replyModel: desk.replyModel(text), heardText: st.request, snapshotText: "", numbers: desk.strictNumberSet([text, st.request]), replied: true, grounded: true };
+    if (!st.rel) st.rel = new desk.Releaser(() => st.ctx, (line) => this.streamSay(st, line), { summary: true });
+    st.rel.update(final || cut ? text : clean, final || cut, {}); // (the Releaser itself judges only finished sentences)
+    if (st.rel.trip) this.streamStop(st, "guard: " + st.rel.trip.rule);
+  }
+  streamSay(st, line) {
+    if (st.stopped || this.closed) return;
+    if (st.gen !== this.speechGen) return this.streamStop(st, "talked over");
+    if (st.read.length >= STREAM_MAX_SENTENCES) {
+      st.more = true;
+      return;
+    }
+    const mine = this.requests.get(st.id) || {};
+    if (!st.read.length) {
+      st.firstAt = this.now();
+      this.log(`live: call ${this.id} request ${st.id}: first sentence of the reply read while it is written, ${st.firstAt - (mine.askedAt || st.at)} ms after the ask`);
+      if ((this.lastHeardN || 0) > (mine.turnN || 0)) this.say([{ text: arabic.isArabic(mine.text || "") ? EARLIER_LINE.ar : EARLIER_LINE.en, safe: true }], "mint", null, this.id + "r" + st.id);
+      this.firstSpokenFor = { id: st.id, at: this.now(), askedAt: mine.askedAt, streamed: true };
+    }
+    st.read.push(line);
+    st.msgRead.push(line);
+    this.say([{ text: line, safe: false }], "mint", null, this.id + "r" + st.id);
+  }
+  streamStop(st, why) {
+    if (st.stopped) return;
+    st.stopped = true;
+    this.log(`live: call ${this.id} request ${st.id}: stopped reading the reply as it is written (${why}) after ${st.read.length} sentence(s)`);
+  }
+  /** The reply is final and part of it was read as it was written: read the rest if it is how it continues. */
+  finishStream(id, mine, st, reply) {
+    const norm = (s) => String(s || "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+    const { clean, cut } = this.streamText(this.d.redact ? this.d.redact(reply) : reply);
+    const finalSents = desk.sentencesOf(clean, true);
+    const same = st.msgRead.every((s, i) => norm(s) === norm(finalSents[i]));
+    let lines = [];
+    if (!same) {
+      this.log(`live: call ${this.id} request ${id}: the final reply differs from what was read as it was written; nothing more is read`);
+      st.more = true;
+    } else if (!st.stopped && st.gen === this.speechGen) {
+      // What the guard has not released yet, through the same guard, as final.
+      st.raw = reply;
+      this.streamPump(st, true);
+      if (cut || st.msgRead.length < finalSents.length) st.more = true; // a list / code, the cap, or a cut: not all of it was read
+    } else st.more = true;
+    if (st.more && st.gen === this.speechGen) lines.push({ text: desk.linesFor(arabic.isArabic(reply) ? "ar" : "en", this.persona.gender).details, safe: true });
+    if (lines.length) this.say(lines, "mint", null, this.id + "r" + id);
+    this.replies.push(reply);
+    const spoken = st.read.join(" ");
+    const clipped = reply.length > REPLY_IN_CONTEXT_CHARS ? reply.slice(0, REPLY_IN_CONTEXT_CHARS) + " [...the rest is on the administrator's screen]" : reply;
+    this.send({
+      type: "conversation.item.create",
+      item: { type: "message", role: "system", content: [{ type: "input_text", text: `Your result for request ${id} arrived (the administrator heard it read aloud as it was written: "${spoken.slice(0, 600)}", and has the full text on screen):\n${clipped}` }] },
     });
   }
 

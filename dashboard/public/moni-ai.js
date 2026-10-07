@@ -2605,6 +2605,8 @@
     paintLiveKeys();
     if (on) {
       var line = st === "connecting" && (LiveUI.wasReady || LiveUI.resuming) ? LIVE_TEXT.reconnecting : (st === "speaking" && half ? LIVE_TEXT.speakingHalf : LIVE_TEXT[st]) || st;
+      // Hold-to-talk: "Listening" only while the key is held; between presses the call is just warm.
+      if (LiveUI.ptt && (st === "listening" || st === "talking")) line = LiveUI.held ? (LiveUI.latched ? "Listening — pause to send" : "Listening — release to send") : "Hold " + talkKeyName() + " to talk";
       if (!(LiveUI.who === "you" && st === "thinking")) $("cc-vb-text").textContent = line;
     }
     paintState();
@@ -2786,7 +2788,12 @@
     var el = document.querySelector(".cc-live-suggest");
     if (el) el.remove();
   }
-  var MIC_WHY = { off: "starting the call", asking: "waiting for the microphone", refused: "the microphone was refused", ended: "the microphone went away", muted: "Windows has the microphone muted",
+  /** The desktop app's talk key, as its settings name it ("Ctrl+Space"). */
+  function talkKeyName() {
+    var d = window.MintDesktop && window.MintDesktop.state ? window.MintDesktop.state() : null;
+    return (d && d.talkKey) || "Ctrl+Space";
+  }
+  var MIC_WHY = { off: "starting the call", asking: "waiting for the microphone", resting: "opening the microphone", refused: "the microphone was refused", ended: "the microphone went away", muted: "Windows has the microphone muted",
     "audio suspended": "the browser paused audio", "audio closed": "audio is closed", "no audio": "no sound from the microphone", "muted here": "muted — unmute to talk" };
   function liveSpeaking() { return LiveUI.active && window.VoiceLive.speaking && window.VoiceLive.speaking(); }
   /** What the core and the caption show while a call is on (see snapshot()). */
@@ -2801,6 +2808,8 @@
       var ms = window.VoiceLive.micState();
       if (!ms.ok) { snap.listening = false; snap.micNotReady = MIC_WHY[ms.why] || ms.why || "starting"; }
     }
+    // Warm (the key up, nothing being answered or said): ready to talk, with the key to hold.
+    if (LiveUI.ptt && !LiveUI.held && (st === "listening" || st === "talking")) snap.pttWarm = "Hold " + talkKeyName() + " to talk";
     snap.speaking = st === "speaking";
     snap.voiceLive = st === "thinking";
     snap.voiceText = $("cc-vb-text").textContent;
@@ -2954,6 +2963,7 @@
     // While the key is held the pill follows the microphone (Listening, or Mic not ready and why).
     clearInterval(LiveUI.paintT);
     LiveUI.paintT = setInterval(paintState, 250);
+    if (LiveUI.state) paintLive(LiveUI.state);
     paintState();
     return true;
   }
@@ -2965,6 +2975,7 @@
       LiveUI.lv = null;
       LiveUI.latchT = setTimeout(pttSend, PTT_LATCH_MS);
       toast("Listening — speak, then pause to send (or press the talk key again).");
+      if (LiveUI.state) paintLive(LiveUI.state);
       paintState();
       return true;
     }
@@ -2997,6 +3008,7 @@
     if (LiveUI.active && LiveUI.ptt && window.VoiceLive.release) window.VoiceLive.release();
     if (window.VoiceLive.note) window.VoiceLive.note({ k: "send" });
     pttWarm();
+    if (LiveUI.active && LiveUI.state) paintLive(LiveUI.state);
     paintState();
   }
   /** The call is ready (the press was made when the key went down): with the key up already, the warm spell starts. */

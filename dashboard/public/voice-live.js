@@ -145,6 +145,52 @@
 
   /* ---- the microphone going away: its track ended (unplugged, taken), or the devices changed ---- */
 
+  /*
+   * Hold-to-talk, warm between presses: the microphone is closed after
+   * MIC_REST_MS without a press (Windows' "microphone in use" mark goes away;
+   * nothing is captured), and opened again by the next press. The trade-off:
+   * that press waits for the microphone (getUserMedia on a device already
+   * allowed: ~0.1-0.4 s), so its first syllable can be clipped; presses within
+   * MIC_REST_MS of the last one start at once. Nothing is ever sent between
+   * presses either way (onFrame drops what is captured while the key is up).
+   */
+  var MIC_REST_MS = 10 * 1000;
+  function micRest(me) {
+    if (me !== S || !me.ptt || me.held || me.resting || !me.stream) return;
+    me.resting = true;
+    try { if (me.src) me.src.disconnect(); } catch (e) { /* gone */ }
+    me.stream.getTracks().forEach(function (t) { t.onended = null; t.stop(); });
+    me.stream = null;
+    me.src = null;
+    me.lastFrameAt = 0;
+    diag.rests = (diag.rests || 0) + 1;
+    note({ k: "mic-rest" });
+  }
+  function micWake(me) {
+    if (!me.resting || me.waking) return;
+    me.waking = true;
+    note({ k: "mic-wake" });
+    navigator.mediaDevices.getUserMedia(MIC_OPTS).then(function (stream) {
+      me.waking = false;
+      if (me !== S || !me.ctx || !me.cap) { stream.getTracks().forEach(function (t) { t.stop(); }); return; }
+      me.resting = false;
+      me.stream = stream;
+      me.src = me.ctx.createMediaStreamSource(stream);
+      me.src.connect(me.cap);
+      watchMic(me);
+      note({ k: "mic-awake" });
+      if (!me.held) restLater(me);
+    }).catch(function () {
+      me.waking = false;
+      if (me === S) stop("mic");
+    });
+  }
+  function restLater(me) {
+    clearTimeout(me.restT);
+    var ms = me.o.micRestMs != null ? me.o.micRestMs : MIC_REST_MS;
+    if (me.ptt && ms > 0) me.restT = setTimeout(function () { micRest(me); }, ms);
+  }
+
   var MIC_OPTS = { audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 } };
   function micLive(me) {
     var t = me.stream && me.stream.getAudioTracks ? me.stream.getAudioTracks()[0] : null;
@@ -161,7 +207,7 @@
   }
   /** The microphone is opened again, once per loss; if that fails the call ends with the reason. */
   function micLost(me, why) {
-    if (me.reopening) return;
+    if (me.reopening || me.resting) return; // a microphone put to rest (micRest) is not a lost one
     me.reopening = true;
     diag.errors.push("mic: " + why);
     emit(me.o.onEvent, { type: "mic-lost", why: why });
@@ -425,6 +471,7 @@
     clearTimeout(me.flashT);
     clearTimeout(me.muteT);
     clearTimeout(me.relT);
+    clearTimeout(me.restT);
     clearInterval(me.lagT);
     try { if (me.ws && me.ws.readyState <= 1) me.ws.close(1000, "hung up"); } catch (e) { /* closed */ }
     try { if (me.pcA) me.pcA.close(); } catch (e) { /* closed */ }
@@ -450,6 +497,7 @@
   function micState() {
     var me = S;
     if (!me) return { ok: false, why: "off" };
+    if (me.resting) return { ok: false, why: "resting" };
     if (!me.stream) return { ok: false, why: me.gum === "asking" ? "asking" : "refused" };
     var tr = me.stream.getAudioTracks ? me.stream.getAudioTracks()[0] : null;
     if (!tr || tr.readyState !== "live") return { ok: false, why: "ended" };
@@ -553,6 +601,8 @@
     if (S.playing) { silenceTail(S); S.player.port.postMessage({ type: "flush", at: Date.now() }); }
     S.held = true;
     S.released = false;
+    clearTimeout(S.restT);
+    if (S.resting) micWake(S);
     if (!S.live) { S.pressed = true; return true; } // sent when ready (pttFlush)
     try { if (S.ws && S.ws.readyState === 1) S.ws.send(JSON.stringify({ type: "ptt", on: true })); } catch (e) { /* closed */ }
     return true;
@@ -561,6 +611,7 @@
     if (!S || !S.ptt || !S.held) return false;
     var me = S;
     clearTimeout(me.relT);
+    restLater(me);
     if (!me.live) { me.held = false; me.released = true; return true; } // committed when ready (pttFlush)
     me.relT = setTimeout(function () {
       if (me !== S || !me.held) return;
@@ -590,6 +641,8 @@
     release: release,
     ptt: function () { return !!(S && S.ptt); },
     micState: micState,
+    /* Hold-to-talk: is the microphone closed between presses (micRest)? */
+    resting: function () { return !!(S && S.resting); },
     note: note,
     ack: function (nonce, ok, why) {
       if (!S || !S.ws || S.ws.readyState !== 1 || !nonce) return;

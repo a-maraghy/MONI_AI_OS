@@ -92,6 +92,7 @@
    *   lastReply   the gist of MINT AI's last answer
    *   offlineMsg  why the supervisor is unreachable
    *   micNotReady hold-to-talk held but no audio flowing: why ("waiting for the microphone")
+   *   pttWarm     hold-to-talk call warm between presses: the hint ("Hold Ctrl+Space to talk")
    */
   function caption(s) {
     s = s || {};
@@ -146,6 +147,12 @@
       // Its daily token cap (Settings > Usage & budget) holds every new turn until Resume.
       out.label = "Paused";
       out.text = "Paused at its daily cap — Resume from Decisions.";
+      return out;
+    }
+    if (s.pttWarm) {
+      // Hold-to-talk, the call warm between presses: not "Ready" (idle) and not "Listening".
+      out.label = "Ready to talk";
+      out.text = oneLine(s.pttWarm);
       return out;
     }
     out.text = s.lastReply ? oneLine(s.lastReply, 220) : "Ready when you are.";

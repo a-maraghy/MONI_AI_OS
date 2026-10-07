@@ -248,6 +248,7 @@ function makeCall(extra) {
     isUndo: (t) => VoiceStop.undo(t),
     log: () => {},
     audit: (line) => audited.push(line),
+    ...(x.watchTurns ? { watchTurns: x.watchTurns } : {}),
     opts: { pollMs: 20, uiAckMs: 150, ...(x.opts || {}) },
   });
   return { c, client, sup, spoke, rows, summarised, persona, audited };
@@ -552,6 +553,160 @@ let WS_BASE;
     await until(() => spoke.length >= 2, 2000, "the verbatim reading");
     check("a short plain reply is read word for word, code as plain words", spoke[0] === "Odoo is running." && spoke[1] === "systemctl status odoo says active.", JSON.stringify(spoke));
     c.close("test");
+  }
+
+  section("MINT AI's reply spoken while it is written (the supervisor's text stream)");
+  {
+    // A fake supervisor stream: the test emits {type, turn_id, ...} as the supervisor's event stream would.
+    const bus = () => { const b = { subs: new Set(), closed: 0 }; b.watch = (fn) => { b.subs.add(fn); return () => { b.subs.delete(fn); b.closed++; }; }; b.emit = (ev) => [...b.subs].forEach((f) => f(ev)); return b; };
+    const words = (b, id, text) => (text.match(/\S+\s*/g) || []).forEach((w) => b.emit({ type: "text", turn_id: id, delta: w }));
+    const handOff = async (x) => {
+      const r = makeCall(x);
+      const logs = [];
+      r.c.log = (m) => logs.push(m);
+      await r.c.open();
+      const s = lastSession();
+      await userTurn(s, r.c, "is the dashboard up");
+      await respond(s, null, { calls: [{ name: "look_into", args: { text: "is the dashboard up" } }] });
+      await until(() => r.sup.calls.some((y) => y[0] === "send"), 1000, "the hand-off");
+      await respond(s, "I've passed that to MINT AI.");
+      await sleep(30);
+      return { ...r, s, logs, id: r.sup.nextTurn, askedAt: Date.now() };
+    };
+    const REPLY = "The dashboard is up and answering. It restarted at 14:02 and every check since has passed. Nothing else needs you.";
+
+    // 1. Streamed, then final = what was streamed: every sentence read once, in order, as it was written; no summary.
+    {
+      const b = bus();
+      const h = await handOff({ turnText: "is the dashboard up", watchTurns: b.watch });
+      const before = h.spoke.length;
+      b.emit({ type: "text", turn_id: 999, delta: "Another turn's words. " }); // another turn: ignored
+      words(b, h.id, "The dashboard is up and answering. It restarted at 14:02 and every ");
+      await until(() => h.spoke.length > before, 1000, "the first sentence");
+      const first = h.spoke.slice(before);
+      const firstMs = Date.now() - h.askedAt;
+      check("the first sentence is read as soon as it is written, before MINT AI has finished (" + firstMs + " ms after the ask)", first.length === 1 && first[0] === "The dashboard is up and answering.", JSON.stringify(first));
+      check("  another turn's text is never read", !h.spoke.some((x) => /Another turn/.test(x)));
+      words(b, h.id, "check since has passed. Nothing else needs you.");
+      await sleep(40);
+      // ("It restarted at 14:02 ..." is held for the sentence after it, the desk's rule: a figure's sentence waits for the next one.)
+      check("  a sentence the next one could still change is held (the desk's rule); nothing is read twice", h.spoke.slice(before).length >= 1 && h.spoke.slice(before).length <= 3 && new Set(h.spoke.slice(before)).size === h.spoke.slice(before).length, JSON.stringify(h.spoke.slice(before)));
+      h.sup.replies.set(h.id, REPLY);
+      b.emit({ type: "result", turn: { id: h.id } });
+      await until(() => h.spoke.slice(before).length >= 3, 1500, "the rest");
+      await sleep(60);
+      check("  at the end the rest is read; each sentence once, in order; the summariser is not used", JSON.stringify(h.spoke.slice(before)) === JSON.stringify(["The dashboard is up and answering.", "It restarted at 14:02 and every check since has passed.", "Nothing else needs you."]) && h.summarised.length === 0, JSON.stringify(h.spoke.slice(before)));
+      check("  the stream is closed once the reply is in; the conversation is told what was heard", b.closed === 1 && b.subs.size === 0 && h.s.of("conversation.item.create").some((e) => e.item.content && /read aloud as it was written/.test(e.item.content[0].text)));
+      check("  logged: first sentence N ms after the ask", h.logs.some((l) => /first sentence of the reply read while it is written, \d+ ms after the ask/.test(l)), h.logs.join(" / "));
+      h.c.close("test");
+    }
+    // 2. The final text differs from what was streamed: nothing more is read but "the details are on screen".
+    {
+      const b = bus();
+      const h = await handOff({ turnText: "is the dashboard up", watchTurns: b.watch });
+      const before = h.spoke.length;
+      words(b, h.id, "The dashboard is down right now. I am ");
+      await until(() => h.spoke.length > before, 1000);
+      h.sup.replies.set(h.id, "The dashboard is up after all. It came back at 14:02.");
+      b.emit({ type: "result", turn: { id: h.id } });
+      await sleep(250);
+      const said = h.spoke.slice(before);
+      check("a final reply that differs from what was read: no contradiction -- only 'the details are on screen'", said.length === 2 && said[0] === "The dashboard is down right now." && /details are on (your )?screen/i.test(said[1]) && h.logs.some((l) => /differs from what was read/.test(l)), JSON.stringify(said));
+      h.c.close("test");
+    }
+    // 3. A message that becomes a tool call: its unread tail is dropped, the next message streams afresh.
+    {
+      const b = bus();
+      const h = await handOff({ turnText: "is the dashboard up", watchTurns: b.watch });
+      const before = h.spoke.length;
+      words(b, h.id, "Let me look at the service first. Then I will check ");
+      await until(() => h.spoke.length > before, 1000);
+      b.emit({ type: "tool", turn_id: h.id, name: "Bash" });
+      words(b, h.id, REPLY.replace(" Nothing else needs you.", " "));
+      h.sup.replies.set(h.id, REPLY);
+      b.emit({ type: "result", turn: { id: h.id } });
+      await sleep(300);
+      const said = h.spoke.slice(before);
+      check("a tool call mid-reply: the narration read stays, its unfinished tail is dropped, the final message is read in full", JSON.stringify(said) === JSON.stringify(["Let me look at the service first.", "The dashboard is up and answering.", "It restarted at 14:02 and every check since has passed.", "Nothing else needs you."]), JSON.stringify(said));
+      h.c.close("test");
+    }
+    // 4. A list: prose up to it is read, then "the details are on screen"; nothing of the list or code.
+    {
+      const b = bus();
+      const h = await handOff({ turnText: "is the dashboard up", watchTurns: b.watch });
+      const before = h.spoke.length;
+      const LIST = "Three services are up.\n- dashboard\n- odoo\n```\nsystemctl status odoo\n```\n";
+      words(b, h.id, LIST);
+      h.sup.replies.set(h.id, LIST);
+      b.emit({ type: "result", turn: { id: h.id } });
+      await sleep(300);
+      const said = h.spoke.slice(before);
+      check("a list or code in the reply: the prose before it is read, then 'the details are on screen'; never the list or the code", said.length === 2 && said[0] === "Three services are up." && /details/i.test(said[1]) && !said.some((x) => /odoo|systemctl/.test(x)), JSON.stringify(said));
+      h.c.close("test");
+    }
+    // 5. Talked over: the rest of the stream is not read.
+    {
+      const b = bus();
+      const h = await handOff({ turnText: "is the dashboard up", watchTurns: b.watch });
+      const before = h.spoke.length;
+      words(b, h.id, "The dashboard is up and answering. It restarted ");
+      await until(() => h.spoke.length > before, 1000);
+      h.c.speechGen++; // a barge-in (what bargeIn does to the reader)
+      words(b, h.id, "at 14:02 and every check since has passed. Nothing else needs you.");
+      h.sup.replies.set(h.id, REPLY);
+      b.emit({ type: "result", turn: { id: h.id } });
+      await sleep(250);
+      check("talked over: nothing more of the stream is read", h.spoke.slice(before).length === 1 && h.logs.some((l) => /stopped reading the reply as it is written \(talked over\)/.test(l)), JSON.stringify(h.spoke.slice(before)));
+      h.c.close("test");
+    }
+    // 6. Before / after: ask → first word read, MINT AI writing for 3 s (first sentence at 0.4 s).
+    const timeIt = async (streamed) => {
+      const b = bus();
+      const h = await handOff({ turnText: "is the dashboard up", watchTurns: streamed ? b.watch : undefined, summarise: async () => ({ fallback: "verbatim", tokens: null }), opts: { pollMs: 500 } });
+      const t0 = Date.now();
+      let firstAt = 0;
+      const first = until(() => h.spoke.includes("The dashboard is up and answering."), 6000).then(() => (firstAt = Date.now()));
+      const parts = REPLY.match(/[^.]+\./g).map((x) => x.trim() + " ");
+      await sleep(400); words(b, h.id, parts[0]);
+      await sleep(1300); words(b, h.id, parts[1]);
+      await sleep(1300); words(b, h.id, parts[2]);
+      h.sup.replies.set(h.id, REPLY);
+      b.emit({ type: "result", turn: { id: h.id } });
+      await first;
+      const ms = firstAt - t0;
+      h.c.close("test");
+      return ms;
+    };
+    // The server's door to that stream: moniai.subscribe on the supervisor's socket, from now on (no replay).
+    {
+      const net = require("net");
+      const os = require("os");
+      const moniai = require(path.join(ROOT, "lib", "moniai.js"));
+      const sock = path.join(os.tmpdir(), "mint-sup-" + process.pid + ".sock");
+      try { require("fs").unlinkSync(sock); } catch (_) { /* none */ }
+      const got = { req: null };
+      const srv = net.createServer((c) => {
+        c.setEncoding("utf8");
+        c.once("data", (d) => {
+          got.req = JSON.parse(d.split("\n")[0]);
+          c.write(JSON.stringify({ id: got.req.id, ok: true, data: { subscribed: true, seq: 41 } }) + "\n");
+          c.write(JSON.stringify({ event: { seq: 0, type: "text", turn_id: 7, delta: "Hello. " } }) + "\n");
+        });
+      });
+      await new Promise((r) => srv.listen(sock, r));
+      const evs = [];
+      const close = moniai.subscribe(Number.MAX_SAFE_INTEGER, "amaraghy", (ev) => evs.push(ev), () => {}, { socket: sock });
+      await until(() => evs.length === 1, 1000, "the stream");
+      close();
+      srv.close();
+      check("the live relay follows MINT AI's text through the supervisor's event stream, asking for no replay (since = the largest seq)", got.req && got.req.op === "events" && got.req.since === Number.MAX_SAFE_INTEGER && evs[0].type === "text" && evs[0].delta === "Hello. ", JSON.stringify(got.req));
+      const srvSrc = require("fs").readFileSync(path.join(ROOT, "server.js"), "utf8");
+      check("  server.js gives every live call that stream and the redactor (the text so far is redacted again)", /watchTurns: \(onEvent\) => moniai\.subscribe\(Number\.MAX_SAFE_INTEGER, actor, onEvent/.test(srvSrc) && /redact: \(text\) => priv\.redact\(/.test(srvSrc));
+    }
+    const old = await timeIt(false);
+    const neu = await timeIt(true);
+    console.log("       (ask→first word read, MINT AI writing for 3 s: without streaming " + old + " ms, with " + neu + " ms)");
+    check("streaming: the first word comes while MINT AI is still writing (" + neu + " ms vs " + old + " ms after the ask)", neu < 1000 && old >= 3000, old + " / " + neu);
   }
 
   section("barge-in: flush, cancel, truncate at the played millisecond (headphones mode, confirmed by the page)");
