@@ -280,6 +280,10 @@ app.get("/manifest.webmanifest", (req, res) => {
   const stamped = req.query.v === ui.MANIFEST_VERSION();
   res.set("Content-Type", "application/manifest+json; charset=utf-8");
   res.set("Cache-Control", stamped ? "public, max-age=2592000, immutable" : "public, max-age=300");
+  // The desktop app's start page (http://tauri.localhost) probes this file with a
+  // no-cors fetch to see the site is up; helmet's same-origin CORP would make that
+  // fetch fail and the app would sit on "Offline". The file is public anyway.
+  res.set("Cross-Origin-Resource-Policy", "cross-origin");
   res.send(JSON.stringify(ui.manifest(), null, 2));
 });
 
