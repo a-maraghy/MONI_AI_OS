@@ -101,6 +101,8 @@
       duplex: DUPLEX[o.duplex] ? o.duplex : "speakers", route: "", lagMs: 0, t0: performance.now(),
       // Hold-to-talk (the desktop app): the microphone is relayed only while the key is held.
       ptt: o.turn === "ptt", held: false,
+      // Hold-to-talk before the call is ready: what is said is kept here and sent once it is (pttFlush).
+      live: false, early: null, earlyBytes: 0, pressed: false, released: false,
       det: window.MintLiveDetect ? window.MintLiveDetect.create() : null };
     var me = S;
     diag.duplex = S.duplex;
@@ -276,7 +278,7 @@
         try { m = JSON.parse(e.data); } catch (_) { return; }
         if (m.type === "ready") me.callId = m.call || null;
         onMessage(me, m);
-        if (m.type === "ready") settle();
+        if (m.type === "ready") { me.live = true; settle(); pttFlush(me); }
         // Refused, or the server could not open its upstream, before the call was ready: start() fails, with the reason.
         if ((m.type === "error" || m.type === "ended") && !ready) settle(new Error(m.error || m.text || "The live conversation could not start (" + (m.code || m.why || "refused") + ")."));
       };
@@ -301,8 +303,13 @@
         if (me.ws && me.ws.readyState === 1) me.ws.send(JSON.stringify({ type: "voice", on: v === "on" }));
       }
     }
-    if (me.muted || !me.ws || me.ws.readyState !== 1) return;
     if (me.ptt && !me.held) return; // hold-to-talk: nothing is relayed between turns
+    if (me.ptt && !me.live && !me.muted) {
+      // The key went down before the call was ready (the first press opens it): keep what is said.
+      if (me.earlyBytes < EARLY_MAX) { (me.early = me.early || []).push(m.pcm); me.earlyBytes += m.pcm.byteLength; }
+      return;
+    }
+    if (me.muted || !me.ws || me.ws.readyState !== 1) return;
     me.ws.send(m.pcm);
     diag.frames++;
     diag.bytesIn += m.pcm.byteLength;
@@ -471,12 +478,34 @@
    * the worklet still holds is in the turn, then tells the server to commit.
    */
   var PTT_TAIL_MS = 140;
+  // At most this much of what is said before the call is ready is kept (4 s of PCM16 at 24 kHz; the
+  // server takes no more than twice real time).
+  var EARLY_MAX = 4 * 48000;
+  /*
+   * A press may come before the call is ready -- the first press of the key is
+   * what opens it, and that takes a second or two. Then the microphone's
+   * frames are kept (onFrame) and the press, the frames and, if the key is
+   * already up, the release go to the server the moment it is ready. Before
+   * 0.1.2 the press was only made at "ready" if the key was still down, and a
+   * key released by then gave a call that sat "listening" and heard nothing.
+   */
+  function pttFlush(me) {
+    if (me !== S || !me.ptt || !me.pressed) return;
+    var send = function (o) { try { if (me.ws && me.ws.readyState === 1) me.ws.send(o instanceof ArrayBuffer || ArrayBuffer.isView(o) ? o : JSON.stringify(o)); } catch (e) { /* closed */ } };
+    send({ type: "ptt", on: true });
+    (me.early || []).forEach(function (b) { send(b); diag.frames++; diag.bytesIn += b.byteLength; });
+    diag.early = me.earlyBytes;
+    me.early = null;
+    if (me.released) { me.released = false; send({ type: "ptt", on: false }); }
+  }
   function press() {
     if (!S || !S.ptt) return false;
     clearTimeout(S.relT);
     if (S.held) return true;
     if (S.playing) { silenceTail(S); S.player.port.postMessage({ type: "flush", at: Date.now() }); }
     S.held = true;
+    S.released = false;
+    if (!S.live) { S.pressed = true; return true; } // sent when ready (pttFlush)
     try { if (S.ws && S.ws.readyState === 1) S.ws.send(JSON.stringify({ type: "ptt", on: true })); } catch (e) { /* closed */ }
     return true;
   }
@@ -484,6 +513,7 @@
     if (!S || !S.ptt || !S.held) return false;
     var me = S;
     clearTimeout(me.relT);
+    if (!me.live) { me.held = false; me.released = true; return true; } // committed when ready (pttFlush)
     me.relT = setTimeout(function () {
       if (me !== S || !me.held) return;
       me.held = false;

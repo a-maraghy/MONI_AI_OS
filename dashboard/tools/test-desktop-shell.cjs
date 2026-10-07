@@ -50,15 +50,15 @@ const near = (a, b, e) => Math.abs(a - b) <= (e || 0.5);
     check("  S and L scale it (0.8 / 1.22); focus mode is the core alone, 168 px, no headroom", LAY.windowSize({ size: "S" }).w === 384 && LAY.windowSize({ size: "L" }).w === 586 && LAY.windowSize({ focus: true }).w === 168 && LAY.windowSize({ focus: true }).h === 168);
     const f = LAY.layout({ mode: "floating", size: "M", W: 480, H: 860 });
     check("  the box sits at the bottom of the window; the core 36 % down it, radius 16.3 % of its width", f.box.y === 280 && near(f.cy, 280 + 580 * 0.36) && near(f.R, 480 * 0.163) && f.cx === 240);
-    check("  the composer at the bottom of the box, 14 px in; the chat between core and composer; two exchanges", f.composer.y === 280 + 580 - 14 - 48 && f.composer.w === 452 && f.chat.y > f.cy + f.R && f.chat.y + f.chat.h <= f.composer.y && f.keep === 2);
+    check("  the chat button on the core's lower right rim; the chat panel under the pill, down to the box's bottom, 14 px in", near(f.chatBtn.x, f.cx + f.R * 0.74) && near(f.chatBtn.y, f.cy + f.R * 0.74) && f.chatBtn.d === 34 && f.panel.x === 14 && f.panel.w === 452 && f.panel.y > f.caption.y + 20 && near(f.panel.y + f.panel.h, 280 + 580 - 14) && f.composer === undefined && f.chat === undefined);
     check("  the card in the headroom, 10 px above the box, never over the core", f.card.bottom === 860 - 280 + 10 && f.card.y + f.card.h <= 280);
     const d = LAY.layout({ mode: "desktop", W: 1920, H: 1032 });
-    check("Desktop layer: core 170 px at 56 % across (right), 42 % down; three exchanges", near(d.R, 170) && near(d.cx, 1920 * 0.56) && near(d.cy, 1032 * 0.42) && d.keep === 3 && d.tools === null);
+    check("Desktop layer: core 170 px at 56 % across (right), 42 % down; the panel (460 px) under it, inside the screen", near(d.R, 170) && near(d.cx, 1920 * 0.56) && near(d.cy, 1032 * 0.42) && d.tools === null && d.panel.w === 460 && d.panel.y > d.cy + d.R && d.panel.y + d.panel.h <= 1032 - 16 && near(d.panel.x + d.panel.w / 2, d.cx));
     check("  left / centre presets move it; the card top right", near(LAY.layout({ mode: "desktop", pos: "left", W: 1920, H: 1032 }).cx, 1920 * 0.36) && near(LAY.layout({ mode: "desktop", pos: "centre", W: 1920, H: 1032 }).cx, 960) && d.card.x === 1920 - 16 - 330 && d.card.y === 72);
-    const p = LAY.layout({ mode: "peek", W: 1366, H: 720 });
-    check("Peek: centred, 180 px, 40 % down; a 620 px composer under the core", p.cx === 683 && near(p.R, 180) && near(p.cy, 288) && p.composer.w === 620 && p.composer.y > p.cy + p.R);
+    const p = LAY.layout({ mode: "peek", W: 1440, H: 900 });
+    check("Peek: centred, 180 px, 40 % down; a 560 px panel under the core", p.cx === 720 && near(p.R, 180) && near(p.cy, 360) && p.panel.w === 560 && p.panel.y > p.cy + p.R && p.panel.y + p.panel.h <= 900 - 24);
     const tiny = LAY.layout({ mode: "desktop", W: 1024, H: 560 });
-    check("  a small screen: the composer stays on screen and below the core", tiny.composer.y + tiny.composer.h <= 560 && tiny.composer.y > tiny.cy + tiny.R);
+    check("  a small screen: no room under the core, so the panel goes beside it, on screen and clear of the core", tiny.panel.y >= 16 && tiny.panel.y + tiny.panel.h <= 560 - 16 && tiny.panel.x >= 16 && tiny.panel.x + tiny.panel.w <= 1024 - 16 && (tiny.panel.x + tiny.panel.w <= tiny.cx - tiny.R || tiny.panel.x >= tiny.cx + tiny.R), JSON.stringify(tiny.panel));
     const rg = LAY.regions(f, [{ left: 10, top: 10, width: 20, height: 10 }, { left: 0, top: 0, width: 0, height: 9 }, { left: 470, top: 850, width: 50, height: 50, r: 4 }]);
     check("the hit regions: the core as a circle first, empty boxes dropped, the rest clipped to the window", rg.length === 3 && rg[0].r === Math.round(f.R) && rg[0].w === rg[0].h && rg[2].x === 470 && rg[2].w === 10 && rg[2].h === 10);
     check("  'all': the whole window (Peek while it shows, a dialog open)", JSON.stringify(LAY.regions(f, [], { all: true })) === JSON.stringify([{ x: 0, y: 0, w: 480, h: 860, r: 0 }]));
@@ -173,7 +173,7 @@ const near = (a, b, e) => Math.abs(a - b) <= (e || 0.5);
     check("signed in in a browser: lands as always, 8 h", W.res.headers.location !== "/mint-ai?shell=desktop" && wAge > 7.9 * 3600 && wAge <= 8 * 3600 + 5, W.res.headers.location + " " + wAge);
 
     const pg = await s.req("GET", "/mint-ai?shell=desktop", { cookie: A.cookie, headers: { "User-Agent": APP_UA } });
-    check("/mint-ai?shell=desktop: the Command Center in its desktop mode", pg.status === 200 && /class="cc-page cc-desk"/.test(pg.body) && /id="cc" data-shell="desktop"/.test(pg.body) && /id="dk-chat"/.test(pg.body) && /id="dk-corehit"/.test(pg.body) && /id="dk-kb"/.test(pg.body));
+    check("/mint-ai?shell=desktop: the Command Center in its desktop mode", pg.status === 200 && /class="cc-page cc-desk"/.test(pg.body) && /id="cc" data-shell="desktop"/.test(pg.body) && /id="dk-chatbtn"/.test(pg.body) && /<section class="dk-panel" id="dk-panel"[^>]*hidden>/.test(pg.body) && !/id="dk-chat"/.test(pg.body) && /id="dk-corehit"/.test(pg.body) && /id="dk-kb"/.test(pg.body));
     check("  the same scripts, plus the desktop ones; no Mint OS dock or page shell", /moni-ai\.js\?v=/.test(pg.body) && /mint-desktop\.js\?v=/.test(pg.body) && /mint-desktop-layout\.js\?v=/.test(pg.body) && /mint-desktop\.css\?v=/.test(pg.body) && !/mint-dock\.js/.test(pg.body) && !/mint-shell\.js/.test(pg.body) && !/id="mint-dock-root"/.test(pg.body));
     check("  no inline script or style anywhere", !/<script>(?!\s*<\/script>)/.test(pg.body) && !/\sstyle="/.test(pg.body) && !/\son[a-z]+="/.test(pg.body));
     const pw = await s.req("GET", "/mint-ai", { cookie: W.cookie, headers: { "User-Agent": WEB_UA } });
@@ -291,17 +291,20 @@ const near = (a, b, e) => Math.abs(a - b) <= (e || 0.5);
           const L = window.MintDesktop && window.MintDesktop.layout();
           const r = window.MintDesktop && window.MintDesktop.regions();
           const comp = document.getElementById("cc-compose").getBoundingClientRect();
+          const btn = document.getElementById("dk-chatbtn").getBoundingClientRect();
+          const inPanel = !!document.querySelector("#dk-panel #cc-dock");
           const bg = getComputedStyle(document.body).backgroundColor;
           const top = getComputedStyle(document.querySelector(".topbar")).display;
           const core = window.__mintCC && window.__mintCC.orbit.layout;
-          return { L, n: r ? r.length : 0, regs: r, comp: { x: comp.x, y: comp.y, w: comp.width, h: comp.height }, bg, top, core: core && { cx: core.cx, cy: core.cy, R: core.R }, theme: document.documentElement.getAttribute("data-theme") };
+          return { L, n: r ? r.length : 0, regs: r, inPanel, btn: { x: btn.x, y: btn.y, w: btn.width }, comp: { x: comp.x, y: comp.y, w: comp.width, h: comp.height }, bg, top, core: core && { cx: core.cx, cy: core.cy, R: core.R }, theme: document.documentElement.getAttribute("data-theme") };
         });
         const L = info.L;
         check(`${m.name}: laid out for its window; no top bar; the core where the layout says`, L && L.mode === m.name.split("-")[0] && info.top === "none" && info.core && Math.abs(info.core.cx - L.cx) < 1 && Math.abs(info.core.R - L.R) < 1, JSON.stringify({ L: L && { cx: L.cx, R: L.R }, core: info.core, top: info.top }));
-        if (!/focus/.test(m.name)) check(`  the composer is where the layout puts it`, Math.abs(info.comp.x - L.composer.x) < 1.5 && Math.abs(info.comp.y - L.composer.y) < 1.5 && Math.abs(info.comp.w - L.composer.w) < 1.5, JSON.stringify(info.comp) + " " + JSON.stringify(L.composer));
-        else check(`  focus mode: the composer is hidden`, info.comp.w === 0);
+        check(`  no composer or bubbles on show: the composer sits in the closed chat panel`, info.comp.w === 0 && info.inPanel, JSON.stringify(info.comp));
+        if (!/focus/.test(m.name)) check(`  the chat button is where the layout puts it`, Math.abs(info.btn.x - (L.chatBtn.x - 17)) < 1.5 && Math.abs(info.btn.y - (L.chatBtn.y - 17)) < 1.5 && info.btn.w === 34, JSON.stringify(info.btn) + " " + JSON.stringify(L.chatBtn));
+        else check(`  focus mode: no chat button`, info.btn.w === 0);
         if (m.name === "peek") check("  Peek while it shows: the whole window catches the mouse (a click on empty space hides it)", info.n === 1 && info.regs[0].w === m.W && info.regs[0].h === m.H);
-        else check(`  the hit regions: the core${/focus/.test(m.name) ? "" : " and the composer"}, not the whole window`, info.n >= (/focus/.test(m.name) ? 1 : 2) && !info.regs.some((r) => r.w === m.W && r.h === m.H) && info.regs.some((r) => r.r > 10), JSON.stringify(info.regs));
+        else check(`  the hit regions: the core${/focus/.test(m.name) ? "" : " and the chat button"}, not the whole window`, info.n >= (/focus/.test(m.name) ? 1 : 2) && !info.regs.some((r) => r.w === m.W && r.h === m.H) && info.regs.some((r) => r.r > 10) && (/focus/.test(m.name) || info.regs.some((r) => r.w === 34 && r.h === 34 && r.r === 17)), JSON.stringify(info.regs));
         check(`  ink: ${/light-ink/.test(m.name) ? "dark ink (light theme) for a light wallpaper" : "light ink (dark theme)"}`, info.theme === (/light-ink/.test(m.name) ? "light" : "dark"));
         if (m.name !== "peek") {
           // The far corners: nothing but the last breath of the core's glow (a few of 255), or nothing at all
@@ -315,24 +318,71 @@ const near = (a, b, e) => Math.abs(a - b) <= (e || 0.5);
         }
         await ctx.close();
       }
-      // The bubbles: the last exchanges, from the Command Center's own turns.
-      {
-        const { ctx, page } = await view(1440, 852, "/mint-ai?shell=desktop&mode=desktop", APP_UA, A.cookie);
-        const n = await page.evaluate(() => {
+      // The chat panel: closed by default; the button opens it with the recent conversation and the composer;
+      // a reply while it is closed lights a dot; Esc and a click outside close it; its rect is a hit region only while open.
+      for (const [W_, H_, q] of [[1440, 852, "mode=desktop"], [480, 860, "mode=floating"]]) {
+        const { ctx, page } = await view(W_, H_, "/mint-ai?shell=desktop&" + q, APP_UA, A.cookie);
+        const add = (rows) => page.evaluate((rows) => {
           const S = window.__mintCC.S;
-          document.getElementById("cc-offline").hidden = true; // the scratch copy has no supervisor; the bubbles hide while offline
-          [[1, "What's waiting for me today?", "Two things: the invoice audit and the freight quotes."], [2, "Hire someone for the customs papers", "I hired Customs docs."], [3, "Thanks", "You're welcome."], [4, "And the label check?", "It is running."]].forEach(function (x) {
+          document.getElementById("cc-offline").hidden = true; // the scratch copy has no supervisor
+          rows.forEach(function (x) {
             S.turns.set(x[0], { id: x[0], source: "dashboard", text: x[1], blocks: [x[2]], partial: "", status: "done", created_at: new Date().toISOString() });
             S.turnOrder.push(x[0]);
           });
           document.dispatchEvent(new CustomEvent("mint-turns"));
-          const b = document.querySelectorAll("#dk-chat .dk-bub");
-          const box = document.getElementById("dk-chat");
-          return { n: b.length, last: b.length ? b[b.length - 1].textContent : "", first: b.length ? b[0].textContent : "", old: document.querySelectorAll("#dk-chat .dk-bub.old").length, hs: [].map.call(b, (x) => Math.round(x.getBoundingClientRect().height)), box: [box.clientHeight, box.scrollHeight, getComputedStyle(box).maxHeight] };
+        }, rows);
+        const look = () => page.evaluate(() => {
+          const p = document.getElementById("dk-panel"), b = document.getElementById("dk-chatbtn"), log = document.getElementById("dk-log");
+          const pr = p.getBoundingClientRect();
+          return { open: !p.hidden, unread: b.classList.contains("unread"), dot: getComputedStyle(b.querySelector(".dk-dot")).transform, msgs: [].map.call(log.querySelectorAll(".dk-msg"), (m) => m.textContent), scrolled: log.scrollHeight - log.scrollTop - log.clientHeight, panel: { x: pr.x, y: pr.y, w: pr.width, h: pr.height }, focus: document.activeElement && document.activeElement.id, regs: window.MintDesktop.regions(), comp: document.getElementById("cc-compose").getBoundingClientRect().width };
         });
-        // As many of the last three exchanges as fit between the core and the composer (the mockup's rule), newest last.
-        check("the bubbles: the newest exchanges that fit under the core, newest last", n.n >= 2 && n.n <= 6 && /It is running/.test(n.last) && /And the label check/.test(n.n >= 2 ? n.first + n.last : ""), JSON.stringify(n));
-        if (SHOTS) await page.screenshot({ path: path.join(SHOTS, "desk-desktop-chat.png"), omitBackground: true });
+        await add([[1, "What's waiting for me today?", "Two things: the invoice audit and the freight quotes."], [2, "Hire someone for the customs papers", "I hired Customs docs."]]);
+        await page.waitForTimeout(4200); // the page's first seconds load the history: not "new"
+        let v = await look();
+        check(`chat (${q}): closed by default, no dot for the history the page loaded with`, !v.open && !v.unread && v.comp === 0, JSON.stringify(v));
+        await add([[3, "And the label check?", "It is running."]]);
+        await page.waitForTimeout(250);
+        v = await look();
+        check("  a reply while it is closed: only the dot on the button lights; nothing else shows", v.unread && !v.open && v.comp === 0, JSON.stringify(v));
+        await page.click("#dk-chatbtn");
+        await page.waitForTimeout(250);
+        v = await look();
+        const L = await page.evaluate(() => window.MintDesktop.layout());
+        check("  the button opens the panel where the layout says: the conversation (newest last, scrolled to it), the composer in it, focused; the dot goes", v.open && !v.unread && v.msgs.length === 6 && /It is running/.test(v.msgs[5]) && v.scrolled < 2 && v.comp > 100 && v.focus === "cc-input" && Math.abs(v.panel.x - L.panel.x) < 1.5 && Math.abs(v.panel.y - L.panel.y) < 1.5 && Math.abs(v.panel.h - L.panel.h) < 1.5, JSON.stringify(v));
+        check("  while open the panel is a hit region", v.regs.some((r) => Math.abs(r.x - Math.floor(L.panel.x)) <= 1 && Math.abs(r.w - L.panel.w) <= 2), JSON.stringify(v.regs));
+        if (SHOTS) await page.screenshot({ path: path.join(SHOTS, "desk-chat-open-" + W_ + ".png"), omitBackground: true });
+        await page.keyboard.press("Escape");
+        await page.waitForTimeout(150);
+        v = await look();
+        check("  Esc closes it; its region goes", !v.open && !v.regs.some((r) => Math.abs(r.w - L.panel.w) <= 2 && r.h > 100), JSON.stringify(v));
+        await page.click("#dk-chatbtn");
+        await page.mouse.click(4, 4);
+        await page.waitForTimeout(150);
+        v = await look();
+        check("  a click outside closes it; the button toggles it too", !v.open, JSON.stringify(v));
+        await page.click("#dk-chatbtn");
+        await page.click("#dk-chatbtn");
+        v = await look();
+        check("  (the button again: closed)", !v.open, JSON.stringify(v));
+        await ctx.close();
+      }
+      // Focus mode: no button, no panel (even if asked to open).
+      {
+        const { ctx, page } = await view(168, 168, "/mint-ai?shell=desktop&mode=floating&focus=1", APP_UA, A.cookie);
+        const v = await page.evaluate(() => ({ btn: getComputedStyle(document.getElementById("dk-chatbtn")).display, panel: document.getElementById("dk-panel").hidden }));
+        check("focus mode: the chat button is hidden and the panel stays closed", v.btn === "none" && v.panel, JSON.stringify(v));
+        await ctx.close();
+      }
+      // Listening: on the state pill only, with a small meter.
+      {
+        const { ctx, page } = await view(480, 860, "/mint-ai?shell=desktop&mode=floating", APP_UA, A.cookie);
+        const v = await page.evaluate(() => {
+          const c = document.getElementById("cc-cap-state");
+          c.setAttribute("data-s", "listening");
+          const m = c.querySelector(".dk-meter");
+          return { meter: !!m && getComputedStyle(m).display, bars: m ? m.children.length : 0, bar: document.getElementById("cc-voicebar").getBoundingClientRect().width };
+        });
+        check("listening shows on the pill (a 4-bar meter), never as a bar on the desktop", /flex/.test(v.meter) && v.bars === 4 && v.bar === 0, JSON.stringify(v));
         await ctx.close();
       }
       // The sign-in card as the app shows it, and the browser pages.

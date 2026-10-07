@@ -1345,6 +1345,10 @@ pub fn run() {
                 .visible(false)
                 .user_agent(&user_agent())
                 .zoom_hotkeys_enabled(false)
+                // wry's own defaults, plus: audio may start without a click in the page. Hold-to-talk starts a
+                // call from the hotkey (an event, not a user gesture); Chromium lets audio run once the microphone
+                // is open, but this window only ever shows the site, so nothing is lost by not depending on that.
+                .additional_browser_args("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --autoplay-policy=no-user-gesture-required")
                 .on_navigation(move |u| {
                     // Locked to the site (and the app's own pages). Anything else opens in the browser.
                     let local = u.scheme() == "tauri" || u.host_str() == Some("tauri.localhost");

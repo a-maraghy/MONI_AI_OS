@@ -2,7 +2,7 @@
 # machine -- the build box is Linux. The files are the app's own (src-tauri/src/*.rs), not copies.
 [package]
 name = "mint-desktop-core-tests"
-version = "0.1.1" # keep equal to src-tauri (site::VERSION reads it)
+version = "0.1.2" # keep equal to src-tauri (site::VERSION reads it)
 edition = "2021"
 publish = false
 

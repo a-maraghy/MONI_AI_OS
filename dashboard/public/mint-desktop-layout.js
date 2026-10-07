@@ -12,7 +12,12 @@
  * pixels, (0, 0) at its top left.
  *
  *   MintDesktopLayout.layout({ mode, size, pos, focus, W, H }) ->
- *     { mode, box, cx, cy, R, composer, chat, caption, card, gate, tools, keep }
+ *     { mode, box, cx, cy, R, chatBtn, panel, caption, card, gate, tools }
+ *
+ * Since 0.1.2 nothing of the conversation shows by itself: the core, the
+ * session spheres and the state pill; a small round chat button on the core's
+ * lower right (chatBtn: its centre and diameter) opens the chat panel (panel:
+ * the recent conversation with the composer inside), under the core.
  *   MintDesktopLayout.windowSize({ mode, size, focus }) -> { w, h } (Floating only)
  *
  * The host (desktop/src-tauri/src/layout.rs) sizes the Floating window with
@@ -27,7 +32,13 @@
   var MODES = { desktop: 1, floating: 1, peek: 1 };
   var HEADROOM = 280; // above the Floating box: where its decision card goes
   var MARGIN = 14;
-  var COMPOSER_H = 48;
+  var BTN = 34; // the chat button's diameter
+  var PANEL_MAX_H = 440;
+
+  /** The chat button: on the core's rim, lower right (45 degrees). */
+  function chatBtn(L) {
+    return { x: L.cx + L.R * 0.74, y: L.cy + L.R * 0.74, d: BTN };
+  }
 
   function sizeK(s) { return SIZES[s] || 1; }
   function mode(m) { return MODES[m] ? m : "floating"; }
@@ -44,7 +55,7 @@
     o = o || {};
     var m = mode(o.mode), k = sizeK(o.size), W = Math.max(1, o.W || 1), H = Math.max(1, o.H || 1);
     var focus = !!o.focus;
-    var L = { mode: m, focus: focus, W: W, H: H, keep: m === "floating" ? 2 : 3 };
+    var L = { mode: m, focus: focus, W: W, H: H };
     if (m === "floating") {
       // A bottom corner (the default): the box at the bottom of the window, the card's headroom above it.
       // A top corner: the box at the top, the headroom below (the app places the window the same way).
@@ -54,11 +65,11 @@
       L.cx = bw / 2;
       L.cy = focus ? top + bh / 2 : top + bh * 0.36;
       L.R = focus ? bw * 0.3 : bw * 0.163;
-      var cy0 = top + bh - MARGIN - COMPOSER_H;
-      L.composer = { x: MARGIN, y: cy0, w: bw - 2 * MARGIN, h: COMPOSER_H };
-      var chatTop = L.cy + L.R + 40;
-      L.chat = { x: MARGIN, y: chatTop, w: bw - 2 * MARGIN, h: Math.max(60, cy0 - 10 - chatTop) };
       L.caption = { x: L.cx, y: L.cy + L.R + 6 };
+      L.chatBtn = chatBtn(L);
+      // The chat panel: the box's lower part, under the state pill.
+      var pTop = L.cy + L.R + 40;
+      L.panel = { x: MARGIN, y: pTop, w: bw - 2 * MARGIN, h: Math.max(120, top + bh - MARGIN - pTop) };
       // The card: in the headroom, 10 px off the box, right-aligned; never over the core.
       var cw = Math.min(330, bw - 16);
       L.card = up ? { x: Math.max(8, bw - cw - 8), y: bh + 10, w: cw, h: Math.max(0, H - bh - 18), bottom: null } : { x: Math.max(8, bw - cw - 8), y: 8, w: cw, h: Math.max(0, top - 18), bottom: H - top + 10 };
@@ -72,15 +83,20 @@
     L.cx = W * fx;
     L.cy = H * (m === "peek" ? 0.4 : 0.42);
     L.R = R;
-    // Small screens: the core never pushes the composer off the bottom.
-    var cwid = Math.min(m === "peek" ? 620 : 540, W - 32);
-    var cyc = Math.min(L.cy + L.R * 2.25, H - 72);
-    if (cyc < L.cy + L.R + 60) { L.R = Math.max(60, (H - 72 - L.cy - 60) / 1.0); cyc = Math.min(L.cy + L.R * 2.25, H - 72); }
-    L.composer = { x: Math.max(16, Math.min(W - 16 - cwid, L.cx - cwid / 2)), y: cyc, w: cwid, h: COMPOSER_H };
-    var chw = Math.min(460, W - 32);
-    var chatTop2 = L.cy + L.R + 50;
-    L.chat = { x: Math.max(16, Math.min(W - 16 - chw, L.cx - chw / 2)), y: chatTop2, w: chw, h: Math.max(0, cyc - 12 - chatTop2) };
+    // Small screens: the core leaves room under it for the state pill and the chat panel's top.
+    if (L.cy + L.R + 60 > H - 72) L.R = Math.max(60, H - 72 - 60 - L.cy);
     L.caption = { x: L.cx, y: L.cy + L.R + 16 };
+    L.chatBtn = chatBtn(L);
+    // The chat panel: under the core, centred on it; where there is no room under it, beside it.
+    var pw = Math.min(m === "peek" ? 560 : 460, W - 32);
+    var py = L.cy + L.R + 56, ph = Math.min(PANEL_MAX_H, H - 24 - py);
+    if (ph >= 220) L.panel = { x: Math.max(16, Math.min(W - 16 - pw, L.cx - pw / 2)), y: py, w: pw, h: ph };
+    else {
+      ph = Math.min(PANEL_MAX_H, H - 32);
+      var right = W - 16 - (L.cx + L.R + 32) >= L.cx - L.R - 32 - 16; // the wider side
+      pw = Math.max(260, Math.min(pw, right ? W - 16 - (L.cx + L.R + 32) : L.cx - L.R - 48));
+      L.panel = { x: right ? Math.min(W - 16 - pw, L.cx + L.R + 32) : Math.max(16, L.cx - L.R - 32 - pw), y: Math.max(16, Math.min(H - 16 - ph, L.cy - ph / 2)), w: pw, h: ph };
+    }
     L.card = { x: Math.max(16, W - 16 - 330), y: 72, w: Math.min(330, W - 32), h: H - 72 - 16, bottom: null };
     L.gate = { x: L.cx, y: L.cy + L.R + 60, w: 340 };
     L.tools = null;

@@ -378,12 +378,20 @@ ${perm && !desk ? dockMarkup(o.csrf, perm, { shell: true, noVoice: !vOk, core })
 
 /**
  * What only the desktop render mode adds (public/mint-desktop.js places it):
- * the bubbles of the last exchanges, the core's own click target (in Floating
- * the core is the handle you drag the box by), and the Floating box's tools.
+ * the chat button on the core and the chat panel it opens (the recent
+ * conversation; mint-desktop.js moves the composer, #cc-dock, into it), the
+ * core's own click target (in Floating the core is the handle you drag the
+ * box by), and the Floating box's tools.
  */
 function deskParts() {
   const b = (k, t, d) => `<button type="button" data-dk="${k}" title="${esc(t)}" aria-label="${esc(t)}"><svg class="cc-i" viewBox="0 0 24 24" aria-hidden="true">${d}</svg></button>`;
-  return `<div class="dk-chat" id="dk-chat" aria-live="polite"></div>
+  const svg = (d) => `<svg class="cc-i" viewBox="0 0 24 24" aria-hidden="true">${d}</svg>`;
+  return `<button type="button" class="dk-chatbtn" id="dk-chatbtn" title="Chat" aria-label="Chat" aria-expanded="false" aria-controls="dk-panel">${svg('<path d="M5 5.5h14a1.5 1.5 0 0 1 1.5 1.5v8.5A1.5 1.5 0 0 1 19 17h-8.5L6 20.5V17H5a1.5 1.5 0 0 1-1.5-1.5V7A1.5 1.5 0 0 1 5 5.5z"/>')}<span class="dk-dot" aria-hidden="true"></span></button>
+  <section class="dk-panel" id="dk-panel" aria-label="Chat with MINT AI" hidden>
+    <div class="dk-panel-hd"><b>Chat</b><button type="button" class="dk-panel-x" id="dk-panel-x" title="Close (Esc)" aria-label="Close the chat">${svg('<path d="M6 6l12 12M18 6 6 18"/>')}</button></div>
+    <div class="dk-log" id="dk-log" aria-live="polite"></div>
+    <div class="dk-panel-dock" id="dk-panel-dock"></div>
+  </section>
   <div class="dk-corehit" id="dk-corehit" title="MINT AI" aria-hidden="true"></div>
   <div class="dk-tools" id="dk-tools" role="toolbar" aria-label="MINT AI window" hidden>${
     b("drag", "Drag to move", '<circle cx="9" cy="6" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="18" r="1.4"/>') +

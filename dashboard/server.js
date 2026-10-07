@@ -6550,7 +6550,7 @@ function liveConnected(ws, { me, cfg, ip, duplex, noise, route, tab, canVoice, s
   call.sid = sid || null;
   voiceLive.register(actor, call);
   db.logLogin(ip, actor, "voice", `live conversation started (${turn === "ptt" ? "hold-to-talk, " : ""}${duplex === "full" ? "headphones" : "speakers"} mode, playback ${route}, noise reduction ${noise})`);
-  console.log(`live: call ${call.id} started: ${duplex} mode, playback ${route}, noise reduction ${noise}${resume ? ", resumed after a restart" : ""}`);
+  console.log(`live: call ${call.id} started: ${turn === "ptt" ? "hold-to-talk, " : ""}${duplex} mode, playback ${route}, noise reduction ${noise}${resume ? ", resumed after a restart" : ""}`);
   // Twice real time is the most a microphone can send; more is not a microphone.
   let window0 = Date.now();
   let bytes = 0;

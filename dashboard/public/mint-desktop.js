@@ -9,7 +9,10 @@
  * file only:
  *   - lays the pieces out for the app's mode (Floating, Peek, Desktop layer;
  *     public/mint-desktop-layout.js holds the numbers), size, position and
- *     focus mode, and keeps the last exchanges as bubbles under the core;
+ *     focus mode. Nothing of the conversation shows by itself (0.1.2): a small
+ *     chat button on the core opens the chat panel -- the recent conversation
+ *     with the composer (moved in from the page) -- and a reply that comes
+ *     while it is closed only lights a dot on the button;
  *   - tells the app which parts of the window catch the mouse, so the rest
  *     lets clicks through to the desktop (set_hit_regions, ~10 a second while
  *     anything moves, only when the list changed);
@@ -79,13 +82,10 @@
   function layout() {
     L = LAY.layout({ mode: st.mode, size: st.size, pos: st.pos, focus: st.focus, W: window.innerWidth, H: window.innerHeight });
     if (!$("cc")) { layoutAuth(); return report(true); }
-    var dock = $("cc-dock"), cap = $("cc-caption"), chat = $("dk-chat"), need = $("cc-need"), tools = $("dk-tools"), core = $("dk-corehit");
-    place(dock, L.composer.x, L.composer.y, L.composer.w);
-    if (chat) {
-      chat.style.left = px(L.chat.x); chat.style.width = px(L.chat.w);
-      chat.style.top = "auto"; chat.style.bottom = px(L.H - (L.chat.y + L.chat.h));
-      chat.style.maxHeight = px(Math.max(0, L.chat.h));
-    }
+    var cap = $("cc-caption"), need = $("cc-need"), tools = $("dk-tools"), core = $("dk-corehit"), btn = $("dk-chatbtn"), panel = $("dk-panel");
+    if (btn) place(btn, L.chatBtn.x - L.chatBtn.d / 2, L.chatBtn.y - L.chatBtn.d / 2, L.chatBtn.d, L.chatBtn.d);
+    if (panel) place(panel, L.panel.x, L.panel.y, L.panel.w, L.panel.h);
+    if (st.focus && chatOpen()) closeChat();
     if (cap) { cap.style.left = px(L.caption.x); cap.style.top = px(L.caption.y); }
     if (need) {
       need.style.left = px(L.card.x); need.style.width = px(L.card.w);
@@ -151,38 +151,98 @@
     regions: function () { return lastRegions; },
   };
 
-  /* ---------------------------------------------------------------- chat bubbles
-     The last exchanges (three; two in Floating) under the core, from the
-     Command Center's own turns. Older ones fade. The words of a live call
-     appear as a ghost bubble while they are said. */
+  /* ---------------------------------------------------------------- the chat panel
+     Closed by default. The chat button on the core opens it: the recent
+     conversation (scrollable, the last LOG_KEEP exchanges, from the Command
+     Center's own turns) and the composer, moved in here from the page so it
+     is the same composer (moni-ai.js keeps driving it). It closes on the
+     button again, its X, Esc or a click outside it. A reply that arrives
+     while it is closed lights a dot on the button; nothing else shows. The
+     words of a live call appear as a ghost line while they are said. */
+  var LOG_KEEP = 20;
   var ghost = null;
-  function turns() { var cc = window.__mintCC; return cc && cc.recent ? cc.recent(L ? L.keep : 3) : []; }
-  function renderChat() {
-    var box = $("dk-chat");
-    if (!box || !L) return;
-    var list = turns(), keepEx = L.keep, out = [];
+  var dockHome = $("dk-panel-dock"), dockEl = $("cc-dock");
+  if (dockHome && dockEl) dockHome.appendChild(dockEl);
+  function chatOpen() { var p = $("dk-panel"); return !!(p && !p.hidden); }
+  function openChat(focusInput) {
+    var p = $("dk-panel"), b = $("dk-chatbtn");
+    if (!p || st.focus) return;
+    p.hidden = false;
+    if (b) { b.setAttribute("aria-expanded", "true"); b.classList.add("on"); b.classList.remove("unread"); }
+    seenAi = lastAi;
+    renderChat(true);
+    if (focusInput !== false) setTimeout(function () { var i = $("cc-input"); if (i && !i.closest("[hidden]")) i.focus(); }, 30);
+    report(true);
+  }
+  function closeChat() {
+    var p = $("dk-panel"), b = $("dk-chatbtn");
+    if (!p || p.hidden) return;
+    p.hidden = true;
+    if (b) { b.setAttribute("aria-expanded", "false"); b.classList.remove("on"); }
+    var a = document.activeElement;
+    if (a && p.contains(a) && a.blur) a.blur();
+    report(true);
+  }
+  var lastAi = "", seenAi = "", primed = false, bornAt = Date.now();
+  function turns() { var cc = window.__mintCC; return cc && cc.recent ? cc.recent(LOG_KEEP) : []; }
+  function renderChat(force) {
+    var box = $("dk-log");
+    if (!box) return;
+    var list = turns(), out = [];
     list.forEach(function (x) { if (x.me) out.push({ who: "me", text: x.me, id: "m" + x.id }); if (x.ai) out.push({ who: "ai", text: x.ai, id: "a" + x.id }); });
-    out = out.slice(-keepEx * 2);
+    // The newest reply: a new one while the panel is closed lights the button's dot.
+    var ai = out.filter(function (b) { return b.who === "ai" && b.text !== "…"; }).pop();
+    var aiSig = ai ? ai.id + ":" + ai.text.length : "";
+    // What the page loaded with (the history comes in its first seconds) is not new.
+    if (!primed) { seenAi = aiSig; if (aiSig || Date.now() - bornAt > 4000) primed = true; }
+    lastAi = aiSig;
+    var btn = $("dk-chatbtn");
+    if (btn) btn.classList.toggle("unread", !chatOpen() && !!aiSig && aiSig.split(":")[0] !== seenAi.split(":")[0]);
+    if (chatOpen()) seenAi = aiSig;
     var sig = out.map(function (b) { return b.id + ":" + b.text.length; }).join("|") + "|" + (ghost ? ghost.text : "");
-    if (sig === renderChat.sig) return;
+    if (!force && sig === renderChat.sig) return;
     renderChat.sig = sig;
+    var atEnd = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
     var h = "";
-    out.forEach(function (b, i) {
-      h += '<div class="dk-bub ' + b.who + '"><b>' + (b.who === "ai" ? "MINT AI" : "You") + "</b><span>" + esc(clip(b.text, 420)) + "</span></div>";
+    out.forEach(function (b) {
+      h += '<div class="dk-msg ' + b.who + '"><b>' + (b.who === "ai" ? "MINT AI" : "You") + "</b><span>" + esc(clip(b.text, 4000)) + "</span></div>";
     });
-    if (ghost && ghost.text) h += '<div class="dk-bub me ghost"><b>You</b><span>' + esc(clip(ghost.text, 300)) + "…</span></div>";
+    if (ghost && ghost.text) h += '<div class="dk-msg me ghost"><b>You</b><span>' + esc(clip(ghost.text, 600)) + "…</span></div>";
+    if (!h) h = '<p class="dk-empty">Nothing said yet. Type below, or hold the talk key to speak.</p>';
     box.innerHTML = h;
-    // What does not fit goes, oldest first (measured by the bubbles' own heights: their entry
-    // animation moves them, and an overflow measure would count that).
-    var max = parseFloat(box.style.maxHeight) || 1e9;
-    var used = function () { var h = 0; for (var i = 0; i < box.children.length; i++) h += box.children[i].offsetHeight + 8; return h - 8; };
-    var guard = 0;
-    while (used() > max && box.children.length > 1 && guard++ < 8) box.removeChild(box.firstElementChild);
-    var all = box.querySelectorAll(".dk-bub:not(.ghost)");
-    for (var j = 0; j < all.length; j++) all[j].classList.toggle("old", all.length > 2 && j < all.length - 2);
+    if (atEnd || force) box.scrollTop = box.scrollHeight;
   }
   function clip(s, n) { s = String(s || ""); return s.length > n ? s.slice(0, n - 1) + "…" : s; }
-  document.addEventListener("mint-turns", renderChat);
+  var cb = $("dk-chatbtn");
+  if (cb) cb.addEventListener("click", function (e) { e.preventDefault(); if (chatOpen()) closeChat(); else openChat(true); });
+  var px_ = $("dk-panel-x");
+  if (px_) px_.addEventListener("click", function (e) { e.preventDefault(); closeChat(); });
+  // A click outside the panel closes it (where the window lets clicks through, they never reach here anyway).
+  document.addEventListener("pointerdown", function (e) {
+    if (!chatOpen() || !e.target.closest) return;
+    if (e.target.closest("#dk-panel, #dk-chatbtn, .cc-need, .cc-toast, .cc-pop, .cc-smenu, .cc-sdlg-back, .cc-modal, .cc-palette, [role=menu], [role=dialog]")) return;
+    closeChat();
+  }, true);
+  document.addEventListener("mint-turns", function () { renderChat(false); });
+
+  /* ---------------------------------------------------------------- listening: on the state pill only
+     No voice bar while the panel is closed: the pill reads "Listening" (moni-ai.js) and a small
+     meter in it follows the microphone's level. */
+  var capSt = $("cc-cap-state"), meter = null;
+  if (capSt) {
+    meter = document.createElement("span");
+    meter.className = "dk-meter";
+    meter.setAttribute("aria-hidden", "true");
+    meter.innerHTML = "<i></i><i></i><i></i><i></i>";
+    capSt.appendChild(meter);
+    var bars = meter.children, ph = 0;
+    setInterval(function () {
+      if (capSt.getAttribute("data-s") !== "listening") return;
+      var lv = window.__mintLive, l = lv && lv.level ? Math.min(1, (lv.level() || 0) * 4) : 0;
+      ph += 0.9;
+      for (var i = 0; i < bars.length; i++) bars[i].style.transform = "scaleY(" + (0.25 + 0.75 * l * (0.6 + 0.4 * Math.abs(Math.sin(ph + i * 1.3)))).toFixed(2) + ")";
+    }, 90);
+  }
   document.addEventListener("mint-live-caption", function (e) {
     var d = (e && e.detail) || {};
     ghost = d.who === "you" && d.text && !d.final ? { text: d.text } : null;
@@ -190,8 +250,9 @@
   });
 
   /* ---------------------------------------------------------------- click-through: what catches the mouse */
+  // The chat button always; the chat panel (and the composer in it) only while it is open (a hidden element is skipped).
   var HIT = [
-    "#cc-compose", "#cc-voicebar", "#cc-cap-state", "#cc-cap-more", "#dk-chat .dk-bub", "#cc-need", "#dk-tools", "#cc-kids > *",
+    "#dk-chatbtn", "#dk-panel", "#cc-cap-state", "#cc-cap-more", "#cc-need", "#dk-tools", "#cc-kids > *",
     "#cc-reply", "#cc-pop", "#cc-kcard.on", ".cc-smenu", ".cc-toast", ".dk-auth .auth-wrap .card", "#dk-gate", "#cc-offline", "#cc-needpill",
   ];
   // Open over everything: the whole window catches the mouse while one shows.
@@ -284,7 +345,7 @@
     var was = JSON.stringify(st);
     ["mode", "focus", "size", "pos", "ink", "opacity", "still", "peekOpen", "talkKey", "hidden"].forEach(function (k) { if (p[k] !== undefined) st[k] = p[k]; });
     if (JSON.stringify(st) !== was) apply();
-    if (p.focusComposer) setTimeout(function () { var i = $("cc-input"); if (i) i.focus(); }, 120);
+    if (p.focusComposer) setTimeout(function () { openChat(true); }, 120);
   });
   listen("mint://ptt", function (p) {
     var lv = window.__mintLive;
@@ -298,6 +359,7 @@
   // Quit: hang up first, so the server logs why.
   listen("mint://quit", function () { var lv = window.__mintLive; if (lv && lv.active && lv.active()) lv.end("unload"); });
   function escape() {
+    if (chatOpen()) { closeChat(); return; }
     var lv = window.__mintLive;
     if (lv && lv.active && lv.active()) { lv.end("esc"); return; }
     if (st.mode === "peek") invoke("hide_peek");
@@ -320,7 +382,7 @@
     ch.addEventListener("pointerdown", function (e) {
       if (e.button !== 0) return;
       if (st.mode === "floating") { e.preventDefault(); invoke("start_drag"); return; }
-      var i = $("cc-input"); if (i) i.focus();
+      openChat(true);
     });
   }
   var tl = $("dk-tools");

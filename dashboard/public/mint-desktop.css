@@ -50,10 +50,44 @@ html.cc-desk .cc-cap-state { padding: 5px 12px; border-radius: 14px; background:
 html.cc-desk .cc-cap-state[data-s="listening"], html.cc-desk .cc-cap-state[data-s="speaking"] { color: var(--dk-accent); }
 html.cc-desk .cc-cap-state[data-s="needs"] { color: var(--dk-amber); }
 
-/* The composer and the live call's bar: always solid. */
-html.cc-desk .cc-dock { position: fixed; z-index: 8; padding: 0; gap: 0; display: block; pointer-events: none; }
-html.cc-desk .cc-dock > * { pointer-events: auto; }
-html.cc-desk .cc-composer, html.cc-desk .cc-voicebar { width: 100%; box-sizing: border-box; background: var(--dk-card); border: 1px solid var(--dk-card-b); color: var(--dk-tx); box-shadow: var(--dk-shadow); }
+/* Listening shows on the pill only: a small meter follows the microphone. */
+.dk-meter { display: none; }
+html.cc-desk .cc-cap-state[data-s="listening"] .dk-meter { display: inline-flex; align-items: center; gap: 2px; height: 10px; margin-left: 7px; vertical-align: -1px; }
+html.cc-desk .dk-meter i { display: block; width: 2px; height: 10px; border-radius: 1px; background: currentColor; transform: scaleY(.25); transform-origin: 50% 50%; transition: transform .09s linear; }
+
+/* The chat button: small, round, glass, on the core's lower right. A dot when a reply came while the panel was closed. */
+.dk-chatbtn, .dk-panel { display: none; }
+html.cc-desk .dk-chatbtn { display: grid; place-items: center; position: fixed; z-index: 9; box-sizing: border-box; padding: 0; border-radius: 50%; cursor: pointer;
+  background: var(--dk-pill); border: 1px solid var(--dk-pill-b); color: var(--dk-tx); box-shadow: 0 2px 14px rgba(0, 0, 0, .18);
+  -webkit-backdrop-filter: blur(10px) saturate(1.3); backdrop-filter: blur(10px) saturate(1.3); transition: background .15s, border-color .15s, transform .15s; }
+html.cc-desk .dk-chatbtn:hover { transform: scale(1.06); border-color: var(--dk-card-b); }
+html.cc-desk .dk-chatbtn:focus-visible { outline: 2px solid var(--dk-accent); outline-offset: 2px; }
+html.cc-desk .dk-chatbtn.on { background: var(--dk-card); color: var(--dk-accent); }
+html.cc-desk .dk-chatbtn .cc-i { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linejoin: round; }
+html.cc-desk .dk-chatbtn .dk-dot { position: absolute; top: 3px; right: 3px; width: 8px; height: 8px; border-radius: 50%; background: var(--dk-accent); box-shadow: 0 0 0 2px var(--dk-card); transform: scale(0); transition: transform .2s; }
+html.cc-desk .dk-chatbtn.unread .dk-dot { transform: scale(1); }
+
+/* The chat panel: the recent conversation and the composer, solid, opened from the button. */
+html.cc-desk .dk-panel:not([hidden]) { display: flex; flex-direction: column; position: fixed; z-index: 11; box-sizing: border-box; padding: 8px 10px 10px; border-radius: 18px;
+  background: var(--dk-card); border: 1px solid var(--dk-card-b); color: var(--dk-tx); box-shadow: var(--dk-shadow); animation: dk-in .18s ease-out; }
+html.cc-desk .dk-panel-hd { display: flex; align-items: center; justify-content: space-between; padding: 0 2px 6px 6px; font: 600 10.5px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--dk-tx2); }
+html.cc-desk .dk-panel-x { width: 26px; height: 26px; border: 0; border-radius: 8px; background: transparent; color: var(--dk-tx2); display: grid; place-items: center; padding: 0; cursor: pointer; }
+html.cc-desk .dk-panel-x:hover { background: rgba(128, 128, 128, .2); color: var(--dk-tx); }
+html.cc-desk .dk-panel-x .cc-i { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 2; }
+html.cc-desk .dk-log { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; padding: 2px 4px 8px; scrollbar-width: thin; }
+html.cc-desk .dk-msg { max-width: 88%; padding: 7px 11px 8px; border-radius: 14px; font: 13.5px/1.4 var(--ui); overflow-wrap: anywhere; background: rgba(128, 128, 128, .12); }
+html.cc-desk .dk-msg b { display: block; font-size: 10px; letter-spacing: .12em; text-transform: uppercase; margin-bottom: 2px; }
+html.cc-desk .dk-msg.ai { align-self: flex-start; border-bottom-left-radius: 5px; }
+html.cc-desk .dk-msg.ai b { color: var(--dk-accent); }
+html.cc-desk .dk-msg.me { align-self: flex-end; border-bottom-right-radius: 5px; background: color-mix(in srgb, var(--dk-accent) 14%, transparent); }
+html.cc-desk .dk-msg.me b { opacity: .6; text-align: right; }
+html.cc-desk .dk-msg.ghost { opacity: .75; font-style: italic; }
+html.cc-desk .dk-empty { margin: auto 0; text-align: center; font: 12.5px/1.4 var(--ui); color: var(--dk-tx2); }
+html.cc-desk .dk-panel-dock { flex: none; }
+
+/* The composer and the live call's bar, inside the panel. */
+html.cc-desk .cc-dock { position: static; padding: 0; gap: 0; display: block; }
+html.cc-desk .cc-composer, html.cc-desk .cc-voicebar { width: 100%; box-sizing: border-box; background: rgba(128, 128, 128, .10); border: 1px solid var(--dk-card-b); color: var(--dk-tx); box-shadow: none; }
 html.cc-desk .cc-composer { height: 48px; padding: 0 6px 0 8px; }
 html.cc-desk .cc-composer input { color: var(--dk-tx); }
 html.cc-desk .cc-composer input::placeholder { color: var(--dk-tx2); }
@@ -65,22 +99,11 @@ html.cc-desk .cc-composer input { order: 2; }
 html.cc-desk .cc-composer .cc-c-mic { order: 4; }
 html.cc-desk .cc-composer .cc-c-stop, html.cc-desk .cc-composer .cc-c-send { order: 5; }
 
-/* The last exchanges: bubbles on tinted pills, older ones faded. */
-.dk-chat { display: none; }
-html.cc-desk .dk-chat { position: fixed; z-index: 7; display: flex; flex-direction: column; gap: 8px; justify-content: flex-end; overflow: hidden; pointer-events: none; }
-html.cc-desk .dk-bub { max-width: 100%; padding: 9px 14px 10px; border-radius: 16px; font: 14px/1.4 var(--ui); color: var(--dk-tx); background: var(--dk-pill); border: 1px solid var(--dk-pill-b); box-shadow: 0 2px 14px rgba(0, 0, 0, .16); pointer-events: auto; animation: dk-in .35s ease-out; overflow-wrap: anywhere; }
-html.cc-desk .dk-bub b { display: block; font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; margin-bottom: 2px; }
-html.cc-desk .dk-bub.ai { align-self: flex-start; border-bottom-left-radius: 5px; }
-html.cc-desk .dk-bub.ai b { color: var(--dk-accent); }
-html.cc-desk .dk-bub.me { align-self: flex-end; border-bottom-right-radius: 5px; }
-html.cc-desk .dk-bub.me b { opacity: .6; text-align: right; }
-html.cc-desk .dk-bub.old { opacity: .55; }
-html.cc-desk .dk-bub.ghost { opacity: .8; font-style: italic; }
 @keyframes dk-in { from { opacity: 0; transform: translateY(8px); } }
 
 /* Offline: the note under the core instead of the bubbles and the state pill (DESIGN.md "Signed out and offline"). */
-html.cc-desk .cc-shell:has(#cc-offline:not([hidden])) .dk-chat, html.cc-desk .cc-shell:has(#cc-offline:not([hidden])) .cc-caption { display: none; }
-html.cc-desk .cc-shell:has(#cc-offline:not([hidden])) .cc-composer { opacity: .6; }
+html.cc-desk .cc-shell:has(#cc-offline:not([hidden])) .cc-caption { display: none; }
+html.cc-desk:has(#cc-offline:not([hidden])) .dk-panel .cc-composer { opacity: .6; }
 html.cc-desk .cc-shell:has(#cc-offline:not([hidden])) #cc-core { filter: saturate(.25) brightness(.8); }
 html.cc-desk .cc-offline { background: var(--dk-card); border: 1px solid var(--dk-card-b); color: var(--dk-tx); width: 320px; box-sizing: border-box; text-align: center; }
 
@@ -104,14 +127,14 @@ html.cc-desk .dk-tools button { width: 28px; height: 26px; border: 0; border-rad
 html.cc-desk .dk-tools button:hover { background: rgba(128, 128, 128, .25); }
 html.cc-desk .dk-tools .cc-i { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 2; }
 
-/* Notes the page raises: above the composer, inside the window. */
-html.cc-desk .cc-toast { bottom: 84px !important; max-width: calc(100vw - 32px); }
+/* Notes the page raises: near the bottom, inside the window. */
+html.cc-desk .cc-toast { bottom: 24px !important; max-width: calc(100vw - 32px); }
 
 /* The session spheres' hover card: shown in the app's box too (moni-ai.css hides it under 720 px, for phones). */
 html.cc-desk .cc-kcard { display: block; width: min(290px, calc(100vw - 24px)); }
 
 /* Focus mode: only the core (its colour and motion still say the state). */
-html.cc-desk.dk-focus .dk-chat, html.cc-desk.dk-focus .cc-dock, html.cc-desk.dk-focus .cc-kids, html.cc-desk.dk-focus .cc-family,
+html.cc-desk.dk-focus .dk-chatbtn, html.cc-desk.dk-focus .dk-panel, html.cc-desk.dk-focus .cc-kids, html.cc-desk.dk-focus .cc-family,
 html.cc-desk.dk-focus .cc-kcard, html.cc-desk.dk-focus .dk-tools, html.cc-desk.dk-focus #cc-needpill, html.cc-desk.dk-focus #cc-offline { display: none !important; }
 
 /* Peek: a light dim behind it while it shows. */
@@ -140,5 +163,5 @@ html.cc-desk.dk-auth .auth-wrap .card .muted, html.cc-desk.dk-auth .auth-foot { 
 html:not(.dk-host) .dk-browser { display: none; }
 
 @media (prefers-reduced-motion: reduce) {
-  html.cc-desk .dk-bub { animation: none; }
+  html.cc-desk .dk-panel:not([hidden]) { animation: none; }
 }

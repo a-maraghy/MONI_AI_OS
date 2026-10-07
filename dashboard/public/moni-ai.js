@@ -2691,6 +2691,9 @@
     LiveUI.caption = "";
     LiveUI.ptt = false;
     LiveUI.held = false;
+    LiveUI.latched = false;
+    LiveUI.skipUp = false;
+    clearTimeout(LiveUI.latchT);
     clearTimeout(LiveUI.warmT);
     LiveUI.resuming = false;
     paintLive("idle");
@@ -2865,7 +2868,10 @@
   // toggle(): the dock's mic -- it starts a call, and during one it mutes (it never ends it).
   window.__mintLive = { ok: function () { return LIVE_OK; }, active: function () { return LiveUI.active; }, toggle: function () { if (!LIVE_OK) return false; if (LiveUI.active) liveMuteToggle(); else liveStart(); return true; }, end: function (why) { return liveStop(why || "button"); },
     // Hold-to-talk (the desktop app's key, or holding the mic there): down / up.
-    ptt: function (down) { return down ? pttPress() : pttRelease(); }, held: function () { return !!LiveUI.held; } };
+    ptt: function (down) { return down ? pttPress(true) : pttRelease(true); }, held: function () { return !!LiveUI.held; },
+    latched: function () { return !!LiveUI.latched; },
+    // The microphone's level (0..1) while a call is on: the desktop page's state pill shows it.
+    level: function () { return LiveUI.active ? LiveUI.mic || 0 : 0; } };
   /*
    * Hold-to-talk, for the desktop app (DESIGN.md, "Voice"). The first press
    * opens a live call in its "ptt" turn mode (the server commits a turn when
@@ -2892,27 +2898,54 @@
     window.addEventListener("pointerup", micUp, true);
     window.addEventListener("pointercancel", micUp, true);
   }
-  function pttPress() {
+  /*
+   * The key: held, it is hold-to-talk. Tapped (up again within PTT_TAP_MS), it
+   * latches: MINT AI keeps listening until the next press, which sends the turn
+   * (at most PTT_LATCH_MS). A tap is also what a hotkey that reports its release
+   * at once looks like, so the key works either way.
+   */
+  var PTT_TAP_MS = 300;
+  var PTT_LATCH_MS = 60 * 1000;
+  function pttPress(key) {
     if (!LIVE_OK) return false;
+    if (LiveUI.latched) { LiveUI.skipUp = true; pttSend(); return true; } // the press that sends a latched turn
     if (LiveUI.held) return true;
     LiveUI.held = true;
+    LiveUI.pressAt = Date.now();
+    LiveUI.byKey = !!key;
     clearTimeout(LiveUI.warmT);
-    if (!LiveUI.active) { liveStart({ ptt: true }); paintState(); return true; }
-    if (!LiveUI.ptt) { if (liveSpeaking()) window.VoiceLive.interrupt(); LiveUI.held = false; return false; }
-    if (window.VoiceLive.press) window.VoiceLive.press();
+    if (!LiveUI.active) liveStart({ ptt: true });
+    else if (!LiveUI.ptt) { if (liveSpeaking()) window.VoiceLive.interrupt(); LiveUI.held = false; return false; }
+    // Pressed at once, even while the call is still opening: voice-live.js keeps what is said until it is ready.
+    if (LiveUI.active && window.VoiceLive.press) window.VoiceLive.press();
     paintState();
     return true;
   }
-  function pttRelease() {
-    if (!LiveUI.held) return false;
+  function pttRelease(key) {
+    if (key && LiveUI.skipUp) { LiveUI.skipUp = false; return false; }
+    if (!LiveUI.held || LiveUI.latched) return false;
+    if (key && LiveUI.byKey && Date.now() - (LiveUI.pressAt || 0) < PTT_TAP_MS) {
+      LiveUI.latched = true;
+      LiveUI.latchT = setTimeout(pttSend, PTT_LATCH_MS);
+      toast("Listening — press the talk key again to send.");
+      paintState();
+      return true;
+    }
+    pttSend();
+    return true;
+  }
+  /** The turn is over: the server commits it (voice-live.js release). */
+  function pttSend() {
+    clearTimeout(LiveUI.latchT);
+    LiveUI.latched = false;
+    if (!LiveUI.held) return;
     LiveUI.held = false;
     if (LiveUI.active && LiveUI.ptt && window.VoiceLive.release) window.VoiceLive.release();
     pttWarm();
     paintState();
-    return true;
   }
-  /** The call is ready: a key still held starts its turn now (the first press opened the call). */
-  function pttReady() { if (LiveUI.held && window.VoiceLive.press) window.VoiceLive.press(); else pttWarm(); }
+  /** The call is ready (the press was made when the key went down): with the key up already, the warm spell starts. */
+  function pttReady() { if (!LiveUI.held) pttWarm(); }
   function pttWarm() {
     clearTimeout(LiveUI.warmT);
     LiveUI.warmT = setTimeout(function warm() {
