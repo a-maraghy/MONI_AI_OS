@@ -146,7 +146,9 @@
       OV.prev = document.activeElement;
       $("cc-overlay").innerHTML = '<div class="cc-scrim" data-close></div><div class="' + cls + '" role="dialog" aria-modal="true" aria-label="' + esc(label || kind) + '" id="cc-ov">' + html + "</div>";
       var f = $("cc-ov").querySelector("[data-autofocus]") || $("cc-ov").querySelector("input, textarea, button:not([data-close])");
-      if (f) f.focus();
+      // Nothing to focus yet (a conversation still loading): the dialog itself, so Esc, Tab and the wheel reach it.
+      if (!f) { $("cc-ov").setAttribute("tabindex", "-1"); f = $("cc-ov"); }
+      f.focus();
       return $("cc-ov");
     }
     function closeOverlay(quiet) {

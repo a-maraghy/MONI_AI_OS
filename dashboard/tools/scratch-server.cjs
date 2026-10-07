@@ -108,7 +108,8 @@ function makeCopy(o) {
 async function startScratch(opts) {
   const o = opts || {};
   makeCopy(o);
-  const port = o.port || 3600 + Math.floor(Math.random() * 300);
+  let port = o.port || 3600 + Math.floor(Math.random() * 300);
+  if (!o.port && port === 3659) port = 3660; // 3659 is on Chromium's unsafe-port list (ERR_UNSAFE_PORT)
   const env = Object.assign({}, process.env, {
     MONI_PORT: String(port),
     MONI_BIND: "127.0.0.1",

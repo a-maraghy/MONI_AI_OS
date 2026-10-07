@@ -53,7 +53,7 @@
   var st = {
     mode: Q.get("mode") || "floating", focus: Q.get("focus") === "1", size: Q.get("size") || "M", pos: Q.get("pos") || "",
     ink: Q.get("ink") === "dark" ? "dark" : "light", opacity: 100, still: Q.get("still") === "1", peekOpen: Q.get("open") !== "0",
-    talkKey: Q.get("talk") || "Ctrl+Space", hidden: false, host: !!T,
+    talkKey: Q.get("talk") || "Ctrl+Space", liveKey: T ? "" : Q.get("livekey") || "Ctrl+Alt+L", hidden: false, host: !!T,
   };
   html.classList.toggle("dk-host", !!T);
 
@@ -84,6 +84,12 @@
     if (!$("cc")) { layoutAuth(); return report(true); }
     var cap = $("cc-caption"), need = $("cc-need"), tools = $("dk-tools"), core = $("dk-corehit"), btn = $("dk-chatbtn"), panel = $("dk-panel");
     if (btn) place(btn, L.chatBtn.x - L.chatBtn.d / 2, L.chatBtn.y - L.chatBtn.d / 2, L.chatBtn.d, L.chatBtn.d);
+    var lb = $("dk-livebtn");
+    if (lb) place(lb, L.liveBtn.x - L.liveBtn.d / 2, L.liveBtn.y - L.liveBtn.d / 2, L.liveBtn.d, L.liveBtn.d);
+    // Where an opened sheet, dialog or conversation goes: Floating, inside the box; otherwise a large centred panel.
+    var ov = L.mode === "floating" ? { x: 8, y: L.box.y + 8, w: L.box.w - 16, h: L.box.h - 16 } : { w: Math.min(1040, L.W - 48), h: L.H - 48, y: 24 };
+    if (ov.x == null) ov.x = (L.W - ov.w) / 2;
+    ["x", "y", "w", "h"].forEach(function (k) { html.style.setProperty("--dk-ov-" + k, px(ov[k])); });
     if (panel) place(panel, L.panel.x, L.panel.y, L.panel.w, L.panel.h);
     if (st.focus && chatOpen()) closeChat();
     if (cap) { cap.style.left = px(L.caption.x); cap.style.top = px(L.caption.y); }
@@ -225,6 +231,34 @@
   }, true);
   document.addEventListener("mint-turns", function () { renderChat(false); });
 
+  /* ---------------------------------------------------------------- the live-call button (and the app's live key)
+     Not on a call: starts a hands-free live call, as a tap of the mic does. On one: ends it, as the voice
+     bar's red X does. A warm hold-to-talk call is not a live one: the button starts a live call in its place. */
+  var liveB = $("dk-livebtn");
+  function liveMode() { var lv = window.__mintLive; return lv && lv.mode ? lv.mode() : lv && lv.active && lv.active() ? "live" : ""; }
+  function liveToggle() {
+    var lv = window.__mintLive;
+    if (!lv || !lv.ok || !lv.ok()) return false;
+    var m = liveMode();
+    if (m === "live") return lv.end("button");
+    if (m === "ptt") { lv.end("button"); setTimeout(function () { if (!liveMode()) lv.toggle(); }, 500); return true; }
+    return lv.toggle();
+  }
+  function paintLiveBtn() {
+    if (!liveB) return;
+    var lv = window.__mintLive, ok = !!(lv && lv.ok && lv.ok()), on = liveMode() === "live";
+    liveB.hidden = !ok;
+    liveB.classList.toggle("on", on);
+    var t = on ? "End conversation" : "Start a live conversation" + (st.liveKey ? " (" + st.liveKey + ")" : "");
+    if (liveB.title !== t) { liveB.title = t; liveB.setAttribute("aria-label", on ? "End conversation" : "Start a live conversation"); }
+  }
+  if (liveB) {
+    liveB.addEventListener("click", function (e) { e.preventDefault(); e.stopPropagation(); liveToggle(); setTimeout(paintLiveBtn, 50); });
+    setInterval(paintLiveBtn, 250);
+    paintLiveBtn();
+  }
+  listen("mint://live", function () { liveToggle(); setTimeout(paintLiveBtn, 50); });
+
   /* ---------------------------------------------------------------- listening: on the state pill only
      No voice bar while the panel is closed: the pill reads "Listening" (moni-ai.js) and a small
      meter in it follows the microphone's level. */
@@ -252,11 +286,12 @@
   /* ---------------------------------------------------------------- click-through: what catches the mouse */
   // The chat button always; the chat panel (and the composer in it) only while it is open (a hidden element is skipped).
   var HIT = [
-    "#dk-chatbtn", "#dk-panel", "#cc-cap-state", "#cc-cap-more", "#cc-need", "#dk-tools", "#cc-kids > *",
+    "#dk-livebtn", "#dk-chatbtn", "#dk-panel", "#cc-cap-state", "#cc-cap-more", "#cc-need", "#dk-tools", "#cc-kids > *",
     "#cc-reply", "#cc-pop", "#cc-kcard.on", ".cc-smenu", ".cc-toast", ".dk-auth .auth-wrap .card", "#dk-gate", "#cc-offline", "#cc-needpill",
   ];
   // Open over everything: the whole window catches the mouse while one shows.
-  var FULL = [".cc-sdlg-back", ".cc-modal:not([hidden])", "#cc-sheet.open", ".cc-palette:not([hidden])", "#md-frame:not([hidden])"];
+  // (#cc-overlay holds the conversation of a session -- the deep view -- and the forms: the whole window while one is open.)
+  var FULL = ["#cc-overlay > *", ".cc-sdlg-back", ".cc-modal:not([hidden])", "#cc-sheet.open", ".cc-palette:not([hidden])", "#md-frame:not([hidden])"];
   function shown(el) {
     if (!el || el.hidden) return false;
     var r = el.getClientRects();
@@ -264,10 +299,16 @@
     var cs = getComputedStyle(el);
     return cs.visibility !== "hidden" && cs.display !== "none" && Number(cs.opacity) > 0.05;
   }
+  function present(el) {
+    if (!el || el.hidden || !el.getClientRects().length) return false;
+    var cs = getComputedStyle(el);
+    return cs.visibility !== "hidden" && cs.display !== "none";
+  }
   function measure() {
     if (!L) return [];
     var full = st.mode === "peek" && st.peekOpen;
-    if (!full) for (var f = 0; f < FULL.length; f++) { var fe = document.querySelectorAll(FULL[f]); for (var j = 0; j < fe.length; j++) if (shown(fe[j])) { full = true; break; } if (full) break; }
+    // (Open counts from the first frame: an overlay fading in is already there to be clicked.)
+    if (!full) for (var f = 0; f < FULL.length; f++) { var fe = document.querySelectorAll(FULL[f]); for (var j = 0; j < fe.length; j++) if (present(fe[j])) { full = true; break; } if (full) break; }
     if (full) return LAY.regions(L, [], { all: true });
     var els = [];
     for (var i = 0; i < HIT.length; i++) {
@@ -300,6 +341,13 @@
     invoke("set_hit_regions", { regions: regs, dpr: window.devicePixelRatio || 1 });
   }
   setInterval(function () { report(false); }, 100);
+  // A dialog, menu or overlay added (or removed) is reported at once, not at the next tick: the first click on it must land.
+  try {
+    var mo = new MutationObserver(function () { report(false); });
+    mo.observe(document.body, { childList: true });
+    var ovl = document.getElementById("cc-overlay");
+    if (ovl) mo.observe(ovl, { childList: true });
+  } catch (e) { /* the tick still reports */ }
   window.addEventListener("resize", function () { apply(); });
 
   /* ---------------------------------------------------------------- the core's state, out to the tray */
@@ -343,7 +391,7 @@
   /* ---------------------------------------------------------------- the app's hotkeys and state, in */
   listen("mint://state", function (p) {
     var was = JSON.stringify(st);
-    ["mode", "focus", "size", "pos", "ink", "opacity", "still", "peekOpen", "talkKey", "hidden"].forEach(function (k) { if (p[k] !== undefined) st[k] = p[k]; });
+    ["mode", "focus", "size", "pos", "ink", "opacity", "still", "peekOpen", "talkKey", "liveKey", "hidden"].forEach(function (k) { if (p[k] !== undefined) st[k] = p[k]; });
     if (JSON.stringify(st) !== was) apply();
     if (p.focusComposer) setTimeout(function () { openChat(true); }, 120);
   });
@@ -365,8 +413,14 @@
     if (lv && lv.active && lv.active()) { lv.end("esc"); return; }
     if (st.mode === "peek") invoke("hide_peek");
   }
+  var ESC_OWNERS = "#cc-overlay > *, .cc-sdlg-back, .cc-modal:not([hidden]), #cc-pop:not([hidden]), .cc-smenu, .cc-sheet.open, .cc-palette:not([hidden])";
+  var escOwned = false;
+  window.addEventListener("keydown", function (e) { if (e.key === "Escape") escOwned = !!document.querySelector(ESC_OWNERS); }, true);
   window.addEventListener("keydown", function (e) {
-    if (e.key === "Escape" && !e.defaultPrevented && !document.querySelector(".cc-sdlg-back, .cc-modal:not([hidden]), #cc-pop:not([hidden])")) escape();
+    // Esc closes the topmost thing open first (an overlay, a dialog, a menu, the sheet: their own handlers,
+    // which run before this one -- so whether one was open is noted as the key goes down); only then the
+    // chat panel, the call, Peek.
+    if (e.key === "Escape" && !e.defaultPrevented && !escOwned) escape();
   });
   // Peek: a click on empty space sends it away (the whole window catches clicks while it shows).
   document.addEventListener("pointerdown", function (e) {
@@ -426,7 +480,7 @@
   apply(); // from the address (or the defaults) at once; the app's own state follows
   function boot() {
     invoke("get_state").then(function (p) {
-      if (p) ["mode", "focus", "size", "pos", "ink", "opacity", "still", "peekOpen", "talkKey", "hidden"].forEach(function (k) { if (p[k] !== undefined) st[k] = p[k]; });
+      if (p) ["mode", "focus", "size", "pos", "ink", "opacity", "still", "peekOpen", "talkKey", "liveKey", "hidden"].forEach(function (k) { if (p[k] !== undefined) st[k] = p[k]; });
       apply();
       invoke("page_ready", { signedIn: !!$("cc") });
     });

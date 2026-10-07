@@ -56,14 +56,19 @@ html.cc-desk .cc-cap-state[data-s="listening"] .dk-meter { display: inline-flex;
 html.cc-desk .dk-meter i { display: block; width: 2px; height: 10px; border-radius: 1px; background: currentColor; transform: scaleY(.25); transform-origin: 50% 50%; transition: transform .09s linear; }
 
 /* The chat button: small, round, glass, on the core's lower right. A dot when a reply came while the panel was closed. */
-.dk-chatbtn, .dk-panel { display: none; }
-html.cc-desk .dk-chatbtn { display: grid; place-items: center; position: fixed; z-index: 9; box-sizing: border-box; padding: 0; border-radius: 50%; cursor: pointer;
+.dk-chatbtn, .dk-livebtn, .dk-panel { display: none; }
+html.cc-desk .dk-chatbtn, html.cc-desk .dk-livebtn:not([hidden]) { display: grid; place-items: center; position: fixed; z-index: 9; box-sizing: border-box; padding: 0; border-radius: 50%; cursor: pointer;
   background: var(--dk-pill); border: 1px solid var(--dk-pill-b); color: var(--dk-tx); box-shadow: 0 2px 14px rgba(0, 0, 0, .18);
   -webkit-backdrop-filter: blur(10px) saturate(1.3); backdrop-filter: blur(10px) saturate(1.3); transition: background .15s, border-color .15s, transform .15s; }
-html.cc-desk .dk-chatbtn:hover { transform: scale(1.06); border-color: var(--dk-card-b); }
-html.cc-desk .dk-chatbtn:focus-visible { outline: 2px solid var(--dk-accent); outline-offset: 2px; }
+html.cc-desk .dk-chatbtn:hover, html.cc-desk .dk-livebtn:hover { transform: scale(1.06); border-color: var(--dk-card-b); }
+html.cc-desk .dk-chatbtn:focus-visible, html.cc-desk .dk-livebtn:focus-visible { outline: 2px solid var(--dk-accent); outline-offset: 2px; }
 html.cc-desk .dk-chatbtn.on { background: var(--dk-card); color: var(--dk-accent); }
-html.cc-desk .dk-chatbtn .cc-i { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linejoin: round; }
+html.cc-desk .dk-chatbtn .cc-i, html.cc-desk .dk-livebtn .cc-i { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linejoin: round; stroke-linecap: round; }
+/* The live-call button: a waveform; on a call it turns into the red end-call button. */
+html.cc-desk .dk-livebtn .dk-end, html.cc-desk .dk-livebtn.on .dk-wave { display: none; }
+html.cc-desk .dk-livebtn.on .dk-end { display: inline; }
+html.cc-desk .dk-livebtn.on { background: #E5484D; border-color: rgba(255, 255, 255, .28); color: #fff; box-shadow: 0 2px 14px rgba(229, 72, 77, .35); }
+html.cc-desk .dk-livebtn.on .cc-i { stroke-width: 2.2; }
 html.cc-desk .dk-chatbtn .dk-dot { position: absolute; top: 3px; right: 3px; width: 8px; height: 8px; border-radius: 50%; background: var(--dk-accent); box-shadow: 0 0 0 2px var(--dk-card); transform: scale(0); transition: transform .2s; }
 html.cc-desk .dk-chatbtn.unread .dk-dot { transform: scale(1); }
 
@@ -134,7 +139,7 @@ html.cc-desk .cc-toast { bottom: 24px !important; max-width: calc(100vw - 32px);
 html.cc-desk .cc-kcard { display: block; width: min(290px, calc(100vw - 24px)); }
 
 /* Focus mode: only the core (its colour and motion still say the state). */
-html.cc-desk.dk-focus .dk-chatbtn, html.cc-desk.dk-focus .dk-panel, html.cc-desk.dk-focus .cc-kids, html.cc-desk.dk-focus .cc-family,
+html.cc-desk.dk-focus .dk-chatbtn, html.cc-desk.dk-focus .dk-livebtn, html.cc-desk.dk-focus .dk-panel, html.cc-desk.dk-focus .cc-kids, html.cc-desk.dk-focus .cc-family,
 html.cc-desk.dk-focus .cc-kcard, html.cc-desk.dk-focus .dk-tools, html.cc-desk.dk-focus #cc-needpill, html.cc-desk.dk-focus #cc-offline { display: none !important; }
 
 /* Peek: a light dim behind it while it shows. */
@@ -165,3 +170,20 @@ html:not(.dk-host) .dk-browser { display: none; }
 @media (prefers-reduced-motion: reduce) {
   html.cc-desk .dk-panel:not([hidden]) { animation: none; }
 }
+
+/* Everything a click can open -- a session's conversation (the deep view), the forms, the palette, the
+   sheet -- goes where it fits: in Floating inside the box, elsewhere a large panel in the middle of the
+   screen (mint-desktop.js sets --dk-ov-x/y/w/h). Their scrims dim nothing (there is no page behind, only the
+   desktop) but still catch a click outside, which closes them. */
+html.cc-desk .cc-deep, html.cc-desk .cc-modal { position: fixed; left: var(--dk-ov-x) !important; top: var(--dk-ov-y) !important; width: var(--dk-ov-w) !important;
+  right: auto !important; bottom: auto !important; transform: none !important; max-height: var(--dk-ov-h); box-sizing: border-box; background: var(--dk-card); color: var(--dk-tx); border: 1px solid var(--dk-card-b); box-shadow: var(--dk-shadow); }
+html.cc-desk .cc-deep { height: var(--dk-ov-h); }
+html.cc-desk .cc-modal { overflow: auto; }
+html.cc-desk .cc-deep-body { overflow: auto; }
+html.cc-desk[data-dk-mode="floating"] .cc-deep-body { grid-template-columns: minmax(0, 1fr); }
+html.cc-desk .cc-sheet { top: var(--dk-ov-y) !important; bottom: auto !important; height: var(--dk-ov-h) !important; max-height: var(--dk-ov-h); right: auto !important; box-sizing: border-box;
+  left: calc(var(--dk-ov-x) + var(--dk-ov-w) - min(460px, var(--dk-ov-w))) !important; width: min(460px, var(--dk-ov-w)) !important; }
+html.cc-desk .cc-sheet.wide { left: var(--dk-ov-x) !important; width: var(--dk-ov-w) !important; }
+html.cc-desk .cc-scrim, html.cc-desk .cc-sheet-scrim, html.cc-desk .cc-sdlg-back { background: transparent !important; backdrop-filter: none !important; }
+html.cc-desk .cc-sdlg { background: var(--dk-card); color: var(--dk-tx); border-color: var(--dk-card-b); box-shadow: var(--dk-shadow); }
+html.cc-desk .cc-smenu { background: var(--dk-card); color: var(--dk-tx); border-color: var(--dk-card-b); }

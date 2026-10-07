@@ -378,7 +378,7 @@ ${perm && !desk ? dockMarkup(o.csrf, perm, { shell: true, noVoice: !vOk, core })
 
 /**
  * What only the desktop render mode adds (public/mint-desktop.js places it):
- * the chat button on the core and the chat panel it opens (the recent
+ * the live-call button and the chat button on the core and the chat panel it opens (the recent
  * conversation; mint-desktop.js moves the composer, #cc-dock, into it), the
  * core's own click target (in Floating the core is the handle you drag the
  * box by), and the Floating box's tools.
@@ -386,7 +386,8 @@ ${perm && !desk ? dockMarkup(o.csrf, perm, { shell: true, noVoice: !vOk, core })
 function deskParts() {
   const b = (k, t, d) => `<button type="button" data-dk="${k}" title="${esc(t)}" aria-label="${esc(t)}"><svg class="cc-i" viewBox="0 0 24 24" aria-hidden="true">${d}</svg></button>`;
   const svg = (d) => `<svg class="cc-i" viewBox="0 0 24 24" aria-hidden="true">${d}</svg>`;
-  return `<button type="button" class="dk-chatbtn" id="dk-chatbtn" title="Chat" aria-label="Chat" aria-expanded="false" aria-controls="dk-panel">${svg('<path d="M5 5.5h14a1.5 1.5 0 0 1 1.5 1.5v8.5A1.5 1.5 0 0 1 19 17h-8.5L6 20.5V17H5a1.5 1.5 0 0 1-1.5-1.5V7A1.5 1.5 0 0 1 5 5.5z"/>')}<span class="dk-dot" aria-hidden="true"></span></button>
+  return `<button type="button" class="dk-livebtn" id="dk-livebtn" title="Start a live conversation" aria-label="Start a live conversation">${svg('<path class="dk-wave" d="M4 10.5v3M8 7.5v9M12 4.5v15M16 7.5v9M20 10.5v3"/><path class="dk-end" d="M7 7l10 10M17 7 7 17"/>')}</button>
+  <button type="button" class="dk-chatbtn" id="dk-chatbtn" title="Chat" aria-label="Chat" aria-expanded="false" aria-controls="dk-panel">${svg('<path d="M5 5.5h14a1.5 1.5 0 0 1 1.5 1.5v8.5A1.5 1.5 0 0 1 19 17h-8.5L6 20.5V17H5a1.5 1.5 0 0 1-1.5-1.5V7A1.5 1.5 0 0 1 5 5.5z"/>')}<span class="dk-dot" aria-hidden="true"></span></button>
   <section class="dk-panel" id="dk-panel" aria-label="Chat with MINT AI" hidden>
     <div class="dk-panel-hd"><b>Chat</b><button type="button" class="dk-panel-x" id="dk-panel-x" title="Close (Esc)" aria-label="Close the chat">${svg('<path d="M6 6l12 12M18 6 6 18"/>')}</button></div>
     <div class="dk-log" id="dk-log" aria-live="polite"></div>

@@ -12,7 +12,7 @@
  * pixels, (0, 0) at its top left.
  *
  *   MintDesktopLayout.layout({ mode, size, pos, focus, W, H }) ->
- *     { mode, box, cx, cy, R, chatBtn, panel, caption, card, gate, tools }
+ *     { mode, box, cx, cy, R, chatBtn, liveBtn, panel, caption, card, gate, tools }
  *
  * Since 0.1.2 nothing of the conversation shows by itself: the core, the
  * session spheres and the state pill; a small round chat button on the core's
@@ -35,10 +35,18 @@
   var BTN = 34; // the chat button's diameter
   var PANEL_MAX_H = 440;
 
-  /** The chat button: on the core's rim, lower right (45 degrees). */
-  function chatBtn(L) {
-    return { x: L.cx + L.R * 0.74, y: L.cy + L.R * 0.74, d: BTN };
+  /*
+   * The core's two round buttons, on its rim at the lower right: chat at 10
+   * degrees below the horizontal (about 3 o'clock), the live call at 42 (about
+   * half past 4) -- clear of each other and of the state pill under the core
+   * at every size.
+   */
+  function rimBtn(L, deg) {
+    var D = L.R * 1.02 + 8, a = (deg * Math.PI) / 180;
+    return { x: L.cx + D * Math.cos(a), y: L.cy + D * Math.sin(a), d: BTN };
   }
+  function chatBtn(L) { return rimBtn(L, 10); }
+  function liveBtn(L) { return rimBtn(L, 42); }
 
   function sizeK(s) { return SIZES[s] || 1; }
   function mode(m) { return MODES[m] ? m : "floating"; }
@@ -67,6 +75,8 @@
       L.R = focus ? bw * 0.3 : bw * 0.163;
       L.caption = { x: L.cx, y: L.cy + L.R + 6 };
       L.chatBtn = chatBtn(L);
+    L.liveBtn = liveBtn(L);
+      L.liveBtn = liveBtn(L);
       // The chat panel: the box's lower part, under the state pill.
       var pTop = L.cy + L.R + 40;
       L.panel = { x: MARGIN, y: pTop, w: bw - 2 * MARGIN, h: Math.max(120, top + bh - MARGIN - pTop) };
@@ -87,6 +97,7 @@
     if (L.cy + L.R + 60 > H - 72) L.R = Math.max(60, H - 72 - 60 - L.cy);
     L.caption = { x: L.cx, y: L.cy + L.R + 16 };
     L.chatBtn = chatBtn(L);
+    L.liveBtn = liveBtn(L);
     // The chat panel: under the core, centred on it; where there is no room under it, beside it.
     var pw = Math.min(m === "peek" ? 560 : 460, W - 32);
     var py = L.cy + L.R + 56, ph = Math.min(PANEL_MAX_H, H - 24 - py);

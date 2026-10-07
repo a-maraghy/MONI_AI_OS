@@ -50,7 +50,8 @@ const near = (a, b, e) => Math.abs(a - b) <= (e || 0.5);
     check("  S and L scale it (0.8 / 1.22); focus mode is the core alone, 168 px, no headroom", LAY.windowSize({ size: "S" }).w === 384 && LAY.windowSize({ size: "L" }).w === 586 && LAY.windowSize({ focus: true }).w === 168 && LAY.windowSize({ focus: true }).h === 168);
     const f = LAY.layout({ mode: "floating", size: "M", W: 480, H: 860 });
     check("  the box sits at the bottom of the window; the core 36 % down it, radius 16.3 % of its width", f.box.y === 280 && near(f.cy, 280 + 580 * 0.36) && near(f.R, 480 * 0.163) && f.cx === 240);
-    check("  the chat button on the core's lower right rim; the chat panel under the pill, down to the box's bottom, 14 px in", near(f.chatBtn.x, f.cx + f.R * 0.74) && near(f.chatBtn.y, f.cy + f.R * 0.74) && f.chatBtn.d === 34 && f.panel.x === 14 && f.panel.w === 452 && f.panel.y > f.caption.y + 20 && near(f.panel.y + f.panel.h, 280 + 580 - 14) && f.composer === undefined && f.chat === undefined);
+    const rim = (deg) => [f.cx + (f.R * 1.02 + 8) * Math.cos((deg * Math.PI) / 180), f.cy + (f.R * 1.02 + 8) * Math.sin((deg * Math.PI) / 180)];
+    check("  the chat (10°) and live-call (42°) buttons on the core's lower right rim; the chat panel under the pill, down to the box's bottom, 14 px in", near(f.chatBtn.x, rim(10)[0]) && near(f.chatBtn.y, rim(10)[1]) && near(f.liveBtn.x, rim(42)[0]) && near(f.liveBtn.y, rim(42)[1]) && f.chatBtn.d === 34 && f.liveBtn.d === 34 && f.panel.x === 14 && f.panel.w === 452 && f.panel.y > f.caption.y + 20 && near(f.panel.y + f.panel.h, 280 + 580 - 14) && f.composer === undefined && f.chat === undefined);
     check("  the card in the headroom, 10 px above the box, never over the core", f.card.bottom === 860 - 280 + 10 && f.card.y + f.card.h <= 280);
     const d = LAY.layout({ mode: "desktop", W: 1920, H: 1032 });
     check("Desktop layer: core 170 px at 56 % across (right), 42 % down; the panel (460 px) under it, inside the screen", near(d.R, 170) && near(d.cx, 1920 * 0.56) && near(d.cy, 1032 * 0.42) && d.tools === null && d.panel.w === 460 && d.panel.y > d.cy + d.R && d.panel.y + d.panel.h <= 1032 - 16 && near(d.panel.x + d.panel.w / 2, d.cx));
@@ -366,11 +367,221 @@ const near = (a, b, e) => Math.abs(a - b) <= (e || 0.5);
         check("  (the button again: closed)", !v.open, JSON.stringify(v));
         await ctx.close();
       }
+      // Everything a click can open must be usable in the app's window: the session's conversation (deep view),
+      // its menu, the retire dialog, the sheet, a form, the palette. Each: inside the window, a hit region (or the
+      // whole window), the click lands inside it, focus moves in, it scrolls / takes typing, Esc closes it -- and
+      // only it (not the chat panel or a call).
+      for (const [W_, H_, q, nm] of [[480, 860, "mode=floating", "Floating M"], [1920, 1032, "mode=desktop", "Desktop layer 1920"]]) {
+        const { ctx, page } = await view(W_, H_, "/mint-ai?shell=desktop&" + q, APP_UA, A.cookie);
+        await page.evaluate(() => {
+          document.getElementById("cc-offline").hidden = true;
+          const S = window.__mintCC.S;
+          S.sessions.push({ name: "Customs docs", session_id: "sx1", where: "Desktop · Claude Code", state: "waiting", hire: { slug: "customs-docs", kept: false, purpose: "the customs papers" } });
+        });
+        const audit = (sel) => page.evaluate((sel) => {
+          const el = document.querySelector(sel);
+          if (!el) return { found: false };
+          const r = el.getBoundingClientRect(), cs = getComputedStyle(el);
+          const regs = window.MintDesktop.regions();
+          const cx = r.left + Math.min(r.width / 2, 120), cy = r.top + Math.min(r.height / 2, 60);
+          const at = document.elementFromPoint(cx, cy);
+          const covered = regs.some((g) => g.x <= r.left + 1 && g.y <= r.top + 1 && g.x + g.w >= r.right - 1 && g.y + g.h >= r.bottom - 1);
+          return { found: true, visible: cs.visibility !== "hidden" && cs.display !== "none" && r.width > 0, inside: r.left >= -1 && r.top >= -1 && r.right <= innerWidth + 1 && r.bottom <= innerHeight + 1, covered, hitsIt: !!(at && el.contains(at)), focusIn: el.contains(document.activeElement), rect: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)], cx, cy };
+        }, sel);
+        const ok = (a) => a.found && a.visible && a.inside && a.covered && a.hitsIt;
+        const openPanel = async () => { await page.click("#dk-chatbtn"); await page.waitForTimeout(100); };
+        const panelOpen = () => page.evaluate(() => !document.getElementById("dk-panel").hidden);
+
+        // 1. The conversation of a session (deep view) -- the reported bug.
+        await openPanel();
+        await page.evaluate(() => window.__mintCC.panels.openDeep("sx1"));
+        await page.waitForTimeout(300);
+        let a = await audit("#cc-ov");
+        check(`${nm}: a session's conversation opens inside the window, the whole window catches the mouse, a click lands in it, focus is in it`, ok(a) && a.focusIn, JSON.stringify(a));
+        await page.mouse.click(a.cx, a.cy);
+        await page.mouse.wheel(0, 300);
+        await page.waitForTimeout(100);
+        a = await audit("#cc-ov");
+        check(`  a click and a scroll inside it keep it open`, a.found, JSON.stringify(a));
+        await page.keyboard.press("Escape");
+        await page.waitForTimeout(150);
+        check(`  Esc closes it -- and only it (the chat panel stays open)`, !(await page.evaluate(() => !!document.querySelector("#cc-overlay > *"))) && (await panelOpen()));
+        await page.keyboard.press("Escape");
+        await page.waitForTimeout(100);
+
+        // 2. A sphere's menu (right-click), and from it the retire dialog.
+        const L = await page.evaluate(() => window.MintDesktop.layout());
+        await page.evaluate((L) => window.__mintCC.sessMenu("sx1", L.cx, L.cy), L);
+        await page.waitForTimeout(100);
+        a = await audit(".cc-smenu");
+        check(`${nm}: a sphere's menu: inside the window, a hit region, clickable, focused`, ok(a) && a.focusIn, JSON.stringify(a));
+        await page.keyboard.press("ArrowDown");
+        await page.keyboard.press("Escape");
+        await page.waitForTimeout(100);
+        check(`  Esc closes the menu`, !(await page.evaluate(() => !!document.querySelector(".cc-smenu"))));
+        await page.evaluate(() => window.__mintCC.retire("sx1"));
+        await page.waitForTimeout(100);
+        a = await audit(".cc-sdlg");
+        check(`${nm}: the retire / keep dialog: inside the window, the whole window catches the mouse, clickable, focused`, ok(a) && a.focusIn, JSON.stringify(a));
+        await page.keyboard.press("Escape");
+        await page.waitForTimeout(100);
+        check(`  Esc closes it`, !(await page.evaluate(() => !!document.querySelector(".cc-sdlg-back"))));
+
+        // 3. The sheet (a sphere's click opens Sessions there).
+        await page.evaluate(() => window.__mintCC.openSheet("sessions"));
+        await page.waitForTimeout(450);
+        a = await audit("#cc-sheet");
+        check(`${nm}: the sheet: inside the window, the whole window catches the mouse, clickable`, ok(a), JSON.stringify(a));
+        await page.mouse.wheel(0, 200);
+        await page.keyboard.press("Escape");
+        await page.waitForTimeout(400);
+        check(`  Esc closes it`, !(await page.evaluate(() => document.getElementById("cc-sheet").classList.contains("open"))));
+
+        // 4. A form (a standing order) -- typing into it.
+        await page.evaluate(() => window.__mintCC.panels.openOrder && window.__mintCC.panels.openOrder());
+        await page.waitForTimeout(200);
+        a = await audit("#cc-ov");
+        const typed = await page.evaluate(() => { const i = document.querySelector("#cc-ov input:not([type=hidden]), #cc-ov textarea"); if (!i) return null; i.focus(); return true; });
+        if (typed) await page.keyboard.type("check the backups");
+        const val = await page.evaluate(() => { const i = document.querySelector("#cc-ov input:not([type=hidden]), #cc-ov textarea"); return i ? i.value : null; });
+        check(`${nm}: a form: inside the window, clickable, takes typing`, ok(a) && /check the backups/.test(val || ""), JSON.stringify(a) + " " + val);
+        await page.keyboard.press("Escape");
+        await page.waitForTimeout(100);
+        check(`  Esc closes it`, !(await page.evaluate(() => !!document.querySelector("#cc-overlay > *"))));
+
+        // 5. The palette (Ctrl+K).
+        await page.keyboard.press("Control+k");
+        await page.waitForTimeout(150);
+        a = await audit("#cc-ov");
+        await page.keyboard.type("sess");
+        const pv = await page.evaluate(() => (document.getElementById("cc-pal-q") || {}).value);
+        check(`${nm}: the palette: inside the window, clickable, takes typing`, ok(a) && pv === "sess", JSON.stringify(a) + " " + pv);
+        await page.keyboard.press("Escape");
+        await page.waitForTimeout(100);
+        check(`  Esc closes it`, !(await page.evaluate(() => !!document.querySelector("#cc-overlay > *"))));
+        if (SHOTS) {
+          await page.evaluate(() => window.__mintCC.panels.openDeep("sx1"));
+          await page.waitForTimeout(300);
+          await page.screenshot({ path: path.join(SHOTS, "desk-deep-" + W_ + ".png"), omitBackground: true });
+        }
+        await ctx.close();
+      }
+
+      // The live-call button: next to the chat button, a hit region, starts / ends a call; mint://live does the same.
+      require(path.join(ROOT, "lib", "db.js")).setSetting("voice_desk", "on", "test"); // the scratch database: voice on, so the button shows
+      for (const [W_, H_, q] of [[480, 860, "mode=floating"], [384, 744, "mode=floating&size=S"], [1920, 1032, "mode=desktop"], [1440, 900, "mode=peek"]]) {
+        const { ctx, page } = await view(W_, H_, "/mint-ai?shell=desktop&" + q, APP_UA, A.cookie);
+        const v = await page.evaluate(() => {
+          const L = window.MintDesktop.layout(), b = document.getElementById("dk-livebtn"), c = document.getElementById("dk-chatbtn"), p = document.getElementById("cc-cap-state");
+          const br = b.getBoundingClientRect(), cr = c.getBoundingClientRect(), pr = p.getBoundingClientRect();
+          const apart = (x, y) => x.right <= y.left || y.right <= x.left || x.bottom <= y.top || y.bottom <= x.top;
+          return { shown: getComputedStyle(b).display !== "none", w: br.width, clearOfChat: apart(br, cr), clearOfPill: apart(br, pr), inWin: br.right <= innerWidth && br.bottom <= innerHeight && cr.right <= innerWidth, region: window.MintDesktop.regions().some((g) => (g.w === 34 && Math.abs(g.x - Math.floor(br.left)) <= 1 && Math.abs(g.y - Math.floor(br.top)) <= 1) || (g.x === 0 && g.y === 0 && g.w === innerWidth && g.h === innerHeight)), /* (Peek open: the whole window) */ title: b.title };
+        });
+        check(`live button (${q}): shown, 34 px, clear of the chat button and the pill, in the window, a hit region; tooltip names the action`, v.shown && v.w === 34 && v.clearOfChat && v.clearOfPill && v.inWin && v.region && /Start a live conversation/.test(v.title), JSON.stringify(v));
+        await ctx.close();
+      }
+      {
+        // The page side of the button and the app's key (Tauri stood in for): start, then end.
+        const ctx = await browser.newContext({ viewport: { width: 480, height: 860 }, userAgent: APP_UA, extraHTTPHeaders: { "X-Forwarded-Proto": "https" } });
+        await ctx.addCookies(String(A.cookie).split("; ").filter(Boolean).map((kv) => ({ name: kv.split("=")[0], value: kv.slice(kv.indexOf("=") + 1), url: "http://127.0.0.1:" + s.port })));
+        await ctx.addInitScript(() => {
+          const L = {};
+          window.__emit = (n, p) => (L[n] || []).forEach((f) => f({ payload: p }));
+          window.__TAURI__ = { core: { invoke: (cmd) => Promise.resolve(cmd === "get_state" ? { liveKey: "Ctrl+Alt+L", talkKey: "Ctrl+Space" } : null) }, event: { listen: (n, f) => { (L[n] = L[n] || []).push(f); return Promise.resolve(() => {}); } } };
+        });
+        const page = await ctx.newPage();
+        await page.goto("http://127.0.0.1:" + s.port + "/mint-ai?shell=desktop&mode=floating", { waitUntil: "load" });
+        await page.waitForTimeout(600);
+        // A fake live layer: what the button and the key ask of the call.
+        await page.evaluate(() => {
+          const calls = (window.__liveCalls = []);
+          let mode = "";
+          window.__mintLive = { ok: () => true, active: () => !!mode, mode: () => mode, toggle: () => { calls.push("start"); mode = "live"; return true; }, end: (why) => { calls.push("end:" + why); mode = ""; return true; }, ptt: () => {}, level: () => 0 };
+        });
+        const title0 = await page.evaluate(() => document.getElementById("dk-livebtn").title);
+        await page.click("#dk-livebtn");
+        await page.waitForTimeout(300);
+        const on = await page.evaluate(() => ({ cls: document.getElementById("dk-livebtn").className, label: document.getElementById("dk-livebtn").getAttribute("aria-label") }));
+        await page.click("#dk-livebtn");
+        await page.waitForTimeout(300);
+        await page.evaluate(() => window.__emit("mint://live", { at: Date.now() }));
+        await page.waitForTimeout(300);
+        await page.evaluate(() => window.__emit("mint://live", { at: Date.now() }));
+        await page.waitForTimeout(300);
+        const calls = await page.evaluate(() => window.__liveCalls);
+        check("the live button: 'Start a live conversation (Ctrl+Alt+L)'; a click starts a call, the button turns red 'End conversation', a click ends it", title0 === "Start a live conversation (Ctrl+Alt+L)" && /\bon\b/.test(on.cls) && on.label === "End conversation" && calls[0] === "start" && calls[1] === "end:button", JSON.stringify({ title0, on, calls }));
+        check("  the app's live key (mint://live) does the same: start, then end", calls[2] === "start" && calls[3] === "end:button", JSON.stringify(calls));
+        // A warm hold-to-talk call: the button starts a live call in its place.
+        await page.evaluate(() => { const m = window.__mintLive; let mode = "ptt"; m.mode = () => mode; m.active = () => !!mode; m.end = (w) => { window.__liveCalls.push("end:" + w); mode = ""; return true; }; m.toggle = () => { window.__liveCalls.push("start"); mode = "live"; return true; }; });
+        await page.click("#dk-livebtn");
+        await page.waitForTimeout(800);
+        const c2 = await page.evaluate(() => window.__liveCalls.slice(4));
+        check("  over a warm hold-to-talk call: that call ends, a live one starts", JSON.stringify(c2) === JSON.stringify(["end:button", "start"]), JSON.stringify(c2));
+        await ctx.close();
+      }
+      // The app's Settings window (desktop/dist/settings.html), with the app's commands stood in for.
+      {
+        const D = path.join(ROOT, "..", "desktop");
+        const ctx = await browser.newContext({ viewport: { width: 560, height: 760 } });
+        await ctx.addInitScript(() => {
+          const settings = { mode: "floating", focus: false, monitor: "", hotkeys: { talk: "Ctrl+Space", show: "Ctrl+Alt+M", focus: "Ctrl+Alt+F", live: "Ctrl+Alt+L" }, per_monitor: {}, do_not_disturb: false, battery_saver: true, autostart: true, check_updates: true, experimental_behind_icons: false };
+          window.__inv = [];
+          window.__TAURI__ = { core: { invoke: (cmd, args) => {
+            window.__inv.push({ cmd, args: args ? JSON.parse(JSON.stringify(args)) : null });
+            if (cmd === "settings_get") return Promise.resolve({ settings: JSON.parse(JSON.stringify(window.__saved || settings)), version: "0.1.4", talkKey: "Ctrl+Space", talkFallback: false, liveKey: "Ctrl+Alt+L", liveFallback: false, monitors: [], monitorKey: "A", update: null });
+            if (cmd === "settings_set") { window.__saved = args.value; return Promise.resolve(null); }
+            return Promise.resolve(null);
+          } } };
+        });
+        const page = await ctx.newPage();
+        const perrs = [];
+        page.on("pageerror", (e) => perrs.push(e.message));
+        await page.goto("file://" + path.join(D, "dist", "settings.html"));
+        await page.waitForTimeout(300);
+        const inv = () => page.evaluate(() => window.__inv.map((x) => x.cmd));
+        await page.click("#cancel");
+        await page.waitForTimeout(100);
+        check("Settings: Close with nothing changed asks the app to close the window (settings_close), never window.close()", (await inv()).includes("settings_close") && !/window\.close\(/.test(fs.readFileSync(path.join(D, "dist", "settings.js"), "utf8")), JSON.stringify(await inv()));
+        await page.evaluate(() => (window.__inv.length = 0));
+        await page.click("#dnd");
+        await page.click("#cancel");
+        await page.waitForTimeout(100);
+        const msg = await page.evaluate(() => document.getElementById("err").textContent);
+        check("  with unsaved changes the first Close says so and does not close", !(await inv()).includes("settings_close") && /unsaved changes/.test(msg), msg);
+        await page.click("#cancel");
+        await page.waitForTimeout(100);
+        check("  Close again discards them and closes", (await inv()).includes("settings_close"));
+        await page.evaluate(() => (window.__inv.length = 0));
+        // A hotkey box records a key; Esc there stops recording and does not close.
+        await page.click("#hk-live");
+        await page.keyboard.press("Control+Alt+KeyK");
+        await page.click("#hk-talk");
+        await page.keyboard.press("Escape");
+        await page.waitForTimeout(100);
+        check("  a hotkey box records Ctrl+Alt+K for the live key; Esc in a hotkey box does not close the window", (await page.evaluate(() => document.getElementById("hk-live").value)) === "Ctrl+Alt+K" && !(await inv()).includes("settings_close"));
+        await page.click("#save");
+        await page.waitForTimeout(150);
+        const saved = await page.evaluate(() => window.__inv.find((x) => x.cmd === "settings_set"));
+        check("  Save sends the settings with the new live key (settings_set), then reads them back", saved && saved.args.value.hotkeys.live === "Ctrl+Alt+K" && (await inv()).slice(-1)[0] === "settings_get", JSON.stringify(saved && saved.args.value.hotkeys));
+        await page.keyboard.press("Escape");
+        await page.waitForTimeout(100);
+        check("  Esc after saving closes the window", (await inv()).includes("settings_close"));
+        await page.evaluate(() => (window.__inv.length = 0));
+        await page.click("#upd");
+        check("  Check for updates asks the app (settings_check_update)", (await inv()).includes("settings_check_update"));
+        check("  no page errors", perrs.length === 0, perrs.join(" / "));
+        await ctx.close();
+        const local = JSON.parse(fs.readFileSync(path.join(D, "src-tauri", "capabilities", "local.json"), "utf8"));
+        const remote = fs.readFileSync(path.join(D, "src-tauri", "capabilities", "remote.json"), "utf8");
+        const lib = fs.readFileSync(path.join(D, "src-tauri", "src", "lib.rs"), "utf8");
+        check("Settings' commands are allowed to the Settings window only (local pages), never to the site; settings_close destroys the window after answering, and the next open builds a fresh one", local.windows.includes("settings") && ["allow-settings-get", "allow-settings-set", "allow-settings-close", "allow-settings-check-update"].every((p) => local.permissions.includes(p)) && !/allow-settings/.test(remote) && /"settings_close"/.test(fs.readFileSync(path.join(D, "src-tauri", "build.rs"), "utf8")) && /fn settings_close\([\s\S]{0,600}on_main\([\s\S]{0,200}\.destroy\(\)/.test(lib) && /fn open_settings\([\s\S]{0,300}get_webview_window\(SETTINGS_WIN\)[\s\S]{0,300}WebviewWindowBuilder::new\(app, SETTINGS_WIN/.test(lib));
+        check("the live-call key: registered with a fallback and a toast (like the talk key), shown first if hidden or Peek is closed, sent to the page as mint://live", /settings::FALLBACK_LIVE/.test(lib) && /"mint:\/\/live"/.test(lib) && /Press Ctrl\+Alt\+Shift\+L for a live conversation/.test(lib) && /live_key: a\.live_key\.clone\(\)/.test(lib));
+      }
       // Focus mode: no button, no panel (even if asked to open).
       {
         const { ctx, page } = await view(168, 168, "/mint-ai?shell=desktop&mode=floating&focus=1", APP_UA, A.cookie);
-        const v = await page.evaluate(() => ({ btn: getComputedStyle(document.getElementById("dk-chatbtn")).display, panel: document.getElementById("dk-panel").hidden }));
-        check("focus mode: the chat button is hidden and the panel stays closed", v.btn === "none" && v.panel, JSON.stringify(v));
+        const v = await page.evaluate(() => ({ btn: getComputedStyle(document.getElementById("dk-chatbtn")).display, live: getComputedStyle(document.getElementById("dk-livebtn")).display, panel: document.getElementById("dk-panel").hidden }));
+        check("focus mode: the chat and live buttons are hidden and the panel stays closed", v.btn === "none" && v.live === "none" && v.panel, JSON.stringify(v));
         await ctx.close();
       }
       // Listening: on the state pill only, with a small meter.

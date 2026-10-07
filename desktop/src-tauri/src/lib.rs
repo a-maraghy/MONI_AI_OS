@@ -67,6 +67,9 @@ pub struct App {
     still: bool,
     talk_key: String,
     talk_fallback: bool,
+    /// The live-call hotkey as registered ("" when it could not be), and whether it is the fallback.
+    live_key: String,
+    live_fallback: bool,
     talking: bool,
     /// The talk key's events, numbered (the page drops one older than one it has seen), and when it went down.
     key_seq: u64,
@@ -109,6 +112,7 @@ struct PageState {
     still: bool,
     peek_open: bool,
     talk_key: String,
+    live_key: String,
     hidden: bool,
     focus_composer: bool,
 }
@@ -136,6 +140,7 @@ fn page_state(a: &App, monitor: &str, focus_composer: bool) -> PageState {
         // A raised Desktop layer is not Peek's dimmed overlay: the page only needs to know Peek's.
         peek_open: a.peek_open && a.settings.mode == Mode::Peek,
         talk_key: a.talk_key.clone(),
+        live_key: a.live_key.clone(),
         hidden: a.hidden,
         focus_composer,
     }
@@ -366,10 +371,29 @@ fn register_hotkeys(app: &AppHandle, shared: &Shared) {
     }
     let show_ok = gs.register(hk.show.as_str()).is_ok();
     let focus_ok = gs.register(hk.focus.as_str()).is_ok();
+    // The live-call key: as the talk key, a taken default falls back to Ctrl+Alt+Shift+L (said in a toast).
+    let mut live = hk.live.clone();
+    let mut live_fallback = false;
+    if gs.register(live.as_str()).is_err() {
+        if live == settings::DEFAULT_LIVE && gs.register(settings::FALLBACK_LIVE).is_ok() {
+            live = settings::FALLBACK_LIVE.into();
+            live_fallback = true;
+        } else {
+            live = String::new();
+        }
+    }
+    mlog!("hotkeys: talk {:?}{}, live {:?}{}, show {}, focus {}", talk, if fallback { " (fallback)" } else { "" }, live, if live_fallback { " (fallback)" } else { "" }, show_ok, focus_ok);
     {
         let mut a = shared.lock().unwrap();
         a.talk_key = talk.clone();
         a.talk_fallback = fallback;
+        a.live_key = live.clone();
+        a.live_fallback = live_fallback;
+    }
+    if live_fallback {
+        notify_plain(app, "Press Ctrl+Alt+Shift+L for a live conversation", "Ctrl+Alt+L is taken by another app on this computer, so MINT AI uses Ctrl+Alt+Shift+L. You can change it in Settings.");
+    } else if live.is_empty() {
+        notify_plain(app, "The live conversation key could not be set", &format!("{} is taken by another app. Pick another in MINT AI's Settings.", hk.live));
     }
     if fallback {
         notify_plain(app, "Hold Ctrl+Alt+Space to talk", "Ctrl+Space is taken by another app on this computer, so MINT AI listens on Ctrl+Alt+Space. You can change it in Settings.");
@@ -383,10 +407,27 @@ fn register_hotkeys(app: &AppHandle, shared: &Shared) {
 
 fn on_hotkey(app: &AppHandle, sc: &Shortcut, ev_state: ShortcutState) {
     let shared = app.state::<Shared>().inner().clone();
-    let (talk, show_k, focus_k) = {
+    let (talk, show_k, focus_k, live_k) = {
         let a = shared.lock().unwrap();
-        (a.talk_key.parse::<Shortcut>().ok(), a.settings.hotkeys.show.parse::<Shortcut>().ok(), a.settings.hotkeys.focus.parse::<Shortcut>().ok())
+        (a.talk_key.parse::<Shortcut>().ok(), a.settings.hotkeys.show.parse::<Shortcut>().ok(), a.settings.hotkeys.focus.parse::<Shortcut>().ok(), a.live_key.parse::<Shortcut>().ok())
     };
+    // The live-call key: pressed once, it starts a hands-free call or ends the one that is on (the page
+    // decides, as its live button does). Hidden or Peek closed: the layer is shown first.
+    if live_k.is_some() && live_k.as_ref() == Some(sc) {
+        if ev_state != ShortcutState::Pressed {
+            return;
+        }
+        let need_show = {
+            let a = shared.lock().unwrap();
+            (a.settings.mode == Mode::Peek && !a.peek_open) || (a.settings.mode == Mode::Floating && a.hidden)
+        };
+        mlog!("live key pressed{}", if need_show { " (showing the layer)" } else { "" });
+        if need_show {
+            show(app, &shared, false);
+        }
+        let _ = app.emit_to(MAIN, "mint://live", serde_json::json!({ "at": epoch_ms() }));
+        return;
+    }
     if talk.as_ref() == Some(sc) {
         match ev_state {
             ShortcutState::Pressed => {
@@ -669,6 +710,19 @@ fn open_full(_app: &AppHandle, shared: &Shared) {
     }
 }
 
+/// The Settings window's Close (and Esc): the app closes the window -- the page's own window.close()
+/// only empties the WebView2 page and leaves the window up, white. The next open builds a fresh one.
+#[tauri::command]
+fn settings_close(app: AppHandle) {
+    mlog!("settings window closed from its page");
+    // After this command has answered (the page that asked is the one going away).
+    on_main(&app, |app| {
+        if let Some(w) = app.get_webview_window(SETTINGS_WIN) {
+            let _ = w.destroy();
+        }
+    });
+}
+
 fn open_settings(app: &AppHandle) {
     if let Some(w) = app.get_webview_window(SETTINGS_WIN) {
         let _ = w.show();
@@ -921,6 +975,8 @@ struct SettingsView {
     version: &'static str,
     talk_key: String,
     talk_fallback: bool,
+    live_key: String,
+    live_fallback: bool,
     monitors: Vec<String>,
     /// The per-monitor key of the monitor MINT AI is on now (size, corner, opacity are kept per monitor).
     monitor_key: String,
@@ -937,6 +993,8 @@ fn settings_get(app: AppHandle, shared: State<'_, Shared>) -> SettingsView {
         version: VERSION,
         talk_key: a.talk_key.clone(),
         talk_fallback: a.talk_fallback,
+        live_key: a.live_key.clone(),
+        live_fallback: a.live_fallback,
         monitors,
         monitor_key,
         update: a.update.clone(),
@@ -947,14 +1005,14 @@ fn settings_get(app: AppHandle, shared: State<'_, Shared>) -> SettingsView {
 #[tauri::command]
 fn settings_set(app: AppHandle, value: Settings, shared: State<'_, Shared>) -> Result<(), String> {
     let mut v = value;
-    for (label, k) in [("Talk", &v.hotkeys.talk), ("Show / hide", &v.hotkeys.show), ("Focus mode", &v.hotkeys.focus)] {
+    for (label, k) in [("Talk", &v.hotkeys.talk), ("Show / hide", &v.hotkeys.show), ("Focus mode", &v.hotkeys.focus), ("Live conversation", &v.hotkeys.live)] {
         if settings::normalize_hotkey(k).is_none() {
             return Err(format!("{}: \"{}\" is not a hotkey here. Use Ctrl or Alt with one key, e.g. Ctrl+Alt+M.", label, k));
         }
     }
     v.fix();
     if !settings::hotkeys_distinct(&v.hotkeys) {
-        return Err("The three hotkeys must be different.".into());
+        return Err("The four hotkeys must be different.".into());
     }
     let autostart = v.autostart;
     {
@@ -1322,6 +1380,7 @@ pub fn run() {
             browser_signin,
             settings_get,
             settings_set,
+            settings_close,
             settings_check_update
         ])
         .setup(|app| {
@@ -1349,6 +1408,8 @@ pub fn run() {
                 still: false,
                 talk_key: settings::DEFAULT_TALK.into(),
                 talk_fallback: false,
+                live_key: settings::DEFAULT_LIVE.into(),
+                live_fallback: false,
                 talking: false,
                 key_seq: 0,
                 pressed_at: None,

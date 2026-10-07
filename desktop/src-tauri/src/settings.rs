@@ -11,6 +11,10 @@ pub const DEFAULT_TALK: &str = "Ctrl+Space";
 pub const FALLBACK_TALK: &str = "Ctrl+Alt+Space";
 pub const DEFAULT_SHOW: &str = "Ctrl+Alt+M";
 pub const DEFAULT_FOCUS: &str = "Ctrl+Alt+F";
+/// Start / end a live (hands-free) call. Ctrl+Alt+L: no common Windows or Office binding (Win+L locks,
+/// Ctrl+L is the address bar, Ctrl+Alt+L is free in Windows, Office, browsers, VS Code's default keymap).
+pub const DEFAULT_LIVE: &str = "Ctrl+Alt+L";
+pub const FALLBACK_LIVE: &str = "Ctrl+Alt+Shift+L";
 pub const DEFAULT_ORIGIN: &str = "https://os.mint-stack.com";
 
 /// Desktop-layer position presets (where the core sits across the screen).
@@ -54,11 +58,13 @@ pub struct Hotkeys {
     pub talk: String,
     pub show: String,
     pub focus: String,
+    /// Start / end a live call (hands-free), pressed once.
+    pub live: String,
 }
 
 impl Default for Hotkeys {
     fn default() -> Self {
-        Hotkeys { talk: DEFAULT_TALK.into(), show: DEFAULT_SHOW.into(), focus: DEFAULT_FOCUS.into() }
+        Hotkeys { talk: DEFAULT_TALK.into(), show: DEFAULT_SHOW.into(), focus: DEFAULT_FOCUS.into(), live: DEFAULT_LIVE.into() }
     }
 }
 
@@ -115,7 +121,7 @@ impl Settings {
         for pm in self.per_monitor.values_mut() {
             pm.opacity = pm.opacity.clamp(35, 100);
         }
-        for (k, d) in [(&mut self.hotkeys.talk, DEFAULT_TALK), (&mut self.hotkeys.show, DEFAULT_SHOW), (&mut self.hotkeys.focus, DEFAULT_FOCUS)] {
+        for (k, d) in [(&mut self.hotkeys.talk, DEFAULT_TALK), (&mut self.hotkeys.show, DEFAULT_SHOW), (&mut self.hotkeys.focus, DEFAULT_FOCUS), (&mut self.hotkeys.live, DEFAULT_LIVE)] {
             match normalize_hotkey(k) {
                 Some(n) => *k = n,
                 None => *k = d.into(),
@@ -203,9 +209,10 @@ fn normal_key(up: &str) -> Option<String> {
     Some(k)
 }
 
-/// Three hotkeys must be three different keys.
+/// The four hotkeys must be four different keys.
 pub fn hotkeys_distinct(h: &Hotkeys) -> bool {
-    h.talk != h.show && h.talk != h.focus && h.show != h.focus
+    let all = [&h.talk, &h.show, &h.focus, &h.live];
+    (0..all.len()).all(|i| (i + 1..all.len()).all(|j| all[i] != all[j]))
 }
 
 #[cfg(test)]
@@ -219,6 +226,7 @@ mod tests {
         assert_eq!(s.hotkeys.talk, "Ctrl+Space");
         assert_eq!(s.hotkeys.show, "Ctrl+Alt+M");
         assert_eq!(s.hotkeys.focus, "Ctrl+Alt+F");
+        assert_eq!(s.hotkeys.live, "Ctrl+Alt+L");
         assert!(!s.experimental_behind_icons);
         assert_eq!(s.monitor_prefs("any").corner, Corner::Br);
         assert_eq!(s.monitor_prefs("any").opacity, 100);
@@ -271,5 +279,25 @@ mod tests {
         assert!(!origin_ok("https://user:pw@os.mint-stack.com"));
         assert!(!origin_ok("https://os.mint-stack.com/mint-ai"));
         assert!(!origin_ok("file:///c:/x"));
+    }
+
+    #[test]
+    fn live_hotkey() {
+        // A settings file from 0.1.3 (no "live") gets the default; a bad one is put back to it.
+        let s = Settings::from_json(r#"{"hotkeys":{"talk":"Ctrl+Space","show":"Ctrl+Alt+M","focus":"Ctrl+Alt+F"}}"#);
+        assert_eq!(s.hotkeys.live, DEFAULT_LIVE);
+        let s = Settings::from_json(r#"{"hotkeys":{"live":"L"}}"#);
+        assert_eq!(s.hotkeys.live, DEFAULT_LIVE);
+        let s = Settings::from_json(r#"{"hotkeys":{"live":"alt+ctrl+k"}}"#);
+        assert_eq!(s.hotkeys.live, "Ctrl+Alt+K");
+        assert_eq!(normalize_hotkey(FALLBACK_LIVE).as_deref(), Some(FALLBACK_LIVE));
+        let mut h = Hotkeys::default();
+        assert!(hotkeys_distinct(&h));
+        h.live = h.show.clone();
+        assert!(!hotkeys_distinct(&h), "the live key may not be another hotkey");
+        h.live = h.talk.clone();
+        assert!(!hotkeys_distinct(&h));
+        let d = Hotkeys::default();
+        assert!([&d.talk, &d.show, &d.focus].iter().all(|k| **k != DEFAULT_LIVE && **k != FALLBACK_LIVE));
     }
 }

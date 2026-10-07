@@ -16,6 +16,7 @@ fn main() {
         "browser_signin",
         "settings_get",
         "settings_set",
+        "settings_close",
         "settings_check_update",
     ])))
     .expect("failed to run tauri-build");

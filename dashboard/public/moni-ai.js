@@ -349,6 +349,11 @@
     recent: function (n) { return recentTurns(n); },
     /* For the desktop app's toast: Deny, through the same call the card's Deny makes (never approve). */
     decide: function (id, how) { return how === "deny" ? denyApproval(id) : Promise.resolve(null); },
+    /* The things a click on a session opens (the desktop render mode's checks drive them): its menu, the conversation, the retire dialog, a sheet. */
+    get panels() { return P; },
+    sessMenu: function (key, x, y) { return sessMenu(key, x, y); },
+    retire: function (key) { var s = findSess(key); if (s && s.hire) retireDialog(s); },
+    openSheet: function (id) { return openSheet(id); },
   };
 
   /* ---- the core setting: A dotted sphere, B Siri fluid, C hybrid, D mesh (the default). The
@@ -2888,6 +2893,8 @@
     // at / seq: the app's own time of the key event (ms since 1970) and its order; see pttKey.
     ptt: function (down, at, seq) { return pttKey(!!down, at, seq); }, held: function () { return !!LiveUI.held; },
     latched: function () { return !!LiveUI.latched; },
+    // "live" (hands-free), "ptt" (hold-to-talk, warm or held) or "" (no call): the desktop page's live button.
+    mode: function () { return LiveUI.active ? (LiveUI.ptt ? "ptt" : "live") : ""; },
     // The microphone's level (0..1) while a call is on: the desktop page's state pill shows it.
     level: function () { return LiveUI.active ? LiveUI.mic || 0 : 0; } };
   /*
