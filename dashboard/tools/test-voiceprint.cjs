@@ -598,6 +598,45 @@ async function routes(sock) {
     check("without voice.manage: refused", (await post("/mint-ai/settings/voice/voiceprint", {}, op)).status === 403 && db.getSetting("voiceprint_enabled") === "on");
     check("without CSRF: refused", (await s.req("POST", "/mint-ai/settings/voice/voiceprint", { cookie: ad.cookie, body: "enabled=1", headers: { Accept: "application/json" } })).status === 403);
 
+    // Strictness: presets, Advanced, reset; merged into voiceprint_thresholds
+    {
+      const TH = "voiceprint_thresholds";
+      const stored = () => JSON.parse(db.getSetting(TH, "{}") || "{}");
+      db.setSetting(TH, JSON.stringify({ first: 3, timeoutMs: 350, accept: 0.3 }), "test");
+      pg = await page();
+      check("Strictness: a stored accept of 0.30 reads as custom; the active values are shown", /id="vp-custom"/.test(pg.body) && /<details class="vp-adv" id="vp-adv" open>/.test(pg.body) && /id="vp-active">Now: recognised from 0\.3; another voice below 0\.2; the call's voice from 0\.2; MINT AI's own voice from 0\.45 \(custom\)/.test(pg.body), (pg.body.match(/id="vp-active">[^<]*/) || [""])[0]);
+      r = await post("/mint-ai/settings/voice/voiceprint/strictness", { preset: "strict" });
+      check("  Strict: call's voice 0.25, the other three back to defaults, other keys kept (merge)", r.status === 200 && JSON.stringify(stored()) === JSON.stringify({ first: 3, timeoutMs: 350, stickyMin: 0.25 }), JSON.stringify(stored()));
+      check("  audited, with the values before and after", db.recentLogins(10).some((x) => /voiceprint strictness: Strict \(accept 0\.31, reject 0\.2, call's voice 0\.25, echo 0\.45; was accept 0\.3, reject 0\.2, call's voice 0\.2, echo 0\.45\)/.test(x.detail || "")), db.recentLogins(3).map((x) => x.detail).join("\n"));
+      pg = await page();
+      check("  the page shows Strict selected, with its effect line", /<label class="vp-preset on"><input type="radio" name="preset" value="strict" checked>/.test(pg.body) && /about 9 % of other voices/.test(pg.body) && /\(Strict\)/.test(pg.body));
+      r = await post("/mint-ai/settings/voice/voiceprint/strictness", { preset: "very_strict" });
+      check("  Very strict: 0.31", stored().stickyMin === 0.31 && stored().first === 3);
+      r = await post("/mint-ai/settings/voice/voiceprint/strictness", { preset: "relaxed" });
+      check("  Relaxed: 0.20", stored().stickyMin === 0.2);
+      r = await post("/mint-ai/settings/voice/voiceprint/strictness", { preset: "paranoid" });
+      check("  an unknown preset is refused", r.status === 400 && stored().stickyMin === 0.2);
+      const before = JSON.stringify(stored());
+      for (const [why, f, re] of [
+        ["accept above 0.80", { accept: "0.9", reject: "0.2", stickyMin: "0.25", echo: "0.45" }, /between 0\.05 and 0\.8/],
+        ["echo below 0.20", { accept: "0.31", reject: "0.2", stickyMin: "0.25", echo: "0.1" }, /Echo must be between 0\.2 and 0\.9/],
+        ["reject not below the call's-voice minimum", { accept: "0.31", reject: "0.25", stickyMin: "0.25", echo: "0.45" }, /must be lower than/],
+        ["the call's-voice minimum above accept", { accept: "0.3", reject: "0.2", stickyMin: "0.35", echo: "0.45" }, /must not be above/],
+        ["not a number", { accept: "abc", reject: "0.2", stickyMin: "0.25", echo: "0.45" }, /must be a number/],
+        ["a field missing", { accept: "0.31", reject: "0.2", echo: "0.45" }, /must be a number/],
+      ]) {
+        r = await post("/mint-ai/settings/voice/voiceprint/strictness", f);
+        check(`  Advanced refuses ${why}, and nothing changes`, r.status === 400 && re.test(r.body) && JSON.stringify(stored()) === before, r.body.slice(0, 200));
+      }
+      r = await post("/mint-ai/settings/voice/voiceprint/strictness", { accept: "0.33", reject: "0.18", stickyMin: "0.27", echo: "0.5" });
+      check("  Advanced saves valid values, merged", r.status === 200 && JSON.stringify(stored()) === JSON.stringify({ first: 3, timeoutMs: 350, stickyMin: 0.27, accept: 0.33, reject: 0.18, echo: 0.5 }), JSON.stringify(stored()));
+      check("  and the library uses them", (() => { const t = JSON.parse(db.getSetting(TH)); return t.accept === 0.33; })());
+      r = await post("/mint-ai/settings/voice/voiceprint/strictness", { reset: "1", accept: "0.5" });
+      check("  Reset to defaults: the four go, other keys stay", r.status === 200 && JSON.stringify(stored()) === JSON.stringify({ first: 3, timeoutMs: 350 }), JSON.stringify(stored()));
+      check("  without voice.manage or CSRF: refused", (await post("/mint-ai/settings/voice/voiceprint/strictness", { preset: "strict" }, op)).status === 403 && (await s.req("POST", "/mint-ai/settings/voice/voiceprint/strictness", { cookie: ad.cookie, body: "preset=strict", headers: { Accept: "application/json" } })).status === 403 && !("stickyMin" in stored()));
+      db.setSetting(TH, "{}", "test");
+    }
+
     // the trial's recordings, through the trial's own API
     const tpg = await s.req("GET", "/mint-ai/voiceprint-trial", { cookie: ad.cookie });
     const tcsrf = s.csrfOf(tpg.body);
@@ -816,6 +855,38 @@ async function browser(s, ad) {
         await until(async () => db.getSetting("voiceprint_enabled") === "off", 4000);
         check(tag + ": the switch turns it off from the page (with a confirm)", !!yes && db.getSetting("voiceprint_enabled") === "off");
         db.setSetting("voiceprint_enabled", "on", "test");
+        // Strictness from the page: a preset card, then Advanced (a bad order refused, a good one saved), then reset.
+        await page.reload();
+        await page.waitForSelector("#v-vp-strict");
+        const ov = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+        check(tag + ": Strictness: three presets, no horizontal scroll", (await page.$$("#v-vp-strict .vp-preset")).length === 3 && ov <= 0, ov);
+        await page.locator('#v-vp-strict .vp-preset:has(input[value="strict"])').click();
+        await until(async () => (JSON.parse(db.getSetting("voiceprint_thresholds", "{}")).stickyMin === 0.25), 4000);
+        check(tag + ": clicking Strict saves it in place", JSON.parse(db.getSetting("voiceprint_thresholds", "{}")).stickyMin === 0.25);
+        await page.waitForTimeout(600);
+        await page.waitForLoadState("networkidle").catch(() => {});
+        await page.waitForSelector("#vp-adv");
+        if (!(await page.evaluate(() => document.getElementById("vp-adv").open))) await page.click("#vp-adv summary");
+        await page.fill('#vp-adv input[name="reject"]', "0.3");
+        await page.click("#vp-adv-save");
+        await page.waitForSelector("#flash .alert.bad", { timeout: 4000 }).catch(() => {});
+        const fl = await page.textContent("#flash").catch(() => "");
+        check(tag + ": Advanced: a bad order is refused with the reason, nothing saved", /must be lower than/.test(fl) && JSON.parse(db.getSetting("voiceprint_thresholds", "{}")).reject === undefined, fl);
+        await page.fill('#vp-adv input[name="reject"]', "0.18");
+        await page.click("#vp-adv-save");
+        await until(async () => JSON.parse(db.getSetting("voiceprint_thresholds", "{}")).reject === 0.18, 4000);
+        check(tag + ": Advanced: valid values saved", JSON.parse(db.getSetting("voiceprint_thresholds", "{}")).reject === 0.18);
+        await page.waitForTimeout(600);
+        await page.waitForLoadState("networkidle").catch(() => {});
+        if (w === 1440 && scheme === "light") await page.locator("#v-vp-strict").screenshot({ path: path.join(os.tmpdir(), "vp-strict-1440-light.png") }).catch(() => {});
+        if (w === 390 && scheme === "dark") await page.locator("#v-vp-strict").screenshot({ path: path.join(os.tmpdir(), "vp-strict-390-dark.png") }).catch(() => {});
+        await page.waitForSelector("#vp-adv");
+        if (!(await page.evaluate(() => document.getElementById("vp-adv").open))) await page.click("#vp-adv summary");
+        await page.click("#vp-adv-reset");
+        await until(async () => db.getSetting("voiceprint_thresholds", "{}") === "{}", 4000);
+        check(tag + ": Reset to defaults", db.getSetting("voiceprint_thresholds", "{}") === "{}", db.getSetting("voiceprint_thresholds"));
+        await page.waitForTimeout(600);
+        await page.waitForLoadState("networkidle").catch(() => {});
         if (w === 1440 && scheme === "light") await page.locator("#v-vp").screenshot({ path: path.join(os.tmpdir(), "vp-settings-1440-light.png") }).catch(() => {});
         if (w === 390 && scheme === "dark") await page.locator("#v-vp").screenshot({ path: path.join(os.tmpdir(), "vp-settings-390-dark.png") }).catch(() => {});
 

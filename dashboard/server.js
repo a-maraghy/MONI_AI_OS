@@ -3075,7 +3075,7 @@ async function voiceprintView(me) {
   if (!vprint) return null;
   if (vprint.enabled()) await vprint.health(true).catch(() => null);
   const trial = voiceprintTrialStore ? [...new Set(voiceprintTrialStore.readManifest(me).clips.filter((c) => c.part === "enrol").map((c) => c.mic))].filter((sl) => voiceprintTrialStore.readManifest(me).clips.filter((c) => c.mic === sl && c.part === "enrol").length >= 2) : [];
-  return { ...vprint.status(me), stats: vprint.stats(7, me.username), trial };
+  return { ...vprint.status(me), stats: vprint.stats(7, me.username), trial, presets: voiceprintLib.PRESETS, bounds: voiceprintLib.BOUNDS };
 }
 
 async function voiceSettings() {

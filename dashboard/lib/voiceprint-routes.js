@@ -5,6 +5,10 @@
  *
  *   POST /mint-ai/settings/voice/voiceprint             enabled=1|absent   On / Off
  *   POST /mint-ai/settings/voice/voiceprint/gate        gate=1|absent      Only respond to my voice
+ *   POST /mint-ai/settings/voice/voiceprint/strictness  preset=relaxed|strict|very_strict, or
+ *                                                       accept, reject, stickyMin, echo (Advanced),
+ *                                                       or reset=1 (all four back to the defaults);
+ *                                                       merged into voiceprint_thresholds, other keys kept
  *   POST /mint-ai/settings/voice/voiceprint/from-trial  slot               enrol from the trial's recordings
  *   POST /mint-ai/settings/voice/voiceprint/remove-mic  mic
  *   POST /mint-ai/settings/voice/voiceprint/delete                         the voiceprint
@@ -51,6 +55,31 @@ function mount(app, deps) {
     vprint.setGate(want, req.me.username);
     audit(req, `voiceprint: only respond to my voice ${want ? "on" : "off"}${was === want ? " (unchanged)" : ""}`);
     reply(req, res, { msg: want ? "Only your voice is answered from the next turn. Other voices and unsure turns are not answered; the screen says why, MINT AI never speaks about it." : "Back to watching only: every turn is answered, and checked.", anchor: "v-vp-gate", reload: true });
+  });
+
+  app.post(SET + "/strictness", ...settingsGuard, (req, res) => {
+    const b = req.body || {};
+    const was = vprint.thresholds();
+    const fmt = (t) => `accept ${t.accept}, reject ${t.reject}, call's voice ${t.stickyMin}, echo ${t.echo}`;
+    let now;
+    let what;
+    if (b.reset === "1") {
+      now = vprint.setThresholds(Object.fromEntries(vpLib.TUNABLE.map((k) => [k, null])), req.me.username);
+      what = "reset to the defaults";
+    } else if (b.preset !== undefined && b.preset !== "custom") {
+      const p = vpLib.PRESETS.find((x) => x.id === String(b.preset));
+      if (!p) return reply(req, res, { err: "Choose Relaxed, Strict or Very strict.", anchor: "v-vp-strict" });
+      // A preset sets the call's-voice minimum and puts the other three back to their defaults.
+      now = vprint.setThresholds({ accept: null, reject: null, echo: null, stickyMin: p.stickyMin }, req.me.username);
+      what = p.label.replace(/ \(recommended\)$/, "");
+    } else {
+      const v = vpLib.validateThresholds({ accept: b.accept, reject: b.reject, stickyMin: b.stickyMin, echo: b.echo });
+      if (!v.ok) return reply(req, res, { err: v.error, anchor: "v-vp-strict" });
+      now = vprint.setThresholds(v.values, req.me.username);
+      what = "advanced";
+    }
+    audit(req, `voiceprint strictness: ${what} (${fmt(now)}; was ${fmt(was)})`);
+    reply(req, res, { msg: `Strictness saved: ${what}. It applies from the next turn.`, anchor: "v-vp-strict", reload: true });
   });
 
   app.post(SET + "/from-trial", ...settingsGuard, async (req, res) => {

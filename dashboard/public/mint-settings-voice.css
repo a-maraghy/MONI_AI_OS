@@ -46,3 +46,19 @@
   .vp-acts { justify-content: flex-start; }
   .vp-hist { flex-basis: 100%; width: 100%; }
 }
+/* Strictness (voiceprintGroup): three presets as cards, then Advanced. */
+.vp-strict { display: flex; flex-direction: column; gap: 10px; width: 100%; }
+.vp-presets { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.vp-preset { display: flex; gap: 8px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); cursor: pointer; min-width: 0; }
+.vp-preset.on, .vp-preset:has(input:checked) { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+.vp-preset input { margin-top: 3px; flex: none; }
+.vp-preset .t { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.vp-preset small { color: var(--muted); font-size: 12px; line-height: 1.35; }
+.vp-custom { grid-column: 1 / -1; margin: 0; color: var(--warn); }
+.vp-adv summary { cursor: pointer; font-size: 13px; color: var(--body); }
+.vp-nums-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 8px; }
+.vp-num { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.vp-num input { width: 100%; max-width: 140px; }
+.vp-num small { font-size: 11px; }
+@media (max-width: 900px) { .vp-presets { grid-template-columns: 1fr; } .vp-nums-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 420px) { .vp-nums-grid { grid-template-columns: 1fr; } .vp-num input { max-width: none; } }

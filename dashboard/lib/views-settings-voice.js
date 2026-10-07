@@ -25,7 +25,7 @@
  *
  * Anchors (the page registry scans them): v-model, v-transcribe,
  * v-transcribe-lang, v-token, v-voice, v-persona, v-read, v-live-audio, v-spend,
- * v-voiceprint, v-vp-gate, v-vp-enrol, v-vp-stats, v-vp-forget.
+ * v-voiceprint, v-vp-gate, v-vp-strict, v-vp-enrol, v-vp-stats, v-vp-forget.
  *
  * The Voiceprint group (lib/voiceprint.js): the On / Off switch, "Only respond
  * to my voice" (greyed while the voiceprint is off or not enrolled), the
@@ -164,6 +164,41 @@ function voiceprintGroup(o) {
     }</div></div>`,
     { id: "v-vp-enrol", scope: "you", full: false }
   );
+  const presets = vp.presets || [];
+  const cur = vp.preset || "relaxed";
+  const curP = presets.find((p) => p.id === cur);
+  const presetForm = V.form(
+    `${BASE}/voiceprint/strictness`,
+    csrf,
+    `<div class="vp-presets" role="radiogroup" aria-label="Strictness">${presets
+      .map(
+        (p) =>
+          `<label class="vp-preset${p.id === cur ? " on" : ""}"><input type="radio" name="preset" value="${esc(p.id)}"${p.id === cur ? " checked" : ""}${en ? "" : " disabled"}><span class="t"><b>${esc(p.label)}</b><small>${esc(p.effect)}</small></span></label>`
+      )
+      .join("")}${cur === "custom" ? `<p class="small vp-custom" id="vp-custom">Custom values (Advanced).</p>` : ""}</div>`
+  );
+  const num = (name, label, val, lo, hi, hint) =>
+    `<label class="vp-num"><span class="small">${esc(label)}</span><input type="number" name="${name}" value="${esc(String(val))}" min="${lo}" max="${hi}" step="0.01" required data-no-live${en ? "" : " disabled"}><small class="muted">${esc(hint)}</small></label>`;
+  const B = vp.bounds || { accept: [0.05, 0.8], reject: [0.05, 0.8], stickyMin: [0.05, 0.8], echo: [0.2, 0.9] };
+  const adv = `<details class="vp-adv" id="vp-adv"${cur === "custom" ? " open" : ""}><summary>Advanced</summary>${V.form(
+    `${BASE}/voiceprint/strictness`,
+    csrf,
+    `<div class="vp-nums-grid">${num("accept", "Recognised from", th.accept, B.accept[0], B.accept[1], "a score this high is you")}${num("reject", "Another voice below", th.reject, B.reject[0], B.reject[1], "lower than the next")}${num(
+      "stickyMin",
+      "Call's voice from",
+      th.stickyMin,
+      B.stickyMin[0],
+      B.stickyMin[1],
+      "after you're recognised; ≤ Recognised from"
+    )}${num("echo", "MINT AI's own voice from", th.echo, B.echo[0], B.echo[1], "heard over its playback")}</div><p class="btn-row"><button class="btn small primary" type="submit" id="vp-adv-save"${en ? "" : " disabled"}>Save</button><button class="btn small" type="submit" name="reset" value="1" id="vp-adv-reset"${en ? "" : " disabled"}>Reset to defaults</button></p>`,
+    { noSave: true }
+  )}</details>`;
+  const strictRow = V.row(
+    "Strictness",
+    `How much benefit of the doubt a call gives once you've been recognised in it. Before that, an unsure turn is never answered. At every level, a very short turn (under 0.8 s of speech) goes through unless it is clearly another voice.${curP ? "" : " Now: custom values."} <span class="muted">Figures from replaying your trial recordings and 200 other people's through the live check.</span>`,
+    `<div class="vp-strict">${presetForm}${adv}</div>`,
+    { id: "v-vp-strict", scope: "everyone", full: true }
+  );
   const st = vp.stats || { checked: 0, by: {} };
   const by = st.by || {};
   const statsBody = st.checked
@@ -178,7 +213,9 @@ function voiceprintGroup(o) {
     : `<span class="muted-num" id="vp-stats">${en ? (enrolled ? "No turns checked yet — talk in a live call." : "Nothing yet: enrol first.") : "The voiceprint is off."}</span>`;
   const statsRow = V.row(
     `Last ${st.days || 7} days${vp.gate ? "" : " (watching only)"}`,
-    `What the check said about each turn. “Would” is what “Only respond to my voice” would have done; with it on, it did. Accept from ${th.accept}; below ${th.reject} is another voice.`,
+    `What the check said about each turn. “Would” is what “Only respond to my voice” would have done; with it on, it did. <span id="vp-active">Now: recognised from ${th.accept}; another voice below ${th.reject}; the call's voice from ${th.stickyMin}; MINT AI's own voice from ${th.echo}${
+      curP ? ` (${esc(curP.label.replace(/ \(recommended\)$/, ""))})` : " (custom)"
+    }.</span>`,
     statsBody,
     { id: "v-vp-stats", full: !!st.checked }
   );
@@ -194,7 +231,7 @@ function voiceprintGroup(o) {
     }),
     { id: "v-vp-forget" }
   );
-  return V.group("Voiceprint", "fingerprint", warn + sw1 + `<div class="vp-dep${en ? "" : " vp-off"}">${sw2}${enrolRow}${statsRow}</div>` + forget, { id: "v-vp" });
+  return V.group("Voiceprint", "fingerprint", warn + sw1 + `<div class="vp-dep${en ? "" : " vp-off"}">${sw2}${strictRow}${enrolRow}${statsRow}</div>` + forget, { id: "v-vp" });
 }
 
 function usd(n) {

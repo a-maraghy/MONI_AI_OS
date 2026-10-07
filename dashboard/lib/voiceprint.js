@@ -64,6 +64,45 @@ const THRESHOLDS_SETTING = "voiceprint_thresholds";
 // raise it, e.g. 0.25, to let fewer other people through in a call where you were recognised).
 const DEFAULTS = Object.freeze({ accept: 0.31, reject: 0.2, echo: 0.45, first: 3, min: 0.8, timeoutMs: 400, stickyMs: 10 * 60 * 1000, stickyMin: 0.2 });
 const MODEL = "WeSpeaker ResNet34-LM (VoxCeleb2), CC-BY-4.0";
+
+/*
+ * Strictness (Settings ▸ Voice ▸ Voiceprint): how much benefit of the doubt a call gives once the
+ * administrator has been recognised in it. The figures are the live replay of 2026-10-07
+ * (tools/voiceprint/live_replay.py: the administrator's 30 trial phrases, 200 other people from
+ * Common Voice, whole turns through the live code path): other people scoring 0.20-0.25 were 9.5 %,
+ * 0.25-0.31 8 %, above 0.31 1 %; the administrator's lowest phrase 0.40.
+ */
+const PRESETS = Object.freeze([
+  { id: "relaxed", label: "Relaxed", stickyMin: 0.2, effect: "Once you're recognised in a call, about 18 % of other voices would be answered too. Your own turns: none missed in tests." },
+  { id: "strict", label: "Strict (recommended)", stickyMin: 0.25, effect: "Once you're recognised in a call, about 9 % of other voices would be answered. Your own turns: unchanged in tests." },
+  { id: "very_strict", label: "Very strict", stickyMin: 0.31, effect: "No leniency within a call: about 1 % of other voices answered. Your own turns: unchanged in tests; unsure turns are never answered." },
+]);
+// What the Advanced fields may hold (server-side checked): reject < stickyMin <= accept.
+const BOUNDS = Object.freeze({ accept: [0.05, 0.8], reject: [0.05, 0.8], stickyMin: [0.05, 0.8], echo: [0.2, 0.9] });
+const TUNABLE = Object.freeze(["accept", "reject", "stickyMin", "echo"]);
+
+/** {accept, reject, stickyMin, echo} (strings or numbers) -> { ok, values } | { ok: false, error }. */
+function validateThresholds(v) {
+  const out = {};
+  for (const k of TUNABLE) {
+    const raw = v && v[k];
+    const n = typeof raw === "number" ? raw : /^\s*-?\d*\.?\d+\s*$/.test(String(raw == null ? "" : raw)) ? Number(raw) : NaN;
+    if (!Number.isFinite(n)) return { ok: false, error: `${k === "stickyMin" ? "The call's-voice minimum" : k[0].toUpperCase() + k.slice(1)} must be a number.` };
+    const [lo, hi] = BOUNDS[k];
+    if (n < lo || n > hi) return { ok: false, error: `${k === "stickyMin" ? "The call's-voice minimum" : k[0].toUpperCase() + k.slice(1)} must be between ${lo} and ${hi}.` };
+    out[k] = Math.round(n * 1000) / 1000;
+  }
+  if (!(out.reject < out.stickyMin)) return { ok: false, error: "“Another voice below” must be lower than the call's-voice minimum." };
+  if (!(out.stickyMin <= out.accept)) return { ok: false, error: "The call's-voice minimum must not be above “Recognised from”." };
+  return { ok: true, values: out };
+}
+/** The preset these values are, or "custom". */
+function presetOf(t) {
+  const th = { ...DEFAULTS, ...(t || {}) };
+  if (th.accept !== DEFAULTS.accept || th.reject !== DEFAULTS.reject || th.echo !== DEFAULTS.echo) return "custom";
+  const p = PRESETS.find((x) => Math.abs(x.stickyMin - th.stickyMin) < 1e-9);
+  return p ? p.id : "custom";
+}
 const MIC_RE = /^[a-z][a-z0-9-]{0,23}$/;
 const MIN_ENROL_MS = 30000; // speech needed for a microphone's print
 const TTS_MAX = 40;
@@ -178,6 +217,25 @@ function createVoiceprint(deps) {
     for (const k of Object.keys(DEFAULTS)) if (Number.isFinite(Number(t[k]))) o[k] = Number(t[k]);
     if (o.reject > o.accept) o.reject = o.accept;
     return o;
+  }
+  /** The stored thresholds as written (only the keys someone set). */
+  function storedThresholds() {
+    try {
+      const t = JSON.parse(db.getSetting(THRESHOLDS_SETTING, "") || "{}");
+      return t && typeof t === "object" && !Array.isArray(t) ? t : {};
+    } catch (_) {
+      return {};
+    }
+  }
+  /** Merge `patch` into the stored thresholds (other keys kept); a key set to null goes back to its default. */
+  function setThresholds(patch, by) {
+    const cur = storedThresholds();
+    for (const [k, v] of Object.entries(patch || {})) {
+      if (v === null) delete cur[k];
+      else cur[k] = v;
+    }
+    db.setSetting(THRESHOLDS_SETTING, JSON.stringify(cur), by);
+    return thresholds();
   }
   function setEnabled(on, by) {
     db.setSetting(ENABLED_SETTING, on ? "on" : "off", by);
@@ -490,6 +548,7 @@ function createVoiceprint(deps) {
       enabled: enabled(),
       gate: gate(),
       thresholds: thresholds(),
+      preset: presetOf(thresholds()),
       service: { ok: service.ok, error: recentError ? service.error : null, errorAt: service.errorAt || null, health: service.health ? { model: service.health.model, dim: service.health.dim, threads: service.health.threads } : null },
       enrolled: user ? meta(user) : null,
       model: MODEL,
@@ -501,6 +560,8 @@ function createVoiceprint(deps) {
     enabled,
     gate,
     thresholds,
+    storedThresholds,
+    setThresholds,
     setEnabled,
     setGate,
     health,
@@ -526,4 +587,4 @@ function createVoiceprint(deps) {
   };
 }
 
-module.exports = { createVoiceprint, DEFAULTS, MODEL, ENABLED_SETTING, GATE_SETTING, THRESHOLDS_SETTING, MIN_ENROL_MS, MIC_RE, request, unit, dot };
+module.exports = { createVoiceprint, PRESETS, BOUNDS, TUNABLE, validateThresholds, presetOf, DEFAULTS, MODEL, ENABLED_SETTING, GATE_SETTING, THRESHOLDS_SETTING, MIN_ENROL_MS, MIC_RE, request, unit, dot };
