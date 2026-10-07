@@ -457,7 +457,7 @@
   var vpShown = null; // { badge, state, until }
   var vpTimer = 0;
   function showVoiceprint(m) {
-    var b = ML.vpBadge(m.kind, !!m.gated);
+    var b = ML.vpBadge(m.kind, !!m.gated, m.name, !!m.talkOnly);
     if (!b) return;
     var c = ML.caption(snapshot());
     vpShown = { badge: b, state: S.online ? c.state : "offline", at: Date.now(), until: Date.now() + ML.VP_SHOW_MS };

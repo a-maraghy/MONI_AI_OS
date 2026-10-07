@@ -3075,7 +3075,8 @@ async function voiceprintView(me) {
   if (!vprint) return null;
   if (vprint.enabled()) await vprint.health(true).catch(() => null);
   const trial = voiceprintTrialStore ? [...new Set(voiceprintTrialStore.readManifest(me).clips.filter((c) => c.part === "enrol").map((c) => c.mic))].filter((sl) => voiceprintTrialStore.readManifest(me).clips.filter((c) => c.mic === sl && c.part === "enrol").length >= 2) : [];
-  return { ...vprint.status(me), stats: vprint.stats(7, me.username), trial, presets: voiceprintLib.PRESETS, bounds: voiceprintLib.BOUNDS };
+  await vprint.openAll().catch(() => {});
+  return { ...vprint.status(me), stats: vprint.stats(7), trial, presets: voiceprintLib.PRESETS, bounds: voiceprintLib.BOUNDS, users: db.listUsers ? db.listUsers().map((u) => ({ id: u.id, username: u.username })) : [] };
 }
 
 async function voiceSettings() {
@@ -6423,6 +6424,7 @@ vprint = voiceprintLib.createVoiceprint({
   dataDir: DATA_DIR,
   log: (m) => console.log(m),
   parseWav: voiceprintTrial.parseWav,
+  userById: (id) => db.getUser(id),
   trialClips: (user) => {
     const m = voiceprintTrialStore.readManifest(user);
     return (m.clips || []).map((c) => ({ ...c, path: path.join(voiceprintTrialStore.dirOf(user), c.mic, c.id + ".wav") })).filter((c) => fs.existsSync(c.path));
@@ -6430,6 +6432,7 @@ vprint = voiceprintLib.createVoiceprint({
 });
 voiceprintRoutes.mount(app, { vprint, trialStore: voiceprintTrialStore, trial: voiceprintTrial, settingsGuard: voiceGuardSettings, reply: (req, res, o) => voiceReply(req, res, o), requireAuth, requirePerm, requireApiPerm, requireApiCsrf, rateLimit, express, db, ctx, views: voiceprintEnrolViews, asset });
 if (vprint.enabled()) vprint.health().catch(() => {});
+vprint.openAll().catch(() => {}); // opens (and, once, migrates) the stored voiceprints
 
 /* --------------------------------------------------------------- misc ----- */
 
@@ -6598,8 +6601,8 @@ function liveConnected(ws, { me, cfg, ip, duplex, noise, route, tab, canVoice, s
       ? {
           enabled: () => vprint.enabled(),
           gate: () => vprint.gate(),
-          hasPrint: () => vprint.hasPrint(me),
-          check: (pcm, o) => vprint.check(me, pcm, o),
+          hasPrints: () => vprint.hasPrints(),
+          check: (pcm, o) => vprint.check(pcm, o),
           record: (row) => vprint.ledger({ ...row, actor }),
           learnTts: (v, pcm) => vprint.learnTts(v, pcm),
         }
@@ -6607,7 +6610,7 @@ function liveConnected(ws, { me, cfg, ip, duplex, noise, route, tab, canVoice, s
     opts: { duplex, turn: turn === "ptt" ? "ptt" : "vad" },
   });
   // Open the voiceprint now, so the first turn does not wait for the helper.
-  if (vprint && vprint.enabled()) vprint.printFor(me).catch(() => {});
+  if (vprint && vprint.enabled()) vprint.openAll().catch(() => {});
   call.sid = sid || null;
   voiceLive.register(actor, call);
   db.logLogin(ip, actor, "voice", `live conversation started (${turn === "ptt" ? "hold-to-talk, " : ""}${duplex === "full" ? "headphones" : "speakers"} mode, playback ${route}, noise reduction ${noise})`);

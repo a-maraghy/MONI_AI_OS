@@ -156,6 +156,8 @@ const TURNS = ["vad", "ptt"];
 const PTT_MIN_MS = 200;
 const PTT_IDLE_MS = 3 * 60 * 1000;
 const VP_LEARN_MS = 3000; // MINT AI's own voice: up to this much of a reply is sampled for its print
+// A stored voice that may not give commands asked for something (the safe line after a cut).
+const TALK_ONLY_LINE = { en: "Only someone allowed to give commands can ask for that.", ar: "الطلب ده لازم يطلبه حد مسموح له يدي أوامر." };
 const BACK_LINE = { en: "The line dropped for a second — I'm back.", ar: "الخط قطع لثانية، وأنا معاك تاني." };
 const RECONNECTED_LINE = { en: "Reconnected.", ar: "الاتصال رجع، وأنا معاك." };
 const EARLIER_LINE = { en: "About your earlier question:", ar: "بخصوص سؤالك اللي فات:" };
@@ -340,9 +342,11 @@ class LiveCall {
     this.press = null; // the press being held: { n, at, frames, bytes } (counts only, for the log)
     this.pressN = 0;
     this.idleFrames = 0; // audio frames from the page between presses (dropped)
-    // The voiceprint (lib/voiceprint.js through server.js): { enabled(), gate(), hasPrint(), check(pcm, o),
+    // The voiceprint (lib/voiceprint.js through server.js): { enabled(), gate(), hasPrints(), check(pcm, o),
     // record(row), learnTts(voice, pcm) }. Read per turn, so switching it in Settings applies from the next turn.
     this.vp = d.voiceprint || null;
+    this.vpSpeaker = null; // the call's current speaker: { id, name, spoken, may_command, at }
+    this.vpSeq = []; // the names in the order they spoke (each change once), for the call's log line
     this.now = d.now || Date.now;
     this.pttSeenAt = this.now();
     this.log = d.log || (() => {});
@@ -764,6 +768,7 @@ class LiveCall {
     } catch (_) {
       /* gone */
     }
+    if (this.vpSeq && this.vpSeq.length) this.log(`live: call ${this.id} speakers: ${this.vpSeq.join(" → ")}`);
     this.log(`live: call ${this.id} ended (${why}${this.endWhy.detail ? ": " + this.endWhy.detail : ""}) after ${Math.round((this.now() - this.bornAt) / 1000)} s, $${this.usd.toFixed(4)}`);
   }
 
@@ -1153,17 +1158,17 @@ class LiveCall {
     }, (this.opts.transcriptWaitMs || TRANSCRIPT_WAIT_MS) + (awaiting && this.suspect(t) ? 2000 : 0));
   }
 
-  /* ---- the voiceprint (lib/voiceprint.js) ---- */
+  /* ---- the voiceprints (lib/voiceprint.js): who is speaking ---- */
 
-  /** The voiceprint is switched on and this administrator has one. Read per turn. */
+  /** The voiceprint is switched on and at least one voiceprint is stored. Read per turn. */
   vpOn() {
     try {
-      return !!(this.vp && this.vp.enabled() && this.vp.hasPrint());
+      return !!(this.vp && this.vp.enabled() && this.vp.hasPrints());
     } catch (_) {
       return false;
     }
   }
-  /** On, and "Only respond to my voice": turns wait for their verdict. */
+  /** On, and "Only respond to stored voices": unknown and unsure turns are not answered. */
   vpGating() {
     try {
       return this.vpOn() && !!this.vp.gate();
@@ -1173,36 +1178,50 @@ class LiveCall {
   }
 
   /**
-   * The turn has ended: score its speech (up to 3 s) against the print.
-   * Off (or no print): nothing is called, nothing waits. Never throws; the
-   * service failing is a verdict "error", and the turn goes on (fail open).
+   * The turn has ended: who said it? Its speech (up to 3 s) against every
+   * stored voiceprint. Off (or none stored): nothing is called, nothing waits.
+   * Never throws; the service failing is a verdict "error" (fail open).
    */
   vpStart(t) {
     if (t.vpP || !this.vpOn()) return;
-    // The turn's speech, up to ~3 s of it (the service takes the first `first` seconds of speech; 6 s of
-    // audio is plenty for that). The check runs when the turn has ended, so this costs no waiting.
+    // The turn's speech, up to ~3 s of it (6 s of audio is plenty). It runs when the turn has ended.
     const pcm = this.turnAudio(t).subarray(0, 6000 * BYTES_PER_MS);
     const gated = this.vpGating();
     const overVoice = !!(t.overVoice || t.pressOverVoice);
     const what = t.ptt && t.pressN ? "press " + t.pressN : "turn " + t.n;
+    const cur = this.vpSpeaker ? { id: this.vpSpeaker.id, at: this.vpSpeaker.at } : null;
     t.vpP = Promise.resolve()
-      .then(() => this.vp.check(pcm, { overVoice, voice: this.cfg.voice, verifiedAt: this.vpVerifiedAt || 0 }))
+      .then(() => this.vp.check(pcm, { overVoice, voice: this.cfg.voice, current: cur }))
       .catch((e) => ({ verdict: "error", error: String((e && e.message) || e).slice(0, 120) }))
       .then((v) => {
         t.vp = v || { verdict: "error", error: "no answer" };
         t.vpDone = true;
-        // Per-call identity: a turn verified as the administrator's makes later doubtful ones theirs too.
-        if (t.vp.verdict === "accept") this.vpVerifiedAt = this.now();
         const r = t.vp;
+        const named = (r.verdict === "accept" || r.verdict === "sticky") && r.speaker ? r.speaker : null;
+        if (named) {
+          // The call's speaker: the first one recognised, or a change (A -> B -> A) is said by name.
+          t.vpAnnounce = !this.vpSpeaker || this.vpSpeaker.id !== named.id;
+          this.vpSpeaker = { ...named, at: this.now() };
+          t.speaker = named;
+          if (t.vpAnnounce) this.vpSeq.push(named.name);
+        }
+        // Who the permission follows: the named speaker, else (a turn too short or failed to check)
+        // the call's current speaker if recent.
+        const recent = this.vpSpeaker && this.now() - this.vpSpeaker.at <= 10 * 60 * 1000 ? this.vpSpeaker : null;
+        const eff = named || (r.verdict === "unverified" || r.verdict === "error" ? recent : null);
+        t.talkOnly = !!(eff && !eff.may_command);
+        t.talkOnlyName = t.talkOnly ? eff.name : null;
         const sc = r.score != null ? r.score.toFixed(3) : "-";
+        const nd = r.second != null ? " (next " + r.second.toFixed(3) + ")" : "";
         const ts = r.tts_score != null ? ", MINT AI's voice " + r.tts_score.toFixed(3) : "";
         const sp = r.speech_ms != null ? `, ${r.used_ms} of ${r.speech_ms} ms of speech` : "";
         const tl = t.endMs != null && t.startMs != null ? `, turn ${Math.round(t.endMs - t.startMs)} ms` : "";
-        this.log(`live: call ${this.id} ${what} voiceprint: ${r.verdict} ${sc}${ts}${sp}${tl}${r.why ? " (" + r.why + ")" : ""}${overVoice ? ", over the voice" : ""}, ${Math.round(r.ms || 0)} ms (${gated ? "gate" : "shadow"})${r.error ? ": " + scrub(r.error) : ""}`);
-        if (!gated) this.vpRecord(t, false, "shadow");
-        // The page's state pill shows the verdict (never the score): recognised, not recognised, unsure.
-        const kind = { accept: "you", sticky: "you", reject: "other", echo: "echo", uncertain: "unsure", unverified: "short" }[r.verdict];
-        if (kind) this.toClient({ type: "voiceprint", verdict: r.verdict, kind, gated, turn: t.ptt && t.pressN ? t.pressN : t.n });
+        const who = named ? `${named.name}${t.vpAnnounce ? " (new speaker)" : ""}${t.talkOnly ? ", talk only" : ""}` : r.verdict === "reject" ? "unknown voice" : "nobody named";
+        this.log(`live: call ${this.id} ${what} voiceprint: ${r.verdict}, ${who}, ${sc}${nd}${ts}${sp}${tl}${r.why ? " (" + r.why + ")" : ""}${overVoice ? ", over the voice" : ""}, ${Math.round(r.ms || 0)} ms (${gated ? "gate" : "shadow"})${r.error ? ": " + scrub(r.error) : ""}`);
+        if (!gated) this.vpRecord(t, false, t.talkOnly ? "shadow, talk only" : "shadow");
+        // The page's state pill: who, or that the voice is unknown or unsure -- never a score.
+        const kind = named ? "known" : { reject: "other", echo: "echo", uncertain: "unsure", unverified: "short" }[r.verdict];
+        if (kind) this.toClient({ type: "voiceprint", verdict: r.verdict, kind, gated, name: named ? named.name : null, talkOnly: !!(named && t.talkOnly), turn: t.ptt && t.pressN ? t.pressN : t.n });
         const w = t.vpWaiters || [];
         t.vpWaiters = null;
         for (const fn of w) fn();
@@ -1211,45 +1230,66 @@ class LiveCall {
   vpRecord(t, gated, acted) {
     const r = t.vp || {};
     try {
-      if (this.vp && this.vp.record) this.vp.record({ call_id: this.id, turn: t.ptt && t.pressN ? t.pressN : t.n, mode: t.ptt ? "ptt" : "vad", speech_ms: r.speech_ms, score: r.score, tts_score: r.tts_score, verdict: r.verdict || "error", gated, acted, over_voice: !!(t.overVoice || t.pressOverVoice), ms: r.ms, error: r.error || null });
+      if (this.vp && this.vp.record)
+        this.vp.record({ call_id: this.id, turn: t.ptt && t.pressN ? t.pressN : t.n, mode: t.ptt ? "ptt" : "vad", speech_ms: r.speech_ms, score: r.score, tts_score: r.tts_score, verdict: r.verdict || "error", gated, acted, over_voice: !!(t.overVoice || t.pressOverVoice), ms: r.ms, error: r.error || null, speaker_id: t.speaker ? t.speaker.id : null, speaker: t.speaker ? t.speaker.name : null });
     } catch (_) {
       /* the ledger never stops a turn */
     }
   }
   /**
-   * The gate, at the points where a turn would be used (its transcript, its
-   * answer). Returns true when the caller must stop: the verdict is not in yet
-   * (`again` runs when it is), or the turn was not the administrator's and has
-   * been dropped. Shadow mode, off, no check, accept, error: false (go on).
+   * At the points where a turn would be used (its transcript, its answer):
+   * true when the caller must stop -- the verdict is not in yet (`again` runs
+   * when it is: ~20-60 ms, at most the service's 400 ms), or the gate dropped
+   * the turn. Shadow, accept, sticky, unverified, error: go on, with the speaker.
    */
   vpHold(t, again) {
     if (!t || !t.vpP || t.vpApplied === "go") return false;
     if (t.vpApplied === "dropped") return true;
-    if (!this.vpGating()) return false; // switched to shadow or off mid-turn: go on
+    if (!this.vpOn()) return false; // switched off mid-turn: go on
     if (!t.vpDone) {
       (t.vpWaiters = t.vpWaiters || []).push(again);
       return true;
     }
+    const gated = this.vpGating();
     const v = (t.vp && t.vp.verdict) || "error";
-    if (v === "accept" || v === "sticky" || v === "unverified" || v === "error" || v === "none") {
+    if (!gated || v === "accept" || v === "sticky" || v === "unverified" || v === "error" || v === "none") {
       t.vpApplied = "go";
-      this.vpRecord(t, true, v === "error" ? "answered (fail open)" : v === "sticky" ? "answered (this call's voice)" : v === "unverified" ? "answered (too short to check)" : "answered");
+      this.vpApply(t);
+      if (gated) {
+        const how = v === "error" ? "answered (fail open)" : v === "sticky" ? "answered (the call's speaker)" : v === "unverified" ? "answered (too short to check)" : "answered";
+        this.vpRecord(t, true, t.talkOnly ? how + ", talk only" : how);
+      }
       return false;
     }
+    // The gate: never spoken about (the administrator, 2026-10-07); the page's pill says why.
     t.vpApplied = "dropped";
     if (v === "reject") {
-      this.drop(t, "not-your-voice"); // the page's pill already says so (the verdict event above)
+      this.drop(t, "unknown-voice");
       this.vpRecord(t, true, "ignored");
     } else if (v === "echo") {
       this.drop(t, "echo-voiceprint");
       this.vpRecord(t, true, "dropped (echo)");
     } else {
-      // Unsure, nothing recognised yet in this call: not answered. MINT AI never speaks about it (the
-      // administrator, 2026-10-07); the page's pill says "Not sure it's you — not answered".
       this.drop(t, "voice-uncertain");
       this.vpRecord(t, true, "not answered (unsure)");
     }
     return true;
+  }
+  /**
+   * The turn goes on: tell the voice who is speaking -- by name on the call's
+   * first recognised turn and whenever the speaker changes -- and, for someone
+   * who may not give commands, that this turn is conversation only.
+   */
+  vpApply(t) {
+    const sp = t.speaker;
+    const parts = [];
+    if (sp && t.vpAnnounce) {
+      const said = sp.spoken ? `"${sp.name}" (in Arabic: «${sp.spoken}»)` : `"${sp.name}"`;
+      parts.push(`this turn's voice was recognised as ${said}${this.vpSeq.length > 1 ? ", a different person from the previous speaker" : ""}. Start your reply by addressing them by that name, once, in the language of the conversation. Use the name only because the voice was recognised; do not say how sure you are`);
+    }
+    if (t.talkOnly) parts.push(`${t.talkOnlyName || "this speaker"} may talk with you but may not give commands: in this turn do not call look_into or ui_action. If they ask you to do or change something, say briefly that only someone allowed to give commands can ask for that`);
+    if (!parts.length) return;
+    this.send({ type: "conversation.item.create", item: { type: "message", role: "user", content: [{ type: "input_text", text: "(System note, not the speaker: " + parts.join(". ") + ".)" }] } });
   }
 
   /** Heard over (or just after) the voice, and not a confirmed barge-in: maybe the speaker's leak. */
@@ -1323,7 +1363,7 @@ class LiveCall {
     // "yes" lands there -- unless the voice itself said a yes/no word lately, which could be its own leak.
     // A suspect turn that is anything else never touches the confirm (it may be the voice's echo).
     let conf = null;
-    if (this.d.confirmHeard && t.n > (this.confirmAfter || 0) && (!this.d.confirmPending || this.d.confirmPending())) {
+    if (this.d.confirmHeard && !t.talkOnly && t.n > (this.confirmAfter || 0) && (!this.d.confirmPending || this.d.confirmPending())) {
       if (!suspect) conf = this.d.confirmHeard(text);
       else if (this.d.isYesNo && this.d.isYesNo(text) && !this.voiceSaidYesNo()) {
         conf = this.d.confirmHeard(text);
@@ -1339,7 +1379,7 @@ class LiveCall {
       this.toClient({ type: "caption", who: "you", text, final: true });
       return;
     }
-    if (this.undoUntil > this.now() && this.d.isUndo && this.d.isUndo(text) && !suspect) {
+    if (this.undoUntil > this.now() && this.d.isUndo && this.d.isUndo(text) && !suspect && !t.talkOnly) {
       this.diag.undos = (this.diag.undos || 0) + 1;
       t.resolveSession(null);
       return this.undoByVoice(t, text);
@@ -1752,7 +1792,8 @@ class LiveCall {
     const lang = desk.langOf(r.trip.sentence || r.rel.sentences[r.trip.at] || "", t ? t.sessionText : "");
     const L = desk.linesFor(lang, this.persona.gender);
     let line = L.asked;
-    if (t && !t.asked && !t.dropped) {
+    if (t && t.talkOnly) line = lang === "ar" ? TALK_ONLY_LINE.ar : TALK_ONLY_LINE.en;
+    else if (t && !t.asked && !t.dropped) {
       const request = await this.groundedText(t);
       if (request) {
         try {
@@ -1784,6 +1825,12 @@ class LiveCall {
   }
 
   async passOn(t, request) {
+    if (t && t.talkOnly) {
+      this.log(`live: call ${this.id} turn ${t.n} not passed to MINT AI: ${t.talkOnlyName || "the speaker"} may not give commands`);
+      return null;
+    }
+    // Who asked, when the voice recognised them (Settings ▸ Voice ▸ Voiceprint): MINT AI and its record see it.
+    if (t && t.speaker && t.speaker.name) request = `[speaker: ${t.speaker.name}] ` + request;
     // Listen for MINT AI's text before asking: the turn may start (and stream) before the ask returns.
     const stream = this.openStream(request);
     let ut = null;
@@ -1857,6 +1904,12 @@ class LiveCall {
       return JSON.stringify({ error: "the arguments were not valid JSON" });
     }
     if (!args || typeof args !== "object" || Array.isArray(args)) args = {};
+    // A stored voice that may not give commands (Settings ▸ Voice ▸ Voiceprint): conversation only.
+    if (r && r.turn && r.turn.talkOnly && (call.name === "look_into" || call.name === "ui_action")) {
+      this.diag.refused.push(call.name + ":talk-only");
+      this.log(`live: call ${this.id} refused ${call.name}: ${r.turn.talkOnlyName || "the speaker"} may not give commands`);
+      return JSON.stringify({ error: `refused: ${r.turn.talkOnlyName || "this speaker"} may talk with you but may not give commands. Say briefly and kindly that only someone allowed to give commands can ask for that.` });
+    }
     if (call.name === "ui_action") return this.uiAction(args, r);
     if (call.name === "read_status") {
       if (Object.keys(args).length) return JSON.stringify({ error: "read_status takes no arguments" });

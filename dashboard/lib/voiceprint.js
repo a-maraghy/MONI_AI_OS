@@ -1,53 +1,49 @@
 "use strict";
 /**
- * The voiceprint (2026-10-07): MINT AI's live voice can tell the enrolled
- * administrator's voice from other voices -- people in the room, a TV, its own
- * voice coming back through the speakers.
+ * The voiceprints (2026-10-07; stored voiceprints by name since the evening):
+ * MINT AI's live voice tells the people it knows apart -- each stored
+ * voiceprint has a name (AbdElMoniem, Zaghloul...) -- from voices it does not
+ * know (people in the room, a TV) and from its own voice coming back through
+ * the speakers, and addresses whoever it recognised by name.
  *
- *   Settings > Voice > Voiceprint     On / Off (default On). Off: the relay never
- *                                     calls the service; nothing is scored or logged.
- *   "Only respond to my voice"        Off by default = SHADOW mode: every turn is
- *                                     scored and logged, nothing is blocked. On =
- *                                     the gate below.
+ *   Settings > Voice > Voiceprint       On / Off (default On). Off: the relay never
+ *                                       calls the service; nothing is scored or logged.
+ *   "Only respond to stored voices"     Off by default = SHADOW: every turn is scored,
+ *                                       logged and the speaker named; no turn is blocked.
+ *                                       On = the gate below.
+ *   per person "May give commands"      Off: they are answered in conversation only (no
+ *                                       hand-off to MINT AI, no screen action, no "yes"
+ *                                       to a confirm). Identification, not authentication:
+ *                                       approvals and destructive actions still need the
+ *                                       signed-in user's click / Windows Hello.
  *
  * Per turn (a hold-to-talk press, a hands-free VAD segment) the relay
- * (lib/voice-live.js) sends the turn's speech (the first 3 s of it) to moni-voiceprint
+ * (lib/voice-live.js) sends the turn's speech (its first 3 s) to moni-voiceprint
  * (voiceprint/server.py: WeSpeaker ResNet34-LM in ONNX Runtime on a Unix
- * socket) and compares the embedding it gets back with the enrolled print
- * (cosine). Verdicts, thresholds from the trial on the administrator's own
- * recordings (tools/voiceprint/, 2026-10-07: accept >= 0.31 = FAR 1 %; the
- * user's lowest phrase scored 0.41, the best impostor 0.455):
+ * socket) and compares the embedding with EVERY stored print (cosine, 1-vs-N):
+ * decide() below.
  *
- *   accept     score >= accept                         -> the turn goes on
- *   uncertain  reject <= score < accept, nothing        -> not answered; never spoken about: the
- *              verified yet in this call                   page's pill says "Not sure it's you"
- *   sticky     reject <= score < accept (or too short), -> the turn goes on: the call's voice
- *              and a turn of this call was accepted        (not when heard over MINT AI's voice,
- *              within stickyMs (10 min)                    unless too short to judge)
- *   unverified under 0.8 s of speech (or < 0.3 s: no     -> the turn goes on;
- *              embedding at all), not below reject         below reject it is still "reject"
- *   reject     score < reject                          -> ignored, never spoken; the page's
- *                                                         pill says "Voice not recognised -- ignored"
- *   echo       heard over MINT AI's own playback and   -> dropped silently
- *              closer to MINT AI's TTS voice than to the user's
- *   none       no voiceprint enrolled                  -> not checked at all
- *   error      the service is down, slow (> 400 ms) or -> FAIL OPEN: the turn goes on;
- *              answered nonsense                         logged, Settings warns
+ *   accept     best >= accept, and best - second >= margin   -> that person
+ *   sticky     the call's current speaker, doubtful but at least stickyMin and not
+ *              clearly someone else (a stored person ahead by the margin)  -> that speaker
+ *   unverified under 0.8 s of speech, not clearly anyone          -> goes on, unnamed
+ *   uncertain  in between, or two stored people too close         -> gate: not answered
+ *   reject     every stored print below reject (an unknown voice) -> gate: ignored
+ *   echo       over MINT AI's playback and closer to its own voice -> gate: dropped
+ *   none / error  nothing enrolled / the service failed           -> goes on (fail open)
  *
- * Storage. The print is an embedding (256 numbers), biometric data: kept only
- * SEALED (AES-256-GCM) by the helper, whose key is root-only and never leaves
- * it (moni-helper voiceprint-seal / -open / -forget). On disk here:
- * DATA_DIR/voiceprint/<user id>.json (0600) = the sealed blob + non-secret
- * facts (which microphones, how many seconds, when). Opened into this
- * process's memory when a call needs it. Never in a log, the audit log, MINT
- * AI's memory, or a page. MINT AI's own voice print (for the echo rule) is
- * learned from what the relay plays, DATA_DIR/voiceprint/tts.json.
- *
- * Enrolment never stores audio: each clip is embedded as it arrives and only
- * the sums are kept (in memory until saved, then sealed).
+ * Storage. Each print is an embedding (sums per microphone), biometric data:
+ * kept only SEALED (AES-256-GCM) by the helper, whose key is root-only and never
+ * leaves it (moni-helper voiceprint-seal / -open / -forget). On disk here:
+ * DATA_DIR/voiceprint/people.json (0600): per person the name, the spoken name,
+ * the linked dashboard user, "may give commands", the microphones' facts and the
+ * sealed blob. The prints are opened into this process's memory only. Names are
+ * not secrets but go only to the ledger, the hand-off to MINT AI and the page.
+ * MINT AI's own voice print (the echo rule) is learned from what the relay
+ * plays, DATA_DIR/voiceprint/tts.json. Enrolment never stores audio.
  *
  * The ledger (table voiceprint_checks): one row per turn checked -- scores,
- * verdict, what was done -- for tuning and the 7-day view in Settings.
+ * verdict, the speaker, what was done -- for tuning and the 7-day view.
  */
 const fs = require("fs");
 const path = require("path");
@@ -62,7 +58,14 @@ const THRESHOLDS_SETTING = "voiceprint_thresholds";
 // stickyMs: after a turn verified as the administrator's, doubtful turns in the same call are theirs.
 // stickyMin: the lowest score a doubtful turn may have to count as the call's voice (default = reject;
 // raise it, e.g. 0.25, to let fewer other people through in a call where you were recognised).
-const DEFAULTS = Object.freeze({ accept: 0.31, reject: 0.2, echo: 0.45, first: 3, min: 0.8, timeoutMs: 400, stickyMs: 10 * 60 * 1000, stickyMin: 0.2 });
+// margin: how far the best stored person must be ahead of the second to be named (1-vs-N).
+const DEFAULTS = Object.freeze({ accept: 0.31, reject: 0.2, echo: 0.45, first: 3, min: 0.8, timeoutMs: 400, stickyMs: 10 * 60 * 1000, stickyMin: 0.2, margin: 0.05 });
+const MAX_PEOPLE = 10;
+// A display name: Latin letters, digits, spaces and . - ' (1-40). A spoken name: any letters (Arabic too), up to 40.
+const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9 .'-]{0,39}$/;
+const SPOKEN_RE = /^[\p{L}\p{M}\p{N} .'\u0640-]{1,40}$/u;
+// This deployment's own print, made before prints had names (2026-10-07): it becomes this person.
+const MIGRATE_NAMES = Object.freeze({ amaraghy: { name: "AbdElMoniem", spoken: "عبد المنعم" } });
 const MODEL = "WeSpeaker ResNet34-LM (VoxCeleb2), CC-BY-4.0";
 
 /*
@@ -73,9 +76,9 @@ const MODEL = "WeSpeaker ResNet34-LM (VoxCeleb2), CC-BY-4.0";
  * 0.25-0.31 8 %, above 0.31 1 %; the administrator's lowest phrase 0.40.
  */
 const PRESETS = Object.freeze([
-  { id: "relaxed", label: "Relaxed", stickyMin: 0.2, effect: "Once you're recognised in a call, about 18 % of other voices would be answered too. Your own turns: none missed in tests." },
-  { id: "strict", label: "Strict (recommended)", stickyMin: 0.25, effect: "Once you're recognised in a call, about 9 % of other voices would be answered. Your own turns: unchanged in tests." },
-  { id: "very_strict", label: "Very strict", stickyMin: 0.31, effect: "No leniency within a call: about 1 % of other voices answered. Your own turns: unchanged in tests; unsure turns are never answered." },
+  { id: "relaxed", label: "Relaxed", stickyMin: 0.2, effect: "Once someone is recognised in a call, about 18 % of unknown voices would be answered as them. Their own turns: none missed in tests." },
+  { id: "strict", label: "Strict (recommended)", stickyMin: 0.25, effect: "Once someone is recognised in a call, about 9 % of unknown voices would be answered as them. Their own turns: unchanged in tests." },
+  { id: "very_strict", label: "Very strict", stickyMin: 0.31, effect: "No leniency within a call: about 1 % of unknown voices answered. Their own turns: unchanged in tests; unsure turns are never answered." },
 ]);
 // What the Advanced fields may hold (server-side checked): reject < stickyMin <= accept.
 const BOUNDS = Object.freeze({ accept: [0.05, 0.8], reject: [0.05, 0.8], stickyMin: [0.05, 0.8], echo: [0.2, 0.9] });
@@ -160,9 +163,50 @@ function request(socketPath, method, p, body, timeoutMs) {
   });
 }
 
+/** A name for a person: { ok, value } | { ok: false, error }. */
+function cleanName(v) {
+  const n = String(v == null ? "" : v).replace(/\s+/g, " ").trim();
+  if (!NAME_RE.test(n)) return { ok: false, error: "A name is 1-40 Latin letters or digits (spaces, . - ' allowed), e.g. AbdElMoniem." };
+  return { ok: true, value: n };
+}
+function cleanSpoken(v) {
+  const n = String(v == null ? "" : v).replace(/\s+/g, " ").trim();
+  if (!n) return { ok: true, value: "" };
+  if (!SPOKEN_RE.test(n)) return { ok: false, error: "The spoken name is up to 40 letters (Arabic is fine), e.g. «عبد المنعم»." };
+  return { ok: true, value: n };
+}
+
+/**
+ * The 1-vs-N decision for one turn (pure; tested on its own).
+ *   scores   [{ id, score }] for every stored person with a print
+ *   o        { speechMs, overVoice, tts (score against MINT AI's voice or null),
+ *              current (the call's current speaker id, recent enough) }
+ *   th       thresholds()
+ * -> { verdict, id (who, or null), score (best), second, why }
+ */
+function decide(scores, o, th) {
+  const list = (scores || []).slice().sort((a, b) => b.score - a.score);
+  const best = list[0] || null;
+  const second = list[1] ? list[1].score : null;
+  const out = (verdict, id, why) => ({ verdict, id: id || null, score: best ? r3(best.score) : null, second: r3(second), ...(why ? { why } : {}) });
+  if (!best) return out("none");
+  const lead = second == null ? Infinity : best.score - second;
+  if (o.overVoice && o.tts != null && o.tts >= th.echo && o.tts > best.score) return out("echo");
+  const cur = o.current ? list.find((x) => x.id === o.current) : null;
+  // The call's current speaker still fits: at least stickyMin, and nobody else clearly ahead of them.
+  const curFits = !!(cur && cur.score >= Math.max(th.reject, th.stickyMin) && (best.id === cur.id || best.score - cur.score < th.margin));
+  if (best.score >= th.accept && lead >= th.margin) return out("accept", best.id);
+  if (best.score >= th.accept) return curFits ? out("sticky", cur.id, "the call's speaker (two voices close)") : out("uncertain", null, "two stored voices too close");
+  if (best.score < th.reject) return out("reject"); // nobody stored, however short
+  if (o.speechMs < th.min * 1000) return curFits ? out("sticky", cur.id, "the call's speaker") : out("unverified", null, "too short to check");
+  if (curFits && !o.overVoice) return out("sticky", cur.id, "the call's speaker");
+  return out("uncertain");
+}
+
 /**
  * deps: { db, priv: {voiceprintSeal, voiceprintOpen, voiceprintForget}, dataDir,
- *         socketPath?, log?, now?, trialClips?(user) -> [{mic, id, path}] }
+ *         socketPath?, log?, now?, parseWav?, trialClips?(user) -> [{mic, id, part, path}],
+ *         userById?(id) -> {id, username, display_name} (the migration) }
  */
 function createVoiceprint(deps) {
   const d = deps || {};
@@ -172,13 +216,15 @@ function createVoiceprint(deps) {
   const now = d.now || Date.now;
   const socketPath = d.socketPath || SOCKET;
   const dir = path.join(d.dataDir, "voiceprint");
-  const prints = new Map(); // user id -> { vec: number[] (unit), mics: {mic: {sum, windows}}, meta }
-  const loading = new Map(); // user id -> Promise
-  const pending = new Map(); // user id + mic -> { sum, windows, speech_ms, clips: {id: speech_ms}, at }
+  const peopleFile = path.join(dir, "people.json");
+  const open = new Map(); // person id -> { vec: unit, mics: {mic: {sum, windows}} }
+  let opening = null;
+  const pending = new Map(); // person id + mic -> { clips: {id: {sum, windows, speech_ms}}, at }
   let service = { ok: null, at: 0, error: null, errorAt: 0, failures: 0, checked: 0, health: null };
-  let tts = null; // { voices: { name: { sum, n, at } } }
+  let tts = null;
   let lastTtsAt = 0;
   let pruned = 0;
+  let store = null; // { v: 2, people: [...] }
 
   const mk = () => {
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -188,7 +234,6 @@ function createVoiceprint(deps) {
       /* best effort */
     }
   };
-  const fileOf = (user) => path.join(dir, String(Number(user.id)) + ".json");
   const writeJson = (p, obj) => {
     mk();
     fs.writeFileSync(p + ".tmp", JSON.stringify(obj), { mode: 0o600 });
@@ -201,24 +246,12 @@ function createVoiceprint(deps) {
       return null;
     }
   };
+  const bad = (status, message) => Object.assign(new Error(message), { status });
 
   /* ---- the switches ---- */
 
   const enabled = () => db.getSetting(ENABLED_SETTING, "on") !== "off";
   const gate = () => enabled() && db.getSetting(GATE_SETTING, "off") === "on";
-  function thresholds() {
-    let t = {};
-    try {
-      t = JSON.parse(db.getSetting(THRESHOLDS_SETTING, "") || "{}") || {};
-    } catch (_) {
-      t = {};
-    }
-    const o = { ...DEFAULTS };
-    for (const k of Object.keys(DEFAULTS)) if (Number.isFinite(Number(t[k]))) o[k] = Number(t[k]);
-    if (o.reject > o.accept) o.reject = o.accept;
-    return o;
-  }
-  /** The stored thresholds as written (only the keys someone set). */
   function storedThresholds() {
     try {
       const t = JSON.parse(db.getSetting(THRESHOLDS_SETTING, "") || "{}");
@@ -226,6 +259,13 @@ function createVoiceprint(deps) {
     } catch (_) {
       return {};
     }
+  }
+  function thresholds() {
+    const t = storedThresholds();
+    const o = { ...DEFAULTS };
+    for (const k of Object.keys(DEFAULTS)) if (Number.isFinite(Number(t[k]))) o[k] = Number(t[k]);
+    if (o.reject > o.accept) o.reject = o.accept;
+    return o;
   }
   /** Merge `patch` into the stored thresholds (other keys kept); a key set to null goes back to its default. */
   function setThresholds(patch, by) {
@@ -237,12 +277,8 @@ function createVoiceprint(deps) {
     db.setSetting(THRESHOLDS_SETTING, JSON.stringify(cur), by);
     return thresholds();
   }
-  function setEnabled(on, by) {
-    db.setSetting(ENABLED_SETTING, on ? "on" : "off", by);
-  }
-  function setGate(on, by) {
-    db.setSetting(GATE_SETTING, on ? "on" : "off", by);
-  }
+  const setEnabled = (on, by) => db.setSetting(ENABLED_SETTING, on ? "on" : "off", by);
+  const setGate = (on, by) => db.setSetting(GATE_SETTING, on ? "on" : "off", by);
 
   /* ---- the service ---- */
 
@@ -263,7 +299,6 @@ function createVoiceprint(deps) {
       return null;
     }
   }
-  /** pcm: PCM16 LE mono at `rate` -> {embedding|null, speech_ms, used_ms, ms, too_short}. */
   async function embed(pcm, rate, first, timeoutMs) {
     const j = await request(socketPath, "POST", `/embed?rate=${rate}&first=${first == null ? thresholds().first : first}`, pcm, timeoutMs || thresholds().timeoutMs);
     if (j.embedding != null && (!Array.isArray(j.embedding) || j.embedding.length < 64 || !j.embedding.every(Number.isFinite))) throw new Error("the voiceprint service answered a malformed embedding");
@@ -275,145 +310,256 @@ function createVoiceprint(deps) {
     return j;
   }
 
-  /* ---- the print: sealed on disk, open in memory ---- */
+  /* ---- the people: people.json, prints sealed in it ---- */
 
-  function meta(user) {
-    const f = readJson(fileOf(user));
-    if (!f || !f.sealed) return null;
-    return { created_at: f.created_at, updated_at: f.updated_at, mics: f.mics || {}, model: f.model || MODEL };
+  function load() {
+    if (store) return store;
+    const f = readJson(peopleFile);
+    if (f && Array.isArray(f.people)) return (store = f);
+    store = { v: 2, people: [] };
+    migrate();
+    return store;
   }
-  function hasPrint(user) {
-    return prints.has(Number(user.id));
+  function persist() {
+    writeJson(peopleFile, store);
   }
-  /** Open the user's print (once; then from memory). -> {vec, mics} | null. */
-  function printFor(user) {
-    const id = Number(user.id);
-    if (prints.has(id)) return Promise.resolve(prints.get(id));
-    if (loading.has(id)) return loading.get(id);
-    const p = (async () => {
-      const f = readJson(fileOf(user));
-      if (!f || !f.sealed) return null;
-      const r = await priv.voiceprintOpen(f.sealed);
-      const plain = JSON.parse(Buffer.from(r.plain, "base64").toString("utf8"));
-      const pr = build(plain.mics || {});
-      if (!pr) return null;
-      prints.set(id, pr);
-      return pr;
-    })()
-      .catch((e) => {
-        log("voiceprint: could not open the voiceprint of user " + id + ": " + e.message);
-        return null;
-      })
-      .finally(() => loading.delete(id));
-    loading.set(id, p);
-    return p;
+  /** Before names (one print per dashboard user, DATA_DIR/voiceprint/<user id>.json): each becomes a person. */
+  function migrate() {
+    let files = [];
+    try {
+      files = fs.readdirSync(dir).filter((f) => /^\d+\.json$/.test(f));
+    } catch (_) {
+      files = [];
+    }
+    if (!files.length) return;
+    for (const f of files) {
+      const old = readJson(path.join(dir, f));
+      if (!old || !old.sealed) continue;
+      const uid = Number(f.replace(".json", ""));
+      const u = d.userById ? d.userById(uid) : null;
+      const named = (u && MIGRATE_NAMES[u.username]) || null;
+      const nm = cleanName(named ? named.name : (u && (u.display_name || u.username)) || "Person " + uid);
+      store.people.push({
+        id: newId(),
+        name: nm.ok ? nm.value : "Person " + uid,
+        spoken: named ? named.spoken : "",
+        user_id: uid,
+        may_command: true,
+        created_at: old.created_at || new Date(now()).toISOString(),
+        updated_at: old.updated_at || null,
+        last_heard: null,
+        mics: old.mics || {},
+        sealed: old.sealed,
+      });
+    }
+    persist();
+    for (const f of files) {
+      try {
+        fs.unlinkSync(path.join(dir, f));
+      } catch (_) {
+        /* kept */
+      }
+    }
+    log(`voiceprint: ${store.people.length} voiceprint(s) moved to stored voiceprints by name`);
   }
+  function newId() {
+    let id;
+    do id = "p" + require("crypto").randomBytes(4).toString("hex");
+    while (store.people.some((p) => p.id === id));
+    return id;
+  }
+  const pub = (p) => ({ id: p.id, name: p.name, spoken: p.spoken || "", user_id: p.user_id == null ? null : p.user_id, may_command: !!p.may_command, created_at: p.created_at, updated_at: p.updated_at || null, last_heard: p.last_heard || null, mics: p.mics || {}, enrolled: !!p.sealed });
+  function people() {
+    return load().people.map(pub);
+  }
+  function find(pid) {
+    return load().people.find((p) => p.id === String(pid)) || null;
+  }
+  function person(pid) {
+    const p = find(pid);
+    return p ? pub(p) : null;
+  }
+  function personForUser(user) {
+    const p = user ? load().people.find((x) => x.user_id === Number(user.id)) : null;
+    return p ? pub(p) : null;
+  }
+  function addPerson(o) {
+    load();
+    if (store.people.length >= MAX_PEOPLE) throw bad(400, `At most ${MAX_PEOPLE} stored voiceprints.`);
+    const n = cleanName(o && o.name);
+    if (!n.ok) throw bad(400, n.error);
+    const sp = cleanSpoken(o && o.spoken);
+    if (!sp.ok) throw bad(400, sp.error);
+    if (store.people.some((p) => p.name.toLowerCase() === n.value.toLowerCase())) throw bad(400, "There is already a voiceprint called " + n.value + ".");
+    const uid = o && o.user_id != null ? Number(o.user_id) : null;
+    if (uid != null && store.people.some((p) => p.user_id === uid)) throw bad(400, "That dashboard user already has a voiceprint.");
+    const p = { id: newId(), name: n.value, spoken: sp.value, user_id: uid, may_command: o && o.may_command != null ? !!o.may_command : uid != null, created_at: new Date(now()).toISOString(), updated_at: null, last_heard: null, mics: {}, sealed: null };
+    store.people.push(p);
+    persist();
+    return pub(p);
+  }
+  function updatePerson(pid, patch) {
+    const p = find(pid);
+    if (!p) throw bad(404, "No such voiceprint.");
+    if (patch.name !== undefined) {
+      const n = cleanName(patch.name);
+      if (!n.ok) throw bad(400, n.error);
+      if (store.people.some((x) => x !== p && x.name.toLowerCase() === n.value.toLowerCase())) throw bad(400, "There is already a voiceprint called " + n.value + ".");
+      p.name = n.value;
+    }
+    if (patch.spoken !== undefined) {
+      const sp = cleanSpoken(patch.spoken);
+      if (!sp.ok) throw bad(400, sp.error);
+      p.spoken = sp.value;
+    }
+    if (patch.may_command !== undefined) p.may_command = !!patch.may_command;
+    persist();
+    return pub(p);
+  }
+  async function removePerson(pid) {
+    load();
+    const i = store.people.findIndex((p) => p.id === String(pid));
+    if (i < 0) return null;
+    const [p] = store.people.splice(i, 1);
+    open.delete(p.id);
+    for (const k of [...pending.keys()]) if (k.startsWith(p.id + "|")) pending.delete(k);
+    persist();
+    return pub(p);
+  }
+
+  /* ---- the prints, open in memory ---- */
+
   function build(mics) {
-    const keys = Object.keys(mics).filter((m) => mics[m] && Array.isArray(mics[m].sum) && mics[m].windows > 0);
+    const keys = Object.keys(mics || {}).filter((m) => mics[m] && Array.isArray(mics[m].sum) && mics[m].windows > 0);
     if (!keys.length) return null;
-    const dim = mics[keys[0]].sum.length;
-    const sum = new Array(dim).fill(0);
+    const sum = new Array(mics[keys[0]].sum.length).fill(0);
     for (const m of keys) mics[m].sum.forEach((v, i) => (sum[i] += v));
     return { vec: unit(sum), mics };
   }
-  async function save(user, mics, info) {
+  /** Open every stored print (each once, through the helper). */
+  function openAll() {
+    if (opening) return opening;
+    opening = (async () => {
+      for (const p of load().people) {
+        if (!p.sealed || open.has(p.id)) continue;
+        try {
+          const r = await priv.voiceprintOpen(p.sealed);
+          const plain = JSON.parse(Buffer.from(r.plain, "base64").toString("utf8"));
+          const pr = build(plain.mics);
+          if (pr) open.set(p.id, pr);
+        } catch (e) {
+          log("voiceprint: could not open a stored voiceprint: " + e.message);
+        }
+      }
+    })().finally(() => (opening = null));
+    return opening;
+  }
+  const hasPrints = () => open.size > 0;
+  async function printOf(pid) {
+    if (!open.has(pid)) await openAll();
+    return open.get(pid) || null;
+  }
+  async function save(p, mics) {
     const plain = Buffer.from(JSON.stringify({ v: 1, model: MODEL, mics }), "utf8").toString("base64");
     const r = await priv.voiceprintSeal(plain);
-    const was = readJson(fileOf(user)) || {};
-    const at = new Date(now()).toISOString();
-    writeJson(fileOf(user), { v: 1, model: MODEL, sealed: r.sealed, created_at: was.created_at || at, updated_at: at, mics: info });
+    p.sealed = r.sealed;
+    p.updated_at = new Date(now()).toISOString();
+    persist();
     const pr = build(mics);
-    if (pr) prints.set(Number(user.id), pr);
-    else prints.delete(Number(user.id));
+    if (pr) open.set(p.id, pr);
+    else open.delete(p.id);
   }
 
-  /* ---- enrolment ---- */
+  /* ---- enrolment (per person, per microphone) ---- */
 
-  const pkey = (user, mic) => Number(user.id) + "|" + mic;
-  /** One clip of a guided enrolment: embedded now, kept as a sum in memory. */
-  async function enrolClip(user, mic, clipId, pcm, rate) {
-    if (!MIC_RE.test(mic)) throw Object.assign(new Error("Which microphone?"), { status: 400 });
+  const pkey = (pid, mic) => pid + "|" + mic;
+  async function enrolClip(pid, mic, clipId, pcm, rate) {
+    if (!find(pid)) throw bad(404, "No such voiceprint.");
+    if (!MIC_RE.test(mic)) throw bad(400, "Which microphone?");
     const j = await enrolEmbed(pcm, rate);
-    const k = pkey(user, mic);
+    const k = pkey(pid, mic);
     const p = pending.get(k) || { clips: {}, at: now() };
     p.clips[clipId] = { sum: j.embedding, windows: j.windows, speech_ms: j.speech_ms };
     p.at = now();
     pending.set(k, p);
     return { speech_ms: j.speech_ms, windows: j.windows, total_ms: Object.values(p.clips).reduce((n, c) => n + c.speech_ms, 0) };
   }
-  function pendingOf(user, mic) {
-    const p = pending.get(pkey(user, mic));
+  function pendingOf(pid, mic) {
+    const p = pending.get(pkey(pid, mic));
     return p ? { clips: Object.keys(p.clips), total_ms: Object.values(p.clips).reduce((n, c) => n + c.speech_ms, 0) } : { clips: [], total_ms: 0 };
   }
-  function discardPending(user, mic) {
-    pending.delete(pkey(user, mic));
-  }
-  /** Save the guided enrolment of one microphone into the user's print (replacing that microphone's part). */
-  async function enrolSave(user, mic, source) {
-    const k = pkey(user, mic);
-    const p = pending.get(k);
-    const clips = p ? Object.values(p.clips) : [];
+  const discardPending = (pid, mic) => pending.delete(pkey(pid, mic));
+  async function enrolSave(pid, mic, source) {
+    const person0 = find(pid);
+    if (!person0) throw bad(404, "No such voiceprint.");
+    const k = pkey(pid, mic);
+    const pend = pending.get(k);
+    const clips = pend ? Object.values(pend.clips) : [];
     const total = clips.reduce((n, c) => n + c.speech_ms, 0);
-    if (total < MIN_ENROL_MS) throw Object.assign(new Error(`Not enough speech yet: ${Math.round(total / 1000)} s of the ${MIN_ENROL_MS / 1000} s needed.`), { status: 400 });
+    if (total < MIN_ENROL_MS) throw bad(400, `Not enough speech yet: ${Math.round(total / 1000)} s of the ${MIN_ENROL_MS / 1000} s needed.`);
     const sum = new Array(clips[0].sum.length).fill(0);
     let windows = 0;
     for (const c of clips) {
       c.sum.forEach((v, i) => (sum[i] += v));
       windows += c.windows;
     }
-    const cur = (await printFor(user)) || { mics: {} };
+    const cur = (await printOf(pid)) || { mics: {} };
     const mics = { ...cur.mics, [mic]: { sum, windows } };
-    const info = { ...((meta(user) || {}).mics || {}), [mic]: { windows, speech_s: Math.round(total / 100) / 10, clips: clips.length, source: source || "enrol", at: new Date(now()).toISOString() } };
-    await save(user, mics, info);
+    person0.mics = { ...(person0.mics || {}), [mic]: { windows, speech_s: Math.round(total / 100) / 10, clips: clips.length, source: source || "enrol", at: new Date(now()).toISOString() } };
+    await save(person0, mics);
     pending.delete(k);
-    return { mic, windows, speech_s: info[mic].speech_s, mics: Object.keys(mics) };
+    return { person: pid, name: person0.name, mic, windows, speech_s: person0.mics[mic].speech_s, mics: Object.keys(mics) };
   }
-  /** Enrol from the voiceprint trial's recordings (their reading paragraphs, one microphone slot). */
+  /** The signed-in user's trial recordings (one slot) into their own voiceprint (made if missing). */
   async function enrolFromTrial(user, slot) {
     const clips = (d.trialClips ? d.trialClips(user) : []).filter((c) => c.mic === slot && c.part === "enrol");
-    if (!clips.length) throw Object.assign(new Error("There are no trial recordings to enrol from."), { status: 400 });
-    discardPending(user, slot);
-    for (const c of clips) {
-      const buf = fs.readFileSync(c.path);
-      const w = d.parseWav(buf);
-      const pcm = Buffer.from(w.samples.buffer, w.samples.byteOffset, w.samples.length * 2);
-      await enrolClip(user, slot, c.id, pcm, w.rate);
+    if (!clips.length) throw bad(400, "There are no trial recordings to enrol from.");
+    let me = personForUser(user);
+    if (!me) {
+      const named = MIGRATE_NAMES[user.username] || null;
+      me = addPerson({ name: named ? named.name : user.display_name || user.username, spoken: named ? named.spoken : "", user_id: user.id, may_command: true });
     }
-    return enrolSave(user, slot, "trial");
+    discardPending(me.id, slot);
+    for (const c of clips) {
+      const w = d.parseWav(fs.readFileSync(c.path));
+      await enrolClip(me.id, slot, c.id, Buffer.from(w.samples.buffer, w.samples.byteOffset, w.samples.length * 2), w.rate);
+    }
+    return enrolSave(me.id, slot, "trial");
   }
-  async function removeMic(user, mic) {
-    const cur = await printFor(user);
-    if (!cur || !cur.mics[mic]) return false;
+  async function removeMic(pid, mic) {
+    const p = find(pid);
+    const cur = p ? await printOf(pid) : null;
+    if (!p || !cur || !cur.mics[mic]) return false;
     const mics = { ...cur.mics };
     delete mics[mic];
-    if (!Object.keys(mics).length) return removePrint(user).then(() => true);
-    const info = { ...((meta(user) || {}).mics || {}) };
+    const info = { ...(p.mics || {}) };
     delete info[mic];
-    await save(user, mics, info);
+    p.mics = info;
+    if (!Object.keys(mics).length) {
+      p.sealed = null;
+      open.delete(p.id);
+      persist();
+      return true;
+    }
+    await save(p, mics);
     return true;
   }
-  async function removePrint(user) {
-    prints.delete(Number(user.id));
-    for (const k of [...pending.keys()]) if (k.startsWith(Number(user.id) + "|")) pending.delete(k);
+  /** Everything: every stored voiceprint, the ledger, MINT AI's voice print; the key too. */
+  async function forgetAll() {
+    const n = load().people.length;
+    store.people = [];
+    open.clear();
+    pending.clear();
+    persist();
     try {
-      fs.unlinkSync(fileOf(user));
-      return true;
+      fs.unlinkSync(path.join(dir, "tts.json"));
     } catch (_) {
-      return false;
+      /* none */
     }
-  }
-  /** Everything of this user's: the print, the ledger rows; the key too when no other print needs it. */
-  async function forgetAll(user) {
-    const had = await removePrint(user);
-    const rows = db.voiceprintChecksDelete(user.username);
-    let others = 0;
-    try {
-      others = fs.readdirSync(dir).filter((f) => /^\d+\.json$/.test(f)).length;
-    } catch (_) {
-      others = 0;
-    }
-    const helper = await priv.voiceprintForget(others > 0);
-    return { print: had, ledger_rows: rows, key_deleted: !!(helper && helper.key_deleted), results_deleted: (helper && helper.results_deleted) || 0 };
+    tts = null;
+    const rows = db.voiceprintChecksDeleteAll();
+    const helper = await priv.voiceprintForget(false);
+    return { people: n, ledger_rows: rows, key_deleted: !!(helper && helper.key_deleted), results_deleted: (helper && helper.results_deleted) || 0 };
   }
 
   /* ---- MINT AI's own voice (the echo rule) ---- */
@@ -426,7 +572,6 @@ function createVoiceprint(deps) {
     const v = ttsLoad().voices[voice];
     return v && v.n > 0 ? unit(v.sum) : null;
   }
-  /** Audio the relay played in this voice (PCM16 24 kHz, >= 1.5 s): folded into its print, now and then. */
   async function learnTts(voice, pcm) {
     if (!enabled() || !/^[a-z]{2,20}$/.test(String(voice || "")) || !pcm || pcm.length < 24000 * 2 * 1.5) return false;
     const v = ttsLoad().voices[voice];
@@ -448,18 +593,19 @@ function createVoiceprint(deps) {
     }
   }
 
-  /* ---- the check ---- */
+  /* ---- the check: who is speaking ---- */
 
   /**
    * One turn: pcm = PCM16 24 kHz (what the relay relayed). Never throws: a
    * failure is {verdict: "error"} (the caller goes on: fail open).
-   * o: { overVoice, voice }
+   * o: { overVoice, voice, current: { id, at } (the call's current speaker) }
+   * -> { verdict, speaker: {id, name, spoken, may_command} | null, score, second, tts_score, ... }
    */
-  async function check(user, pcm, o) {
+  async function check(pcm, o) {
     const t0 = now();
     const th = thresholds();
-    const pr = prints.get(Number(user.id)) || (await printFor(user));
-    if (!pr) return { verdict: "none", ms: now() - t0 };
+    if (!open.size) await openAll();
+    if (!open.size) return { verdict: "none", ms: now() - t0 };
     let j;
     try {
       j = await embed(pcm, 24000, th.first, th.timeoutMs);
@@ -470,22 +616,25 @@ function createVoiceprint(deps) {
       return { verdict: "error", error: String(e.message).slice(0, 120), ms: now() - t0 };
     }
     const out = { speech_ms: j.speech_ms, used_ms: j.used_ms, svc_ms: j.ms, ms: now() - t0 };
-    const recent = !!(o && o.verifiedAt && now() - o.verifiedAt <= th.stickyMs);
-    const over = !!(o && o.overVoice);
-    if (!j.embedding) return { ...out, verdict: "unverified", why: "under 0.3 s of speech" };
-    const score = dot(pr.vec, j.embedding);
+    if (!j.embedding) return { ...out, verdict: "unverified", speaker: null, why: "under 0.3 s of speech" };
+    const scores = [...open.entries()].map(([id, pr]) => ({ id, score: dot(pr.vec, j.embedding) }));
     const tp = o && o.voice ? ttsPrint(o.voice) : null;
     const tts = tp ? dot(tp, j.embedding) : null;
-    const res = (verdict, why) => ({ ...out, verdict, score: r3(score), tts_score: r3(tts), ...(why ? { why } : {}) });
-    const sticky = recent && score >= Math.max(th.reject, th.stickyMin);
-    // MINT AI's own voice coming back while it plays.
-    if (over && tts != null && tts >= th.echo && tts > score) return res("echo");
-    if (score >= th.accept) return res("accept");
-    if (score < th.reject) return res("reject"); // clearly another voice, however short
-    // In between: too little speech to judge, or doubtful.
-    if (j.speech_ms < th.min * 1000) return res(sticky ? "sticky" : "unverified", sticky ? "this call's voice" : "too short to check");
-    if (sticky && !over) return res("sticky", "this call's voice");
-    return res("uncertain");
+    const cur = o && o.current && o.current.id && now() - (o.current.at || 0) <= th.stickyMs ? o.current.id : null;
+    const v = decide(scores, { speechMs: j.speech_ms, overVoice: !!(o && o.overVoice), tts, current: cur }, th);
+    const p = v.id ? find(v.id) : null;
+    if (p && (v.verdict === "accept" || v.verdict === "sticky")) {
+      p.last_heard = new Date(now()).toISOString();
+      if (now() - (p._lastSaved || 0) > 60000) {
+        p._lastSaved = now();
+        try {
+          persist();
+        } catch (_) {
+          /* best effort */
+        }
+      }
+    }
+    return { ...out, verdict: v.verdict, speaker: p ? { id: p.id, name: p.name, spoken: p.spoken || "", may_command: !!p.may_command } : null, score: v.score, second: v.second, tts_score: r3(tts), ...(v.why ? { why: v.why } : {}) };
   }
 
   /* ---- the ledger ---- */
@@ -501,10 +650,11 @@ function createVoiceprint(deps) {
       log("voiceprint: could not write the ledger: " + e.message);
     }
   }
-  /** The last `days` days: counts per verdict, what the gate would have done, a score histogram. */
-  function stats(days, actor) {
-    const rows = db.voiceprintChecksSince(now() - (days || 7) * DAY, actor || null);
+  /** The last `days` days: per verdict, per person, what the gate would have done, a score histogram. */
+  function stats(days) {
+    const rows = db.voiceprintChecksSince(now() - (days || 7) * DAY, null);
     const by = { accept: 0, sticky: 0, unverified: 0, uncertain: 0, reject: 0, echo: 0, short: 0, error: 0 };
+    const per = {};
     const acted = {};
     const bins = Math.round((HIST.to - HIST.from) / HIST.step);
     const hist = new Array(bins).fill(0);
@@ -512,11 +662,17 @@ function createVoiceprint(deps) {
     const ms = [];
     for (const r of rows) {
       if (by[r.verdict] !== undefined) by[r.verdict]++;
+      if (r.speaker_id && (r.verdict === "accept" || r.verdict === "sticky")) {
+        const p = find(r.speaker_id);
+        const k = p ? p.id : r.speaker_id;
+        per[k] = per[k] || { id: k, name: p ? p.name : r.speaker || "(deleted)", turns: 0, talk_only: 0 };
+        per[k].turns++;
+        if (r.acted && /talk only/.test(r.acted)) per[k].talk_only++;
+      }
       if (r.acted) acted[r.acted] = (acted[r.acted] || 0) + 1;
       if (r.score != null) {
         scores.push(r.score);
-        const i = Math.max(0, Math.min(bins - 1, Math.floor((r.score - HIST.from) / HIST.step)));
-        hist[i]++;
+        hist[Math.max(0, Math.min(bins - 1, Math.floor((r.score - HIST.from) / HIST.step)))]++;
       }
       if (r.ms != null) ms.push(r.ms);
     }
@@ -527,6 +683,9 @@ function createVoiceprint(deps) {
       days: days || 7,
       checked: rows.length,
       by,
+      people: Object.values(per).sort((a, b) => b.turns - a.turns),
+      unknown: by.reject,
+      unsure: by.uncertain,
       acted,
       would_ignore: by.reject + by.echo,
       would_ask: by.uncertain,
@@ -544,13 +703,17 @@ function createVoiceprint(deps) {
 
   function status(user) {
     const recentError = service.errorAt && now() - service.errorAt < 10 * 60 * 1000 && service.ok === false;
+    const ps = people();
     return {
       enabled: enabled(),
       gate: gate(),
       thresholds: thresholds(),
       preset: presetOf(thresholds()),
       service: { ok: service.ok, error: recentError ? service.error : null, errorAt: service.errorAt || null, health: service.health ? { model: service.health.model, dim: service.health.dim, threads: service.health.threads } : null },
-      enrolled: user ? meta(user) : null,
+      people: ps,
+      enrolledCount: ps.filter((p) => p.enrolled).length,
+      me: user ? personForUser(user) : null,
+      max: MAX_PEOPLE,
       model: MODEL,
     };
   }
@@ -567,16 +730,20 @@ function createVoiceprint(deps) {
     health,
     embed,
     check,
-    hasPrint,
-    printFor,
-    meta,
+    hasPrints,
+    openAll,
+    people,
+    person,
+    personForUser,
+    addPerson,
+    updatePerson,
+    removePerson,
     enrolClip,
     enrolSave,
     enrolFromTrial,
     pendingOf,
     discardPending,
     removeMic,
-    removePrint,
     forgetAll,
     learnTts,
     ttsPrint,
@@ -587,4 +754,4 @@ function createVoiceprint(deps) {
   };
 }
 
-module.exports = { createVoiceprint, PRESETS, BOUNDS, TUNABLE, validateThresholds, presetOf, DEFAULTS, MODEL, ENABLED_SETTING, GATE_SETTING, THRESHOLDS_SETTING, MIN_ENROL_MS, MIC_RE, request, unit, dot };
+module.exports = { createVoiceprint, decide, cleanName, cleanSpoken, PRESETS, BOUNDS, TUNABLE, validateThresholds, presetOf, DEFAULTS, MAX_PEOPLE, MIGRATE_NAMES, MODEL, ENABLED_SETTING, GATE_SETTING, THRESHOLDS_SETTING, MIN_ENROL_MS, MIC_RE, request, unit, dot };

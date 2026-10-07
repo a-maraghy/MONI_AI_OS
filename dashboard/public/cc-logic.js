@@ -44,21 +44,26 @@
   function isSessView(v) { return typeof v === "string" && Object.prototype.hasOwnProperty.call(SESS_VIEWS, v); }
 
   /**
-   * The voiceprint's verdict on the state pill (the relay's {type: "voiceprint", kind, gated}):
+   * Who is speaking, on the state pill (the relay's {type: "voiceprint", kind, gated, name, talkOnly}):
    * { label, tone: "ok" | "bad" | "mid", icon: "you" | "no" | "q" } -- never a score.
-   *   you    recognised (or the call's voice)
-   *   other  another voice; echo: MINT AI's own voice coming back
-   *   unsure doubtful (gate: not answered; nothing is ever spoken); short: too little speech to check (let through)
-   * gated: "Only respond to my voice" is on (what it did) or off (what it would have done).
+   *   known  a stored voiceprint, by name ("Recognised: Zaghloul"; "Zaghloul — talk only" when
+   *          that person may not give commands and was answered in conversation only)
+   *   other  an unknown voice; echo: MINT AI's own voice coming back
+   *   unsure not sure who's speaking (gate: not answered; nothing is ever spoken); short: too little speech (let through)
+   * gated: "Only respond to stored voices" is on (what it did) or off (what it would have done).
    */
   var VP_SHOW_MS = 2600; // shown this long at most...
   var VP_MIN_MS = 1500; // ...and at least this long, even if the state moves on (an ignored turn goes straight back to listening)
-  function vpBadge(kind, gated) {
-    if (kind === "you") return { label: "Recognised", tone: "ok", icon: "you" };
-    if (kind === "other") return { label: "Voice not recognised — " + (gated ? "ignored" : "would be ignored"), tone: "bad", icon: "no" };
+  function vpBadge(kind, gated, name, talkOnly) {
+    var n = oneLine(name || "", 40);
+    if (kind === "known" || kind === "you") {
+      if (!n) return { label: "Recognised", tone: "ok", icon: "you" };
+      return talkOnly ? { label: n + " — talk only", tone: "mid", icon: "you" } : { label: "Recognised: " + n, tone: "ok", icon: "you" };
+    }
+    if (kind === "other") return { label: "Unknown voice — " + (gated ? "ignored" : "would be ignored"), tone: "bad", icon: "no" };
     if (kind === "echo") return { label: "MINT AI's own voice — " + (gated ? "ignored" : "would be ignored"), tone: "bad", icon: "no" };
-    if (kind === "unsure") return { label: "Not sure it's you — " + (gated ? "not answered" : "would not be answered"), tone: "mid", icon: "q" };
-    if (kind === "short") return { label: "Not sure it's you", tone: "mid", icon: "q" };
+    if (kind === "unsure") return { label: "Not sure who's speaking" + (gated ? " — not answered" : ""), tone: "mid", icon: "q" };
+    if (kind === "short") return { label: "Not sure who's speaking", tone: "mid", icon: "q" };
     return null;
   }
 

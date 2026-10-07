@@ -13,6 +13,7 @@
   var CSRF = root.getAttribute("data-csrf") || "";
   var WORKLET = root.getAttribute("data-worklet") || "/static/voice-live-worklet.js";
   var NEED = Number(root.getAttribute("data-need")) || 30;
+  var PERSON = root.getAttribute("data-person") || "";
   var AC = window.AudioContext || window.webkitAudioContext;
   var rec = null;
 
@@ -92,7 +93,7 @@
     var n = r.frames.reduce(function (a, f) { return a + f.length; }, 0), all = new Int16Array(n), at = 0;
     r.frames.forEach(function (f) { all.set(f, at); at += f.length; });
     state(r.id, "learning…");
-    fetch("/mint-ai/api/voiceprint/enrol-clip?mic=" + encodeURIComponent(slot()) + "&id=" + encodeURIComponent(r.id), {
+    fetch("/mint-ai/api/voiceprint/enrol-clip?person=" + encodeURIComponent(PERSON) + "&mic=" + encodeURIComponent(slot()) + "&id=" + encodeURIComponent(r.id), {
       method: "POST", credentials: "same-origin",
       headers: { "Content-Type": "audio/wav", Accept: "application/json", "X-CSRF-Token": CSRF },
       body: wav(all),
@@ -115,13 +116,13 @@
     var btn = this;
     btn.disabled = true;
     $("#vpe-done").textContent = "Saving…";
-    fetch("/mint-ai/api/voiceprint/enrol-save", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json", Accept: "application/json", "X-CSRF-Token": CSRF }, body: JSON.stringify({ mic: slot() }) })
+    fetch("/mint-ai/api/voiceprint/enrol-save", { method: "POST", credentials: "same-origin", headers: { "Content-Type": "application/json", Accept: "application/json", "X-CSRF-Token": CSRF }, body: JSON.stringify({ person: PERSON, mic: slot() }) })
       .then(json)
       .then(function (j) {
         $("#vpe-done").innerHTML = "";
-        var t = document.createTextNode("Saved: your voiceprint now covers " + j.mics.length + " microphone" + (j.mics.length === 1 ? "" : "s") + ". ");
+        var t = document.createTextNode("Saved: " + j.name + "'s voiceprint now covers " + j.mics.length + " microphone" + (j.mics.length === 1 ? "" : "s") + ". ");
         var a = document.createElement("a");
-        a.href = "/mint-ai/settings/voice#v-vp";
+        a.href = "/mint-ai/settings/voice#v-vp-people";
         a.textContent = "Back to Settings ▸ Voice";
         $("#vpe-done").appendChild(t);
         $("#vpe-done").appendChild(a);
@@ -130,7 +131,7 @@
   });
   function refresh() {
     $$(".vp-row").forEach(function (row) { state(row.getAttribute("data-id"), "not recorded"); $("[data-rec]", row).textContent = "Record"; });
-    fetch("/mint-ai/api/voiceprint/enrol-status?mic=" + encodeURIComponent(slot()), { credentials: "same-origin", headers: { Accept: "application/json" } })
+    fetch("/mint-ai/api/voiceprint/enrol-status?person=" + encodeURIComponent(PERSON) + "&mic=" + encodeURIComponent(slot()), { credentials: "same-origin", headers: { Accept: "application/json" } })
       .then(json)
       .then(function (j) {
         (j.clips || []).forEach(function (id) { state(id, "done", "ok"); var b = $('[data-rec="' + id + '"]'); if (b) b.textContent = "Record again"; });

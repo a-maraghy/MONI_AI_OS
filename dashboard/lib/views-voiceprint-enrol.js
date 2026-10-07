@@ -8,8 +8,9 @@
  */
 const { esc, shell, card, icon } = require("./ui");
 
-function page({ csrf, user, paragraphs, slots, worklet, enabled, enrolled, minSeconds }) {
-  const have = (enrolled && enrolled.mics) || {};
+function page({ csrf, user, person, isMe, paragraphs, slots, worklet, enabled, minSeconds }) {
+  const have = (person && person.mics) || {};
+  const who = person ? person.name : "";
   const slotOpts = slots.map((s, i) => `<option value="${esc(s.id)}"${i === 0 ? " selected" : ""}>${esc(s.label)}${have[s.id] ? " — enrolled (redo)" : ""}</option>`).join("");
   const rows = paragraphs
     .map(
@@ -24,14 +25,19 @@ function page({ csrf, user, paragraphs, slots, worklet, enabled, enrolled, minSe
   const off = enabled
     ? ""
     : `<div class="alert bad" id="vpe-off">${icon("alert")}<div>The voiceprint is off. Switch it on in <a href="/mint-ai/settings/voice#v-voiceprint">Settings ▸ Voice</a> first.</div></div>`;
-  const body = `<div id="vpe" data-csrf="${esc(csrf)}" data-worklet="${esc(worklet)}" data-need="${Number(minSeconds) || 30}">
+  const consent = isMe
+    ? ""
+    : `<div class="alert warn" id="vpe-consent">${icon("alert")}<div><strong>Only record someone who agreed to it.</strong> ${esc(who)} reads the paragraphs at this computer's microphone; tell them what it is for and that you can delete it any time.</div></div>`;
+  const body = `<div id="vpe" data-csrf="${esc(csrf)}" data-worklet="${esc(worklet)}" data-need="${Number(minSeconds) || 30}" data-person="${esc(person ? person.id : "")}">
 ${off}
+${consent}
 ${card(
-  "Your voiceprint",
-  `<p>MINT AI learns what your voice sounds like from about a minute of you reading aloud, so in a live call it can tell you apart from other people, a TV, or its own voice coming back through the speakers.</p>
+  isMe ? `Your voiceprint (${who})` : `${who}'s voiceprint`,
+  `<p>MINT AI learns what ${isMe ? "your" : esc(who) + "'s"} voice sounds like from about a minute of reading aloud, so in a live call it can tell who is speaking — and address them by name — apart from people it does not know, a TV, or its own voice coming back through the speakers.</p>
    <ul class="vp-facts">
      <li>${icon("lock", 14)} Each recording is turned into numbers on this server and then deleted. Only the voiceprint is kept, sealed with a key only the server's root can use. Nothing is sent to OpenAI or anyone else.</li>
      <li>${icon("voice", 14)} One microphone at a time. Enrolling a second one (laptop and headset) makes it surer on both.</li>
+     <li>${icon("shield", 14)} A voice identifies; it never authorises. Approvals still need the signed-in user's click or Windows Hello.</li>
      <li>${icon("trash", 14)} Remove a microphone or delete the voiceprint in Settings ▸ Voice ▸ Voiceprint.</li>
    </ul>`,
   { icon: "fingerprint", id: "vpe-why" }
@@ -51,18 +57,18 @@ ${card(
   "2. Read these aloud",
   `<p class="muted small">Press Record, read at your normal pace, press Stop. Mistakes do not matter. ${Number(minSeconds) || 30} seconds of speech are needed; all four give about a minute.</p>
    <ol class="vp-list">${rows}</ol>
-   <p class="btn-row"><button type="button" class="btn primary small" id="vpe-save" disabled>${icon("save", 14)} Save my voiceprint</button><span class="small" id="vpe-total" aria-live="polite">0 s of speech</span></p>
+   <p class="btn-row"><button type="button" class="btn primary small" id="vpe-save" disabled>${icon("save", 14)} ${isMe ? "Save my voiceprint" : "Save " + esc(who) + "'s voiceprint"}</button><span class="small" id="vpe-total" aria-live="polite">0 s of speech</span></p>
    <p class="small" id="vpe-done" aria-live="polite"></p>`,
   { icon: "file", id: "vpe-read" }
 )}
 </div>`;
-  return shell("Enrol your voiceprint", body, {
+  return shell(isMe ? "Enrol your voiceprint" : "Enrol a voiceprint", body, {
     user,
     csrf,
     active: "moni-ai",
-    subtitle: "About two minutes: read four short paragraphs aloud",
+    subtitle: `${who}: about two minutes, four short paragraphs read aloud`,
     assets: ["voiceprint-trial.css", "voiceprint-enrol.js"],
-    crumbs: [["MINT AI", "/mint-ai"], ["Settings", "/mint-ai/settings/voice#v-vp"], ["Voiceprint", null]],
+    crumbs: [["MINT AI", "/mint-ai"], ["Settings", "/mint-ai/settings/voice#v-vp-people"], [who || "Voiceprint", null]],
   });
 }
 

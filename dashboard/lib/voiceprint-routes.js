@@ -4,20 +4,24 @@
  * Voiceprint forms, and the guided enrolment page with its two calls.
  *
  *   POST /mint-ai/settings/voice/voiceprint             enabled=1|absent   On / Off
- *   POST /mint-ai/settings/voice/voiceprint/gate        gate=1|absent      Only respond to my voice
+ *   POST /mint-ai/settings/voice/voiceprint/gate        gate=1|absent      Only respond to stored voices
  *   POST /mint-ai/settings/voice/voiceprint/strictness  preset=relaxed|strict|very_strict, or
  *                                                       accept, reject, stickyMin, echo (Advanced),
  *                                                       or reset=1 (all four back to the defaults);
  *                                                       merged into voiceprint_thresholds, other keys kept
- *   POST /mint-ai/settings/voice/voiceprint/from-trial  slot               enrol from the trial's recordings
- *   POST /mint-ai/settings/voice/voiceprint/remove-mic  mic
- *   POST /mint-ai/settings/voice/voiceprint/delete                         the voiceprint
- *   POST /mint-ai/settings/voice/voiceprint/forget-all                     voiceprint, key, trial clips,
- *                                                                          results, ledger
- *   GET  /mint-ai/voiceprint/enrol                                         the page
- *   POST /mint-ai/api/voiceprint/enrol-clip?mic=&id=    audio/wav           embedded at once, never stored
- *   POST /mint-ai/api/voiceprint/enrol-save             {mic}
- *   GET  /mint-ai/api/voiceprint/enrol-status?mic=
+ *   POST /mint-ai/settings/voice/voiceprint/from-trial  slot               my trial recordings -> my voiceprint
+ *   POST /mint-ai/settings/voice/voiceprint/people      name, spoken, me   add a person (a plain form: 303
+ *                                                                          to their enrolment page)
+ *   POST .../voiceprint/people/<id>/rename              name, spoken
+ *   POST .../voiceprint/people/<id>/command             may=1|absent       May give commands
+ *   POST .../voiceprint/people/<id>/remove-mic          mic
+ *   POST .../voiceprint/people/<id>/delete                                 that person's voiceprint only
+ *   POST /mint-ai/settings/voice/voiceprint/forget-all                     every voiceprint, the key, my trial
+ *                                                                          clips, results, the ledger
+ *   GET  /mint-ai/voiceprint/enrol?person=<id>                             the page
+ *   POST /mint-ai/api/voiceprint/enrol-clip?person=&mic=&id=  audio/wav    embedded at once, never stored
+ *   POST /mint-ai/api/voiceprint/enrol-save             {person, mic}
+ *   GET  /mint-ai/api/voiceprint/enrol-status?person=&mic=
  *
  * All of it needs moniai.use + voice.manage (the voice section's own rule) and
  * the CSRF token; every change is audited (login_log, outcome "voice"), counts
@@ -44,17 +48,18 @@ function mount(app, deps) {
     const was = vprint.enabled();
     vprint.setEnabled(want, req.me.username);
     audit(req, `voiceprint ${want ? "on (watching; the gate is " + (vprint.gate() ? "on" : "off") + ")" : "off: no turn is checked"}${was === want ? " (unchanged)" : ""}`);
-    reply(req, res, { msg: want ? "Voiceprint on. Turns are checked from the next one" + (vprint.gate() ? ", and only your voice is answered." : "; nothing is blocked (watching only).") : "Voiceprint off. Nothing is checked; your voiceprint is kept.", anchor: "v-voiceprint", reload: true });
+    reply(req, res, { msg: want ? "Voiceprint on. Turns are checked from the next one" + (vprint.gate() ? ", and only stored voices are answered." : "; nothing is blocked (watching only).") : "Voiceprint off. Nothing is checked; the stored voiceprints are kept.", anchor: "v-voiceprint", reload: true });
   });
 
   app.post(SET + "/gate", ...settingsGuard, async (req, res) => {
     const want = on(req.body && req.body.gate);
     if (want && !vprint.enabled()) return reply(req, res, { err: "Switch the voiceprint on first.", anchor: "v-vp-gate" });
-    if (want && !(await vprint.printFor(req.me))) return reply(req, res, { err: "Enrol your voiceprint first.", anchor: "v-vp-gate" });
+    await vprint.openAll().catch(() => {});
+    if (want && !vprint.hasPrints()) return reply(req, res, { err: "Store a voiceprint first.", anchor: "v-vp-gate" });
     const was = vprint.gate();
     vprint.setGate(want, req.me.username);
-    audit(req, `voiceprint: only respond to my voice ${want ? "on" : "off"}${was === want ? " (unchanged)" : ""}`);
-    reply(req, res, { msg: want ? "Only your voice is answered from the next turn. Other voices and unsure turns are not answered; the screen says why, MINT AI never speaks about it." : "Back to watching only: every turn is answered, and checked.", anchor: "v-vp-gate", reload: true });
+    audit(req, `voiceprint: only respond to stored voices ${want ? "on" : "off"}${was === want ? " (unchanged)" : ""}`);
+    reply(req, res, { msg: want ? "Only stored voices are answered from the next turn. Unknown voices and unsure turns are not; the screen says why, MINT AI never speaks about it." : "Back to watching only: every turn is answered, and the speaker named when recognised.", anchor: "v-vp-gate", reload: true });
   });
 
   app.post(SET + "/strictness", ...settingsGuard, (req, res) => {
@@ -87,40 +92,70 @@ function mount(app, deps) {
     if (!vpLib.MIC_RE.test(slot)) return reply(req, res, { err: "Which microphone?", anchor: "v-vp-enrol" });
     try {
       const r = await vprint.enrolFromTrial(req.me, slot);
-      audit(req, `voiceprint enrolled from the trial recordings (${slot}, ${r.speech_s} s of speech)`);
-      reply(req, res, { msg: `Voiceprint made from your trial recordings (${r.speech_s} s of speech). Turns are checked from the next one.`, anchor: "v-vp-enrol", reload: true });
+      audit(req, `voiceprint of ${r.name} enrolled from the trial recordings (${slot}, ${r.speech_s} s of speech)`);
+      reply(req, res, { msg: `${r.name}'s voiceprint made from your trial recordings (${r.speech_s} s of speech). Turns are checked from the next one.`, anchor: "v-vp-people", reload: true });
     } catch (e) {
-      reply(req, res, { err: e.status ? e.message : "The voiceprint could not be made: " + String(e.message).slice(0, 160), anchor: "v-vp-enrol" });
+      reply(req, res, { err: e.status ? e.message : "The voiceprint could not be made: " + String(e.message).slice(0, 160), anchor: "v-vp-people" });
     }
   });
 
-  app.post(SET + "/remove-mic", ...settingsGuard, async (req, res) => {
-    const mic = String((req.body && req.body.mic) || "");
-    if (!vpLib.MIC_RE.test(mic)) return reply(req, res, { err: "Which microphone?", anchor: "v-vp-enrol" });
+  /* ---- the stored voiceprints, by name ---- */
+
+  // Add a person: a plain form (not sent in place), so the browser follows the 303 to their enrolment page.
+  app.post(SET + "/people", ...settingsGuard, (req, res) => {
+    const b = req.body || {};
     try {
-      const done = await vprint.removeMic(req.me, mic);
-      if (!(await vprint.printFor(req.me)) && vprint.gate()) vprint.setGate(false, req.me.username);
-      audit(req, `voiceprint: removed the ${mic} microphone${done ? "" : " (it was not there)"}`);
-      reply(req, res, { msg: done ? "Removed." : "That microphone was not in your voiceprint.", anchor: "v-vp-enrol", reload: true });
+      const me = on(b.me) ? req.me : null;
+      const p = vprint.addPerson({ name: b.name, spoken: b.spoken, user_id: me ? me.id : null, may_command: me ? true : false });
+      audit(req, `voiceprint: added ${p.name}${p.user_id ? " (linked to " + req.me.username + ")" : ""}, may give commands ${p.may_command ? "on" : "off"}`);
+      if (/json/.test(String(req.get("accept") || ""))) return res.json({ ok: true, person: p, next: "/mint-ai/voiceprint/enrol?person=" + p.id });
+      return res.redirect(303, "/mint-ai/voiceprint/enrol?person=" + encodeURIComponent(p.id));
     } catch (e) {
-      reply(req, res, { err: "Could not change the voiceprint: " + String(e.message).slice(0, 160), anchor: "v-vp-enrol" });
+      return reply(req, res, { err: e.status ? e.message : "Could not add it: " + String(e.message).slice(0, 160), anchor: "v-vp-people" });
     }
   });
-
-  app.post(SET + "/delete", ...settingsGuard, async (req, res) => {
-    const had = await vprint.removePrint(req.me);
-    if (vprint.gate()) vprint.setGate(false, req.me.username);
-    audit(req, `voiceprint deleted${had ? "" : " (there was none)"}; only-my-voice off`);
-    reply(req, res, { msg: had ? "Your voiceprint is deleted." : "There was no voiceprint.", anchor: "v-vp-enrol", reload: true });
-  });
+  const withPerson = (fn) => async (req, res) => {
+    const p = vprint.person(String(req.params.id || ""));
+    if (!p) return reply(req, res, { err: "No such voiceprint.", anchor: "v-vp-people" });
+    try {
+      await fn(req, res, p);
+    } catch (e) {
+      reply(req, res, { err: e.status ? e.message : "Could not change it: " + String(e.message).slice(0, 160), anchor: "v-vp-people" });
+    }
+  };
+  app.post(SET + "/people/:id/rename", ...settingsGuard, withPerson(async (req, res, p) => {
+    const q = vprint.updatePerson(p.id, { name: (req.body || {}).name, spoken: (req.body || {}).spoken });
+    audit(req, `voiceprint: renamed ${p.name} to ${q.name}${q.spoken !== p.spoken ? " (spoken name changed)" : ""}`);
+    reply(req, res, { msg: `Saved: ${q.name}${q.spoken ? " («" + q.spoken + "»)" : ""}.`, anchor: "v-vp-people", reload: true });
+  }));
+  app.post(SET + "/people/:id/command", ...settingsGuard, withPerson(async (req, res, p) => {
+    const want = on((req.body || {}).may);
+    const q = vprint.updatePerson(p.id, { may_command: want });
+    audit(req, `voiceprint: ${q.name} may give commands ${want ? "on" : "off"}${p.may_command === want ? " (unchanged)" : ""}`);
+    reply(req, res, { msg: want ? `${q.name} may give commands by voice (approvals still need a click).` : `${q.name} is answered in conversation only.`, anchor: "v-vp-people" });
+  }));
+  app.post(SET + "/people/:id/remove-mic", ...settingsGuard, withPerson(async (req, res, p) => {
+    const mic = String((req.body && req.body.mic) || "");
+    if (!vpLib.MIC_RE.test(mic)) return reply(req, res, { err: "Which microphone?", anchor: "v-vp-people" });
+    const done = await vprint.removeMic(p.id, mic);
+    if (!vprint.hasPrints() && vprint.gate()) vprint.setGate(false, req.me.username);
+    audit(req, `voiceprint: removed the ${mic} microphone from ${p.name}${done ? "" : " (it was not there)"}`);
+    reply(req, res, { msg: done ? "Removed." : "That microphone was not in the voiceprint.", anchor: "v-vp-people", reload: true });
+  }));
+  app.post(SET + "/people/:id/delete", ...settingsGuard, withPerson(async (req, res, p) => {
+    await vprint.removePerson(p.id);
+    if (!vprint.hasPrints() && vprint.gate()) vprint.setGate(false, req.me.username);
+    audit(req, `voiceprint: deleted ${p.name}'s voiceprint`);
+    reply(req, res, { msg: `${p.name}'s voiceprint is deleted.`, anchor: "v-vp-people", reload: true });
+  }));
 
   app.post(SET + "/forget-all", ...settingsGuard, async (req, res) => {
     try {
-      const r = await vprint.forgetAll(req.me);
+      const r = await vprint.forgetAll();
       const clips = trialStore.removeAll(req.me);
       if (vprint.gate()) vprint.setGate(false, req.me.username);
-      audit(req, `voiceprint: deleted everything (voiceprint ${r.print ? "yes" : "none"}, key ${r.key_deleted ? "deleted" : "kept"}, ${clips} trial clips, ${r.results_deleted} result folders, ${r.ledger_rows} check rows)`);
-      reply(req, res, { msg: `Deleted: ${r.print ? "your voiceprint, " : ""}${clips} trial recordings, ${r.results_deleted} evaluation results, ${r.ledger_rows} check log rows${r.key_deleted ? ", and the sealing key" : ""}.`, anchor: "v-vp", reload: true });
+      audit(req, `voiceprint: deleted everything (${r.people} voiceprints, key ${r.key_deleted ? "deleted" : "kept"}, ${clips} trial clips, ${r.results_deleted} result folders, ${r.ledger_rows} check rows)`);
+      reply(req, res, { msg: `Deleted: ${r.people} stored voiceprint${r.people === 1 ? "" : "s"}, ${clips} trial recordings, ${r.results_deleted} evaluation results, ${r.ledger_rows} check log rows${r.key_deleted ? ", and the sealing key" : ""}.`, anchor: "v-vp", reload: true });
     } catch (e) {
       reply(req, res, { err: "Not everything could be deleted: " + String(e.message).slice(0, 160), anchor: "v-vp" });
     }
@@ -141,14 +176,19 @@ function mount(app, deps) {
   const raw = express.raw({ type: ["audio/wav", "audio/x-wav"], limit: MAX_WAV });
 
   app.get("/mint-ai/voiceprint/enrol", requireAuth, requirePerm("moniai.use"), requirePerm("voice.manage"), (req, res) => {
+    const p = vprint.person(String(req.query.person || ""));
+    if (!p) return res.redirect(302, "/mint-ai/settings/voice#v-vp-people");
     res.set("Cache-Control", "no-store");
-    res.send(views.page({ csrf: res.locals.csrf, user: ctx(req, "console"), paragraphs: trial.ENROL, slots: trial.SLOTS, worklet: asset("voice-live-worklet.js"), enabled: vprint.enabled(), enrolled: vprint.meta(req.me), minSeconds: vpLib.MIN_ENROL_MS / 1000 }));
+    res.send(views.page({ csrf: res.locals.csrf, user: ctx(req, "console"), person: p, isMe: p.user_id === req.me.id, paragraphs: trial.ENROL, slots: trial.SLOTS, worklet: asset("voice-live-worklet.js"), enabled: vprint.enabled(), minSeconds: vpLib.MIN_ENROL_MS / 1000 }));
   });
 
+  const personQ = (v) => vprint.person(String(v || ""));
   app.get("/mint-ai/api/voiceprint/enrol-status", ...guard, (req, res) => {
     const mic = String(req.query.mic || "");
+    const p = personQ(req.query.person);
+    if (!p) return res.status(404).json({ error: "No such voiceprint." });
     if (!vpLib.MIC_RE.test(mic)) return res.status(400).json({ error: "Which microphone?" });
-    res.set("Cache-Control", "no-store").json(vprint.pendingOf(req.me, mic));
+    res.set("Cache-Control", "no-store").json(vprint.pendingOf(p.id, mic));
   });
 
   app.post(
@@ -160,6 +200,8 @@ function mount(app, deps) {
     async (req, res) => {
       const mic = String(req.query.mic || "");
       const id = String(req.query.id || "");
+      const p = personQ(req.query.person);
+      if (!p) return res.status(404).json({ error: "No such voiceprint." });
       if (!vpLib.MIC_RE.test(mic)) return res.status(400).json({ error: "Which microphone?" });
       if (!trial.ENROL.some((p) => p.id === id)) return res.status(400).json({ error: "Which paragraph?" });
       if (!vprint.enabled()) return res.status(409).json({ error: "The voiceprint is off. Switch it on in Settings ▸ Voice first." });
@@ -173,7 +215,7 @@ function mount(app, deps) {
       if (seconds < 3 || seconds > 40) return res.status(400).json({ error: "A paragraph must be between 3 and 40 seconds." });
       if (trial.peakDb(w.samples) < -50) return res.status(400).json({ error: "Nothing was heard. Check the microphone and record again." });
       try {
-        const r = await vprint.enrolClip(req.me, mic, id, Buffer.from(w.samples.buffer, w.samples.byteOffset, w.samples.length * 2), w.rate);
+        const r = await vprint.enrolClip(p.id, mic, id, Buffer.from(w.samples.buffer, w.samples.byteOffset, w.samples.length * 2), w.rate);
         res.json({ ok: true, id, mic, speech_s: Math.round(r.speech_ms / 100) / 10, total_s: Math.round(r.total_ms / 100) / 10, need_s: vpLib.MIN_ENROL_MS / 1000 });
       } catch (e) {
         res.status(e.status === 422 ? 400 : 503).json({ error: e.status === 422 ? "Not enough speech in that recording. Record it again." : "The voiceprint service is not answering; try again in a minute." });
@@ -183,10 +225,12 @@ function mount(app, deps) {
 
   app.post("/mint-ai/api/voiceprint/enrol-save", ...guard, requireApiCsrf, express.json({ limit: "4kb" }), async (req, res) => {
     const mic = String((req.body && req.body.mic) || "");
+    const p = personQ(req.body && req.body.person);
+    if (!p) return res.status(404).json({ error: "No such voiceprint." });
     if (!vpLib.MIC_RE.test(mic)) return res.status(400).json({ error: "Which microphone?" });
     try {
-      const r = await vprint.enrolSave(req.me, mic, "enrol");
-      audit(req, `voiceprint enrolled (${mic}, ${r.speech_s} s of speech; microphones: ${r.mics.join(", ")})`);
+      const r = await vprint.enrolSave(p.id, mic, "enrol");
+      audit(req, `voiceprint of ${r.name} enrolled (${mic}, ${r.speech_s} s of speech; microphones: ${r.mics.join(", ")})`);
       res.json({ ok: true, ...r });
     } catch (e) {
       res.status(e.status || 500).json({ error: e.status ? e.message : "The voiceprint could not be saved: " + String(e.message).slice(0, 160) });

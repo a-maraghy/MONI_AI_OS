@@ -217,6 +217,11 @@ addColumn("users", "sessions_view", "TEXT NOT NULL DEFAULT ''"); // '' = spheres
 // yet. Never free text a person typed.
 addColumn("users", "voice_persona", "TEXT NOT NULL DEFAULT ''");
 
+// The voiceprint ledger names who spoke since stored voiceprints have names (2026-10-07):
+// the person's id and the name it had then.
+addColumn("voiceprint_checks", "speaker_id", "TEXT");
+addColumn("voiceprint_checks", "speaker", "TEXT");
+
 addColumn("console_sessions", "permission_mode", "TEXT NOT NULL DEFAULT 'auto'");
 addColumn("console_sessions", "archived", "INTEGER NOT NULL DEFAULT 0");
 // New chats start without root. The value is written explicitly by
@@ -393,13 +398,14 @@ module.exports = {
 
   voiceprintCheckInsert: (r) =>
     db
-      .prepare("INSERT INTO voiceprint_checks (ts, actor, call_id, turn, mode, speech_ms, score, tts_score, verdict, gated, acted, over_voice, ms, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .run(r.ts, r.actor || null, r.call_id || null, r.turn == null ? null : r.turn, r.mode || null, r.speech_ms == null ? null : Math.round(r.speech_ms), r.score == null ? null : r.score, r.tts_score == null ? null : r.tts_score, r.verdict, r.gated ? 1 : 0, r.acted || null, r.over_voice ? 1 : 0, r.ms == null ? null : r.ms, r.error || null),
+      .prepare("INSERT INTO voiceprint_checks (ts, actor, call_id, turn, mode, speech_ms, score, tts_score, verdict, gated, acted, over_voice, ms, error, speaker_id, speaker) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(r.ts, r.actor || null, r.call_id || null, r.turn == null ? null : r.turn, r.mode || null, r.speech_ms == null ? null : Math.round(r.speech_ms), r.score == null ? null : r.score, r.tts_score == null ? null : r.tts_score, r.verdict, r.gated ? 1 : 0, r.acted || null, r.over_voice ? 1 : 0, r.ms == null ? null : r.ms, r.error || null, r.speaker_id || null, r.speaker || null),
   voiceprintChecksSince: (ms, actor) =>
     actor
       ? db.prepare("SELECT * FROM voiceprint_checks WHERE ts >= ? AND actor = ? ORDER BY ts").all(Number(ms) || 0, String(actor))
       : db.prepare("SELECT * FROM voiceprint_checks WHERE ts >= ? ORDER BY ts").all(Number(ms) || 0),
   voiceprintChecksPrune: (beforeMs) => db.prepare("DELETE FROM voiceprint_checks WHERE ts < ?").run(Number(beforeMs) || 0).changes,
+  voiceprintChecksDeleteAll: () => db.prepare("DELETE FROM voiceprint_checks").run().changes,
   voiceprintChecksDelete: (actor) => db.prepare("DELETE FROM voiceprint_checks WHERE actor = ?").run(String(actor)).changes,
 
   /* --- the voice persona (lib/voice-persona.js) -------------------------- */

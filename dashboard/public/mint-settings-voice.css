@@ -62,3 +62,23 @@
 .vp-num small { font-size: 11px; }
 @media (max-width: 900px) { .vp-presets { grid-template-columns: 1fr; } .vp-nums-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 420px) { .vp-nums-grid { grid-template-columns: 1fr; } .vp-num input { max-width: none; } }
+/* Stored voiceprints (voiceprintGroup personCard). */
+.vp-people-box { display: flex; flex-direction: column; gap: 10px; width: 100%; }
+.vp-people { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.vp-person { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+.vp-person .vp-ph { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.vp-person .vp-pn { overflow-wrap: anywhere; }
+.vp-person .vp-pc { justify-self: end; }
+.vp-person .vp-mics, .vp-person .vp-acts { grid-column: 1 / -1; }
+.vp-person .vp-acts { justify-content: flex-start; align-items: center; }
+.vp-cmd { display: inline-flex; align-items: center; gap: 8px; }
+.vp-rename { display: inline-block; }
+.vp-rename > summary { list-style: none; display: inline-flex; }
+.vp-rename > summary::-webkit-details-marker { display: none; }
+.vp-rename[open] { flex-basis: 100%; }
+.vp-rename-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; margin-top: 8px; }
+.vp-add { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; }
+.vp-add .vp-field, .vp-rename-form .vp-field { flex: 1 1 160px; }
+.vp-add input[type=text], .vp-add input:not([type]), .vp-rename-form input { width: 100%; }
+.vp-me { display: inline-flex; gap: 6px; align-items: center; font-size: 13px; }
+@media (max-width: 640px) { .vp-person { grid-template-columns: 1fr; } .vp-person .vp-pc { justify-self: start; } }
