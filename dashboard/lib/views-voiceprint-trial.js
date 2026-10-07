@@ -32,7 +32,7 @@ ${card(
      <li>${icon("cpu", 14)} They are scored offline, on this server, by open speaker-recognition models. Nothing is decided from them: no voiceprint is switched on.</li>
      <li>${icon("trash", 14)} You can delete all of them at any time with the button at the bottom of this page.</li>
    </ul>
-   <p class="muted small">About ${Math.round((total * 5) / 60)}–${Math.round((total * 7) / 60)} minutes per microphone. Do the whole list once with the laptop microphone and once with the headset — a different session for each, picked below.
+   <p class="muted small">About 5 minutes per microphone (${total} recordings). Do the whole list once with the laptop microphone and once with the headset — a different session for each, picked below.
      Speak as you would to MINT AI, at your normal volume. A quiet room is best, but it does not have to be silent.</p>`,
   { icon: "info", id: "vp-why" }
 )}

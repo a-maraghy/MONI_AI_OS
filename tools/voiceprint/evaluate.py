@@ -548,14 +548,17 @@ def write_report(summary, out):
         L.append("")
     L.append("## Speed and memory (CPU)")
     L.append("")
-    L.append("| model | licence | size | load | RAM (model) | 1 s audio | 1.5 s | 3 s | 6 s | threads |")
+    L.append("| model | licence | size | load | RAM (process) | 1 s audio | 1.5 s | 3 s | 6 s | 1.5 s on 1 thread |")
     L.append("|---|---|---|---|---|---|---|---|---|---|")
     import models
     for name, bm in summary["bench"].items():
         if "error" in bm:
             L.append("| %s | %s | — | error | | | | | | |" % (name, models.MODELS[name]["licence"]))
             continue
-        L.append("| %s | %s | %.0f MB | %.2f s | %.0f MB | %.0f ms | %.0f ms | %.0f ms | %.0f ms | %d |" % (name, models.MODELS[name]["licence"], bm["size_mb"], bm["load_s"], bm["rss_model_mb"], bm["ms"]["1.0"], bm["ms"]["1.5"], bm["ms"]["3.0"], bm["ms"]["6.0"], bm["threads"]))
+        one = bm.get("ms_1thread", {}).get("1.5")
+        L.append("| %s | %s | %.0f MB | %.2f s | %.0f MB | %.0f ms | %.0f ms | %.0f ms | %.0f ms | %s |" % (name, models.MODELS[name]["licence"], bm["size_mb"], bm["load_s"], bm["rss_model_mb"], bm["ms"]["1.0"], bm["ms"]["1.5"], bm["ms"]["3.0"], bm["ms"]["6.0"], "%.0f ms" % one if one else "—"))
+    L.append("")
+    L.append("Latency: median of 7, 4 threads unless stated, VAD-trimmed speech. RAM: the process after loading (Python + the runtime + the model).")
     L.append("")
     for name, kinds in summary["models"].items():
         for sk, b in kinds.items():
