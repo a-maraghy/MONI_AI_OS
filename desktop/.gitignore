@@ -3,3 +3,4 @@ src-tauri/gen/
 core-tests/target/
 core-tests/Cargo.lock
 release-feed/
+!dist/
