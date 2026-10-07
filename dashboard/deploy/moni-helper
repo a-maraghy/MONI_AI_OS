@@ -4651,6 +4651,103 @@ def cmd_voice_whisper_set(args):
     ok(_whisper_status())
 
 
+# ============================================================ voiceprint =====
+#
+# The live voice's voiceprint (dashboard lib/voiceprint.js) is an embedding of
+# the administrator's voice -- biometric data. The panel stores it only sealed
+# (AES-256-GCM); the key is this root-only file and never leaves this helper:
+# the panel hands the embedding in to be sealed and the sealed blob in to be
+# opened. voiceprint-forget deletes the key (every sealed copy is then
+# unreadable) and the voiceprint trial's evaluation results.
+
+VOICEPRINT_KEY = os.path.join(VOICE_DIR, "voiceprint.key")
+VOICEPRINT_AAD = b"moni-voiceprint-v1"
+VOICEPRINT_MAX = 64 * 1024
+VOICEPRINT_RESULTS = "/root/.local/mint-voiceprint/results"
+
+
+def _voiceprint_key(create):
+    try:
+        with open(VOICEPRINT_KEY, "rb") as fh:
+            k = fh.read()
+        if len(k) == 32:
+            return k
+        fail("the voiceprint key file is damaged")
+    except FileNotFoundError:
+        if not create:
+            fail("no voiceprint key on this server (nothing was sealed yet, or it was forgotten)")
+    os.makedirs(VOICE_DIR, mode=0o700, exist_ok=True)
+    k = os.urandom(32)
+    fd = os.open(VOICEPRINT_KEY, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(k)
+    os.chown(VOICEPRINT_KEY, 0, 0)
+    audit("voiceprint-key-created", {})
+    return k
+
+
+def _voiceprint_b64(payload, field):
+    v = payload.get(field)
+    if not isinstance(v, str) or not v or len(v) > VOICEPRINT_MAX * 2:
+        fail("expected {\"%s\": base64}" % field)
+    try:
+        raw = base64.b64decode(v, validate=True)
+    except Exception:
+        fail(field + " is not base64")
+    if len(raw) > VOICEPRINT_MAX:
+        fail(field + " is too large")
+    return raw
+
+
+def cmd_voiceprint_seal(args):
+    """stdin {plain: base64} -> {sealed: base64(nonce || AES-256-GCM ciphertext)}. The key is made on first use."""
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+    raw = _voiceprint_b64(read_stdin_json(), "plain")
+    key = _voiceprint_key(create=True)
+    nonce = os.urandom(12)
+    sealed = nonce + AESGCM(key).encrypt(nonce, raw, VOICEPRINT_AAD)
+    audit("voiceprint-seal", {"bytes": len(raw)})
+    ok({"sealed": base64.b64encode(sealed).decode()})
+
+
+def cmd_voiceprint_open(args):
+    """stdin {sealed: base64} -> {plain: base64}. For the panel's own process only; never audited per call."""
+    from cryptography.exceptions import InvalidTag
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+    raw = _voiceprint_b64(read_stdin_json(), "sealed")
+    if len(raw) < 12 + 16:
+        fail("sealed voiceprint too short")
+    key = _voiceprint_key(create=False)
+    try:
+        plain = AESGCM(key).decrypt(raw[:12], raw[12:], VOICEPRINT_AAD)
+    except InvalidTag:
+        fail("the voiceprint could not be opened (a different key, or damaged)")
+    ok({"plain": base64.b64encode(plain).decode()})
+
+
+def cmd_voiceprint_forget(args):
+    """voiceprint-forget [keep-key]: delete the voiceprint key (unless another user's voiceprint still
+    needs it: the panel says keep-key) and the trial's evaluation results of the user's voice (results/user-*)."""
+    if args not in ([], ["keep-key"]):
+        fail("usage: voiceprint-forget [keep-key]")
+    had_key = os.path.exists(VOICEPRINT_KEY)
+    if had_key and args != ["keep-key"]:
+        os.unlink(VOICEPRINT_KEY)
+    else:
+        had_key = False
+    removed = 0
+    if os.path.isdir(VOICEPRINT_RESULTS):
+        for name in os.listdir(VOICEPRINT_RESULTS):
+            p = os.path.join(VOICEPRINT_RESULTS, name)
+            if name.startswith("user-") and os.path.isdir(p) and not os.path.islink(p):
+                shutil.rmtree(p)
+                removed += 1
+    audit("voiceprint-forget", {"key": had_key, "results": removed})
+    ok({"key_deleted": had_key, "results_deleted": removed})
+
+
 # =============================================================== probing =====
 
 
@@ -7883,6 +7980,9 @@ COMMANDS = {
     "voice-options-set": cmd_voice_options_set,
     "voice-whisper-status": cmd_voice_whisper_status,
     "voice-whisper-set": cmd_voice_whisper_set,
+    "voiceprint-seal": cmd_voiceprint_seal,
+    "voiceprint-open": cmd_voiceprint_open,
+    "voiceprint-forget": cmd_voiceprint_forget,
     "system-probe": cmd_system_probe,
     "console-open": cmd_console_open,
     "console-dirs": cmd_console_dirs,

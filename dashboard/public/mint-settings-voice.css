@@ -20,3 +20,29 @@
   .tr-pick { width: 100%; align-items: stretch; }
   .tr-hint { text-align: left; }
 }
+/* The Voiceprint group (lib/views-settings-voice.js voiceprintGroup). */
+.vp-off { opacity: .55; }
+.vp-off .rc { pointer-events: none; }
+.vp-warn { margin: 6px 0 10px; }
+.vp-enrol { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; width: min(420px, 100%); }
+.vp-mics { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; width: 100%; }
+.vp-mic { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+.vp-mic .muted { font-size: 12px; }
+.vp-acts { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+.vp-stats { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; justify-content: space-between; width: 100%; }
+.vp-nums { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 13px; color: var(--body); min-width: 0; flex: 1 1 260px; }
+.vp-nums .muted { font-size: 12px; flex-basis: 100%; }
+.vp-attn b { color: var(--warn, var(--bad)); }
+.vp-hist { width: min(280px, 100%); height: auto; flex: 0 1 280px; }
+.vp-hist rect.ok { fill: var(--accent); }
+.vp-hist rect.mid { fill: var(--warn, #c9a227); }
+.vp-hist rect.bad { fill: var(--bad); }
+.vp-hist line.base { stroke: var(--line-strong, var(--line)); stroke-width: 1; }
+.vp-hist line.acc { stroke: var(--accent); stroke-width: 1; stroke-dasharray: 3 2; }
+.vp-hist line.rej { stroke: var(--bad); stroke-width: 1; stroke-dasharray: 3 2; }
+.vp-hist text { fill: var(--muted); font-size: 8px; }
+@media (max-width: 640px) {
+  .vp-enrol { align-items: stretch; width: 100%; }
+  .vp-acts { justify-content: flex-start; }
+  .vp-hist { flex-basis: 100%; width: 100%; }
+}

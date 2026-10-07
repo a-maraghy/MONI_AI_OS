@@ -41,6 +41,7 @@ You, on Telegram or WhatsApp
 | `dashboard/deploy/` | Privileged helper, systemd units, nginx, fail2ban, sudoers |
 | `memory/` | `moni-memory` — vector + keyword memory over an Obsidian vault, exposed to Claude over MCP |
 | `whatsapp/` | The WhatsApp bridge — Baileys + Claude Agent SDK, one process per channel |
+| `voiceprint/` | `moni-voiceprint` — local speaker embeddings for the live voice's voiceprint (Unix socket, ONNX Runtime, no torch) |
 | `deploy/` | Bootstrap, deployment and migration scripts, the vault template |
 | `docs/` | Setup, Telegram, memory internals, operations |
 | `ops/` | Local helper scripts (RDP launcher) |
@@ -234,3 +235,15 @@ cat /var/lib/moni-dashboard/setup.token
 ```
 
 Moving to a new laptop: [`docs/new-laptop.md`](docs/new-laptop.md).
+
+---
+
+## Third-party models
+
+**Voiceprint** (`voiceprint/`, `deploy/install-voiceprint.sh`, MINT AI ▸ Settings ▸ Voice ▸ Voiceprint):
+the speaker-embedding model is **WeSpeaker ResNet34-LM** (trained on VoxCeleb2) by the
+[WeSpeaker](https://github.com/wenet-e2e/wespeaker) project, file `voxceleb_resnet34_LM.onnx` from
+<https://huggingface.co/Wespeaker/wespeaker-voxceleb-resnet34-LM>, used unmodified, licensed
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). The install script checks its SHA-256
+(`7bb2f06e…ec068`) and writes a NOTICE next to it in `/var/lib/moni-voiceprint/models/`.
+

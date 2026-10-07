@@ -149,6 +149,28 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS voice_usage_ts ON voice_usage(ts);
 
+  -- The voiceprint's ledger (lib/voiceprint.js): one row per turn checked, scores and
+  -- verdicts only (never audio, never an embedding), for tuning the thresholds and the
+  -- 7-day picture in Settings > Voice. Kept 90 days.
+  CREATE TABLE IF NOT EXISTS voiceprint_checks (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts        INTEGER NOT NULL,
+    actor     TEXT,
+    call_id   TEXT,
+    turn      INTEGER,
+    mode      TEXT,
+    speech_ms INTEGER,
+    score     REAL,
+    tts_score REAL,
+    verdict   TEXT NOT NULL,
+    gated     INTEGER NOT NULL DEFAULT 0,
+    acted     TEXT,
+    over_voice INTEGER NOT NULL DEFAULT 0,
+    ms        REAL,
+    error     TEXT
+  );
+  CREATE INDEX IF NOT EXISTS voiceprint_checks_ts ON voiceprint_checks(ts);
+
   CREATE TABLE IF NOT EXISTS login_log (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     ts         TEXT NOT NULL,
@@ -366,6 +388,19 @@ module.exports = {
       .prepare("INSERT INTO voice_usage (ts, day, month, vt, cat, part, model, usd, tokens, actor) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
       .run(r.ts, r.day, r.month, r.vt, r.cat, r.part, r.model, r.usd, r.tokens, r.actor),
   voiceUsageSince: (ms) => db.prepare("SELECT ts, vt, cat, part, model, usd FROM voice_usage WHERE ts >= ? ORDER BY ts").all(Number(ms) || 0),
+
+  /* --- the voiceprint's ledger (lib/voiceprint.js) ----------------------- */
+
+  voiceprintCheckInsert: (r) =>
+    db
+      .prepare("INSERT INTO voiceprint_checks (ts, actor, call_id, turn, mode, speech_ms, score, tts_score, verdict, gated, acted, over_voice, ms, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(r.ts, r.actor || null, r.call_id || null, r.turn == null ? null : r.turn, r.mode || null, r.speech_ms == null ? null : Math.round(r.speech_ms), r.score == null ? null : r.score, r.tts_score == null ? null : r.tts_score, r.verdict, r.gated ? 1 : 0, r.acted || null, r.over_voice ? 1 : 0, r.ms == null ? null : r.ms, r.error || null),
+  voiceprintChecksSince: (ms, actor) =>
+    actor
+      ? db.prepare("SELECT * FROM voiceprint_checks WHERE ts >= ? AND actor = ? ORDER BY ts").all(Number(ms) || 0, String(actor))
+      : db.prepare("SELECT * FROM voiceprint_checks WHERE ts >= ? ORDER BY ts").all(Number(ms) || 0),
+  voiceprintChecksPrune: (beforeMs) => db.prepare("DELETE FROM voiceprint_checks WHERE ts < ?").run(Number(beforeMs) || 0).changes,
+  voiceprintChecksDelete: (actor) => db.prepare("DELETE FROM voiceprint_checks WHERE actor = ?").run(String(actor)).changes,
 
   /* --- the voice persona (lib/voice-persona.js) -------------------------- */
 

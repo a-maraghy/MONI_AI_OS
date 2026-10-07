@@ -117,6 +117,9 @@ const voiceEval = require("./lib/voice-live-eval");
 const voiceEvalViews = require("./lib/views-voice-eval");
 const voiceprintTrial = require("./lib/voiceprint-trial");
 const voiceprintTrialViews = require("./lib/views-voiceprint-trial");
+const voiceprintLib = require("./lib/voiceprint");
+const voiceprintRoutes = require("./lib/voiceprint-routes");
+const voiceprintEnrolViews = require("./lib/views-voiceprint-enrol");
 const ui = require("./lib/ui");
 const { asset } = ui;
 const { WebSocketServer } = require("ws");
@@ -3065,6 +3068,15 @@ async function voiceSpeakRoute(req, res) {
    and a plain POST with a redirect back to the row. */
 
 const voiceSettingsViews = require("./lib/views-settings-voice");
+let vprint = null; // lib/voiceprint.js, made below with the trial's store (see "the voiceprint")
+
+/** The Voiceprint group's data for Settings ▸ Voice. */
+async function voiceprintView(me) {
+  if (!vprint) return null;
+  if (vprint.enabled()) await vprint.health(true).catch(() => null);
+  const trial = voiceprintTrialStore ? [...new Set(voiceprintTrialStore.readManifest(me).clips.filter((c) => c.part === "enrol").map((c) => c.mic))].filter((sl) => voiceprintTrialStore.readManifest(me).clips.filter((c) => c.mic === sl && c.part === "enrol").length >= 2) : [];
+  return { ...vprint.status(me), stats: vprint.stats(7, me.username), trial };
+}
 
 async function voiceSettings() {
   try {
@@ -3117,6 +3129,7 @@ settingsRoutes.sections.voice = async (req, res) => {
       liveAudio: liveAudio(),
       usage: voiceUsageSummary(),
       test,
+      voiceprint: await voiceprintView(req.me),
     }),
     secClass: on ? "" : "voice-off",
     assets: ["mint-settings-voice.css", "mint-settings-voice.js"],
@@ -6397,7 +6410,26 @@ app.post("/mint-ai/api/voice-eval/run", ...evalGuard, requireApiCsrf, async (req
 // Phase 1 of the voiceprint: the administrator records a trial set in their
 // own voice for the offline evaluation (tools/voiceprint/). Recordings only;
 // nothing verifies anyone yet. See lib/voiceprint-trial.js.
-voiceprintTrial.mount(app, { requireAuth, requirePerm, requireApiPerm, requireApiCsrf, rateLimit, express, db, ctx, views: voiceprintTrialViews, asset, dataDir: DATA_DIR });
+const voiceprintTrialStore = voiceprintTrial.mount(app, { requireAuth, requirePerm, requireApiPerm, requireApiCsrf, rateLimit, express, db, ctx, views: voiceprintTrialViews, asset, dataDir: DATA_DIR });
+
+/* ------------------------------------------ the voiceprint (live voice) -- */
+
+// lib/voiceprint.js: the live relay checks each turn against the enrolled voiceprint through the
+// local moni-voiceprint service (Settings ▸ Voice ▸ Voiceprint: On / Off, and "Only respond to my
+// voice"). The print is sealed by the helper; this process holds it open only in memory.
+vprint = voiceprintLib.createVoiceprint({
+  db,
+  priv,
+  dataDir: DATA_DIR,
+  log: (m) => console.log(m),
+  parseWav: voiceprintTrial.parseWav,
+  trialClips: (user) => {
+    const m = voiceprintTrialStore.readManifest(user);
+    return (m.clips || []).map((c) => ({ ...c, path: path.join(voiceprintTrialStore.dirOf(user), c.mic, c.id + ".wav") })).filter((c) => fs.existsSync(c.path));
+  },
+});
+voiceprintRoutes.mount(app, { vprint, trialStore: voiceprintTrialStore, trial: voiceprintTrial, settingsGuard: voiceGuardSettings, reply: (req, res, o) => voiceReply(req, res, o), requireAuth, requirePerm, requireApiPerm, requireApiCsrf, rateLimit, express, db, ctx, views: voiceprintEnrolViews, asset });
+if (vprint.enabled()) vprint.health().catch(() => {});
 
 /* --------------------------------------------------------------- misc ----- */
 
@@ -6561,8 +6593,21 @@ function liveConnected(ws, { me, cfg, ip, duplex, noise, route, tab, canVoice, s
     // (since: the largest seq, so the supervisor replays none of its past events: only what comes next.)
     watchTurns: (onEvent) => moniai.subscribe(Number.MAX_SAFE_INTEGER, actor, onEvent, () => {}),
     redact: (text) => priv.redact(String(text || "")),
+    // The voiceprint (lib/voiceprint.js): read per turn, so Settings changes apply from the next one.
+    voiceprint: vprint
+      ? {
+          enabled: () => vprint.enabled(),
+          gate: () => vprint.gate(),
+          hasPrint: () => vprint.hasPrint(me),
+          check: (pcm, o) => vprint.check(me, pcm, o),
+          record: (row) => vprint.ledger({ ...row, actor }),
+          learnTts: (v, pcm) => vprint.learnTts(v, pcm),
+        }
+      : null,
     opts: { duplex, turn: turn === "ptt" ? "ptt" : "vad" },
   });
+  // Open the voiceprint now, so the first turn does not wait for the helper.
+  if (vprint && vprint.enabled()) vprint.printFor(me).catch(() => {});
   call.sid = sid || null;
   voiceLive.register(actor, call);
   db.logLogin(ip, actor, "voice", `live conversation started (${turn === "ptt" ? "hold-to-talk, " : ""}${duplex === "full" ? "headphones" : "speakers"} mode, playback ${route}, noise reduction ${noise})`);

@@ -91,6 +91,20 @@ function makeCopy(o) {
       `voiceWhisperSet: async (model) => { ${read} W.calls.push(model); if (model === "off") { W.active = "inactive"; } else if (!W.installed.includes(model)) { F.writeFileSync(${wf}, JSON.stringify(W)); throw new Error("the model " + model + " is not installed on this server; run: deploy/install-voice-whisper.sh"); } else { W.selected = model; W.active = "active"; } F.writeFileSync(${wf}, JSON.stringify(W)); return ${out}; },`
     );
   }
+  if (o.fakeVoiceprint) {
+    // The voiceprint's seal / open / forget (helper voiceprint-*): AES-256-GCM here with a key file in the
+    // scratch data dir, the same shape the helper answers; forget records its argument in fake-vp-forget.json.
+    const seal = 'voiceprintSeal: (plainB64) => callHelper("voiceprint-seal", [], { stdin: JSON.stringify({ plain: plainB64 }) }),';
+    const open = 'voiceprintOpen: (sealedB64) => callHelper("voiceprint-open", [], { stdin: JSON.stringify({ sealed: sealedB64 }) }),';
+    const forget = 'voiceprintForget: (keepKey) => callHelper("voiceprint-forget", keepKey ? ["keep-key"] : []),';
+    if (!s.includes(seal) || !s.includes(open) || !s.includes(forget)) throw new Error("scratch: priv.js voiceprint* not found");
+    const kf = JSON.stringify(path.join(DATA, "fake-vp.key"));
+    const ff = JSON.stringify(path.join(DATA, "fake-vp-forget.json"));
+    const key = `const C = require("crypto"), F = require("fs"); let K; try { K = F.readFileSync(${kf}); } catch (_) { K = C.randomBytes(32); F.writeFileSync(${kf}, K, { mode: 0o600 }); }`;
+    s = s.replace(seal, `voiceprintSeal: async (plainB64) => { ${key} const n = C.randomBytes(12); const c = C.createCipheriv("aes-256-gcm", K, n); c.setAAD(Buffer.from("moni-voiceprint-v1")); const ct = Buffer.concat([c.update(Buffer.from(plainB64, "base64")), c.final()]); return { sealed: Buffer.concat([n, ct, c.getAuthTag()]).toString("base64") }; },`);
+    s = s.replace(open, `voiceprintOpen: async (sealedB64) => { const C = require("crypto"), F = require("fs"); const K = F.readFileSync(${kf}); const b = Buffer.from(sealedB64, "base64"); const d = C.createDecipheriv("aes-256-gcm", K, b.subarray(0, 12)); d.setAAD(Buffer.from("moni-voiceprint-v1")); d.setAuthTag(b.subarray(b.length - 16)); return { plain: Buffer.concat([d.update(b.subarray(12, b.length - 16)), d.final()]).toString("base64") }; },`);
+    s = s.replace(forget, `voiceprintForget: async (keepKey) => { const F = require("fs"); F.writeFileSync(${ff}, JSON.stringify({ keepKey: !!keepKey })); let had = false; if (!keepKey) { try { F.unlinkSync(${kf}); had = true; } catch (_) {} } return { key_deleted: had, results_deleted: 0 }; },`);
+  }
   if (o.fakeKeys) {
     // /keys lists keys through the helper; a test that renders it gets these.
     const list = 'listAllKeys: () => callHelper("list-all-keys"),';

@@ -114,6 +114,16 @@ install -m 0440 "$SRC/deploy/moni-sudoers" /etc/sudoers.d/moni-dashboard
 visudo -cf /etc/sudoers.d/moni-dashboard >/dev/null
 systemctl daemon-reload
 
+# The live voice's voiceprint (Settings > Voice > Voiceprint): its local
+# embedding service, moni-voiceprint (Unix socket, own account). Installed or
+# updated here, before the restart below, because the dashboard's account joins
+# the service's group and that takes effect when the dashboard restarts. A
+# failure here does not stop the deploy: the relay fails open without it.
+if [[ "${MONI_VOICEPRINT_SKIP:-0}" != "1" ]]; then
+  say "The voiceprint service"
+  bash "$REPO_DIR/deploy/install-voiceprint.sh" || echo "!! the voiceprint service did not install; the voice works without it (fail-open)" >&2
+fi
+
 say "Restarting the dashboard"
 systemctl restart moni-dashboard
 sleep 2

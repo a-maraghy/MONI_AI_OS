@@ -283,6 +283,11 @@ module.exports = {
   voiceWhisperStatus: () => callHelper("voice-whisper-status"),
   voiceWhisperSet: (model) => callHelper("voice-whisper-set", [model], { timeout: 90000 }),
 
+  // The voiceprint (lib/voiceprint.js): sealed and opened by the helper, whose key never leaves it.
+  voiceprintSeal: (plainB64) => callHelper("voiceprint-seal", [], { stdin: JSON.stringify({ plain: plainB64 }) }),
+  voiceprintOpen: (sealedB64) => callHelper("voiceprint-open", [], { stdin: JSON.stringify({ sealed: sealedB64 }) }),
+  voiceprintForget: (keepKey) => callHelper("voiceprint-forget", keepKey ? ["keep-key"] : []),
+
   /* ---------------------------------------------------------- claude code -- */
 
   // Everything from the cc-* commands is redacted twice: once by the helper

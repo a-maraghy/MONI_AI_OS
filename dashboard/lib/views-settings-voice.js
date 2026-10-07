@@ -24,7 +24,12 @@
  * accuracy and cost; a local model that is not installed is listed, disabled.
  *
  * Anchors (the page registry scans them): v-model, v-transcribe,
- * v-transcribe-lang, v-token, v-voice, v-persona, v-read, v-live-audio, v-spend.
+ * v-transcribe-lang, v-token, v-voice, v-persona, v-read, v-live-audio, v-spend,
+ * v-voiceprint, v-vp-gate, v-vp-enrol, v-vp-stats, v-vp-forget.
+ *
+ * The Voiceprint group (lib/voiceprint.js): the On / Off switch, "Only respond
+ * to my voice" (greyed while the voiceprint is off or not enrolled), the
+ * enrolment, the last 7 days of checks, and Delete everything.
  */
 
 const { esc, icon } = require("./ui");
@@ -50,6 +55,147 @@ const NOISE = [
   ["near_field", "Near field — headset mic"],
   ["off", "Off"],
 ];
+
+const MIC_LABEL = { laptop: "Laptop microphone", headset: "Headset", other: "Other microphone" };
+const micLabel = (m) => MIC_LABEL[m] || m;
+const pct = (n, d) => (d ? Math.round((100 * n) / d) + "%" : "—");
+
+/** The score histogram of the last days (inline SVG: no inline style, CSP-clean). */
+function vpHistogram(st, th) {
+  const h = st.hist || [];
+  const max = Math.max(1, ...h);
+  const W = 240;
+  const H = 56;
+  const bw = W / Math.max(1, h.length);
+  const x = (score) => ((score - st.hist_from) / (st.hist_step * h.length)) * W;
+  const bars = h
+    .map((n, i) => {
+      const lo = st.hist_from + i * st.hist_step;
+      const cls = lo >= th.accept ? "ok" : lo + st.hist_step <= th.reject ? "bad" : "mid";
+      const bh = n ? Math.max(2, Math.round((n / max) * (H - 4))) : 0;
+      return bh ? `<rect class="${cls}" x="${(i * bw + 1).toFixed(1)}" y="${H - bh}" width="${(bw - 2).toFixed(1)}" height="${bh}"><title>${lo.toFixed(2)}–${(lo + st.hist_step).toFixed(2)}: ${n}</title></rect>` : "";
+    })
+    .join("");
+  const line = (v, cls) => `<line class="${cls}" x1="${x(v).toFixed(1)}" x2="${x(v).toFixed(1)}" y1="0" y2="${H}"></line>`;
+  return `<svg class="vp-hist" viewBox="0 0 ${W} ${H + 12}" role="img" aria-label="Scores of the last ${st.days} days"><line class="base" x1="0" x2="${W}" y1="${H}" y2="${H}"></line>${bars}${line(th.accept, "acc")}${line(th.reject, "rej")}<text x="0" y="${H + 11}">${st.hist_from}</text><text x="${x(0).toFixed(1)}" y="${H + 11}" text-anchor="middle">0</text><text x="${x(th.accept).toFixed(1)}" y="${H + 11}" text-anchor="middle">${th.accept}</text><text x="${W}" y="${H + 11}" text-anchor="end">1</text></svg>`;
+}
+
+/**
+ * The Voiceprint group (lib/voiceprint.js). o.voiceprint = { enabled, gate, thresholds, service, enrolled,
+ * model, stats, trial: [slots with enrolment recordings] }.
+ */
+function voiceprintGroup(o) {
+  const vp = o.voiceprint;
+  if (!vp) return "";
+  const csrf = o.csrf;
+  const en = !!vp.enabled;
+  const mics = (vp.enrolled && vp.enrolled.mics) || {};
+  const enrolled = Object.keys(mics).length > 0;
+  const th = vp.thresholds || { accept: 0.31, reject: 0.2 };
+  const svcBad = en && vp.service && (vp.service.ok === false || vp.service.error);
+  const warn = svcBad
+    ? `<div class="alert bad vp-warn" id="vp-service-warn">${icon("alert")}<div><strong>The voiceprint service is not answering.</strong> Turns are not being checked and nothing is blocked (fail open). ${esc(
+        vp.service.error || ""
+      )} <span class="muted">It is <code>moni-voiceprint.service</code>, installed with <code>deploy/install-voiceprint.sh</code>.</span></div></div>`
+    : "";
+  const sw1 = V.row(
+    "Voiceprint",
+    `MINT AI checks each turn of a live call — a hold-to-talk press or a hands-free turn — against your voiceprint, on this server (nothing is sent anywhere). On its own it only watches: the result is logged and nothing is blocked. Off: nothing is checked at all and calls work exactly as before; your voiceprint is kept.`,
+    V.form(`${BASE}/voiceprint`, csrf, V.sw('name="enabled" value="1" id="vp-enabled" aria-label="Voiceprint"', en, "On", "Off"), {
+      confirm: en ? "Switch the voiceprint off?" : null,
+      confirmBody: en ? "Turns are no longer checked; “Only respond to my voice” stops too. Your voiceprint is kept." : null,
+      confirmYes: en ? "Switch off" : null,
+    }),
+    { id: "v-voiceprint", scope: "everyone" }
+  );
+  const canGate = en && enrolled;
+  const gateHelp = `When on: your voice → it answers as always. Not sure → it says “Sorry, say that again?”. Another voice (people in the room, a TV) → ignored, never spoken to; the page shows “Not your voice — ignored”, and a “yes” in such a turn confirms nothing. MINT AI's own voice coming back through the speakers → dropped. If the check fails, the turn goes through.${
+    canGate ? "" : en ? ` <span class="muted" id="vp-gate-why">Enrol your voiceprint first.</span>` : ` <span class="muted" id="vp-gate-why">The voiceprint is off.</span>`
+  }`;
+  const sw2 = V.row(
+    "Only respond to my voice",
+    gateHelp,
+    V.form(`${BASE}/voiceprint/gate`, csrf, V.sw(`name="gate" value="1" id="vp-gate" aria-label="Only respond to my voice"${canGate ? "" : " disabled"}`, canGate && vp.gate, "On", "Off"), {
+      confirm: vp.gate ? null : "Only respond to your voice?",
+      confirmBody: vp.gate ? null : "Turns that are not your voice are ignored from the next turn on. Check the last days' figures below first.",
+      confirmYes: vp.gate ? null : "Turn on",
+    }),
+    { id: "v-vp-gate", scope: "everyone", tag: canGate ? "" : "" }
+  );
+  const micList = Object.keys(mics)
+    .map(
+      (m) =>
+        `<li class="vp-mic"><span><b>${esc(micLabel(m))}</b> <span class="muted">${esc(String(mics[m].speech_s || "?"))} s of speech${mics[m].source === "trial" ? " · from the trial recordings" : ""}${
+          mics[m].at ? " · " + esc(String(mics[m].at).slice(0, 10)) : ""
+        }</span></span>${V.form(`${BASE}/voiceprint/remove-mic`, csrf, `<input type="hidden" name="mic" value="${esc(m)}"><button class="btn small" type="submit">Remove</button>`, {
+          noSave: true,
+          cls: "inline",
+          confirm: "Remove this microphone from your voiceprint?",
+          confirmBody: Object.keys(mics).length > 1 ? "The voiceprint is rebuilt from the other microphones." : "It is your only one: the voiceprint is deleted.",
+          confirmYes: "Remove",
+        })}</li>`
+    )
+    .join("");
+  const trial = (vp.trial || []).filter((sl) => !mics[sl]);
+  const trialBtns = trial
+    .map((sl) =>
+      V.form(`${BASE}/voiceprint/from-trial`, csrf, `<input type="hidden" name="slot" value="${esc(sl)}"><button class="btn small primary" type="submit" id="vp-from-trial-${esc(sl)}"${en ? "" : " disabled"}>${icon("fingerprint", 14)} Use my trial recordings (${esc(micLabel(sl))})</button>`, {
+        noSave: true,
+        cls: "inline",
+      })
+    )
+    .join("");
+  const enrolRow = V.row(
+    "Your voiceprint",
+    `Made from about a minute of you reading aloud, on any microphone; add another microphone for a better match on it. Only the voiceprint is kept — a list of numbers, sealed with a key only the server's root can use — never the recordings. Model: ${esc(vp.model || "")} (WeSpeaker project).`,
+    `<div class="vp-enrol">${enrolled ? `<ul class="vp-mics" id="vp-mics">${micList}</ul>` : `<span class="kv-mask" id="vp-none">${icon("fingerprint", 15)}<span>Not enrolled</span></span>`}<div class="vp-acts">${trialBtns}<a class="btn small${enrolled || trial.length ? "" : " primary"}" href="/mint-ai/voiceprint/enrol" id="vp-enrol-link">${icon(
+      "voice",
+      14
+    )} ${enrolled ? "Add or redo a microphone" : "Enrol (about 2 minutes)"}</a>${
+      enrolled
+        ? V.form(`${BASE}/voiceprint/delete`, csrf, `<button class="btn small danger" type="submit" id="vp-delete">${icon("trash", 14)} Delete voiceprint</button>`, {
+            noSave: true,
+            cls: "inline",
+            confirm: "Delete your voiceprint?",
+            confirmBody: "Turns are no longer checked until you enrol again. “Only respond to my voice” goes off.",
+            confirmYes: "Delete",
+          })
+        : ""
+    }</div></div>`,
+    { id: "v-vp-enrol", scope: "you", full: false }
+  );
+  const st = vp.stats || { checked: 0, by: {} };
+  const by = st.by || {};
+  const statsBody = st.checked
+    ? `<div class="vp-stats" id="vp-stats"><div class="vp-nums"><span><b>${st.checked}</b> turns checked</span><span><b>${by.accept || 0}</b> yours (${pct(by.accept || 0, st.checked)})</span><span><b>${
+        st.would_ask
+      }</b> would ask again</span><span class="${st.would_ignore ? "vp-attn" : ""}"><b>${st.would_ignore}</b> would ignore${by.echo ? ` (${by.echo} MINT AI's echo)` : ""}</span>${
+        by.error ? `<span class="vp-attn"><b>${by.error}</b> not checked (service)</span>` : ""
+      }<span class="muted">median score ${st.score_p50 == null ? "—" : st.score_p50} · check ${st.ms_p50 == null ? "—" : Math.round(st.ms_p50) + " ms"} (p95 ${st.ms_p95 == null ? "—" : Math.round(st.ms_p95) + " ms"})</span></div>${vpHistogram(
+        st,
+        th
+      )}</div>`
+    : `<span class="muted-num" id="vp-stats">${en ? (enrolled ? "No turns checked yet — talk in a live call." : "Nothing yet: enrol first.") : "The voiceprint is off."}</span>`;
+  const statsRow = V.row(
+    `Last ${st.days || 7} days${vp.gate ? "" : " (watching only)"}`,
+    `What the check said about each turn. “Would” is what “Only respond to my voice” would have done; with it on, it did. Accept from ${th.accept}; below ${th.reject} is another voice.`,
+    statsBody,
+    { id: "v-vp-stats", full: !!st.checked }
+  );
+  const forget = V.row(
+    "Delete everything",
+    "Your voiceprint, its sealing key, the voiceprint trial's recordings and evaluation results, and the check log — all of it, from this server.",
+    V.form(`${BASE}/voiceprint/forget-all`, csrf, `<button class="btn small danger" type="submit" id="vp-forget-all">${icon("trash", 14)} Delete everything</button>`, {
+      noSave: true,
+      cls: "inline",
+      confirm: "Delete everything about your voice?",
+      confirmBody: "The voiceprint, its key, the trial recordings, the evaluation results and the check log are removed. This cannot be undone.",
+      confirmYes: "Delete everything",
+    }),
+    { id: "v-vp-forget" }
+  );
+  return V.group("Voiceprint", "fingerprint", warn + sw1 + `<div class="vp-dep${en ? "" : " vp-off"}">${sw2}${enrolRow}${statsRow}</div>` + forget, { id: "v-vp" });
+}
 
 function usd(n) {
   return "$" + (Number(n) || 0).toFixed(2);
@@ -308,9 +454,9 @@ function body(o) {
     ) +
     main +
     hiddenNote +
-    `<div class="dep-hide">${voiceGroup}${liveGroup}${spendGroup}</div>` +
+    `<div class="dep-hide">${voiceGroup}${voiceprintGroup(o)}${liveGroup}${spendGroup}</div>` +
     dialog
   );
 }
 
-module.exports = { body, voiceCard, GENDER, BASE };
+module.exports = { body, voiceCard, voiceprintGroup, GENDER, BASE };

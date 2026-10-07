@@ -2671,6 +2671,8 @@
           if (m.nonce) window.VoiceLive.ack(m.nonce, res.ok, res.why);
         }
         if (m.type === "ui-undo") uiUndoNow("voice"); // "undo" said in the call, caught by the server
+        // The voiceprint's gate ignored a turn that was not the administrator's voice: shown, never spoken.
+        if (m.type === "voiceprint" && m.verdict === "reject") toast("Not your voice — ignored.");
         // The voice settings changed and the call reconnected with them (the voice is global).
         if (m.type === "voice-changed") {
           var vt = $("cc-voice-tag"); if (vt && m.voice) vt.textContent = m.voice;

@@ -155,6 +155,10 @@ const END_WHY = /^(?:button|esc|mic|navigate|unload|track-ended|devicechange|voi
 const TURNS = ["vad", "ptt"];
 const PTT_MIN_MS = 200;
 const PTT_IDLE_MS = 3 * 60 * 1000;
+// The voiceprint's gate (lib/voiceprint.js), when "Only respond to my voice" is on.
+const VP_AGAIN_LINE = { en: "Sorry, say that again?", ar: "معلش، ممكن تقولها تاني؟" };
+const VP_AGAIN_EVERY_MS = 6000; // the ask-again line at most this often
+const VP_LEARN_MS = 3000; // MINT AI's own voice: up to this much of a reply is sampled for its print
 const BACK_LINE = { en: "The line dropped for a second — I'm back.", ar: "الخط قطع لثانية، وأنا معاك تاني." };
 const RECONNECTED_LINE = { en: "Reconnected.", ar: "الاتصال رجع، وأنا معاك." };
 const EARLIER_LINE = { en: "About your earlier question:", ar: "بخصوص سؤالك اللي فات:" };
@@ -339,6 +343,10 @@ class LiveCall {
     this.press = null; // the press being held: { n, at, frames, bytes } (counts only, for the log)
     this.pressN = 0;
     this.idleFrames = 0; // audio frames from the page between presses (dropped)
+    // The voiceprint (lib/voiceprint.js through server.js): { enabled(), gate(), hasPrint(), check(pcm, o),
+    // record(row), learnTts(voice, pcm) }. Read per turn, so switching it in Settings applies from the next turn.
+    this.vp = d.voiceprint || null;
+    this.vpAskedAt = 0;
     this.now = d.now || Date.now;
     this.pttSeenAt = this.now();
     this.log = d.log || (() => {});
@@ -867,7 +875,7 @@ class LiveCall {
     }
     this.send({ type: "input_audio_buffer.clear" });
     this.ptt = { startMs: this.inputMs, at: this.now() };
-    this.press = { n: ++this.pressN, at: this.now(), frames: 0, bytes: 0, upstream: !!(this.ws && this.ws.readyState === WebSocket.OPEN) };
+    this.press = { n: ++this.pressN, at: this.now(), frames: 0, bytes: 0, upstream: !!(this.ws && this.ws.readyState === WebSocket.OPEN), overVoice: this.lastAudibleAt > 0 && this.now() - this.lastAudibleAt < LEAK_AFTER_MS };
     this.setState("talking");
   }
   pttUp() {
@@ -890,7 +898,7 @@ class LiveCall {
       return;
     }
     pressLine("committed");
-    this.pttCommits.push({ startMs: p.startMs, endMs: this.inputMs, at: p.at, upAt: this.now() });
+    this.pttCommits.push({ startMs: p.startMs, endMs: this.inputMs, at: p.at, upAt: this.now(), press: pr ? pr.n : null, overVoice: !!(pr && pr.overVoice) });
     this.send({ type: "input_audio_buffer.commit" });
     this.setState("thinking");
   }
@@ -905,6 +913,8 @@ class LiveCall {
     t.bargeConfirmed = true;
     t.ptt = true;
     t.upAt = c.upAt;
+    t.pressN = c.press;
+    t.pressOverVoice = c.overVoice;
     t.committedAt = this.now();
     this.speechStopped({ item_id: ev.item_id, audio_end_ms: c.endMs });
   }
@@ -1109,6 +1119,7 @@ class LiveCall {
       this.log(`live: barge-in candidate dropped (speech stopped after ${t.stoppedAt - t.startedAt} ms without sustained voice)`);
     }
     if (!this.suspect(t)) this.setState("thinking");
+    this.vpStart(t);
     if (this.opts.handoff === "turn" && this.d.transcribe && !this.suspect(t)) t.turnP = this.transcribeTurn(t);
     // Fast path: a real-length turn that did not overlap the voice cannot be its leak, so it is
     // answered now (as create_response did) instead of after its transcript (~0.7 s later).
@@ -1123,6 +1134,103 @@ class LiveCall {
       if (this.suspect(t)) return this.drop(t, "echo-leak");
       this.answer(t);
     }, (this.opts.transcriptWaitMs || TRANSCRIPT_WAIT_MS) + (awaiting && this.suspect(t) ? 2000 : 0));
+  }
+
+  /* ---- the voiceprint (lib/voiceprint.js) ---- */
+
+  /** The voiceprint is switched on and this administrator has one. Read per turn. */
+  vpOn() {
+    try {
+      return !!(this.vp && this.vp.enabled() && this.vp.hasPrint());
+    } catch (_) {
+      return false;
+    }
+  }
+  /** On, and "Only respond to my voice": turns wait for their verdict. */
+  vpGating() {
+    try {
+      return this.vpOn() && !!this.vp.gate();
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /**
+   * The turn has ended: score its first ~1.2 s of speech against the print.
+   * Off (or no print): nothing is called, nothing waits. Never throws; the
+   * service failing is a verdict "error", and the turn goes on (fail open).
+   */
+  vpStart(t) {
+    if (t.vpP || !this.vpOn()) return;
+    // The first 4 s are plenty for the first ~1.2 s of speech (the audio starts just before the speech did).
+    const pcm = this.turnAudio(t).subarray(0, 4000 * BYTES_PER_MS);
+    const gated = this.vpGating();
+    const overVoice = !!(t.overVoice || t.pressOverVoice);
+    const what = t.ptt && t.pressN ? "press " + t.pressN : "turn " + t.n;
+    t.vpP = Promise.resolve()
+      .then(() => this.vp.check(pcm, { overVoice, voice: this.cfg.voice }))
+      .catch((e) => ({ verdict: "error", error: String((e && e.message) || e).slice(0, 120) }))
+      .then((v) => {
+        t.vp = v || { verdict: "error", error: "no answer" };
+        t.vpDone = true;
+        const r = t.vp;
+        const sc = r.score != null ? r.score.toFixed(3) : "-";
+        const ts = r.tts_score != null ? ", MINT AI's voice " + r.tts_score.toFixed(3) : "";
+        const sp = r.speech_ms != null ? `, ${r.used_ms} of ${r.speech_ms} ms of speech` : "";
+        this.log(`live: call ${this.id} ${what} voiceprint: ${r.verdict} ${sc}${ts}${sp}${overVoice ? ", over the voice" : ""}, ${Math.round(r.ms || 0)} ms (${gated ? "gate" : "shadow"})${r.error ? ": " + scrub(r.error) : ""}`);
+        if (!gated) this.vpRecord(t, false, "shadow");
+        const w = t.vpWaiters || [];
+        t.vpWaiters = null;
+        for (const fn of w) fn();
+      });
+  }
+  vpRecord(t, gated, acted) {
+    const r = t.vp || {};
+    try {
+      if (this.vp && this.vp.record) this.vp.record({ call_id: this.id, turn: t.ptt && t.pressN ? t.pressN : t.n, mode: t.ptt ? "ptt" : "vad", speech_ms: r.speech_ms, score: r.score, tts_score: r.tts_score, verdict: r.verdict || "error", gated, acted, over_voice: !!(t.overVoice || t.pressOverVoice), ms: r.ms, error: r.error || null });
+    } catch (_) {
+      /* the ledger never stops a turn */
+    }
+  }
+  /**
+   * The gate, at the points where a turn would be used (its transcript, its
+   * answer). Returns true when the caller must stop: the verdict is not in yet
+   * (`again` runs when it is), or the turn was not the administrator's and has
+   * been dropped. Shadow mode, off, no check, accept, error: false (go on).
+   */
+  vpHold(t, again) {
+    if (!t || !t.vpP || t.vpApplied === "go") return false;
+    if (t.vpApplied === "dropped") return true;
+    if (!this.vpGating()) return false; // switched to shadow or off mid-turn: go on
+    if (!t.vpDone) {
+      (t.vpWaiters = t.vpWaiters || []).push(again);
+      return true;
+    }
+    const v = (t.vp && t.vp.verdict) || "error";
+    if (v === "accept" || v === "error" || v === "none") {
+      t.vpApplied = "go";
+      this.vpRecord(t, true, v === "error" ? "answered (fail open)" : "answered");
+      return false;
+    }
+    t.vpApplied = "dropped";
+    if (v === "reject") {
+      this.drop(t, "not-your-voice");
+      this.toClient({ type: "voiceprint", verdict: "reject", text: "Not your voice — ignored." });
+      this.vpRecord(t, true, "ignored");
+    } else if (v === "echo") {
+      this.drop(t, "echo-voiceprint");
+      this.vpRecord(t, true, "dropped (echo)");
+    } else {
+      this.drop(t, "voice-uncertain");
+      const askNow = this.now() - this.vpAskedAt >= VP_AGAIN_EVERY_MS;
+      if (askNow) {
+        this.vpAskedAt = this.now();
+        const lang = desk.langOf(this.heard.length ? this.heard[this.heard.length - 1] : "", "");
+        this.sayFixed(lang === "ar" ? VP_AGAIN_LINE.ar : VP_AGAIN_LINE.en, "the voiceprint's ask-again line", null);
+      }
+      this.vpRecord(t, true, askNow ? "asked again" : "ignored (asked lately)");
+    }
+    return true;
   }
 
   /** Heard over (or just after) the voice, and not a confirmed barge-in: maybe the speaker's leak. */
@@ -1170,6 +1278,13 @@ class LiveCall {
   /** The session's own transcript of a user turn: the echo, stop and persona checks. */
   sessionTranscript(ev) {
     const t = this.turnFor(ev.item_id);
+    // The voiceprint's gate: nothing of a turn (its caption, a confirm's "yes", "undo", "stop") is used
+    // before its verdict; a turn that is not the administrator's voice ends here.
+    if (this.vpHold(t, () => this.sessionTranscript({ ...ev, usage: null }))) {
+      if (ev.usage) this.record({ vt: t.vt, part: "transcription", model: this.cfg.transcribe_model || "gpt-4o-mini-transcribe", tokens: usageLib.transcribeTokens(ev.usage) });
+      if (t.dropped) t.resolveSession(null);
+      return;
+    }
     const text = String(ev.transcript || "").trim();
     if (ev.usage) this.record({ vt: t.vt, part: "transcription", model: this.cfg.transcribe_model || "gpt-4o-mini-transcribe", tokens: usageLib.transcribeTokens(ev.usage) });
     const audioSeconds = t.endMs != null && t.startMs != null ? (t.endMs - t.startMs) / 1000 : null;
@@ -1235,6 +1350,7 @@ class LiveCall {
    */
   answer(t) {
     if (!t || t.answered || t.dropped || this.closed) return;
+    if (this.vpHold(t, () => this.answer(t))) return;
     t.answered = true;
     if (this.opts.handoff === "turn" && this.d.transcribe && !t.turnP && t.endMs != null) t.turnP = this.transcribeTurn(t);
     if (this.audibleNow()) {
@@ -1400,6 +1516,10 @@ class LiveCall {
       firstAudioOut: null,
     };
     r.rel = new desk.Releaser(() => this.context(), (text) => this.onRelease(r, text));
+    if (this.vpOn()) {
+      r.vpOut = [];
+      r.vpOutBytes = 0;
+    }
     r.info = { askedNow: () => !!(turn && turn.asked), pending: () => [...this.requests.values()].some((x) => !x.answered), uiCalling: () => (r.uiCalls === undefined ? null : r.uiCalls) };
     this.resp = r;
     this.diag.responses++;
@@ -1438,6 +1558,11 @@ class LiveCall {
     const s = this.segs.get(r.seg);
     if (!s.itemId) s.itemId = r.itemId || ev.item_id || null;
     r.chunks.push({ tag: audioTag(r.text), buf, at: this.now() });
+    // A sample of MINT AI's own voice, for the voiceprint's echo rule (all of the reply's audio is its voice).
+    if (r.vpOut && r.vpOutBytes < VP_LEARN_MS * BYTES_PER_MS) {
+      r.vpOut.push(buf);
+      r.vpOutBytes += buf.length;
+    }
     this.pump(r);
   }
 
@@ -1523,6 +1648,11 @@ class LiveCall {
     if (r.done) return;
     r.done = true;
     this.timingLine(r);
+    if (r.vpOut && !r.cancelled && !r.trip && r.vpOutBytes >= 1500 * BYTES_PER_MS && this.vpOn() && this.vp.learnTts) {
+      const pcm = Buffer.concat(r.vpOut);
+      r.vpOut = null;
+      Promise.resolve(this.vp.learnTts(this.cfg.voice, pcm)).catch(() => {});
+    }
     if (this.queued) {
       const q = this.queued;
       this.queued = null;
