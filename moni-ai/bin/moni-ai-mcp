@@ -24,6 +24,9 @@
  *   ui_actions_list       the screen actions that exist right now (read-only)
  *   session_hire          hire a worker session (its own context, supervised, gated)
  *   session_retire        ASK the administrator to retire one it hired (a consent card; never ends it)
+ *   machine_list / machine_take_over / machine_tell / machine_release
+ *                         the user's own computers (Path A laptop control): a session ON the
+ *                         computer under a lease the user can stop; lib/machines.js
  *   ui_do                 do one: change what the administrator sees in the tab
  *                         they asked from (open a page or a panel, end the
  *                         call...), during their own turn only; never approves,
@@ -259,6 +262,74 @@ const TOOLS = [
     },
     shape: (d) => d,
   },
+  // The user's own computers (Path A laptop control, 2026-10-08). Stable schemas: plain strings and a number.
+  {
+    name: "machine_list",
+    op: "machines",
+    description:
+      "Read-only: the user's computers linked to Mint OS (through the MINT AI desktop app): id, name, whether it is online now, and the session " +
+      "you run on it, if any.",
+    inputSchema: { type: "object", properties: {}, additionalProperties: false },
+    noArgs: true,
+    shape: (d) => d,
+  },
+  {
+    name: "machine_take_over",
+    op: "machine-take-over",
+    description:
+      "Take over one of the user's own computers, ONLY when the user asked you to do something on it (open files or apps, make a Word / Excel / " +
+      "PowerPoint / PDF file, use the browser...). It hires a session that runs ON that computer (Claude Code there, with screen, mouse, keyboard, " +
+      "PowerShell, browser and document tools) under a control lease (default 15 minutes, at most 60). The user sees a glowing frame and can stop it " +
+      "at any moment; sending, deleting, buying, posting, installing or touching files outside theirs waits for their approval in Mint OS. Refused " +
+      "unless this turn is the administrator's own request (typed in the Command Center, or said aloud and recognised by the voiceprint as someone " +
+      "who may give commands). Its reports reach you as turns; give more instructions with machine_tell; machine_release when done.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        machine: { type: "string", description: "The computer's name or id (machine_list); may be left out when only one is linked." },
+        purpose: { type: "string", description: "What to do there, in plain words: this is the laptop session's first message." },
+        minutes: { type: "number", description: "Optional: the lease in minutes, 1-60 (default 15). Only the user can extend it." },
+      },
+      required: ["purpose"],
+      additionalProperties: false,
+    },
+    map(given) {
+      const out = { purpose: given.purpose };
+      if (given.machine !== undefined && given.machine !== "") out.machine = String(given.machine);
+      if (given.minutes !== undefined && given.minutes !== null) out.minutes = Math.round(Number(given.minutes));
+      return out;
+    },
+    shape: (d) => d,
+  },
+  {
+    name: "machine_tell",
+    op: "machine-tell",
+    description: "Send a further instruction to the session you run on one of the user's computers (machine_take_over first). Marked as coming from you.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        machine: { type: "string", description: "The computer's name or id; may be left out when only one is linked." },
+        message: { type: "string", description: "What to tell it." },
+      },
+      required: ["message"],
+      additionalProperties: false,
+    },
+    shape: (d) => d,
+  },
+  {
+    name: "machine_release",
+    op: "machine-release",
+    description: "Hand the computer back to the user: ends the control lease at once and closes the session there. Do it as soon as the job is done.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        machine: { type: "string", description: "The computer's name or id; may be left out when only one is linked." },
+        note: { type: "string", description: "Optional: why, in one line." },
+      },
+      additionalProperties: false,
+    },
+    shape: (d) => d,
+  },
 ];
 
 /**
@@ -342,7 +413,8 @@ async function onMessage(msg) {
         instructions:
           "MINT AI's missions and decision proposals, recorded by the supervisor and shown in the Command Center; status_snapshot: this VPS at a glance, read-only; " +
           "ui_actions_list / ui_do: change what the administrator sees in the tab they asked from, during their own request only (list first, then do); " +
-          "session_hire / session_retire: hire a worker session, and ASK the administrator to retire one you hired (never ends it yourself).",
+          "session_hire / session_retire: hire a worker session, and ASK the administrator to retire one you hired (never ends it yourself); " +
+          "machine_list / machine_take_over / machine_tell / machine_release: work on the user's own computer when they ask, under a lease they can stop.",
       },
     });
   }

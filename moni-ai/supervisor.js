@@ -47,6 +47,7 @@ const names = require("./lib/names");
 const UiActions = require("./lib/ui-actions");
 const planUsageLib = require("./lib/usage");
 const settingsLib = require("./lib/settings");
+const machinesLib = require("./lib/machines");
 
 /* ----------------------------------------------------------------- config --- */
 
@@ -271,6 +272,8 @@ const proc = {
 const UI_REFUSED_ACTORS = new Set(["moni-ai", "watcher", "supervisor", "flag-file", "scheduler", "order"]);
 const UI_ACK_MS = 5000;
 const uiTokens = new Map(); // turn id -> { ut, actor, source }
+// A voice-desk turn's speaker as the voiceprint judged it ("command" | "other"): taking over a computer by voice needs "command".
+const turnVp = new Map(); // turn id -> "command" | "other"
 const uiWaiting = new Map(); // nonce -> { actor, resolve }
 const uiLimit = UiActions.limiter();
 const uiTag = (ut) => crypto.createHash("sha256").update(String(ut)).digest("hex").slice(0, 16);
@@ -672,21 +675,25 @@ function userMessage(row) {
 }
 
 /** Turns this supervisor wrote itself: their replayed text is already recorded. */
-const OUR_SOURCES = new Set(["dashboard", "voice-desk", "order", "watcher", "mission-request", "decision", "cap-held"]);
+const OUR_SOURCES = new Set(["dashboard", "voice-desk", "order", "watcher", "mission-request", "decision", "cap-held", "machine"]);
 
 /**
  * Queue a turn for MINT AI. The supervisor holds the queue and hands the CLI
  * one turn at a time, user turns before background ones (lib/turnqueue.js).
  * Nothing here ever interrupts a running turn.
  */
-function queueTurn({ source, actor, text, target, order_id, mission_id, decision_id, ut, call }) {
-  const merged = call ? mergeVoiceTurn({ actor, text, target, ut, call }) : null;
+function queueTurn({ source, actor, text, target, order_id, mission_id, decision_id, ut, call, vp }) {
+  const merged = call ? mergeVoiceTurn({ actor, text, target, ut, call, vp }) : null;
   if (merged) return merged;
   const row = ledger.addTurn({ uuid: crypto.randomUUID(), source, actor, text, target: target || null, status: "queued", order_id, mission_id, decision_id });
   // The ui token lives here only (memory): never in the ledger, the events or the audit.
   if (ut && (source === "dashboard" || source === "voice-desk") && !UI_REFUSED_ACTORS.has(actor)) {
     uiTokens.set(row.id, { ut, actor, source });
     if (uiTokens.size > 200) uiTokens.delete(uiTokens.keys().next().value);
+  }
+  if (source === "voice-desk") {
+    turnVp.set(row.id, vp === "command" ? "command" : "other");
+    if (turnVp.size > 200) turnVp.delete(turnVp.keys().next().value);
   }
   turns.pending.push({ row, message: userMessage(row), call: call || null, lastAt: Date.now() });
   emit("turn", { phase: "queued", turn: publicTurn(row) });
@@ -700,7 +707,7 @@ function queueTurn({ source, actor, text, target, order_id, mission_id, decision
  * the last: folded into that turn, so MINT AI answers once and the voice does
  * not read two answers back to back. Returns the turn (merged: true), or null.
  */
-function mergeVoiceTurn({ actor, text, target, ut, call }) {
+function mergeVoiceTurn({ actor, text, target, ut, call, vp }) {
   const within = (cfg.voice_merge_s || 0) * 1000;
   if (!within) return null;
   const p = turns.pending.find((q) => q.call === call && q.row.source === "voice-desk" && q.row.actor === actor && (q.row.target || null) === (target || null) && Date.now() - q.lastAt <= within);
@@ -711,6 +718,8 @@ function mergeVoiceTurn({ actor, text, target, ut, call }) {
   p.lastAt = Date.now();
   p.merges = (p.merges || 0) + 1;
   if (ut && !uiTokens.has(p.row.id) && !UI_REFUSED_ACTORS.has(actor)) uiTokens.set(p.row.id, { ut, actor, source: "voice-desk" });
+  // A merged turn may command only if every part of it came from someone who may give commands.
+  if (vp !== "command") turnVp.set(p.row.id, "other");
   log(`queue: a repeat from live call ${call} folded into queued turn #${p.row.id} (${p.merges} so far)`);
   emit("turn", { phase: "merged", turn: publicTurn(p.row) });
   return { ...publicTurn(p.row), merged: true };
@@ -1336,11 +1345,11 @@ const SESSIONS_FILES = path.join(cfg.state_dir, "sessions");
 const INTERNAL_ACTORS = new Set(["moni-ai", "watcher", "supervisor", "flag-file", "scheduler", "order"]);
 /** A person at the panel or a shell (not MINT AI, not a hired session, not the supervisor's own jobs). */
 function isHuman(actor) {
-  return !INTERNAL_ACTORS.has(actor) && !/^session\./.test(actor);
+  return !INTERNAL_ACTORS.has(actor) && !/^session\./.test(actor) && !/^machines?(\.|$)/.test(actor);
 }
 function publicHired(h) {
   if (!h) return null;
-  return { slug: h.slug, name: h.name, cwd: h.cwd, purpose: h.purpose, model: h.model, session_id: h.session_id, status: h.status, kept: !!h.kept, hired_by: h.hired_by, hired_at: h.hired_at, retired_at: h.retired_at, retired_by: h.retired_by, retire_approval_id: h.retire_approval_id };
+  return { slug: h.slug, name: h.name, cwd: h.cwd, purpose: h.purpose, model: h.model, session_id: h.session_id, status: h.status, kept: !!h.kept, hired_by: h.hired_by, hired_at: h.hired_at, retired_at: h.retired_at, retired_by: h.retired_by, retire_approval_id: h.retire_approval_id, machine_id: h.machine_id || null };
 }
 function writeHiredFile(h, extra) {
   fs.mkdirSync(SESSIONS_FILES, { recursive: true, mode: 0o700 });
@@ -1424,6 +1433,11 @@ async function doRetire(h, by) {
 async function sessionRetire(actor, p) {
   const all = ledger.hiredList(false);
   const h = hireLib.findHired({ slug: p.slug, session_id: p.session_id, ref: p.ref, name: p.name }, all, agentRefs);
+  // A session on one of the user's computers: ending control is always safe, so it ends at once (no consent card).
+  if (h && h.machine_id && (actor === "moni-ai" || isHuman(actor))) {
+    const by = actor === "moni-ai" ? "moni-ai" : actor;
+    return { retired: publicHired(machines.stop(h, actor === "moni-ai" ? "released by MINT AI" + (p.note ? ": " + p.note : "") : `stopped by ${actor}`, by)) };
+  }
   if (actor === "moni-ai") {
     const why = hireLib.retireRefusal(h);
     if (why) throw new Error(why);
@@ -1487,6 +1501,7 @@ function sessionKeep(actor, p) {
   if (!isHuman(actor)) throw new Error("only the administrator can keep or unkeep a session");
   const h = hireLib.findHired({ slug: p.slug, session_id: p.session_id }, ledger.hiredList(false));
   if (!h) throw new Error("that is not a session hired through MINT AI");
+  if (h.machine_id && p.kept) throw new Error("a session on your computer runs only under a control lease: it cannot be kept");
   const upd = ledger.updateHired(h.id, { kept: p.kept ? 1 : 0 });
   log(`keep: "${h.name}" ${p.kept ? "kept" : "no longer kept"} by ${actor}`);
   emitHired(upd, p.kept ? "kept" : "unkept");
@@ -1506,6 +1521,17 @@ function sessionApproval(actor, p) {
   const tool = p.tool;
   const gate = classifier.gateDecision(tool, input, cfg) || {};
   const summary = tool === "SendMessage" ? `SendMessage to ${peers.bareName(input.to)}: ${input.message || ""}` : typeof input.command === "string" ? input.command : JSON.stringify(input);
+  return sessionCard(h, { ...p, input_obj: input, summary }, gate);
+}
+/**
+ * The approval card for a hired session's question (a VPS session's, or a laptop session's through
+ * lib/machines.js): attributed to it (origin session:<slug>, origin_name its name), answered by the
+ * administrator in the Command Center; resolves to the CLI's answer. No answer in time: deny.
+ */
+function sessionCard(h, p, gate) {
+  const tool = p.tool;
+  const input = p.input_obj || {};
+  const summary = p.summary || JSON.stringify(input);
   const key = `${p.slug}:${p.request_id}`;
   const row = ledger.addApproval({
     request_id: key,
@@ -1535,7 +1561,9 @@ function sessionApproval(actor, p) {
   });
 }
 function sessionApprovalCancel(actor, p) {
-  if (actor !== "session." + p.slug) throw new Error("not a hired session's own question");
+  const mid = machinesLib.machineIdOfActor(actor);
+  const mine = actor === "session." + p.slug || (mid && ledger.hiredList(false).some((h) => h.slug === p.slug && Number(h.machine_id) === mid));
+  if (!mine) throw new Error("not a hired session's own question");
   const key = `${p.slug}:${p.request_id}`;
   const aid = requestToApproval.get(key);
   if (!aid) return { cancelled: false };
@@ -2234,6 +2262,38 @@ const features = createFeatures({
   onCapResume: (e, why, held) => onCapResume(e, why, held),
 });
 
+/*
+ * The user's own computers (Path A laptop control, lib/machines.js): sessions MINT AI runs on a linked
+ * computer under a control lease. The dashboard relays; the cards are the hired sessions' own.
+ */
+const machines = machinesLib.create({
+  ledger,
+  emit,
+  log,
+  queueTurn: (t) => queueTurn(t),
+  raiseCard: (h, p, gate) => sessionCard(h, p, gate),
+  isPaused: (slug) => !!(features.caps && features.caps.isPaused(slug)),
+  limits: () => hireLimits(),
+  liveSessions: () => sessionsCache.list || [],
+  publicHired: (h) => publicHired(h),
+});
+/** Who may take over a computer: the administrator, or MINT AI answering the administrator's own request. */
+function takeOverPolicy(actor) {
+  if (isHuman(actor)) return { ok: true };
+  if (actor !== "moni-ai") return { ok: false, why: "only MINT AI or the administrator can take over a computer" };
+  const r = turns.running;
+  if (!r) return { ok: false, why: "no turn is running: taking over a computer answers the administrator's own request, during it" };
+  if (r.source === "dashboard") return { ok: true };
+  if (r.source === "voice-desk") {
+    if (turnVp.get(r.id) === "command") return { ok: true };
+    return { ok: false, why: "by voice only when the voiceprint recognises someone who may give commands (it did not, or voiceprint is off): ask them to type it in the Command Center or press Take over in Mint OS > Machines" };
+  }
+  return { ok: false, why: "this turn was not started by the administrator (typed in the Command Center, or said aloud and recognised), so it cannot take over a computer" };
+}
+function machineTellPolicy(actor) {
+  if (!(actor === "moni-ai" || isHuman(actor))) throw new Error("only MINT AI or the administrator can do that");
+}
+
 /* ------------------------------------------------------------ public views --- */
 
 function publicTurn(row) {
@@ -2379,7 +2439,7 @@ async function handle(req, sock) {
         const live = (sessionsCache.list || []).some((s) => s.name === target && !s.self);
         if (!live) throw new Error(`no live session is named "${target}"`);
       }
-      const turn = queueTurn({ source: p.via === "voice-desk" ? "voice-desk" : "dashboard", actor: req.actor, text: p.text, target: target !== "auto" ? target : null, ut: p.ut, call: p.via === "voice-desk" ? p.call : null });
+      const turn = queueTurn({ source: p.via === "voice-desk" ? "voice-desk" : "dashboard", actor: req.actor, text: p.text, target: target !== "auto" ? target : null, ut: p.ut, call: p.via === "voice-desk" ? p.call : null, vp: p.via === "voice-desk" ? p.vp : undefined });
       if (turn.merged) {
         delete turn.merged;
         return { turn, merged: true, process: proc.state, queued_behind: 0 };
@@ -2448,6 +2508,26 @@ async function handle(req, sock) {
       return uiPages(req.actor, p);
     case "charter":
       return charter();
+    case "machines-sync":
+      return machines.sync(req.actor, p);
+    case "machines":
+      return machines.list();
+    case "machine-take-over":
+      return machines.takeOver(req.actor, p, takeOverPolicy(req.actor));
+    case "machine-tell":
+      machineTellPolicy(req.actor);
+      return machines.tell(req.actor, p);
+    case "machine-release":
+      machineTellPolicy(req.actor);
+      return machines.release(req.actor, p);
+    case "machine-ask":
+      return await machines.ask(req.actor, p);
+    case "machine-ask-cancel":
+      return sessionApprovalCancel(req.actor, p);
+    case "machine-report":
+      return machines.report(req.actor, p);
+    case "machine-state":
+      return machines.state(req.actor, p);
     case "deploy-event":
       // The dashboard (re)started (server.js announceStart): remembered for the snapshot, told to MINT AI once.
       return { noted: noteDeploy(p, req.actor) };

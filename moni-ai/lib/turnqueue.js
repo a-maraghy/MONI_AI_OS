@@ -28,7 +28,7 @@
  * running turn may be holding an approval card. The user turn goes next.
  */
 
-const BACKGROUND_SOURCES = new Set(["watcher", "order", "peer", "idle", "delivery", "system"]);
+const BACKGROUND_SOURCES = new Set(["watcher", "order", "peer", "idle", "delivery", "system", "machine"]);
 
 /**
  * "user" or "background". A standing order run by hand is the user's; a
