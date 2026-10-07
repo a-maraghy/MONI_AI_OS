@@ -283,6 +283,11 @@ function body(o) {
         "Compare voices",
         "Record your own voice and compare models and voices side by side.",
         `<a class="btn small" href="/mint-ai/voice-eval" id="voice-eval-link">${icon("voice", 14)} Voice evaluation</a>`
+      ) +
+      V.row(
+        "Voiceprint trial",
+        "Record a short trial set so we can measure how well your own voice can be recognised. Stays on this server.",
+        `<a class="btn small" href="/mint-ai/voiceprint-trial" id="voiceprint-trial-link">${icon("fingerprint", 14)} Voiceprint trial</a>`
       )
   );
 
