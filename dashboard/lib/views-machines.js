@@ -30,8 +30,21 @@ function leaseBlock(m, csrf) {
     </div>`;
 }
 
+/** Claude Code as the computer reported it: "found (version)", "not found", or nothing when unknown. */
+function claudeStatus(m) {
+  const c = m.claude;
+  if (!c) return "";
+  if (c.found) return `<span data-claude="${m.id}" data-found="1">Claude Code ${esc(c.version || "found")}</span>`;
+  return `<span class="warn-text" data-claude="${m.id}" data-found="0">Claude Code: not found</span>`;
+}
+
+function claudeMissingNote(m) {
+  return `<div class="alert warn" data-claude-missing="${m.id}">${icon("alert")}<div><b>Claude Code: not found</b> on this computer, so MINT AI cannot take it over yet. Install Claude Code there and sign in once by running <span class="mono">claude</span> in a terminal, then press <b>Look again</b> in the MINT AI app (Settings &#9656; This computer).</div></div>`;
+}
+
 function takeOverForm(m, csrf) {
   if (!m.online || m.lease) return "";
+  if (m.claude && !m.claude.found) return claudeMissingNote(m);
   return `<details class="mc-take"><summary>Let MINT AI take over</summary>
       <form method="post" action="/machines/${m.id}/take-over" class="stack">
         <input type="hidden" name="_csrf" value="${esc(csrf)}">
@@ -43,8 +56,7 @@ function takeOverForm(m, csrf) {
 }
 
 function machineRow(m, csrf) {
-  const c = m.claude;
-  const claude = c && c.path ? `Claude Code ${esc(c.version || "")}` : m.host ? `<span class="warn-text">Claude Code not found</span>` : "";
+  const claude = claudeStatus(m);
   return `<li class="mc-row" data-mid="${m.id}" id="machine-${m.id}">
       <div class="mc-main">
         <div class="mc-title">${icon("monitor", 18)}<b>${esc(m.name)}</b> ${onlinePill(m)}</div>
@@ -102,7 +114,7 @@ function detail(o) {
     )
     .join("");
   const body =
-    card(m.name, `<p class="muted small">${m.online ? "Online now" : "Offline"} · app ${esc(m.app_version || "?")} · paired ${when(m.created_at)} by ${esc(m.created_by || "?")}</p>`, { icon: "monitor" }) +
+    card(m.name, `<p class="muted small">${m.online ? "Online now" : "Offline"} · app ${esc(m.app_version || "?")}${m.claude ? " · " + claudeStatus(m) : ""} · paired ${when(m.created_at)} by ${esc(m.created_by || "?")}</p>`, { icon: "monitor" }) +
     card("Control sessions", rows ? `<div class="table-wrap"><table class="table"><thead><tr><th>Started</th><th>By</th><th>What for</th><th>End</th><th class="num">Actions</th></tr></thead><tbody>${rows}</tbody></table></div>` : empty("activity", "Nothing yet", "MINT AI has not controlled this computer."), { icon: "activity" });
   return shell(m.name, body, { user: o.user, csrf: o.csrf, active: "machines", heading: m.name, crumbs: [["Computers", "/machines"], [m.name, null]], assets: ["machines.css"] });
 }

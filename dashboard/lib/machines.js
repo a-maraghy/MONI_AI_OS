@@ -52,6 +52,29 @@ const GRACE_MS = 15 * 1000;
 const RETENTION_DAYS = 7;
 const MAX_SHOT = 1536 * 1024;
 const ASK_TIMEOUT_MS = 3700 * 1000; // the supervisor's approval timeout is at most 3600 s
+// A start the app has not acknowledged (lease active / session starting) in this long is ended:
+// "the computer did not start the session" (2026-10-08: a start the app could not read sat as a
+// live lease and a hired session until the user released it by hand).
+const START_TIMEOUT_MS = 60 * 1000;
+const NOT_INSTALLED = "Claude Code is not installed on that computer — install it there and sign in once by running `claude` in a terminal, then press Look again in the MINT AI app (Settings ▸ This computer)";
+const NO_START = "the computer did not start the session (no answer from the MINT AI app within 60 seconds)";
+
+/** The app's Claude Code report (its hello) -> { found, path, version, git_bash }, or null when unknown. */
+function claudeOf(m) {
+  if (!m || !m.claude_json) return null;
+  try {
+    const c = JSON.parse(m.claude_json);
+    if (!c || typeof c !== "object") return null;
+    return { found: c.found === true || (c.found !== false && !!c.path), path: c.path || null, version: c.version || null, git_bash: !!c.git_bash };
+  } catch (_) {
+    return null;
+  }
+}
+/** True only when the computer said Claude Code is missing (unknown is not missing). */
+function claudeMissing(m) {
+  const c = claudeOf(m);
+  return !!c && !c.found;
+}
 const END_REASONS = ["stop-hotkey", "pill-stop", "timeout", "locked", "signout", "app-exit", "link-lost", "runner-exited", "server", "unlinked", "revoked", "failed"];
 const DECISIONS = ["auto", "approved", "denied", "refused", "error"];
 
@@ -137,6 +160,7 @@ function create(o) {
   const codes = new Map(); // code -> { userId, by, exp }
   const links = new Map(); // machine id -> { ws, hello, at }
   const pendingAsks = new Map(); // `${id}:${rid}` -> { slug }
+  const starting = new Map(); // lease id -> ms the start was sent (until the app acknowledges it)
   let sub = null;
   let subTimer = null;
   let stopped = false;
@@ -169,12 +193,7 @@ function create(o) {
   function publicMachine(m) {
     const l = links.get(m.id);
     const lease = q.leaseActive.get(m.id) || null;
-    let claude = null;
-    try {
-      claude = m.claude_json ? JSON.parse(m.claude_json) : null;
-    } catch (_) {
-      claude = null;
-    }
+    const claude = claudeOf(m);
     return {
       id: m.id,
       name: m.name,
@@ -273,9 +292,11 @@ function create(o) {
 
   function endLease(id, l, reason, { tellApp, tellSupervisor } = {}) {
     if (!l || l.ended_at) return;
-    q.leaseEnd.run(iso(), String(reason || "ended").slice(0, 80), l.id);
+    starting.delete(l.id);
+    q.leaseEnd.run(iso(), String(reason || "ended").slice(0, 300), l.id);
     log(`machines: lease #${l.id} on computer #${id} (${l.slug}) ended: ${reason}`);
-    if (tellApp) send(id, { t: "stop", lease_id: l.id, reason: String(reason || "ended") });
+    // Lease ids go to the app as strings (the 0.1.5 app reads only a string).
+    if (tellApp) send(id, { t: "stop", lease_id: String(l.id), reason: String(reason || "ended").slice(0, 300) });
     if (tellSupervisor) {
       call("machine-state", { slug: l.slug, state: "ended", reason: String(reason || "ended").slice(0, 300) }, "machine." + id).catch(() => {});
     }
@@ -288,7 +309,7 @@ function create(o) {
     const t = now();
     const next = Math.min(Math.max(Date.parse(l.expires_at), t) + EXTEND_MS, t + MAX_LEASE_MS);
     q.leaseExpiry.run(iso(next), l.id);
-    send(Number(id), { t: "extend", lease_id: l.id, expires_at: iso(next) });
+    send(Number(id), { t: "extend", lease_id: String(l.id), expires_at: iso(next) });
     log(`machines: lease #${l.id} extended to ${iso(next)} by ${by}`);
     return { ok: true, expires_at: iso(next) };
   }
@@ -311,6 +332,7 @@ function create(o) {
   async function takeOver(id, purpose, minutes, by) {
     const m = get(id);
     if (!m) return { error: "No such computer." };
+    if (claudeMissing(m)) return { error: NOT_INSTALLED.replace("that computer", `"${m.name}"`) + "." };
     try {
       const r = await call("machine-take-over", { machine: String(m.id), purpose: String(purpose || ""), ...(minutes ? { minutes } : {}) }, by);
       return { ok: true, status: r.status, minutes: r.minutes };
@@ -396,7 +418,12 @@ function create(o) {
     switch (m.t) {
       case "hello": {
         const home = typeof m.home === "string" && m.home.length < 260 ? m.home : null;
-        const claude = m.claude && typeof m.claude === "object" ? JSON.stringify({ path: m.claude.path ? clip(m.claude.path, 260) : null, version: m.claude.version ? clip(m.claude.version, 60) : null, git_bash: !!m.claude.git_bash }) : null;
+        const claude =
+          m.claude && typeof m.claude === "object"
+            ? JSON.stringify({ found: typeof m.claude.found === "boolean" ? m.claude.found : !!m.claude.path, path: m.claude.path ? clip(m.claude.path, 260) : null, version: m.claude.version ? clip(m.claude.version, 60) : null, git_bash: !!m.claude.git_bash })
+            : null;
+        const before = q.byId.get(id);
+        if (before && claude && before.claude_json !== claude) log(`machines: computer #${id} Claude Code: ${JSON.parse(claude).found ? "found" : "not found"}`);
         q.seen.run(iso(), /^\d+\.\d+\.\d+$/.test(String(m.app_version || "")) ? m.app_version : null, m.host ? clip(m.host, 64) : null, m.user ? clip(m.user, 64) : null, home, claude, id);
         const l = links.get(id);
         if (l) l.hello = { at: now() };
@@ -408,6 +435,10 @@ function create(o) {
       case "lease": {
         const l = lease();
         if (!l || (m.lease_id != null && Number(m.lease_id) !== l.id)) return;
+        if (m.state === "active") {
+          starting.delete(l.id); // the app took the start
+          return;
+        }
         if (m.state === "extended" && typeof m.expires_at === "string") {
           const t = now();
           const want = Date.parse(m.expires_at);
@@ -483,12 +514,15 @@ function create(o) {
         const l = lease();
         if (!l || l.slug !== m.slug) return;
         if (m.state === "starting" || m.state === "running") {
+          starting.delete(l.id);
           await call("machine-state", { slug: l.slug, state: m.state }, actor).catch(() => {});
           return;
         }
         if (m.state === "failed" || m.state === "exited") {
-          endLease(id, l, m.state === "failed" ? "failed" : "runner-exited", { tellApp: true });
-          await call("machine-state", { slug: l.slug, state: m.state, reason: clip(m.detail || m.state, 300) }, actor).catch(() => {});
+          // A start failure keeps its reason on the lease (the Computers page shows it).
+          const detail = clip(String(m.detail || "").replace(/[\u0000-\u001f]+/g, " ").trim(), 280);
+          endLease(id, l, m.state === "failed" ? (detail ? "failed: " + detail : "failed") : "runner-exited", { tellApp: true });
+          await call("machine-state", { slug: l.slug, state: m.state, reason: clip(detail || m.state, 300) }, actor).catch(() => {});
         }
         return;
       }
@@ -570,7 +604,17 @@ function create(o) {
   /** Leases past their end (plus grace): ended here, the app told to stop, the supervisor told. */
   function sweep() {
     const t = now();
-    for (const l of q.leaseOpen.all()) if (Date.parse(l.expires_at) + GRACE_MS < t) endLease(l.machine_id, l, "timeout", { tellApp: true, tellSupervisor: true });
+    for (const l of q.leaseOpen.all()) {
+      const sent = starting.get(l.id);
+      if (sent != null && sent + START_TIMEOUT_MS < t) {
+        // The app never took the start: end it, and tell the supervisor it FAILED (MINT AI hears why).
+        log(`machines: lease #${l.id} on computer #${l.machine_id} (${l.slug}): no start from the app in ${START_TIMEOUT_MS / 1000} s`);
+        endLease(l.machine_id, l, "failed: " + NO_START, { tellApp: true });
+        call("machine-state", { slug: l.slug, state: "failed", reason: NO_START }, "machine." + l.machine_id).catch(() => {});
+        continue;
+      }
+      if (Date.parse(l.expires_at) + GRACE_MS < t) endLease(l.machine_id, l, "timeout", { tellApp: true, tellSupervisor: true });
+    }
     for (const [, l] of links) {
       if (l.ws.isAlive === false) {
         try {
@@ -601,7 +645,10 @@ function create(o) {
     if (syncTimer.unref) syncTimer.unref();
   }
   function sync() {
-    const machines = q.list.all().map((m) => ({ id: m.id, name: m.name, online: links.has(m.id), ...(m.platform ? { platform: m.platform } : {}), ...(m.home ? { home: m.home } : {}) }));
+    const machines = q.list.all().map((m) => {
+      const c = claudeOf(m);
+      return { id: m.id, name: m.name, online: links.has(m.id), ...(m.platform ? { platform: m.platform } : {}), ...(m.home ? { home: m.home } : {}), ...(c ? { claude: { found: c.found, version: c.version, git_bash: c.git_bash } } : {}) };
+    });
     return call("machines-sync", { machines }, "machines");
   }
 
@@ -617,12 +664,14 @@ function create(o) {
       if (!links.has(id)) return fail("the computer is offline");
       const cur = q.leaseActive.get(id);
       if (cur) return fail("the computer is already under control");
+      if (claudeMissing(m)) return fail(NOT_INSTALLED);
       const minutes = Number.isInteger(ev.minutes) && ev.minutes >= 1 && ev.minutes <= 60 ? ev.minutes : DEFAULT_MINUTES;
       const t = now();
       const r = q.leaseIns.run(id, ev.slug, clip(ev.name, 64), clip(ev.purpose, 4000), ev.by ? clip(ev.by, 64) : null, iso(t), iso(t + minutes * 60000));
       const leaseId = Number(r.lastInsertRowid);
       log(`machines: lease #${leaseId} on computer #${id} for ${ev.slug}, ${minutes} min`);
-      const ok = send(id, { t: "start", slug: ev.slug, name: ev.name, purpose: ev.purpose, model: ev.model || null, first_prompt: ev.first_prompt, lease: { id: leaseId, minutes, expires_at: iso(t + minutes * 60000) } });
+      starting.set(leaseId, t);
+      const ok = send(id, { t: "start", slug: ev.slug, name: ev.name, purpose: ev.purpose, model: ev.model || null, first_prompt: ev.first_prompt, lease: { id: String(leaseId), minutes, expires_at: iso(t + minutes * 60000) } });
       if (!ok) {
         endLease(id, q.leaseGet.get(leaseId), "failed");
         fail("the computer could not be reached");
@@ -681,4 +730,4 @@ function create(o) {
   return { issueCode, withdrawCode, claim, list, get, rename, revoke, extend, stopControl, takeOver, authenticate, connected, onMessage, onSupervisorEvent, leases, lease, actions, shotFile, prune, sweep, sync, send, start, stop, publicMachine };
 }
 
-module.exports = { create, newCode, normCode, showCode, cleanName, newToken, TOKEN_RE, CODE_MS, RETENTION_DAYS, DEFAULT_MINUTES, END_REASONS };
+module.exports = { create, newCode, normCode, showCode, cleanName, newToken, claudeOf, claudeMissing, TOKEN_RE, CODE_MS, RETENTION_DAYS, DEFAULT_MINUTES, END_REASONS, START_TIMEOUT_MS, NOT_INSTALLED, NO_START };

@@ -45,6 +45,11 @@
         const now = m.lease ? m.lease.id : null;
         if (had !== now) changed = true;
         if (shown && m.lease) shown.setAttribute("data-expires", m.lease.expires_at);
+        // Claude Code installed (or gone) since the page was drawn: "Look again" in the app.
+        const cl = row && row.querySelector("[data-claude]");
+        const wasFound = cl ? cl.getAttribute("data-found") === "1" : null;
+        const isFound = m.claude ? !!m.claude.found : null;
+        if (row && wasFound !== isFound) changed = true;
       }
       // A lease started or ended elsewhere: the forms change too, so the page is reloaded (not while typing).
       if (changed && !document.activeElement.matches("textarea, input")) location.reload();

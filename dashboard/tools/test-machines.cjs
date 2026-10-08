@@ -122,6 +122,7 @@ async function part1() {
   const st = ws.last("start");
   check("start event -> the app gets start with the lease (id, minutes, expires_at)", st && st.slug === "pc-ahmed" && st.lease.minutes === 15 && Date.parse(st.lease.expires_at) - clock === 15 * 60000 && st.first_prompt, JSON.stringify(st));
   check("  the panel shows the lease", lib.list()[0].lease && lib.list()[0].lease.slug === "pc-ahmed");
+  await lib.onMessage(1, { t: "lease", lease_id: st.lease.id, state: "active", expires_at: st.lease.expires_at }); // the app took it
   lib.onSupervisorEvent({ type: "machine", what: "start", machine_id: 1, slug: "pc-other", name: "x", purpose: "Another job on it.", minutes: 15 });
   check("  a second start while under control: failed to the supervisor", callsOf("machine-state").some((c) => c.params.slug === "pc-other" && c.params.state === "failed" && /already under control/.test(c.params.reason)));
   lib.onSupervisorEvent({ type: "machine", what: "start", machine_id: 9, slug: "pc-nine", name: "x", purpose: "A job on nothing.", minutes: 15 });
@@ -187,7 +188,57 @@ async function part1() {
   lib.onSupervisorEvent({ type: "machine", what: "start", machine_id: 1, slug: "pc-ahmed-5", name: "x", purpose: "Fifth job here.", minutes: 15 });
   const l5 = ws.last("start").lease.id;
   await lib.onMessage(1, { t: "session", slug: "pc-ahmed-5", state: "failed", detail: "Claude Code was not found" });
-  check("session failed: lease ended, supervisor told failed", lib.lease(l5).end_reason === "failed" && callsOf("machine-state").some((c) => c.params.slug === "pc-ahmed-5" && c.params.state === "failed"));
+  check("session failed: lease ended with its reason, supervisor told failed with it", lib.lease(l5).end_reason === "failed: Claude Code was not found" && callsOf("machine-state").some((c) => c.params.slug === "pc-ahmed-5" && c.params.state === "failed" && c.params.reason === "Claude Code was not found"));
+
+  // 2026-10-08: the 0.1.5 app read lease ids only as strings; a number made it drop the start unread.
+  check("lease ids go to the app as strings (start, stop, extend)", typeof st.lease.id === "string" && typeof l5 === "string" && ws.sent.filter((m) => m.t === "stop" || m.t === "extend").every((m) => typeof m.lease_id === "string"));
+
+  // Claude Code missing on the computer: shown, synced, and a take-over refused up front.
+  await lib.onMessage(1, { t: "hello", app_version: "0.1.5", platform: "windows", host: "AHMED-PC", user: "Ahmed", home: "C:\\Users\\Ahmed", claude: { found: false, path: null, version: null, git_bash: false } });
+  check("hello without Claude Code: the computer shows Claude Code not found", lib.list()[0].claude && lib.list()[0].claude.found === false && M.claudeMissing(lib.get(1)));
+  await lib.sync();
+  check("  machines-sync carries it (claude.found false)", callsOf("machines-sync").pop().params.machines[0].claude.found === false);
+  const before = calls.length;
+  const tk = await lib.takeOver(1, "Make a budget sheet in Excel.", 15, "amaraghy");
+  check("  Take over from the page: refused at once with the reason, the supervisor never asked", tk.error && /Claude Code is not installed on "Ahmed's Laptop"/.test(tk.error) && /`claude`/.test(tk.error) && calls.length === before, JSON.stringify(tk));
+  const startsBefore = ws.sent.filter((m) => m.t === "start").length;
+  lib.onSupervisorEvent({ type: "machine", what: "start", machine_id: 1, slug: "pc-ahmed-nc", name: "x", purpose: "A job without Claude Code.", minutes: 15 });
+  check("  a start event for it: failed to the supervisor with that reason, nothing sent to the app, no lease", ws.sent.filter((m) => m.t === "start").length === startsBefore && lib.list()[0].lease === null && callsOf("machine-state").some((c) => c.params.slug === "pc-ahmed-nc" && c.params.state === "failed" && /Claude Code is not installed/.test(c.params.reason)));
+  await lib.onMessage(1, { t: "hello", app_version: "0.1.5", platform: "windows", host: "AHMED-PC", user: "Ahmed", home: "C:\\Users\\Ahmed", claude: { found: true, path: "C:\\c.exe", version: "2.1.291", git_bash: false } });
+  check("  Look again found it (a new hello): not missing any more", !M.claudeMissing(lib.get(1)) && lib.list()[0].claude.version === "2.1.291");
+  check("  an old app's hello (no found, a path) reads as found; unknown is never missing", M.claudeOf({ claude_json: JSON.stringify({ path: "C:\\c.exe" }) }).found === true && M.claudeOf({ claude_json: JSON.stringify({ path: null }) }).found === false && !M.claudeMissing({ claude_json: null }));
+
+  // (The fake socket answers the sweep's ping, so the link stays up.)
+  const aliveSweep = () => {
+    ws.emit("pong");
+    lib.sweep();
+  };
+  // The start timeout: no word from the app in 60 s -> ended, the app told to stop, the supervisor told FAILED.
+  lib.onSupervisorEvent({ type: "machine", what: "start", machine_id: 1, slug: "pc-ahmed-to", name: "x", purpose: "A job the app never starts.", minutes: 15 });
+  const lt = ws.last("start").lease.id;
+  clock += 30 * 1000;
+  aliveSweep();
+  check("start timeout: still waiting at 30 s", !lib.lease(lt).ended_at);
+  clock += 31 * 1000;
+  aliveSweep();
+  check("  at 61 s with no lease active / session starting from the app: ended (failed), stop to the app, machine-state failed with the reason",
+    /^failed: the computer did not start the session/.test(lib.lease(lt).end_reason) && ws.last("stop").lease_id === lt && callsOf("machine-state").some((c) => c.params.slug === "pc-ahmed-to" && c.params.state === "failed" && c.params.reason === M.NO_START), lib.lease(lt).end_reason);
+  check("  told once (a later sweep does nothing more)", (aliveSweep(), callsOf("machine-state").filter((c) => c.params.slug === "pc-ahmed-to").length === 1));
+  lib.onSupervisorEvent({ type: "machine", what: "start", machine_id: 1, slug: "pc-ahmed-ok", name: "x", purpose: "A job the app starts.", minutes: 15 });
+  const lo = ws.last("start").lease.id;
+  await lib.onMessage(1, { t: "lease", lease_id: lo, state: "active", expires_at: new Date(clock + 15 * 60000).toISOString() });
+  clock += 90 * 1000;
+  aliveSweep();
+  check("  an acknowledged start (lease active) is not timed out", !lib.lease(lo).ended_at);
+  await lib.onMessage(1, { t: "lease", lease_id: lo, state: "ended", reason: "failed" });
+  check("  the app's own lease end for a failed start is accepted (reason failed)", lib.lease(lo).end_reason === "failed");
+  lib.onSupervisorEvent({ type: "machine", what: "start", machine_id: 1, slug: "pc-ahmed-ok2", name: "x", purpose: "A job the app starts.", minutes: 15 });
+  const lo2 = ws.last("start").lease.id;
+  await lib.onMessage(1, { t: "session", slug: "pc-ahmed-ok2", state: "starting" });
+  clock += 90 * 1000;
+  aliveSweep();
+  check("  a start acknowledged by session starting is not timed out either", !lib.lease(lo2).ended_at);
+  await lib.onMessage(1, { t: "session", slug: "pc-ahmed-ok2", state: "exited" });
 
   // Retention: 7 days, the screenshot deleted with its row.
   const file = lib.shotFile(acts[0].id);
@@ -280,7 +331,9 @@ async function part2() {
     for (const v of viewers) v.write(JSON.stringify({ event: { seq: 5, type: "machine", what: "start", machine_id: tok.machine_id, slug: "pc-test-laptop", name: "Test Laptop control", purpose: "Open the Downloads folder.", minutes: 15, first_prompt: "[From MINT AI] Open the Downloads folder." } }) + "\n");
     await sleep(500);
     const start = msgs.find((m) => m.t === "start");
-    check("a take-over event from the supervisor reaches the app as start with a lease", start && start.slug === "pc-test-laptop" && start.lease && start.lease.minutes === 15, JSON.stringify(msgs));
+    check("a take-over event from the supervisor reaches the app as start with a lease (id a string)", start && start.slug === "pc-test-laptop" && start.lease && start.lease.minutes === 15 && typeof start.lease.id === "string", JSON.stringify(msgs));
+    const listed = await srv.req("GET", "/machines", { cookie: who.cookie });
+    check("the Computers page shows Claude Code with its version", /data-claude="\d+" data-found="1">Claude Code 2\.1\.290</.test(listed.body));
     app.send(JSON.stringify({ t: "ask", rid: "r1", slug: "pc-test-laptop", tool: "PowerShell", input: { command: "dir" }, origin: "cli" }));
     await sleep(500);
     const askReq = seen.find((r) => r.op === "machine-ask");
@@ -296,6 +349,15 @@ async function part2() {
     app.send(JSON.stringify({ t: "lease", lease_id: start && start.lease.id, state: "ended", reason: "stop-hotkey" }));
     await sleep(400);
     check("the app's lease end reaches the supervisor (machine-state ended, stop-hotkey)", seen.some((r) => r.op === "machine-state" && r.state === "ended" && r.reason === "stop-hotkey"));
+    app.send(JSON.stringify({ t: "hello", app_version: "0.1.5", platform: "windows", host: "TEST-PC", user: "T", home: "C:\\Users\\T", claude: { found: false, path: null, version: null, git_bash: false } }));
+    await sleep(400);
+    const nf = await srv.req("GET", "/machines", { cookie: who.cookie });
+    check("Claude Code missing: the page says \"Claude Code: not found\", what to do, and offers no Take over", /Claude Code: not found/.test(nf.body) && /data-claude-missing=/.test(nf.body) && /Look again/.test(nf.body) && !new RegExp(`/machines/${tok.machine_id}/take-over`).test(nf.body));
+    const syncNf = seen.filter((r) => r.op === "machines-sync").pop();
+    check("  and the supervisor's registry is told (claude.found false)", syncNf && syncNf.machines.some((m) => m.id === tok.machine_id && m.claude && m.claude.found === false), JSON.stringify(syncNf));
+    const csrf2 = (/name="_csrf" value="([^"]+)"/.exec(nf.body) || [])[1];
+    const tko = await srv.req("POST", `/machines/${tok.machine_id}/take-over`, { cookie: who.cookie, body: new URLSearchParams({ _csrf: csrf2, purpose: "Open the Downloads folder.", minutes: "15" }).toString() });
+    check("  a Take over posted anyway: refused, the supervisor never asked", tko.status === 303 && !seen.some((r) => r.op === "machine-take-over"));
     app.close();
   } catch (e) {
     check("no exception", false, e.stack);
