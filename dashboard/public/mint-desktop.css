@@ -97,7 +97,10 @@ html.cc-desk .cc-composer { height: 48px; padding: 0 6px 0 8px; }
 html.cc-desk .cc-composer input { color: var(--dk-tx); }
 html.cc-desk .cc-composer input::placeholder { color: var(--dk-tx2); }
 html.cc-desk .cc-dock.calm:not(:hover):not(:focus-within) .cc-composer { opacity: 1; }
-html.cc-desk .dk-kb { font: 600 10.5px var(--mono); color: var(--dk-tx2); white-space: nowrap; order: 3; }
+html.cc-desk .dk-kb { font: 600 10.5px var(--mono); color: var(--dk-tx2); white-space: nowrap; order: 3; flex: none; }
+/* Too narrow for the message box's placeholder (mint-desktop.js fitHint): the key caps alone, then nothing. */
+html.cc-desk .dk-kb.dk-kb-short .dk-kb-w { display: none; }
+html.cc-desk .dk-kb.dk-kb-none { display: none; }
 html.cc-desk .dk-kb b { border: 1px solid var(--dk-pill-b); border-radius: 4px; padding: 1px 5px; margin: 0 1px; font-weight: 600; }
 html.cc-desk[data-dk-mode="floating"] .dk-kb { display: none; }
 html.cc-desk .cc-composer input { order: 2; }

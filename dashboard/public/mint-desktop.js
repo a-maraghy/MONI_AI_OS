@@ -69,12 +69,17 @@
     var cc = $("cc") || document.body;
     cc.style.opacity = String(Math.max(0.35, Math.min(1, (Number(st.opacity) || 100) / 100)));
     var kb = $("dk-kb");
-    if (kb) kb.innerHTML = "hold " + String(st.talkKey).split("+").map(function (k) { return "<b>" + esc(k) + "</b>"; }).join("") + " to talk";
+    if (kb) {
+      var keys = String(st.talkKey).split("+");
+      kb.innerHTML = '<span class="dk-kb-w">hold </span>' + keys.map(function (k) { return "<b>" + esc(k) + "</b>"; }).join("") + '<span class="dk-kb-w"> to talk</span>';
+      kb.title = "Hold " + keys.join("+") + " to talk";
+    }
     // Focus mode: the core alone -- the session spheres (drawn by the core) go too.
     var cc2 = window.__mintCC, fam = cc2 && cc2.orbit && cc2.orbit.family, root = $("cc");
     if (fam && fam.enable && root) fam.enable(!st.focus && root.getAttribute("data-sessview") !== "orbit");
     layout();
     still();
+    fitHint();
   }
   function esc(s) { return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) { return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]; }); }
 
@@ -110,6 +115,40 @@
     if (cc && cc.orbit && cc.orbit.resize) cc.orbit.resize();
     renderChat();
     report(true);
+  }
+  /**
+   * The composer's "hold Ctrl Space to talk" hint never squeezes the message box: when the box is
+   * too narrow for its placeholder (a small or scaled screen, a long talk key), the hint shortens to
+   * the key caps alone, and if even that does not fit it goes. Measured, not guessed: the fonts differ
+   * between machines. Runs when the composer or the box changes width and on apply.
+   */
+  var measureCv = null;
+  function textW(el, text) {
+    try {
+      measureCv = measureCv || document.createElement("canvas");
+      var g = measureCv.getContext("2d"), cs = getComputedStyle(el);
+      g.font = cs.fontStyle + " " + cs.fontWeight + " " + cs.fontSize + " " + cs.fontFamily;
+      return g.measureText(text || "").width;
+    } catch (e) { return 0; }
+  }
+  function fitHint() {
+    var kb = $("dk-kb"), inp = $("cc-input");
+    if (!kb || !inp) return;
+    var form = inp.closest("form");
+    if (!form || !form.getBoundingClientRect().width) return; // the panel is closed: measured when it opens
+    var need = Math.ceil(textW(inp, inp.placeholder) + 8);
+    kb.classList.remove("dk-kb-short", "dk-kb-none");
+    if (inp.clientWidth >= need) return;
+    kb.classList.add("dk-kb-short");
+    if (inp.clientWidth >= need) return;
+    kb.classList.add("dk-kb-none");
+  }
+  if (window.ResizeObserver) {
+    // The form (the panel opening, a resize) and the box itself (the mic or the stop button coming and going).
+    try {
+      var ro = new ResizeObserver(function () { fitHint(); });
+      ["cc-compose", "cc-input"].forEach(function (id) { if ($(id)) ro.observe($(id)); });
+    } catch (e) { /* no observer: apply() still fits it */ }
   }
   function place(el, x, y, w, h) {
     if (!el) return;
@@ -155,6 +194,7 @@
     state: function () { return st; },
     layout: function () { return L; },
     regions: function () { return lastRegions; },
+    hint: function () { var kb = $("dk-kb"); return !kb ? "none" : kb.classList.contains("dk-kb-none") ? "hidden" : kb.classList.contains("dk-kb-short") ? "keys" : "full"; },
   };
 
   /* ---------------------------------------------------------------- the chat panel
@@ -453,12 +493,31 @@
   if (full) full.addEventListener("click", function (e) { e.preventDefault(); invoke("open_full_cc"); });
 
   /* ---------------------------------------------------------------- battery saver: a still core */
+  // The app's "hold still" must stick: it used to stop the core only if it was running at that moment,
+  // so a core that was paused just then (the window hidden or covered: WebView2 marks the page hidden),
+  // or not started yet (the app starting on battery), was started again later by the page's own
+  // visibility handler or start() -- and animated on battery. Now the core's own still flag is set
+  // (its start() then draws one still frame), and a slow guard catches a core swapped in later.
+  var reduceMq = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
   function still() {
     var cc = window.__mintCC, core = cc && cc.core;
     if (!core) return;
-    if (st.still || st.hidden) { if (core.S && core.S.running) core.stop(); if (core.still) core.still(); else if (core.draw) core.draw(); }
-    else if (core.S && !core.S.running && core.start) core.start();
+    var hold = !!(st.still || st.hidden);
+    if (hold) {
+      if (core.S) core.S.still = true;
+      if (core.stop) core.stop();
+      if (core.still) core.still(); else if (core.draw) core.draw();
+    } else if (core.S) {
+      var was = core.S.still;
+      core.S.still = !!(reduceMq && reduceMq.matches);
+      if ((was || !core.S.running) && core.start) core.start();
+    }
   }
+  setInterval(function () {
+    if (!(st.still || st.hidden)) return;
+    var cc = window.__mintCC, core = cc && cc.core;
+    if (core && core.S && (core.S.running || !core.S.still)) still();
+  }, 2000);
 
   /* ---------------------------------------------------------------- sign-in: the browser hand-off */
   var bs = $("dk-browser-signin");

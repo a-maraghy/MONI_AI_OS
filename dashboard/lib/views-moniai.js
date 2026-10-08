@@ -236,7 +236,7 @@ ${desk ? deskParts() : ""}
         <button type="button" class="cc-target" id="cc-target" aria-haspopup="menu" aria-expanded="false" title="MINT AI picks the session">${ic("route")}<span id="cc-target-label">Auto-route</span></button>
         <input id="cc-input" name="text" placeholder="Ask MINT AI…" aria-label="Message MINT AI" maxlength="20000" autocomplete="off">
         <button type="button" class="cc-c-stop" id="cc-stop" title="Interrupt the current turn" aria-label="Interrupt" hidden>${ic("stop")}</button>
-        ${desk ? `<span class="kb dk-kb" id="dk-kb">hold <b>Ctrl</b><b>Space</b> to talk</span>` : ""}<button type="submit" class="cc-c-send" id="cc-send" title="Send" aria-label="Send">${ic("up")}</button>
+        ${desk ? `<span class="kb dk-kb" id="dk-kb" title="Hold Ctrl+Space to talk"><span class="dk-kb-w">hold </span><b>Ctrl</b><b>Space</b><span class="dk-kb-w"> to talk</span></span>` : ""}<button type="submit" class="cc-c-send" id="cc-send" title="Send" aria-label="Send">${ic("up")}</button>
       </form>
       <div class="cc-voicebar" id="cc-voicebar">
         <button type="button" class="cc-c-mic cc-live-end cc-live-only" id="cc-live-end" title="End the conversation" aria-label="End conversation" hidden>${ic("close")}</button>
