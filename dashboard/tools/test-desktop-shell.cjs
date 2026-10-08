@@ -277,8 +277,8 @@ const near = (a, b, e) => Math.abs(a - b) <= (e || 0.5);
       section("headless Chromium: the render mode on a transparent window");
       const browser = await chromium.launch();
       const errs = [];
-      async function view(W_, H_, q, ua, cookieStr) {
-        const ctx = await browser.newContext({ viewport: { width: W_, height: H_ }, userAgent: ua, extraHTTPHeaders: { "X-Forwarded-Proto": "https" } });
+      async function view(W_, H_, q, ua, cookieStr, dpr) {
+        const ctx = await browser.newContext({ viewport: { width: W_, height: H_ }, deviceScaleFactor: dpr || 1, userAgent: ua, extraHTTPHeaders: { "X-Forwarded-Proto": "https" } });
         const cookies = String(cookieStr || "").split("; ").filter(Boolean).map((kv) => ({ name: kv.split("=")[0], value: kv.slice(kv.indexOf("=") + 1), url: "http://127.0.0.1:" + s.port }));
         if (cookies.length) await ctx.addCookies(cookies);
         const page = await ctx.newPage();
@@ -343,6 +343,67 @@ const near = (a, b, e) => Math.abs(a - b) <= (e || 0.5);
         }
         await ctx.close();
       }
+      // Battery saver: the app's "hold still" sticks. A core started later (the Command Center's own start,
+      // the page coming back from hidden) stays still; when the app lets go, it moves again.
+      {
+        const { ctx, page } = await view(1440, 852, "/mint-ai?shell=desktop&mode=desktop&still=1", APP_UA, A.cookie);
+        const run = () => page.evaluate(() => { const c = window.__mintCC.core; return { running: !!c.S.running, still: !!c.S.still }; });
+        let r0 = await run();
+        await page.evaluate(() => { window.__mintCC.core.start(); document.dispatchEvent(new Event("visibilitychange")); });
+        await page.waitForTimeout(200);
+        const r1 = await run();
+        check("hold still (?still=1, the app on battery): the core is not animating after the page settles", !r0.running && r0.still, JSON.stringify(r0));
+        check("  and stays still when something starts it again (the core's start, the page visible again)", !r1.running && r1.still, JSON.stringify(r1));
+        await page.evaluate(() => { const c = window.__mintCC.core; c.S.still = false; c.S.running = false; });
+        await page.waitForTimeout(2300);
+        const r2 = await run();
+        check("  a core that lost the still flag is caught by the guard within 2 s", !r2.running && r2.still, JSON.stringify(r2));
+        await ctx.close();
+        const v2 = await view(1440, 852, "/mint-ai?shell=desktop&mode=desktop", APP_UA, A.cookie);
+        const r3 = await v2.page.evaluate(() => { const c = window.__mintCC.core; return { running: !!c.S.running, still: !!c.S.still }; });
+        check("  without it the core animates", r3.running && !r3.still, JSON.stringify(r3));
+        await v2.ctx.close();
+      }
+
+      // The composer's talk hint never covers or squeezes the message box: Windows scaling 100 / 125 / 150 %
+      // (the window is the work area in CSS px), the laptop the bug was seen on, a small screen where the panel
+      // goes beside the core, and the fallback talk key.
+      for (const [W_, H_, dpr, talk, nm] of [
+        [1920, 1032, 1, "", "1920x1080 at 100 %"], [1536, 824, 1.25, "", "1920x1080 at 125 %"], [1280, 688, 1.5, "", "1920x1080 at 150 %"],
+        [1389, 820, 1.5, "", "the laptop, 150 %"], [1389, 820, 1.5, "Ctrl+Alt+Space", "the laptop, 150 %, Ctrl+Alt+Space"], [1024, 552, 1.5, "Ctrl+Alt+Space", "1536x864 at 150 %, panel beside the core"],
+      ]) {
+        const { ctx, page } = await view(W_, H_, "/mint-ai?shell=desktop&mode=desktop" + (talk ? "&talk=" + encodeURIComponent(talk) : ""), APP_UA, A.cookie, dpr);
+        await page.evaluate(() => { document.getElementById("cc-offline").hidden = true; });
+        await page.click("#dk-chatbtn");
+        await page.waitForTimeout(250);
+        const probe = () => page.evaluate(() => {
+          const inp = document.getElementById("cc-input"), kb = document.getElementById("dk-kb");
+          const cs = getComputedStyle(inp), g = document.createElement("canvas").getContext("2d");
+          g.font = cs.fontStyle + " " + cs.fontWeight + " " + cs.fontSize + " " + cs.fontFamily;
+          const need = g.measureText(inp.placeholder).width;
+          const a = inp.getBoundingClientRect(), b = kb.getBoundingClientRect();
+          const overlap = b.width > 0 && a.right > b.left + 0.5 && b.right > a.left + 0.5;
+          return { need: Math.round(need), room: inp.clientWidth, overlap, hint: window.MintDesktop.hint(), text: getComputedStyle(kb).display === "none" ? "" : kb.innerText.replace(/\s+/g, " ").trim(), panel: Math.round(document.getElementById("dk-panel").getBoundingClientRect().width) };
+        });
+        let v = await probe();
+        check(`composer hint, ${nm}: the whole placeholder fits, the hint never overlaps the box (${v.hint}${v.text ? ": " + v.text : ""}; panel ${v.panel}, box ${v.room} of ${v.need} px)`, v.room >= v.need && !v.overlap, JSON.stringify(v));
+        await page.fill("#cc-input", "Summarise what the customs docs session did this morning and what is left");
+        v = await probe();
+        check(`  typed text: still no overlap`, !v.overlap, JSON.stringify(v));
+        // The stop button showing while a turn runs (and the mic, where voice is on): the box narrows, the hint follows.
+        await page.evaluate(() => { const b = document.getElementById("cc-stop"); b.hidden = false; b.style.display = "grid"; });
+        await page.waitForTimeout(150);
+        const vs = await probe();
+        await page.evaluate(() => { const b = document.getElementById("cc-stop"); b.hidden = true; b.style.display = ""; });
+        await page.waitForTimeout(150);
+        const vb = await probe();
+        check(`  the stop button appearing: still no overlap (${vs.hint}), and the hint is back as it was when it goes (${vb.hint})`, !vs.overlap && vb.hint === v.hint, JSON.stringify([vs, vb]));
+        if (/beside/.test(nm)) check(`  (this one is narrow: the hint shortens to the key caps or goes)`, v.hint !== "full", JSON.stringify(v));
+        if (/100 %/.test(nm)) check(`  (with room: the full hint)`, v.hint === "full" && /hold Ctrl ?Space to talk/.test(v.text), JSON.stringify(v));
+        if (SHOTS) await page.screenshot({ path: path.join(SHOTS, "desk-composer-" + W_ + "x" + H_ + (talk ? "-alt" : "") + ".png"), omitBackground: true });
+        await ctx.close();
+      }
+
       // The chat panel: closed by default; the button opens it with the recent conversation and the composer;
       // a reply while it is closed lights a dot; Esc and a click outside close it; its rect is a hit region only while open.
       for (const [W_, H_, q] of [[1440, 852, "mode=desktop"], [480, 860, "mode=floating"]]) {

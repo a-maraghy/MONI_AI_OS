@@ -78,6 +78,48 @@ pub fn hold_still(battery_saver: bool, on_battery: bool, energy_saver: bool, s: 
     (battery_saver && (on_battery || energy_saver)) || s.fullscreen || s.locked || reduce_motion || s.hidden || s.covered || (s.mode == Some(Mode::Peek) && !s.peek_open)
 }
 
+/// A mode picked from the tray while the window was hidden (Peek sent away with Esc, Floating hidden
+/// with its tool): it must show at once, on top and focused -- what "Show MINT AI" does -- and the
+/// Desktop layer then goes down to the bottom when another window takes the focus. Shown plainly at
+/// the bottom of the stack, it stayed out of sight (laptop test, 2026-10-08).
+pub fn reveal_after_mode_change(was_visible: bool, mode: Mode) -> bool {
+    !was_visible && mode != Mode::Peek
+}
+
+/// What Windows says about power, as the notifications (platform::watch_power) and the
+/// fallback poll (GetSystemPowerStatus) report it. None: not heard from that source.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PowerReport {
+    /// GUID_ACDC_POWER_SOURCE: 0 AC, 1 battery (DC), 2 short-term (a UPS).
+    pub acdc: Option<u32>,
+    /// GUID_ENERGY_SAVER_STATUS (Windows 11 22H2+): 0 off, 1 standard, 2 high savings.
+    pub energy_saver: Option<u32>,
+    /// GUID_POWER_SAVING_STATUS (the older battery saver): 0 off, 1 on.
+    pub power_saving: Option<u32>,
+    /// SYSTEM_POWER_STATUS.ACLineStatus: 0 offline, 1 online, 255 unknown.
+    pub ac_line: Option<u8>,
+    /// SYSTEM_POWER_STATUS.SystemStatusFlag: 1 battery saver on.
+    pub status_flag: Option<u8>,
+}
+
+/// (on battery, Windows' energy saver / battery saver on). The notifications win over the poll;
+/// Windows 11's Energy saver status wins over the older battery-saver status, which is what
+/// SystemStatusFlag mirrors (and which may not follow Energy saver).
+pub fn power_state(r: &PowerReport) -> (bool, bool) {
+    let on_battery = match (r.acdc, r.ac_line) {
+        (Some(v), _) => v != 0,
+        (None, Some(l)) => l == 0,
+        (None, None) => false,
+    };
+    let saver = match (r.energy_saver, r.power_saving, r.status_flag) {
+        (Some(v), _, _) => v != 0,
+        (None, Some(v), _) => v != 0,
+        (None, None, Some(f)) => f == 1,
+        _ => false,
+    };
+    (on_battery, saver)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -134,5 +176,51 @@ mod tests {
         assert!(hold_still(false, false, false, &Seen { locked: true, ..s }, false));
         assert!(hold_still(false, false, false, &s, true));
         assert!(hold_still(false, false, false, &seen(Mode::Peek), false));
+    }
+
+    /// The four power cases the laptop test walks: on battery or plugged in, Energy saver on or off,
+    /// with the app's Battery saver on (it holds still on any of them but plugged-in-without-saver)
+    /// and off (power never holds it still).
+    #[test]
+    fn still_core_power_cases() {
+        let s = seen(Mode::Desktop);
+        let case = |acdc: u32, es: u32| power_state(&PowerReport { acdc: Some(acdc), energy_saver: Some(es), ..Default::default() });
+        let cases = [((1, 1), true), ((1, 0), true), ((0, 1), true), ((0, 0), false)];
+        for ((acdc, es), want) in cases {
+            let (bat, saver) = case(acdc, es);
+            assert_eq!(bat, acdc == 1);
+            assert_eq!(saver, es == 1);
+            assert_eq!(hold_still(true, bat, saver, &s, false), want, "battery saver on, acdc {} energy saver {}", acdc, es);
+            assert!(!hold_still(false, bat, saver, &s, false), "battery saver off, acdc {} energy saver {}", acdc, es);
+        }
+        // Energy saver's "high savings" is on too; a UPS counts as battery.
+        assert_eq!(case(0, 2), (false, true));
+        assert_eq!(case(2, 0), (true, false));
+    }
+
+    #[test]
+    fn power_sources_in_order() {
+        // Nothing heard: plugged in, no saver.
+        assert_eq!(power_state(&PowerReport::default()), (false, false));
+        // Only the poll (notifications not registered yet): ACLineStatus and SystemStatusFlag.
+        assert_eq!(power_state(&PowerReport { ac_line: Some(0), status_flag: Some(1), ..Default::default() }), (true, true));
+        assert_eq!(power_state(&PowerReport { ac_line: Some(255), status_flag: Some(0), ..Default::default() }), (false, false));
+        // The notification wins over the poll (the poll can lag, or not follow Energy saver at all).
+        assert_eq!(power_state(&PowerReport { acdc: Some(1), ac_line: Some(1), energy_saver: Some(1), status_flag: Some(0), ..Default::default() }), (true, true));
+        assert_eq!(power_state(&PowerReport { acdc: Some(0), ac_line: Some(0), energy_saver: Some(0), status_flag: Some(1), ..Default::default() }), (false, false));
+        // Before Windows 11 22H2 (no Energy saver status): the older battery-saver status.
+        assert_eq!(power_state(&PowerReport { acdc: Some(1), power_saving: Some(1), status_flag: Some(0), ..Default::default() }), (true, true));
+        assert_eq!(power_state(&PowerReport { acdc: Some(1), power_saving: Some(0), status_flag: Some(1), ..Default::default() }), (true, false));
+    }
+
+    #[test]
+    fn mode_switch_from_hidden_shows_it() {
+        // Peek hidden (Esc), then "On the desktop": shown and raised until something else takes the focus.
+        assert!(reveal_after_mode_change(false, Mode::Desktop));
+        assert!(reveal_after_mode_change(false, Mode::Floating));
+        // Peek itself opens on top anyway; a visible window is left as it is.
+        assert!(!reveal_after_mode_change(false, Mode::Peek));
+        assert!(!reveal_after_mode_change(true, Mode::Desktop));
+        assert!(!reveal_after_mode_change(true, Mode::Floating));
     }
 }

@@ -339,15 +339,28 @@ fn show(app: &AppHandle, shared: &Shared, focus_composer: bool) {
 }
 
 fn set_mode(app: &AppHandle, shared: &Shared, mode: Mode) {
+    let was_visible = main_window(app).map(|w| w.is_visible().unwrap_or(false) && !w.is_minimized().unwrap_or(false)).unwrap_or(true);
+    let reveal = policy::reveal_after_mode_change(was_visible, mode);
     {
         let mut a = shared.lock().unwrap();
         a.settings.mode = mode;
         a.peek_open = mode == Mode::Peek;
         a.hidden = false;
         a.ignoring = None;
+        // From hidden: the Desktop layer comes up on top, as a press of the show key raises it; it goes
+        // down to the bottom when another window takes the focus (env_loop).
+        if reveal && mode == Mode::Desktop {
+            a.raised_for_desktop = true;
+        }
     }
     save(shared);
     apply(app, shared, mode == Mode::Peek);
+    if reveal {
+        if let Some(w) = main_window(app) {
+            let _ = w.set_focus();
+            mlog!("mode {:?} from a hidden window: shown and raised (visible now: {:?})", mode, w.is_visible());
+        }
+    }
 }
 
 fn toggle_focus(app: &AppHandle, shared: &Shared) {
@@ -1282,6 +1295,7 @@ fn env_loop(app: AppHandle, shared: Shared) {
             if still != a.still {
                 a.still = still;
                 repaint = true;
+                log_still(&a, on_battery, energy_saver, reduce, "every second");
             }
             // Monitors plugged in or out, or a resolution change: place it again.
             if let Some(sig) = sig {
@@ -1353,6 +1367,50 @@ fn env_loop(app: AppHandle, shared: Shared) {
         if tick % (6 * 3600) == 30 && shared.lock().unwrap().settings.check_updates {
             check_update(app.clone());
         }
+    }
+}
+
+fn log_still(a: &App, on_battery: bool, energy_saver: bool, reduce: bool, by: &str) {
+    let s = &a.seen;
+    mlog!(
+        "core {} ({}): battery saver setting {}, on battery {}, energy saver {}, fullscreen {}, locked {}, reduce motion {}, hidden {}, covered {}",
+        if a.still { "holds still" } else { "moves" },
+        by,
+        a.settings.battery_saver,
+        on_battery,
+        energy_saver,
+        s.fullscreen,
+        s.locked,
+        reduce,
+        s.hidden,
+        s.covered
+    );
+}
+
+/// A power notification from Windows (platform::watch_power): decide at once whether the core
+/// holds still, and tell the page, without waiting for env_loop's next second.
+fn power_changed(app: &AppHandle, shared: &Shared) {
+    let (on_battery, energy_saver) = platform::power();
+    let reduce = platform::reduce_motion();
+    let changed = {
+        let mut a = shared.lock().unwrap();
+        let still = policy::hold_still(a.settings.battery_saver, on_battery, energy_saver, &a.seen, reduce);
+        let changed = still != a.still;
+        a.still = still;
+        if changed {
+            log_still(&a, on_battery, energy_saver, reduce, "power notification");
+        } else {
+            mlog!("power now: on battery {}, energy saver {} ({:?}); core {}", on_battery, energy_saver, platform::power_report(), if still { "holds still" } else { "moves" });
+        }
+        changed
+    };
+    if changed {
+        let sh = shared.clone();
+        on_main(app, move |app| {
+            let key = current_monitor_key(app, &sh);
+            let payload = page_state(&sh.lock().unwrap(), &key, false);
+            let _ = app.emit_to(MAIN, "mint://state", payload);
+        });
     }
 }
 
@@ -1615,6 +1673,11 @@ pub fn run() {
                 std::thread::spawn(move || env_loop(a2, s2));
                 let a3 = handle.clone();
                 std::thread::spawn(move || watchdog(a3));
+                // Power: told by Windows, not only polled; and not slowed down by Energy saver itself.
+                mlog!("power throttling (EcoQoS) off for this process: {}", platform::keep_full_speed());
+                let (a4, s4) = (handle.clone(), shared.clone());
+                platform::watch_power(Box::new(move || power_changed(&a4, &s4)));
+                mlog!("power at start: {:?}", platform::power_report());
             }
             if shared.lock().unwrap().settings.check_updates {
                 let h = handle.clone();
