@@ -1840,7 +1840,9 @@ class LiveCall {
       ut = null;
     }
     // `call`: this call's id, so the supervisor can fold a repeat that is still queued into the same turn.
-    const res = await this.d.ops.ask(request, { ...(ut ? { ut } : {}), call: this.id });
+    // vp: the voiceprint named this turn's speaker AND they may give commands (taking over a computer needs it).
+    const vp = t && t.speaker && t.speaker.may_command && !t.talkOnly ? "command" : "other";
+    const res = await this.d.ops.ask(request, { ...(ut ? { ut } : {}), call: this.id, vp });
     const tt = res && res.turn;
     t.asked = (tt && tt.id) || true;
     const mine = tt && tt.id ? this.requests.get(tt.id) : null;

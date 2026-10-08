@@ -44,7 +44,7 @@ console.log("the sidebar: five groups");
 {
   check("NAV is five groups: MINT AI, Agents & sessions, Machine, Access & security, Help", ui.NAV.map((g) => g.label).join(" | ") === "MINT AI | Agents & sessions | Machine | Access & security | Help");
   const items = (k) => ui.NAV.find((g) => g.key === k).items.map((i) => i.key).join(" ");
-  check("  MINT AI: Command Center, Settings", items("mint-ai") === "moni-ai mint-settings");
+  check("  MINT AI: Command Center, Settings, Computers", items("mint-ai") === "moni-ai mint-settings machines");
   check("  Agents & sessions: Overview, Sessions, Telegram agents, Channels, Add-ons, Memory", items("agents") === "agents-dashboard claude-sessions agents channels addons claude-memory");
   check("  Machine: Overview, Services, Audit log", items("machine") === "os services audit");
   check("  Access & security: Users, Roles, Devices, SSH keys, Firewall, Credentials", items("access") === "users roles devices keys firewall credentials");

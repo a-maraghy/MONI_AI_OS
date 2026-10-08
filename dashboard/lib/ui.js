@@ -121,6 +121,8 @@ const NAV = [
         // the rest is the administrator's (lib/views-settings.js).
         perm: "moniai.use",
       },
+      // The user's own computers, linked through the desktop app (lib/routes-machines.js).
+      { key: "machines", href: "/machines", label: "Computers", icon: "monitor", perm: "moniai.use" },
     ],
   },
   {

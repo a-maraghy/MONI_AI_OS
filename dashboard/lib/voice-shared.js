@@ -221,7 +221,10 @@ function voiceOps(call, actor) {
       if (door) throw new OpsError(`refused: that reads as ${door.source || "a prompt"}, not as something the administrator said`, "refused");
       const ut = extra && typeof extra.ut === "string" ? extra.ut : null;
       const call = extra && typeof extra.call === "string" && /^lv[a-z0-9]{1,40}$/.test(extra.call) ? extra.call : null;
-      return gate("send", { text: t.slice(0, 20000), via: "voice-desk", ...(ut ? { ut } : {}), ...(call ? { call } : {}) });
+      // extra.vp: "command" when the voiceprint recognised the speaker as someone who may give commands
+      // (taking over a computer by voice needs it; moni-ai/lib/machines.js), else "other".
+      const vp = extra && extra.vp === "command" ? "command" : "other";
+      return gate("send", { text: t.slice(0, 20000), via: "voice-desk", ...(ut ? { ut } : {}), ...(call ? { call } : {}), vp });
     },
   };
 }

@@ -35,6 +35,7 @@ const LIB = __dirname;
 const PAGE_KEYS = {
   "moni-ai": ["cc", "Command Center"],
   "mint-settings": ["settings", "MINT AI Settings"],
+  machines: ["computers", "Computers"],
   "agents-dashboard": ["agents", "Agents & sessions"],
   "claude-sessions": ["sessions", "Sessions"],
   agents: ["telegram", "Telegram agents"],

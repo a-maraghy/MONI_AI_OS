@@ -6309,6 +6309,21 @@ try {
 }
 settingsRoutes.mount(app, { requireAuth, requireCsrf, ctx, db, moniai, pageMap, desktopDays: () => desktop.days(), desktopSetDays: (d, by) => desktop.setDays(d, by) });
 
+/* ------------------------------------- Computers (laptop control) ---- */
+/*
+ * The user's own computers, linked through the MINT AI desktop app (lib/machines.js, routes
+ * lib/routes-machines.js, views lib/views-machines.js; the supervisor's half moni-ai/lib/machines.js).
+ */
+const machines = require("./lib/machines").create({
+  db: db.db,
+  dir: process.env.MONI_MACHINES_DIR || path.join(DATA_DIR, "machines"),
+  call: (op, params, actor, opts) => moniai.call(op, params, actor, opts),
+  subscribe: (since, actor, onEvent, onEnd) => moniai.subscribe(since, actor, onEvent, onEnd),
+  redact: (s) => priv.redact(String(s || "")),
+});
+machines.start();
+const machineLink = require("./lib/routes-machines").mount(app, { machines, requireAuth, requirePerm, requireCsrf, ctx, db, rateLimit, WebSocketServer });
+
 /* ------------------------------------ live voice evaluation (admin) ---- */
 
 /**
@@ -6705,7 +6720,8 @@ const httpServer = app.listen(PORT, BIND, () => {
   // A local transcription model selected: make sure its server runs.
   syncLocalTranscriber();
 });
-httpServer.on("upgrade", liveUpgrade);
+// A computer's link (lib/routes-machines.js) or the live conversation.
+httpServer.on("upgrade", (req, socket, head) => (machineLink.isLink(req) ? machineLink.upgrade(req, socket, head) : liveUpgrade(req, socket, head)));
 
 /* ------------------------------------------- restarts and deploys ---- */
 
