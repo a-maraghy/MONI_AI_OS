@@ -277,9 +277,11 @@ const TOOLS = [
     name: "machine_take_over",
     op: "machine-take-over",
     description:
-      "Take over one of the user's own computers, ONLY when the user asked you to do something on it (open files or apps, make a Word / Excel / " +
-      "PowerPoint / PDF file, use the browser...). It hires a session that runs ON that computer (Claude Code there, with screen, mouse, keyboard, " +
-      "PowerShell, browser and document tools) under a control lease (default 15 minutes, at most 60). The user sees a glowing frame and can stop it " +
+      "Take over one of the user's own computers, ONLY when the user asked you to do something on it that files and commands can do. It hires a " +
+      "session that runs ON that computer (Claude Code there) under a control lease (default 15 minutes, at most 60). What that session can do: " +
+      "read, write and edit the user's files; run PowerShell and other commands; open files and apps (Start-Process); create Word, Excel and " +
+      "PowerPoint files (create_document); ask the user for approval; wait. It has NO screen, mouse, keyboard or browser control: it cannot see " +
+      "the screen, click, type into apps or drive a web browser, so do not offer those. The user sees a glowing frame and can stop it " +
       "at any moment; sending, deleting, buying, posting, installing or touching files outside theirs waits for their approval in Mint OS. Refused " +
       "unless this turn is the administrator's own request (typed in the Command Center, or said aloud and recognised by the voiceprint as someone " +
       "who may give commands). Refused at once when that computer reports Claude Code is not installed (the error says what the user must do). " +

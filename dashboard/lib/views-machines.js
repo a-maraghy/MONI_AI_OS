@@ -89,7 +89,7 @@ function list(o) {
     (o.msg ? `<div class="alert ok">${icon("check")}<div>${esc(o.msg)}</div></div>` : "") +
     (o.err ? `<div class="alert bad">${icon("alert")}<div>${esc(o.err)}</div></div>` : "") +
     card("Your computers", ms.length ? `<ul class="mc-list" id="mc-list">${ms.map((m) => machineRow(m, o.csrf)).join("")}</ul>` : empty("monitor", "No computer is linked yet", "Pair one below: MINT AI can then work on it when you ask."), { icon: "monitor", id: "computers" }) +
-    card("Pair a computer", `<p>Link a Windows computer that runs the MINT AI desktop app. MINT AI can then open files and apps, make Word, Excel, PowerPoint and PDF files and use the browser there <b>when you ask</b>.</p>${pair}`, { icon: "plus", id: "pair" }) +
+    card("Pair a computer", `<p>Link a Windows computer that runs the MINT AI desktop app. MINT AI can then work there <b>when you ask</b>: read, write and edit your files, run PowerShell commands, open files and apps, and make Word, Excel and PowerPoint files. It has <b>no</b> screen, mouse, keyboard or browser control in this version.</p><p class="muted small">Needs Claude Code on that computer: install it and sign in once by running <span class="mono">claude</span> in a terminal.</p>${pair}`, { icon: "plus", id: "pair" }) +
     card(
       "How control works",
       `<ul class="bullets">
@@ -98,7 +98,7 @@ function list(o) {
         <li><b>Always visible.</b> A glowing frame and a pill on the computer; <span class="mono">Ctrl+Alt+Esc</span> stops it instantly, on the computer itself.</li>
         <li><b>Your approval</b> before sending, deleting, buying, posting, installing or touching files outside yours: the usual approval cards.</li>
         <li><b>Never</b> passwords, card numbers or ids typed; never CAPTCHAs; Windows security prompts are yours.</li>
-        <li><b>A log</b> of every action with a screenshot, kept ${esc(String(o.retention))} days.</li>
+        <li><b>A log</b> of every action, kept ${esc(String(o.retention))} days.</li>
       </ul>`,
       { icon: "shield", id: "safety" }
     );
@@ -136,7 +136,7 @@ function leaseLog(o) {
       "Control session",
       `<p>${esc(l.purpose || "")}</p><p class="muted small">Started ${when(l.started_at)} by ${esc(l.started_by === "moni-ai" ? "MINT AI" : l.started_by || "?")} · ${l.ended_at ? "ended " + when(l.ended_at) + " (" + esc(l.end_reason || "") + ")" : "active until " + when(l.expires_at)}</p>`,
       { icon: "core" }
-    ) + card("What it did", items ? `<ol class="mc-acts" id="mc-acts" data-lease="${l.id}" data-active="${l.ended_at ? "0" : "1"}">${items}</ol>` : empty("activity", "No actions yet", "Each action shows here with a screenshot."), { icon: "activity" });
+    ) + card("What it did", items ? `<ol class="mc-acts" id="mc-acts" data-lease="${l.id}" data-active="${l.ended_at ? "0" : "1"}">${items}</ol>` : empty("activity", "No actions yet", "Each action shows here."), { icon: "activity" });
   return shell("Control log", body, { user: o.user, csrf: o.csrf, active: "machines", heading: "Control log", crumbs: [["Computers", "/machines"], [m.name, `/machines/${m.id}`], ["Log", null]], assets: ["machines.css", "machines.js"] });
 }
 

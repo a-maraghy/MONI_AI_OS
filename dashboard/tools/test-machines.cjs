@@ -292,6 +292,8 @@ async function part2() {
     const who = await srv.signIn("admin1");
     const page = await srv.req("GET", "/machines", { cookie: who.cookie });
     check("GET /machines (administrator): the Computers page, no inline script", page.status === 200 && /Pair a computer/.test(page.body) && /machines\.js/.test(page.body) && !/<script>(?!<\/script>)/.test(page.body));
+    const visible = page.body.replace(/<[^>]+>/g, " ").replace(/no\s+screen, mouse, keyboard or browser control/g, "");
+    check("  says what MINT AI can do there and plainly that it has no screen / mouse / keyboard / browser control; claims none of them", /no<\/b> screen, mouse, keyboard or browser control/.test(page.body) && /PowerShell/.test(page.body) && !/\b(screen|mouse|keyboard|browser|screenshot|PDF)\b/i.test(visible), visible.match(/.{0,60}\b(screen|mouse|keyboard|browser|screenshot|PDF)\b.{0,60}/i));
     const csrf = (/name="_csrf" value="([^"]+)"/.exec(page.body) || [])[1];
     const pr = await srv.req("POST", "/machines/pair", { cookie: who.cookie, body: new URLSearchParams({ _csrf: csrf }).toString() });
     const page2 = await srv.req("GET", "/machines", { cookie: who.cookie });

@@ -101,7 +101,7 @@ the expiry, the lock screen, sign-out / shutdown / app exit (and if the app dies
 CLI with it), the link down for 30 s, the server's `stop` / `revoked`, unlinking, the CLI exiting. A second
 `start` while one runs is answered `session failed "already under control"`.
 
-**A start that cannot run fails loudly** (after 0.1.5, which dropped a `start` whose lease id was a JSON number
+**A start that cannot run fails loudly** (0.1.6; 0.1.5 dropped a `start` whose lease id was a JSON number
 without a word): every `start` is logged on arrival; a frame the app cannot read is logged by its `t`, and an
 unreadable `start` is answered `session failed`. Claude Code not found (looked for again first), the hands
 server or the CLI not starting, the CLI ending before it answers `initialize` (reason = exit code + its first
@@ -115,8 +115,12 @@ computer did not start the session"). **The site cannot start any of
 this**: nothing machine_* is in `capabilities/remote.json`; the Settings commands are in `local.json`, the
 pill's three in `overlay.json` (window `mint-pill` only).
 
-Not in this build: the screen / mouse / keyboard / UIA / browser hands (`hands::tool_defs()` offers only
-create_document, wait, request_approval), so the action log has no screenshots yet.
+**What the laptop session can do in this build:** read, write and edit files; run PowerShell and other
+commands; open files and apps with `Start-Process`; create Word / Excel / PowerPoint files with
+`create_document` (not opened for it, no PDF); `request_approval`; `wait`. It has **no** screen, mouse,
+keyboard or browser control (`hands::tool_defs()` offers only create_document, wait, request_approval), so
+the action log has no screenshots. The MCP tool text, `firstPrompt`, the CLI prompt, MINT AI's CLAUDE.md and
+the Computers page say exactly this (tests check it).
 
 ## Server side (dashboard)
 

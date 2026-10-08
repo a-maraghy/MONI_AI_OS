@@ -183,6 +183,13 @@ function hasKeyDeep(v, keys) {
       check("session_hire's schema is the frozen one {name, cwd, purpose, model?}", hire && JSON.stringify(hire.inputSchema) === FROZEN_HIRE, hire && JSON.stringify(hire.inputSchema));
       check("session_retire's schema is the frozen one {name | ref | session_id, note?}", ret && JSON.stringify(ret.inputSchema) === FROZEN_RETIRE, ret && JSON.stringify(ret.inputSchema));
       check("  its description says it only ASKS (a consent card)", ret && /never ends a session by itself/.test(ret.description) && /consent card/.test(ret.description));
+      // Laptop control in this build: files, commands, Start-Process, create_document, approval, wait -- no screen/input/browser.
+      const tko = list.result.tools.find((t) => t.name === "machine_take_over");
+      const tkd = tko ? tko.description : "";
+      const claims = tkd.replace(/It has NO screen, mouse, keyboard or browser control: it cannot see the screen, click, type into apps or drive a web browser, so do not offer those\./, "");
+      check("machine_take_over says what the laptop session can do (files, PowerShell, Start-Process, create_document) and plainly that it has no screen / mouse / keyboard / browser control",
+        /PowerShell/.test(tkd) && /Start-Process/.test(tkd) && /create_document/.test(tkd) && /NO screen, mouse, keyboard or browser control/.test(tkd), tkd);
+      check("  and claims none of them anywhere else (no screen, mouse, keyboard, browser, click, screenshot, PDF)", tko && !/screen|mouse|keyboard|browser|click|screenshot|PDF/i.test(claims), claims);
       seen.length = 0;
       await rpc({ jsonrpc: "2.0", id: 11, method: "tools/call", params: { name: "session_hire", arguments: { name: "Demo Worker", cwd: "/root/moni", purpose: "A demo purpose text." } } });
       check("session_hire is op session-hire as moni-ai with exactly its arguments", seen[0] && seen[0].op === "session-hire" && seen[0].actor === "moni-ai" && seen[0].name === "Demo Worker" && seen[0].cwd === "/root/moni", JSON.stringify(seen[0]));

@@ -67,6 +67,9 @@ console.log("\nlib/machines.js (pure parts)");
   check("sessionName: \"<computer> control\", hire-name safe", M.sessionName("Ahmed's Laptop") === "Ahmed's Laptop control" && M.sessionName("#$%") === "Computer control" && M.sessionName("x".repeat(80)).length <= 48);
   const fp = M.firstPrompt({ name: "Laptop control", machine: "Laptop", purpose: "Make a sheet.", minutes: 15 });
   check("firstPrompt: from MINT AI, the purpose, the lease, approvals, reports go to MINT AI", /^\[From MINT AI -- not the user typing/.test(fp) && /Make a sheet\./.test(fp) && /15 minutes/.test(fp) && /approval/.test(fp) && /passed to MINT AI/.test(fp));
+  const fpClaims = fp.replace(/You have no screen, mouse, keyboard or browser control[^.]*\./, "");
+  check("  says what this build can do (files, PowerShell, Start-Process, create_document) and that it has no screen/mouse/keyboard/browser control; claims none of them",
+    /PowerShell/.test(fp) && /Start-Process/.test(fp) && /create_document/.test(fp) && /no screen, mouse, keyboard or browser control/.test(fp) && !/screen|mouse|keyboard|browser|click|screenshot|PDF/i.test(fpClaims), fp);
   check("notInstalled: names the computer, says to install and run `claude`, then Look again", /Claude Code is not installed on "Laptop"/.test(M.notInstalled("Laptop")) && /`claude`/.test(M.notInstalled("Laptop")) && /Look again/.test(M.notInstalled("Laptop")));
   const ft = M.endedText({ name: "L control", machine: "Laptop", why: "the computer did not start the session", failed: true });
   check("endedText: a start failure says it could not start, why, and to tell the user; an ordinary end does not", /could not start -- the computer did not start the session/.test(ft) && /Tell the user plainly/.test(ft) && /control of the user's computer ended \(timeout\)/.test(M.endedText({ name: "L control", machine: "Laptop", why: "timeout", failed: false })));

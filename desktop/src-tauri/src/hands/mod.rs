@@ -243,7 +243,7 @@ fn create_document(ctx: &Ctx, args: &Value) -> ToolResult {
 }
 
 fn print_pdf(_html: &[u8], _out: &Path) -> Result<(), String> {
-    Err("PDF printing works only on Windows (Microsoft Edge prints it).".into())
+    Err("PDF is not in this build of the MINT AI app: make a docx instead.".into())
 }
 
 fn open_file(_p: &Path) -> Result<(), String> {
@@ -313,8 +313,8 @@ pub fn all_tool_defs() -> Vec<Value> {
         def("browser_click", "Click a page element by ref (from browser_snapshot). Buttons like Send / Buy / Delete need the user's approval.", json!({"ref": {"type": "string"}}), &["ref"]),
         def("browser_type", "Replace the text of an input / textarea / editable element by ref, optionally pressing Enter after (submit). Never password fields or card numbers.", json!({"ref": {"type": "string"}, "text": {"type": "string"}, "submit": {"type": "boolean"}}), &["ref", "text"]),
         def("browser_screenshot", "A JPEG of the current page's viewport.", json!({}), &[]),
-        def("create_document", "Create a Word (docx), Excel (xlsx), PowerPoint (pptx) or PDF file and (by default) open it. Saved under the MINT AI documents folder unless a path is given; never overwrites (adds \" (2)\").", json!({
-            "kind": {"type": "string", "enum": ["docx", "xlsx", "pptx", "pdf"]},
+        def("create_document", "Create a Word (docx), Excel (xlsx) or PowerPoint (pptx) file. Saved under the MINT AI documents folder unless a path is given; never overwrites (adds \" (2)\"). In this build it is not opened for you and PDF is not available: open the file afterwards with PowerShell (Start-Process).", json!({
+            "kind": {"type": "string", "enum": ["docx", "xlsx", "pptx"]},
             "path": {"type": "string", "description": "File path (relative = under the MINT AI documents folder). Default: from the title."},
             "title": {"type": "string", "description": "Document title (docx/pdf: shown at the top; also the file name)."},
             "blocks": blocks,

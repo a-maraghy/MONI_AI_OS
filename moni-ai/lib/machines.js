@@ -57,7 +57,8 @@ function firstPrompt({ name, machine, purpose, minutes }) {
     `[From MINT AI -- not the user typing. At the user's request, MINT AI hired this session ("${name}") to work on the user's own Windows computer "${machine}".]\n\n` +
     `What to do:\n${purpose}\n\n` +
     `You have a control lease of ${minutes} minutes; the user can stop it at any moment. ` +
-    "Work with commands and files first, the browser tools second, screen clicks last. " +
+    "You can read, write and edit files, run PowerShell and other commands, open files and apps with Start-Process, create Word / Excel / PowerPoint files with create_document, ask for approval and wait. " +
+    "You have no screen, mouse, keyboard or browser control: if the job needs those, say so plainly instead of trying. " +
     "Anything consequential (sending, posting, buying, deleting, installing, acting outside the user's files) waits for the user's approval. " +
     "Your final message of each turn is passed to MINT AI: say plainly what you did and what is left."
   );
