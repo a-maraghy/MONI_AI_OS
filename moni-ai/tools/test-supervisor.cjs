@@ -274,8 +274,18 @@ async function until(fn, ms = 10000) {
     // --- approval: approve
     await call("send", { text: "DESTROY two" });
     const ap2 = await sub.waitFor((e) => e.type === "approval" && e.approval.status === "pending" && e.approval.id !== ap1.approval.id);
-    const a2 = await call("approve", { approval_id: ap2.approval.id }, "amaraghy");
+    // Windows Hello for approvals (2026-10-08): the panel holds the card while Hello runs, and says how it was approved.
+    const h2 = await call("approval-hold", { approval_id: ap2.approval.id, seconds: 30 }, "amaraghy");
+    check("approval-hold moves the card's expiry later while Windows Hello runs", h2.ok && h2.data.held === true && Date.parse(h2.data.expires_at) > Date.parse(ap2.approval.expires_at), JSON.stringify(h2));
+    const hHeld = await sub.waitFor((e) => e.type === "approval" && e.approval.id === ap2.approval.id && e.approval.expires_at === (h2.data && h2.data.expires_at));
+    check("  the card's new expiry is published to the viewers", !!hHeld);
+    const hBot = await call("approval-hold", { approval_id: ap2.approval.id, seconds: 30 }, "moni-ai");
+    check("  only the administrator's panel may hold a card", !hBot.ok);
+    const a2 = await call("approve", { approval_id: ap2.approval.id, verified: "hello", verified_with: "Laptop Windows Hello" }, "amaraghy");
     check("approve is accepted", a2.ok && a2.data.approval.status === "approved");
+    check("  the approval records Windows Hello and the passkey", a2.ok && a2.data.approval.verified === "hello" && a2.data.approval.verified_with === "Laptop Windows Hello", JSON.stringify(a2.data && a2.data.approval));
+    const badV = await call("approve", { approval_id: ap2.approval.id, verified: "face" }, "amaraghy");
+    check("  an unknown verification method is refused by the protocol", !badV.ok && /verified/.test(badV.error));
     check("the model is allowed to proceed", !!(await sub.waitFor((e) => e.type === "assistant" && e.text === "allowed")));
 
     // --- approval: nobody answers

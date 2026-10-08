@@ -457,7 +457,7 @@ sections.usage = async (req, res, deps) => {
       <td data-h="At the cap"><select name="at" form="${fid}" aria-label="At the cap"${yours ? ' disabled title="Not started by MINT AI: it can only warn"' : ""}>${V.opt("warn", "Warn", s.at || "warn")}${V.opt("pause", "Pause", yours ? "warn" : s.at)}</select></td>
       <td class="right" data-h="State"><div class="l1">${capPill(s)}${
         s.paused
-          ? `<form method="post" action="/mint-ai/settings/usage/resume" class="set-form" data-live><input type="hidden" name="_csrf" value="${esc(csrf)}"><input type="hidden" name="key" value="${esc(s.key)}"><button type="submit" class="btn small primary">Resume</button></form>`
+          ? `<form method="post" action="/mint-ai/settings/usage/resume" class="set-form" data-step-up><input type="hidden" name="_csrf" value="${esc(csrf)}"><input type="hidden" name="key" value="${esc(s.key)}"><button type="submit" class="btn small primary">Resume</button></form>`
           : ""
       }</div></td></tr>`;
   };
@@ -755,12 +755,24 @@ function mount(app, deps) {
       reply(req, res, "usage", { err: "Not saved: " + e.message, anchor: "u-caps" });
     }
   });
-  app.post("/mint-ai/settings/usage/resume", requireAuth, guard("usage"), requireCsrf, async (req, res) => {
+  // Resume lets a paused session run again: Windows Hello (or the code) first, lib/stepup.js.
+  // The form carries data-step-up; public/step-up.js asks and posts the proof with it.
+  const resumeStepUp = require("./stepup").requireStepUp({
+    bind: (req) => {
+      const key = String((req.body && req.body.key) || "");
+      return /^[A-Za-z0-9<>._:-]{1,80}$/.test(key) ? "resume:" + key : null;
+    },
+    what: () => "Resume past the daily cap",
+    audit: deps.stepAudit,
+    html: (req, res, msg) => reply(req, res, "usage", { err: msg + " (Windows Hello needs JavaScript on this page.)", anchor: "u-caps" }),
+  });
+  app.post("/mint-ai/settings/usage/resume", requireAuth, guard("usage"), requireCsrf, resumeStepUp, async (req, res) => {
     const key = String(req.body.key || "");
     if (!/^[A-Za-z0-9<>._:-]{1,80}$/.test(key)) return reply(req, res, "usage", { err: "No such session.", anchor: "u-caps" });
     try {
-      await moniai.call("budget-resume", { key }, req.me.username);
-      audit(req, `resumed ${key} past its daily cap`);
+      if (deps.callStepped) await deps.callStepped(req, "budget-resume", { key });
+      else await moniai.call("budget-resume", { key }, req.me.username);
+      audit(req, `resumed ${key} past its daily cap${deps.steppedWith ? deps.steppedWith(req) : ""}`);
       reply(req, res, "usage", { msg: "Resumed for the rest of today.", anchor: "u-caps", reload: true });
     } catch (e) {
       reply(req, res, "usage", { err: "Not resumed: " + e.message, anchor: "u-caps" });

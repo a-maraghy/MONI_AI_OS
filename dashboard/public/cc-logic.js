@@ -291,6 +291,15 @@
    * (Later hides the card, Always allow opens its rule dialog).
    */
   function card(q) {
+    var c = cardOf(q);
+    if (!c) return c;
+    // Approving (and Resume) asks for Windows Hello, or the authenticator code (dashboard lib/stepup.js).
+    c.actions.forEach(function (x) { if (x.act === "approve" || x.act === "resume" || x.act === "always") x.hello = true; });
+    c.hello = c.actions.some(function (x) { return x.hello; });
+    return c;
+  }
+  var HELLO_HINT = "Approving asks for Windows Hello. No passkey on this device, or Hello fails? Your authenticator code works too.";
+  function cardOf(q) {
     if (!q) return null;
     var id = encodeURIComponent(String(q.id));
     var later = { act: "later", label: "Later", local: true };
@@ -462,7 +471,7 @@
     CORES: CORES, CORE_DEFAULT: CORE_DEFAULT, normCore: normCore, isCore: isCore,
     SESS_VIEWS: SESS_VIEWS, SESS_VIEW_DEFAULT: SESS_VIEW_DEFAULT, normSessView: normSessView, isSessView: isSessView,
     STATES: STATES, LABEL: LABEL, coreState: coreState, caption: caption, vpBadge: vpBadge, VP_SHOW_MS: VP_SHOW_MS, VP_MIN_MS: VP_MIN_MS, CAPTION_REST_MS: CAPTION_REST_MS, captionRests: captionRests, captionRestIn: captionRestIn, composerCalm: composerCalm, lastSentence: lastSentence, gist: gist,
-    needQueue: needQueue, card: card, doneText: doneText, approvalFrom: approvalFrom, approvalNoRule: approvalNoRule,
+    needQueue: needQueue, card: card, doneText: doneText, approvalFrom: approvalFrom, approvalNoRule: approvalNoRule, HELLO_HINT: HELLO_HINT,
     TOK_KEYS: TOK_KEYS, tokens: tokens, tokLine: tokLine, tokTip: tokTip,
     SHEETS: SHEETS, sheetKeys: sheetKeys,
     normName: normName, makeAliases: makeAliases, resolveTarget: resolveTarget, resolveFrom: resolveFrom, ghostWhere: ghostWhere,

@@ -306,7 +306,8 @@ class Ledger {
     const add = {
       turns: ["order_id INTEGER", "mission_id INTEGER", "decision_id INTEGER", "proc_start TEXT", "cost_delta_usd REAL", "sent_at TEXT", "tokens_cum TEXT", "tok_input INTEGER", "tok_output INTEGER", "tok_cache_read INTEGER", "tok_cache_write INTEGER"],
       delegations: ["mission_id INTEGER", "step_id INTEGER", "target_kind TEXT", "target_ref TEXT"],
-      approvals: ["mission_id INTEGER", "step_id INTEGER", "decision_id INTEGER", "rule_id INTEGER", "origin TEXT", "origin_name TEXT"],
+      // verified / verified_with: how the administrator confirmed an approve in the panel (Windows Hello or the code, 2026-10-08).
+      approvals: ["mission_id INTEGER", "step_id INTEGER", "decision_id INTEGER", "rule_id INTEGER", "origin TEXT", "origin_name TEXT", "verified TEXT", "verified_with TEXT"],
       // Token-cap cards (kind "cap", subject = the session's cap key): warn or pause, and the Cairo day.
       decisions: ["cap_at TEXT", "cap_day TEXT"],
     };

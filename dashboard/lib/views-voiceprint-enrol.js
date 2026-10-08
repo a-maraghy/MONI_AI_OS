@@ -37,7 +37,7 @@ ${card(
    <ul class="vp-facts">
      <li>${icon("lock", 14)} Each recording is turned into numbers on this server and then deleted. Only the voiceprint is kept, sealed with a key only the server's root can use. Nothing is sent to OpenAI or anyone else.</li>
      <li>${icon("voice", 14)} One microphone at a time. Enrolling a second one (laptop and headset) makes it surer on both.</li>
-     <li>${icon("shield", 14)} A voice identifies; it never authorises. Approvals still need the signed-in user's click or Windows Hello.</li>
+     <li>${icon("shield", 14)} A voice identifies; it never authorises. Approvals still need the signed-in user's Windows Hello (or authenticator code).</li>
      <li>${icon("trash", 14)} Remove a microphone or delete the voiceprint in Settings ▸ Voice ▸ Voiceprint.</li>
    </ul>`,
   { icon: "fingerprint", id: "vpe-why" }

@@ -737,7 +737,8 @@ function passkeyCard(csrf, pk) {
     : pk.here
       ? `<p class="muted">You can sign in at <span class="mono">${esc(here)}</span> with Windows Hello
            (face, fingerprint or PIN) instead of typing the code. The authenticator code always
-           stays available as a fallback, and still guards root unlock and approvals.</p>`
+           stays available as a fallback and still guards root unlock. Every approval asks for
+           Windows Hello too, with the code as its fallback.</p>`
       : `<div class="alert info">${icon("info")}<div>No passkey is registered for
            <span class="mono">${esc(here)}</span> yet${pk.list.length ? " — the ones below belong to another address, and a passkey only works where it was added" : ""}.
            Add this device and the next sign-in here asks for Windows Hello instead of the code.</div></div>`;

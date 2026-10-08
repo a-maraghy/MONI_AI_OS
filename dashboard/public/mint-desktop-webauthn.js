@@ -1,5 +1,7 @@
 /*
- * MINT AI desktop app, sign-in pages only: Windows Hello inside the app.
+ * MINT AI desktop app, the sign-in pages and the Command Center (where every
+ * approval asks for Windows Hello, public/step-up.js): Windows Hello inside
+ * the app.
  *
  * The app's window is click-through, borderless, often bottom-most (Desktop
  * layer) and does not take the focus by itself -- and Windows Hello's dialog
@@ -10,7 +12,8 @@
  * or failed -- the window goes back to its mode.
  *
  * If it fails anyway (a refusal, a timeout, Hello not showing), the browser
- * sign-in button is lit up as the way through.
+ * sign-in button is lit up as the way through on the sign-in pages; in the
+ * Command Center the approval dialog offers the authenticator code instead.
  *
  * Loaded before passkey.js; does nothing outside the app.
  */

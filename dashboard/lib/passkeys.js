@@ -6,8 +6,10 @@
  *
  * The authenticator (TOTP) stays. It is still enrolled for every account, it
  * is offered on every sign-in ("Use authenticator code instead"), and it is
- * what root unlock and approvals ask for -- those are not touched by this
- * module. A passkey only ever replaces the code at sign-in, after the password.
+ * what root unlock asks for. A passkey replaces the code at sign-in, after the
+ * password, and -- since 2026-10-08 -- is what every approval asks for first
+ * (lib/stepup.js, through stepUpOptions / verifyStepUp below), with the code
+ * as the fallback there too.
  *
  * A passkey belongs to one domain (its RP ID), so one registered on
  * os.mint-stack.com does nothing at vmi3567127.contaboserver.net. The RP comes
@@ -348,7 +350,83 @@ async function verifyAuthentication(user, rp, slot, response) {
   return { ok: true, passkey: { ...pk, counter: next } };
 }
 
+/* ------------------------------------------------- approvals (step-up) --- */
+
+/**
+ * A fresh Windows Hello check for one approval (lib/stepup.js). Unlike the
+ * sign-in request this one knows who is asking -- the signed-in user -- so it
+ * names that user's passkeys for this domain and nothing else will do.
+ *
+ * Each challenge is bound to the user, the browser session and the exact
+ * thing being approved (`bind`, e.g. "approval:12:approve"), lives at most
+ * STEPUP_MS and is spent the first time anyone presents it, whatever the
+ * outcome. The challenge value itself is the token the page sends back.
+ */
+const STEPUP_MS = 2 * 60 * 1000;
+const STEPUP = new Map(); // challenge -> {userId, sid, bind, rpID, at}
+
+/** Options for navigator.credentials.get(), or null when the user has no passkey for this domain. */
+async function stepUpOptions(user, rp, sid, bind) {
+  const mine = listFor(user.id, rp.rpID);
+  if (!mine.length) return null;
+  const opts = await generateAuthenticationOptions({
+    rpID: rp.rpID,
+    allowCredentials: mine.map((p) => ({ id: p.credential_id, transports: p.transports })),
+    userVerification: "required",
+    timeout: 60000,
+  });
+  opts.hints = ["client-device"];
+  const now = Date.now();
+  for (const [k, v] of STEPUP) if (now - v.at > STEPUP_MS) STEPUP.delete(k);
+  if (STEPUP.size > 5000) STEPUP.clear(); // a flood empties it rather than growing it
+  STEPUP.set(opts.challenge, { userId: user.id, sid: String(sid || ""), bind: String(bind), rpID: rp.rpID, at: now });
+  return opts;
+}
+
+/**
+ * Check a step-up assertion for `bind`. Returns {ok, passkey} or
+ * {ok: false, error}. The token is spent before anything else is looked at.
+ */
+async function verifyStepUp(user, rp, sid, bind, token, response) {
+  const tok = typeof token === "string" ? token : "";
+  const c = tok ? STEPUP.get(tok) : null;
+  // Synchronous get-and-delete: only one request can get past this line.
+  if (!c || !STEPUP.delete(tok)) return { ok: false, error: "no such challenge (used already, expired or never issued)" };
+  if (Date.now() - c.at > STEPUP_MS) return { ok: false, error: "challenge expired" };
+  if (c.userId !== user.id) return { ok: false, error: "challenge was issued to another account" };
+  if (c.sid !== String(sid || "")) return { ok: false, error: "challenge was issued to another browser session" };
+  if (c.bind !== String(bind)) return { ok: false, error: "challenge was issued for something else" };
+  if (!rp || c.rpID !== rp.rpID) return { ok: false, error: "challenge was issued for another address" };
+  const id = response && typeof response.id === "string" ? response.id : "";
+  const pk = row(db.prepare("SELECT * FROM passkeys WHERE credential_id = ? AND user_id = ?").get(id, user.id));
+  if (!pk) return { ok: false, error: "unknown passkey" };
+  if (pk.rp_id !== rp.rpID) return { ok: false, error: "passkey belongs to another address" };
+  const uh = response.response && response.response.userHandle;
+  if (uh && uh !== handleFor(user.id)) return { ok: false, error: "passkey is for another account" };
+  let v;
+  try {
+    v = await verifyAuthenticationResponse({
+      response,
+      expectedChallenge: tok,
+      expectedOrigin: rp.origin,
+      expectedRPID: rp.rpID,
+      requireUserVerification: true,
+      credential: { id: pk.credential_id, publicKey: new Uint8Array(pk.public_key), counter: pk.counter, transports: pk.transports },
+    });
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e).slice(0, 200) };
+  }
+  if (!v || !v.verified) return { ok: false, error: "not verified" };
+  const next = v.authenticationInfo.newCounter;
+  if ((next > 0 || pk.counter > 0) && !(next > pk.counter)) return { ok: false, error: "sign counter went backwards (possible cloned passkey)" };
+  db.prepare("UPDATE passkeys SET counter = ?, last_used_at = ? WHERE id = ?").run(next, nowIso(), pk.id);
+  return { ok: true, passkey: { ...pk, counter: next } };
+}
+
 module.exports = {
+  stepUpOptions,
+  verifyStepUp,
+  STEPUP_MS,
   configure,
   rpFor,
   hostOf,

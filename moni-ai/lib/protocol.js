@@ -95,7 +95,7 @@ const OPS = {
   // Hired sessions (M-6). Hire: MINT AI or the administrator. Retire: from MINT AI only a consent card;
   // from the administrator (the Command Center's Keep / Retire dialog) it ends the session. Keep: the administrator.
   "session-hire": { mutating: true, params: { name: text(1, 48), cwd: str(300, /^\/[^\u0000\n\r]*$/), purpose: text(10, 4000), model: optString(64, /^claude-[a-z0-9][a-z0-9.-]{2,60}$/) } },
-  "session-retire": { mutating: true, params: { slug: optString(40, /^[a-z0-9][a-z0-9-]{0,39}$/), name: optString(64, /^[^\n\r\u0000]{1,64}$/), ref: optString(12, /^[0-9a-f]{4,12}$/i), session_id: optString(36, /^[0-9a-f-]{36}$/), note: optText(500) } },
+  "session-retire": { mutating: true, params: { slug: optString(40, /^[a-z0-9][a-z0-9-]{0,39}$/), name: optString(64, /^[^\n\r\u0000]{1,64}$/), ref: optString(12, /^[0-9a-f]{4,12}$/i), session_id: optString(36, /^[0-9a-f-]{36}$/), note: optText(500), ...stepped() } },
   "session-keep": { mutating: true, params: { slug: optString(40, /^[a-z0-9][a-z0-9-]{0,39}$/), session_id: optString(36, /^[0-9a-f-]{36}$/), kept: bool() } },
   hired: { mutating: false, params: { all: optBool() } },
   // A hired session's own permission question (bin/mint-session, actor "session.<slug>"): answered on this connection.
@@ -106,9 +106,12 @@ const OPS = {
   "session-approval-cancel": { mutating: false, params: { slug: str(40, /^[a-z0-9][a-z0-9-]{0,39}$/), request_id: str(64, /^[^\n\r\u0000]{1,64}$/) } },
   approve: {
     mutating: true,
-    params: { approval_id: int(1, Number.MAX_SAFE_INTEGER), note: optText(500), rule_pattern: optText(2000), rule_tool: optEnum(["Bash", "SendMessage"]) },
+    params: { approval_id: int(1, Number.MAX_SAFE_INTEGER), note: optText(500), rule_pattern: optText(2000), rule_tool: optEnum(["Bash", "SendMessage"]), ...stepped() },
   },
   deny: { mutating: true, params: { approval_id: int(1, Number.MAX_SAFE_INTEGER), note: optText(500) } },
+  // Keep a waiting card alive while the administrator answers Windows Hello (the panel asks when it
+  // issues the challenge): its expiry moves to at least `seconds` from now, bounded (supervisor holdApproval).
+  "approval-hold": { mutating: false, params: { approval_id: int(1, Number.MAX_SAFE_INTEGER), seconds: int(10, 120) } },
   rc: { mutating: true, params: { enabled: bool() } },
   restart: { mutating: true, params: {} },
   // Start MINT AI in a new conversation (new session id; the old transcript stays on disk).
@@ -154,7 +157,7 @@ const OPS = {
   "mission-request": { mutating: true, params: { goal: text(1, 4000) } },
   "decision-propose": { mutating: true, params: { decision_id: int(1, Number.MAX_SAFE_INTEGER), summary: text(1, 4000), evidence: optText(8000), fix_command: optText(4000) } },
   "decision-update": { mutating: true, params: { decision_id: int(1, Number.MAX_SAFE_INTEGER), status: enumOf(["done", "failed"]), result: optText(4000) } },
-  "decision-approve": { mutating: true, params: { decision_id: int(1, Number.MAX_SAFE_INTEGER), note: optText(500) } },
+  "decision-approve": { mutating: true, params: { decision_id: int(1, Number.MAX_SAFE_INTEGER), note: optText(500), ...stepped() } },
   "decision-dismiss": { mutating: true, params: { decision_id: int(1, Number.MAX_SAFE_INTEGER), note: optText(500) } },
   "decision-ask": { mutating: true, params: { decision_id: int(1, Number.MAX_SAFE_INTEGER), text: text(1, 4000) } },
   "watcher-set": { mutating: true, params: { key: enumOf(WATCHERS), enabled: bool() } },
@@ -164,12 +167,12 @@ const OPS = {
   "order-delete": { mutating: true, params: { order_id: int(1, Number.MAX_SAFE_INTEGER) } },
   "order-run": { mutating: true, params: { order_id: int(1, Number.MAX_SAFE_INTEGER) } },
   "order-pause": { mutating: true, params: { order_id: int(1, Number.MAX_SAFE_INTEGER), paused: bool() } },
-  "rule-create": { mutating: true, params: { effect: enumOf(["allow", "ask", "deny"]), tool: enumOf(["Bash", "SendMessage", "any"]), pattern: text(1, 2000), note: optText(500) } },
+  "rule-create": { mutating: true, params: { effect: enumOf(["allow", "ask", "deny"]), tool: enumOf(["Bash", "SendMessage", "any"]), pattern: text(1, 2000), note: optText(500), ...stepped() } },
   "rule-update": {
     mutating: true,
-    params: { rule_id: int(1, Number.MAX_SAFE_INTEGER), effect: optEnum(["allow", "ask", "deny"]), tool: optEnum(["Bash", "SendMessage", "any"]), pattern: optText(2000), note: optText(500) },
+    params: { rule_id: int(1, Number.MAX_SAFE_INTEGER), effect: optEnum(["allow", "ask", "deny"]), tool: optEnum(["Bash", "SendMessage", "any"]), pattern: optText(2000), note: optText(500), ...stepped() },
   },
-  "rule-delete": { mutating: true, params: { rule_id: int(1, Number.MAX_SAFE_INTEGER) } },
+  "rule-delete": { mutating: true, params: { rule_id: int(1, Number.MAX_SAFE_INTEGER), ...stepped() } },
   "cost-budget": { mutating: true, params: { daily_usd: nullableNumber(0, 100000), warn_pct: int(50, 100) } },
 
   /* ---- editable settings (Mint OS reorganisation, 2026-09-30); every write is the administrator's only ---- */
@@ -182,7 +185,7 @@ const OPS = {
   // Token caps per session (build spec §6). key: "<self>", "default", a hire slug or a session id; cap null removes it.
   "token-caps": { mutating: false, params: {} },
   "token-caps-set": { mutating: true, params: { key: optString(64, CAP_KEY_RE), cap: optNullable(int(1, 1e12)), at: optEnum(["warn", "pause"]), warn_pct: optInt(50, 100) } },
-  "budget-resume": { mutating: true, params: { key: optString(64, CAP_KEY_RE), decision_id: optInt(1, Number.MAX_SAFE_INTEGER) } },
+  "budget-resume": { mutating: true, params: { key: optString(64, CAP_KEY_RE), decision_id: optInt(1, Number.MAX_SAFE_INTEGER), ...stepped() } },
   // A hired session's standing link (bin/mint-session, actor "session.<slug>"): budget-pause / budget-resume come down it.
   "session-link": { mutating: false, params: { slug: str(40, /^[a-z0-9][a-z0-9-]{0,39}$/) } },
   // MINT AI's page map (build spec §5): no params reads it; pages stores and applies it; reset returns to the built-in list.
@@ -253,6 +256,16 @@ function optIntList(min, max, maxLen) {
   f.optional = true;
   return f;
 }
+/**
+ * How the administrator confirmed an approval in the panel (dashboard
+ * lib/stepup.js, 2026-10-08): "hello" (Windows Hello / a passkey) or "totp"
+ * (the authenticator code), and with which passkey. Optional on the ops that
+ * let something run; recorded on the approval row and in the audit.
+ */
+function stepped() {
+  return { verified: optEnum(["hello", "totp"]), verified_with: optText(80) };
+}
+
 function optEnum(values) {
   const f = enumOf(values);
   f.optional = true;

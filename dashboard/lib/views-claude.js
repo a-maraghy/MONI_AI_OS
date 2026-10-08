@@ -1472,7 +1472,7 @@ function teamTable(csrf, user, team, r, opts = {}) {
           x.hire.kept
             ? `<form method="post" action="/claude/sessions/live/${slug}/keep" class="inline">${hidden(csrf)}<input type="hidden" name="kept" value="0"><button class="btn small" type="submit">Stop keeping</button></form>`
             : `<form method="post" action="/claude/sessions/live/${slug}/keep" class="inline">${hidden(csrf)}<input type="hidden" name="kept" value="1"><button class="btn small" type="submit">Keep</button></form>
-               <form method="post" action="/claude/sessions/live/${slug}/retire" class="inline" data-confirm-dlg="Retire “${esc(name)}”?" data-confirm-body="It ends gracefully and its sphere dissolves; its transcript is kept." data-confirm-yes="Retire" data-confirm-no="Keep">${hidden(
+               <form method="post" action="/claude/sessions/live/${slug}/retire" class="inline" data-step-up data-confirm-dlg="Retire “${esc(name)}”?" data-confirm-body="It ends gracefully and its sphere dissolves; its transcript is kept." data-confirm-yes="Retire" data-confirm-no="Keep">${hidden(
                  csrf
                )}<button class="btn small danger" type="submit">Retire…</button></form>`
         );
@@ -1485,7 +1485,7 @@ function teamTable(csrf, user, team, r, opts = {}) {
         );
       if (paused && useAi)
         acts.push(
-          `<form method="post" action="/claude/sessions/live/resume" class="inline">${hidden(csrf)}<input type="hidden" name="key" value="${esc(key)}"><button class="btn small primary" type="submit">Resume</button></form>`
+          `<form method="post" action="/claude/sessions/live/resume" class="inline" data-step-up>${hidden(csrf)}<input type="hidden" name="key" value="${esc(key)}"><button class="btn small primary" type="submit">Resume</button></form>`
         );
       return `<tr><td class="first" data-h="Session"><div class="l1"><b class="ink">${esc(name)}</b></div>${
         x.hire && x.hire.purpose ? `<div class="l2">MINT AI hired it: ${esc(snippet(x.hire.purpose, 140))}</div>` : ""
