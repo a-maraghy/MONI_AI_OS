@@ -43,7 +43,7 @@ const byKey = new Map(entries.map((e) => [e.key, e]));
 {
   const navItems = ui.NAV.flatMap((g) => g.items);
   const missing = navItems.filter((it) => !entries.some((e) => e.kind === "page" && e.url === it.href));
-  check("every NAV item is a page entry (same url)", navItems.length === 18 && missing.length === 0, missing.map((i) => i.key).join());
+  check("every NAV item is a page entry (same url)", navItems.length === 19 && missing.length === 0, missing.map((i) => i.key).join());
   check("  under the key MINT AI hears for it (PAGE_KEYS)", navItems.every((it) => byKey.has(R.PAGE_KEYS[it.key][0]) && byKey.get(R.PAGE_KEYS[it.key][0]).url === it.href));
   check("  plus Your account (the avatar menu)", byKey.get("account") && byKey.get("account").url === "/account" && byKey.get("account").perm === null);
   const keys = entries.map((e) => e.key);

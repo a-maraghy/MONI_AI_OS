@@ -46,6 +46,34 @@ It syntax-checks every file before restarting. Doing it by hand instead, always
 `node --check` first — a syntax error otherwise leaves the service in a restart
 loop with the panel down.
 
+## Computers (laptop control, Path A, 2026-10-08)
+
+Mint OS ▸ MINT AI ▸ **Computers** (`/machines`, `moniai.use`): the user's own Windows computers,
+linked through the MINT AI desktop app. `lib/machines.js` (store, pairing, the link, leases,
+action log), `lib/routes-machines.js` (routes + the WebSocket upgrade), `lib/views-machines.js`,
+`public/machines.{js,css}`; the supervisor's half is `moni-ai/lib/machines.js` (+ `machine-gate.js`).
+
+- **Pairing:** "Pair a computer" → a one-time code (Crockford base32, `ABCD-EFGH`, 10 min, one per
+  person, in memory). The app posts it to `POST /machines/api/claim` `{code, name, platform,
+  app_version}` → `{machine_id, name, token}` (`mmt_` + 32 random bytes; only its SHA-256 is stored).
+  The app keeps the token in Windows Credential Manager. Rename / Revoke on the page; Revoke closes
+  the link and ends any lease.
+- **Link:** `wss://…/machines/api/link`, `Authorization: Bearer <token>` (401 otherwise), one per
+  computer (a newer link replaces the older), pings every 10 s, 2 MB frames. Wire contract in
+  `desktop/README.md` ("Laptop control"). Relayed to the supervisor as actor `machine.<id>`; the
+  registry is pushed with `machines-sync` (actor `machines`); the supervisor's `machine` events
+  (start / tell / stop) arrive through one standing subscription.
+- **Lease:** created when the supervisor's `start` arrives (default 15 min, ≤ 60 min from now);
+  extended (+15, capped) here or from the app's pill; ended here on timeout (+15 s grace, app told to
+  stop), Stop, revoke, the app's report (stop hotkey, lock, sign-out, link lost, runner exit). The app
+  enforces it too.
+- **Action log:** every action with a JPEG screenshot (magic-checked, ≤ 1.5 MB, 0600) in
+  `MONI_MACHINES_DIR` (default `<data dir>/machines/<id>/`), rows in `machine_actions`; kept **7 days**
+  (hourly prune deletes row and file). Screenshots: `/machines/shot/<id>`, signed in, `no-store`.
+- **DB:** three new tables in `moni.db` (`machines`, `machine_leases`, `machine_actions`), created on
+  start (`CREATE TABLE IF NOT EXISTS`); nothing else changes.
+- Tests: `NODE_PATH=/opt/moni-dashboard/node_modules node dashboard/tools/test-machines.cjs`.
+
 ## Passkeys (Windows Hello)
 
 The sign-in's second step can be a passkey instead of the authenticator code

@@ -1,0 +1,18 @@
+/* Laptop control: the pill at the top of the primary monitor (time left, +15 min, Stop). */
+:root { --font: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif; }
+html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; font-family: var(--font); user-select: none; }
+.pill { box-sizing: border-box; height: 100%; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 0 10px 0 14px;
+  border-radius: 999px; background: rgba(16, 18, 40, .94); border: 1.5px solid rgba(0, 201, 143, .9); color: #F2F3FA; font-size: 13px; white-space: nowrap;
+  box-shadow: 0 0 14px rgba(0, 201, 143, .45); }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: #00C98F; box-shadow: 0 0 8px #00C98F; animation: pulse 1.6s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .dot { animation: none; } }
+.sep { opacity: .5; }
+#left { font-variant-numeric: tabular-nums; font-weight: 600; }
+button { font: 600 12.5px var(--font); border-radius: 999px; padding: 4px 11px; cursor: pointer; border: 1px solid rgba(255, 255, 255, .25); background: rgba(255, 255, 255, .1); color: #F2F3FA; }
+button:hover { background: rgba(255, 255, 255, .2); }
+button.stop { background: #D92D4F; border-color: transparent; color: #fff; }
+button.stop:hover { background: #F0335A; }
+.key { font: 11.5px "Cascadia Mono", Consolas, monospace; opacity: .7; }
+body.ended .pill { border-color: rgba(255, 255, 255, .3); box-shadow: none; }
+body.ended .dot { background: #888; box-shadow: none; animation: none; }

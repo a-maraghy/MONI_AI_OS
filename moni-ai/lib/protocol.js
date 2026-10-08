@@ -72,6 +72,9 @@ const OPS = {
       // The live call a voice-desk send comes from (the dashboard's call id): a repeat of a
       // request still waiting in the queue is folded into that turn (supervisor mergeVoiceTurn).
       call: optString(42, /^lv[a-z0-9]{1,40}$/),
+      // A voice-desk send's speaker, as the voiceprint judged it: "command" = recognised AND may give
+      // commands; anything else is "other". Taking over a computer by voice needs "command" (lib/machines.js).
+      vp: optEnum(["command", "other"]),
     },
   },
   // The dashboard (re)started: what it runs now, for MINT AI's next turn and the snapshot.
@@ -192,6 +195,23 @@ const OPS = {
   "ui-pages": { mutating: true, params: { pages: optArray(pageSpec(), 500), reset: optBool() } },
   // MINT AI's charter (the CLAUDE.md in its working directory), read-only, at most 64 KB.
   charter: { mutating: false, params: {} },
+
+  /* ---- the user's own computers (Path A laptop control, lib/machines.js) ---- */
+  // The dashboard's machine relay (actor "machines"): the linked computers and whether each is online now.
+  "machines-sync": { mutating: false, params: { machines: optArray(objOf({ id: int(1, 9999999999), name: text(1, 64), online: bool(), platform: optString(20, /^[a-z0-9_-]{1,20}$/), home: optText(260) }), 200) } },
+  machines: { mutating: false, params: {} },
+  // MINT AI (during a turn the administrator started) or the administrator: hire a session on a computer, under a lease.
+  "machine-take-over": { mutating: true, params: { machine: optString(64, /^[^\n\r\u0000]{1,64}$/), purpose: text(10, 4000), minutes: optInt(1, 60), model: optString(64, /^claude-[a-z0-9][a-z0-9.-]{2,60}$/) } },
+  "machine-tell": { mutating: true, params: { machine: optString(64, /^[^\n\r\u0000]{1,64}$/), message: text(1, 8000) } },
+  "machine-release": { mutating: true, params: { machine: optString(64, /^[^\n\r\u0000]{1,64}$/), note: optText(300) } },
+  // The dashboard, for one linked computer (actor "machine.<id>", after it checked that computer's token).
+  "machine-ask": {
+    mutating: false,
+    params: { slug: str(40, /^[a-z0-9][a-z0-9-]{0,39}$/), request_id: str(64, /^[^\n\r\u0000]{1,64}$/), tool: str(80, /^[A-Za-z0-9_.:-]{1,80}$/), input: text(2, 16000), reason: optText(2000), tool_use_id: optString(64, /^[A-Za-z0-9_-]{1,64}$/), origin: optEnum(["cli", "hands"]) },
+  },
+  "machine-ask-cancel": { mutating: false, params: { slug: str(40, /^[a-z0-9][a-z0-9-]{0,39}$/), request_id: str(64, /^[^\n\r\u0000]{1,64}$/) } },
+  "machine-report": { mutating: true, params: { slug: str(40, /^[a-z0-9][a-z0-9-]{0,39}$/), text: text(1, MAX_TEXT) } },
+  "machine-state": { mutating: true, params: { slug: str(40, /^[a-z0-9][a-z0-9-]{0,39}$/), state: enumOf(["starting", "running", "exited", "failed", "ended"]), reason: optText(300) } },
 };
 
 /* ------------------------------------------------------------ validators --- */

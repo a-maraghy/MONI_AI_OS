@@ -384,6 +384,32 @@ Keys `^[a-z0-9][a-z0-9._-]{0,63}$`, unique; `url` site-relative (one leading
 `ui_do` / `ui_actions_list` schemas do not change. Keep a push under the
 socket's 64 KB line limit (roughly 400-500 short entries).
 
+## The user's own computers (laptop control, Path A, 2026-10-08)
+
+`lib/machines.js` + `lib/machine-gate.js`; the dashboard holds the registry and the app's link
+(`dashboard/lib/machines.js`). A take-over hires a session that runs ON the computer: a
+`hired_sessions` row with `machine_id` (new column) and `cwd` `machine:<id>`, no systemd unit; the
+desktop app runs Claude Code there under a lease. It counts against the live limit, shows in the
+spheres, can never be kept, and `session_retire` / `machine_release` end it at once.
+
+- **Who may take over** (`machine-take-over`): the administrator (the Computers page), or MINT AI
+  (`machine_take_over`) during a turn the administrator started — typed in the Command Center
+  (`dashboard`), or a live-call turn (`voice-desk`) whose `send` carried `vp: "command"` (the
+  voiceprint named the speaker and they may give commands). Never a watcher, an order, a peer, a
+  hired session or a laptop report.
+- **Ops:** `machines-sync` (actor `machines`), `machines`, `machine-take-over`, `machine-tell`,
+  `machine-release`; from the dashboard for one computer (actor `machine.<id>`): `machine-ask`,
+  `machine-ask-cancel`, `machine-report`, `machine-state`. Event `machine` {what: start | tell | stop}.
+- **Gate** (`machine-ask` → `machine-gate.decide`): allow at once (reads and writes in the user's own
+  files, ordinary commands), a card (delete, install, send over the network, change the system,
+  outside the user's files, WebFetch, every `mcp__mint-hands__*` approval), deny (disk wipes,
+  switching off security, obfuscated or downloaded-and-run code, credential dumps, elevation). Cards
+  are the hired sessions' own (`origin session:<slug>`, `origin_name` the session's name).
+  Paused at a token cap: denied.
+- **Reports:** each laptop turn's final text → a background turn for MINT AI (source `machine`),
+  marked as the laptop session's words. The end of a lease retires the hire and tells MINT AI.
+- Tests: `node moni-ai/tools/test-machines.cjs` (56 checks, scratch supervisor).
+
 ## Command Center v3, phase 1
 
 `lib/features.js` holds everything below and is wired into the supervisor at

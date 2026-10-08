@@ -31,6 +31,13 @@ sha2 = "0.10"
 base64 = "0.22"
 rand = "0.8"
 url = "2"
+# Laptop control (machine/): the link to Mint OS (WebSocket over rustls, the Windows trust store) and the pairing POST.
+tungstenite = { version = "=0.29.0", features = ["rustls-tls-webpki-roots"] }
+rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-platform-verifier = "=0.7.1"
+reqwest = { version = "=0.13.5", default-features = false, features = ["json", "rustls-no-provider"] }
+# Laptop control (hands/docs.rs): docx / xlsx / pptx are written as OOXML zips.
+zip = { version = "=4.6.1", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 [target.'cfg(windows)'.dependencies]
 tauri-winrt-notification = "0.7"
@@ -52,6 +59,10 @@ windows = { version = "0.61", features = [
   "Win32_System_Registry",
   "Win32_UI_Accessibility",
   "Win32_UI_Controls",
+  # Laptop control (machine/): the link token in Credential Manager, the CLI's process tree in a Job Object.
+  "Win32_Security",
+  "Win32_Security_Credentials",
+  "Win32_System_JobObjects",
   "Win32_System_Threading",
 ] }
 

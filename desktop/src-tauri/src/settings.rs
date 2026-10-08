@@ -16,6 +16,10 @@ pub const DEFAULT_FOCUS: &str = "Ctrl+Alt+F";
 pub const DEFAULT_LIVE: &str = "Ctrl+Alt+L";
 pub const FALLBACK_LIVE: &str = "Ctrl+Alt+Shift+L";
 pub const DEFAULT_ORIGIN: &str = "https://os.mint-stack.com";
+/// Laptop control: end MINT AI's control of this computer at once (handled in the app, no server).
+/// Esc is accepted only with both Ctrl and Alt (Ctrl+Esc is the Start menu, Alt+Esc switches windows).
+pub const DEFAULT_STOP: &str = "Ctrl+Alt+Esc";
+pub const FALLBACK_STOP: &str = "Ctrl+Alt+Shift+Esc";
 
 /// Desktop-layer position presets (where the core sits across the screen).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -60,11 +64,13 @@ pub struct Hotkeys {
     pub focus: String,
     /// Start / end a live call (hands-free), pressed once.
     pub live: String,
+    /// Laptop control: stop it now.
+    pub stop: String,
 }
 
 impl Default for Hotkeys {
     fn default() -> Self {
-        Hotkeys { talk: DEFAULT_TALK.into(), show: DEFAULT_SHOW.into(), focus: DEFAULT_FOCUS.into(), live: DEFAULT_LIVE.into() }
+        Hotkeys { talk: DEFAULT_TALK.into(), show: DEFAULT_SHOW.into(), focus: DEFAULT_FOCUS.into(), live: DEFAULT_LIVE.into(), stop: DEFAULT_STOP.into() }
     }
 }
 
@@ -88,6 +94,8 @@ pub struct Settings {
     pub check_updates: bool,
     /// The site, for a test server only; the app refuses anything that is not https.
     pub origin: String,
+    /// Laptop control: claude.exe (or claude.cmd) to run; empty = look on PATH and the usual places.
+    pub claude_path: String,
 }
 
 impl Default for Settings {
@@ -105,6 +113,7 @@ impl Default for Settings {
             experimental_behind_icons: false,
             check_updates: true,
             origin: DEFAULT_ORIGIN.into(),
+            claude_path: String::new(),
         }
     }
 }
@@ -124,12 +133,13 @@ impl Settings {
         for pm in self.per_monitor.values_mut() {
             pm.opacity = pm.opacity.clamp(35, 100);
         }
-        for (k, d) in [(&mut self.hotkeys.talk, DEFAULT_TALK), (&mut self.hotkeys.show, DEFAULT_SHOW), (&mut self.hotkeys.focus, DEFAULT_FOCUS), (&mut self.hotkeys.live, DEFAULT_LIVE)] {
+        for (k, d) in [(&mut self.hotkeys.talk, DEFAULT_TALK), (&mut self.hotkeys.show, DEFAULT_SHOW), (&mut self.hotkeys.focus, DEFAULT_FOCUS), (&mut self.hotkeys.live, DEFAULT_LIVE), (&mut self.hotkeys.stop, DEFAULT_STOP)] {
             match normalize_hotkey(k) {
                 Some(n) => *k = n,
                 None => *k = d.into(),
             }
         }
+        self.claude_path = self.claude_path.trim().trim_matches('"').chars().filter(|c| !c.is_control()).take(400).collect();
         if !origin_ok(&self.origin) {
             self.origin = DEFAULT_ORIGIN.into();
         }
@@ -194,6 +204,9 @@ pub fn normalize_hotkey(s: &str) -> Option<String> {
         return None; // Win+ is Windows'; Shift alone types capitals
     }
     let key = key?;
+    if key == "Esc" && !(mods[0] && mods[1]) {
+        return None; // Ctrl+Esc is the Start menu, Alt+Esc switches windows
+    }
     let mut out: Vec<String> = MODS.iter().enumerate().filter(|(i, _)| mods[*i]).map(|(_, m)| m.to_string()).collect();
     out.push(key);
     Some(out.join("+"))
@@ -205,6 +218,7 @@ fn normal_key(up: &str) -> Option<String> {
         "ENTER" | "RETURN" => "Enter".to_string(),
         "TAB" => "Tab".to_string(),
         "BACKQUOTE" | "`" => "Backquote".to_string(),
+        "ESC" | "ESCAPE" => "Esc".to_string(),
         s if s.len() == 1 && s.chars().all(|c| c.is_ascii_alphanumeric()) => s.to_string(),
         s if s.starts_with('F') && s[1..].parse::<u8>().map(|n| (1..=24).contains(&n)).unwrap_or(false) => s.to_string(),
         _ => return None,
@@ -212,9 +226,9 @@ fn normal_key(up: &str) -> Option<String> {
     Some(k)
 }
 
-/// The four hotkeys must be four different keys.
+/// The hotkeys must all be different keys.
 pub fn hotkeys_distinct(h: &Hotkeys) -> bool {
-    let all = [&h.talk, &h.show, &h.focus, &h.live];
+    let all = [&h.talk, &h.show, &h.focus, &h.live, &h.stop];
     (0..all.len()).all(|i| (i + 1..all.len()).all(|j| all[i] != all[j]))
 }
 
@@ -310,5 +324,24 @@ mod tests {
         assert!(!hotkeys_distinct(&h));
         let d = Hotkeys::default();
         assert!([&d.talk, &d.show, &d.focus].iter().all(|k| **k != DEFAULT_LIVE && **k != FALLBACK_LIVE));
+    }
+
+    #[test]
+    fn stop_hotkey() {
+        let d = Settings::default();
+        assert_eq!(d.hotkeys.stop, "Ctrl+Alt+Esc");
+        assert_eq!(d.claude_path, "");
+        assert_eq!(normalize_hotkey("alt+ctrl+escape").as_deref(), Some("Ctrl+Alt+Esc"));
+        assert_eq!(normalize_hotkey(FALLBACK_STOP).as_deref(), Some(FALLBACK_STOP));
+        assert_eq!(normalize_hotkey("Ctrl+Esc"), None, "the Start menu");
+        assert_eq!(normalize_hotkey("Alt+Esc"), None);
+        // A 0.1.4 settings file has no stop key: the default; a bad one goes back to it.
+        let s = Settings::from_json(r#"{"hotkeys":{"talk":"Ctrl+Space"},"claude_path":"  \"C:\\x\\claude.exe\" "}"#);
+        assert_eq!(s.hotkeys.stop, DEFAULT_STOP);
+        assert_eq!(s.claude_path, "C:\\x\\claude.exe");
+        assert_eq!(Settings::from_json(r#"{"hotkeys":{"stop":"Esc"}}"#).hotkeys.stop, DEFAULT_STOP);
+        let mut h = Hotkeys::default();
+        h.stop = h.show.clone();
+        assert!(!hotkeys_distinct(&h), "the stop key may not be another hotkey");
     }
 }

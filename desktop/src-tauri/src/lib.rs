@@ -23,8 +23,10 @@
 pub mod log;
 pub mod acrylic;
 pub mod blur;
+pub mod hands;
 pub mod hit;
 pub mod layout;
+pub mod machine; // laptop control: the paired link, the lease, the CLI runner (machine/mod.rs)
 pub mod platform;
 pub mod policy;
 pub mod settings;
@@ -400,6 +402,7 @@ fn register_hotkeys(app: &AppHandle, shared: &Shared) {
             live = String::new();
         }
     }
+    machine::register_stop(app, &hk.stop);
     mlog!("hotkeys: talk {:?}{}, live {:?}{}, show {}, focus {}", talk, if fallback { " (fallback)" } else { "" }, live, if live_fallback { " (fallback)" } else { "" }, show_ok, focus_ok);
     {
         let mut a = shared.lock().unwrap();
@@ -424,6 +427,9 @@ fn register_hotkeys(app: &AppHandle, shared: &Shared) {
 }
 
 fn on_hotkey(app: &AppHandle, sc: &Shortcut, ev_state: ShortcutState) {
+    if machine::on_hotkey(sc, ev_state == ShortcutState::Pressed) {
+        return;
+    }
     let shared = app.state::<Shared>().inner().clone();
     let (talk, show_k, focus_k, live_k) = {
         let a = shared.lock().unwrap();
@@ -1027,14 +1033,14 @@ fn settings_get(app: AppHandle, shared: State<'_, Shared>) -> SettingsView {
 #[tauri::command]
 fn settings_set(app: AppHandle, value: Settings, shared: State<'_, Shared>) -> Result<(), String> {
     let mut v = value;
-    for (label, k) in [("Talk", &v.hotkeys.talk), ("Show / hide", &v.hotkeys.show), ("Focus mode", &v.hotkeys.focus), ("Live conversation", &v.hotkeys.live)] {
+    for (label, k) in [("Talk", &v.hotkeys.talk), ("Show / hide", &v.hotkeys.show), ("Focus mode", &v.hotkeys.focus), ("Live conversation", &v.hotkeys.live), ("Stop MINT AI's control", &v.hotkeys.stop)] {
         if settings::normalize_hotkey(k).is_none() {
             return Err(format!("{}: \"{}\" is not a hotkey here. Use Ctrl or Alt with one key, e.g. Ctrl+Alt+M.", label, k));
         }
     }
     v.fix();
     if !settings::hotkeys_distinct(&v.hotkeys) {
-        return Err("The four hotkeys must be different.".into());
+        return Err("The hotkeys must all be different.".into());
     }
     let autostart = v.autostart;
     {
@@ -1257,6 +1263,7 @@ fn env_loop(app: AppHandle, shared: Shared) {
         let fullscreen = platform::fullscreen();
         let (on_battery, energy_saver) = platform::power();
         let locked = platform::locked();
+        machine::on_locked(locked);
         let reduce = platform::reduce_motion();
         let mut reapply = false;
         let mut repaint = false;
@@ -1521,7 +1528,14 @@ pub fn run() {
             settings_get,
             settings_set,
             settings_close,
-            settings_check_update
+            settings_check_update,
+            machine::machine_status,
+            machine::machine_link,
+            machine::machine_unlink,
+            machine::machine_claude_check,
+            machine::machine_pill,
+            machine::machine_pill_extend,
+            machine::machine_pill_stop
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -1568,6 +1582,7 @@ pub fn run() {
                 toasted: Vec::new(),
             }));
             app.manage(shared.clone());
+            machine::setup(&handle);
             if first_run {
                 save(&shared);
             }
@@ -1688,6 +1703,11 @@ pub fn run() {
             }
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running MINT AI");
+        .build(tauri::generate_context!())
+        .expect("error while running MINT AI")
+        .run(|_app, ev| {
+            if let tauri::RunEvent::Exit = ev {
+                machine::on_exit();
+            }
+        });
 }

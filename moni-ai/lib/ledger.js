@@ -310,6 +310,8 @@ class Ledger {
       approvals: ["mission_id INTEGER", "step_id INTEGER", "decision_id INTEGER", "rule_id INTEGER", "origin TEXT", "origin_name TEXT", "verified TEXT", "verified_with TEXT"],
       // Token-cap cards (kind "cap", subject = the session's cap key): warn or pause, and the Cairo day.
       decisions: ["cap_at TEXT", "cap_day TEXT"],
+      // A session MINT AI runs on one of the user's own computers (lib/machines.js): the dashboard's machine id.
+      hired_sessions: ["machine_id INTEGER"],
     };
     for (const [table, cols] of Object.entries(add)) {
       const have = new Set(this.db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name));
@@ -426,9 +428,9 @@ class Ledger {
   addHired(h) {
     const t = now();
     const r = this.prep(
-      `INSERT INTO hired_sessions (slug, name, cwd, purpose, model, session_id, status, kept, hired_by, hired_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, 'hired', 0, ?, ?, ?)`
-    ).run(h.slug, h.name, h.cwd, h.purpose, h.model || null, h.session_id, h.hired_by, t, t);
+      `INSERT INTO hired_sessions (slug, name, cwd, purpose, model, session_id, status, kept, hired_by, hired_at, updated_at, machine_id)
+       VALUES (?, ?, ?, ?, ?, ?, 'hired', 0, ?, ?, ?, ?)`
+    ).run(h.slug, h.name, h.cwd, h.purpose, h.model || null, h.session_id, h.hired_by, t, t, h.machine_id || null);
     return this.get("hired_sessions", Number(r.lastInsertRowid));
   }
   hiredList(all) {

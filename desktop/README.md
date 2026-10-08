@@ -55,6 +55,57 @@ Hold **Ctrl+Space** to talk (hold-to-talk on the live call; released = sent), **
 **Ctrl+Alt+F** focus mode, **Esc** (only while MINT AI has the focus) hides Peek or ends a call.
 If Ctrl+Space is taken by another app the talk key falls back to **Ctrl+Alt+Space** and a notification says so.
 
+## Laptop control ("This computer", Path A — `src-tauri/src/machine/`)
+
+The app can be MINT AI's **machine agent**. Settings ▸ This computer pairs it with Mint OS once: a one-time
+code (8 Crockford characters, `ABCD-EFGH`, 10 min) → `POST {origin}/machines/api/claim`
+`{code, name, platform:"windows", app_version}` → `{machine_id, name, token}`. The token lives **only** in
+Windows Credential Manager (generic credential "MINT AI machine token (<host>)", local machine) — never in
+settings.json, the log or the repo. The app then keeps one outbound WebSocket
+`wss://<host>/machines/api/link` (`Authorization: Bearer <token>`; no inbound port): reconnects 2 s → 60 s,
+lost after 60 s silence (the server pings every 10 s); a 401/403 on the upgrade or `{t:"revoked"}` deletes
+the token.
+
+| File | What |
+|---|---|
+| `machine/mod.rs` | The controller: link messages, start / stop, questions → cards, the hands' Host, the Settings and pill commands, the lib.rs hooks |
+| `machine/lease.rs` | The lease (pure): start / extend (≤ now + 60 min) / end (idempotent) / tick |
+| `machine/wire.rs` | The messages (pure), ISO times, pairing-code and slug checks |
+| `machine/claude.rs` | Claude Code (pure): where claude.exe is, the arguments, the MCP config, the stream-json conversation |
+| `machine/prompt.rs` | The rules appended to the CLI's system prompt (pure) |
+| `machine/mcp_http.rs` | The hands as MCP over HTTP on 127.0.0.1 (a new 256-bit bearer per lease; parse / auth / dispatch pure) |
+| `machine/runner.rs` | The CLI process: no console, in a Job Object (KILL_ON_JOB_CLOSE) |
+| `machine/link.rs` | The WebSocket thread (tungstenite + rustls, the Windows trust store) |
+| `machine/overlay.rs` | The glowing frame per monitor (`dist/overlay.*`, click-through) and the pill (`dist/pill.*`), both excluded from capture |
+| `machine/cred.rs` | Credential Manager |
+
+**A session.** The server sends `start {slug, name, purpose, model, first_prompt, lease:{id, minutes, expires_at}}`.
+The app starts the lease (minutes preferred over expires_at: a laptop clock that is off cannot shorten it),
+shows the frame and pill, serves the hands (`crate::hands`) on loopback and runs Claude Code headless as
+`moni-ai/bin/mint-session` runs a hired session: `-p --input-format stream-json --output-format stream-json
+--verbose -n <name> [--model] --permission-mode default --permission-prompt-tool stdio --session-id <uuid>
+--strict-mcp-config --mcp-config <only mint-hands> --allowedTools <the hands' tools> --add-dir Desktop,
+Downloads, Pictures --append-system-prompt <rules>`, cwd Documents, files in Documents\MINT AI; never
+bypassPermissions or --dangerously-*. Git Bash missing → `CLAUDE_CODE_USE_POWERSHELL_TOOL=1`. An npm
+`claude.cmd` is run as `node …\cli.js`. The user signs in to Claude Code themselves; the app never touches
+those credentials.
+Every `can_use_tool` becomes `{t:"ask", origin:"cli"}` (denied at once without a lease or link; 10 min
+timeout); the hands' own approvals are `origin:"hands"`; `result` → `{t:"report"}`; every non-hands tool →
+`{t:"action"}`. app → server also: `hello {app_version, platform, host, user, home, claude}`, `lease`,
+`cancel`, `session`. Messages queued while the link is down (except questions) go after the next `hello`.
+
+**It stops** — the CLI's whole process tree killed at once, the MCP server closed, open questions denied,
+frame and pill gone, `lease ended` sent — on: the local stop key (default **Ctrl+Alt+Esc**, fallback
+Ctrl+Alt+Shift+Esc, Settings ▸ This computer, handled in the app with no server round trip), the pill's Stop,
+the expiry, the lock screen, sign-out / shutdown / app exit (and if the app dies, the Job Object takes the
+CLI with it), the link down for 30 s, the server's `stop` / `revoked`, unlinking, the CLI exiting. A second
+`start` while one runs is answered `session failed "already under control"`. **The site cannot start any of
+this**: nothing machine_* is in `capabilities/remote.json`; the Settings commands are in `local.json`, the
+pill's three in `overlay.json` (window `mint-pill` only).
+
+Not in this build: the screen / mouse / keyboard / UIA / browser hands (`hands::tool_defs()` offers only
+create_document, wait, request_approval), so the action log has no screenshots yet.
+
 ## Server side (dashboard)
 
 - `/mint-ai?shell=desktop` — the render mode. `lib/views-moniai.js` (`shell: "desktop"`),
@@ -90,7 +141,7 @@ for d in *.deb; do dpkg -x "$d" ../root; done
 
 desktop/tools/build-windows.sh --feed /tmp/mint-feed      # signed installer + update feed
 node desktop/tools/test-feed.cjs                          # the feed tool
-(cd desktop/core-tests && cargo test)                     # the app's pure modules (45 tests)
+(cd desktop/core-tests && cargo test)                     # the app's pure modules (80 tests)
 ```
 
 The installer: `src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/MINT AI_<version>_x64-setup.exe`
@@ -142,7 +193,7 @@ minisign signature, not the Authenticode one).
 
 ## Limits and what is not verified yet
 
-- Built and unit-tested on Linux only (`core-tests`: 45 tests of the pure modules; the dashboard's
+- Built and unit-tested on Linux only (`core-tests`: 80 tests of the pure modules; the dashboard's
   `test-desktop-shell.cjs` renders the page in headless Chromium). Everything Windows-specific —
   transparency and WebGL in WebView2, click-through, always-on-bottom and Win+D, WorkerW, global
   hotkeys and key-up, toasts, Windows Hello inside WebView2, DPI, the installer — is on

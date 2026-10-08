@@ -120,3 +120,50 @@ Note `winver` (build). Settings ▸ Behaviour ▸ "Real blur behind cards" is on
 - [ ] A link to another site inside the Command Center opens in the browser, never in the app.
 - [ ] `%APPDATA%\com.mint-stack.mint-desktop\settings.json` holds no password, token or key.
 - [ ] The installer and `MINT AI.exe` are both signed (Properties ▸ Digital Signatures).
+
+## 12. Laptop control ("This computer", Path A)
+Prerequisite: the server side (Mint OS ▸ Machines, `/machines/api/claim`, `/machines/api/link`) is deployed;
+Claude Code is installed on the laptop and signed in once (`claude` in a terminal).
+
+Pairing
+- [ ] Settings ▸ This computer reads "Not linked."; the name field is pre-filled with the computer name.
+- [ ] Mint OS shows a code; type it as `abcd-efgh` (lower case, with the dash) ▸ Link → "Linked as <name> to os.mint-stack.com · online" within ~2 s.
+- [ ] A wrong code / an expired code / several quick wrong tries: the messages for 404 / 410 / 429.
+- [ ] Credential Manager (Control Panel ▸ Credential Manager ▸ Windows Credentials ▸ Generic): "MINT AI machine token (os.mint-stack.com)" exists. `settings.json`, the app log and the Settings page hold no token.
+- [ ] Quit and restart the app: it comes back linked and online without asking.
+- [ ] Revoke the computer in Mint OS: within seconds the app reads "Not linked" and the credential is gone.
+- [ ] Unlink (press twice) in Settings: credential gone, Mint OS shows it offline.
+- [ ] Wi-Fi off: "offline, reconnecting"; on: online again within 2–60 s (backoff). A corporate TLS proxy, if any: the link uses the Windows trust store.
+
+Claude Code
+- [ ] Settings ▸ Claude Code shows the path (`%USERPROFILE%\.local\bin\claude.exe` for the native install, or npm's) and the version; note whether Git Bash was found.
+- [ ] Rename claude.exe away ▸ Look again → "Not found — install Claude Code…"; put it back ▸ Look again.
+- [ ] npm install only (`npm i -g @anthropic-ai/claude-code`): found as `…\npm\claude.cmd`; a session starts (the app runs `node …\cli.js` directly; if cli.js is not there it runs the .cmd — check that the long --mcp-config / --append-system-prompt arguments get through).
+- [ ] No Git Bash installed: a session still starts (CLAUDE_CODE_USE_POWERSHELL_TOOL=1).
+- [ ] The CLI answers the `initialize` control request (a session that never says "running" means this CLI version does not).
+
+A session
+- [ ] Ask MINT AI to take over the laptop: a glowing green frame round **every** monitor, the pill at the top centre of the primary one ("MINT AI is controlling · mm:ss left · +15 min · Stop · Ctrl+Alt+Esc"); the time counts down.
+- [ ] The frame never takes a click (click and type through it everywhere, edges included); the pill's buttons take clicks **without** taking the focus from the window in front (type in Notepad, click +15 min, keep typing: the text still goes to Notepad).
+- [ ] Win+Shift+S / Snipping Tool / a Teams screen share: the frame and the pill are **not** in the capture.
+- [ ] Task Manager ▸ Details: `claude.exe` (or node.exe) runs under MINT AI.exe, no console window appears.
+- [ ] The first message arrives; a tool that needs approval (e.g. a PowerShell command) shows a card in Mint OS; Approve → it runs; Deny → Claude says it was denied and does not retry. Leave a card 10 min: it is denied by itself.
+- [ ] "Make a Word document with …": the .docx lands in `Documents\MINT AI`. The action log in Mint OS lists the steps (no screenshots yet: the screen hands are not in this build).
+- [ ] The final text of each turn reaches MINT AI; a follow-up from MINT AI ("tell") reaches the same session.
+- [ ] +15 min: the time jumps by 15 min (never past 60 min from now); Mint OS shows the new expiry.
+
+Every way it must stop (each time: frame and pill vanish at once, claude.exe and all its children are gone within a second, Mint OS shows the lease ended with this reason)
+- [ ] Ctrl+Alt+Esc (stop-hotkey), also while another app is in front and while a tool is running.
+- [ ] The pill's Stop (pill-stop).
+- [ ] Let it run out (timeout).
+- [ ] Win+L (locked).
+- [ ] Wi-Fi off for more than 30 s (link-lost; Mint OS learns of it after the reconnect). Off for less than 30 s: the session goes on, but open approval questions are denied.
+- [ ] Stop from Mint OS (server); revoke from Mint OS (unlinked).
+- [ ] Tray ▸ Quit (app-exit); end MINT AI.exe in Task Manager: claude.exe dies with it (the Job Object).
+- [ ] Sign out of Windows / restart during a session (signout): nothing of the session survives.
+- [ ] Unlink in Settings during a session (unlinked).
+- [ ] A second takeover while one runs: Mint OS says "already under control".
+
+Stop key
+- [ ] Another app holding Ctrl+Alt+Esc: a toast says Ctrl+Alt+Shift+Esc is used, and it works.
+- [ ] Remap the stop key in Settings ▸ Save (Default puts it back); Esc only with Ctrl+Alt; it may not equal another MINT AI hotkey. (The current stop key cannot be recorded in its own box: the app holds it.)
