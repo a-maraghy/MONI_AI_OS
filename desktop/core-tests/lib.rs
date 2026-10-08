@@ -4,6 +4,8 @@
 pub mod log;
 #[path = "../src-tauri/src/hit.rs"]
 pub mod hit;
+#[path = "../src-tauri/src/blur.rs"]
+pub mod blur;
 #[path = "../src-tauri/src/layout.rs"]
 pub mod layout;
 #[path = "../src-tauri/src/platform.rs"]

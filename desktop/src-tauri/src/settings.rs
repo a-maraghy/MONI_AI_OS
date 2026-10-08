@@ -77,6 +77,8 @@ pub struct Settings {
     pub do_not_disturb: bool,
     /// Lower frame rate / still core on battery and during full-screen apps.
     pub battery_saver: bool,
+    /// Real blur (acrylic) behind the cards, pills and panels (blur.rs, acrylic.rs); off: the tinted look.
+    pub real_blur: bool,
     pub autostart: bool,
     /// The monitor MINT AI lives on (its name); empty = the primary.
     pub monitor: String,
@@ -96,6 +98,7 @@ impl Default for Settings {
             hotkeys: Hotkeys::default(),
             do_not_disturb: false,
             battery_saver: true,
+            real_blur: true,
             autostart: true,
             monitor: String::new(),
             per_monitor: BTreeMap::new(),
@@ -228,6 +231,7 @@ mod tests {
         assert_eq!(s.hotkeys.focus, "Ctrl+Alt+F");
         assert_eq!(s.hotkeys.live, "Ctrl+Alt+L");
         assert!(!s.experimental_behind_icons);
+        assert!(s.real_blur, "real blur behind the cards is on by default");
         assert_eq!(s.monitor_prefs("any").corner, Corner::Br);
         assert_eq!(s.monitor_prefs("any").opacity, 100);
     }
@@ -279,6 +283,13 @@ mod tests {
         assert!(!origin_ok("https://user:pw@os.mint-stack.com"));
         assert!(!origin_ok("https://os.mint-stack.com/mint-ai"));
         assert!(!origin_ok("file:///c:/x"));
+    }
+
+    #[test]
+    fn real_blur_setting() {
+        // A settings file from 0.1.4 (no "real_blur") gets it on; an explicit off stays off.
+        assert!(Settings::from_json(r#"{"mode":"floating"}"#).real_blur);
+        assert!(!Settings::from_json(r#"{"real_blur":false}"#).real_blur);
     }
 
     #[test]

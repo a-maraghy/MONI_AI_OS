@@ -68,6 +68,30 @@ const near = (a, b, e) => Math.abs(a - b) <= (e || 0.5);
     check("  the app's own sizes (desktop/src-tauri/src/layout.rs) are the same: 480 x 580, 168, headroom 280, S/M/L", /BOX_W:\s*f64\s*=\s*480\.0/.test(rs) && /BOX_H:\s*f64\s*=\s*580\.0/.test(rs) && /FOCUS:\s*f64\s*=\s*168\.0/.test(rs) && /HEADROOM:\s*f64\s*=\s*280\.0/.test(rs) && /0\.8/.test(rs) && /1\.22/.test(rs));
   }
 
+  section("real blur: which glass surfaces the page reports (MintDesktopLayout.glass)");
+  {
+    const S = LAY.GLASS_SETTLE_MS;
+    const panel = { key: "g1", x: 14.2, y: 400, w: 452, h: 446, r: 18 };
+    let g = LAY.glass(null, [panel], 1000);
+    check("a surface seen once is not reported yet (it may still be sliding in)", g.rects.length === 0 && g.keys.length === 0);
+    g = LAY.glass(g.state, [panel], 1000 + S);
+    check("  the same rectangle again, settle time later: reported, rounded to half pixels", g.rects.length === 1 && g.keys[0] === "g1" && g.rects[0].x === 14 && g.rects[0].w === 452 && g.rects[0].r === 18, JSON.stringify(g.rects));
+    const moved = { ...panel, y: 396 };
+    g = LAY.glass(g.state, [moved], 1000 + 2 * S);
+    check("  it moves: dropped at once, back once it holds still", g.rects.length === 0 && LAY.glass(g.state, [moved], 1000 + 3 * S).rects.length === 1);
+    g = LAY.glass(LAY.glass(LAY.glass(null, [panel], 0).state, [panel], S).state, [], 2 * S);
+    check("  it goes: dropped at once (no blur outlives its card)", g.rects.length === 0 && Object.keys(g.state.seen).length === 0);
+    const pill = LAY.glass(LAY.glass(null, [{ key: "p", x: 0, y: 0, w: 90, h: 24, r: 999 }, { key: "z", x: 0, y: 0, w: 0, h: 10 }], 0).state, [{ key: "p", x: 0, y: 0, w: 90, h: 24, r: 999 }], S);
+    check("  a radius past half the side is half the side (a pill); empty boxes are never reported", pill.rects.length === 1 && pill.rects[0].r === 12, JSON.stringify(pill.rects));
+    const D = path.join(ROOT, "..", "desktop", "src-tauri");
+    const remote = fs.readFileSync(path.join(D, "capabilities", "remote.json"), "utf8");
+    const lib = fs.readFileSync(path.join(D, "src", "lib.rs"), "utf8");
+    const acr = fs.readFileSync(path.join(D, "src", "acrylic.rs"), "utf8");
+    check("the app: set_blur_rects is a command the site may call; it only stores rectangles (no window, no file)", /"allow-set-blur-rects"/.test(remote) && /"set_blur_rects"/.test(fs.readFileSync(path.join(D, "build.rs"), "utf8")) && /fn set_blur_rects\(rects: Vec<Region>, dpr: f64\) \{\s*acrylic::set_rects\(rects, dpr\);\s*\}/.test(lib));
+    check("  the acrylic windows never take the focus or a click, follow the main window by its own messages (no polling), and use the accent that stays blurred when inactive", /WS_EX_TOOLWINDOW \| WS_EX_NOACTIVATE/.test(acr) && /MA_NOACTIVATE/.test(acr) && /WM_WINDOWPOSCHANGED/.test(acr) && /SetWindowSubclass/.test(acr) && /state: if on \{ 4 \}/.test(acr) && !/thread::sleep/.test(acr));
+    check("  the page's glass flag comes from page_state (so the page and the native blur never disagree); the setting is on by default", /glass: blur_glass\(a, pm\.opacity\)/.test(lib) && /real_blur: true/.test(fs.readFileSync(path.join(D, "src", "settings.rs"), "utf8")));
+  }
+
   section("lib/desktop.js: the app's user agent, session length, one-time codes");
   {
     check("the app is told from a browser by MintDesktop/<version> only", DK.appVersion({ headers: { "user-agent": APP_UA } }) === "0.1.0" && !DK.isApp({ headers: { "user-agent": WEB_UA } }) && !DK.isApp({ headers: { "user-agent": "MintDesktop/x" } }));
@@ -519,6 +543,47 @@ const near = (a, b, e) => Math.abs(a - b) <= (e || 0.5);
         check("  over a warm hold-to-talk call: that call ends, a live one starts", JSON.stringify(c2) === JSON.stringify(["end:button", "start"]), JSON.stringify(c2));
         await ctx.close();
       }
+      // Real blur: the page reports its settled glass surfaces, takes the lighter tint only once reported,
+      // drops them at once when they go, and reports nothing while the app draws no blur.
+      for (const glassOn of [true, false]) {
+        const ctx = await browser.newContext({ viewport: { width: 480, height: 860 }, userAgent: APP_UA, extraHTTPHeaders: { "X-Forwarded-Proto": "https" } });
+        await ctx.addCookies(String(A.cookie).split("; ").filter(Boolean).map((kv) => ({ name: kv.split("=")[0], value: kv.slice(kv.indexOf("=") + 1), url: "http://127.0.0.1:" + s.port })));
+        await ctx.addInitScript((on) => {
+          const L = {};
+          window.__blur = [];
+          window.__emit = (n, p) => (L[n] || []).forEach((f) => f({ payload: p }));
+          window.__TAURI__ = { core: { invoke: (cmd, args) => {
+            if (cmd === "set_blur_rects") window.__blur.push(JSON.parse(JSON.stringify(args.rects)));
+            return Promise.resolve(cmd === "get_state" ? { mode: "floating", size: "M", liveKey: "Ctrl+Alt+L", talkKey: "Ctrl+Space", glass: on } : null);
+          } }, event: { listen: (n, f) => { (L[n] = L[n] || []).push(f); return Promise.resolve(() => {}); } } };
+        }, glassOn);
+        const page = await ctx.newPage();
+        const perrs = [];
+        page.on("pageerror", (e) => perrs.push(e.message));
+        await page.goto("http://127.0.0.1:" + s.port + "/mint-ai?shell=desktop", { waitUntil: "load" });
+        await page.waitForTimeout(700);
+        await page.click("#dk-chatbtn");
+        await page.waitForTimeout(700);
+        const open = await page.evaluate(() => {
+          const p = document.getElementById("dk-panel"), r = p.getBoundingClientRect(), last = window.__blur[window.__blur.length - 1] || [];
+          const inside = (g) => window.MintDesktop.regions().some((h) => g.x >= h.x - 1 && g.y >= h.y - 1 && g.x + g.w <= h.x + h.w + 1 && g.y + g.h <= h.y + h.h + 1);
+          return { acrylic: document.documentElement.classList.contains("dk-acrylic"), mark: p.getAttribute("data-dk-glass"), bg: getComputedStyle(p).backgroundColor, panel: last.some((g) => Math.abs(g.x - r.left) <= 0.5 && Math.abs(g.y - r.top) <= 0.5 && Math.abs(g.w - r.width) <= 0.5 && g.r > 10), pill: last.some((g) => g.h < 40 && g.r >= g.h / 2 - 1), all: last.every(inside), n: last.length, sends: window.__blur.length };
+        });
+        await page.click("#dk-panel-x");
+        await page.waitForTimeout(150);
+        const closed = await page.evaluate(() => { const last = window.__blur[window.__blur.length - 1] || []; const r = document.getElementById("dk-chatbtn").getBoundingClientRect(); return { mark: document.getElementById("dk-panel").getAttribute("data-dk-glass"), panelGone: !last.some((g) => g.h > 200), sends: window.__blur.length }; });
+        await page.waitForTimeout(600);
+        const idle = await page.evaluate(() => window.__blur.length);
+        if (glassOn) {
+          check("real blur on: the open chat panel and the state pill are reported (the panel's own rectangle and radius), each inside a hit region; the panel takes the glass tint", open.acrylic && open.mark === "card" && open.panel && open.pill && open.all && /rgba\(16, 18, 40, 0\.7\)/.test(open.bg), JSON.stringify(open));
+          check("  closing the panel drops its blur at once (nothing in the next report) and its glass tint", closed.mark === null && closed.panelGone);
+          check("  nothing is sent while nothing changes (no per-frame reports)", idle === closed.sends, idle + " vs " + closed.sends);
+        } else {
+          check("real blur off (old Windows, setting off): nothing is reported, the panel keeps its solid tint", !open.acrylic && open.mark === null && open.n === 0 && /0\.92/.test(open.bg), JSON.stringify(open));
+        }
+        check("  no page errors", perrs.length === 0, perrs.join(" / "));
+        await ctx.close();
+      }
       // The app's Settings window (desktop/dist/settings.html), with the app's commands stood in for.
       {
         const D = path.join(ROOT, "..", "desktop");
@@ -528,7 +593,7 @@ const near = (a, b, e) => Math.abs(a - b) <= (e || 0.5);
           window.__inv = [];
           window.__TAURI__ = { core: { invoke: (cmd, args) => {
             window.__inv.push({ cmd, args: args ? JSON.parse(JSON.stringify(args)) : null });
-            if (cmd === "settings_get") return Promise.resolve({ settings: JSON.parse(JSON.stringify(window.__saved || settings)), version: "0.1.4", talkKey: "Ctrl+Space", talkFallback: false, liveKey: "Ctrl+Alt+L", liveFallback: false, monitors: [], monitorKey: "A", update: null });
+            if (cmd === "settings_get") return Promise.resolve({ settings: JSON.parse(JSON.stringify(window.__saved || settings)), version: "0.1.4", talkKey: "Ctrl+Space", talkFallback: false, liveKey: "Ctrl+Alt+L", liveFallback: false, monitors: [], monitorKey: "A", update: null, blurNote: window.__blurNote || null });
             if (cmd === "settings_set") { window.__saved = args.value; return Promise.resolve(null); }
             return Promise.resolve(null);
           } } };
@@ -569,6 +634,13 @@ const near = (a, b, e) => Math.abs(a - b) <= (e || 0.5);
         await page.evaluate(() => (window.__inv.length = 0));
         await page.click("#upd");
         check("  Check for updates asks the app (settings_check_update)", (await inv()).includes("settings_check_update"));
+        const blur0 = await page.evaluate(() => document.getElementById("blur").checked);
+        await page.evaluate(() => { window.__blurNote = "Windows' transparency effects are off (Settings ▸ Personalization ▸ Colours): the tinted look is used."; });
+        await page.click("#blur");
+        await page.click("#save");
+        await page.waitForTimeout(150);
+        const sb = await page.evaluate(() => ({ v: (window.__inv.filter((x) => x.cmd === "settings_set").pop() || {}).args, note: document.getElementById("blur-note").textContent, warn: document.getElementById("blur-note").classList.contains("warn") }));
+        check("  'Real blur behind cards': on by default (a file without it), unticked and saved as real_blur false; the app's reason it cannot blur shows under it", blur0 === true && sb.v && sb.v.value.real_blur === false && /transparency effects are off/.test(sb.note) && sb.warn, JSON.stringify(sb));
         check("  no page errors", perrs.length === 0, perrs.join(" / "));
         await ctx.close();
         const local = JSON.parse(fs.readFileSync(path.join(D, "src-tauri", "capabilities", "local.json"), "utf8"));

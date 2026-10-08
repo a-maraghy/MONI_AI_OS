@@ -21,6 +21,8 @@
 
 #[macro_use]
 pub mod log;
+pub mod acrylic;
+pub mod blur;
 pub mod hit;
 pub mod layout;
 pub mod platform;
@@ -115,6 +117,8 @@ struct PageState {
     live_key: String,
     hidden: bool,
     focus_composer: bool,
+    /// Real blur is drawn behind the page's glass surfaces: the page uses its lighter glass tints (blur.rs).
+    glass: bool,
 }
 
 fn page_state(a: &App, monitor: &str, focus_composer: bool) -> PageState {
@@ -143,6 +147,7 @@ fn page_state(a: &App, monitor: &str, focus_composer: bool) -> PageState {
         live_key: a.live_key.clone(),
         hidden: a.hidden,
         focus_composer,
+        glass: blur_glass(a, pm.opacity),
     }
 }
 
@@ -847,6 +852,7 @@ fn start_drag(window: WebviewWindow, shared: State<'_, Shared>) {
         return;
     }
     shared.lock().unwrap().dragging = Some(Instant::now());
+    acrylic::set_dragging(true);
     let _ = window.start_dragging();
 }
 
@@ -981,6 +987,8 @@ struct SettingsView {
     /// The per-monitor key of the monitor MINT AI is on now (size, corner, opacity are kept per monitor).
     monitor_key: String,
     update: Option<String>,
+    /// Why real blur cannot be drawn on this computer (None: it can).
+    blur_note: Option<&'static str>,
 }
 
 #[tauri::command]
@@ -998,6 +1006,7 @@ fn settings_get(app: AppHandle, shared: State<'_, Shared>) -> SettingsView {
         monitors,
         monitor_key,
         update: a.update.clone(),
+        blur_note: blur_note(),
     }
 }
 
@@ -1046,6 +1055,72 @@ fn set_autostart(app: &AppHandle, on: bool) {
     } else if !on && now {
         let _ = al.disable();
     }
+}
+
+/* ------------------------------------------------- real blur (acrylic.rs)
+   The only places the rest of the app touches real blur: the page's glass flag (page_state), its
+   rectangles (set_blur_rects), drag start / end, the environment loop's re-read of what Windows
+   allows, and this setup. Everything else is acrylic.rs (native) and blur.rs (pure). */
+
+static BLUR_APP: std::sync::OnceLock<AppHandle> = std::sync::OnceLock::new();
+
+/// The page's glass flag -- and acrylic.rs is told the same, so the page's look and the native blur
+/// never disagree (every state the page sees comes through page_state).
+fn blur_glass(a: &App, opacity: u8) -> bool {
+    // Behind the icons, or about to be (apply asks for the state before it moves the window there).
+    let behind = a.behind_icons || (a.settings.mode == Mode::Desktop && a.settings.experimental_behind_icons && !a.peek_open);
+    let glass = acrylic::live() && blur::page_glass(a.settings.real_blur, &acrylic::system(), opacity, behind);
+    acrylic::set_glass(glass, a.ink == Ink::Light);
+    glass
+}
+
+fn blur_note() -> Option<&'static str> {
+    if !cfg!(windows) {
+        return Some("Real blur is drawn on Windows only.");
+    }
+    if !acrylic::live() {
+        return Some("Real blur could not start on this computer: the tinted look is used.");
+    }
+    blur::unavailable(&acrylic::system())
+}
+
+/// The page's glass surfaces, in CSS px, settled (not moving), only when they change.
+#[tauri::command]
+fn set_blur_rects(rects: Vec<Region>, dpr: f64) {
+    acrylic::set_rects(rects, dpr);
+}
+
+fn blur_init(app: &AppHandle, w: &WebviewWindow) {
+    let _ = BLUR_APP.set(app.clone());
+    acrylic::init(hwnd(w), blur_cursor, blur_system_changed);
+}
+
+/// The cursor reached a blur window before the click-through loop noticed: the main window catches the
+/// mouse now (main thread, from the blur window's hit test; never waits on the lock).
+fn blur_cursor() {
+    let Some(app) = BLUR_APP.get() else { return };
+    let shared = app.state::<Shared>().inner().clone();
+    {
+        let Ok(mut a) = shared.try_lock() else { return };
+        if a.ignoring != Some(true) || a.behind_icons {
+            return;
+        }
+        a.ignoring = Some(false);
+    }
+    if let Some(w) = main_window(app) {
+        let _ = w.set_ignore_cursor_events(false);
+    }
+}
+
+/// Transparency effects or high contrast switched in Windows: the page changes look at once.
+fn blur_system_changed() {
+    let Some(app) = BLUR_APP.get() else { return };
+    let sh = app.state::<Shared>().inner().clone();
+    on_main(app, move |app| {
+        let key = current_monitor_key(app, &sh);
+        let payload = page_state(&sh.lock().unwrap(), &key, false);
+        let _ = app.emit_to(MAIN, "mint://state", payload);
+    });
 }
 
 /* ------------------------------------------------------------- the loops */
@@ -1124,6 +1199,7 @@ fn snap(app: &AppHandle, shared: &Shared, w: &WebviewWindow) {
         (Ok(p), Ok(s)) => (p, s),
         _ => {
             shared.lock().unwrap().dragging = None;
+            acrylic::set_dragging(false);
             return;
         }
     };
@@ -1142,6 +1218,7 @@ fn snap(app: &AppHandle, shared: &Shared, w: &WebviewWindow) {
             a.settings.monitor = name;
         }
     }
+    acrylic::set_dragging(false);
     save(shared);
     apply(app, shared, false);
 }
@@ -1176,6 +1253,10 @@ fn env_loop(app: AppHandle, shared: Shared) {
             None
         };
         let mut stuck = false;
+        // Real blur: what Windows allows (transparency effects, high contrast), every 5 s.
+        if tick % 5 == 3 && acrylic::refresh_system().1 {
+            repaint = true;
+        }
         {
             let mut a = shared.lock().unwrap();
             a.seen.fullscreen = fullscreen;
@@ -1368,6 +1449,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_state,
             set_hit_regions,
+            set_blur_rects,
             set_status,
             needs_you,
             hide_peek,
@@ -1492,6 +1574,7 @@ pub fn run() {
                 .build()?;
             let _ = w.set_ignore_cursor_events(true);
             shared.lock().unwrap().ignoring = Some(true);
+            blur_init(&handle, &w);
 
             // A dragged Floating box: note each move (hit_loop snaps it when the moves stop).
             let sh = shared.clone();

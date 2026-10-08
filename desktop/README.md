@@ -16,13 +16,15 @@ Command Center reaches the app without a new release. Sign-in is the site's: pas
 | `lib.rs` | The window, the three modes, tray and menu, hotkeys, toasts, the click-through and environment loops, updates, the commands the page may call |
 | `layout.rs` | Window geometry per mode, size (S/M/L), corner, monitor and DPI; corner snapping after a drag |
 | `hit.rs` | Per-pixel click-through: is the cursor on a region the page reported (rounded rectangles / circles)? |
+| `blur.rs` | Real blur behind the cards (pure): when it is drawn (setting, Windows build, transparency effects, high contrast, opacity, dragging, scale), where each acrylic window goes, the pool's next state |
+| `acrylic.rs` | Real blur, Windows only: a pool of small borderless acrylic windows (the accent of SetWindowCompositionAttribute) right under the main window, one per glass surface the page reports, rounded like the CSS, following the main window through its own messages; never focused or clicked |
 | `settings.rs` | The app's settings file (`%APPDATA%\com.mint-stack.mint-desktop\settings.json`), hotkey validation |
 | `policy.rs` | When a toast is shown (only when MINT AI cannot be seen; never in Do not disturb), the tray dot, when the core holds still |
 | `signin.rs` | "Sign in in your browser": PKCE verifier/challenge and the loopback listener for the one-time code |
 | `platform.rs` | Windows only: what is in front, full-screen apps, power, lock screen, wallpaper brightness (ink), the WorkerW layer |
 | `trayicon.rs` | The tray icon's status dot |
 | `site.rs` | The user agent (`… MintDesktop/<version>`) and the "stay on the site" rule |
-| `capabilities/remote.json` | The **only** commands the site may call: hit regions, status, needs-you toast, hide Peek, drag, the box's tools, open the full Command Center, start the browser sign-in, events. Nothing that runs a program, reads a file or changes settings |
+| `capabilities/remote.json` | The **only** commands the site may call: hit regions, glass surfaces (real blur), status, needs-you toast, hide Peek, drag, the box's tools, open the full Command Center, start the browser sign-in, events. Nothing that runs a program, reads a file or changes settings |
 | `capabilities/local.json` | The app's own pages (`dist/`): the connecting/offline card and the Settings window |
 
 `dist/index.html` is the first thing the window shows: "Connecting…" / "Offline — retrying in N s"; it
@@ -88,7 +90,7 @@ for d in *.deb; do dpkg -x "$d" ../root; done
 
 desktop/tools/build-windows.sh --feed /tmp/mint-feed      # signed installer + update feed
 node desktop/tools/test-feed.cjs                          # the feed tool
-(cd desktop/core-tests && cargo test)                     # the app's pure modules (33 tests)
+(cd desktop/core-tests && cargo test)                     # the app's pure modules (45 tests)
 ```
 
 The installer: `src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/MINT AI_<version>_x64-setup.exe`
@@ -140,7 +142,7 @@ minisign signature, not the Authenticode one).
 
 ## Limits and what is not verified yet
 
-- Built and unit-tested on Linux only (`core-tests`: 33 tests of the pure modules; the dashboard's
+- Built and unit-tested on Linux only (`core-tests`: 45 tests of the pure modules; the dashboard's
   `test-desktop-shell.cjs` renders the page in headless Chromium). Everything Windows-specific —
   transparency and WebGL in WebView2, click-through, always-on-bottom and Win+D, WorkerW, global
   hotkeys and key-up, toasts, Windows Hello inside WebView2, DPI, the installer — is on
@@ -148,7 +150,13 @@ minisign signature, not the Authenticode one).
 - Settings `origin` exists for a test server, but the page's bridge (capabilities/remote.json) is granted
   to https://os.mint-stack.com only; another origin loads without the bridge (no click-through info,
   no hotkeys into the page).
-- Acrylic (real blur) is not built (the design chose tinted pills). Arabic/RTL and screen-reader
-  behaviour of the desktop mode are not designed yet (as in the design).
+- Real blur (acrylic, 2026-10-08): the page reports its settled glass surfaces (`set_blur_rects`: the chat
+  panel, the state pill, the chat / live buttons, the box's tools, menus, dialogs, the sign-in and offline
+  cards, the approval card) and the app puts a native acrylic window under each (`blur.rs`, `acrylic.rs`);
+  they take a lighter tint only once their blur is there. Windows 10 1809+ and Windows 11 alike (the accent
+  API: Windows 11's system backdrop goes flat on windows that are never active). Off, unsupported, with
+  transparency effects off, high contrast or opacity under 70 %: the tinted look. The session-name pills
+  stay tinted (they move with their spheres). Unverified on real Windows: checklist 9b. Arabic/RTL and
+  screen-reader behaviour of the desktop mode are not designed yet (as in the design).
 - The talk key's release is Windows' `GetAsyncKeyState` poll (global-hotkey, every 50 ms) on the main
   key; releasing only Ctrl while still holding Space keeps talking until Space is released.
