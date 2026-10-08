@@ -68,7 +68,7 @@ the token.
 
 | File | What |
 |---|---|
-| `machine/mod.rs` | The controller: link messages, start / stop, questions → cards, the hands' Host, the Settings and pill commands, the lib.rs hooks |
+| `machine/mod.rs` | The controller: link messages, start / stop, questions → cards, the hands' Host, the Settings commands, the pill's view / +15 / Stop, the lib.rs hooks |
 | `machine/lease.rs` | The lease (pure): start / extend (≤ now + 60 min) / end (idempotent) / tick |
 | `machine/wire.rs` | The messages (pure), ISO times, pairing-code and slug checks |
 | `machine/claude.rs` | Claude Code (pure): where claude.exe is, the arguments, the MCP config, the stream-json conversation |
@@ -76,7 +76,8 @@ the token.
 | `machine/mcp_http.rs` | The hands as MCP over HTTP on 127.0.0.1 (a new 256-bit bearer per lease; parse / auth / dispatch pure) |
 | `machine/runner.rs` | The CLI process: no console, in a Job Object (KILL_ON_JOB_CLOSE) |
 | `machine/link.rs` | The WebSocket thread (tungstenite + rustls, the Windows trust store) |
-| `machine/overlay.rs` | The glowing frame per monitor (`dist/overlay.*`, click-through) and the pill (`dist/pill.*`), both excluded from capture |
+| `machine/overlay.rs` | The glowing frame (four thin click-through edge strips per monitor) and the pill (its own rounded shape, click-through; +15 min and Stop as two small windows), all plain Win32 layered windows drawn by the app before they show (no WebView2 since 0.1.7: 0.1.6's showed a white block), excluded from capture; logs each window's place |
+| `machine/overlay_layout.rs` | Pure: the strips, the pill's layout at any scale, the shading (unit-tested in core-tests) |
 | `machine/cred.rs` | Credential Manager |
 
 **A session.** The server sends `start {slug, name, purpose, model, first_prompt, lease:{id, minutes, expires_at}}`.
@@ -112,8 +113,15 @@ again (or a take-over's re-check) finds it changed; Mint OS shows it on the Comp
 take-over up front while it says not found. Lease ids may arrive as strings or whole numbers. The server
 also ends a start the app has not acknowledged (`lease active` / `session starting`) within 60 s ("the
 computer did not start the session"). **The site cannot start any of
-this**: nothing machine_* is in `capabilities/remote.json`; the Settings commands are in `local.json`, the
-pill's three in `overlay.json` (window `mint-pill` only).
+this**: nothing machine_* is in `capabilities/remote.json`; the Settings commands are in `local.json`. The
+pill is native (no page, no commands): its buttons call the controller directly.
+
+**Asked once (0.1.7):** request_approval takes `delete_paths` (exact files). Once that card is approved,
+the supervisor (moni-ai/lib/machines.js + machine-gate.js) lets the delete of exactly those files through
+without a second card: this lease only, 5 minutes, each file once, a plain delete (no wildcards, pipes,
+chained commands, -Recurse); anything else is a card as before and refusals still win. An older app's
+one-file summary "Delete the file <path>" counts too. The session is told not to ask first for commands
+that raise their own card.
 
 **What the laptop session can do in this build:** read, write and edit files; run PowerShell and other
 commands; open files and apps with `Start-Process`; create Word / Excel / PowerPoint files with

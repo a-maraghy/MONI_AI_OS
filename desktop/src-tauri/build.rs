@@ -19,14 +19,11 @@ fn main() {
         "settings_set",
         "settings_close",
         "settings_check_update",
-        // Laptop control (machine/): the Settings window's "This computer", and the control pill.
+        // Laptop control (machine/): the Settings window's "This computer" (the control pill is native since 0.1.7).
         "machine_status",
         "machine_link",
         "machine_unlink",
         "machine_claude_check",
-        "machine_pill",
-        "machine_pill_extend",
-        "machine_pill_stop",
     ])))
     .expect("failed to run tauri-build");
 }

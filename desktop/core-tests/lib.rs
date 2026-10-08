@@ -31,6 +31,8 @@ pub mod machine_wire;
 pub mod machine_mcp_http;
 #[path = "../src-tauri/src/machine/claude.rs"]
 pub mod machine_claude;
+#[path = "../src-tauri/src/machine/overlay_layout.rs"]
+pub mod machine_overlay_layout;
 // Laptop control: the hands' pure parts (risk rules, coordinate / key mapping, document files).
 #[path = "../src-tauri/src/hands/risk.rs"]
 pub mod hands_risk;

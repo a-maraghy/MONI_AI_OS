@@ -1533,9 +1533,7 @@ pub fn run() {
             machine::machine_link,
             machine::machine_unlink,
             machine::machine_claude_check,
-            machine::machine_pill,
-            machine::machine_pill_extend,
-            machine::machine_pill_stop
+
         ])
         .setup(|app| {
             let handle = app.handle().clone();

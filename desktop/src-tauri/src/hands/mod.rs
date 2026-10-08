@@ -41,6 +41,12 @@ pub trait Host: Send + Sync {
     fn lease_active(&self) -> bool;
     /// Raise an approval card in Mint OS and BLOCK until the user answers (or timeout / lease end): true = approved.
     fn approve(&self, tool: &str, summary: &str, why: &str) -> bool;
+    /// request_approval naming files to delete (`delete_paths`): Mint OS then lets the delete of exactly
+    /// those files through without a second card (5 minutes, this lease, each once -- decided on the server).
+    fn approve_deletes(&self, tool: &str, summary: &str, why: &str, delete_paths: &[String]) -> bool {
+        let _ = delete_paths;
+        self.approve(tool, summary, why)
+    }
     /// One action-log entry. decision: "auto" | "approved" | "denied" | "refused" | "error". shot: JPEG bytes, or None.
     fn log_action(&self, tool: &str, summary: &str, decision: &str, shot: Option<Vec<u8>>);
     /// Default folder for created documents (e.g. %USERPROFILE%\Documents\MINT AI).
@@ -186,13 +192,38 @@ fn request_approval(ctx: &Ctx, args: &Value) -> ToolResult {
         return ToolResult::error("Say what you want to do in \"action\".");
     }
     let summary: String = action.chars().take(300).collect();
-    if ctx.host.approve(ctx.tool, &summary, why) {
+    let delete_paths = match delete_paths_of(args) {
+        Ok(p) => p,
+        Err(e) => return ToolResult::error(e),
+    };
+    if ctx.host.approve_deletes(ctx.tool, &summary, why, &delete_paths) {
         ctx.host.log_action(ctx.tool, &summary, "approved", None);
         ToolResult::text("approved")
     } else {
         ctx.host.log_action(ctx.tool, &summary, "denied", None);
         ToolResult::text("denied — the user did not approve; do not do it.")
     }
+}
+
+/// request_approval's optional `delete_paths`: up to 10 file paths, each one line, no wildcards.
+pub fn delete_paths_of(args: &Value) -> Result<Vec<String>, String> {
+    let Some(v) = args.get("delete_paths") else { return Ok(Vec::new()) };
+    if v.is_null() {
+        return Ok(Vec::new());
+    }
+    let Some(list) = v.as_array() else { return Err("delete_paths must be a list of file paths.".into()) };
+    if list.len() > 10 {
+        return Err("delete_paths: at most 10 files per approval.".into());
+    }
+    let mut out = Vec::new();
+    for p in list {
+        let Some(s) = p.as_str().map(str::trim) else { return Err("delete_paths must be a list of file paths.".into()) };
+        if s.is_empty() || s.len() > 400 || s.chars().any(|c| c.is_control() || matches!(c, '*' | '?' | '[' | ']')) {
+            return Err(format!("delete_paths: \"{}\" is not one exact file path (no wildcards).", s.chars().take(80).collect::<String>()));
+        }
+        out.push(s.to_string());
+    }
+    Ok(out)
 }
 
 fn create_document(ctx: &Ctx, args: &Value) -> ToolResult {
@@ -322,13 +353,28 @@ pub fn all_tool_defs() -> Vec<Value> {
             "slides": {"type": "array", "description": "pptx (16:9): [{\"title\": text, \"bullets\": [text, ...], \"notes\": speaker notes}].", "items": {"type": "object", "properties": {"title": {"type": "string"}, "bullets": {"type": "array", "items": {"type": "string"}}, "notes": {"type": "string"}}}},
             "open": {"type": "boolean", "description": "Open it after saving (default true)."}
         }), &["kind"]),
-        def("request_approval", "Ask the user (an approval card in Mint OS) before a consequential step. Returns approved or denied.", json!({"action": {"type": "string", "description": "What you are about to do, in one line."}, "why": {"type": "string"}}), &["action", "why"]),
+        def("request_approval", "Ask the user (an approval card in Mint OS) before a consequential step nothing else asks about (sending, posting, buying ...). Commands that delete or install raise their own card: do not ask first for those. Returns approved or denied.", json!({
+            "action": {"type": "string", "description": "What you are about to do, in one line."},
+            "why": {"type": "string"},
+            "delete_paths": {"type": "array", "maxItems": 10, "items": {"type": "string"}, "description": "Only when the step is deleting files: the exact full path of each file (no wildcards). Once approved, deleting exactly these files within 5 minutes is not asked again."}
+        }), &["action", "why"]),
     ]
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn delete_paths_are_exact_files() {
+        assert_eq!(delete_paths_of(&json!({"action": "x"})).unwrap(), Vec::<String>::new());
+        assert_eq!(delete_paths_of(&json!({"delete_paths": [" C:\\Users\\a\\Documents\\x.xlsx "]})).unwrap(), vec!["C:\\Users\\a\\Documents\\x.xlsx".to_string()]);
+        assert!(delete_paths_of(&json!({"delete_paths": ["C:\\Users\\a\\*.xlsx"]})).is_err(), "wildcard");
+        assert!(delete_paths_of(&json!({"delete_paths": "C:\\x"})).is_err(), "not a list");
+        assert!(delete_paths_of(&json!({"delete_paths": [1]})).is_err());
+        assert!(delete_paths_of(&json!({"delete_paths": vec!["a"; 11]})).is_err(), "too many");
+        assert!(delete_paths_of(&json!({"delete_paths": ["a\nb"]})).is_err(), "one line");
+    }
 
     #[test]
     fn defs_are_well_formed() {

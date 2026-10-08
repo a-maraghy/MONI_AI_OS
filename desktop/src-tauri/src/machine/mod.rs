@@ -24,6 +24,7 @@ pub mod wire;
 mod cred;
 mod link;
 mod overlay;
+pub mod overlay_layout;
 mod runner;
 
 use serde::Serialize;
@@ -491,7 +492,7 @@ impl Ctl {
     }
 
     /// The hands' own approvals (request_approval and the risky steps): blocks until answered.
-    fn approve_blocking(&self, lease_id: &str, slug: &str, tool: &str, summary: &str, why: &str) -> bool {
+    fn approve_blocking(&self, lease_id: &str, slug: &str, tool: &str, summary: &str, why: &str, delete_paths: &[String]) -> bool {
         if !self.lease_active_id(lease_id) || !self.st.lock().unwrap().online {
             return false;
         }
@@ -499,7 +500,12 @@ impl Ctl {
         let (tx, rx) = mpsc::channel();
         self.pending.lock().unwrap().insert(rid.clone(), Pending { tx, cli_request: None });
         let tool = format!("mcp__{}__{}", crate::hands::SERVER_NAME, tool);
-        self.push(wire::ask(&rid, slug, &tool, &json!({ "summary": wire::clip(summary, 2000), "why": wire::clip(why, 2000) }), None, None, "hands"), true);
+        let mut input = json!({ "summary": wire::clip(summary, 2000), "why": wire::clip(why, 2000) });
+        if !delete_paths.is_empty() {
+            // The server decides what these allow (exactly these files, this lease, 5 minutes); the app only passes them on.
+            input["delete_paths"] = json!(delete_paths.iter().take(10).map(|p| wire::clip(p, 400)).collect::<Vec<_>>());
+        }
+        self.push(wire::ask(&rid, slug, &tool, &input, None, None, "hands"), true);
         let a = self.ask_wait(&rid, &rx);
         a.map(|a| a.allow).unwrap_or(false) && self.lease_active_id(lease_id)
     }
@@ -848,7 +854,10 @@ impl crate::hands::Host for MachineHost {
         self.ctl.lease_active_id(&self.lease_id)
     }
     fn approve(&self, tool: &str, summary: &str, why: &str) -> bool {
-        self.ctl.approve_blocking(&self.lease_id, &self.slug, tool, summary, why)
+        self.ctl.approve_blocking(&self.lease_id, &self.slug, tool, summary, why, &[])
+    }
+    fn approve_deletes(&self, tool: &str, summary: &str, why: &str, delete_paths: &[String]) -> bool {
+        self.ctl.approve_blocking(&self.lease_id, &self.slug, tool, summary, why, delete_paths)
     }
     fn log_action(&self, tool: &str, summary: &str, decision: &str, shot: Option<Vec<u8>>) {
         self.ctl.log_action(&self.lease_id, &self.slug, tool, summary, decision, shot);
@@ -999,16 +1008,14 @@ pub async fn machine_claude_check() -> Result<Status, String> {
     Ok(status_of(&c))
 }
 
-/* --------------------------------------------------------- commands: the pill */
+/* ---------------------------------- the pill (overlay.rs draws it natively since 0.1.7) */
 
-#[derive(Serialize)]
 pub struct PillView {
     active: bool,
     left: String,
     stop_key: String,
 }
 
-#[tauri::command]
 pub fn machine_pill() -> PillView {
     let Some(c) = ctl() else { return PillView { active: false, left: String::new(), stop_key: String::new() } };
     let st = c.st.lock().unwrap();
@@ -1016,8 +1023,16 @@ pub fn machine_pill() -> PillView {
     PillView { active: st.lease.active(now), left: lease::mmss(st.lease.remaining_ms(now)), stop_key: st.stop_key.clone() }
 }
 
+/// The same for the pill's own drawing on the main thread: never waits for the state lock (a thread
+/// holding it may be waiting for the main thread), None when it is busy -- that second is skipped.
+pub fn machine_pill_now() -> Option<PillView> {
+    let Some(c) = ctl() else { return Some(PillView { active: false, left: String::new(), stop_key: String::new() }) };
+    let st = c.st.try_lock().ok()?;
+    let now = now_ms();
+    Some(PillView { active: st.lease.active(now), left: lease::mmss(st.lease.remaining_ms(now)), stop_key: st.stop_key.clone() })
+}
+
 /// "+15 min": extended here, then the server is told.
-#[tauri::command]
 pub fn machine_pill_extend() -> PillView {
     if let Some(c) = ctl() {
         let r = {
@@ -1033,7 +1048,6 @@ pub fn machine_pill_extend() -> PillView {
     machine_pill()
 }
 
-#[tauri::command]
 pub fn machine_pill_stop() {
     if let Some(c) = ctl() {
         c.end_lease("pill-stop");

@@ -330,6 +330,13 @@ mod imp {
         }
         let next = &next[..next.len().min(pool.wins.len())];
         let ops = blur::plan(&pool.at, next);
+        // For the laptop check: a line whenever the set of blur windows changes (not when they only follow
+        // the main window in the z-order), with where they are and whether they are topmost.
+        let shown: Vec<Place> = pool.at.iter().flatten().copied().collect();
+        if shown.as_slice() != next || (!next.is_empty() && pool.topmost.iter().take(next.len()).any(|t| *t != topmost)) {
+            let list: Vec<String> = next.iter().map(|p| format!("({}, {}) {}x{}", p.x, p.y, p.w, p.h)).collect();
+            mlog!("acrylic: {} blur window(s){}{}", next.len(), if next.is_empty() { String::new() } else { format!(" at {}", list.join(", ")) }, if topmost { ", topmost" } else { "" });
+        }
         unsafe {
             // Hides first; then every shown one, in order, right under the main window.
             for op in &ops {
