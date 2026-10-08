@@ -109,6 +109,142 @@ function decideCommand(cmd, ctx) {
   return { decision: "allow", category: "command", label: "Command on your computer", reason: null };
 }
 
+/* ------------------------------------------- approved deletes (2026-10-08) --- */
+/*
+ * The laptop session sometimes asks request_approval ("Delete the file X") and
+ * then runs the delete -- which the gate would put on a second card. An
+ * approved request_approval that names files to delete leaves a narrow
+ * allowance on the supervisor (lib/machines.js keeps it: this lease's session
+ * only, 5 minutes, each file once). The gate honours it only for a command
+ * that does nothing but delete exactly those files (and, at most, check them
+ * with Test-Path): one literal path per delete, no wildcards, no variables
+ * other than the profile folder, no pipes, no redirection, no sub-commands,
+ * no -Recurse. Anything else is a card as before; deny rules are checked
+ * first and still win.
+ */
+
+const ALLOWANCE_MS = 5 * 60 * 1000;
+const MAX_ALLOWED_PATHS = 10;
+const DELETE_CMDS = new Set(["remove-item", "ri", "rm", "del", "erase"]);
+const PROFILE_FOLDERS = new Set(["documents", "desktop", "downloads", "pictures", "music", "videos", "onedrive"]);
+const WILDCARD = /[*?[\]]/;
+
+/** Expand the profile-folder spellings and normalise against `base` when relative; null unless absolute. */
+function absPath(p, home, base) {
+  const raw = String(p || "").trim().replace(/^["']|["']$/g, "");
+  if (!raw || !home || WILDCARD.test(raw)) return null;
+  let n = normPath(raw, home);
+  if (/[$%]/.test(n)) return null; // a variable other than the profile folder: its value is unknown here
+  if (!/^[a-z]:\\|^\\\\/.test(n)) n = normPath(base + "\\" + raw, home);
+  return /^[a-z]:\\./.test(n) ? n : null;
+}
+
+/**
+ * A file an approval names, resolved as a person reads it: absolute, or under the profile
+ * ("Documents\MINT AI\x.xlsx", "~\Desktop\a.txt"), else under Documents (the session's folder).
+ * null unless it is one of the user's own files.
+ */
+function approvalPath(p, home) {
+  const raw = String(p || "").trim().replace(/^["']|["']$/g, "").replace(/[.\s]+$/, "");
+  const first = raw.split(/[\\/]/)[0].toLowerCase();
+  const n = absPath(raw, home, PROFILE_FOLDERS.has(first) ? home : home + "\\Documents");
+  return n && inUserFiles(n, home) ? n : null;
+}
+
+/**
+ * The deletes an approved request_approval allows, or null: its `delete_paths` (the app's
+ * request_approval from 0.1.7) or, from an older app, a one-file summary "Delete the file <path>".
+ */
+function approvalScope(input, home) {
+  const i = input && typeof input === "object" ? input : {};
+  let list = null;
+  if (Array.isArray(i.delete_paths) && i.delete_paths.length) {
+    if (i.delete_paths.length > MAX_ALLOWED_PATHS || i.delete_paths.some((x) => typeof x !== "string")) return null;
+    list = i.delete_paths;
+  } else {
+    const m = /^\s*delete\s+(?:the\s+)?(?:file\s+)?("[^"]+"|'[^']+'|[^"'\n]+?)\s*(?:\((?:only|just)\s+(?:that|this)\s+file\))?\s*\.?\s*$/i.exec(String(i.summary || i.action || ""));
+    if (!m || /\s(and|or)\s|,|;/i.test(m[1])) return null; // one file, said plainly
+    list = [m[1]];
+  }
+  const paths = list.map((p) => approvalPath(p, home));
+  if (!paths.length || paths.some((p) => !p)) return null;
+  return { kind: "delete", paths: [...new Set(paths)] };
+}
+
+/** A command line split into words (quoted words keep their content); null on unbalanced quotes. */
+function words(stmt) {
+  const out = [];
+  const re = /\s*(?:"([^"]*)"|'([^']*)'|([^\s"']+))/y;
+  let at = 0;
+  for (;;) {
+    re.lastIndex = at;
+    const m = re.exec(stmt);
+    if (!m || !m[0].trim()) break;
+    out.push({ text: m[1] !== undefined ? m[1] : m[2] !== undefined ? m[2] : m[3], quoted: m[3] === undefined });
+    at = re.lastIndex;
+  }
+  return stmt.slice(at).trim() ? null : out;
+}
+
+/**
+ * If the command does nothing but delete files (and check them with Test-Path), the files it
+ * deletes (normalised); otherwise null. Paths are literal, one per statement, relative ones
+ * resolved against Documents (the CLI's working folder).
+ */
+function deleteTargets(cmd, home) {
+  const c = String(cmd || "");
+  if (!home || /[|&`<>{}()@]|\$\(/.test(c)) return null;
+  const stmts = c.split(/[;\r\n]+/).map((x) => x.trim()).filter(Boolean);
+  if (!stmts.length || stmts.length > 2 * MAX_ALLOWED_PATHS) return null;
+  const base = home + "\\Documents";
+  const targets = [];
+  for (const st of stmts) {
+    const w = words(st);
+    if (!w || !w.length || w[0].quoted) return null;
+    const verb = w[0].text.toLowerCase();
+    const isDelete = DELETE_CMDS.has(verb);
+    if (!isDelete && verb !== "test-path") return null;
+    const paths = [];
+    for (let k = 1; k < w.length; k++) {
+      const t = w[k];
+      const f = t.quoted ? "" : t.text.toLowerCase();
+      if (f === "-literalpath" || f === "-path") continue; // the next word is the path
+      if (isDelete && (f === "-force" || f === "-f" || f === "-confirm:$false")) continue;
+      if (f === "-erroraction" || f === "-ea") {
+        const v = w[++k];
+        if (!v || !/^(stop|silentlycontinue|continue|ignore)$/i.test(v.text)) return null;
+        continue;
+      }
+      if (!isDelete && f === "-pathtype") {
+        const v = w[++k];
+        if (!v || !/^(leaf|any)$/i.test(v.text)) return null;
+        continue;
+      }
+      if (f.startsWith("-")) return null; // -Recurse, -Include, -Filter ...: not a plain one-file delete
+      const n = absPath(t.text, home, base);
+      if (!n || !inUserFiles(n, home)) return null;
+      paths.push(n);
+    }
+    if (paths.length !== 1) return null;
+    if (isDelete) targets.push(paths[0]);
+  }
+  return targets.length ? targets : null;
+}
+
+/**
+ * Does an allowance { paths, used: Set, expires_at: ms } cover this command? The files it would
+ * use (each allowed, not used yet, named once), or null.
+ */
+function allowanceCovers(allowance, cmd, home, nowMs) {
+  if (!allowance || !(nowMs <= allowance.expires_at)) return null;
+  const t = deleteTargets(cmd, home);
+  if (!t) return null;
+  const uniq = [...new Set(t)];
+  if (uniq.length !== t.length) return null;
+  for (const p of uniq) if (!allowance.paths.includes(p) || allowance.used.has(p)) return null;
+  return uniq;
+}
+
 /* ---------------------------------------------------------------- tools --- */
 
 const ALWAYS_ALLOW = new Set(["TodoWrite", "Task", "Agent", "WebSearch", "ToolSearch", "ExitPlanMode", "EnterPlanMode", "TaskOutput", "KillShell", "BashOutput", "Skill", "SlashCommand", "AskUserQuestion"]);
@@ -153,4 +289,4 @@ function summaryOf(tool, input) {
   return `${tool} ${JSON.stringify(i).slice(0, 500)}`;
 }
 
-module.exports = { HANDS_PREFIX, normPath, inUserFiles, pathsIn, decideCommand, decide, summaryOf };
+module.exports = { HANDS_PREFIX, ALLOWANCE_MS, normPath, inUserFiles, pathsIn, decideCommand, decide, summaryOf, approvalPath, approvalScope, deleteTargets, allowanceCovers };

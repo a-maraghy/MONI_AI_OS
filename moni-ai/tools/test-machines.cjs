@@ -62,6 +62,36 @@ console.log("lib/machine-gate.js: the routing of a laptop session's questions");
   check("summaryOf: the command, the path, the hands' summary", G.summaryOf("PowerShell", { command: "dir" }) === "dir" && G.summaryOf("Write", { file_path: "a" }) === "Write a" && G.summaryOf("mcp__mint-hands__click", { summary: "Click Send" }) === "Click Send");
 }
 
+console.log("\nlib/machine-gate.js: a delete the user approved with request_approval (asked once, 2026-10-08)");
+{
+  const home = "C:\\Users\\Ahmed";
+  const F = "c:\\users\\ahmed\\documents\\mint ai\\mint-test.xlsx";
+  const sc = G.approvalScope({ summary: "Delete the file Documents\\MINT AI\\mint-test.xlsx (only that file)", why: "the user asked" }, home);
+  check("approvalScope: the summary of 2026-10-08 (an older app) names one file under the profile", sc && sc.kind === "delete" && sc.paths.length === 1 && sc.paths[0] === F, JSON.stringify(sc));
+  check("  delete_paths (0.1.7): absolute, ~, %USERPROFILE%, $env:USERPROFILE, relative to Documents",
+    JSON.stringify(G.approvalScope({ summary: "Clean up", delete_paths: ["C:\\Users\\Ahmed\\Documents\\MINT AI\\mint-test.xlsx", "~\\Desktop\\a.txt", "%USERPROFILE%\\Downloads\\b.pdf", "$env:USERPROFILE\\Pictures\\c.png", "MINT AI\\d.docx"] }, home).paths) ===
+      JSON.stringify([F, "c:\\users\\ahmed\\desktop\\a.txt", "c:\\users\\ahmed\\downloads\\b.pdf", "c:\\users\\ahmed\\pictures\\c.png", "c:\\users\\ahmed\\documents\\mint ai\\d.docx"]));
+  check("  none for: a wildcard, several files in words, outside the user's files, AppData, another verb, no home, too many, not strings",
+    !G.approvalScope({ summary: "Delete the file Documents\\MINT AI\\*.xlsx" }, home) && !G.approvalScope({ summary: "Delete the files a.txt and b.txt" }, home) && !G.approvalScope({ summary: "Delete the file C:\\Windows\\win.ini" }, home) &&
+      !G.approvalScope({ delete_paths: ["C:\\Users\\Ahmed\\AppData\\Local\\x"] }, home) && !G.approvalScope({ summary: "Send the report to Sara" }, home) && !G.approvalScope({ summary: "Delete the file a.txt" }, "") &&
+      !G.approvalScope({ delete_paths: Array.from({ length: 11 }, (_, i) => "f" + i + ".txt") }, home) && !G.approvalScope({ delete_paths: [{ p: 1 }] }, home) && !G.approvalScope({ delete_paths: ["a.txt", "..\\..\\..\\Windows\\x"] }, home));
+  const cmd = 'Remove-Item "$env:USERPROFILE\\Documents\\MINT AI\\mint-test.xlsx"; Test-Path "$env:USERPROFILE\\Documents\\MINT AI\\mint-test.xlsx"';
+  check("deleteTargets: the command of 2026-10-08 (delete + Test-Path) deletes exactly that file", JSON.stringify(G.deleteTargets(cmd, home)) === JSON.stringify([F]));
+  check("  same file spelled other ways: -LiteralPath, -Force, -ErrorAction Stop, relative to Documents, del, Git Bash rm -f",
+    JSON.stringify(G.deleteTargets('Remove-Item -LiteralPath "MINT AI\\mint-test.xlsx" -Force -ErrorAction Stop', home)) === JSON.stringify([F]) && JSON.stringify(G.deleteTargets("del 'C:/Users/Ahmed/Documents/MINT AI/mint-test.xlsx'", home)) === JSON.stringify([F]) &&
+      JSON.stringify(G.deleteTargets('rm -f "/c/Users/Ahmed/Documents/MINT AI/mint-test.xlsx"', home)) === JSON.stringify([F]) && JSON.stringify(G.deleteTargets('Remove-Item -Path "~\\Documents\\MINT AI\\mint-test.xlsx" -Confirm:$false', home)) === JSON.stringify([F]));
+  const no = (c) => G.deleteTargets(c, home) === null;
+  check("  not a plain delete: wildcards, -Recurse, pipes, chained commands, &&, sub-expressions, other variables, two paths, a redirect, outside the user's files",
+    no('Remove-Item "$env:USERPROFILE\\Documents\\MINT AI\\*.xlsx"') && no('Remove-Item -Recurse "MINT AI\\mint-test.xlsx"') && no("Get-ChildItem | Remove-Item") && no('Remove-Item "MINT AI\\mint-test.xlsx"; Stop-Process -Name excel') &&
+      no('Remove-Item "MINT AI\\mint-test.xlsx" && curl https://x') && no('Remove-Item $(Get-Item x)') && no('Remove-Item "$env:TEMP\\x"') && no('Remove-Item $p') && no("Remove-Item a.txt b.txt") && no('Remove-Item "MINT AI\\mint-test.xlsx" > out.txt') &&
+      no('Remove-Item "C:\\Windows\\win.ini"') && no('Remove-Item "C:\\Users\\Ahmed\\AppData\\Roaming\\x"') && no("Test-Path a.txt") && no('Remove-Item "MINT AI\\mint-test.xlsx`; calc"') && no('Remove-Item "unclosed'));
+  const al = { paths: [F], used: new Set(), expires_at: 1000 };
+  check("allowanceCovers: the exact delete within the time", JSON.stringify(G.allowanceCovers(al, cmd, home, 999)) === JSON.stringify([F]));
+  check("  not: after expiry, another file, a used file, the same file twice in one command",
+    G.allowanceCovers(al, cmd, home, 1001) === null && G.allowanceCovers(al, 'Remove-Item "MINT AI\\other.xlsx"', home, 0) === null && G.allowanceCovers({ ...al, used: new Set([F]) }, cmd, home, 0) === null && G.allowanceCovers(al, `${cmd}; ${cmd}`, home, 0) === null);
+  check("  deny rules still win (decide refuses before any allowance is looked at)", G.decide("PowerShell", { command: 'Remove-Item "MINT AI\\mint-test.xlsx"; diskpart' }, { home }).decision === "deny");
+}
+
 console.log("\nlib/machines.js (pure parts)");
 {
   check("sessionName: \"<computer> control\", hire-name safe", M.sessionName("Ahmed's Laptop") === "Ahmed's Laptop control" && M.sessionName("#$%") === "Computer control" && M.sessionName("x".repeat(80)).length <= 48);
@@ -195,6 +225,45 @@ const machineEvents = (what) => events.filter((e) => e.type === "machine" && (!w
     check("a question withdrawn by the laptop: the card is cancelled", card3 && c3.ok && c3.data.cancelled === true, JSON.stringify(c3));
     pending3.catch(() => {});
 
+    console.log("\na delete approved with request_approval is asked once (2026-10-08)");
+    const pendingCard = async () => until(async () => { const r = await call("ledger", { table: "approvals", limit: 30 }); return r.ok && r.data.rows.find((x) => x.status === "pending" && x.origin === "session:" + slug); }, 4000);
+    const delCmd = 'Remove-Item "$env:USERPROFILE\\Documents\\MINT AI\\mint-test.xlsx"; Test-Path "$env:USERPROFILE\\Documents\\MINT AI\\mint-test.xlsx"';
+    // Before any approval: the delete is a card (answered by a deny, so nothing is left pending).
+    const pre = call("machine-ask", { slug, request_id: "d0", tool: "PowerShell", input: JSON.stringify({ command: delCmd }), origin: "cli" }, A, 20000);
+    const preCard = await pendingCard();
+    check("before any approval: the delete is a card", !!preCard, JSON.stringify(preCard));
+    if (preCard) await call("deny", { approval_id: preCard.id });
+    await pre;
+    const ra = call("machine-ask", { slug, request_id: "d1", tool: "mcp__mint-hands__request_approval", input: JSON.stringify({ summary: "Delete the file Documents\\MINT AI\\mint-test.xlsx (only that file)", why: "The user asked to remove the test file." }), origin: "hands" }, A, 20000);
+    const raCard = await pendingCard();
+    check("request_approval: a card", raCard && raCard.tool === "mcp__mint-hands__request_approval", JSON.stringify(raCard));
+    if (raCard) await call("approve", { approval_id: raCard.id });
+    const raR = await ra;
+    check("  approved", raR.ok && raR.data.behavior === "allow", JSON.stringify(raR));
+    const cardsBefore = (await call("ledger", { table: "approvals", limit: 100 })).data.rows.length;
+    // Other commands first: they still get their cards, and do not use the allowance up.
+    const other = call("machine-ask", { slug, request_id: "d2", tool: "PowerShell", input: JSON.stringify({ command: 'Remove-Item "$env:USERPROFILE\\Documents\\MINT AI\\other.xlsx"' }), origin: "cli" }, A, 20000);
+    const otherCard = await pendingCard();
+    check("then a delete of ANOTHER file: still a card", !!otherCard, JSON.stringify(otherCard));
+    if (otherCard) await call("deny", { approval_id: otherCard.id });
+    await other;
+    for (const [rid, c, what] of [["d3", 'Remove-Item "$env:USERPROFILE\\Documents\\MINT AI\\*.xlsx"', "a wildcard"], ["d4", delCmd + "; Stop-Process -Name excel", "a chained command"], ["d5", 'Remove-Item -Recurse "$env:USERPROFILE\\Documents\\MINT AI\\mint-test.xlsx"', "-Recurse"]]) {
+      const q = call("machine-ask", { slug, request_id: rid, tool: "PowerShell", input: JSON.stringify({ command: c }), origin: "cli" }, A, 20000);
+      const qc = await pendingCard();
+      check(`  ${what}: still a card`, !!qc, JSON.stringify(qc));
+      if (qc) await call("deny", { approval_id: qc.id });
+      await q;
+    }
+    const cardsMid = (await call("ledger", { table: "approvals", limit: 100 })).data.rows.length;
+    const exact = await call("machine-ask", { slug, request_id: "d6", tool: "PowerShell", input: JSON.stringify({ command: delCmd }), origin: "cli" }, A);
+    const cardsAfter = (await call("ledger", { table: "approvals", limit: 100 })).data.rows.length;
+    check("the exact delete of the approved file: allowed at once, NO second card", exact.ok && exact.data.behavior === "allow" && exact.data.auto === true && cardsAfter === cardsMid, JSON.stringify([exact, cardsBefore, cardsMid, cardsAfter]));
+    const again2 = call("machine-ask", { slug, request_id: "d7", tool: "PowerShell", input: JSON.stringify({ command: delCmd }), origin: "cli" }, A, 20000);
+    const againCard = await pendingCard();
+    check("  the same delete again: a card (single use)", !!againCard, JSON.stringify(againCard));
+    if (againCard) await call("deny", { approval_id: againCard.id });
+    await again2;
+
     console.log("\nreports, tell, the end of control");
     const rp = await call("machine-report", { slug, text: "Made Budget.xlsx in Documents\\MINT AI and opened it." }, A);
     check("a report: queued as a background turn for MINT AI, marked as the laptop session's words", rp.ok && rp.data.queued === true, JSON.stringify(rp));
@@ -218,11 +287,22 @@ const machineEvents = (what) => events.filter((e) => e.type === "machine" && (!w
     check("the administrator (Mint OS panel) takes over without a turn", r3.ok, JSON.stringify(r3));
     const slug2 = r3.ok && r3.data.hired.slug;
     check("  a fresh slug (the first is kept for the record)", slug2 && slug2 !== slug);
-    const rl = await call("machine-release", { machine: "Ahmed Laptop" }, "moni-ai");
+    // An approval in this lease ...
+    const ra2 = call("machine-ask", { slug: slug2, request_id: "e1", tool: "mcp__mint-hands__request_approval", input: JSON.stringify({ summary: "Remove the old file", why: "asked", delete_paths: ["C:\\Users\\Ahmed\\Documents\\MINT AI\\old.xlsx"] }), origin: "hands" }, "machine.7", 20000);
+    const ra2Card = await until(async () => { const r = await call("ledger", { table: "approvals", limit: 30 }); return r.ok && r.data.rows.find((x) => x.status === "pending" && x.origin === "session:" + slug2); }, 4000);
+    if (ra2Card) await call("approve", { approval_id: ra2Card.id });
+    check("request_approval with delete_paths approved in the panel's lease", (await ra2).data.behavior === "allow");
+    const rl =await call("machine-release", { machine: "Ahmed Laptop" }, "moni-ai");
     const sev = await until(async () => machineEvents("stop").find((e) => e.slug === slug2), 3000);
     check("MINT AI releases it: event machine/stop, retired at once", rl.ok && sev && sev.machine_id === 7 && /released by MINT AI/.test(sev.reason), JSON.stringify([rl, sev]));
     const r4 = await call("machine-take-over", { machine: "7", purpose: "Show me the Downloads folder again." }, "amaraghy");
     const slug3 = r4.ok && r4.data.hired.slug;
+    // ... does not carry over to the next lease on the same computer.
+    const ol = call("machine-ask", { slug: slug3, request_id: "e2", tool: "PowerShell", input: JSON.stringify({ command: 'Remove-Item "C:\\Users\\Ahmed\\Documents\\MINT AI\\old.xlsx"' }), origin: "cli" }, "machine.7", 20000);
+    const olCard = await until(async () => { const r = await call("ledger", { table: "approvals", limit: 30 }); return r.ok && r.data.rows.find((x) => x.status === "pending" && x.origin === "session:" + slug3); }, 4000);
+    check("an approval of an earlier lease does not cover the next lease: a card", !!olCard, JSON.stringify(olCard));
+    if (olCard) await call("deny", { approval_id: olCard.id });
+    await ol;
     const rr = await call("session-retire", { slug: slug3 }, "moni-ai");
     check("session_retire on a laptop session ends it at once (no consent card: ending control is safe)", rr.ok && rr.data.retired && rr.data.retired.status === "retired", JSON.stringify(rr));
     const r5 = await call("machine-take-over", { machine: "7", purpose: "Show me the Downloads folder again." }, "amaraghy");

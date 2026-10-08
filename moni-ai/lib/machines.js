@@ -60,6 +60,8 @@ function firstPrompt({ name, machine, purpose, minutes }) {
     "You can read, write and edit files, run PowerShell and other commands, open files and apps with Start-Process, create Word / Excel / PowerPoint files with create_document, ask for approval and wait. " +
     "You have no screen, mouse, keyboard or browser control: if the job needs those, say so plainly instead of trying. " +
     "Anything consequential (sending, posting, buying, deleting, installing, acting outside the user's files) waits for the user's approval. " +
+    "Commands that delete, install, send data or change the system raise an approval card by themselves: just run them, do not call request_approval first (the user would be asked twice). " +
+    "If you do ask with request_approval before deleting, list the exact files in delete_paths: the delete of exactly those files within 5 minutes is not asked again. " +
     "Your final message of each turn is passed to MINT AI: say plainly what you did and what is left."
   );
 }
@@ -80,6 +82,7 @@ function endedText({ name, machine, why, failed }) {
 function create(deps) {
   const { ledger, emit, log, queueTurn, raiseCard, isPaused } = deps;
   const now = deps.now || (() => new Date().toISOString());
+  const nowMs = deps.nowMs || (() => Date.now());
   let registry = new Map(); // id -> { id, name, online, platform, home }
   let synced = false;
 
@@ -201,6 +204,7 @@ function create(deps) {
   }
 
   function ended(h, reason, by) {
+    allowances.delete(h.slug);
     const cur = ledger.get("hired_sessions", h.id);
     if (!cur || cur.status === "retired") return cur;
     const upd = ledger.updateHired(h.id, { status: "retired", retired_at: now(), retired_by: by || "lease-end", note: String(reason || "").slice(0, 300) });
@@ -223,7 +227,43 @@ function create(deps) {
     const d = gate.decide(p.tool, input, { home: m.home, origin: p.origin });
     if (d.decision === "allow") return { behavior: "allow", auto: true, label: d.label };
     if (d.decision === "deny") return { behavior: "deny", message: d.reason + " Do not retry it." };
-    return raiseCard(h, { ...p, summary: gate.summaryOf(p.tool, input), input_obj: input }, d);
+    // A delete the user approved a moment ago (request_approval naming exactly these files): no second card.
+    if (d.category === "delete" && p.origin !== "hands" && (p.tool === "PowerShell" || p.tool === "Bash")) {
+      const used = useAllowance(h, input.command || input.script || "", m.home);
+      if (used) return { behavior: "allow", auto: true, label: "Delete you approved a moment ago" };
+    }
+    const r = await raiseCard(h, { ...p, summary: gate.summaryOf(p.tool, input), input_obj: input }, d);
+    if (r && r.behavior === "allow" && p.tool === gate.HANDS_PREFIX + "request_approval") grantAllowance(h, input, m.home);
+    return r;
+  }
+
+  /*
+   * Approved deletes (machine-gate.js approvalScope / allowanceCovers): kept here, on the server, never
+   * taken from the laptop's word. Per hired session (= one lease), 5 minutes, each file once; dropped
+   * when the session ends.
+   */
+  const allowances = new Map(); // slug -> { hired_id, machine_id, paths, used: Set, expires_at }
+  function grantAllowance(h, input, home) {
+    const scope = gate.approvalScope(input, home);
+    if (!scope) return null;
+    const a = { hired_id: h.id, machine_id: Number(h.machine_id), paths: scope.paths, used: new Set(), expires_at: nowMs() + gate.ALLOWANCE_MS };
+    allowances.set(h.slug, a);
+    log(`machine: "${h.name}" (${h.slug}) may delete ${scope.paths.length} approved file(s) without a second card for ${gate.ALLOWANCE_MS / 60000} min`);
+    return a;
+  }
+  function useAllowance(h, cmd, home) {
+    const a = allowances.get(h.slug);
+    if (!a) return null;
+    if (a.hired_id !== h.id || a.machine_id !== Number(h.machine_id) || nowMs() > a.expires_at) {
+      allowances.delete(h.slug);
+      return null;
+    }
+    const paths = gate.allowanceCovers(a, cmd, home, nowMs());
+    if (!paths) return null;
+    for (const p of paths) a.used.add(p);
+    if (a.used.size >= a.paths.length) allowances.delete(h.slug);
+    log(`machine: "${h.name}" (${h.slug}) deletes ${paths.length} file(s) the user approved a moment ago: no second card`);
+    return paths;
   }
 
   /** The laptop session's turn ended: its words go to MINT AI as a background turn. */
