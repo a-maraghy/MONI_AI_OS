@@ -63,6 +63,19 @@ function firstPrompt({ name, machine, purpose, minutes }) {
   );
 }
 
+/** Why a take-over is refused up front: the computer said Claude Code is missing. Said to the user as is. */
+function notInstalled(machine) {
+  return `Claude Code is not installed on "${machine}", so MINT AI cannot work there yet: install Claude Code on that computer and sign in once by running \`claude\` in a terminal, then press Look again in the MINT AI app (Settings > This computer)`;
+}
+
+/** The text MINT AI gets when a laptop session ends; a start failure says so plainly. */
+function endedText({ name, machine, why, failed }) {
+  if (failed) {
+    return `[Mint OS: the session on the user's computer "${machine}" could not start -- ${why}. Nothing was done there and control has ended. Tell the user plainly what went wrong and what they need to do; take over again only after they say it is fixed.]`;
+  }
+  return `[Mint OS: control of the user's computer ended (${why}). The laptop session "${name}" is closed; take over again only if the user asks.]`;
+}
+
 function create(deps) {
   const { ledger, emit, log, queueTurn, raiseCard, isPaused } = deps;
   const now = deps.now || (() => new Date().toISOString());
@@ -71,7 +84,7 @@ function create(deps) {
 
   function publicMachine(m) {
     const s = activeOn(m.id);
-    return { id: m.id, name: m.name, online: !!m.online, platform: m.platform || null, session: s ? { slug: s.slug, name: s.name, purpose: s.purpose, hired_at: s.hired_at, hired_by: s.hired_by } : null };
+    return { id: m.id, name: m.name, online: !!m.online, platform: m.platform || null, claude_code: m.claude ? (m.claude.found ? "found" + (m.claude.version ? " " + m.claude.version : "") : "not found") : "unknown", session: s ? { slug: s.slug, name: s.name, purpose: s.purpose, hired_at: s.hired_at, hired_by: s.hired_by } : null };
   }
   function activeOn(id) {
     return ledger.hiredList(false).find((h) => Number(h.machine_id) === Number(id)) || null;
@@ -104,7 +117,9 @@ function create(deps) {
     const next = new Map();
     for (const m of p.machines || []) {
       if (!m || !Number.isInteger(m.id)) continue;
-      next.set(m.id, { id: m.id, name: String(m.name || "Computer").slice(0, 64), online: !!m.online, platform: m.platform ? String(m.platform).slice(0, 20) : null, home: m.home ? String(m.home).slice(0, 260) : null });
+      // claude: what the computer's app last said about Claude Code (null = not said yet).
+      const c = m.claude && typeof m.claude === "object" ? { found: m.claude.found === true, version: m.claude.version ? String(m.claude.version).slice(0, 60) : null, git_bash: !!m.claude.git_bash } : null;
+      next.set(m.id, { id: m.id, name: String(m.name || "Computer").slice(0, 64), online: !!m.online, platform: m.platform ? String(m.platform).slice(0, 20) : null, home: m.home ? String(m.home).slice(0, 260) : null, claude: c });
     }
     // A computer that went offline (or was revoked) loses its session: the app ends the lease on its side too.
     for (const h of ledger.hiredList(false)) {
@@ -130,6 +145,7 @@ function create(deps) {
     const m = find(p.machine);
     if (m.error) throw new Error(m.error);
     if (!m.online) throw new Error(`"${m.name}" is offline: the MINT AI app is not running there (or not linked)`);
+    if (m.claude && !m.claude.found) throw new Error(notInstalled(m.name));
     const cur = activeOn(m.id);
     if (cur) throw new Error(`MINT AI already controls "${m.name}" ("${cur.name}"): tell it what to do with machine_tell, or release it first`);
     const purpose = String(p.purpose || "").trim();
@@ -231,11 +247,15 @@ function create(deps) {
       return { ok: true };
     }
     if (p.state === "starting") return { ok: true };
-    const why = String(p.reason || p.state).slice(0, 200);
+    const failed = p.state === "failed";
+    const why = String(p.reason || p.state).slice(0, failed ? 300 : 200);
     const was = ledger.get("hired_sessions", h.id);
-    ended(h, why, "lease-end");
-    if (was && was.status !== "retired" && was.hired_by === "moni-ai") {
-      queueTurn({ source: "machine", actor, text: `[Mint OS: control of the user's computer ended (${why}). The laptop session "${h.name}" is closed; take over again only if the user asks.]` });
+    if (!was || was.status === "retired") return { ok: true }; // already ended (a second report)
+    ended(h, failed ? "could not start: " + why : why, "lease-end");
+    const m = registry.get(Number(h.machine_id)) || { name: "the computer" };
+    if (failed) emit("notice", { level: "warn", text: `MINT AI could not start on ${m.name}: ${why}` });
+    if (was.hired_by === "moni-ai") {
+      queueTurn({ source: "machine", actor, text: endedText({ name: h.name, machine: m.name, why, failed }) });
     }
     return { ok: true };
   }
@@ -243,4 +263,4 @@ function create(deps) {
   return { sync, list, takeOver, tell, release, stop, ended, ask, report, state, find, activeOn, firstPrompt, sessionName };
 }
 
-module.exports = { create, firstPrompt, sessionName, machineActor, machineIdOfActor, DEFAULT_MINUTES, MAX_MINUTES };
+module.exports = { create, firstPrompt, sessionName, notInstalled, endedText, machineActor, machineIdOfActor, DEFAULT_MINUTES, MAX_MINUTES };

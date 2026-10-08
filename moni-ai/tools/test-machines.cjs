@@ -67,6 +67,9 @@ console.log("\nlib/machines.js (pure parts)");
   check("sessionName: \"<computer> control\", hire-name safe", M.sessionName("Ahmed's Laptop") === "Ahmed's Laptop control" && M.sessionName("#$%") === "Computer control" && M.sessionName("x".repeat(80)).length <= 48);
   const fp = M.firstPrompt({ name: "Laptop control", machine: "Laptop", purpose: "Make a sheet.", minutes: 15 });
   check("firstPrompt: from MINT AI, the purpose, the lease, approvals, reports go to MINT AI", /^\[From MINT AI -- not the user typing/.test(fp) && /Make a sheet\./.test(fp) && /15 minutes/.test(fp) && /approval/.test(fp) && /passed to MINT AI/.test(fp));
+  check("notInstalled: names the computer, says to install and run `claude`, then Look again", /Claude Code is not installed on "Laptop"/.test(M.notInstalled("Laptop")) && /`claude`/.test(M.notInstalled("Laptop")) && /Look again/.test(M.notInstalled("Laptop")));
+  const ft = M.endedText({ name: "L control", machine: "Laptop", why: "the computer did not start the session", failed: true });
+  check("endedText: a start failure says it could not start, why, and to tell the user; an ordinary end does not", /could not start -- the computer did not start the session/.test(ft) && /Tell the user plainly/.test(ft) && /control of the user's computer ended \(timeout\)/.test(M.endedText({ name: "L control", machine: "Laptop", why: "timeout", failed: false })));
   check("machine actors: machine.<id> only", M.machineIdOfActor("machine.12") === 12 && M.machineIdOfActor("machine.x") === null && M.machineIdOfActor("session.x") === null);
 }
 
@@ -223,6 +226,40 @@ const machineEvents = (what) => events.filter((e) => e.type === "machine" && (!w
     await call("machines-sync", { machines: [{ id: 8, name: "Office PC", online: false }] }, "machines");
     const after2 = await call("hired", { all: true });
     check("a computer unlinked (revoked): its session ends", r5.ok && after2.data.hired.find((h) => h.slug === r5.data.hired.slug).status === "retired");
+
+    console.log("\nClaude Code missing, and a session that could not start (2026-10-08)");
+    await call("machines-sync", { machines: [{ id: 8, name: "Office PC", online: false }, { id: 9, name: "GSHN1124", online: true, platform: "windows", home: "C:\\Users\\A", claude: { found: false, version: null, git_bash: false } }] }, "machines");
+    const ls9 = await call("machines", {}, "moni-ai");
+    const m9 = ls9.ok && ls9.data.machines.find((m) => m.id === 9);
+    check("machine_list says Claude Code: not found", m9 && m9.claude_code === "not found", JSON.stringify(m9));
+    const hiredBefore = (await call("hired", { all: true })).data.hired.length;
+    const nf = await call("machine-take-over", { machine: "GSHN1124", purpose: "Open Excel and make a budget sheet." }, "amaraghy");
+    check("take-over refused up front: Claude Code is not installed there, what to do", !nf.ok && /Claude Code is not installed on "GSHN1124"/.test(nf.error) && /`claude`/.test(nf.error), JSON.stringify(nf));
+    check("  nothing hired, no start event", (await call("hired", { all: true })).data.hired.length === hiredBefore && !machineEvents("start").some((e) => e.machine_id === 9));
+    await call("machines-sync", { machines: [{ id: 9, name: "GSHN1124", online: true, claude: { found: true, version: "2.1.290", git_bash: true } }] }, "machines");
+    const m9b = (await call("machines", {}, "moni-ai")).data.machines.find((m) => m.id === 9);
+    check("installed since (Look again): found <version>", m9b && m9b.claude_code === "found 2.1.290", JSON.stringify(m9b));
+    await call("machines-sync", { machines: [{ id: 9, name: "GSHN1124", online: true }] }, "machines");
+    check("  an older dashboard (no claude in the sync): unknown, not refused for it", (await call("machines", {}, "moni-ai")).data.machines.find((m) => m.id === 9).claude_code === "unknown");
+    await call("machines-sync", { machines: [{ id: 9, name: "GSHN1124", online: true, claude: { found: true, version: "2.1.290", git_bash: true } }] }, "machines");
+    // MINT AI takes over during the administrator's typed turn; the app then reports the start failed.
+    await call("send", { text: "SLOW 4000" });
+    await until(async () => { const s = await call("status"); return s.ok && s.data.busy; }, 5000);
+    const t9 = await call("machine-take-over", { machine: "GSHN1124", purpose: "Open Excel and make a budget sheet." }, "moni-ai");
+    check("MINT AI takes over GSHN1124 during a typed turn: starting", t9.ok && t9.data.status === "starting", JSON.stringify(t9));
+    const slug9 = t9.ok && t9.data.hired.slug;
+    await until(async () => { const s = await call("status"); return s.ok && !s.data.busy; }, 10000);
+    const why = "Claude Code stopped while starting (exit code 1): Invalid API key. If it has never been used on this computer, sign in once by running `claude` in a terminal.";
+    const sf = await call("machine-state", { slug: slug9, state: "failed", reason: why }, "machine.9");
+    const row9 = (await call("hired", { all: true })).data.hired.find((h) => h.slug === slug9);
+    check("a start failure from the app: the hire is retired, its note says it could not start and why", sf.ok && row9 && row9.status === "retired" && row9.retired_by === "lease-end", JSON.stringify(row9));
+    const failTurn = await until(async () => { const r = await call("ledger", { table: "turns", limit: 40 }); return r.ok && r.data.rows.find((t) => t.source === "machine" && /could not start -- Claude Code stopped while starting/.test(t.text)); }, 4000);
+    check("  MINT AI gets a clear turn: could not start, the reason, nothing was done, tell the user", failTurn && /Nothing was done there/.test(failTurn.text) && /Tell the user plainly/.test(failTurn.text) && /"GSHN1124"/.test(failTurn.text), JSON.stringify(failTurn && failTurn.text));
+    const notice = events.find((e) => e.type === "notice" && /could not start on GSHN1124/.test(e.text || ""));
+    check("  and a warning notice", notice && notice.level === "warn", JSON.stringify(notice));
+    const again = await call("machine-state", { slug: slug9, state: "failed", reason: why }, "machine.9");
+    const failTurns = (await call("ledger", { table: "turns", limit: 60 })).data.rows.filter((t) => t.source === "machine" && /could not start/.test(t.text));
+    check("  a second report of the same end: refused (not a second turn)", !again.ok && failTurns.length === 1, JSON.stringify([again, failTurns.length]));
     w.destroy();
   } catch (e) {
     check("no exception", false, e.stack);

@@ -198,7 +198,11 @@ const OPS = {
 
   /* ---- the user's own computers (Path A laptop control, lib/machines.js) ---- */
   // The dashboard's machine relay (actor "machines"): the linked computers and whether each is online now.
-  "machines-sync": { mutating: false, params: { machines: optArray(objOf({ id: int(1, 9999999999), name: text(1, 64), online: bool(), platform: optString(20, /^[a-z0-9_-]{1,20}$/), home: optText(260) }), 200) } },
+  // claude: what the computer's app says about Claude Code there (left out: not said yet).
+  "machines-sync": {
+    mutating: false,
+    params: { machines: optArray(objOf({ id: int(1, 9999999999), name: text(1, 64), online: bool(), platform: optString(20, /^[a-z0-9_-]{1,20}$/), home: optText(260), claude: optObjOf({ found: bool(), version: optText(60), git_bash: optBool() }) }), 200) },
+  },
   machines: { mutating: false, params: {} },
   // MINT AI (during a turn the administrator started) or the administrator: hire a session on a computer, under a lease.
   "machine-take-over": { mutating: true, params: { machine: optString(64, /^[^\n\r\u0000]{1,64}$/), purpose: text(10, 4000), minutes: optInt(1, 60), model: optString(64, /^claude-[a-z0-9][a-z0-9.-]{2,60}$/) } },
@@ -338,6 +342,11 @@ function objOf(spec) {
     }
     return out;
   };
+}
+function optObjOf(spec) {
+  const f = objOf(spec);
+  f.optional = true;
+  return f;
 }
 function stepSpec() {
   return objOf({ title: text(1, 300), detail: optText(4000), target: optString(300, /^[^\n\r\u0000]*$/) });
