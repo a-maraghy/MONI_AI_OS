@@ -36,6 +36,8 @@ GPU, and the scale (Settings ▸ Display) of each monitor. Prerequisite: the ser
 - [ ] Tray ▸ "Hidden until called (peek)": the layer disappears.
 - [ ] Ctrl+Alt+M: it fades in centred on the monitor **under the mouse**, light dim behind it, composer focused.
 - [ ] Esc hides it; a click on empty space hides it; Ctrl+Alt+M again hides it.
+- [ ] (0.1.5) Peek hidden (Esc), then tray ▸ "On the desktop": it shows **at once**, on top, focused; click another app: it goes down to the desktop layer. Log line "mode Desktop from a hidden window: shown and raised".
+- [ ] (0.1.5) Peek hidden, then tray ▸ "Floating, always on top": the box shows at once.
 
 ## 5. Desktop layer
 - [ ] Tray ▸ "On the desktop": the core sits on the wallpaper at the right; **every other window covers it**; it never takes the focus.
@@ -44,6 +46,8 @@ GPU, and the scale (Settings ▸ Display) of each monitor. Prerequisite: the ser
 - [ ] Settings ▸ Desktop layer position Left / Centre / Right.
 - [ ] Ctrl+Alt+M raises it on top; Esc lowers it.
 - [ ] Experimental: Settings ▸ "behind the icons" on → it goes behind the icons (nothing clickable); off → back. Note the Windows build if it fails.
+
+- [ ] (0.1.5) Windows scaling 100 %, 125 %, 150 % (Settings ▸ Display ▸ Scale), Desktop layer, open the chat: the message box shows the whole "Ask MINT AI…"; the talk hint beside it reads "hold Ctrl Space to talk", or only the key caps, or is gone when there is no room — never over the placeholder or typed text. Same with the talk key on Ctrl+Alt+Space.
 
 ## 6. Hotkeys and voice
 - [ ] **Hold Ctrl+Space**: state pill "Listening", core listens; speak; **release**: the turn is sent, core thinks then speaks the answer.
@@ -76,6 +80,10 @@ GPU, and the scale (Settings ▸ Display) of each monitor. Prerequisite: the ser
 ## 9. Ink, battery, offline
 - [ ] Dark wallpaper: light text on dark pills. Light wallpaper: dark text on light pills. Change the wallpaper: within ~30 s the ink follows.
 - [ ] On battery with Battery saver on (or Windows energy saver): the core holds still; plugged in: it moves.
+- [ ] (0.1.5) Battery saver on in the app, nothing covering the core (Win+D, or Desktop layer with no window over it), all four cases, ~2 s each to settle: **battery + Energy saver on: still** · **battery + Energy saver off: still** · **plugged in + Energy saver on** ("Always use energy saver"): still · **plugged in + Energy saver off: moves**. With the app's Battery saver off: it moves in all four.
+- [ ] (0.1.5) After that, read `%LOCALAPPDATA%\MINT AI\logs\mint-desktop.log`: at start "power throttling (EcoQoS) off for this process: true", "notifications for power source / Energy saver / battery saver registered" (Energy saver "no notifications" only before Windows 11 22H2), "power at start: PowerReport {…}"; on each switch a "power: … -> …" line **within a second**, then "core holds still / moves (power notification): …" with the values. Send the log if any case is wrong.
+- [ ] (0.1.5) Start the app **on battery** (quit, unplug, start): the core is still from the first frame and stays still after the page has loaded (it used to start moving once the page loaded).
+- [ ] (0.1.5) Task Manager ▸ Details ▸ add the "Power throttling" column: MINT AI.exe "Disabled"; the msedgewebview2.exe processes keep Windows' choice (often "Enabled" with Energy saver on).
 - [ ] Lock the screen: the core stops (GPU idle); unlock: it resumes.
 - [ ] Turn Wi-Fi off: "MINT AI is not reachable" under a dimmed core; on again: it reconnects by itself.
 - [ ] Start the app with Wi-Fi off: the "Offline — retrying in N s" card; Retry now works.

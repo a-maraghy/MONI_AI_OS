@@ -64,7 +64,14 @@ mod imp {
     use super::{Front, Ink};
     use windows::core::PCWSTR;
     use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
-    use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
+    use core::ffi::c_void;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::OnceLock;
+    use windows::core::GUID;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::Power::{GetSystemPowerStatus, PowerSettingRegisterNotification, DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS, POWERBROADCAST_SETTING, SYSTEM_POWER_STATUS};
+    use windows::Win32::System::Threading::{GetCurrentProcess, ProcessPowerThrottling, SetProcessInformation, PROCESS_POWER_THROTTLING_CURRENT_VERSION, PROCESS_POWER_THROTTLING_EXECUTION_SPEED, PROCESS_POWER_THROTTLING_STATE};
+    use windows::Win32::UI::WindowsAndMessaging::{DEVICE_NOTIFY_CALLBACK, PBT_POWERSETTINGCHANGE};
     use windows::Win32::System::StationsAndDesktops::{CloseDesktop, OpenInputDesktop, DESKTOP_ACCESS_FLAGS, DESKTOP_CONTROL_FLAGS};
     use windows::Win32::UI::Shell::{SHQueryUserNotificationState, QUERY_USER_NOTIFICATION_STATE, QUNS_BUSY, QUNS_PRESENTATION_MODE, QUNS_RUNNING_D3D_FULL_SCREEN};
     use windows::Win32::UI::WindowsAndMessaging::{
@@ -108,13 +115,93 @@ mod imp {
         }
     }
 
-    /// (on battery, Windows' battery saver / energy saver on)
+    /// (on battery, Windows' battery saver / energy saver on): what the power notifications said
+    /// (watch_power), filled in from GetSystemPowerStatus where they have not (policy::power_state).
     pub fn power() -> (bool, bool) {
+        crate::policy::power_state(&power_report())
+    }
+
+    pub fn power_report() -> crate::policy::PowerReport {
         let mut p = SYSTEM_POWER_STATUS::default();
-        if unsafe { GetSystemPowerStatus(&mut p) }.is_err() {
-            return (false, false);
+        let polled = unsafe { GetSystemPowerStatus(&mut p) }.is_ok();
+        let get = |a: &AtomicU32| match a.load(Ordering::SeqCst) {
+            UNSET => None,
+            v => Some(v),
+        };
+        crate::policy::PowerReport {
+            acdc: get(&ACDC),
+            energy_saver: get(&ES),
+            power_saving: get(&PS),
+            ac_line: polled.then_some(p.ACLineStatus),
+            status_flag: polled.then_some(p.SystemStatusFlag),
         }
-        (p.ACLineStatus == 0, p.SystemStatusFlag == 1)
+    }
+
+    /* Power notifications: Windows calls on_power (on a thread of its own pool) when the power source,
+    Energy saver (Windows 11 22H2+) or the older battery saver changes, and once at registration with
+    the current value. A poll once a second missed or lagged Energy saver: the app is itself slowed
+    down by it (EcoQoS), and SystemStatusFlag follows the older battery saver, not Energy saver. */
+    const UNSET: u32 = u32::MAX;
+    static ACDC: AtomicU32 = AtomicU32::new(UNSET);
+    static ES: AtomicU32 = AtomicU32::new(UNSET);
+    static PS: AtomicU32 = AtomicU32::new(UNSET);
+    static HOOK: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
+    const GUID_ACDC_POWER_SOURCE: GUID = GUID::from_u128(0x5d3e9a59_e9d5_4b00_a6bd_ff34ff516548);
+    const GUID_ENERGY_SAVER_STATUS: GUID = GUID::from_u128(0x550e8400_e29b_41d4_a716_446655440000);
+    const GUID_POWER_SAVING_STATUS: GUID = GUID::from_u128(0xe00958c0_c213_4ace_ac77_fecced2eeea5);
+
+    unsafe extern "system" fn on_power(_ctx: *const c_void, kind: u32, setting: *const c_void) -> u32 {
+        if kind != PBT_POWERSETTINGCHANGE || setting.is_null() {
+            return 0;
+        }
+        let s = setting as *const POWERBROADCAST_SETTING;
+        let (guid, len) = unsafe { ((*s).PowerSetting, (*s).DataLength) };
+        if len < 4 {
+            return 0;
+        }
+        let v = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*s).Data) as *const u32) };
+        let (slot, name) = if guid == GUID_ACDC_POWER_SOURCE {
+            (&ACDC, "power source (0 AC, 1 battery, 2 UPS)")
+        } else if guid == GUID_ENERGY_SAVER_STATUS {
+            (&ES, "Energy saver (0 off, 1 standard, 2 high savings)")
+        } else if guid == GUID_POWER_SAVING_STATUS {
+            (&PS, "battery saver (0 off, 1 on)")
+        } else {
+            return 0;
+        };
+        let old = slot.swap(v, Ordering::SeqCst);
+        if old != v {
+            let was = if old == UNSET { "-".to_string() } else { old.to_string() };
+            mlog!("power: {} {} -> {}", name, was, v);
+            if let Some(h) = HOOK.get() {
+                h();
+            }
+        }
+        0
+    }
+
+    /// Ask Windows to tell us about power changes; `hook` runs after each one (on a Windows thread).
+    pub fn watch_power(hook: Box<dyn Fn() + Send + Sync>) {
+        let _ = HOOK.set(hook);
+        for (g, name) in [(GUID_ACDC_POWER_SOURCE, "power source"), (GUID_ENERGY_SAVER_STATUS, "Energy saver"), (GUID_POWER_SAVING_STATUS, "battery saver")] {
+            // Windows keeps the pointer for as long as the registration lives: the life of the app.
+            let params: &'static mut DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS = Box::leak(Box::new(DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS { Callback: Some(on_power), Context: core::ptr::null_mut() }));
+            let mut reg: *mut c_void = core::ptr::null_mut();
+            let r = unsafe { PowerSettingRegisterNotification(&g, DEVICE_NOTIFY_CALLBACK, HANDLE(params as *mut _ as *mut c_void), &mut reg) };
+            if r.0 == 0 {
+                mlog!("power: notifications for {} registered", name);
+            } else {
+                // Energy saver: Windows before 11 22H2 has no such setting (the battery saver one stands in).
+                mlog!("power: no notifications for {} (error {})", name, r.0);
+            }
+        }
+    }
+
+    /// Opt this process (not WebView2's own processes, which keep their savings) out of Windows'
+    /// power throttling (EcoQoS), so the watchers that hold the core still keep running on time.
+    pub fn keep_full_speed() -> bool {
+        let st = PROCESS_POWER_THROTTLING_STATE { Version: PROCESS_POWER_THROTTLING_CURRENT_VERSION, ControlMask: PROCESS_POWER_THROTTLING_EXECUTION_SPEED, StateMask: 0 };
+        unsafe { SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &st as *const _ as *const c_void, core::mem::size_of::<PROCESS_POWER_THROTTLING_STATE>() as u32) }.is_ok()
     }
 
     /// The screen is locked (or another desktop, like a UAC prompt, has the input).
@@ -257,6 +344,13 @@ mod imp {
     }
     pub fn power() -> (bool, bool) {
         (false, false)
+    }
+    pub fn power_report() -> crate::policy::PowerReport {
+        crate::policy::PowerReport::default()
+    }
+    pub fn watch_power(_hook: Box<dyn Fn() + Send + Sync>) {}
+    pub fn keep_full_speed() -> bool {
+        false
     }
     pub fn locked() -> bool {
         false
