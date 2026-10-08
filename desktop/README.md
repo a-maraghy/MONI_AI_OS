@@ -141,7 +141,7 @@ for d in *.deb; do dpkg -x "$d" ../root; done
 
 desktop/tools/build-windows.sh --feed /tmp/mint-feed      # signed installer + update feed
 node desktop/tools/test-feed.cjs                          # the feed tool
-(cd desktop/core-tests && cargo test)                     # the app's pure modules (80 tests)
+(cd desktop/core-tests && cargo test)                     # the app's pure modules (91 tests)
 ```
 
 The installer: `src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/MINT AI_<version>_x64-setup.exe`
@@ -193,7 +193,7 @@ minisign signature, not the Authenticode one).
 
 ## Limits and what is not verified yet
 
-- Built and unit-tested on Linux only (`core-tests`: 80 tests of the pure modules; the dashboard's
+- Built and unit-tested on Linux only (`core-tests`: 91 tests of the pure modules; the dashboard's
   `test-desktop-shell.cjs` renders the page in headless Chromium). Everything Windows-specific —
   transparency and WebGL in WebView2, click-through, always-on-bottom and Win+D, WorkerW, global
   hotkeys and key-up, toasts, Windows Hello inside WebView2, DPI, the installer — is on
