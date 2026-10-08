@@ -30,3 +30,7 @@ body.settings { background: #f6f7fb; color: #17142b; overflow: auto; }
 .settings .actions { display: flex; gap: 8px; margin-top: 18px; align-items: center; }
 .settings .actions .sp { flex: 1; }
 .settings .btn { color: inherit; margin-top: 0; }
+/* Laptop control ("This computer"). */
+.settings [hidden] { display: none !important; }
+.settings #m-code { font-family: "Cascadia Mono", Consolas, monospace; text-transform: uppercase; letter-spacing: .08em; }
+.settings #m-cpath { min-width: 220px; }

@@ -40,6 +40,21 @@
   <h2>Experimental</h2>
   <div class="row"><span>Desktop layer behind the icons<small class="warn">Uses undocumented Windows behaviour (live wallpapers use it; Windows updates have broken it). Behind the icons MINT AI cannot be clicked at all: talk with the hotkey, and use Ctrl+Alt+M to bring it up.</small></span><input type="checkbox" id="icons"></div>
 
+  <h2>This computer</h2>
+  <p class="note">Link this computer to Mint OS so MINT AI can work on it when you ask it to. It never starts by itself: you hand over control from MINT AI, for a limited time, with a glowing frame round the screen the whole time. Stop it with the pill's Stop button or the stop key below.</p>
+  <div class="row"><span>Status<small id="m-status">…</small></span><button class="btn" id="m-unlink" type="button" hidden>Unlink</button></div>
+  <div id="m-pair">
+    <div class="row"><span>Pairing code<small>Mint OS ▸ Machines ▸ Link a computer shows one (8 characters, 10 minutes).</small></span><input type="text" id="m-code" placeholder="ABCD-EFGH" maxlength="12" autocomplete="off" spellcheck="false"></div>
+    <div class="row"><span>Name in Mint OS</span><input type="text" id="m-name" maxlength="60" autocomplete="off"></div>
+    <div class="actions"><span class="sp"></span><button class="btn pri" id="m-link" type="button">Link</button></div>
+  </div>
+  <div class="row"><span>Stop MINT AI's control<small id="stop-note">Ends control at once, here on this computer.</small></span><input type="text" class="key" id="hk-stop" readonly><button class="btn" id="hk-stop-def" type="button" title="Back to Ctrl+Alt+Esc">Default</button></div>
+
+  <h2>Claude Code</h2>
+  <div class="row"><span>Found<small id="m-claude">…</small></span><button class="btn" id="m-recheck" type="button">Look again</button></div>
+  <div class="row"><span>Path<small>Leave empty to look on PATH, in %USERPROFILE%\.local\bin and in npm's folder.</small></span><input type="text" id="m-cpath" placeholder="C:\…\claude.exe" spellcheck="false"></div>
+  <div class="err" id="m-err" role="alert"></div>
+
   <div class="err" id="err" role="alert"></div>
   <div class="actions"><button class="btn" id="upd" type="button">Check for updates now</button><span class="sp"></span><button class="btn" id="cancel" type="button">Close</button><button class="btn pri" id="save" type="button">Save</button></div>
 </main>

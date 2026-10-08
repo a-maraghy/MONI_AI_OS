@@ -67,6 +67,7 @@
     $("talk-note").textContent = v.talkFallback ? "Ctrl+Space is taken by another app: listening on " + v.talkKey + " for now." : v.talkKey ? "Now: hold " + v.talkKey + "." : "Not set: the key is taken by another app.";
     $("opacity").value = pm().opacity; $("opv").textContent = pm().opacity + "%";
     segs();
+    if (window.MintMachine) window.MintMachine.paint(S); // "This computer" (below)
     // What is saved, as the form reads it (the per-monitor entry above may have just been made).
     collect();
     saved = JSON.stringify(S);
@@ -77,6 +78,7 @@
     S.monitor = $("monitor").value;
     S.focus = $("focus").checked; S.do_not_disturb = $("dnd").checked; S.battery_saver = $("batt").checked;
     S.autostart = $("autostart").checked; S.check_updates = $("updates").checked; S.experimental_behind_icons = $("icons").checked;
+    if (window.MintMachine) window.MintMachine.collect(S);
   }
   function save() {
     collect();
@@ -109,4 +111,79 @@
   window.MintSettings = { close: close, save: save, dirty: function () { if (S) collect(); return !!S && JSON.stringify(S) !== saved; } };
   $("upd").addEventListener("click", function () { invoke("settings_check_update"); $("err").textContent = "Checking… a notification says what was found."; });
   invoke("settings_get").then(paint);
+})();
+
+/* "This computer" and "Claude Code": pairing with Mint OS (machine_link / machine_unlink, the token goes
+   to Windows Credential Manager, never here), the stop key and the CLI's path (both saved with Save,
+   through the form above: paint / collect are called from it). */
+(function () {
+  var T = window.__TAURI__;
+  var invoke = function (c, a) { return T.core.invoke(c, a || {}); };
+  var $ = function (id) { return document.getElementById(id); };
+  var stopKey = "Ctrl+Alt+Esc", cpath = "", painted = false;
+
+  function show(st) {
+    if (!st) return;
+    var s = !st.linked ? "Not linked." : "Linked as " + (st.name || "this computer") + " to " + st.server + " · " + (st.online ? "online" : "offline, reconnecting");
+    if (st.lease) s += " · MINT AI is controlling it now (" + st.lease.left + " left)";
+    $("m-status").textContent = s;
+    $("m-unlink").hidden = !st.linked;
+    $("m-pair").hidden = !!st.linked;
+    if (!$("m-name").value) $("m-name").value = st.computer || "";
+    var c = st.claude || {};
+    $("m-claude").textContent = !c.checked ? "Looking…" : c.path ? c.path + (c.version ? " · version " + c.version : " · it did not say its version") + (c.git_bash ? "" : " · no Git Bash: it will use PowerShell")
+      : "Not found — install Claude Code and sign in once by running `claude` in a terminal.";
+    $("stop-note").textContent = st.stop_fallback ? "Ctrl+Alt+Esc is taken by another app: using " + st.stop_key + " for now." : st.stop_key ? "Now: " + st.stop_key + ". Ends control at once, here on this computer." : "Not set: the key is taken by another app (the pill's Stop always works).";
+    if (st.error) $("m-err").textContent = st.error;
+  }
+  function refresh() { return invoke("machine_status").then(show).catch(function () {}); }
+
+  // The stop key: recorded like the others, and Esc is allowed here (only with Ctrl+Alt).
+  var el = $("hk-stop");
+  el.addEventListener("focus", function () { el.classList.add("rec"); el.value = "press the keys…"; });
+  el.addEventListener("blur", function () { el.classList.remove("rec"); el.value = stopKey; });
+  el.addEventListener("keydown", function (e) {
+    e.preventDefault();
+    var c = e.code, k = /^Key[A-Z]$/.test(c) ? c.slice(3) : /^Digit\d$/.test(c) ? c.slice(5) : /^F\d{1,2}$/.test(c) ? c : c === "Escape" ? "Esc" : null;
+    if (!k || !(e.ctrlKey || e.altKey)) return;
+    if (k === "Esc" && !(e.ctrlKey && e.altKey)) return;
+    stopKey = [e.ctrlKey ? "Ctrl" : "", e.altKey ? "Alt" : "", e.shiftKey ? "Shift" : "", k].filter(Boolean).join("+");
+    el.blur();
+  });
+  $("hk-stop-def").addEventListener("click", function () { stopKey = "Ctrl+Alt+Esc"; el.value = stopKey; });
+
+  $("m-link").addEventListener("click", function () {
+    $("m-err").textContent = "Linking…";
+    invoke("machine_link", { code: $("m-code").value, name: $("m-name").value }).then(function (st) { $("m-code").value = ""; $("m-err").textContent = "Linked."; show(st); })
+      .catch(function (e) { $("m-err").textContent = String(e); });
+  });
+  $("m-code").addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); $("m-link").click(); } });
+  $("m-unlink").addEventListener("click", function () {
+    if ($("m-unlink").dataset.sure !== "1") { $("m-unlink").dataset.sure = "1"; $("m-err").textContent = "Press Unlink again to unlink this computer (any control in progress stops)."; return; }
+    $("m-unlink").dataset.sure = "";
+    invoke("machine_unlink").then(function (st) { $("m-err").textContent = "Unlinked. Remove it in Mint OS too if you will not link it again."; show(st); }).catch(function (e) { $("m-err").textContent = String(e); });
+  });
+  $("m-recheck").addEventListener("click", function () {
+    if ($("m-cpath").value.trim() !== cpath) { $("m-err").textContent = "Save first: the new path is used once it is saved."; return; }
+    $("m-claude").textContent = "Looking…";
+    invoke("machine_claude_check").then(show).catch(function (e) { $("m-err").textContent = String(e); });
+  });
+
+  window.MintMachine = {
+    paint: function (S) {
+      S.hotkeys = S.hotkeys || {};
+      stopKey = S.hotkeys.stop || "Ctrl+Alt+Esc";
+      cpath = S.claude_path || "";
+      el.value = stopKey;
+      $("m-cpath").value = cpath;
+      painted = true;
+    },
+    collect: function (S) {
+      if (!painted) return;
+      S.hotkeys.stop = stopKey;
+      S.claude_path = $("m-cpath").value.trim();
+    }
+  };
+  refresh();
+  setInterval(refresh, 2000);
 })();

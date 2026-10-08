@@ -1,0 +1,13 @@
+/* Laptop control: the glowing frame around every monitor while MINT AI controls this computer.
+   Transparent and click-through (the app makes the window ignore the mouse), excluded from capture. */
+html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+.glow { position: fixed; inset: 0; border-radius: 6px; pointer-events: none; opacity: 0; transition: opacity .4s ease;
+  border: 3px solid rgba(0, 201, 143, .95);
+  box-shadow: inset 0 0 18px 4px rgba(0, 201, 143, .55), inset 0 0 46px 10px rgba(19, 166, 196, .28);
+  animation: mint-breathe 2.4s ease-in-out infinite; }
+body.on .glow { opacity: 1; }
+@keyframes mint-breathe {
+  0%, 100% { border-color: rgba(0, 201, 143, .95); box-shadow: inset 0 0 18px 4px rgba(0, 201, 143, .55), inset 0 0 46px 10px rgba(19, 166, 196, .28); }
+  50% { border-color: rgba(19, 166, 196, .95); box-shadow: inset 0 0 26px 7px rgba(19, 166, 196, .6), inset 0 0 70px 16px rgba(124, 92, 255, .25); }
+}
+@media (prefers-reduced-motion: reduce) { .glow { animation: none; } }

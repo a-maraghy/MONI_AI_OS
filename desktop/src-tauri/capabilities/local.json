@@ -16,6 +16,10 @@
     "allow-settings-get",
     "allow-settings-set",
     "allow-settings-check-update",
-    "allow-settings-close"
+    "allow-settings-close",
+    "allow-machine-status",
+    "allow-machine-link",
+    "allow-machine-unlink",
+    "allow-machine-claude-check"
   ]
 }
