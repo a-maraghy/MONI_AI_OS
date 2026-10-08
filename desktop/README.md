@@ -99,7 +99,19 @@ frame and pill gone, `lease ended` sent — on: the local stop key (default **Ct
 Ctrl+Alt+Shift+Esc, Settings ▸ This computer, handled in the app with no server round trip), the pill's Stop,
 the expiry, the lock screen, sign-out / shutdown / app exit (and if the app dies, the Job Object takes the
 CLI with it), the link down for 30 s, the server's `stop` / `revoked`, unlinking, the CLI exiting. A second
-`start` while one runs is answered `session failed "already under control"`. **The site cannot start any of
+`start` while one runs is answered `session failed "already under control"`.
+
+**A start that cannot run fails loudly** (after 0.1.5, which dropped a `start` whose lease id was a JSON number
+without a word): every `start` is logged on arrival; a frame the app cannot read is logged by its `t`, and an
+unreadable `start` is answered `session failed`. Claude Code not found (looked for again first), the hands
+server or the CLI not starting, the CLI ending before it answers `initialize` (reason = exit code + its first
+stderr line) or not ready within 45 s → `session failed <plain reason>` at once (e.g. "Claude Code is not
+installed on this computer — install it and sign in once by running `claude`"), the lease ended (`failed`),
+frame and pill gone, a toast. `hello.claude` is `{found, path, version, git_bash}`, sent again whenever Look
+again (or a take-over's re-check) finds it changed; Mint OS shows it on the Computers page and refuses a
+take-over up front while it says not found. Lease ids may arrive as strings or whole numbers. The server
+also ends a start the app has not acknowledged (`lease active` / `session starting`) within 60 s ("the
+computer did not start the session"). **The site cannot start any of
 this**: nothing machine_* is in `capabilities/remote.json`; the Settings commands are in `local.json`, the
 pill's three in `overlay.json` (window `mint-pill` only).
 

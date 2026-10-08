@@ -342,7 +342,18 @@ impl Ctl {
     }
 
     pub(crate) fn on_text(self: &Arc<Self>, text: &str) {
-        let Some(m) = wire::parse_in(text) else { return };
+        let Some(m) = wire::parse_in(text) else {
+            // Never silently: say what it was, and a `start` we cannot read is answered as failed
+            // (the server ends its lease and MINT AI hears why).
+            let p = wire::peek(text);
+            mlog!("machine link: could not read a {:?} message from the server (slug {:?}, lease {:?})", p.t, p.slug, p.lease_id);
+            if p.t == "start" {
+                if let Some(slug) = p.slug {
+                    self.fail_start(&slug, None, wire::UNREADABLE_START);
+                }
+            }
+            return;
+        };
         match m {
             wire::In::Welcome { machine_id, name } => {
                 let mut st = self.st.lock().unwrap();
@@ -356,6 +367,7 @@ impl Ctl {
                 self.token_revoked();
             }
             wire::In::Start { slug, name, purpose, model, first_prompt, lease } => {
+                mlog!("machine link: start for {} (lease {}, {:?} min)", slug, lease.id, lease.minutes);
                 let me = self.clone();
                 std::thread::spawn(move || me.start(slug, name, purpose, model, first_prompt, lease));
             }
@@ -500,39 +512,63 @@ impl Ctl {
 
     /* ------------------------------------------------------------ start */
 
-    fn fail_start(&self, slug: &str, why: &str) {
+    /// The session could not start: logged, reported to the server at once with the reason (it ends
+    /// its lease and the hire, and MINT AI hears why), the local lease (when one was started) ended
+    /// -- the frame and the pill go with it -- and the user told by a toast.
+    fn fail_start(&self, slug: &str, lease_id: Option<&str>, why: &str) {
         mlog!("control session {} not started: {}", slug, why);
         self.send(wire::session(slug, "failed", Some(why)));
+        if let Some(id) = lease_id {
+            self.finish(|l| l.end_if(id, "failed"));
+        }
+        toast(&self.app, "MINT AI could not take over this computer", &wire::clip(why, 240));
+    }
+
+    /// Look for Claude Code again; when what is found changed, tell the server (a new hello).
+    fn recheck_claude(&self) {
+        let before = self.claude_key();
+        self.detect_claude();
+        if self.claude_key() != before && self.st.lock().unwrap().online {
+            mlog!("claude code: changed, telling Mint OS");
+            let h = self.hello();
+            self.send(h);
+        }
+    }
+
+    fn claude_key(&self) -> (Option<String>, Option<String>, bool) {
+        let st = self.st.lock().unwrap();
+        (st.claude.path.clone(), st.claude.version.clone(), st.claude.git_bash.is_some())
     }
 
     #[allow(clippy::too_many_arguments)]
     fn start(self: Arc<Self>, slug: String, name: String, purpose: String, model: Option<String>, first_prompt: String, spec: wire::LeaseSpec) {
         if !wire::slug_ok(&slug) {
-            return self.fail_start(&slug, "bad session name");
+            return self.fail_start(&slug, None, "bad session name");
         }
         let now = now_ms();
         if self.st.lock().unwrap().lease.active(now) {
-            return self.fail_start(&slug, "already under control");
+            return self.fail_start(&slug, None, "already under control");
         }
         let info = {
             let c = self.st.lock().unwrap().claude.clone();
-            if c.path.is_some() {
+            if c.path.as_deref().map(|p| Path::new(p).is_file()).unwrap_or(false) {
                 c
             } else {
-                self.detect_claude();
+                // Not found (or gone since): look again -- it may have been installed meanwhile.
+                self.recheck_claude();
                 self.st.lock().unwrap().claude.clone()
             }
         };
         let Some(exe) = info.path.clone() else {
-            return self.fail_start(&slug, "Claude Code was not found on this computer. Install Claude Code and sign in once by running `claude` in a terminal.");
+            return self.fail_start(&slug, None, wire::NOT_INSTALLED);
         };
         let Some(expires) = wire::lease_expiry(&spec, now) else {
-            return self.fail_start(&slug, "the lease has no expiry");
+            return self.fail_start(&slug, None, "the lease has no expiry");
         };
         let started = self.st.lock().unwrap().lease.start(&spec.id, &slug, expires, now).map(|a| (a.id.clone(), a.expires_at));
         let (lease_id, expires_at) = match started {
             Ok(x) => x,
-            Err(e) => return self.fail_start(&slug, e),
+            Err(e) => return self.fail_start(&slug, None, e),
         };
         mlog!("control lease {} started for {} ({} min)", lease_id, slug, (expires_at - now) / 60_000);
         self.send(wire::lease(&lease_id, "active", Some(expires_at), None));
@@ -546,11 +582,7 @@ impl Ctl {
         let host = Arc::new(MachineHost { ctl: self.clone(), lease_id: lease_id.clone(), slug: slug.clone(), work_dir: self.work_dir() });
         let srv = match mcp_http::Server::start(secret.clone(), Arc::new(HandsTools { host: host.clone() })) {
             Ok(s) => s,
-            Err(e) => {
-                self.fail_start(&slug, &format!("could not open the hands server: {}", e));
-                self.finish(|l| l.end_if(&lease_id, "runner-exited"));
-                return;
-            }
+            Err(e) => return self.fail_start(&slug, Some(&lease_id), &format!("could not open the hands server: {}", e)),
         };
 
         // Folders: cwd Documents, files into Documents\MINT AI, and Desktop / Downloads / Pictures.
@@ -585,11 +617,13 @@ impl Ctl {
             Ok(s) => s,
             Err(e) => {
                 srv.stop();
-                self.fail_start(&slug, &format!("could not start Claude Code: {}", e));
-                self.finish(|l| l.end_if(&lease_id, "runner-exited"));
-                return;
+                return self.fail_start(&slug, Some(&lease_id), &format!("could not start Claude Code ({}): {}", exe, e));
             }
         };
+        // Ready = the CLI answered `initialize`; until then an exit (or a hang) is a start failure.
+        let ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stderr_first: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let stderr_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let proc = Arc::new(sp.proc);
         {
             let mut st = self.st.lock().unwrap();
@@ -606,7 +640,7 @@ impl Ctl {
         let stream = Arc::new(Mutex::new(claude::Stream::new(crate::hands::SERVER_NAME)));
         // stdout: the conversation.
         {
-            let (me, proc, stream, lease_id, slug) = (self.clone(), proc.clone(), stream.clone(), lease_id.clone(), slug.clone());
+            let (me, proc, stream, lease_id, slug, ready) = (self.clone(), proc.clone(), stream.clone(), lease_id.clone(), slug.clone(), ready.clone());
             let first = if first_prompt.trim().is_empty() { purpose.clone() } else { first_prompt };
             let stdout = sp.stdout;
             std::thread::spawn(move || {
@@ -615,15 +649,20 @@ impl Ctl {
                     let Ok(line) = line else { break };
                     let effects = stream.lock().unwrap().on_line(&line);
                     for e in effects {
+                        if matches!(e, claude::Effect::Initialized) {
+                            ready.store(true, Ordering::SeqCst);
+                            mlog!("control session {}: Claude Code is ready", slug);
+                        }
                         me.on_effect(e, &proc, &stream, &lease_id, &slug, &first);
                     }
                 }
             });
         }
-        // stderr: to the log, briefly (never the arguments: they hold the hands' secret).
+        // stderr: to the log, briefly (never the arguments: they hold the hands' secret). Its first
+        // line is kept: when the CLI ends while starting, that is usually why (not signed in ...).
         {
             let stderr = sp.stderr;
-            let slug = slug.clone();
+            let (slug, first, done) = (slug.clone(), stderr_first.clone(), stderr_done.clone());
             std::thread::spawn(move || {
                 let r = std::io::BufReader::new(stderr);
                 for (n, line) in r.lines().enumerate() {
@@ -631,17 +670,33 @@ impl Ctl {
                     if n < 50 {
                         mlog!("claude ({}) stderr: {}", slug, line.chars().take(300).collect::<String>());
                     }
+                    let mut f = first.lock().unwrap();
+                    if f.is_none() && !line.trim().is_empty() {
+                        *f = Some(line.chars().take(300).collect());
+                    }
                 }
+                done.store(true, Ordering::SeqCst);
             });
         }
         // The exit.
         {
-            let (me, proc, lease_id, slug) = (self.clone(), proc.clone(), lease_id.clone(), slug.clone());
+            let (me, proc, lease_id, slug, ready) = (self.clone(), proc.clone(), lease_id.clone(), slug.clone(), ready.clone());
+            let (first, done) = (stderr_first.clone(), stderr_done.clone());
             std::thread::spawn(move || loop {
                 std::thread::sleep(Duration::from_millis(300));
                 if let Some(code) = proc.exited() {
                     let killed = proc.killed();
                     mlog!("control session {}: Claude Code exited (code {}{})", slug, code, if killed { ", stopped" } else { "" });
+                    if !killed && !ready.load(Ordering::SeqCst) {
+                        // Ended before it was ready: a start failure, with what it said.
+                        let t0 = Instant::now();
+                        while !done.load(Ordering::SeqCst) && t0.elapsed() < Duration::from_millis(1500) {
+                            std::thread::sleep(Duration::from_millis(50));
+                        }
+                        let said = first.lock().unwrap().clone();
+                        me.fail_start(&slug, Some(&lease_id), &wire::early_exit_reason(code, said.as_deref()));
+                        break;
+                    }
                     me.finish(|l| l.end_if(&lease_id, "runner-exited"));
                     if killed || code == 0 {
                         me.send(wire::session(&slug, "exited", None));
@@ -649,6 +704,23 @@ impl Ctl {
                         me.send(wire::session(&slug, "failed", Some(&format!("Claude Code exited with code {}", code))));
                     }
                     break;
+                }
+            });
+        }
+        // Not ready in time: ended as a start failure (the server has its own, longer, limit).
+        {
+            let (me, proc, lease_id, slug, ready) = (self.clone(), proc.clone(), lease_id.clone(), slug.clone(), ready.clone());
+            std::thread::spawn(move || {
+                let t0 = Instant::now();
+                while t0.elapsed() < Duration::from_secs(wire::START_TIMEOUT_SECS) {
+                    if ready.load(Ordering::SeqCst) || proc.exited().is_some() || !me.lease_active_id(&lease_id) {
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(250));
+                }
+                if !ready.load(Ordering::SeqCst) && proc.exited().is_none() && me.lease_active_id(&lease_id) {
+                    // Reported first; ending the lease kills the CLI (the exit watcher then sees it stopped).
+                    me.fail_start(&slug, Some(&lease_id), &wire::start_timeout_reason());
                 }
             });
         }
@@ -921,7 +993,9 @@ pub fn machine_unlink() -> Result<Status, String> {
 pub async fn machine_claude_check() -> Result<Status, String> {
     let c = ctl().ok_or("not ready")?;
     let c2 = c.clone();
-    let _ = tauri::async_runtime::spawn_blocking(move || c2.detect_claude()).await;
+    // A change (installed now, another version) reaches Mint OS at once: the Computers page and
+    // machine_take_over read it from there.
+    let _ = tauri::async_runtime::spawn_blocking(move || c2.recheck_claude()).await;
     Ok(status_of(&c))
 }
 

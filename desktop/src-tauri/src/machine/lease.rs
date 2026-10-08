@@ -8,7 +8,9 @@ pub const MAX_AHEAD_MS: u64 = 60 * 60 * 1000;
 pub const EXTEND_STEP_MS: u64 = 15 * 60 * 1000;
 
 /// Why a lease ended (the wire's `reason`).
-pub const REASONS: [&str; 10] = ["stop-hotkey", "pill-stop", "timeout", "locked", "signout", "app-exit", "link-lost", "runner-exited", "server", "unlinked"];
+/// "failed": the session could not start (Claude Code missing, would not spawn, ended or hung
+/// while starting); the reason itself goes with the `session failed` message.
+pub const REASONS: [&str; 11] = ["stop-hotkey", "pill-stop", "timeout", "locked", "signout", "app-exit", "link-lost", "runner-exited", "server", "unlinked", "failed"];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Active {
@@ -172,6 +174,9 @@ mod tests {
         let mut l = Lease::new();
         l.start("L", "s", 10 * M, 0).unwrap();
         assert_eq!(l.end("made-up").unwrap().reason, "server");
+        let mut l = Lease::new();
+        l.start("L", "s", 10 * M, 0).unwrap();
+        assert_eq!(l.end("failed").unwrap().reason, "failed", "a start failure is its own reason");
     }
 
     #[test]

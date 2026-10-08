@@ -1,8 +1,19 @@
 //! The link's messages, server <-> app (pure; unit-tested in core-tests). JSON text frames, at most
 //! 2 MB, with a `t` field. See desktop/README.md ("This computer") for the whole contract.
 
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use serde_json::{json, Value};
+
+/// A lease id as the server sends it: a string, or (Mint OS up to 2026-10-08) a JSON number. The
+/// 0.1.5 app took only a string, so every `start` / `stop` / `extend` of that server was dropped
+/// unread -- the take-over did nothing and nobody was told.
+fn id_string<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    match Value::deserialize(d)? {
+        Value::String(s) => Ok(s),
+        Value::Number(n) if n.is_u64() || n.is_i64() => Ok(n.to_string()),
+        _ => Err(serde::de::Error::custom("a lease id is a string or a whole number")),
+    }
+}
 
 pub const MAX_FRAME: usize = 2 * 1024 * 1024;
 /// An action's screenshot is dropped above this (base64 of it is a third bigger).
@@ -11,6 +22,7 @@ pub const MAX_SUMMARY: usize = 500;
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct LeaseSpec {
+    #[serde(deserialize_with = "id_string")]
     pub id: String,
     #[serde(default)]
     pub minutes: Option<u64>,
@@ -45,6 +57,7 @@ pub enum In {
         lease: LeaseSpec,
     },
     Extend {
+        #[serde(deserialize_with = "id_string")]
         lease_id: String,
         expires_at: String,
     },
@@ -53,6 +66,7 @@ pub enum In {
         text: String,
     },
     Stop {
+        #[serde(deserialize_with = "id_string")]
         lease_id: String,
         #[serde(default)]
         reason: Option<String>,
@@ -73,6 +87,58 @@ pub fn parse_in(text: &str) -> Option<In> {
         return None;
     }
     serde_json::from_str(text).ok()
+}
+
+/// What can be read of a frame `parse_in` refused (for the log, and to answer a `start` it could
+/// not read): its `t`, `slug` and lease id, each only when present and plain. Never the rest.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct Peek {
+    pub t: String,
+    pub slug: Option<String>,
+    pub lease_id: Option<String>,
+}
+
+pub fn peek(text: &str) -> Peek {
+    if text.len() > MAX_FRAME {
+        return Peek { t: "(too big)".into(), ..Peek::default() };
+    }
+    let Ok(v) = serde_json::from_str::<Value>(text) else { return Peek { t: "(not JSON)".into(), ..Peek::default() } };
+    let plain = |v: &Value| -> Option<String> {
+        match v {
+            Value::String(s) if !s.is_empty() && s.len() <= 80 => Some(clip(s, 80)),
+            Value::Number(n) => Some(n.to_string()),
+            _ => None,
+        }
+    };
+    let t = v.get("t").and_then(|t| t.as_str()).map(|t| clip(t, 30)).unwrap_or_else(|| "(no type)".into());
+    let slug = v.get("slug").and_then(|s| s.as_str()).filter(|s| slug_ok(s)).map(|s| s.to_string());
+    let lease_id = v.get("lease").and_then(|l| l.get("id")).or_else(|| v.get("lease_id")).and_then(plain);
+    Peek { t, slug, lease_id }
+}
+
+/// Why a control session could not start: Claude Code is missing (the user's words, also MINT AI's).
+pub const NOT_INSTALLED: &str = "Claude Code is not installed on this computer \u{2014} install it and sign in once by running `claude`";
+/// The app read a `start` it could not understand (a newer or older Mint OS).
+pub const UNREADABLE_START: &str = "the MINT AI app on this computer could not read the start message \u{2014} update the app (tray \u{25b8} Check for updates)";
+/// Claude Code did not get ready in time.
+pub const START_TIMEOUT_SECS: u64 = 45;
+
+/// Claude Code ended before it was ready (the conversation never started): its exit code and the
+/// first line it printed on stderr, if any, with what to do about it.
+pub fn early_exit_reason(code: i32, stderr_first: Option<&str>) -> String {
+    let said = stderr_first.map(|s| clip(s.trim(), 200)).filter(|s| !s.is_empty());
+    let mut r = format!("Claude Code stopped while starting (exit code {})", code);
+    if let Some(s) = said {
+        r.push_str(": ");
+        r.push_str(&s);
+    }
+    r.push_str(". If it has never been used on this computer, sign in once by running `claude` in a terminal.");
+    r
+}
+
+/// Claude Code started but never became ready.
+pub fn start_timeout_reason() -> String {
+    format!("Claude Code did not get ready within {} seconds on this computer. Run `claude` once in a terminal there to check it signs in.", START_TIMEOUT_SECS)
 }
 
 /// A hired session's slug, as the server makes them (mint-session's rule).
@@ -96,7 +162,13 @@ pub struct Claude<'a> {
 
 /// `home` = %USERPROFILE% (the server's gate reads "the user's own files" from it), `user` = the Windows user name.
 pub fn hello(app_version: &str, host: &str, user: &str, home: &str, c: &Claude) -> Value {
-    json!({ "t": "hello", "app_version": app_version, "platform": "windows", "host": host, "user": user, "home": home, "claude": { "path": c.path, "version": c.version, "git_bash": c.git_bash } })
+    json!({ "t": "hello", "app_version": app_version, "platform": "windows", "host": host, "user": user, "home": home, "claude": claude_json(c) })
+}
+
+/// Claude Code's status as the server keeps it (in the hello, and in a hello sent again whenever
+/// "Look again" or a take-over finds it changed): found or not, its path and version, Git Bash.
+pub fn claude_json(c: &Claude) -> Value {
+    json!({ "found": c.path.is_some(), "path": c.path, "version": c.version, "git_bash": c.git_bash })
 }
 
 pub fn lease(lease_id: &str, state: &str, expires_at: Option<u64>, reason: Option<&str>) -> Value {
@@ -299,12 +371,59 @@ mod tests {
         assert_eq!(parse_in(&big), None);
     }
 
+    /// The 2026-10-08 take-over that did nothing: Mint OS sent the lease id as a number.
+    #[test]
+    fn lease_ids_as_numbers() {
+        let real = r#"{"t":"start","slug":"pc-gshn1124","name":"GSHN1124 control","purpose":"Open Excel.","model":null,"first_prompt":"[From MINT AI] Open Excel.","lease":{"id":1,"minutes":15,"expires_at":"2026-10-08T01:06:42.000Z"}}"#;
+        match parse_in(real) {
+            Some(In::Start { slug, lease, .. }) => {
+                assert_eq!(slug, "pc-gshn1124");
+                assert_eq!(lease.id, "1");
+                assert_eq!(lease.minutes, Some(15));
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(parse_in(r#"{"t":"stop","lease_id":7,"reason":"server"}"#), Some(In::Stop { lease_id: "7".into(), reason: Some("server".into()) }));
+        assert_eq!(parse_in(r#"{"t":"extend","lease_id":7,"expires_at":"2026-10-08T12:15:00Z"}"#), Some(In::Extend { lease_id: "7".into(), expires_at: "2026-10-08T12:15:00Z".into() }));
+        assert_eq!(parse_in(r#"{"t":"stop","lease_id":"7"}"#), Some(In::Stop { lease_id: "7".into(), reason: None }));
+        assert_eq!(parse_in(r#"{"t":"stop","lease_id":1.5}"#), None, "not a whole number");
+        assert_eq!(parse_in(r#"{"t":"stop","lease_id":{"x":1}}"#), None);
+        assert_eq!(parse_in(r#"{"t":"stop","lease_id":true}"#), None);
+    }
+
+    #[test]
+    fn peeks_at_unreadable_frames() {
+        let p = peek(r#"{"t":"start","slug":"pc-x","lease":{"id":{"weird":1}}}"#);
+        assert_eq!(p, Peek { t: "start".into(), slug: Some("pc-x".into()), lease_id: None });
+        let p = peek(r#"{"t":"start","slug":"pc-x","lease":{"id":12,"minutes":"fifteen"}}"#);
+        assert_eq!(parse_in(r#"{"t":"start","slug":"pc-x","lease":{"id":12,"minutes":"fifteen"}}"#), None);
+        assert_eq!(p.lease_id.as_deref(), Some("12"));
+        assert_eq!(peek(r#"{"t":"stop","lease_id":"L9"}"#).lease_id.as_deref(), Some("L9"));
+        assert_eq!(peek(r#"{"t":"start","slug":"Not A Slug"}"#).slug, None, "only a valid slug is kept");
+        assert_eq!(peek("nope").t, "(not JSON)");
+        assert_eq!(peek(r#"{"x":1}"#).t, "(no type)");
+        assert_eq!(peek(&"x".repeat(MAX_FRAME + 1)).t, "(too big)");
+    }
+
+    #[test]
+    fn start_failure_reasons() {
+        assert!(NOT_INSTALLED.starts_with("Claude Code is not installed on this computer"));
+        assert!(NOT_INSTALLED.contains("`claude`"));
+        let r = early_exit_reason(1, Some("  Invalid API key \u{b7} Please run /login  "));
+        assert_eq!(r, "Claude Code stopped while starting (exit code 1): Invalid API key \u{b7} Please run /login. If it has never been used on this computer, sign in once by running `claude` in a terminal.");
+        assert!(early_exit_reason(0, None).starts_with("Claude Code stopped while starting (exit code 0). "));
+        assert!(early_exit_reason(2, Some("   ")).starts_with("Claude Code stopped while starting (exit code 2). "));
+        assert!(early_exit_reason(1, Some(&"e".repeat(5000))).len() < 400);
+        assert!(start_timeout_reason().contains("45 seconds"));
+    }
+
     #[test]
     fn builds_app_messages() {
         let h = hello("0.1.5", "LAPTOP", "Ahmed", "C:\\Users\\Ahmed", &Claude { path: Some("C:\\c.exe"), version: Some("2.1.0"), git_bash: false });
-        assert_eq!(h, json!({"t":"hello","app_version":"0.1.5","platform":"windows","host":"LAPTOP","user":"Ahmed","home":"C:\\Users\\Ahmed","claude":{"path":"C:\\c.exe","version":"2.1.0","git_bash":false}}));
+        assert_eq!(h, json!({"t":"hello","app_version":"0.1.5","platform":"windows","host":"LAPTOP","user":"Ahmed","home":"C:\\Users\\Ahmed","claude":{"found":true,"path":"C:\\c.exe","version":"2.1.0","git_bash":false}}));
         let h = hello("0.1.5", "L", "u", "h", &Claude { path: None, version: None, git_bash: true });
         assert_eq!(h["claude"]["path"], Value::Null);
+        assert_eq!(h["claude"]["found"], false, "Claude Code missing is said plainly");
         assert_eq!(lease("L1", "active", Some(0), None), json!({"t":"lease","lease_id":"L1","state":"active","expires_at":"1970-01-01T00:00:00.000Z"}));
         assert_eq!(lease("L1", "ended", None, Some("stop-hotkey")), json!({"t":"lease","lease_id":"L1","state":"ended","reason":"stop-hotkey"}));
         let a = ask("r1", "s", "Bash", &json!({"command":"dir"}), Some("tu1"), None, "cli");
