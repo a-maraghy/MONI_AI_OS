@@ -109,11 +109,19 @@ const ALL = ["general", "voice", "appearance", "sessions", "screen", "approvals"
   let s;
   try {
     s = await startScratch({ env: { MONI_AI_SOCKET: SOCK } });
-    await s.makeUser("setadmin", "administrator");
+    const adminU = await s.makeUser("setadmin", "administrator");
     await s.makeUser("setuse", "mint-user", ["moniai.use"]);
     await s.makeUser("setvoice", "mint-voice", ["moniai.use", "voice.manage"]);
     await s.makeUser("setview", "viewer");
     const A = await s.signIn("setadmin");
+    // Resume asks for Windows Hello or the authenticator code (lib/stepup.js); here the code. Each code is burned.
+    const { authenticator } = require("otplib");
+    let codeStep = Math.floor(Date.now() / 30000);
+    const freshCode = async () => {
+      while (Math.floor(Date.now() / 30000) === codeStep) await new Promise((r) => setTimeout(r, 500));
+      codeStep = Math.floor(Date.now() / 30000);
+      return authenticator.generate(adminU.secret);
+    };
     const U = await s.signIn("setuse");
     const Vo = await s.signIn("setvoice");
     const Vw = await s.signIn("setview");
@@ -202,8 +210,10 @@ const ALL = ["general", "voice", "appearance", "sessions", "screen", "approvals"
     r = await s.req("GET", "/mint-ai/settings/usage", { cookie: A.cookie });
     check("Usage lists the sessions' caps from token-caps (a paused hire has Resume)", r.status === 200 && /id="u-caps"/.test(r.body) && /Planning audit/.test(r.body) && /action="\/mint-ai\/settings\/usage\/resume"/.test(r.body));
     r = await s.req("POST", "/mint-ai/settings/usage/resume", { cookie: A.cookie, headers: fetchH, body: form({ _csrf: aTok, key: "planning-audit" }) });
-    check("Resume -> budget-resume {key}", r.status === 200 && last("budget-resume").key === "planning-audit", JSON.stringify(last("budget-resume")));
-    r = await s.req("POST", "/mint-ai/api/decisions/21/resume", { cookie: A.cookie, headers: { "X-CSRF-Token": aTok }, body: {} });
+    check("Resume without Windows Hello or the code -> 428, nothing resumed", r.status === 428 && count("budget-resume") === 0, r.status);
+    r = await s.req("POST", "/mint-ai/settings/usage/resume", { cookie: A.cookie, headers: fetchH, body: form({ _csrf: aTok, key: "planning-audit", step_up: JSON.stringify({ totp: await freshCode() }) }) });
+    check("Resume (with the code) -> budget-resume {key}", r.status === 200 && last("budget-resume").key === "planning-audit", JSON.stringify(last("budget-resume")));
+    r = await s.req("POST", "/mint-ai/api/decisions/21/resume", { cookie: A.cookie, headers: { "X-CSRF-Token": aTok }, body: { step_up: { totp: await freshCode() } } });
     check("a cap card's Resume (decisions/:id/resume) -> budget-resume {decision_id}", r.status === 200 && last("budget-resume").decision_id === 21, r.status + " " + r.body);
     r = await s.req("POST", "/mint-ai/api/decisions/21/resume", { cookie: Vw.cookie, headers: { "X-CSRF-Token": "x" }, body: {} });
     check("  not for a role without moniai.use", r.status === 403 || r.status === 401, r.status);

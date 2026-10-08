@@ -214,7 +214,7 @@ function ask(ev) {
     answered = true;
     s.destroy();
     deny("Nobody answered the approval request in time, so it was denied.");
-  }, (approvalTimeoutS() + 30) * 1000);
+  }, (approvalTimeoutS() + 150) * 1000); // the card's window, plus the supervisor's Windows Hello hold (HOLD_MAX_S 120) and a margin
   let buf = "";
   s.setEncoding("utf8");
   s.on("connect", () =>

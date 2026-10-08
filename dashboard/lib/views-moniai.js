@@ -370,7 +370,7 @@ ${perm && !desk ? dockMarkup(o.csrf, perm, { shell: true, noVoice: !vOk, core })
     heading: null,
     pageClass: desk ? "cc-page cc-desk" : "cc-page",
     assets: desk
-      ? ["voice-live.css", "mint-desktop.css", "console.js", "cc-logic.js", "mint-core.js", "mint-core-d.js", "cc-family.js", "cc-map.js", "cc-panels.js", "voice-live-detect.js", "voice-live.js", "ui-actions.js", "mint-desktop-layout.js", "moni-ai.js", "mint-desktop.js"]
+      ? ["mint-desktop-webauthn.js", "voice-live.css", "mint-desktop.css", "console.js", "cc-logic.js", "mint-core.js", "mint-core-d.js", "cc-family.js", "cc-map.js", "cc-panels.js", "voice-live-detect.js", "voice-live.js", "ui-actions.js", "mint-desktop-layout.js", "moni-ai.js", "mint-desktop.js"]
       : ["voice-live.css", "mint-dock.css", "console.js", "cc-logic.js", "mint-core.js", "mint-core-d.js", "cc-family.js", "cc-map.js", "cc-panels.js", "voice-live-detect.js", "voice-live.js", "ui-actions.js", "moni-ai.js", "mint-dock.js", "mint-shell.js"],
     topExtra: topExtra(),
     topEnd: TOP_CLOCK,

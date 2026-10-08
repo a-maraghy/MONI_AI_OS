@@ -258,7 +258,8 @@ every call; unknown fields are refused. `lib/protocol.js` is the definition.
 | `deploy-event` | `component` (`dashboard`), `started_at?`, `commit?`, `deployed_at?` | audited |
 | `snapshot` | `turns?` (the voice front desk's own earlier turns) | read: counts, titles and human-unit figures for the voice front desk, never a command (`lib/snapshot.js`) |
 | `interrupt` | – | audited |
-| `approve`, `deny` | `approval_id`, `note?` | audited |
+| `approve`, `deny` | `approval_id`, `note?`; approve also `verified?` (`hello`/`totp`), `verified_with?` | audited; the panel requires Windows Hello or the code for every approve (dashboard `lib/stepup.js`) and says which -- stored on the approval row (`verified`, `verified_with`). The same two optional fields ride on `decision-approve`, `budget-resume`, `rule-create/update/delete`, `session-retire` (audit only) |
+| `approval-hold` | `approval_id`, `seconds` (10-120) | the panel, while Windows Hello runs: the card's expiry moves to at least `seconds` from now, never past its own window + 120 s (a hired session's runner gives up 150 s after its window) |
 | `rc` | `enabled` | audited |
 | `restart` | – | audited |
 | `fresh` | `reason?`, `force?` | audited; a new conversation (see *Fresh start*) |

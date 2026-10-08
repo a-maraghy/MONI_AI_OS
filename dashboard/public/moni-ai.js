@@ -227,6 +227,17 @@
         if (!r.ok) {
           var e = new Error(j.error || "HTTP " + r.status);
           e.status = r.status; e.code = j.code;
+          if (j.step_up) e.stepUp = j.step_up;
+          // Windows Hello for an approval (lib/stepup.js): the first try names the challenge; ask, and send again with the proof.
+          if (r.status === 428 && j.step_up && !opts.stepped && window.MintStepUp) {
+            return window.MintStepUp.ask(j.step_up, function (proof) {
+              var o = {};
+              for (var k in opts) if (Object.prototype.hasOwnProperty.call(opts, k)) o[k] = opts[k];
+              o.body = Object.assign({}, opts.body || {}, { step_up: proof });
+              o.stepped = true;
+              return api(path, o);
+            });
+          }
           throw e;
         }
         return j;
@@ -1249,7 +1260,8 @@
     var head = res === "ok" ? (byRule ? "Auto-approved" : "Approved") : a.status === "denied" ? "Denied" : a.status === "expired" ? "Expired" : a.status === "cancelled" ? "Withdrawn" : "Approval needed";
     var who = esc(ML.approvalFrom(a)) + (/^session:/.test(String(a.origin || "")) ? " (a session MINT AI hired)" : "");
     var what = a.tool === "SessionRetire" ? "retire the session <b>" + esc(String((a.input || {}).session || (a.input || {}).name || "?")) + "</b>" : a.tool === "SendMessage" ? "send this to <b>" + esc(String((a.input || {}).to || "a session").replace(/\s*\[[0-9a-f]+\]$/, "")) + "</b>" : a.tool === "Bash" || a.tool === "Monitor" ? "run this command" : "use <b>" + esc(a.tool) + "</b>";
-    var resText = a.status === "approved" ? (byRule ? "Approved automatically by " + esc(decidedBy(a)) : "Approved by " + esc(decidedBy(a))) + " · " + esc(hm(a.decided_at))
+    var how = a.verified === "hello" ? " with Windows Hello" : a.verified === "totp" ? " with the authenticator code" : "";
+    var resText = a.status === "approved" ? (byRule ? "Approved automatically by " + esc(decidedBy(a)) : "Approved by " + esc(decidedBy(a)) + how) + " · " + esc(hm(a.decided_at))
       : a.status === "denied" ? "Denied by " + esc(decidedBy(a)) + " · " + esc(hm(a.decided_at)) + " — nothing ran"
       : a.status === "expired" ? "Nobody answered in time — denied by default at " + esc(hm(a.decided_at))
       : a.status === "cancelled" ? "Withdrawn — answered elsewhere or the turn was interrupted" : "";
@@ -1266,6 +1278,7 @@
       '<div class="cc-ap-act"><button type="button" class="cc-btn pri sm" data-approve="' + a.id + '">' + ic("check") + (a.tool === "SessionRetire" ? "Retire" : "Approve once") + "</button>" +
       (ML.approvalNoRule(a) ? "" : '<button type="button" class="cc-btn sm" data-always="' + a.id + '">' + ic("scale") + "Always allow this</button>") +
       '<button type="button" class="cc-btn sm" data-deny="' + a.id + '">' + ic("close") + (a.tool === "SessionRetire" ? "Keep" : "Deny") + "</button></div>" +
+      (a.status === "pending" ? '<div class="cc-ap-hint cc-ap-hello">' + esc(ML.HELLO_HINT) + "</div>" : "") +
       (a.status === "pending" && sug && sug.pattern && !ML.approvalNoRule(a) ? '<div class="cc-ap-hint">“Always allow this” would add an allow rule for <code>' + esc(clip(sug.pattern, 160)) + "</code> — you see it before it is saved.</div>" : "") +
       '<div class="cc-ap-res">' + (res === "ok" ? ic("check") : ic("close")) + "<span>" + resText + "</span></div>" +
       '<div class="cc-ap-err" data-err hidden></div></div></div>';
@@ -1546,6 +1559,7 @@
       (n > 1 ? '<button type="button" data-need-pg="1" aria-label="Next">' + ic("chevr") + "</button>" : "") + "</span></div>" +
       "<h3>" + esc(c.title) + "</h3>" + (c.meta ? '<div class="meta">' + esc(c.meta) + "</div>" : "") +
       (c.why ? '<p class="why">' + esc(c.why) + "</p>" : "") +
+      (c.hello ? '<p class="hello">' + ic("shield") + "<span>" + esc(ML.HELLO_HINT) + "</span></p>" : "") +
       (it.type === "approval" ? '<div class="timer"><span data-need-timer>—</span><span class="bar"><i data-need-bar></i></span></div>' : "") +
       '<div class="acts">' + c.actions.map(function (x, i) {
         if (x.link) return "";

@@ -95,7 +95,8 @@ check("an id is URL-encoded into its route", L.card({ type: "decision", id: "a/b
   // Every route the card names is one server.js serves (under moniAiWrite).
   const routes = [/app\.post\("\/mint-ai\/api\/approvals\/:id\/:decision", \.\.\.moniAiWrite/, /app\.post\("\/mint-ai\/api\/decisions\/:id\/:action", \.\.\.moniAiWrite/, /\["approve", "dismiss", "ask", "resume"\]\.includes\(action\)/];
   check("every route the card calls exists on the server, behind moniai.use + CSRF", routes.every((r) => r.test(server)));
-  check("  decisions/:id/resume is the supervisor's budget-resume", /if \(action === "resume"\) \{[\s\S]{0,200}moniAiOp\(req, res, "budget-resume", \{ decision_id: id \}/.test(server));
+  // (Since 2026-10-08 Resume and Approve go through Windows Hello first: lib/stepup.js, decisionStepUp.)
+  check("  decisions/:id/resume is the supervisor's budget-resume, after Windows Hello", /if \(action === "resume" \|\| action === "approve"\) \{[\s\S]{0,500}callStepped\(req, action === "resume" \? "budget-resume" : "decision-approve", p\)/.test(server) && /"\/mint-ai\/api\/decisions\/:id\/:action", \.\.\.moniAiWrite, decisionStepUp,/.test(server));
 }
 {
   // A daily token cap card (kind "cap"): Resume for today / Leave paused, as the Decisions sheet offers.

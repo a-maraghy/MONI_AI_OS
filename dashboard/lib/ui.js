@@ -546,7 +546,7 @@ function MANIFEST_VERSION() {
 function page(title, inner, opts = {}) {
   // Every page carries the Command Center's stylesheet too: its confirm
   // (.cc-sdlg), form dialog (.cc-modal), buttons and tags are the whole OS's.
-  const GLOBAL = ["style.css", "os.css", "moni-ai.css", "mint-os.css", "app.js", "voice-stop.js", "os.js"];
+  const GLOBAL = ["style.css", "os.css", "moni-ai.css", "mint-os.css", "app.js", "voice-stop.js", "os.js", "step-up.js"];
   const assets = (opts.assets || []).filter((f) => /^[a-z0-9-]+\.(css|js)$/.test(f) && !GLOBAL.includes(f));
   const css = assets.filter((f) => f.endsWith(".css")).map((f) => `<link rel="stylesheet" href="${asset(f)}">`).join("\n");
   const js = assets.filter((f) => f.endsWith(".js")).map((f) => `<script src="${asset(f)}" defer></script>`).join("\n");
@@ -573,6 +573,7 @@ ${css}
 <script src="${asset("app.js")}" defer></script>
 <script src="${asset("voice-stop.js")}" defer></script>
 <script src="${asset("os.js")}" defer></script>
+<script src="${asset("step-up.js")}" defer></script>
 ${js}
 </head><body>
 ${inner}

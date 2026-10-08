@@ -384,18 +384,39 @@ var MD = (function () {
       allow.type = "button";
       deny.type = "button";
 
+      // Allow asks for Windows Hello (or the authenticator code) first: the
+      // server answers 428 with a challenge (lib/stepup.js), public/step-up.js asks.
+      function sendAnswer(decision, extra) {
+        var body = { request_id: String(ev.request_id), decision: decision };
+        Object.keys(extra || {}).forEach(function (k) { body[k] = extra[k]; });
+        return post("/console/" + sessionId + "/permission", body).then(function (r) {
+          if (r.ok) return r;
+          return r.json().catch(function () { return {}; }).then(function (j) {
+            var e = new Error(j.error || "HTTP " + r.status);
+            e.status = r.status;
+            if (j.step_up) e.stepUp = j.step_up;
+            throw e;
+          });
+        });
+      }
       function answer(decision) {
         allow.disabled = true;
         deny.disabled = true;
-        card.className = "permission answered";
-        row.textContent = decision === "allow" ? "Allowed" : "Skipped";
-        status.textContent = "working…";
-        post("/console/" + sessionId + "/permission", {
-          request_id: String(ev.request_id),
-          decision: decision,
-        }).catch(function () {
-          addMessage("system", "Could not send that answer.");
-        });
+        sendAnswer(decision)
+          .catch(function (e) {
+            if (e.status === 428 && e.stepUp && window.MintStepUp)
+              return window.MintStepUp.ask(e.stepUp, function (proof) { return sendAnswer(decision, { step_up: JSON.stringify(proof) }); });
+            throw e;
+          })
+          .then(function () {
+            card.className = "permission answered";
+            row.textContent = decision === "allow" ? "Allowed" : "Skipped";
+            status.textContent = "working…";
+          }, function (e) {
+            allow.disabled = false;
+            deny.disabled = false;
+            if (!(e && e.code === "step-up-cancelled")) addMessage("system", "Could not send that answer" + (e && e.message ? ": " + e.message : "."));
+          });
       }
 
       allow.addEventListener("click", function () { answer("allow"); });

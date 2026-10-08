@@ -1177,8 +1177,9 @@ function onControlRequest(ev) {
     reason: req.decision_reason || gate.reason || req.description || null,
     expires_at: expires,
   });
-  const timer = setTimeout(() => expireApproval(row.id), approvalTimeoutS() * 1000);
-  approvals.set(row.id, { requestId: ev.request_id, input, generation: proc.generation, timer, tool, toolUseId: req.tool_use_id });
+  const expire = () => expireApproval(row.id);
+  const timer = setTimeout(expire, approvalTimeoutS() * 1000);
+  approvals.set(row.id, { requestId: ev.request_id, input, generation: proc.generation, timer, expire, tool, toolUseId: req.tool_use_id });
   requestToApproval.set(ev.request_id, row.id);
   const t = turns.toolSteps.get(req.tool_use_id);
   if (t) {
@@ -1268,7 +1269,33 @@ function recordDeniedDelegation(a, row, why) {
   emitDelegation(d);
 }
 
-function decide(approvalId, allow, actor, note, alwaysRule) {
+/**
+ * Keep a waiting card alive while the administrator answers Windows Hello
+ * (the panel asks when it hands out the challenge, dashboard lib/stepup.js):
+ * the expiry moves to at least `seconds` from now, never further than
+ * HOLD_MAX_S past the card's own window (a hired session's runner gives up 150 s
+ * after it, bin/mint-session). Returns {expires_at, held}.
+ */
+const HOLD_MAX_S = 120;
+function holdApproval(approvalId, seconds) {
+  const row = ledger.get("approvals", approvalId);
+  if (!row) throw new Error("no such approval");
+  if (row.status !== "pending") throw new Error(`that approval is already ${row.status}`);
+  const a = approvals.get(approvalId);
+  if (!a || !a.expire) throw new Error("that request is no longer waiting (the process restarted)");
+  if (!a.window_end) a.window_end = Date.parse(row.expires_at) + HOLD_MAX_S * 1000;
+  const cur = Date.parse(row.expires_at);
+  const want = Math.min(Date.now() + seconds * 1000, a.window_end);
+  if (!(want > cur)) return { expires_at: row.expires_at, held: false };
+  clearTimeout(a.timer);
+  a.timer = setTimeout(a.expire, Math.max(0, want - Date.now()));
+  const upd = ledger.updateApproval(approvalId, { expires_at: new Date(want).toISOString() });
+  log(`approval #${approvalId} held to ${upd.expires_at} while Windows Hello runs`);
+  emit("approval", { approval: publicApproval(upd) });
+  return { expires_at: upd.expires_at, held: true };
+}
+
+function decide(approvalId, allow, actor, note, alwaysRule, verified) {
   const row = ledger.get("approvals", approvalId);
   if (!row) throw new Error("no such approval");
   if (row.status !== "pending") throw new Error(`that approval is already ${row.status}`);
@@ -1292,9 +1319,11 @@ function decide(approvalId, allow, actor, note, alwaysRule) {
     decided_at: now(),
     decided_by: actor,
     note: note || null,
+    ...(allow && verified && verified.verified ? { verified: verified.verified, verified_with: verified.verified_with || null } : {}),
   });
   if (!allow) recordDeniedDelegation(a, updated, `denied by ${actor}`);
-  log(`approval #${approvalId} ${allow ? "approved" : "denied"} by ${actor}${rule ? " and rule #" + rule.id + " saved" : ""}`);
+  const how = allow && verified && verified.verified ? (verified.verified === "hello" ? " with Windows Hello" : " with the authenticator code") : "";
+  log(`approval #${approvalId} ${allow ? "approved" : "denied"} by ${actor}${how}${rule ? " and rule #" + rule.id + " saved" : ""}`);
   emit("approval", { approval: publicApproval(updated) });
   return rule ? { approval: publicApproval(updated), rule } : publicApproval(updated);
 }
@@ -1441,14 +1470,15 @@ async function sessionRetire(actor, p) {
       origin: "moni-ai",
       origin_name: "MINT AI",
     });
-    const timer = setTimeout(() => {
+    const expire = () => {
       const a = approvals.get(row.id);
       if (!a) return;
       approvals.delete(row.id);
       const cur = ledger.get("hired_sessions", h.id);
       if (cur && cur.status === "retiring") emitHired(ledger.updateHired(h.id, { status: "hired" }), "retire-expired");
       emit("approval", { approval: publicApproval(ledger.updateApproval(row.id, { status: "expired", decided_at: now(), decided_by: "timeout" })) });
-    }, secs * 1000);
+    };
+    const timer = setTimeout(expire, secs * 1000);
     if (timer.unref) timer.unref();
     approvals.set(row.id, {
       kind: "retire",
@@ -1456,6 +1486,7 @@ async function sessionRetire(actor, p) {
       input: {},
       tool: "SessionRetire",
       timer,
+      expire,
       reply: (resp, by) => {
         const cur = ledger.get("hired_sessions", h.id);
         if (!cur || cur.status === "retired") return;
@@ -1477,7 +1508,8 @@ async function sessionRetire(actor, p) {
     if (a) {
       clearTimeout(a.timer);
       approvals.delete(h.retire_approval_id);
-      emit("approval", { approval: publicApproval(ledger.updateApproval(h.retire_approval_id, { status: "approved", decided_at: now(), decided_by: actor, note: "retired from the session's menu" })) });
+      const how = p.verified ? { verified: p.verified, verified_with: p.verified_with || null } : {};
+      emit("approval", { approval: publicApproval(ledger.updateApproval(h.retire_approval_id, { status: "approved", decided_at: now(), decided_by: actor, note: "retired from the session's menu", ...how })) });
     }
   }
   return { retired: publicHired(await doRetire(h, actor)) };
@@ -1522,14 +1554,15 @@ function sessionApproval(actor, p) {
   });
   log(`approval #${row.id} raised by hired session "${h.name}": ${tool} ${clip(summary, 120)}`);
   return new Promise((resolve) => {
-    const timer = setTimeout(() => {
+    const expire = () => {
       if (!approvals.has(row.id)) return;
       approvals.delete(row.id);
       requestToApproval.delete(key);
       emit("approval", { approval: publicApproval(ledger.updateApproval(row.id, { status: "expired", decided_at: now(), decided_by: "timeout" })) });
       resolve({ behavior: "deny", message: "Nobody answered the approval request in time, so it was denied." });
-    }, approvalTimeoutS() * 1000);
-    approvals.set(row.id, { kind: "session", slug: p.slug, requestId: key, input, tool, timer, reply: (resp) => resolve(resp) });
+    };
+    const timer = setTimeout(expire, approvalTimeoutS() * 1000);
+    approvals.set(row.id, { kind: "session", slug: p.slug, requestId: key, input, tool, timer, expire, reply: (resp) => resolve(resp) });
     requestToApproval.set(key, row.id);
     emit("approval", { approval: publicApproval(ledger.get("approvals", row.id)) });
   });
@@ -2397,12 +2430,16 @@ async function handle(req, sock) {
       return { interrupted: true };
     }
     case "approve": {
+      const verified = p.verified ? { verified: p.verified, verified_with: p.verified_with } : null;
       if (p.rule_pattern !== undefined || p.rule_tool !== undefined) {
         if (!p.rule_pattern || !p.rule_tool) throw new Error("an always-allow rule needs rule_pattern and rule_tool");
-        return decide(p.approval_id, true, req.actor, p.note, { pattern: p.rule_pattern, tool: p.rule_tool });
+        return decide(p.approval_id, true, req.actor, p.note, { pattern: p.rule_pattern, tool: p.rule_tool }, verified);
       }
-      return { approval: decide(p.approval_id, true, req.actor, p.note) };
+      return { approval: decide(p.approval_id, true, req.actor, p.note, null, verified) };
     }
+    case "approval-hold":
+      if (!isHuman(req.actor)) throw new Error("only the administrator's panel holds a card");
+      return holdApproval(p.approval_id, p.seconds);
     case "deny":
       return { approval: decide(p.approval_id, false, req.actor, p.note) };
     case "rc":

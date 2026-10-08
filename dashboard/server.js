@@ -43,6 +43,8 @@ const rbac = require("./lib/rbac");
 const totp = require("./lib/totp");
 // Passkeys (Windows Hello) as the sign-in's second step; the authenticator stays as the fallback.
 const passkeys = require("./lib/passkeys");
+// Windows Hello (or the code) for every approval that lets something run (2026-10-08).
+const stepup = require("./lib/stepup");
 const voice = require("./lib/voice");
 const voiceShared = require("./lib/voice-shared"); // the guard, the supervisor door, the summaries (was voice-desk.js)
 const voiceUsage = require("./lib/voice-usage");
@@ -3857,6 +3859,56 @@ app.post("/console/:id/transcribe", requireAuth, requirePerm("console.use"), con
   return voiceTranscribeRoute(req, res);
 });
 
+/* ----------------------------------------------- Windows Hello for approvals --- */
+/*
+ * Every decision that lets something run needs Windows Hello (or the
+ * authenticator code) here, on the server: lib/stepup.js. These are the
+ * pieces the routes below share. Deny, Keep and Dismiss never ask.
+ */
+
+/** A short, stable fingerprint of what exactly is allowed, for the bind string. */
+function stepBindHash(...parts) {
+  return crypto.createHash("sha256").update(JSON.stringify(parts)).digest("hex").slice(0, 16);
+}
+
+/**
+ * A supervisor op for a stepped-up request: the step-up rides along as
+ * `verified` / `verified_with`, so MINT AI's own ledger and audit log record
+ * how it was approved. A supervisor that does not know those fields yet (the
+ * two deploy separately) gets the op without them -- the panel's own audit
+ * line still says it.
+ */
+async function callStepped(req, op, params, opts) {
+  const s = req.stepUp;
+  const p = s ? { ...params, verified: s.method, verified_with: String(s.with || "").slice(0, 80) } : params;
+  try {
+    return await moniai.call(op, p, req.me.username, opts);
+  } catch (e) {
+    if (s && /unexpected field: verified/.test(String(e && e.message))) return moniai.call(op, params, req.me.username, opts);
+    throw e;
+  }
+}
+
+/** " with Windows Hello (Laptop)" / " with authenticator code", for the panel's audit lines. */
+const steppedWith = (req) => (req.stepUp ? " with " + stepup.label(req.stepUp) : "");
+
+/**
+ * Keep an approval card alive while Windows Hello runs: the supervisor moves
+ * its expiry to at least 90 s from now (bounded there). Resolves to the new
+ * expires_at, or null (an older supervisor, or the card is gone).
+ */
+async function holdApproval(req, id) {
+  try {
+    const r = await moniai.call("approval-hold", { approval_id: id, seconds: 90 }, req.me.username, { timeout: 5000 });
+    return (r && r.expires_at) || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+/** Refusals of a step-up go to the panel's log like every other sign of a check failing. */
+const stepAudit = (req, line) => db.logLogin(req.ip, req.me.username, "step-up", String(line).slice(0, 200));
+
 /** Answer the CLI's permission question. */
 function answerPermission(entry, requestId, behavior, input, message) {
   const response =
@@ -3925,7 +3977,13 @@ app.post("/console/:id/speak", requireAuth, requirePerm("console.use"), requireC
   return voiceSpeakRoute(req, res);
 });
 
-app.post("/console/:id/permission", requireAuth, requirePerm("console.use"), requireCsrf, (req, res) => {
+// Allow needs Windows Hello (or the code); Skip does not.
+const consoleAllowStepUp = stepup.requireStepUp({
+  bind: (req) => (field(req.body, "decision") === "allow" ? `console:${String(req.params.id).slice(0, 20)}:${String(req.body.request_id || "").slice(0, 80)}:allow` : null),
+  what: () => "Allow this step in the console chat",
+  audit: stepAudit,
+});
+app.post("/console/:id/permission", requireAuth, requirePerm("console.use"), requireCsrf, consoleAllowStepUp, (req, res) => {
   const session = loadConsoleSession(req, res);
   if (!session) return;
   const entry = consoleTurns.get(session.id);
@@ -3938,6 +3996,7 @@ app.post("/console/:id/permission", requireAuth, requirePerm("console.use"), req
 
   const allow = field(req.body, "decision") === "allow";
   answerPermission(entry, requestId, allow ? "allow" : "deny", pending.input);
+  db.logLogin(req.ip, req.me.username, "console", `${allow ? "allowed" : "skipped"} a step in chat ${session.id}${steppedWith(req)}`);
   res.json({ ok: true });
 });
 
@@ -4451,15 +4510,23 @@ app.post("/mint-ai/api/sessions/:slug/keep", ...moniAiWrite, async (req, res) =>
     moniAiFail(res, e);
   }
 });
-app.post("/mint-ai/api/sessions/:slug/retire", ...moniAiWrite, async (req, res) => {
+// Retiring a session (and with it approving a waiting retire card) needs Windows Hello.
+const retireStepUp = (html) =>
+  stepup.requireStepUp({
+    bind: (req) => (cleanSlug(req.params.slug) ? "retire:" + cleanSlug(req.params.slug) : null),
+    what: (req) => `Retire the session ${cleanSlug(req.params.slug)}`,
+    audit: stepAudit,
+    html,
+  });
+app.post("/mint-ai/api/sessions/:slug/retire", ...moniAiWrite, retireStepUp(), async (req, res) => {
   const slug = cleanSlug(req.params.slug);
   if (!slug) return res.status(404).json({ error: "No such session." });
   try {
     const params = { slug };
     const note = moniai.cleanNote(req.body && req.body.note);
     if (note) params.note = note;
-    const out = await moniai.call("session-retire", params, req.me.username, { timeout: 60000 });
-    db.logLogin(req.ip, req.me.username, "moni-ai", `retired hired session ${slug}`);
+    const out = await callStepped(req, "session-retire", params, { timeout: 60000 });
+    db.logLogin(req.ip, req.me.username, "moni-ai", `retired hired session ${slug}${steppedWith(req)}`);
     res.json(out);
   } catch (e) {
     moniAiFail(res, e);
@@ -4667,7 +4734,24 @@ app.post("/mint-ai/api/interrupt", ...moniAiWrite, async (req, res) => {
   }
 });
 
-app.post("/mint-ai/api/approvals/:id/:decision", ...moniAiWrite, async (req, res) => {
+/*
+ * Approve once and Always allow this need Windows Hello (or the code), bound
+ * to this approval and -- for Always allow -- to the exact rule; Deny never
+ * does. Covers every card that comes through here: MINT AI's own, a hired or
+ * machine session's (origin session:<slug>) and a retire consent.
+ */
+const approvalStepUp = stepup.requireStepUp({
+  bind: (req) => {
+    if (req.params.decision !== "approve") return null;
+    const id = moniai.cleanApprovalId(req.params.id);
+    const always = moniai.cleanAlwaysRule(req.body);
+    return `approval:${id}:approve` + (always ? ":always:" + stepBindHash(always.rule_tool, always.rule_pattern) : "");
+  },
+  what: (req) => `${req.body && req.body.rule ? "Always allow" : "Approve"} request #${req.params.id}`,
+  hold: (req) => holdApproval(req, moniai.cleanApprovalId(req.params.id)),
+  audit: stepAudit,
+});
+app.post("/mint-ai/api/approvals/:id/:decision", ...moniAiWrite, approvalStepUp, async (req, res) => {
   const decision = req.params.decision;
   if (decision !== "approve" && decision !== "deny") return res.status(404).json({ error: "No such action." });
   try {
@@ -4676,8 +4760,8 @@ app.post("/mint-ai/api/approvals/:id/:decision", ...moniAiWrite, async (req, res
     if (note) params.note = note;
     const always = decision === "approve" ? moniai.cleanAlwaysRule(req.body) : null;
     if (always) Object.assign(params, always);
-    const out = await moniai.call(decision, params, req.me.username);
-    db.logLogin(req.ip, req.me.username, "moni-ai", `${decision === "approve" ? "approved" : "denied"} request ${params.approval_id}${always ? " and saved an always-allow rule" : ""}`);
+    const out = decision === "approve" ? await callStepped(req, decision, params) : await moniai.call(decision, params, req.me.username);
+    db.logLogin(req.ip, req.me.username, "moni-ai", `${decision === "approve" ? "approved" : "denied"} request ${params.approval_id}${always ? " and saved an always-allow rule" : ""}${steppedWith(req)}`);
     res.json(out);
   } catch (e) {
     moniAiFail(res, e);
@@ -4782,13 +4866,31 @@ app.post("/mint-ai/api/missions/request", ...moniAiWrite, (req, res) => {
 app.get("/mint-ai/api/decisions", ...moniAiGuard, (req, res) => {
   moniAiOp(req, res, "decisions", { status: req.query && req.query.status === "all" ? "all" : "open" });
 });
-app.post("/mint-ai/api/decisions/:id/:action", ...moniAiWrite, (req, res) => {
+// Apply fix / Retire (approve) and Resume for today need Windows Hello; Dismiss and Ask more do not.
+const decisionStepUp = stepup.requireStepUp({
+  bind: (req) => (["approve", "resume"].includes(req.params.action) ? `decision:${moniai.idOf(req.params.id, "decision")}:${req.params.action}` : null),
+  what: (req) => (req.params.action === "resume" ? "Resume past the daily cap" : "Approve decision #" + req.params.id),
+  audit: stepAudit,
+});
+app.post("/mint-ai/api/decisions/:id/:action", ...moniAiWrite, decisionStepUp, async (req, res) => {
   const action = req.params.action;
   if (!["approve", "dismiss", "ask", "resume"].includes(action)) return res.status(404).json({ error: "No such action." });
   // Resume is a daily-token-cap card's (Settings > Usage & budget): the supervisor's budget-resume.
-  if (action === "resume") {
-    const id = moniAiClean(res, () => moniai.idOf(req.params.id, "decision"));
-    if (id !== undefined) moniAiOp(req, res, "budget-resume", { decision_id: id }, { log: `resumed past the daily cap (decision ${id})` });
+  if (action === "resume" || action === "approve") {
+    const p = moniAiClean(res, () => {
+      const o = { decision_id: moniai.idOf(req.params.id, "decision") };
+      const note = action === "approve" ? moniai.cleanNote(req.body && req.body.note) : undefined;
+      if (note) o.note = note;
+      return o;
+    });
+    if (p === undefined) return;
+    try {
+      const out = await callStepped(req, action === "resume" ? "budget-resume" : "decision-approve", p);
+      db.logLogin(req.ip, req.me.username, "moni-ai", `${action === "resume" ? `resumed past the daily cap (decision ${p.decision_id})` : `approve decision ${p.decision_id}`}${steppedWith(req)}`);
+      res.json(out);
+    } catch (e) {
+      moniAiFail(res, e);
+    }
     return;
   }
   const params = moniAiClean(res, () => {
@@ -4851,17 +4953,49 @@ app.post("/mint-ai/api/rules/test", ...moniAiWrite, (req, res) => {
   );
   if (p) moniAiOp(req, res, "rule-test", p);
 });
-app.post("/mint-ai/api/rules", ...moniAiWrite, (req, res) => {
+/*
+ * Rules that can let something run need Windows Hello: a new allow rule, and
+ * any change to or removal of a rule (a changed pattern or effect, or a deny /
+ * ask rule gone, can loosen the gate). A new deny or ask rule only tightens it
+ * and goes through as before.
+ */
+async function moniAiOpStepped(req, res, op, params, what) {
+  try {
+    const out = await callStepped(req, op, params);
+    db.logLogin(req.ip, req.me.username, "moni-ai", String(what + steppedWith(req)).slice(0, 200));
+    res.json(out);
+  } catch (e) {
+    moniAiFail(res, e);
+  }
+}
+const ruleStepUp = (kind) =>
+  stepup.requireStepUp({
+    bind: (req) => {
+      if (kind === "create") {
+        const r = moniai.cleanRule(req.body, false);
+        return r.effect === "allow" ? "rule:create:" + stepBindHash(r.effect, r.tool, r.pattern) : null;
+      }
+      const id = moniai.idOf(req.params.id, "rule");
+      if (kind === "delete") return `rule:${id}:delete`;
+      const r = moniai.cleanRule(req.body, true);
+      return `rule:${id}:update:` + stepBindHash(r.effect || null, r.tool || null, r.pattern === undefined ? null : r.pattern);
+    },
+    what: (req) => (kind === "create" ? "Save an allow rule" : kind === "delete" ? `Delete rule #${req.params.id}` : `Change rule #${req.params.id}`),
+    audit: stepAudit,
+  });
+app.post("/mint-ai/api/rules", ...moniAiWrite, ruleStepUp("create"), (req, res) => {
   const p = moniAiClean(res, () => moniai.cleanRule(req.body, false));
-  if (p) moniAiOp(req, res, "rule-create", p, { log: `added a ${p.effect} rule` });
+  if (!p) return;
+  if (req.stepUp) return moniAiOpStepped(req, res, "rule-create", p, `added a ${p.effect} rule`);
+  moniAiOp(req, res, "rule-create", p, { log: `added a ${p.effect} rule` });
 });
-app.post("/mint-ai/api/rules/:id", ...moniAiWrite, (req, res) => {
+app.post("/mint-ai/api/rules/:id", ...moniAiWrite, ruleStepUp("update"), (req, res) => {
   const p = moniAiClean(res, () => ({ rule_id: moniai.idOf(req.params.id, "rule"), ...moniai.cleanRule(req.body, true) }));
-  if (p) moniAiOp(req, res, "rule-update", p, { log: `changed rule ${p.rule_id}` });
+  if (p) moniAiOpStepped(req, res, "rule-update", p, `changed rule ${p.rule_id}`);
 });
-app.post("/mint-ai/api/rules/:id/delete", ...moniAiWrite, (req, res) => {
+app.post("/mint-ai/api/rules/:id/delete", ...moniAiWrite, ruleStepUp("delete"), (req, res) => {
   const id = moniAiClean(res, () => moniai.idOf(req.params.id, "rule"));
-  if (id !== undefined) moniAiOp(req, res, "rule-delete", { rule_id: id }, { log: `deleted rule ${id}` });
+  if (id !== undefined) moniAiOpStepped(req, res, "rule-delete", { rule_id: id }, `deleted rule ${id}`);
 });
 function strip2(o) {
   const out = {};
@@ -6161,24 +6295,36 @@ app.post("/claude/sessions/live/:slug/keep", requireAuth, requirePerm("moniai.us
     liveBack(res, "err", e.message);
   }
 });
-app.post("/claude/sessions/live/:slug/retire", requireAuth, requirePerm("moniai.use"), requireCsrf, async (req, res) => {
+// Both forms carry data-step-up: public/step-up.js asks for Windows Hello and posts the proof with them.
+const liveStepRefuse = (req, res, msg) => liveBack(res, "err", msg + " (Windows Hello needs JavaScript on this page.)");
+app.post("/claude/sessions/live/:slug/retire", requireAuth, requirePerm("moniai.use"), requireCsrf, retireStepUp(liveStepRefuse), async (req, res) => {
   const slug = /^[a-z0-9][a-z0-9-]{0,39}$/.test(req.params.slug) ? req.params.slug : null;
   if (!slug) return liveBack(res, "err", "No such session.");
   try {
-    await moniai.call("session-retire", { slug }, req.me.username, { timeout: 60000 });
-    db.logLogin(req.ip, req.me.username, "moni-ai", `retired hired session ${slug}`);
+    await callStepped(req, "session-retire", { slug }, { timeout: 60000 });
+    db.logLogin(req.ip, req.me.username, "moni-ai", `retired hired session ${slug}${steppedWith(req)}`);
     liveBack(res, "msg", "Retired. Its transcript is kept.");
   } catch (e) {
     liveBack(res, "err", e.message);
   }
 });
-app.post("/claude/sessions/live/resume", requireAuth, requirePerm("moniai.use"), requireCsrf, async (req, res) => {
+const resumeKeyOf = (req) => {
+  const key = String(field(req.body, "key") || "");
+  return /^[A-Za-z0-9<>._:-]{1,80}$/.test(key) ? key : null;
+};
+const liveResumeStepUp = stepup.requireStepUp({
+  bind: (req) => (resumeKeyOf(req) ? "resume:" + resumeKeyOf(req) : null),
+  what: () => "Resume past the daily cap",
+  audit: stepAudit,
+  html: liveStepRefuse,
+});
+app.post("/claude/sessions/live/resume", requireAuth, requirePerm("moniai.use"), requireCsrf, liveResumeStepUp, async (req, res) => {
   if (!req.perm.admin) return liveBack(res, "err", "Resuming past a cap is the administrator's.");
   const key = String(field(req.body, "key") || "");
   if (!/^[A-Za-z0-9<>._:-]{1,80}$/.test(key)) return liveBack(res, "err", "No such session.");
   try {
-    await moniai.call("budget-resume", { key }, req.me.username);
-    db.logLogin(req.ip, req.me.username, "moni-ai", `resumed ${key} past its daily cap`);
+    await callStepped(req, "budget-resume", { key });
+    db.logLogin(req.ip, req.me.username, "moni-ai", `resumed ${key} past its daily cap${steppedWith(req)}`);
     liveBack(res, "msg", "Resumed for the rest of today.");
   } catch (e) {
     liveBack(res, "err", e.message);
@@ -6307,7 +6453,7 @@ try {
 } catch (e) {
   console.error("page map: the scan failed, page.open keeps its built-in pages: " + e.message);
 }
-settingsRoutes.mount(app, { requireAuth, requireCsrf, ctx, db, moniai, pageMap, desktopDays: () => desktop.days(), desktopSetDays: (d, by) => desktop.setDays(d, by) });
+settingsRoutes.mount(app, { requireAuth, requireCsrf, ctx, db, moniai, pageMap, stepup, stepAudit, callStepped, steppedWith, desktopDays: () => desktop.days(), desktopSetDays: (d, by) => desktop.setDays(d, by) });
 
 /* ------------------------------------ live voice evaluation (admin) ---- */
 

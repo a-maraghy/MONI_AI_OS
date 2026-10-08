@@ -532,7 +532,7 @@
           '<label>Scope</label><div class="cc-chips-sel sm"><button type="button" class="on" disabled>' + ic("core") + 'MINT AI</button><button type="button" class="on" disabled>' + ic("server") + "this VPS</button></div>" +
           (rule.note ? '<label>Note</label><span class="cc-muted">' + esc(rule.note) + "</span>" : "") +
           '<span></span><span class="hint" id="cc-al-match"></span></div>' +
-          '<p class="cc-rule-hint">Deny rules still win, and built-in asks cannot be overridden. You can edit or delete the rule later in Rules.</p>';
+          '<p class="cc-rule-hint">Deny rules still win, and built-in asks cannot be overridden. You can edit or delete the rule later in Rules. Saving approves this request too, so Windows Hello (or your authenticator code) is asked first.</p>';
         var pat = $("cc-al-pat");
         function check() {
           var ok = globMatch(pat.value, subject);

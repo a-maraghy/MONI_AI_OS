@@ -52,7 +52,8 @@ The sign-in's second step can be a passkey instead of the authenticator code
 (`lib/passkeys.js`, `@simplewebauthn/server`; the browser half is
 `public/simplewebauthn-browser.js`, the library's own bundle, vendored because
 the CSP allows no CDN, and `public/passkey.js`). The code stays enrolled and is
-offered on every sign-in; root unlock and approvals still ask for it.
+offered on every sign-in; root unlock still asks for it, and it is the fallback
+for approvals (below).
 
 - **Account ▸ Passkeys**: add this device (needs a code unless you signed in
   within 5 minutes), rename, remove. Table `passkeys` (+ `passkey_handles`, the
@@ -73,6 +74,53 @@ offered on every sign-in; root unlock and approvals still ask for it.
 - An administrator's **Reset two-factor** removes the user's passkeys too.
 - Test: `tools/test-passkeys.cjs` (Chromium's virtual authenticator; set
   `PLAYWRIGHT=` to a playwright module).
+
+### Windows Hello for every approval (2026-10-08)
+
+Every decision that lets something run needs a fresh passkey assertion with
+user verification from the signed-in user, or -- where no passkey can be used
+(an address off the allow-list, a passkey kept in Google Password Manager that
+WebView2 cannot see, Hello cancelled or failing) -- a fresh authenticator code.
+The server enforces it (`lib/stepup.js`, `requireStepUp(spec)`); the page only
+helps. Deny, Keep, Dismiss, Ask more, Skip never ask. There is no setting that
+turns it off.
+
+- **Routes wrapped** (server.js): `POST /mint-ai/api/approvals/:id/approve`
+  (Approve once and Always allow this, every card: MINT AI's, a hired or machine
+  session's `origin: session:<slug>`, a retire consent), `/mint-ai/api/decisions/:id/approve`
+  (Apply fix, Retire) and `/resume`, `/mint-ai/api/rules` (a new **allow** rule;
+  deny/ask rules pass), `/mint-ai/api/rules/:id` and `/:id/delete` (any change),
+  `/mint-ai/api/sessions/:slug/retire`, the forms `/claude/sessions/live/:slug/retire`,
+  `/claude/sessions/live/resume`, `/mint-ai/settings/usage/resume`
+  (lib/routes-settings.js), and the hidden console's `/console/:id/permission` Allow.
+- **Protocol**: a request without proof gets **428** `{code: "step-up", step_up}`:
+  `step_up.passkey` = options for `navigator.credentials.get()` naming the user's
+  passkeys for this host (`userVerification: "required"`), or `null` with
+  `no_passkey` saying why; `totp: true`; `expires_at` when the card was held.
+  The same request again with `step_up: {token, response}` (or `{totp}`; a form
+  sends it as JSON text in a hidden field) is checked and applied. A challenge is
+  single use, 2 minutes, bound to the user, the browser session and the exact
+  action (`approval:<id>:approve`, `+:always:<hash of tool+pattern>`,
+  `decision:<id>:approve|resume`, `rule:...`, `retire:<slug>`, `resume:<key>`;
+  lib/passkeys.js `stepUpOptions` / `verifyStepUp`). A refused proof answers 403
+  with a fresh challenge; five wrong codes in ten minutes lock the code (429)
+  while Hello keeps working.
+- **The card waits for Hello**: issuing a challenge for an approval asks the
+  supervisor to hold the card (`approval-hold`, at least 90 s from now, never
+  more than 120 s past its own window); the dialog shows the time left.
+- **Audit**: the panel's login log ("approved request 12 with Windows Hello
+  (Laptop Windows Hello)" / "with authenticator code", refusals as `step-up`), and
+  the supervisor op carries `verified: hello|totp` + `verified_with` (stored on
+  the approval row, in MINT AI's audit table and log). An older supervisor that
+  refuses those fields gets the op without them.
+- **Page**: `public/step-up.js` (on every page, lib/ui.js) -- the "Confirm it is
+  you" dialog: starts Windows Hello at once, "Use authenticator code instead",
+  Cancel; the Command Center's `api()` and the plain `form[data-step-up]` forms
+  use it. In the desktop app `mint-desktop-webauthn.js` (now also on the
+  Command Center) makes the window an ordinary one while Hello's prompt is up.
+  Windows toasts never approve (unchanged).
+- Tests: `tools/test-stepup.cjs` (server, a software authenticator),
+  `tools/test-stepup-ui.cjs` (Chromium, the virtual authenticator; `--shots DIR`).
 
 ## Where you land
 
