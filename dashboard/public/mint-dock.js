@@ -238,6 +238,15 @@
     var LG = window.MintLogic;
     meshCore = window.MintCoreBot(cv, { noGuard: true, head: root.getAttribute("data-bot-head") || "", colors: LG ? LG.normBotColors(root.getAttribute("data-bot-colors") || "") : null });
     cv = meshCore.canvas || cv;
+    // a change in Settings (another tab, or the shell's frame) reaches the dock's bot at once
+    window.addEventListener("storage", function (e) {
+      if (e.key !== "mint-bot" || !e.newValue || !meshCore) return;
+      var b = null;
+      try { b = JSON.parse(e.newValue); } catch (x) { b = null; }
+      if (!b) return;
+      if (b.head) meshCore.setHead(b.head);
+      if (b.colors && LG) meshCore.setColors(LG.normBotColors(b.colors));
+    });
   }
   var g = meshCore ? null : cv.getContext("2d");
   function points(n, s) {
@@ -250,7 +259,8 @@
     return { dir: dir, rnd: rnd, n: n };
   }
   var P = points(420, 7), DPR = Math.min(2, window.devicePixelRatio || 1), t = 0, last = 0, W = { rip: 0, gal: 0, need: 0 }, rot = 0;
-  if (meshCore) meshCore.resize(34, 34, 21, 68, 68); else { cv.width = 68 * DPR; cv.height = 68 * DPR; }
+  // (the bot head sits a little larger: its face must read at dock size; mint-shell.js lands on the same size)
+  if (meshCore) meshCore.resize(34, 34, meshCore.S.concept === "E" ? 27 : 21, 68, 68); else { cv.width = 68 * DPR; cv.height = 68 * DPR; }
   function isLight() {
     var th = document.documentElement.getAttribute("data-theme");
     if (th) return th === "light";

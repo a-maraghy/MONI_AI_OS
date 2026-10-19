@@ -332,7 +332,7 @@
     "  a=(0.05+0.28*d*d)*u_wa; if(kind==6) a=0.55*u_wa;",
     "  if(kind==2||kind==4){ col=u_st; a=0.9*u_lit; }",
     "  a+=sh*0.3; col=mix(col,u_st,clamp(sh,0.0,1.0)*0.6);",
-    "  a*=smoothstep(0.82,1.0,u_form)*(1.0-smoothstep(0.0,0.12,u_dis));",
+    "  a*=smoothstep(0.95,1.0,u_form)*(1.0-smoothstep(0.0,0.1,u_dis));",
     " } else if(u_mode<1.5){",                                      // the grid nodes (and joints)
     "  float w=wt(a_i.y);",
     "  a=(0.08+0.35*d*d)*u_wa*1.2*(1.0-w); size=(0.6+1.7*d)*u_psz;",
@@ -439,7 +439,7 @@
     }
     var fade = o.alpha * (o.form < 1 ? 0.4 + 0.6 * o.form : 1) * (o.dis > 0 ? 1 - o.dis * 0.85 : 1);
     var sst = function (a, b, x) { x = Math.max(0, Math.min(1, (x - a) / (b - a))); return x * x * (3 - 2 * x); };
-    var lf = sst(0.82, 1, o.form) * (1 - sst(0, 0.12, o.dis)); // a head forming or dissolving is dots only: its lines would stretch
+    var lf = sst(0.95, 1, o.form) * (1 - sst(0, 0.1, o.dis)); // a head forming or dissolving is dots only: its lines would stretch
     var W8 = o.w, off = o.off;
     function wAt(f) { return f < 0 ? 0 : W8[off + f] / 255; }
     // glow behind
@@ -1017,7 +1017,7 @@
     draw2dHead(g, {
       geo: build(HEADS[head] ? head : "cap", r >= 60 ? "hi" : "lo"), cx: w / 2, cy: h / 2 + r * 0.3, r: r, yaw: cfg.yaw, tilt: cfg.tilt || 0.1, sc: 1,
       wire: P.wire, st: P[fo.state], wa: P.wireK * 1.3, lit: 1, alpha: 1, w: w8, off: 0, light: !!o.light, rimA: P.rim[0], rimB: P.rim[1], rimL: P.rimL,
-      rimK: o.light ? 0.08 : 0.26, stK: o.light ? 0.12 : 0.22, form: 1, dis: 0, homeX: 0, homeY: 0, shimX: 0, shimA: 0, dpr: dpr,
+      rimK: o.light ? 0.035 : 0.26, stK: o.light ? 0.1 : 0.22, form: 1, dis: 0, homeX: 0, homeY: 0, shimX: 0, shimA: 0, dpr: dpr,
     });
   }
 

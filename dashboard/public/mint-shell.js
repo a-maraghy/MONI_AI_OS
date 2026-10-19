@@ -230,7 +230,7 @@
     if (dir === "down") { fl.from = coreLayout(); fl.to = D().orbRect(); }
     else { fl.from = D().orbRect(); if (!mesh) coreStart(); else { var c2 = CCx(); if (c2 && c2.orbit && c2.orbit.resize) c2.orbit.resize(); } fl.to = coreLayout(); }
     // the dock's mesh is drawn at R 21 in its 68 px canvas: land on (and leave from) exactly that size
-    if (mesh && dm) { if (dir === "down") fl.to.R = 21; else fl.from.R = 21; }
+    if (mesh && dm) { var dR = dm.S && dm.S.concept === "E" ? 27 : 21; if (dir === "down") fl.to.R = dR; else fl.from.R = dR; }
     html.classList.add("md-flying");
     html.classList.toggle("md-fly-mesh", mesh); // the dock's own small mesh hides while the flying one is on its way
     if (!mesh) hero.classList.add("on");

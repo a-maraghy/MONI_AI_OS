@@ -382,6 +382,13 @@
     Orb.setConcept(c);
     try { window.localStorage.setItem(CORE_KEY, c); } catch (e) { /* not remembered here; the server has it */ }
   })();
+  /* Core E's head and colours changed in Settings (another tab, or the page in the shell's frame): take them now. */
+  window.addEventListener("storage", function (e) {
+    if (e.key !== "mint-bot" || !e.newValue) return;
+    var b = null;
+    try { b = JSON.parse(e.newValue); } catch (x) { b = null; }
+    if (b && Orb.setBot) Orb.setBot(ML.isBotHead(b.head) ? b.head : null, b.colors ? ML.normBotColors(b.colors) : null);
+  });
   function paintCoreSwitches() {
     var bs = document.querySelectorAll("[data-core-set]");
     for (var i = 0; i < bs.length; i++) bs[i].setAttribute("aria-checked", String(bs[i].getAttribute("data-core-set") === coreNow()));

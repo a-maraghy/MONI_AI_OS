@@ -504,7 +504,7 @@ function botSettings(o) {
   ).join("");
   const strip = (th) => logic.BOT_STATE_ITEMS.map((k) => `<span><canvas data-bot-state="${k}" data-bot-theme="${th}"></canvas><em>${esc(logic.BOT_ITEM_LABEL[k])}</em></span>`).join("");
   return `<div class="mint-bot" id="mint-bot" data-bot-colors="${esc(logic.botColorsJson(colors))}" data-bot-head="${head}">
-        <p class="muted mint-sess-h"><b>Bot</b> — core E's head and colours. The sessions round it, the dock, the page flight and the desktop app use the same.</p>
+        ${o.inRow ? "" : `<p class="muted mint-sess-h"><b>Bot</b> — core E's head and colours. The sessions round it, the dock, the page flight and the desktop app use the same.</p>`}
         <fieldset class="mint-bot-heads"><legend class="cc-sr">Bot head</legend>${heads}</fieldset>
         <fieldset class="mint-bot-presets"><legend class="mint-bot-lg">Colours</legend>${presets}</fieldset>
         <div class="mint-bot-custom" id="mint-bot-custom"${colors.p === "custom" ? "" : " hidden"}>

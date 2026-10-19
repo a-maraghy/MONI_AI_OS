@@ -175,7 +175,7 @@ sections.appearance = async (req, res) => {
           scope: "you",
           id: "a-sessions",
         }) +
-        V.row("Bot", "Core E's head and colours: the sessions, the dock, the page flight and the desktop app follow them.", MV.botSettings({ core, botHead: req.me.mint_bot_head, botColors: req.me.mint_bot_colors }), {
+        V.row("Bot", "Core E's head and colours: the sessions, the dock, the page flight and the desktop app follow them.", MV.botSettings({ core, botHead: req.me.mint_bot_head, botColors: req.me.mint_bot_colors, inRow: true }), {
           full: true,
           scope: "you",
           id: "a-bot",

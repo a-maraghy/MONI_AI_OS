@@ -71,6 +71,7 @@ const SESS = [
         O.palette();
         if (list) O.setNodes(list);
       }, sess || null);
+      if (sess) await page.waitForTimeout(2900); // the page's first list was empty (no supervisor): these are born, forming out of the core's dots
     }
     const setState = (page, st) => page.evaluate((x) => { const O = window.__mintCC.orbit; if (x === "offline") { O._setState("idle"); window.__mintCC.core.setOffline(true); } else { window.__mintCC.core.setOffline(false); O._setState(x); } }, st);
     const shot = async (page, name) => { const f = path.join(OUT, name + ".png"); await page.screenshot({ path: f }); report.shots.push(name); };
@@ -175,6 +176,12 @@ const SESS = [
         report.frames["1920x1080-6sessions-" + st] = await page.evaluate(() => window.__mintCC.core.stats());
       }
       report.audit = await page.evaluate(() => window.__mintCC.orbit.family.audit());
+      // the same scene with core D (the default), for comparison on this machine
+      await page.evaluate(() => { window.__mintCC.orbit.setConcept("D"); window.__mintCC.orbit._setState("idle"); });
+      await page.waitForTimeout(1500);
+      await page.evaluate(() => window.__mintCC.core.resetStats());
+      await page.waitForTimeout(4000);
+      report.frames["coreD-1920x1080-6sessions-idle"] = await page.evaluate(() => window.__mintCC.core.stats());
       await ctx.close();
     }
     {
@@ -226,15 +233,16 @@ const SESS = [
       setPrefs("cap", col);
       const { ctx, page } = await open({ theme, W: 1440, H: 1500, path: "/mint-ai/settings/appearance", name: "settings-" + nm });
       await page.waitForTimeout(1200);
-      const el = await page.$("#a-core");
-      const box = await el.boundingBox();
-      await page.screenshot({ path: path.join(OUT, `settings-appearance-${nm}-${theme}${col && col.c && col.c.listening === "#10D0A0" ? "-warning" : ""}.png`), clip: { x: 0, y: Math.max(0, box.y - 20), width: 1440, height: Math.min(1500 - Math.max(0, box.y - 20), 1400) } });
+      const tag = `${nm}-${theme}${col && col.c && col.c.listening === "#10D0A0" ? "-warning" : ""}`;
+      if (nm === "default") await page.locator("#a-core").screenshot({ path: path.join(OUT, "settings-core-picker-" + theme + ".png") });
+      await page.locator("#a-bot").screenshot({ path: path.join(OUT, "settings-bot-" + tag + ".png") });
+      report.shots.push("settings-bot-" + tag);
       await ctx.close();
     }
     {
       const { ctx, page } = await open({ theme: "dark", W: 390, H: 1600, path: "/mint-ai/settings/appearance", name: "settings-phone" });
       await page.waitForTimeout(1000);
-      await shot(page, "settings-appearance-phone-390");
+      await page.locator("#a-bot").screenshot({ path: path.join(OUT, "settings-bot-phone-390.png") });
       report.hscroll = await page.evaluate(() => document.documentElement.scrollWidth > innerWidth);
       await ctx.close();
     }

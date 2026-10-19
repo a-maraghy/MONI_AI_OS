@@ -56,7 +56,7 @@
 .mint-bot-shades { display: inline-flex; border-radius: 6px; overflow: hidden; box-shadow: inset 0 0 0 1px var(--line); }
 .mint-bot-shades i { width: 14px; height: 14px; display: block; }
 .mint-bot-custom .btn-row { display: flex; gap: 8px; align-items: center; }
-.mint-bot-custom select { font: inherit; font-size: 13px; padding: 4px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel-2); color: var(--ink); }
+.mint-bot-custom select { width: auto; max-width: 200px; font: inherit; font-size: 13px; padding: 4px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel-2); color: var(--ink); }
 .mint-bot-warn { margin: 10px 0 0; padding: 8px 12px; border-radius: 10px; font-size: 13px; color: var(--warn, #b45309); background: color-mix(in srgb, var(--warn, #b45309) 12%, transparent); }
 .mint-bot-strip { margin: 12px 0 0; display: grid; gap: 6px; }
 .mint-bot-strip .row { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px; padding: 6px; border-radius: 12px; }

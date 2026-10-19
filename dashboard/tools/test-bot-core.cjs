@@ -229,6 +229,10 @@ const B = require(path.join(ROOT, "public", "mint-core-bot.js"));
         // a live change of head and colours (the setting reaching an open page)
         await page.evaluate(() => window.__mintCC.orbit.setBot("antennas", { p: "mono" }));
         check(theme + ": head and colours switch in place (no new canvas)", await page.evaluate(() => window.__mintCC.core.S.head === "antennas" && document.getElementById("cc").getAttribute("data-bot-head") === "antennas"));
+        // a change saved in Settings in another tab (or the shell's frame) arrives as a storage event
+        await page.evaluate(() => window.dispatchEvent(new StorageEvent("storage", { key: "mint-bot", newValue: JSON.stringify({ head: "halo", colors: { p: "sunset" } }) })));
+        check(theme + ": a change made in Settings elsewhere reaches the open page (storage event)", await page.evaluate(() => window.__mintCC.core.S.head === "halo" && /sunset/.test(document.getElementById("cc").getAttribute("data-bot-colors"))));
+        await page.evaluate(() => window.__mintCC.orbit.setBot("antennas", { p: "mono" }));
         // switching to D and back to E swaps the renderer on a fresh canvas
         await page.evaluate(() => window.__mintCC.orbit.setConcept("D"));
         const dOk = await page.evaluate(() => window.__mintCC.core.S.concept === "D");

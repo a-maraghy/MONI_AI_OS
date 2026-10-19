@@ -125,6 +125,9 @@
       return r.json().catch(function () { return {}; }).then(function (j) {
         if (!r.ok) throw new Error(j.error || "HTTP " + r.status);
         say("Saved. The bot: " + (what === "head" ? j.headName : j.colorsName) + ".");
+        // An open Command Center (another tab, or the shell round this page) takes it at once (a storage event).
+        var note = JSON.stringify({ head: j.head, colors: j.colors, at: Date.now() });
+        try { window.localStorage.setItem("mint-bot", note); } catch (x) { /* it reads the server's on its next load */ }
       });
     }).catch(function (x) { say("Not saved: " + x.message, true); });
   }
