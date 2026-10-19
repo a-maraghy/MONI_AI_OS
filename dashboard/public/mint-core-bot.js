@@ -49,6 +49,7 @@
   var G = 18, GN = G + 1, NF = GN * GN; // the front grid: 19 x 19 nodes, the face maps' pixels
   var MAXK = 12, ROWS = MAXK + 2;        // weight rows: 0 the core, 1.. the sessions
   var STREAM = 420;
+  var SMALL = 40; // CSS px head radius below which a head is "small" (sessions, the dock): coarse, crisp face, no face glow
 
   /* ------------------------------------------------------------ faces (the mockup's maps) */
   var FMAP = {
@@ -162,9 +163,10 @@
         if (i + st <= GG) this.lines.push(idx[i][j], idx[i + st][j]);
         if (j + st <= GG) this.lines.push(idx[i][j], idx[i][j + st]);
       }
-      if (fi === 0 && this.lod >= 1) for (i = 0; i <= GG; i++) for (j = 0; j <= GG; j++) {
-        if (i < GG) this.segs.push(idx[i][j], idx[i + 1][j]);
-        if (j < GG) this.segs.push(idx[i][j], idx[i][j + 1]);
+      // the lit strokes run along the face grid's edges: every edge on a large head, the coarse (every other node) grid on a small one
+      if (fi === 0) for (i = 0; i <= GG; i += st) for (j = 0; j <= GG; j += st) {
+        if (i + st <= GG) this.segs.push(idx[i][j], idx[i + st][j]);
+        if (j + st <= GG) this.segs.push(idx[i][j], idx[i][j + st]);
       }
     }
   };
@@ -219,7 +221,7 @@
     g.head(cfg.p, ax, ay);
     cfg.acc.forEach(function (a) { ACC[a](g, ax, ay); });
     // the lit strokes: points along each front grid edge, lit where both its ends are (the mockup's 3 px lit lines)
-    var sp = [], K = 4, V = g.v;
+    var sp = [], K = hi ? 4 : 3, V = g.v;
     for (var i = 0; i < g.segs.length; i += 2) {
       var A = g.segs[i] * 7, Bv = g.segs[i + 1] * 7;
       for (var k = 1; k <= K; k++) {
@@ -291,7 +293,27 @@
     return this.rgb;
   };
   /** Fill one row of face weights (0..255, 361 nodes) from the anim's faces, cross-faded. */
-  function weights(an, out, off, amp) {
+  var FW = new Float32Array(NF); // one head's full-resolution weights, before a small head's coarse grid (reused)
+  /**
+   * coarse (a small head: a session, the dock): the face is drawn on every other node only, each node lit
+   * by the brightest of the 2 x 2 face pixels it stands for -- eyes and mouth become a few clear pixels
+   * instead of a blur of 2-px dots.
+   */
+  function weights(an, out, off, amp, coarse) {
+    if (coarse) {
+      weights(an, FW, -1, amp, false);
+      for (var rr = 0; rr < GN; rr++) for (var cc = 0; cc < GN; cc++) {
+        var v = 0;
+        if (!(rr & 1) && !(cc & 1)) {
+          v = FW[rr * GN + cc];
+          if (rr + 1 < GN) v = Math.max(v, FW[(rr + 1) * GN + cc]);
+          if (cc + 1 < GN) v = Math.max(v, FW[rr * GN + cc + 1]);
+          if (rr + 1 < GN && cc + 1 < GN) v = Math.max(v, FW[(rr + 1) * GN + cc + 1]);
+        }
+        out[off + rr * GN + cc] = (v * 255 + 0.5) | 0;
+      }
+      return;
+    }
     var A = FACES[an.face] || FACES.base, P = FACES[an.prev] || FACES.base, k = an.fk * an.fk * (3 - 2 * an.fk), s = an.blink();
     var gx = an.gx, g0 = Math.floor(gx), gf = gx - g0, gy = Math.round(an.gy), t = an.t;
     for (var r = 0; r < GN; r++) for (var c = 0; c < GN; c++) {
@@ -303,7 +325,7 @@
         if (gf > 0.01) b = b * (1 - gf) + faceAt(P, r, c, g0 + 1, gy, s, amp, t) * gf;
         w = b + (a - b) * k;
       }
-      out[off + r * GN + c] = (w * 255 + 0.5) | 0;
+      if (off < 0) out[r * GN + c] = w; else out[off + r * GN + c] = (w * 255 + 0.5) | 0;
     }
   }
 
@@ -313,7 +335,7 @@
     "precision highp float;",
     "layout(location=0) in vec3 a_p; layout(location=1) in vec4 a_i;",
     "uniform vec2 u_res,u_c,u_home; uniform vec3 u_wire,u_st; uniform sampler2D u_wt;",
-    "uniform float u_r,u_fs,u_sc,u_yaw,u_tilt,u_form,u_dis,u_row,u_wa,u_lit,u_alpha,u_mode,u_psz,u_jsz,u_lsz,u_gsz,u_shimX,u_shimA,u_maxPt;",
+    "uniform float u_r,u_fs,u_sc,u_yaw,u_tilt,u_form,u_dis,u_row,u_wa,u_lit,u_alpha,u_mode,u_psz,u_jsz,u_lsz,u_gsz,u_shimX,u_shimA,u_maxPt,u_snap,u_segK;",
     "out vec4 v_c; out float v_j;",
     "float wt(float f){ if(f<0.0) return 0.0; return texelFetch(u_wt,ivec2(int(f+0.5),int(u_row+0.5)),0).r; }",
     "float h1(float n){ return fract(sin(n*91.7+7.3)*43758.5453); }",
@@ -342,7 +364,7 @@
     "  if(kind==2){ col=u_st; a=0.6*u_lit; }",
     "  a+=sh*0.6*(1.0-w); col=mix(col,u_st,clamp(sh,0.0,1.0)*0.7); size*=1.0+sh*0.7;",
     " } else if(u_mode<2.5){ float w=wt(a_i.y); a=w*u_lit; size=u_lsz; col=u_st; }",          // the lit face
-    " else if(u_mode<3.5){ float w=min(wt(a_i.y),wt(a_i.w)); a=w*u_lit*0.95; size=u_lsz*0.45; col=u_st; }", // its lit strokes
+    " else if(u_mode<3.5){ float w=min(wt(a_i.y),wt(a_i.w)); a=w*u_lit*0.95; size=u_lsz*u_segK; col=u_st; }", // its lit strokes
     " else { float w=wt(a_i.y); a=w*u_lit; size=u_gsz; col=u_st; }",                         // its glow (quarter resolution)
     " a*=vis*u_alpha;",
     " if(u_form<1.0) a*=0.4+0.6*u_form;",
@@ -350,15 +372,18 @@
     " v_c=vec4(col,clamp(a,0.0,1.0));",
     " px*=u_fs;",
     " gl_Position=(u_mode>0.5&&a<=0.003)?vec4(2.0,2.0,0.0,1.0):vec4(px/u_res*2.0-1.0,0.0,1.0);",
-    " gl_PointSize=clamp(size*u_fs,1.0,u_maxPt);",
+    " size=clamp(size*u_fs,1.0,u_maxPt);",
+    // a small head's face: whole device pixels, on the pixel grid (odd sizes on pixel centres, even on corners)
+    " if(u_snap>0.5&&(u_mode>1.5&&u_mode<3.5)){ size=max(2.0,floor(size+0.5)); vec2 q=floor(px); px=mod(size,2.0)>0.5?q+0.5:floor(px+0.5); gl_Position=a<=0.003?vec4(2.0,2.0,0.0,1.0):vec4(px/u_res*2.0-1.0,0.0,1.0); }",
+    " gl_PointSize=size;",
     "}",
   ].join("\n");
   var WIRE_FS = [
     "#version 300 es",
     "precision highp float;",
-    "in vec4 v_c; in float v_j; uniform float u_pt,u_soft; out vec4 o;",
+    "in vec4 v_c; in float v_j; uniform float u_pt,u_soft,u_sq,u_mode; out vec4 o;",
     "void main(){ float a=v_c.a; vec3 c=v_c.rgb;",
-    " if(u_pt>0.5){ vec2 q=gl_PointCoord*2.0-1.0; float r2=dot(q,q); if(r2>1.0) discard;",
+    " if(u_pt>0.5&&!(u_sq>0.5&&u_mode>1.5&&u_mode<3.5)){ vec2 q=gl_PointCoord*2.0-1.0; float r2=dot(q,q); if(r2>1.0) discard;",
     "  a*=u_soft>0.5?exp(-r2*3.2):smoothstep(1.0,0.55,r2);",
     "  if(v_j>0.5&&r2<0.42){ c=vec3(1.0); a=max(a,0.9*v_c.a); } }",
     " o=vec4(c*a,a); }",
@@ -690,7 +715,7 @@
       var ek = S.still ? 1 : 1 - Math.exp(-dt * 10);
       an.gx += (an.gxT - an.gx) * ek; an.gy += (an.gyT - an.gy) * ek;
       var amp = W.speak > 0.05 ? S.amp : 0;
-      weights(an, W8, 0, amp);
+      weights(an, W8, 0, amp, rc < SMALL);
       var h = POOL[nHeads++];
       var tt = S.t;
       h.detail = detailFor(rc); h.cssR = rc;
@@ -724,7 +749,7 @@
           var dx = clamp((cc[0] - k.x) / (rc * 4), -1, 1), dy = clamp((cc[1] - k.y) / (rc * 4), -1, 1);
           ka.gxT = ka.glanceUntil > ka.t ? ka.glx : dx * 1.2; ka.gyT = 0;
           ka.gx += (ka.gxT - ka.gx) * ek; ka.gy = 0;
-          weights(ka, W8, (i + 1) * NF, sf.state === "speaking" ? 0.35 + 0.55 * synthAmp(ka.t + ka.ph) : 0);
+          weights(ka, W8, (i + 1) * NF, sf.state === "speaking" ? 0.35 + 0.55 * synthAmp(ka.t + ka.ph) : 0, k.r * 0.86 < SMALL);
           var q = POOL[nHeads++], kr = k.r * 0.86;
           q.detail = "lo"; q.cssR = kr; q.row = i + 1;
           q.cx = k.x; q.cy = k.y + k.r * 0.06; q.r = kr;
@@ -736,8 +761,8 @@
           q.wa = pal.wireK * (S.light > 0.5 ? 0.9 : 0.85); q.alpha = Math.min(1.2, k.alpha == null ? 1 : k.alpha);
           var pb = sf.state === "needs" ? 1 + 0.25 * (k.amb || 0.5) : 1;
           q.lit = pb; q.glowK = pb;
-          q.rimK = GLOW ? ((1 - S.light) * 0.2 + S.light * 0.06) : 0;
-          q.stK = GLOW ? ((1 - S.light) * 0.2 + S.light * 0.1) * pb : 0;
+          q.rimK = GLOW ? ((1 - S.light) * 0.14 + S.light * 0.05) : 0;
+          q.stK = GLOW ? ((1 - S.light) * 0.07 + S.light * 0.05) * pb : 0; // faint: the face itself carries the colour
           q.shimA = sf.state === "thinking" && !S.still ? 0.8 : 0; q.shimX = -1.6 + (((ka.t + ka.ph) * 0.62) % 1) * 3.2;
           q.form = k.form == null ? 1 : k.form; q.dis = k.dis || 0;
         }
@@ -756,7 +781,10 @@
       gl.uniform1f(u.u_shimX, h.shimX); gl.uniform1f(u.u_shimA, h.shimA);
       var ps = dpr * clamp(h.cssR / 120, 0.55, 1.5);
       gl.uniform1f(u.u_psz, ps); gl.uniform1f(u.u_jsz, 7.2 * ps);
-      gl.uniform1f(u.u_lsz, Math.max(h.cssR < 40 ? 2.4 : 1.5, 0.062 * h.cssR) * dpr);
+      var small = h.cssR < SMALL;
+      // small: a face pixel ~60 % of the coarse grid's spacing (2 x 2 face cells), strokes ~45 % so lit runs join into bars
+      gl.uniform1f(u.u_lsz, small ? Math.max(2, 0.118 * h.cssR * dpr) : Math.max(1.5, 0.062 * h.cssR) * dpr);
+      gl.uniform1f(u.u_segK, small ? 0.75 : 0.45); gl.uniform1f(u.u_snap, small ? 1 : 0); gl.uniform1f(u.u_sq, small ? 1 : 0);
       gl.uniform1f(u.u_gsz, h.cssR * (h.cssR < 40 ? 0.4 : 0.24) * dpr * h.glowK);
     }
     function drawGL() {
@@ -795,6 +823,7 @@
         gl.uniform1f(u.u_pt, 1); gl.uniform1f(u.u_soft, 1); gl.uniform1f(u.u_mode, 4);
         for (i = 0; i < nHeads; i++) {
           h = POOL[i]; o = geoFor(h.detail);
+          if (h.cssR < SMALL) continue; // small heads: no blurred face glow (it would swallow the pixels)
           setHeadU(u, h, fs, dpr, home);
           gl.uniform1f(u.u_lit, h.lit * (S.light > 0.5 ? 0.26 : 0.55));
           gl.bindVertexArray(o.vao); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, o.ibF);

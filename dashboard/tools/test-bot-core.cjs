@@ -101,8 +101,22 @@ const B = require(path.join(ROOT, "public", "mint-core-bot.js"));
   check("speaking: a flat mouth when silent, a waveform with the voice level", loud > q + 4, q + " -> " + loud);
   const fx = mk("base"); fx.set("pupils", "needs"); fx.fk = 0.5; const mid = lit(fx).w; let half = 0; for (const v of mid) if (v > 40 && v < 215) half++;
   check("a face change cross-fades (half-lit nodes mid-way), never a pop", half > 10, half);
+  {
+    // small heads (sessions, the dock): the face on every other node, each lit by its 2 x 2 block
+    const a = mk("listen"), full = new Uint8Array(B.NF), coarse = new Uint8Array(B.NF);
+    B.weights(a, full, 0, 0); B.weights(a, coarse, 0, 0, true);
+    let offGrid = 0, onLit = 0, missed = 0;
+    for (let r = 0; r < B.GN; r++) for (let c = 0; c < B.GN; c++) {
+      const v = coarse[r * B.GN + c];
+      if ((r & 1 || c & 1) && v) offGrid++;
+      if (!(r & 1) && !(c & 1) && v > 127) onLit++;
+      if (!(r & 1) && !(c & 1)) { const blk = [full[r * B.GN + c], full[(r + 1) * B.GN + c] || 0, full[r * B.GN + c + 1] || 0, full[(r + 1) * B.GN + c + 1] || 0]; if ((Math.max(...blk) > 127) !== (v > 127)) missed++; }
+    }
+    check("small heads: a coarse face (every other node, each the brightest of its 2 x 2 block), nothing off the coarse grid", offGrid === 0 && onLit > 8 && missed === 0, offGrid + " " + onLit + " " + missed);
+    check("small heads: crisp pixel-snapped square face pixels, thicker strokes, no blurred face glow", /SMALL = 40/.test(read("public/mint-core-bot.js")) && /u_snap>0\.5/.test(read("public/mint-core-bot.js")) && /if \(h\.cssR < SMALL\) continue;/.test(read("public/mint-core-bot.js")) && B.build("cap", "lo").seg.length > 0);
+  }
   const sizes = HEADS.map((h) => { const hi = B.build(h, "hi"), lo = B.build(h, "lo"); return [h, hi.n, lo.n, hi.front.length, lo.front.length, hi.lines.length % 2, hi.seg.length > 0, lo.seg.length]; });
-  check("each head builds (hi for the core, lo for sessions and the dock): < 65,536 vertices, 361 face nodes, line pairs", sizes.every((x) => x[1] < 65536 && x[3] === 361 && x[4] === 361 && x[5] === 0 && x[6] && x[7] === 0 && x[2] < x[1]), JSON.stringify(sizes));
+  check("each head builds (hi for the core, lo for sessions and the dock): < 65,536 vertices, 361 face nodes, line pairs", sizes.every((x) => x[1] < 65536 && x[3] === 361 && x[4] === 361 && x[5] === 0 && x[6] && x[7] > 0 && x[2] < x[1]), JSON.stringify(sizes));
   check("lit accessories: the twin antennas' joints and the mortarboard's tassel take the state colour; the cap's antenna joints stay neutral", (() => { const k = (h) => { const g = B.build(h, "hi"); const c = {}; for (let i = 0; i < g.n; i++) c[g.v[i * 7 + 3]] = (c[g.v[i * 7 + 3]] || 0) + 1; return c; }; return k("antennas")[4] === 4 && k("mortar")[4] === 2 && !k("cap")[4] && k("cap")[3] === 3 && k("headset")[2] > 50; })());
   const src = read("public/mint-core-bot.js");
   check("no eval, no inline style, no CDN; WebGL2 with a 2D fallback; stops when hidden; reduced motion; a resolution guard", !/\beval\(|new Function|\.style\.|setAttribute\("style"|https?:\/\//.test(src.replace(/\/\*[\s\S]*?\*\//g, "")) && /getContext\("webgl2"/.test(src) && /getContext\("2d"\)/.test(src) && /visibilitychange/.test(src) && /prefers-reduced-motion: reduce/.test(src) && /S\.lowRes = true/.test(src));

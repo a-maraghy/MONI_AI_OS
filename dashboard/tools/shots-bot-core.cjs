@@ -71,7 +71,8 @@ const SESS = [
         O.palette();
         if (list) O.setNodes(list);
       }, sess || null);
-      if (sess) await page.waitForTimeout(2900); // the page's first list was empty (no supervisor): these are born, forming out of the core's dots
+      // the page's first list was empty (no supervisor): these are born, forming out of the core's dots -- wait until they have
+      if (sess) await page.waitForFunction(() => window.__mintCC.orbit.family.kids().every((k) => k.form >= 1), null, { timeout: 20000 }).catch(() => {});
     }
     const setState = (page, st) => page.evaluate((x) => { const O = window.__mintCC.orbit; if (x === "offline") { O._setState("idle"); window.__mintCC.core.setOffline(true); } else { window.__mintCC.core.setOffline(false); O._setState(x); } }, st);
     const shot = async (page, name) => { const f = path.join(OUT, name + ".png"); await page.screenshot({ path: f }); report.shots.push(name); };
