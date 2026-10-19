@@ -369,7 +369,7 @@
     voiceprint: function (m) { showVoiceprint(m || {}); },
   };
 
-  /* ---- the core setting: A dotted sphere, B Siri fluid, C hybrid, D mesh (the default). The
+  /* ---- the core setting: A dotted sphere, B Siri fluid, C hybrid, D mesh (the default), E bot. The
      server rendered the saved one as data-core; this browser remembers it too
      (the fallback if the attribute is ever missing), and a switch here saves it
      for the person and swaps the running core in place, no reload. ---- */
@@ -544,6 +544,7 @@
     var snap = snapshot();
     var st = ML.coreState(snap);
     Orb.setState(st);
+    if (Orb.setOffline) Orb.setOffline(!S.online && !!S.offlineMsg); // core E: the error face once MINT AI is known to be unreachable (not while connecting)
     var capNow = paintCaption(snap);
     paintCalm(st);
     if (window.MintShell) window.MintShell.feed({ state: st, pending: snap.pending, cap: capNow && capNow.text, live: liveActive(), muted: !!(liveActive() && window.VoiceLive && window.VoiceLive.muted && window.VoiceLive.muted()) });

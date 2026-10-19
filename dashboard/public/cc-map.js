@@ -4,11 +4,12 @@
  * and the live sessions as small points on a faint orbit round it.
  *
  * The core's concept (A dotted sphere, B Siri fluid, C hybrid -- mint-core.js;
- * D mesh, the default -- mint-core-d.js) is the viewer's saved choice, rendered
+ * D mesh, the default -- mint-core-d.js; E bot -- mint-core-bot.js, with the
+ * viewer's head style and colours from data-bot-head / data-bot-colors) is the viewer's saved choice, rendered
  * by the server as data-core on #cc before first paint and switchable at any
  * time without a reload (setConcept). A/B/C share one WebGL canvas; D draws
  * with WebGL2, which a canvas that once gave out a WebGL1 context can never
- * give, so crossing between D and A/B/C stops the running core, releases its
+ * give, so crossing between D, E and A/B/C stops the running core, releases its
  * context and starts the other on a fresh copy of the canvas. Its state comes
  * from real events through moni-ai.js: thinking while a turn runs, delegating
  * when a SendMessage lands (a stream of dots flies to that session's point),
@@ -44,7 +45,13 @@
     var state = "idle";
 
     var GHOST = "\u0000ghost";
-    function wantsD(c) { return (window.MintLogic ? window.MintLogic.normCore(c) : String(c == null ? "" : c).trim().toUpperCase()) === "D"; }
+    function normC(c) { return window.MintLogic ? window.MintLogic.normCore(c) : String(c == null ? "" : c).trim().toUpperCase(); }
+    /** Which renderer draws a concept: "D" (mint-core-d.js), "E" (mint-core-bot.js) or "dots" (mint-core.js, A/B/C). */
+    function rendererOf(c) { c = normC(c); return c === "D" && window.MintCoreD ? "D" : c === "E" && window.MintCoreBot ? "E" : "dots"; }
+    /** D and E draw the family's spheres themselves (as meshes / bot heads), on their own canvas. */
+    function drawsKids() { return core.S.concept === "D" || core.S.concept === "E"; }
+    function botHead() { return root.getAttribute("data-bot-head") || ""; }
+    function botColors() { var L = window.MintLogic; return L ? L.normBotColors(root.getAttribute("data-bot-colors") || "") : null; }
     function coreOpts(c) {
       return {
         concept: c,
@@ -59,19 +66,23 @@
           return null;
         },
         onFrame: onFrame,
-        backdrop: "glow", // D: only the glow round the core; the page keeps its own background
+        backdrop: "glow", // D / E: only the glow round the core; the page keeps its own background
+        head: botHead(), colors: botColors(), // E: the viewer's bot
         // D draws the family's spheres as meshes on its own canvas, after the family has moved this frame.
         kids: function () { return family && family.enabled() ? family.meshKids() : null; },
         beforeDraw: function () { if (family && family.enabled()) family.frame(); },
       };
     }
     function makeCore(c) {
-      var k = wantsD(c) && window.MintCoreD ? window.MintCoreD(els.canvas, coreOpts("D")) : window.MintCore(els.canvas, coreOpts(c));
+      var r = rendererOf(c);
+      var k = r === "D" ? window.MintCoreD(els.canvas, coreOpts("D")) : r === "E" ? window.MintCoreBot(els.canvas, coreOpts("E")) : window.MintCore(els.canvas, coreOpts(c));
+      if (r === "E" && offline && k.setOffline) k.setOffline(true);
       els.canvas = k.canvas || els.canvas; // a core that fell back to 2D drew on a fresh copy of the canvas
       return k;
     }
     var core = makeCore(root.getAttribute("data-core"));
-    /** Hand the canvas to the other renderer (D <-> A/B/C): stop, release the context, fresh canvas, same state. */
+    var offline = false;
+    /** Hand the canvas to another renderer (D / E / A-B-C): stop, release the context, fresh canvas, same state. */
     function swapCore(c) {
       var wasOn = !!(core.S.running || core.S.wanted);
       core.stop();
@@ -140,12 +151,12 @@
         onClick: function (id) { if (opts.onOpen) opts.onOpen(id); else if (opts.onClick) opts.onClick(id); },
         onMenu: function (id, x, y) { if (opts.onMenu) opts.onMenu(id, x, y); },
         // Reduced motion: the family redraws on a change; the core draws its meshes still.
-        meshRedraw: function () { if (core.S.concept === "D" && (core.S.still || !core.S.running)) core.draw(); },
+        meshRedraw: function () { if (drawsKids() && (core.S.still || !core.S.running)) core.draw(); },
       });
     }
     function spheresOn() { return root.getAttribute("data-sessview") !== "orbit"; }
-    /** With core D (and WebGL2) the session spheres are meshes the core draws; else the family's dotted ones. */
-    function meshFamily() { if (family) family.setMesh(core.S.concept === "D" && core.isGL); }
+    /** With core D (and WebGL2) the session spheres are meshes the core draws, with E bot heads (its 2D renderer draws them too); else the family's dotted ones. */
+    function meshFamily() { if (family) family.setMesh((core.S.concept === "D" && core.isGL) || core.S.concept === "E"); }
     meshFamily();
 
     function isLight() {
@@ -249,7 +260,7 @@
     /* ---------------------------------------------------------- per frame */
     function onFrame(S, W) {
       if (!reduced) place(S.t);
-      if (family && family.enabled() && core.S.concept !== "D") family.frame(); // D moved it before drawing (beforeDraw)
+      if (family && family.enabled() && !drawsKids()) family.frame(); // D / E moved it before drawing (beforeDraw)
       if (core.S.concept === "C") {
         var talk = W.wave + W.line;
         var k = (1 + 0.35 * S.amp * talk + 0.08 * Math.sin(S.t * 1.1)) * (1 - 0.45 * talk);
@@ -292,10 +303,19 @@
         root.setAttribute("data-state", name);
       },
       setConcept: function (c) {
-        if (wantsD(c) !== (core.S.concept === "D") && (window.MintCoreD || core.S.concept === "D")) swapCore(c);
+        var cur = core.S.concept === "D" ? "D" : core.S.concept === "E" ? "E" : "dots";
+        if (rendererOf(c) !== cur) swapCore(c);
         else core.setConcept(c);
         root.setAttribute("data-core", core.S.concept);
       },
+      /** Core E's head style and colours ({p, c}), in place (no new canvas); kept on #cc for a later switch to E. */
+      setBot: function (head, colors) {
+        if (head) root.setAttribute("data-bot-head", head);
+        if (colors && window.MintLogic) root.setAttribute("data-bot-colors", window.MintLogic.botColorsJson(colors));
+        if (core.S.concept === "E") { if (head && core.setHead) core.setHead(head); if (colors && core.setColors) core.setColors(window.MintLogic ? window.MintLogic.normBotColors(colors) : colors); }
+      },
+      /** MINT AI unreachable: core E shows its error face (the other cores have no offline look). */
+      setOffline: function (on) { offline = !!on; if (core.setOffline) core.setOffline(offline); },
       /** A delegation went out to this session: the stream of dots flies there. */
       send: function (id, ms) {
         var n = node(id);

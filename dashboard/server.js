@@ -463,7 +463,9 @@ function ctx(req, dash) {
     dash: dash || null,
     chrome: req.chrome || null,
     voice: !!req.voiceMic, // the dock's mic: voice on, a key, and voice.use (see voiceDockOk)
-    core: req.me ? mintLogic.normCore(req.me.mint_core) : null, // the dock draws the same core (D: mint-core-d.js)
+    core: req.me ? mintLogic.normCore(req.me.mint_core) : null, // the dock draws the same core (D: mint-core-d.js, E: mint-core-bot.js)
+    botHead: req.me ? mintLogic.normBotHead(req.me.mint_bot_head) : null,
+    botColors: req.me ? mintLogic.botColorsJson(req.me.mint_bot_colors) : null,
   };
 }
 
@@ -4394,6 +4396,8 @@ app.get("/mint-ai", requireAuth, async (req, res) => {
       voice: await moniAiVoice(req),
       core: req.me.mint_core,
       sessview: req.me.sessions_view,
+      botHead: req.me.mint_bot_head,
+      botColors: req.me.mint_bot_colors,
       // The desktop app's render mode: the same page, no page round it (public/mint-desktop.js).
       shell: req.query.shell === "desktop" ? "desktop" : null,
     })
@@ -4434,9 +4438,45 @@ app.post("/mint-ai/api/prefs/sessions", ...moniAiWrite, (req, res) => {
   res.json({ view, name: mintLogic.SESS_VIEWS[view] });
 });
 
+/**
+ * Core E ("Bot"), per person: the head style (users.mint_bot_head, one of mintLogic.BOT_HEADS) and the
+ * colours (users.mint_bot_colors: a preset, or custom "#rrggbb" picks -- hex only, checked by
+ * mintLogic.checkBotColors). Stored and audited like the core ("account": "MINT AI bot head ..." /
+ * "MINT AI bot colours ..."), written into the Command Center and the dock as data-bot-head /
+ * data-bot-colors. Either field may come alone.
+ */
+function setBotHead(req, head) {
+  const was = mintLogic.normBotHead(req.me.mint_bot_head);
+  db.setUserBotHead(req.me.id, head);
+  db.logLogin(req.ip, req.me.username, "account", `MINT AI bot head ${was} -> ${head} (${mintLogic.BOT_HEADS[head]})${was === head ? " (unchanged)" : ""}`);
+}
+function setBotColors(req, colors) {
+  const was = mintLogic.botColorsLine(req.me.mint_bot_colors);
+  const now = mintLogic.botColorsLine(colors);
+  db.setUserBotColors(req.me.id, mintLogic.botColorsJson(colors));
+  db.logLogin(req.ip, req.me.username, "account", `MINT AI bot colours ${was} -> ${now}${was === now ? " (unchanged)" : ""}`);
+}
+app.post("/mint-ai/api/prefs/bot", ...moniAiWrite, (req, res) => {
+  const b = req.body || {};
+  if (b.head === undefined && b.colors === undefined) return res.status(400).json({ error: "Send a head, colours or both.", code: "invalid" });
+  if (b.head !== undefined && !mintLogic.isBotHead(b.head)) return res.status(400).json({ error: "The head must be one of " + Object.keys(mintLogic.BOT_HEADS).join(", ") + ".", code: "invalid" });
+  let colors = null;
+  if (b.colors !== undefined) {
+    const c = mintLogic.checkBotColors(b.colors);
+    if (!c.ok) return res.status(400).json({ error: c.error, code: "invalid" });
+    colors = c.value;
+  }
+  if (b.head !== undefined) setBotHead(req, b.head);
+  if (colors) setBotColors(req, colors);
+  const me = db.getUser(req.me.id);
+  const head = mintLogic.normBotHead(b.head !== undefined ? b.head : me ? me.mint_bot_head : req.me.mint_bot_head);
+  const cur = colors || mintLogic.normBotColors(me ? me.mint_bot_colors : req.me.mint_bot_colors);
+  res.json({ head, headName: mintLogic.BOT_HEADS[head], colors: cur, colorsName: mintLogic.botColorsLine(cur), close: mintLogic.botClosePairs(cur) });
+});
+
 app.post("/mint-ai/api/prefs/core", ...moniAiWrite, (req, res) => {
   const core = req.body && req.body.core;
-  if (!mintLogic.isCore(core)) return res.status(400).json({ error: "The core must be A, B, C or D.", code: "invalid" });
+  if (!mintLogic.isCore(core)) return res.status(400).json({ error: "The core must be A, B, C, D or E.", code: "invalid" });
   setMintCore(req, core);
   res.json({ core, name: mintLogic.CORES[core] });
 });
@@ -5579,10 +5619,22 @@ app.post("/account/appearance", requireAuth, requirePerm("moniai.use"), requireC
   const view = req.body && req.body.sessions_view !== undefined ? String(req.body.sessions_view) : null;
   // The no-JavaScript path of Settings > Appearance: back there with a note.
   const back = "/mint-ai/settings/appearance";
-  if (!mintLogic.isCore(core)) return res.redirect(back + "?err=" + encodeURIComponent("Choose core A, B, C or D.") + "#a-core");
+  if (!mintLogic.isCore(core)) return res.redirect(back + "?err=" + encodeURIComponent("Choose core A, B, C, D or E.") + "#a-core");
   if (view !== null && !mintLogic.isSessView(view)) return res.redirect(back + "?err=" + encodeURIComponent("Choose Spheres or Classic orbit.") + "#a-sessions");
+  // Core E's head and colour preset, when the form carries them (custom colours are set with JavaScript).
+  const head = req.body && req.body.bot_head !== undefined ? String(req.body.bot_head) : null;
+  const preset = req.body && req.body.bot_preset !== undefined ? String(req.body.bot_preset) : null;
+  if (head !== null && !mintLogic.isBotHead(head)) return res.redirect(back + "?err=" + encodeURIComponent("Choose one of the bot heads.") + "#a-bot");
+  let colors = null;
+  if (preset !== null && preset !== "custom") {
+    const c = mintLogic.checkBotColors({ preset });
+    if (!c.ok) return res.redirect(back + "?err=" + encodeURIComponent(c.error) + "#a-bot");
+    colors = c.value;
+  }
   setMintCore(req, core);
   if (view !== null) setSessionsView(req, view);
+  if (head !== null) setBotHead(req, head);
+  if (colors) setBotColors(req, colors);
   res.redirect(back + "?msg=" + encodeURIComponent(`MINT AI core: ${core} · ${mintLogic.CORES[core]}${view ? ` · Sessions view: ${mintLogic.SESS_VIEWS[view]}` : ""}.`) + "#a-core");
 });
 

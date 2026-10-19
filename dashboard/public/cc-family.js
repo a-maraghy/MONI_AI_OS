@@ -34,7 +34,9 @@
  * stops the dotted 2D sphere here and meshKids() hands the core, each frame,
  * where each one is and how it looks (size, tint, dim / shimmer, amber, born /
  * dissolving, catching a delegation). Everything else -- names, badges, rings,
- * sub-agents, streams, hover, click, drift -- stays here, unchanged.
+ * sub-agents, streams, hover, click, drift -- stays here, unchanged. Core E (the bot,
+ * mint-core-bot.js) takes the same list and draws each session as a small bot head in
+ * the core's style, its face and colour from the session's state (key / st / glow / bloom).
  *
  * window.MintFamily(els, opts) -> instance. els: { root, canvas, labels, card };
  * opts: { layout() -> {cx, cy, R}, obstacles() -> [rects], light() -> bool,
@@ -617,6 +619,8 @@
             amb: k.amb * (0.55 + 0.45 * pulse), shimmer: k.st === "working" && !reduced ? 1 : 0,
             form: k.form, dis: k.dis || 0, catchK: Math.min(1, k.catchK * 1.4), seed: k.ph[2],
             tint: tc.dark, tintL: tc.light,
+            // core E (bot heads): which session, its state and what just happened, for the face (MintLogic.botSessState)
+            key: k.id, st: k.st, glow: k.glow, bloom: k.bloom,
           });
         });
         return out;

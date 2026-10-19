@@ -201,6 +201,7 @@ function page(o) {
   const body = `${sprite()}
 <div class="cc-shell" id="cc"${desk ? ' data-shell="desktop"' : ""}
      data-core="${core}" data-state="idle" data-sessview="${sessview}"
+     data-bot-head="${esc(logic.normBotHead(o.botHead))}" data-bot-colors="${esc(logic.botColorsJson(o.botColors))}"
      data-pages="${esc(pageMap.keys)}" data-page-map="${esc(pageMap.map)}"
      data-csrf="${esc(o.csrf)}"
      data-viewer="${esc(o.user && o.user.name)}"
@@ -358,7 +359,7 @@ ${desk ? deskParts() : ""}
   )}
 </aside>
 <div id="cc-overlay"></div>
-${perm && !desk ? dockMarkup(o.csrf, perm, { shell: true, noVoice: !vOk, core }) : ""}
+${perm && !desk ? dockMarkup(o.csrf, perm, { shell: true, noVoice: !vOk, core, botHead: logic.normBotHead(o.botHead), botColors: logic.botColorsJson(o.botColors) }) : ""}
 <noscript><div class="cc-noscript">The Command Center needs JavaScript.</div></noscript>`;
 
   return shell("MINT AI", body, {
@@ -370,8 +371,8 @@ ${perm && !desk ? dockMarkup(o.csrf, perm, { shell: true, noVoice: !vOk, core })
     heading: null,
     pageClass: desk ? "cc-page cc-desk" : "cc-page",
     assets: desk
-      ? ["mint-desktop-webauthn.js", "voice-live.css", "mint-desktop.css", "console.js", "cc-logic.js", "mint-core.js", "mint-core-d.js", "cc-family.js", "cc-map.js", "cc-panels.js", "voice-live-detect.js", "voice-live.js", "ui-actions.js", "mint-desktop-layout.js", "moni-ai.js", "mint-desktop.js"]
-      : ["voice-live.css", "mint-dock.css", "console.js", "cc-logic.js", "mint-core.js", "mint-core-d.js", "cc-family.js", "cc-map.js", "cc-panels.js", "voice-live-detect.js", "voice-live.js", "ui-actions.js", "moni-ai.js", "mint-dock.js", "mint-shell.js"],
+      ? ["mint-desktop-webauthn.js", "voice-live.css", "mint-desktop.css", "console.js", "cc-logic.js", "mint-core.js", "mint-core-d.js", "mint-core-bot.js", "cc-family.js", "cc-map.js", "cc-panels.js", "voice-live-detect.js", "voice-live.js", "ui-actions.js", "mint-desktop-layout.js", "moni-ai.js", "mint-desktop.js"]
+      : ["voice-live.css", "mint-dock.css", "console.js", "cc-logic.js", "mint-core.js", "mint-core-d.js", "mint-core-bot.js", "cc-family.js", "cc-map.js", "cc-panels.js", "voice-live-detect.js", "voice-live.js", "ui-actions.js", "moni-ai.js", "mint-dock.js", "mint-shell.js"],
     topExtra: topExtra(),
     topEnd: TOP_CLOCK,
   });
@@ -435,6 +436,7 @@ function appearance(o) {
     B: "A glassy fluid orb that melts into voice waves when it listens and speaks.",
     C: "The dotted sphere with the brand spark at its heart.",
     D: "A folding sphere of dots, cyan to magenta, with a glowing rim and a halo of dots. The default.",
+    E: BOT_DESC,
   };
   const opts = Object.keys(logic.CORES)
     .map(
@@ -455,12 +457,67 @@ function appearance(o) {
         <fieldset class="mint-core-opts"><legend class="cc-sr">MINT AI core</legend>${opts}</fieldset>
         <p class="muted mint-sess-h"><b>Sessions view</b> — how the live sessions are shown round the core.</p>
         <fieldset class="mint-sess-opts"><legend class="cc-sr">Sessions view</legend>${sessOpts}</fieldset>
+        ${botSettings({ core, botHead: o.botHead, botColors: o.botColors })}
         <div class="btn-row"><button class="btn primary mint-core-save" type="submit">Save</button><span class="muted small" id="mint-appearance-note" role="status"></span></div>
       </form>`,
       { icon: "eye", id: "appearance" }
     ),
-    assets: ["mint-settings.css", "mint-core.js", "mint-core-d.js", "mint-settings.js"],
+    assets: APPEARANCE_ASSETS,
   };
 }
 
-module.exports = { page, appearance, SPRITE, coreSwitch };
+/* ------------------------------------------------ core E: head and colours --- */
+
+const BOT_DESC = "A wireframe bot head; its face lights up in one colour per state. Pick a head and colours below.";
+const APPEARANCE_ASSETS = ["mint-settings.css", "cc-logic.js", "mint-core.js", "mint-core-d.js", "mint-core-bot.js", "mint-settings.js"];
+
+/**
+ * Core E's settings in Appearance (the Settings section and the Account card render the same): the
+ * ten heads, each with a thumbnail drawn by mint-settings.js (MintBot.thumb), the colour presets
+ * (swatches painted through the CSSOM), and Custom: one colour picker per state and the wireframe,
+ * with each pick's derived dark / light shade, a reset to a preset, a warning when two state colours
+ * are too close, and a strip of the six states in both themes. Without JavaScript the head and the
+ * preset post with the form; custom colours need JavaScript. Shown while core E is chosen
+ * (mint-settings.css, .core-e); no inline style anywhere (CSP).
+ */
+function botSettings(o) {
+  const head = logic.normBotHead(o.botHead);
+  const colors = logic.normBotColors(o.botColors);
+  const heads = Object.keys(logic.BOT_HEADS)
+    .map(
+      (k) => `<label class="mint-bot-head" data-bot-head-opt="${k}"><input type="radio" name="bot_head" value="${k}"${k === head ? " checked" : ""}>
+        <canvas data-bot-thumb="${k}" aria-hidden="true"></canvas><span>${esc(logic.BOT_HEADS[k])}</span></label>`
+    )
+    .join("");
+  const presets = Object.keys(logic.BOT_PRESETS)
+    .concat(["custom"])
+    .map((k) => {
+      const base = k === "custom" ? colors.c : logic.botPresetBase(k);
+      const sw = logic.BOT_STATE_ITEMS.map((i) => `<i data-swatch="${esc(base[i])}"></i>`).join("");
+      return `<label class="mint-bot-preset" data-bot-preset-opt="${k}"><input type="radio" name="bot_preset" value="${k}"${k === colors.p ? " checked" : ""}>
+        <span class="mint-bot-sw" aria-hidden="true">${sw}</span><span>${esc(k === "custom" ? "Custom" : logic.BOT_PRESETS[k].name)}</span></label>`;
+    })
+    .join("");
+  const picks = logic.BOT_ITEMS.map(
+    (k) => `<label class="mint-bot-pick"><input type="color" value="${esc(colors.c[k].toLowerCase())}" data-bot-item="${k}" aria-label="${esc(logic.BOT_ITEM_LABEL[k])} colour">
+      <span class="nm">${esc(logic.BOT_ITEM_LABEL[k])}</span><span class="mint-bot-shades" title="Dark / light theme shade"><i data-shade="${k}:dark"></i><i data-shade="${k}:light"></i></span></label>`
+  ).join("");
+  const strip = (th) => logic.BOT_STATE_ITEMS.map((k) => `<span><canvas data-bot-state="${k}" data-bot-theme="${th}"></canvas><em>${esc(logic.BOT_ITEM_LABEL[k])}</em></span>`).join("");
+  return `<div class="mint-bot" id="mint-bot" data-bot-colors="${esc(logic.botColorsJson(colors))}" data-bot-head="${head}">
+        <p class="muted mint-sess-h"><b>Bot</b> — core E's head and colours. The sessions round it, the dock, the page flight and the desktop app use the same.</p>
+        <fieldset class="mint-bot-heads"><legend class="cc-sr">Bot head</legend>${heads}</fieldset>
+        <fieldset class="mint-bot-presets"><legend class="mint-bot-lg">Colours</legend>${presets}</fieldset>
+        <div class="mint-bot-custom" id="mint-bot-custom"${colors.p === "custom" ? "" : " hidden"}>
+          <div class="mint-bot-picks">${picks}</div>
+          <p class="muted small">One colour each; its dark- and light-theme shades are worked out from it (at least 3:1 on each background).</p>
+          <div class="btn-row"><button type="button" class="btn small" id="mint-bot-reset">Reset to preset</button><select id="mint-bot-reset-from" aria-label="Preset to reset to">${Object.keys(logic.BOT_PRESETS)
+            .map((k) => `<option value="${k}">${esc(logic.BOT_PRESETS[k].name)}</option>`)
+            .join("")}</select></div>
+        </div>
+        <p class="mint-bot-warn" id="mint-bot-warn" role="status" hidden></p>
+        <div class="mint-bot-strip" aria-hidden="true"><div class="row dark">${strip("dark")}</div><div class="row light">${strip("light")}</div></div>
+      </div>`;
+}
+
+module.exports = { page, appearance, botSettings, BOT_DESC, APPEARANCE_ASSETS, SPRITE, coreSwitch };
+

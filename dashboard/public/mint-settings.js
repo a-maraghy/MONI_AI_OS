@@ -1,6 +1,10 @@
 "use strict";
 /*
- * Account > Appearance: the MINT AI core, chosen with a live preview of each.
+ * Account > Appearance: the MINT AI core, chosen with a live preview of each;
+ * with core E (the bot), its head (ten thumbnails) and colours (presets, or one
+ * picker per state and the wireframe, each with its derived dark / light shade,
+ * a too-close warning, the six states in both themes), saved at once through
+ * POST /mint-ai/api/prefs/bot.
  *
  * Each option draws its core in a small canvas (mint-core.js; D, the mesh, is
  * mint-core-d.js), cycling through
@@ -17,6 +21,20 @@
   var CYCLE = ["idle", "listening", "thinking", "speaking", "needs", "idle"];
   var previews = [];
   form.classList.add("js");
+  var LG = window.MintLogic;
+
+  /* ------------------------------------------------------------ core E: head and colours */
+  var botEl = document.getElementById("mint-bot");
+  var Bot = {
+    live: null,
+    cur: LG && botEl ? LG.normBotColors(botEl.getAttribute("data-bot-colors") || "") : null,
+    head: function () { var r = form.querySelector('input[name="bot_head"]:checked'); return r ? r.value : botEl ? botEl.getAttribute("data-bot-head") : "cap"; },
+    colors: function () { return Bot.cur; },
+  };
+  /** Core E's section shows only while E is the chosen core. */
+  function coreNow() { var r = form.querySelector('input[name="core"]:checked'); return r ? r.value : ""; }
+  function paintCoreE() { form.classList.toggle("core-e", coreNow() === "E"); }
+  paintCoreE();
 
   function isLight() {
     var t = document.documentElement.getAttribute("data-theme");
@@ -30,7 +48,10 @@
       var k0 = cv.getAttribute("data-prev-core");
       var core = k0 === "D" && window.MintCoreD
         ? window.MintCoreD(cv, { autoAmp: true })
-        : window.MintCore(cv, { concept: k0, points: 1500, points2d: 500, autoAmp: true });
+        : k0 === "E" && window.MintCoreBot
+          ? window.MintCoreBot(cv, { noGuard: true, head: Bot.head(), colors: Bot.colors() })
+          : window.MintCore(cv, { concept: k0, points: 1500, points2d: 500, autoAmp: true });
+      if (k0 === "E") Bot.live = core;
       cv = core.canvas || cv; // a core without its GPU context draws on a fresh copy of the canvas
       var p = { cv: cv, core: core, n: k, on: false };
       p.fit = function () {
@@ -63,7 +84,84 @@
     previews.forEach(function (p) { io.observe(p.cv); });
   } else previews.forEach(function (p) { visible(p, true); });
   window.addEventListener("resize", function () { previews.forEach(function (p) { p.fit(); }); });
-  function repaint() { previews.forEach(function (p) { p.core.setLight(isLight()); }); }
+  paintBot();
+  function repaint() { previews.forEach(function (p) { p.core.setLight(isLight()); }); paintBot(); }
+
+  /* ---- core E: thumbnails (MintBot.thumb, 2D), swatches and shades (CSSOM: no inline style), the warning ---- */
+  function paintBot() {
+    if (!botEl || !window.MintBot || !LG || !Bot.cur) return;
+    var light = isLight(), c = Bot.cur, i;
+    var th = botEl.querySelectorAll("canvas[data-bot-thumb]");
+    for (i = 0; i < th.length; i++) window.MintBot.thumb(th[i], th[i].getAttribute("data-bot-thumb"), { state: "idle", light: light, colors: c, w: 84, h: 84 });
+    var st = botEl.querySelectorAll("canvas[data-bot-state]"), FACE = { ready: "idle", listening: "listening", thinking: "thinking", speaking: "speaking", needs: "needs", error: "error" };
+    for (i = 0; i < st.length; i++) window.MintBot.thumb(st[i], Bot.head(), { state: FACE[st[i].getAttribute("data-bot-state")], light: st[i].getAttribute("data-bot-theme") === "light", colors: c, w: 76, h: 76 });
+    var sw = botEl.querySelectorAll("[data-bot-preset-opt=custom] i[data-swatch]");
+    for (i = 0; i < sw.length; i++) sw[i].setAttribute("data-swatch", c.c[LG.BOT_STATE_ITEMS[i]]);
+    var all = botEl.querySelectorAll("i[data-swatch]");
+    for (i = 0; i < all.length; i++) all[i].style.background = all[i].getAttribute("data-swatch");
+    var sh = botEl.querySelectorAll("i[data-shade]"), pd = LG.botPalette({ p: "custom", c: c.c }, false), pl = LG.botPalette({ p: "custom", c: c.c }, true);
+    for (i = 0; i < sh.length; i++) {
+      var kk = sh[i].getAttribute("data-shade").split(":"), rgb = (kk[1] === "light" ? pl : pd)[kk[0]];
+      sh[i].style.background = LG.rgbHex(rgb);
+      sh[i].title = (kk[1] === "light" ? "Light theme: " : "Dark theme: ") + LG.rgbHex(rgb);
+    }
+    var warn = document.getElementById("mint-bot-warn"), close = c.p === "custom" ? LG.botClosePairs(c) : [];
+    if (warn) {
+      warn.hidden = !close.length;
+      warn.textContent = close.length ? "Hard to tell apart: " + close.map(function (p) { return LG.BOT_ITEM_LABEL[p[0]] + " and " + LG.BOT_ITEM_LABEL[p[1]]; }).join(", ") + ". The faces still differ, but the colours look alike." : "";
+    }
+    var cu = document.getElementById("mint-bot-custom");
+    if (cu) cu.hidden = c.p !== "custom";
+    if (Bot.live) { Bot.live.setHead(Bot.head()); Bot.live.setColors(c); }
+  }
+  function saveBot(body, what) {
+    say("Saving…");
+    return fetch("/mint-ai/api/prefs/bot", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json", Accept: "application/json", "X-CSRF-Token": CSRF },
+      body: JSON.stringify(body),
+    }).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (j) {
+        if (!r.ok) throw new Error(j.error || "HTTP " + r.status);
+        say("Saved. The bot: " + (what === "head" ? j.headName : j.colorsName) + ".");
+      });
+    }).catch(function (x) { say("Not saved: " + x.message, true); });
+  }
+  function botHeadChosen(h) { paintBot(); saveBot({ head: h }, "head"); }
+  function botPresetChosen(p) {
+    if (p === "custom") Bot.cur = { p: "custom", c: Bot.cur.c };
+    else Bot.cur = LG.normBotColors({ p: p });
+    if (p === "custom") fillPickers();
+    paintBot();
+    saveBot({ colors: { preset: Bot.cur.p, custom: Bot.cur.p === "custom" ? Bot.cur.c : undefined } }, "colors");
+  }
+  function fillPickers() {
+    var ins = botEl.querySelectorAll("input[data-bot-item]");
+    for (var i = 0; i < ins.length; i++) ins[i].value = Bot.cur.c[ins[i].getAttribute("data-bot-item")].toLowerCase();
+  }
+  var botT = 0;
+  /** A custom colour moved: preview at once; saved when the picker closes (change) or after a pause. */
+  function botPicked(commit) {
+    var ins = botEl.querySelectorAll("input[data-bot-item]"), c = {};
+    for (var i = 0; i < ins.length; i++) c[ins[i].getAttribute("data-bot-item")] = ins[i].value;
+    Bot.cur = LG.normBotColors({ p: "custom", c: c });
+    var cr = form.querySelector('input[name="bot_preset"][value="custom"]');
+    if (cr) cr.checked = true;
+    paintBot();
+    clearTimeout(botT);
+    botT = setTimeout(function () { saveBot({ colors: { preset: "custom", custom: Bot.cur.c } }, "colors"); }, commit ? 0 : 700);
+  }
+  if (botEl && LG) {
+    botEl.addEventListener("input", function (e) { if (e.target.getAttribute("data-bot-item")) botPicked(false); });
+    var rs = document.getElementById("mint-bot-reset");
+    if (rs) rs.addEventListener("click", function () {
+      var from = document.getElementById("mint-bot-reset-from");
+      Bot.cur = { p: "custom", c: LG.normBotColors({ p: from ? from.value : "default" }).c };
+      fillPickers();
+      botPicked(true);
+    });
+  }
   document.addEventListener("moni-theme", repaint);
   if (window.matchMedia) {
     var mq = window.matchMedia("(prefers-color-scheme: light)");
@@ -77,7 +175,11 @@
   }
   form.addEventListener("change", function (e) {
     if (e.target.name === "sessions_view") return saveSessView(e.target.value);
+    if (e.target.name === "bot_head") return botHeadChosen(e.target.value);
+    if (e.target.name === "bot_preset") return botPresetChosen(e.target.value);
+    if (e.target.getAttribute && e.target.getAttribute("data-bot-item")) return botPicked(true);
     if (e.target.name !== "core") return;
+    paintCoreE();
     var core = e.target.value;
     say("Saving…");
     fetch("/mint-ai/api/prefs/core", {

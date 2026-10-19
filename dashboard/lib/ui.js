@@ -384,8 +384,10 @@ function shell(title, body, opts = {}) {
   const withDock = !bare && !!(perm && perm.can && perm.can("moniai.use")) && opts.dock !== false;
   const pageClass = [bare ? "" : "framed", withDock ? "with-dock" : "", opts.pageClass || ""].filter(Boolean).join(" ");
   // Core D's dock draws the mesh itself (WebGL2, mint-core-d.js, loaded before mint-dock.js); A/B/C keep the dotted 2D one.
+  // Core E's dock draws the bot head (WebGL2, mint-core-bot.js, with cc-logic.js for its colours).
   const dockCoreD = !!(who && who.core === "D");
-  if (withDock) opts = Object.assign({}, opts, { assets: (opts.assets || []).concat(["mint-dock.css", "ui-actions.js"].concat(dockCoreD ? ["mint-core-d.js"] : [], ["mint-dock.js"]).filter((f) => !(opts.assets || []).includes(f))) });
+  const dockCoreE = !!(who && who.core === "E");
+  if (withDock) opts = Object.assign({}, opts, { assets: (opts.assets || []).concat(["mint-dock.css", "ui-actions.js"].concat(dockCoreD ? ["mint-core-d.js"] : [], dockCoreE ? ["cc-logic.js", "mint-core-bot.js"] : [], ["mint-dock.js"]).filter((f) => !(opts.assets || []).includes(f))) });
 
   const where = renderWhere(opts.active, opts.where || (opts.crumbs && opts.crumbs.length ? opts.crumbs[opts.crumbs.length - 1][0] : title));
 
@@ -415,7 +417,7 @@ function shell(title, body, opts = {}) {
         ${head}
         ${bare ? body : `<div class="frame-body${opts.fill ? " stretch" : ""}">${body}</div>`}
       </main>
-    </div>${withDock ? `<div class="dock-band" aria-hidden="true"></div>` + dockMarkup(opts.csrf, perm, { noVoice: !who.voice, core: who.core }) : ""}`,
+    </div>${withDock ? `<div class="dock-band" aria-hidden="true"></div>` + dockMarkup(opts.csrf, perm, { noVoice: !who.voice, core: who.core, botHead: who.botHead, botColors: who.botColors }) : ""}`,
     Object.assign({}, opts, { pageClass })
   );
 }
@@ -462,7 +464,7 @@ function dockMarkup(csrf, perm, opts = {}) {
     : "";
   const svg = (d) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
   return `
-<div class="md-root${opts.shell ? " md-shell" : ""}" id="mint-dock-root" data-core="${opts.core === "D" ? "D" : "dots"}" data-csrf="${esc(csrf)}" data-pages="${esc(keys)}" data-page-map="${esc(map)}"${opts.shell ? ' data-shell="1"' : ""} hidden>${shellParts}
+<div class="md-root${opts.shell ? " md-shell" : ""}" id="mint-dock-root" data-core="${opts.core === "D" || opts.core === "E" ? opts.core : "dots"}"${opts.core === "E" ? ` data-bot-head="${esc(opts.botHead || "")}" data-bot-colors="${esc(opts.botColors || "")}"` : ""} data-csrf="${esc(csrf)}" data-pages="${esc(keys)}" data-page-map="${esc(map)}"${opts.shell ? ' data-shell="1"' : ""} hidden>${shellParts}
   <div class="md-bubble" id="md-bubble" aria-hidden="true" data-s="idle"><div class="b-top">MINT AI · <b id="md-b-state">READY</b><span id="md-b-at">now</span></div><div class="b-you" id="md-b-you"></div><div class="b-cap" id="md-b-cap">Ready when you are.</div><div class="b-ask" id="md-b-ask" hidden></div>
     <div class="b-hint"><span>Click to open the Command Center</span>${opts.noVoice ? "" : `<span>the mic starts a live call</span>`}</div></div>
   <div class="md-toast" id="md-toast" role="status"><span class="t-ic" aria-hidden="true"></span><span id="md-t-txt"></span><button type="button" id="md-t-act" hidden>Undo</button><button type="button" id="md-t-no" hidden>Cancel</button></div>

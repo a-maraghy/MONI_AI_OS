@@ -211,6 +211,10 @@ addColumn("users", "email", "TEXT NOT NULL DEFAULT ''");
 // place; '' meaning "the default" is what makes D the default for new users.)
 addColumn("users", "mint_core", "TEXT NOT NULL DEFAULT ''");
 addColumn("users", "sessions_view", "TEXT NOT NULL DEFAULT ''"); // '' = spheres (the default), or "orbit"
+// Core E ("Bot"): the head style ('' = "cap", public/cc-logic.js normBotHead) and the colours
+// ('' = the Default preset; else JSON {p} or {p: "custom", c: {item: "#RRGGBB"}}, cc-logic.js normBotColors).
+addColumn("users", "mint_bot_head", "TEXT NOT NULL DEFAULT ''");
+addColumn("users", "mint_bot_colors", "TEXT NOT NULL DEFAULT ''");
 
 // How the voice speaks to this person, learned from how they speak to it
 // (lib/voice-persona.js): JSON {dialect, gender, updated_at}, empty = not known
@@ -476,6 +480,14 @@ module.exports = {
   /** The MINT AI core this person chose (A / B / C). The caller validates it. */
   setUserMintCore: (id, core) =>
     db.prepare("UPDATE users SET mint_core = ? WHERE id = ?").run(String(core), id),
+
+  /** Core E's head style this person chose (one of cc-logic BOT_HEADS). The caller validates it. */
+  setUserBotHead: (id, head) =>
+    db.prepare("UPDATE users SET mint_bot_head = ? WHERE id = ?").run(String(head), id),
+
+  /** Core E's colours (the JSON from cc-logic botColorsJson). The caller validates them. */
+  setUserBotColors: (id, json) =>
+    db.prepare("UPDATE users SET mint_bot_colors = ? WHERE id = ?").run(String(json), id),
 
   /** The sessions view this person chose (spheres / orbit). The caller validates it. */
   setUserSessionsView: (id, view) =>

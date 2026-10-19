@@ -1,6 +1,7 @@
 /* Account > Appearance: the MINT AI core picker with live previews
    (lib/views-moniai.js appearance(), public/mint-settings.js). Tokens only. */
-.mint-core-opts { border: 0; margin: 12px 0; padding: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.mint-core-opts { border: 0; margin: 12px 0; padding: 0; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
+@media (max-width: 1400px) { .mint-core-opts { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 @media (max-width: 1100px) { .mint-core-opts { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .mint-core-opt { position: relative; display: flex; flex-direction: column; gap: 6px; padding: 10px; border-radius: 14px; border: 1px solid var(--line); background: var(--panel); cursor: pointer; transition: border-color .2s, box-shadow .2s; }
 .mint-core-opt:hover { border-color: var(--line-strong); }
@@ -31,3 +32,37 @@
 .mint-sess-opt:has(input:focus-visible) { outline: 2px solid var(--accent-2); outline-offset: 2px; }
 .mint-sess-opt .mint-core-name b { display: inline; min-width: 0; height: auto; padding: 0; background: none; color: var(--ink); font-size: 14px; margin: 0; }
 @media (max-width: 720px) { .mint-core-opts, .mint-sess-opts { grid-template-columns: 1fr; } .mint-prev { height: 110px; } }
+/* Core E (the bot): head thumbnails, colour presets, custom pickers with their derived shades, the state strip.
+   Shown while E is the chosen core (mint-settings.js sets .core-e; without JavaScript always shown). */
+.mint-appearance.js:not(.core-e) .mint-bot, .mint-appearance.js:not(.core-e) #a-bot { display: none; }
+.mint-bot { margin: 4px 0 12px; }
+.mint-bot-heads { border: 0; margin: 10px 0 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; }
+.mint-bot-head { position: relative; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 6px 4px 8px; border-radius: 12px; border: 1px solid var(--line); background: var(--panel); cursor: pointer; font-size: 12px; color: var(--muted); text-align: center; transition: border-color .2s, box-shadow .2s; }
+.mint-bot-head canvas { width: 84px; height: 84px; display: block; border-radius: 8px; }
+.mint-bot-head:hover { border-color: var(--line-strong); }
+.mint-bot-head input, .mint-bot-preset input { position: absolute; opacity: 0; pointer-events: none; }
+.mint-bot-head:has(input:checked), .mint-bot-preset:has(input:checked) { border-color: var(--accent-2); box-shadow: 0 0 0 3px var(--accent-soft); color: var(--ink); }
+.mint-bot-head:has(input:focus-visible), .mint-bot-preset:has(input:focus-visible) { outline: 2px solid var(--accent-2); outline-offset: 2px; }
+.mint-bot-presets { border: 0; margin: 14px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; }
+.mint-bot-lg { width: 100%; padding: 0; margin: 0 0 4px; font: 600 13px var(--brand-font); color: var(--ink); }
+.mint-bot-preset { position: relative; display: inline-flex; align-items: center; gap: 8px; padding: 7px 12px 7px 9px; border-radius: 999px; border: 1px solid var(--line); background: var(--panel); cursor: pointer; font-size: 13px; color: var(--muted); }
+.mint-bot-sw { display: inline-flex; gap: 2px; }
+.mint-bot-sw i { width: 10px; height: 10px; border-radius: 50%; display: block; box-shadow: inset 0 0 0 1px rgba(127, 127, 127, .35); }
+.mint-bot-custom { margin: 12px 0 0; padding: 12px; border-radius: 14px; border: 1px solid var(--line); background: var(--panel); }
+.mint-bot-picks { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px 12px; }
+.mint-bot-pick { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--ink); cursor: pointer; }
+.mint-bot-pick input { width: 34px; height: 28px; padding: 0; border: 1px solid var(--line); border-radius: 8px; background: none; cursor: pointer; }
+.mint-bot-pick .nm { flex: 1; }
+.mint-bot-shades { display: inline-flex; border-radius: 6px; overflow: hidden; box-shadow: inset 0 0 0 1px var(--line); }
+.mint-bot-shades i { width: 14px; height: 14px; display: block; }
+.mint-bot-custom .btn-row { display: flex; gap: 8px; align-items: center; }
+.mint-bot-custom select { font: inherit; font-size: 13px; padding: 4px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel-2); color: var(--ink); }
+.mint-bot-warn { margin: 10px 0 0; padding: 8px 12px; border-radius: 10px; font-size: 13px; color: var(--warn, #b45309); background: color-mix(in srgb, var(--warn, #b45309) 12%, transparent); }
+.mint-bot-strip { margin: 12px 0 0; display: grid; gap: 6px; }
+.mint-bot-strip .row { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px; padding: 6px; border-radius: 12px; }
+.mint-bot-strip .row.dark { background: #0D1117; color: #c9d1e0; }
+.mint-bot-strip .row.light { background: #F8FAFC; color: #334155; box-shadow: inset 0 0 0 1px var(--line); }
+.mint-bot-strip span { display: flex; flex-direction: column; align-items: center; gap: 2px; min-width: 0; }
+.mint-bot-strip canvas { width: 76px; max-width: 100%; height: auto; aspect-ratio: 1; display: block; }
+.mint-bot-strip em { font-style: normal; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+@media (max-width: 720px) { .mint-bot-strip .row { grid-template-columns: repeat(3, minmax(0, 1fr)); } .mint-bot-heads { grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); } }

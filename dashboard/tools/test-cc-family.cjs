@@ -50,9 +50,16 @@ check("real data only in the page: task from waiting_for / mission / delegation,
 console.log("\nwith core D (the mesh)");
 const coreD = read("public/mint-core-d.js");
 check("the spheres become mesh replicas drawn by core D in ONE batch on its canvas (setMesh / meshKids), not 7 contexts", /setMesh: function \(yes\)/.test(fam) && /meshKids: function \(\)/.test(fam) && /if \(!mesh\) drawSphere\(PC,/.test(fam) && /kids: function \(\) \{ return family && family\.enabled\(\) \? family\.meshKids\(\) : null; \}/.test(map) && /gl\.drawArrays\(gl\.POINTS, 0, n \* KPER\)/.test(coreD) && (coreD.match(/getContext\("webgl2"/g) || []).length === 1);
-check("the family moves before the core draws (beforeDraw), so meshes and names agree; never twice a frame", /beforeDraw: function \(\) \{ if \(family && family\.enabled\(\)\) family\.frame\(\); \}/.test(map) && /family\.enabled\(\) && core\.S\.concept !== "D"\) family\.frame\(\)/.test(map) && /if \(opts\.beforeDraw\) opts\.beforeDraw\(S, W\)/.test(coreD));
+check("the family moves before the core draws (beforeDraw), so meshes and names agree; never twice a frame", /beforeDraw: function \(\) \{ if \(family && family\.enabled\(\)\) family\.frame\(\); \}/.test(map) && /family\.enabled\(\) && !drawsKids\(\)\) family\.frame\(\)/.test(map) && /function drawsKids\(\) \{ return core\.S\.concept === "D" \|\| core\.S\.concept === "E"; \}/.test(map) && /if \(opts\.beforeDraw\) opts\.beforeDraw\(S, W\)/.test(coreD));
 check("each sphere keeps its state in the mesh: tint, dim / shimmer (faster folds), amber, born / dissolving, catching a delegation", ["tint: tc.dark", "shimmer:", "amb:", "form: k.form", "dis: k.dis", "catchK:"].every((x) => fam.includes(x)) && /k\.fold \+= dt \* \(0\.05 \+ 0\.25 \* \(k\.st === "working"/.test(fam));
-check("only with D and WebGL2; A/B/C (or no WebGL2) keep the dotted spheres", /family\.setMesh\(core\.S\.concept === "D" && core\.isGL\)/.test(map));
+check("only with D and WebGL2, or E (its 2D renderer draws them too); A/B/C (or D without WebGL2) keep the dotted spheres", /family\.setMesh\(\(core\.S\.concept === "D" && core\.isGL\) \|\| core\.S\.concept === "E"\)/.test(map));
+
+console.log("\nwith core E (the bot)");
+const coreE = read("public/mint-core-bot.js");
+check("the sessions become small bot heads drawn by core E on its canvas, from the same meshKids list (plus key / st / glow / bloom for the face)", /key: k\.id, st: k\.st, glow: k\.glow, bloom: k\.bloom/.test(fam) && /var list = opts\.kids \? opts\.kids\(\) : null;/.test(coreE) && (coreE.match(/getContext\("webgl2"/g) || []).length === 1);
+check("each head's face and colour come from the session's state (MintLogic.botSessState): needs you, listening, speaking, a grin, thinking, ready", /function botSessState\(k\)/.test(read("public/cc-logic.js")) && /sessState\(k\)/.test(coreE));
+check("born out of the core's dots, dissolving back into them (form / dis in the shader and the 2D renderer)", /if\(u_form<1\.0\)/.test(coreE) && /if\(u_dis>0\.0\)/.test(coreE) && /o\.form < 1 \|\| o\.dis > 0/.test(coreE));
+check("cc-map hands E the viewer's head and colours, and the offline face", /head: botHead\(\), colors: botColors\(\)/.test(map) && /setBot: function \(head, colors\)/.test(map) && /setOffline: function \(on\)/.test(map));
 check("reduced motion: a change redraws the core's still meshes", /if \(mesh && reduced && opts\.meshRedraw\) opts\.meshRedraw\(\);/.test(fam) && /meshRedraw: function \(\)/.test(map));
 
 console.log(`\n${passes} passed, ${failures} failed`);

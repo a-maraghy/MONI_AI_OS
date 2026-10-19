@@ -46,7 +46,7 @@
     "machine = the machine / server (الماشين، السيرفر)",
     "everything (كل حاجة)",
   ].join("; ");
-  var CORES = { A: "A", B: "B", C: "C", D: "D" };
+  var CORES = { A: "A", B: "B", C: "C", D: "D", E: "E" };
   // Tier 2 (UI control Phase 3): preferences, applied only after a confirm the server checks.
   var THEMES = { system: "the system theme", dark: "the dark theme", light: "the light theme" };
   // lib/voice-persona.js PRESETS plus "learned" (tested to match).
@@ -217,7 +217,7 @@
       name: "ui_action",
       description:
         "Change what the administrator sees on this Command Center screen, at once: end or mute this call (never unmute), stop reading, " +
-        "open or close a panel (" + Object.keys(SHEETS).join(", ") + "), show the map or missions, switch the core (A/B/C), " +
+        "open or close a panel (" + Object.keys(SHEETS).join(", ") + "), show the map or missions, switch the core (A/B/C/D/E), " +
         "show or read the last reply, or show the waiting decision card. " +
         "page.open takes the administrator to a page, a Settings section, a tab or a card of Mint OS (page = one key of the page map: " + Object.keys(NAV_PAGES).join(", ") + "): " +
         "\"open the machine overview\" / «افتحلي الـ OS dashboard» -> os; \"agents and sessions\" -> agents; \"the Telegram agents\" -> telegram; \"users\" -> users; \"the voice settings\" -> settings.voice; " +

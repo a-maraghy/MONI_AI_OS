@@ -133,6 +133,7 @@ sections.general = async (req, res, deps) => {
 
 sections.appearance = async (req, res) => {
   const L = require("../public/cc-logic");
+  const MV = require("./views-moniai");
   const core = L.normCore(req.me.mint_core);
   const sessview = L.normSessView(req.me.sessions_view);
   const csrf = res.locals.csrf;
@@ -141,6 +142,7 @@ sections.appearance = async (req, res) => {
     B: "A glassy fluid orb that melts into voice waves when it listens and speaks.",
     C: "The dotted sphere with the brand spark at its heart.",
     D: "A folding sphere of dots, cyan to magenta, with a glowing rim and a halo of dots. The default.",
+    E: MV.BOT_DESC,
   };
   const cores = Object.keys(L.CORES)
     .map(
@@ -173,10 +175,15 @@ sections.appearance = async (req, res) => {
           scope: "you",
           id: "a-sessions",
         }) +
+        V.row("Bot", "Core E's head and colours: the sessions, the dock, the page flight and the desktop app follow them.", MV.botSettings({ core, botHead: req.me.mint_bot_head, botColors: req.me.mint_bot_colors }), {
+          full: true,
+          scope: "you",
+          id: "a-bot",
+        }) +
         `<div class="lr set-note"><span class="muted small" id="mint-appearance-note" role="status"></span><noscript><button class="btn small primary" type="submit">Save</button></noscript></div>`
     ) +
     `</form>`;
-  return { body, assets: ["mint-settings.css", "mint-core.js", "mint-core-d.js", "mint-settings.js"] };
+  return { body, assets: MV.APPEARANCE_ASSETS };
 };
 
 function themeButtons() {

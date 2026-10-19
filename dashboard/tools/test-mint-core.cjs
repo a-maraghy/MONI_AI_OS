@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 "use strict";
 /**
- * The MINT AI core setting: which of the four cores (A dotted sphere, B Siri
- * fluid, C hybrid, D mesh) the Command Center draws, per person, default D
+ * The MINT AI core setting: which of the five cores (A dotted sphere, B Siri
+ * fluid, C hybrid, D mesh, E bot) the Command Center draws, per person, default D
  * (since 2026-10-06; everyone was moved to D once, by a recorded migration).
  *
  *     NODE_PATH=/opt/moni-dashboard/node_modules node dashboard/tools/test-mint-core.cjs
@@ -51,13 +51,13 @@ const read = (f) => fs.readFileSync(path.join(ROOT, f), "utf8");
 /* ------------------------------------------------------- static checks --- */
 
 const logic = require(path.join(ROOT, "public", "cc-logic.js"));
-check("four cores: A dotted sphere, B Siri fluid, C hybrid, D mesh", JSON.stringify(logic.CORES) === JSON.stringify({ A: "Dotted sphere", B: "Siri fluid", C: "Hybrid", D: "Mesh" }));
+check("five cores: A dotted sphere, B Siri fluid, C hybrid, D mesh, E bot", JSON.stringify(logic.CORES) === JSON.stringify({ A: "Dotted sphere", B: "Siri fluid", C: "Hybrid", D: "Mesh", E: "Bot" }));
 check("the default is D", logic.CORE_DEFAULT === "D" && logic.normCore("") === "D" && logic.normCore(null) === "D" && logic.normCore(undefined) === "D");
-check("a saved choice is kept, in any case", logic.normCore("a") === "A" && logic.normCore(" B ") === "B" && logic.normCore("C") === "C" && logic.normCore("d") === "D");
-check("anything else reads as the default", logic.normCore("E") === "D" && logic.normCore('"><x') === "D" && logic.normCore(7) === "D");
-check("the API accepts exactly A, B, C or D", logic.isCore("A") && logic.isCore("B") && logic.isCore("C") && logic.isCore("D") && !logic.isCore("a") && !logic.isCore("d") && !logic.isCore("E") && !logic.isCore("") && !logic.isCore(null) && !logic.isCore(["A"]));
+check("a saved choice is kept, in any case", logic.normCore("a") === "A" && logic.normCore(" B ") === "B" && logic.normCore("C") === "C" && logic.normCore("d") === "D" && logic.normCore("e") === "E");
+check("anything else reads as the default", logic.normCore("F") === "D" && logic.normCore('"><x') === "D" && logic.normCore(7) === "D");
+check("the API accepts exactly A, B, C, D or E", logic.isCore("A") && logic.isCore("B") && logic.isCore("C") && logic.isCore("D") && logic.isCore("E") && !logic.isCore("a") && !logic.isCore("d") && !logic.isCore("F") && !logic.isCore("") && !logic.isCore(null) && !logic.isCore(["A"]));
 const uia = require(path.join(ROOT, "public", "ui-actions.js"));
-check("the voice / agent action core.set accepts D too (both copies of ui-actions.js agree)", uia.CORES.D === "D" && read("public/ui-actions.js") === fs.readFileSync(path.join(ROOT, "..", "moni-ai", "lib", "ui-actions.js"), "utf8"));
+check("the voice / agent action core.set accepts D and E too (both copies of ui-actions.js agree)", uia.CORES.D === "D" && uia.CORES.E === "E" && read("public/ui-actions.js") === fs.readFileSync(path.join(ROOT, "..", "moni-ai", "lib", "ui-actions.js"), "utf8"));
 
 const dbSrc = read("lib/db.js");
 check("db: users.mint_core is added the migration way, empty by default", /addColumn\("users", "mint_core", "TEXT NOT NULL DEFAULT ''"\)/.test(dbSrc));
@@ -95,13 +95,13 @@ const pageFor = (core) => views.page({ csrf: "t", user: { name: "a", perm: admin
 check("view: the saved core is on #cc before first paint", /<div class="cc-shell" id="cc"\s+data-core="B"/.test(pageFor("B")));
 check("view: never chosen renders D", /id="cc"\s+data-core="D"/.test(pageFor(undefined)) && /id="cc"\s+data-core="D"/.test(pageFor("")));
 check("view: a bad stored value cannot reach the markup", /id="cc"\s+data-core="D"/.test(pageFor('"><script>')) && !/"><script>/.test(pageFor('"><script>')));
-check("view: the page loads mint-core-d.js after mint-core.js and before cc-map.js", /mint-core\.js\?v=[^"]*"><\/script>\s*<script src="\/static\/mint-core-d\.js/.test(pageFor("D")) || /"mint-core\.js", "mint-core-d\.js", "cc-family\.js", "cc-map\.js"/.test(read("lib/views-moniai.js")));
+check("view: the page loads mint-core-d.js and mint-core-bot.js after mint-core.js and before cc-map.js", (read("lib/views-moniai.js").match(/"mint-core\.js", "mint-core-d\.js", "mint-core-bot\.js", "cc-family\.js", "cc-map\.js"/g) || []).length === 2);
 check("view: the brand spark (concept C) is in the page, shown by CSS on data-core", /id="cc-spark"/.test(pageFor("C")) && /\.cc-shell\[data-core="C"\] \.cc-spark \{ opacity: 1; \}/.test(read("public/moni-ai.css")));
-check("view: the quick switch is in the Everything sheet (and the voice menu builds the same)", (pageFor("A").match(/data-core-set="[ABCD]"/g) || []).length === 4 && /data-core-set="A" aria-checked="true"/.test(pageFor("A")) && /data-core-set=/.test(main));
+check("view: the quick switch is in the Everything sheet (and the voice menu builds the same)", (pageFor("A").match(/data-core-set="[ABCDE]"/g) || []).length === 5 && /data-core-set="A" aria-checked="true"/.test(pageFor("A")) && /data-core-set=/.test(main));
 const ap = views.appearance({ csrf: 'x"y', core: "B" });
-check("appearance: four options, the saved one checked, a preview canvas each", (ap.html.match(/name="core" value="[ABCD]"/g) || []).length === 4 && /value="B" checked/.test(ap.html) && (ap.html.match(/data-prev-core="[ABCD]"/g) || []).length === 4);
+check("appearance: five options, the saved one checked, a preview canvas each", (ap.html.match(/name="core" value="[ABCDE]"/g) || []).length === 5 && /value="B" checked/.test(ap.html) && (ap.html.match(/data-prev-core="[ABCDE]"/g) || []).length === 5);
 check("appearance: works without JavaScript (a form post with the CSRF token)", /<form method="post" action="\/account\/appearance"/.test(ap.html) && /name="_csrf" value="x&quot;y"/.test(ap.html));
-check("appearance: loads its own stylesheet and scripts, the core renderers first", ap.assets.join(" ") === "mint-settings.css mint-core.js mint-core-d.js mint-settings.js");
+check("appearance: loads its own stylesheet and scripts, the colour logic and the core renderers first", ap.assets.join(" ") === "mint-settings.css cc-logic.js mint-core.js mint-core-d.js mint-core-bot.js mint-settings.js");
 check("appearance: no inline style or handler", !/\sstyle\s*=|\son[a-z]+\s*=/i.test(ap.html));
 
 /* ------------------------------------------------------------- over HTTP --- */
@@ -214,8 +214,8 @@ const csrfOf = (html) => (/data-csrf="([^"]+)"/.exec(html) || /name="_csrf" valu
 
     r = await post(A1, { core: "A" });
     check("quick switch without the CSRF token: refused (403)", r.status === 403, r.status);
-    r = await post(A1, { core: "E" }, tok);
-    check("quick switch to an unknown core: refused (400)", r.status === 400 && /A, B, C or D/.test(r.body), r.status + " " + r.body);
+    r = await post(A1, { core: "F" }, tok);
+    check("quick switch to an unknown core: refused (400)", r.status === 400 && /A, B, C, D or E/.test(r.body), r.status + " " + r.body);
     r = await post(A1, { core: "a" }, tok);
     check("only the capital letter is a core (the page sends exactly A/B/C)", r.status === 400, r.status);
     r = await post(A1, { core: "A" }, tok);
@@ -248,7 +248,7 @@ const csrfOf = (html) => (/data-csrf="([^"]+)"/.exec(html) || /name="_csrf" valu
     r = await req("GET", "/mint-ai", { cookie: A1.cookie });
     check("…the page then draws B", coreOn(r.body) === "B", coreOn(r.body));
     r = await req("POST", "/account/appearance", { cookie: A1.cookie, body: new URLSearchParams({ _csrf: accTok, core: "Z" }).toString() });
-    check("the form refuses anything but A/B/C/D", r.status === 302 && /err=/.test(r.headers.location) && db.getUserByName("coreadmin").mint_core === "B", r.headers.location);
+    check("the form refuses anything but A/B/C/D/E", r.status === 302 && /err=/.test(r.headers.location) && db.getUserByName("coreadmin").mint_core === "B", r.headers.location);
     r = await req("POST", "/account/appearance", { cookie: A1.cookie, body: new URLSearchParams({ _csrf: "wrong", core: "C" }).toString() });
     check("the form needs its CSRF token", r.status === 403 && db.getUserByName("coreadmin").mint_core === "B", r.status);
 

@@ -35,7 +35,9 @@
  * by this file's frame (place / tick), and carries the session spheres (fading
  * with the Command Center) so they do not blink out. The Command Center's core
  * stops for the flight (one WebGL context draws at a time, besides the dock's
- * small one). A, B and C keep the dotted 2D flight below.
+ * small one). Core E (the bot) flies the same way, as a bot head (mint-core-bot.js) with the
+ * viewer's head style and colours, the sessions riding along as small bots. A, B and C keep
+ * the dotted 2D flight below.
  */
 (function () {
   var root = document.getElementById("mint-dock-root");
@@ -150,20 +152,24 @@
   var heroD = null, heroCv = null, kidsA = 1;
   function famNow() { var c = CCx(); return c && c.orbit && c.orbit.family; }
   function coreIsD() { var c = CCx(); return !!(window.MintCoreD && c && c.core && c.core.S && c.core.S.concept === "D" && c.core.isGL); }
+  /** Core E (the bot) flies itself too: a bot on the flight's canvas (WebGL2, else its 2D renderer). */
+  function coreIsE() { var c = CCx(); return !!(window.MintCoreBot && c && c.core && c.core.S && c.core.S.concept === "E"); }
   /** A core D for this flight, carrying on from `src` (the Command Center's core, or the dock's). */
   function meshUp(src) {
     heroCv = document.createElement("canvas");
     heroCv.className = "md-hero md-hero-d on";
     heroCv.setAttribute("aria-hidden", "true");
     hero.parentNode.insertBefore(heroCv, hero.nextSibling);
-    heroD = window.MintCoreD(heroCv, {
+    var E = src && src.S && src.S.concept === "E", LG = window.MintLogic;
+    heroD = (E ? window.MintCoreBot : window.MintCoreD)(heroCv, {
       noGuard: true,
+      head: E ? src.S.head : null, colors: E && cc && LG ? LG.normBotColors(cc.getAttribute("data-bot-colors") || "") : null,
       backdrop: "glow",
       // the session spheres ride along, fading with the Command Center
       kids: function () { var f = famNow(), k = f && f.enabled() && f.meshKids ? f.meshKids() : null; if (!k) return null; return k.map(function (x) { x.alpha *= kidsA; return x; }); },
       beforeDraw: function () { var f = famNow(); if (f && f.enabled()) f.frame(); },
     });
-    if (!heroD.isGL) { meshDown(); return false; }
+    if (!heroD.isGL && !E) { meshDown(); return false; }
     heroD.resize(innerWidth / 2, innerHeight / 2, 100, innerWidth, innerHeight);
     heroD.adopt(src);
     heroD.setLight(isLight(), true);
@@ -216,7 +222,7 @@
     heroSize();
     fl = { dir: dir, p: 0, dur: dir === "down" ? 1.05 : 1.0 };
     var dm = D().mesh ? D().mesh() : null, mesh = false;
-    if (coreIsD()) {
+    if (coreIsD() || coreIsE()) {
       var c = CCx();
       mesh = meshUp(dir === "down" ? c.core : dm || c.core);
       if (mesh) coreStop(); // the flight's mesh draws; the Command Center's core waits for its hand-over

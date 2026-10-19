@@ -6,7 +6,8 @@
  * node can require this file (tools/test-cc-logic.cjs) and the page loads the
  * same text as window.MintLogic. What lives here:
  *
- *   - the MINT AI core setting: the three concepts and the default (C);
+ *   - the MINT AI core setting: the five concepts and the default (D); core E's
+ *     head style and colours (presets, custom picks and their derived shades);
  *   - coreState / caption: what the core shows and what the one-line caption
  *     under it says, from what is really happening (the turn and its current
  *     step, a delegation and its target, the sentence being spoken, the
@@ -22,7 +23,8 @@
   /* ------------------------------------------------------------ the core */
 
   // D (Mesh, mint-core-d.js) is the default since 2026-10-06; A/B/C stay one switch away.
-  var CORES = { A: "Dotted sphere", B: "Siri fluid", C: "Hybrid", D: "Mesh" };
+  // E (Bot, mint-core-bot.js, 2026-10-19): a wireframe bot head whose face carries the state.
+  var CORES = { A: "Dotted sphere", B: "Siri fluid", C: "Hybrid", D: "Mesh", E: "Bot" };
   var CORE_DEFAULT = "D";
   /** A saved or requested core, as one of A / B / C / D; anything else is the default. */
   function normCore(c) {
@@ -32,6 +34,206 @@
   /** Whether a request names a core at all (the API refuses anything else). */
   function isCore(c) {
     return typeof c === "string" && Object.prototype.hasOwnProperty.call(CORES, c);
+  }
+
+  /* ------------------------------------------------------------ core E: the bot */
+
+  /**
+   * The bot's head style (users.mint_bot_head): one of the ten approved heads
+   * (mockups/emo-core-states). Empty or unknown reads as the first, "cap".
+   */
+  var BOT_HEADS = {
+    cap: "Cap & headphones", headphones: "Headphones", beanie: "Beanie", goggles: "Goggles", headset: "Headset & mic",
+    ears: "Cat ears", halo: "Halo", mortar: "Graduation cap", antennas: "Twin antennas", bowtie: "Bow tie",
+  };
+  var BOT_HEAD_DEFAULT = "cap";
+  function normBotHead(h) {
+    h = String(h == null ? "" : h).trim().toLowerCase();
+    return Object.prototype.hasOwnProperty.call(BOT_HEADS, h) ? h : BOT_HEAD_DEFAULT;
+  }
+  function isBotHead(h) { return typeof h === "string" && Object.prototype.hasOwnProperty.call(BOT_HEADS, h); }
+
+  /*
+   * The bot's colours (users.mint_bot_colors, JSON {p: preset, c: {item: "#RRGGBB"}}): one colour per
+   * state and one for the wireframe. A preset carries its own dark- and light-theme shades (Default is
+   * the approved set) or one base colour per item; a custom colour is one pick per item. A base / custom
+   * pick's shade for each theme is derived (botShade): lightened until it reaches 3:1 on the dark
+   * background, darkened until 3:1 on the light one.
+   */
+  var BOT_ITEMS = ["ready", "listening", "thinking", "speaking", "needs", "error", "wire"];
+  var BOT_STATE_ITEMS = BOT_ITEMS.slice(0, 6);
+  var BOT_ITEM_LABEL = { ready: "Ready", listening: "Listening", thinking: "Thinking", speaking: "Speaking", needs: "Needs you", error: "Error", wire: "Wireframe" };
+  var BOT_BG = { dark: "#0D1117", light: "#F8FAFC" }; // the page backgrounds (style.css --bg)
+  var BOT_PRESETS = {
+    default: {
+      name: "Default",
+      dark: { ready: "#00E6A5", listening: "#38D6FF", thinking: "#966EFF", speaking: "#FF5AC8", needs: "#FFBE3C", error: "#FF5050", wire: "#E1E8F8" },
+      light: { ready: "#00785A", listening: "#006EAA", thinking: "#6D2BC8", speaking: "#BE1E8C", needs: "#B46900", error: "#C81E1E", wire: "#262E40" },
+      rim: ["#38D6FF", "#966EFF"], rimL: "#6D2BC8",
+    },
+    mint: {
+      name: "Mint only",
+      dark: { ready: "#00E6A5", listening: "#00E6A5", thinking: "#00E6A5", speaking: "#00E6A5", needs: "#00E6A5", error: "#00E6A5", wire: "#E1E8F8" },
+      light: { ready: "#00785A", listening: "#00785A", thinking: "#00785A", speaking: "#00785A", needs: "#00785A", error: "#00785A", wire: "#262E40" },
+      rim: ["#00E6A5", "#38D6FF"], rimL: "#00785A",
+    },
+    mono: {
+      name: "Mono",
+      dark: { ready: "#FFFFFF", listening: "#FFFFFF", thinking: "#FFFFFF", speaking: "#FFFFFF", needs: "#FFFFFF", error: "#FFFFFF", wire: "#EBF0FA" },
+      light: { ready: "#0A0A0A", listening: "#0A0A0A", thinking: "#0A0A0A", speaking: "#0A0A0A", needs: "#0A0A0A", error: "#0A0A0A", wire: "#14161E" },
+      rim: ["#C8D2E6", "#C8D2E6"], rimL: "#14161E", wireK: 1.45,
+    },
+    ocean: {
+      name: "Ocean",
+      base: { ready: "#2EE6C0", listening: "#3AA0FF", thinking: "#8B7CFF", speaking: "#E879F9", needs: "#FFB347", error: "#FF5A5F", wire: "#D6ECF5" },
+      rim: ["#3AA0FF", "#2EE6C0"], rimL: "#0B5F8A",
+    },
+    sunset: {
+      name: "Sunset",
+      base: { ready: "#FF8FB1", listening: "#7DA6FF", thinking: "#B48CFF", speaking: "#FF6B3D", needs: "#FFC233", error: "#FF2E4D", wire: "#F5E6E8" },
+      rim: ["#FF8C5A", "#C85AFF"], rimL: "#9A2C5E",
+    },
+  };
+  var BOT_PRESET_DEFAULT = "default";
+  var HEX = /^#[0-9a-fA-F]{6}$/;
+  function hexRgb(h) { var n = parseInt(String(h).slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; }
+  function rgbHex(c) { return "#" + c.map(function (v) { var s = Math.max(0, Math.min(255, Math.round(v))).toString(16); return s.length < 2 ? "0" + s : s; }).join("").toUpperCase(); }
+  function lin(v) { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); }
+  /** WCAG relative luminance and contrast ratio (colours as "#RRGGBB" or [r, g, b]). */
+  function luminance(c) { return 0.2126 * lin(c[0]) + 0.7152 * lin(c[1]) + 0.0722 * lin(c[2]); }
+  function contrast(a, b) {
+    var x = luminance(typeof a === "string" ? hexRgb(a) : a), y = luminance(typeof b === "string" ? hexRgb(b) : b);
+    return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+  }
+  function rgbHsl(c) {
+    var r = c[0] / 255, g = c[1] / 255, b = c[2] / 255, mx = Math.max(r, g, b), mn = Math.min(r, g, b), l = (mx + mn) / 2, h = 0, s = 0, d = mx - mn;
+    if (d > 1e-9) {
+      s = l > 0.5 ? d / (2 - mx - mn) : d / (mx + mn);
+      h = mx === r ? (g - b) / d + (g < b ? 6 : 0) : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
+      h /= 6;
+    }
+    return [h, s, l];
+  }
+  function hslRgb(h, s, l) {
+    function f(p, q, t) { if (t < 0) t += 1; if (t > 1) t -= 1; return t < 1 / 6 ? p + (q - p) * 6 * t : t < 1 / 2 ? q : t < 2 / 3 ? p + (q - p) * (2 / 3 - t) * 6 : p; }
+    if (s === 0) return [l * 255, l * 255, l * 255];
+    var q = l < 0.5 ? l * (1 + s) : l + s - l * s, p = 2 * l - q;
+    return [f(p, q, h + 1 / 3) * 255, f(p, q, h) * 255, f(p, q, h - 1 / 3) * 255];
+  }
+  /**
+   * One picked colour's shade for a theme: on the dark background it is lightened (HSL lightness, 1 %
+   * steps) until it reaches 3:1, on the light background darkened until 3:1; a colour that already
+   * does is kept as it is. Returns "#RRGGBB".
+   */
+  function botShade(hex, theme) {
+    var c = hexRgb(HEX.test(hex) ? hex : "#808080"), bg = hexRgb(theme === "light" ? BOT_BG.light : BOT_BG.dark);
+    if (contrast(c, bg) >= 3) return rgbHex(c);
+    var hsl = rgbHsl(c), dir = theme === "light" ? -1 : 1, out = c;
+    for (var i = 1; i <= 100; i++) {
+      var l = Math.max(0, Math.min(1, hsl[2] + dir * i * 0.01));
+      out = hslRgb(hsl[0], hsl[1], l);
+      if (contrast(rgbHex(out), bg) >= 3 || l <= 0 || l >= 1) break;
+    }
+    return rgbHex(out);
+  }
+  /** A preset's base colours (what the pickers start from): its own picks, or its dark-theme set. */
+  function botPresetBase(p) { var P = BOT_PRESETS[p] || BOT_PRESETS[BOT_PRESET_DEFAULT]; return P.base || P.dark; }
+  /** A stored / requested colour setting as { p, c } (c complete); anything malformed reads as the default. */
+  function normBotColors(v) {
+    if (typeof v === "string") { try { v = v ? JSON.parse(v) : null; } catch (e) { v = null; } }
+    v = v && typeof v === "object" && !Array.isArray(v) ? v : {};
+    var p = v.p != null ? v.p : v.preset;
+    p = p === "custom" || (typeof p === "string" && Object.prototype.hasOwnProperty.call(BOT_PRESETS, p)) ? p : BOT_PRESET_DEFAULT;
+    var src = v.c || v.custom || {}, base = botPresetBase(p === "custom" ? BOT_PRESET_DEFAULT : p), c = {};
+    BOT_ITEMS.forEach(function (k) { c[k] = typeof src[k] === "string" && HEX.test(src[k]) ? src[k].toUpperCase() : base[k]; });
+    return { p: p, c: c };
+  }
+  /**
+   * The API's check (POST /mint-ai/api/prefs/bot): { preset, custom? } -- the preset one of the presets
+   * or "custom", every custom colour "#rrggbb" (hex only, known items only; custom needs all seven).
+   * Returns { ok: true, value: {p, c} } or { ok: false, error }.
+   */
+  function checkBotColors(v) {
+    if (!v || typeof v !== "object" || Array.isArray(v)) return { ok: false, error: "The colours must be an object: {preset, custom}." };
+    var p = v.preset != null ? v.preset : v.p;
+    if (typeof p !== "string" || !(p === "custom" || Object.prototype.hasOwnProperty.call(BOT_PRESETS, p))) return { ok: false, error: "The colour preset must be one of " + Object.keys(BOT_PRESETS).join(", ") + " or custom." };
+    var c = v.custom != null ? v.custom : v.c;
+    if (c != null) {
+      if (typeof c !== "object" || Array.isArray(c)) return { ok: false, error: "The custom colours must be an object." };
+      var keys = Object.keys(c);
+      for (var i = 0; i < keys.length; i++) {
+        if (BOT_ITEMS.indexOf(keys[i]) < 0) return { ok: false, error: "Unknown colour: " + String(keys[i]).slice(0, 40) + "." };
+        if (typeof c[keys[i]] !== "string" || !HEX.test(c[keys[i]])) return { ok: false, error: "Colours are #rrggbb hex (" + keys[i] + ")." };
+      }
+    }
+    if (p === "custom" && !(c && BOT_ITEMS.every(function (k) { return typeof c[k] === "string"; }))) return { ok: false, error: "Custom colours need a colour for each of " + BOT_ITEMS.join(", ") + "." };
+    return { ok: true, value: normBotColors({ p: p, c: c || {} }) };
+  }
+  /** The stored form (compact JSON; a preset alone keeps no colours), and a short line for the audit log. */
+  function botColorsJson(v) { v = normBotColors(v); return JSON.stringify(v.p === "custom" ? v : { p: v.p }); }
+  function botColorsLine(v) {
+    v = normBotColors(v);
+    if (v.p !== "custom") return BOT_PRESETS[v.p].name;
+    return "Custom (" + BOT_ITEMS.map(function (k) { return k + " " + v.c[k]; }).join(", ") + ")";
+  }
+  /**
+   * The colours to draw with in one theme, as [r, g, b] (0..255): each state, the wireframe (wireK: how
+   * strong), and the soft glow behind the head (rim: two stops, dark theme; rimL: light theme).
+   */
+  function botPalette(v, light) {
+    v = normBotColors(v);
+    var th = light ? "light" : "dark", out = {}, P = v.p === "custom" ? null : BOT_PRESETS[v.p];
+    BOT_ITEMS.forEach(function (k) { out[k] = hexRgb(P ? (P[th] ? P[th][k] : botShade(P.base[k], th)) : botShade(v.c[k], th)); });
+    out.wireK = (P && P.wireK) || 1;
+    var rim = P ? P.rim : [botShade(v.c.listening, "dark"), botShade(v.c.thinking, "dark")];
+    out.rim = [hexRgb(rim[0]), hexRgb(rim[1])];
+    out.rimL = hexRgb(P ? P.rimL : botShade(v.c.thinking, "light"));
+    return out;
+  }
+  /** CIE76 colour difference (sRGB -> Lab, D65). */
+  function lab(c) {
+    var r = lin(c[0]), g = lin(c[1]), b = lin(c[2]);
+    var x = (r * 0.4124 + g * 0.3576 + b * 0.1805) / 0.95047, y = r * 0.2126 + g * 0.7152 + b * 0.0722, z = (r * 0.0193 + g * 0.1192 + b * 0.9505) / 1.08883;
+    function f(t) { return t > 0.008856 ? Math.pow(t, 1 / 3) : 7.787 * t + 16 / 116; }
+    return [116 * f(y) - 16, 500 * (f(x) - f(y)), 200 * (f(y) - f(z))];
+  }
+  function deltaE(a, b) { var p = lab(a), q = lab(b); return Math.sqrt(Math.pow(p[0] - q[0], 2) + Math.pow(p[1] - q[1], 2) + Math.pow(p[2] - q[2], 2)); }
+  var BOT_CLOSE_DE = 20;
+  /**
+   * State colours too close to tell apart, in either theme: [["ready", "listening"], ...]. The face
+   * still differs, so this is a warning in Settings, never a refusal (Mint only / Mono are one colour on purpose).
+   */
+  function botClosePairs(v) {
+    var out = [], seen = {};
+    [false, true].forEach(function (light) {
+      var P = botPalette(v, light);
+      for (var i = 0; i < BOT_STATE_ITEMS.length; i++) for (var j = i + 1; j < BOT_STATE_ITEMS.length; j++) {
+        var a = BOT_STATE_ITEMS[i], b = BOT_STATE_ITEMS[j];
+        if (!seen[a + "|" + b] && deltaE(P[a], P[b]) < BOT_CLOSE_DE) { seen[a + "|" + b] = 1; out.push([a, b]); }
+      }
+    });
+    return out;
+  }
+  /** The core's states (and offline) as the bot's colour item and face. */
+  var BOT_STATE_FACE = {
+    idle: { state: "ready", face: "base" }, listening: { state: "listening", face: "listen" }, thinking: { state: "thinking", face: "focus" },
+    delegating: { state: "thinking", face: "base" }, speaking: { state: "speaking", face: "speak" }, needs: { state: "needs", face: "pupils" },
+    error: { state: "error", face: "err" }, offline: { state: "error", face: "err" },
+  };
+  function botFace(st) { return BOT_STATE_FACE[st] || BOT_STATE_FACE.idle; }
+  /**
+   * What a session's head shows (with core E the sessions are small bots): the core's colour + face
+   * language. Waiting on you -> needs you; a delegation landing -> listening; a reply going back ->
+   * speaking; just finished -> ready, grinning; working -> thinking; idle -> ready.
+   */
+  function botSessState(k) {
+    k = k || {};
+    if (k.st === "waiting") return { state: "needs", face: "pupils" };
+    if ((k.catchK || 0) > 0.25) return { state: "listening", face: "listen" };
+    if ((k.glow || 0) > 0.35) return { state: "speaking", face: "speak" };
+    if ((k.bloom || 0) > 0.25) return { state: "ready", face: "grin" };
+    if (k.st === "working") return { state: "thinking", face: "focus" };
+    return { state: "ready", face: "base" };
   }
 
   /* The sessions view round the core: the family of spheres (the default) or the classic orbit of dots. */
@@ -469,6 +671,11 @@
 
   return {
     CORES: CORES, CORE_DEFAULT: CORE_DEFAULT, normCore: normCore, isCore: isCore,
+    BOT_HEADS: BOT_HEADS, BOT_HEAD_DEFAULT: BOT_HEAD_DEFAULT, normBotHead: normBotHead, isBotHead: isBotHead,
+    BOT_ITEMS: BOT_ITEMS, BOT_STATE_ITEMS: BOT_STATE_ITEMS, BOT_ITEM_LABEL: BOT_ITEM_LABEL, BOT_BG: BOT_BG, BOT_PRESETS: BOT_PRESETS, BOT_PRESET_DEFAULT: BOT_PRESET_DEFAULT,
+    botPresetBase: botPresetBase, normBotColors: normBotColors, checkBotColors: checkBotColors, botColorsJson: botColorsJson, botColorsLine: botColorsLine,
+    botShade: botShade, botPalette: botPalette, botClosePairs: botClosePairs, contrast: contrast, deltaE: deltaE, hexRgb: hexRgb, rgbHex: rgbHex,
+    botSessState: botSessState, botFace: botFace, BOT_STATE_FACE: BOT_STATE_FACE,
     SESS_VIEWS: SESS_VIEWS, SESS_VIEW_DEFAULT: SESS_VIEW_DEFAULT, normSessView: normSessView, isSessView: isSessView,
     STATES: STATES, LABEL: LABEL, coreState: coreState, caption: caption, vpBadge: vpBadge, VP_SHOW_MS: VP_SHOW_MS, VP_MIN_MS: VP_MIN_MS, CAPTION_REST_MS: CAPTION_REST_MS, captionRests: captionRests, captionRestIn: captionRestIn, composerCalm: composerCalm, lastSentence: lastSentence, gist: gist,
     needQueue: needQueue, card: card, doneText: doneText, approvalFrom: approvalFrom, approvalNoRule: approvalNoRule, HELLO_HINT: HELLO_HINT,

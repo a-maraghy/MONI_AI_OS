@@ -225,13 +225,19 @@
     return { openPage: openPage };
   }
 
-  /* ---------------------------------------------------------- the small core (concept C, 2D; or the mesh, D) */
+  /* ---------------------------------------------------------- the small core (concept C, 2D; the mesh, D; the bot, E) */
   // Core D (data-core="D", the default): the mesh itself at dock size (mint-core-d.js, WebGL2, its own
-  // loop -- started and stopped with this one). Anything else, or no WebGL2: the dotted 2D core below.
+  // loop -- started and stopped with this one); core E the bot head the same way (mint-core-bot.js).
+  // Anything else, or D without WebGL2: the dotted 2D core below.
   var cv = $("md-orb-c"), PI = Math.PI, meshCore = null;
   if (root.getAttribute("data-core") === "D" && window.MintCoreD) {
     meshCore = window.MintCoreD(cv, { noGuard: true, backdrop: "none" });
     if (!meshCore.isGL) { meshCore.destroy(); meshCore = null; cv = $("md-orb-c"); } else cv = meshCore.canvas || cv;
+  } else if (root.getAttribute("data-core") === "E" && window.MintCoreBot) {
+    // Core E: the viewer's bot head at dock size (mint-core-bot.js; its own 2D renderer without WebGL2).
+    var LG = window.MintLogic;
+    meshCore = window.MintCoreBot(cv, { noGuard: true, head: root.getAttribute("data-bot-head") || "", colors: LG ? LG.normBotColors(root.getAttribute("data-bot-colors") || "") : null });
+    cv = meshCore.canvas || cv;
   }
   var g = meshCore ? null : cv.getContext("2d");
   function points(n, s) {
