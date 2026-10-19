@@ -258,6 +258,38 @@ const B = require(path.join(ROOT, "public", "mint-core-bot.js"));
         // reduced motion / hold still: one still frame per change
         const still = await page.evaluate(() => new Promise((res) => { const k = window.__mintCC.core; k.setOffline(false); k.S.still = true; k.stop(); k.resetStats(); k.setState("speaking"); setTimeout(() => res({ running: k.S.running, frames: k.S.frames.length, face: k._anim().face, fk: k._anim().fk }), 400); }));
         check(theme + ": hold still: no loop, the new state drawn at once (face fully there)", !still.running && still.frames === 0 && still.face === "speak" && still.fk === 1, JSON.stringify(still));
+        // a still frame never freezes a glance (or a gaze) between two grid columns: that read as a garbled face
+        const held = await page.evaluate(() => {
+          const k = window.__mintCC.core, a = k._anim();
+          k.setState("idle"); a.glanceUntil = a.t + 60; a.glx = 1.6; a.gly = 0; a.gx = 0.7; a.blinkP = 0.5;
+          k.still();
+          const W8 = new Uint8Array(window.MintBot.NF); window.MintBot.weights(a, W8, 0, 0, false);
+          const ref = new Uint8Array(window.MintBot.NF), b = new window.MintBot.Anim(3); b.set("base", "ready"); b.settle(); window.MintBot.weights(b, ref, 0, 0, false);
+          let half = 0, diff = 0; for (let i = 0; i < W8.length; i++) { if (W8[i] > 20 && W8[i] < 235) half++; if (W8[i] !== ref[i]) diff++; }
+          return { gx: a.gx, blink: a.blinkP, half, diff };
+        });
+        check(theme + ": hold still mid-glance / mid-blink: the eyes back home on whole nodes, open, the face exactly the ready face", held.gx === 0 && held.blink < 0 && held.half === 0 && held.diff === 0, JSON.stringify(held));
+        check(theme + ": the browser Command Center: no desktop backplate", (await page.evaluate(() => window.__mintCC.core.S.desk)) === false);
+        // the desktop app's backplate (2D twin of the GL one): a soft disc behind the head, dark under light lines, light under dark ones
+        const plate = await page.evaluate(() => {
+          const one = (desk, light) => {
+            const cv = document.createElement("canvas"); document.body.appendChild(cv);
+            const k = window.MintCoreBot(cv, { force2d: true, head: "cap", desk });
+            k.setLight(light, true); k.resize(200, 200, 140, 400, 400); k.still();
+            const d = cv.getContext("2d").getImageData(0, 0, cv.width, cv.height).data;
+            k.destroy(); cv.remove(); return d;
+          };
+          const out = {};
+          [false, true].forEach((light) => {
+            const b = one(false, light), dk = one(true, light);
+            // pixels the browser leaves (nearly) empty that the desktop covers: the plate; their mean colour
+            let n = 0, sum = 0;
+            for (let i = 3; i < b.length; i += 4) if (b[i] < 8 && dk[i] > 40) { n++; sum += dk[i - 3]; }
+            out[light ? "light" : "dark"] = { n, mean: n ? Math.round(sum / n) : -1 };
+          });
+          return out;
+        });
+        check(theme + ": desktop backplate: dark behind light lines, light behind dark lines, none in the browser", plate.dark.n > 5000 && plate.dark.mean < 60 && plate.light.n > 5000 && plate.light.mean > 200, JSON.stringify(plate));
         await ctx.close();
       }
       // prefers-reduced-motion: no loop, a still frame per change

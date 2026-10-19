@@ -80,6 +80,10 @@ mod imp {
     };
     use windows::Win32::Graphics::Gdi::GetSysColor;
     use windows::Win32::Graphics::Gdi::SYS_COLOR_INDEX;
+    use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromWindow, HMONITOR, MONITORINFO, MONITOR_DEFAULTTONEAREST, MONITOR_DEFAULTTONULL};
+    use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_EXTENDED_FRAME_BOUNDS};
+    use windows::Win32::Foundation::RECT;
+    use windows::Win32::UI::WindowsAndMessaging::{GetWindowLongPtrW, GetWindowRect, IsZoomed, GWL_EXSTYLE, GWL_STYLE, WS_CAPTION, WS_EX_TOOLWINDOW};
 
     pub fn hwnd_of(raw: isize) -> HWND {
         HWND(raw as *mut core::ffi::c_void)
@@ -107,12 +111,59 @@ mod imp {
         }
     }
 
-    /// A full-screen app, a game in exclusive mode, or presentation mode ("quiet hours" excluded).
-    pub fn fullscreen() -> bool {
+    /// What Windows says about full-screen apps (policy::fullscreen_hold decides what it means for us).
+    pub fn quns() -> crate::policy::Quns {
+        use crate::policy::Quns;
         match unsafe { SHQueryUserNotificationState() } {
-            Ok(QUERY_USER_NOTIFICATION_STATE(s)) => s == QUNS_BUSY.0 || s == QUNS_RUNNING_D3D_FULL_SCREEN.0 || s == QUNS_PRESENTATION_MODE.0,
-            Err(_) => false,
+            Ok(QUERY_USER_NOTIFICATION_STATE(s)) if s == QUNS_BUSY.0 => Quns::Busy,
+            Ok(QUERY_USER_NOTIFICATION_STATE(s)) if s == QUNS_RUNNING_D3D_FULL_SCREEN.0 => Quns::D3dFullScreen,
+            Ok(QUERY_USER_NOTIFICATION_STATE(s)) if s == QUNS_PRESENTATION_MODE.0 => Quns::Presentation,
+            _ => Quns::Other,
         }
+    }
+
+    fn monitor_rect(m: HMONITOR) -> Option<crate::policy::Rect> {
+        let mut mi = MONITORINFO { cbSize: core::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+        if m.0.is_null() || !unsafe { GetMonitorInfoW(m, &mut mi) }.as_bool() {
+            return None;
+        }
+        Some((mi.rcMonitor.left, mi.rcMonitor.top, mi.rcMonitor.right, mi.rcMonitor.bottom))
+    }
+
+    /// The monitor MINT AI's window is on (HMONITOR as a number; 0 unknown).
+    pub fn monitor_of(ours: isize) -> isize {
+        if ours == 0 {
+            return 0;
+        }
+        unsafe { MonitorFromWindow(hwnd_of(ours), MONITOR_DEFAULTTONEAREST) }.0 as isize
+    }
+
+    /// The foreground window: its class, whether it is ours / a tool window, its monitor and bounds.
+    pub fn front_window(ours: isize) -> Option<crate::policy::FrontWin> {
+        let fg = unsafe { GetForegroundWindow() };
+        if fg.0.is_null() {
+            return None;
+        }
+        let root = unsafe { GetAncestor(fg, GA_ROOTOWNER) };
+        let r = if root.0.is_null() { fg } else { root };
+        let is_ours = ours != 0 && (r.0 as isize == ours || fg.0 as isize == ours);
+        let ex = unsafe { GetWindowLongPtrW(fg, GWL_EXSTYLE) } as u32;
+        let style = unsafe { GetWindowLongPtrW(fg, GWL_STYLE) } as u32;
+        let m = unsafe { MonitorFromWindow(fg, MONITOR_DEFAULTTONULL) };
+        let mut rc = RECT::default();
+        let dwm = unsafe { DwmGetWindowAttribute(fg, DWMWA_EXTENDED_FRAME_BOUNDS, &mut rc as *mut RECT as *mut c_void, core::mem::size_of::<RECT>() as u32) }.is_ok();
+        if !dwm {
+            let _ = unsafe { GetWindowRect(fg, &mut rc) };
+        }
+        Some(crate::policy::FrontWin {
+            class: class_of(r),
+            ours: is_ours,
+            tool: ex & WS_EX_TOOLWINDOW.0 != 0,
+            monitor: m.0 as isize,
+            rect: (rc.left, rc.top, rc.right, rc.bottom),
+            monitor_rect: monitor_rect(m).unwrap_or_default(),
+            captioned_max: unsafe { IsZoomed(fg) }.as_bool() && style & WS_CAPTION.0 == WS_CAPTION.0,
+        })
     }
 
     /// (on battery, Windows' battery saver / energy saver on): what the power notifications said
@@ -339,8 +390,14 @@ mod imp {
     pub fn front(_ours: isize) -> Front {
         Front::Unknown
     }
-    pub fn fullscreen() -> bool {
-        false
+    pub fn quns() -> crate::policy::Quns {
+        crate::policy::Quns::Other
+    }
+    pub fn monitor_of(_ours: isize) -> isize {
+        0
+    }
+    pub fn front_window(_ours: isize) -> Option<crate::policy::FrontWin> {
+        None
     }
     pub fn power() -> (bool, bool) {
         (false, false)

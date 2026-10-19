@@ -120,6 +120,113 @@ pub fn power_state(r: &PowerReport) -> (bool, bool) {
     (on_battery, saver)
 }
 
+/// What SHQueryUserNotificationState said.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Quns {
+    /// Accepting notifications, quiet hours, the lock screen, an app's own "do not disturb": nothing for us.
+    Other,
+    /// QUNS_BUSY: "a full-screen application is running or Presentation Settings are applied" -- on ANY
+    /// monitor, and some apps raise it with nothing visibly full screen. Never trusted on its own.
+    Busy,
+    /// QUNS_RUNNING_D3D_FULL_SCREEN: a game (or other Direct3D app) in exclusive full-screen mode.
+    D3dFullScreen,
+    /// QUNS_PRESENTATION_MODE: Windows' presentation settings are on.
+    Presentation,
+}
+
+impl Quns {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Quns::Other => "accepting notifications",
+            Quns::Busy => "busy",
+            Quns::D3dFullScreen => "Direct3D full screen",
+            Quns::Presentation => "presentation mode",
+        }
+    }
+}
+
+/// (left, top, right, bottom) in screen pixels.
+pub type Rect = (i32, i32, i32, i32);
+
+/// The foreground window, as far as the full-screen check needs it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FrontWin {
+    /// Its root owner's window class.
+    pub class: String,
+    /// MINT AI's own window.
+    pub ours: bool,
+    /// WS_EX_TOOLWINDOW (floating palettes, overlays): never "full screen".
+    pub tool: bool,
+    /// The monitor it is on (HMONITOR; 0 unknown).
+    pub monitor: isize,
+    /// Its visible bounds (DWM's extended frame bounds, else the window rectangle).
+    pub rect: Rect,
+    /// The whole of its monitor (not the work area).
+    pub monitor_rect: Rect,
+    /// Maximized with a title bar: an ordinary maximized window (the taskbar may be hidden), not full screen.
+    pub captioned_max: bool,
+}
+
+/// The desktop and the shell's own windows: the wallpaper / icon layer, the taskbars, Start and search.
+pub fn is_shell_class(class: &str) -> bool {
+    matches!(class, "WorkerW" | "Progman" | "Shell_TrayWnd" | "Shell_SecondaryTrayWnd" | "SHELLDLL_DefView" | "Windows.UI.Core.CoreWindow" | "XamlExplorerHostIslandWindow" | "")
+}
+
+impl FrontWin {
+    /// Someone else's app window (not ours, not the shell, not a tool window).
+    pub fn is_app(&self) -> bool {
+        !self.ours && !self.tool && !is_shell_class(&self.class)
+    }
+    /// Known to be on a monitor other than MINT AI's.
+    pub fn elsewhere(&self, our_monitor: isize) -> bool {
+        self.monitor != 0 && our_monitor != 0 && self.monitor != our_monitor
+    }
+    /// Covers the whole of MINT AI's monitor.
+    pub fn covers(&self, our_monitor: isize) -> bool {
+        let (r, m) = (self.rect, self.monitor_rect);
+        self.is_app() && self.monitor != 0 && self.monitor == our_monitor && !self.captioned_max && m.2 > m.0 && m.3 > m.1 && r.0 <= m.0 && r.1 <= m.1 && r.2 >= m.2 && r.3 >= m.3
+    }
+}
+
+/// Does a full-screen app hold the core still? Some(why) when it does.
+///
+/// Only something full screen on MINT AI's own monitor counts: a window there that covers the whole
+/// monitor; a Direct3D exclusive full screen or presentation mode, unless the window in front is known
+/// to be on another monitor (a game on the second screen leaves the core moving). Windows' "busy" alone
+/// never does -- it is raised for a full-screen app on any monitor, and by some apps with nothing full
+/// screen at all (the frozen core of 2026-10-19: laptop + second monitor, the desktop in front).
+pub fn fullscreen_hold(q: Quns, fg: Option<&FrontWin>, our_monitor: isize) -> Option<String> {
+    if let Some(f) = fg {
+        if f.covers(our_monitor) {
+            return Some(format!("a full-screen window ({}) covers MINT AI's monitor; Windows says {}", f.class, q.as_str()));
+        }
+    }
+    let app_elsewhere = fg.map(|f| f.is_app() && f.elsewhere(our_monitor)).unwrap_or(false);
+    match q {
+        // An exclusive game is the window in front: with the desktop or MINT AI there, it is not running.
+        Quns::D3dFullScreen if !app_elsewhere && fg.map(|f| f.is_app()).unwrap_or(true) => {
+            Some(format!("Windows says Direct3D full screen; the app in front ({}) is on MINT AI's monitor or its monitor is unknown", fg.map(|f| f.class.as_str()).unwrap_or("unknown")))
+        }
+        Quns::Presentation if !app_elsewhere => Some("Windows' presentation mode is on".into()),
+        _ => None,
+    }
+}
+
+/// Desktop layer: is MINT AI covered by the window in front? An app window in front on another monitor
+/// does not cover it; where the monitors are unknown it is taken as covering (as before).
+pub fn front_covers(front_other: bool, fg: Option<&FrontWin>, our_monitor: isize) -> bool {
+    front_other && !fg.map(|f| f.elsewhere(our_monitor)).unwrap_or(false)
+}
+
+/// The log line for a full-screen decision (logged once per change, not every second).
+pub fn fullscreen_note(q: Quns, why: &Option<String>) -> String {
+    match why {
+        Some(w) => format!("holds still for full screen: {}", w),
+        None if q == Quns::Other => "no full screen".into(),
+        None => format!("Windows says {}, ignored: nothing full screen on MINT AI's monitor", q.as_str()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -222,5 +329,71 @@ mod tests {
         assert!(!reveal_after_mode_change(false, Mode::Peek));
         assert!(!reveal_after_mode_change(true, Mode::Desktop));
         assert!(!reveal_after_mode_change(true, Mode::Floating));
+    }
+    fn win(class: &str, monitor: isize, rect: Rect) -> FrontWin {
+        FrontWin { class: class.into(), monitor, rect, monitor_rect: (0, 0, 1920, 1080), ..Default::default() }
+    }
+
+    #[test]
+    fn busy_alone_never_holds_still() {
+        // The 2026-10-19 log: Windows says busy, the desktop (or MINT AI itself) in front.
+        assert_eq!(fullscreen_hold(Quns::Busy, Some(&win("WorkerW", 1, (0, 0, 1920, 1080))), 1), None);
+        assert_eq!(fullscreen_hold(Quns::Busy, Some(&win("Progman", 1, (0, 0, 1920, 1080))), 1), None);
+        assert_eq!(fullscreen_hold(Quns::Busy, Some(&FrontWin { ours: true, ..win("Tauri", 1, (0, 0, 1920, 1080)) }), 1), None);
+        assert_eq!(fullscreen_hold(Quns::Busy, None, 1), None);
+        // An ordinary window in front, not covering the monitor.
+        assert_eq!(fullscreen_hold(Quns::Busy, Some(&win("Chrome_WidgetWin_1", 1, (100, 100, 1200, 900))), 1), None);
+        // A full-screen video on the second monitor.
+        assert_eq!(fullscreen_hold(Quns::Busy, Some(&FrontWin { monitor_rect: (1920, 0, 3840, 1080), ..win("Chrome_WidgetWin_1", 2, (1920, 0, 3840, 1080)) }), 1), None);
+    }
+
+    #[test]
+    fn full_screen_on_our_monitor_holds_still() {
+        let f = win("Chrome_WidgetWin_1", 1, (0, 0, 1920, 1080));
+        assert!(fullscreen_hold(Quns::Busy, Some(&f), 1).is_some());
+        // Even when Windows does not say so (and with bounds a few px larger than the monitor).
+        assert!(fullscreen_hold(Quns::Other, Some(&win("UnityWndClass", 1, (-1, -1, 1921, 1081))), 1).is_some());
+        // A maximized window with a title bar (hidden taskbar): not full screen.
+        assert_eq!(fullscreen_hold(Quns::Busy, Some(&FrontWin { captioned_max: true, ..f.clone() }), 1), None);
+        // A tool window or the shell covering the screen: not an app.
+        assert_eq!(fullscreen_hold(Quns::Busy, Some(&FrontWin { tool: true, ..f.clone() }), 1), None);
+        assert_eq!(fullscreen_hold(Quns::Busy, Some(&win("Shell_TrayWnd", 1, (0, 0, 1920, 1080))), 1), None);
+        // One pixel short of the monitor: not full screen.
+        assert_eq!(fullscreen_hold(Quns::Busy, Some(&win("X", 1, (0, 0, 1920, 1079))), 1), None);
+        // Our monitor unknown: no window can be said to cover it.
+        assert_eq!(fullscreen_hold(Quns::Busy, Some(&f), 0), None);
+    }
+
+    #[test]
+    fn d3d_and_presentation_only_on_our_monitor() {
+        let game_here = win("GameWnd", 1, (0, 0, 1280, 720));
+        let game_there = FrontWin { monitor_rect: (1920, 0, 3840, 1080), ..win("GameWnd", 2, (1920, 0, 3200, 720)) };
+        assert!(fullscreen_hold(Quns::D3dFullScreen, Some(&game_here), 1).is_some());
+        assert!(fullscreen_hold(Quns::D3dFullScreen, None, 1).is_some());
+        assert_eq!(fullscreen_hold(Quns::D3dFullScreen, Some(&game_there), 1), None);
+        // The desktop in front: no exclusive game is.
+        assert_eq!(fullscreen_hold(Quns::D3dFullScreen, Some(&win("WorkerW", 1, (0, 0, 1920, 1080))), 1), None);
+        assert!(fullscreen_hold(Quns::Presentation, Some(&game_here), 1).is_some());
+        assert!(fullscreen_hold(Quns::Presentation, Some(&win("WorkerW", 1, (0, 0, 1920, 1080))), 1).is_some());
+        assert_eq!(fullscreen_hold(Quns::Presentation, Some(&game_there), 1), None);
+        assert_eq!(fullscreen_hold(Quns::Other, Some(&game_here), 1), None);
+    }
+
+    #[test]
+    fn covered_only_from_our_monitor() {
+        let here = win("Notepad", 1, (0, 0, 800, 600));
+        let there = win("Notepad", 2, (2000, 0, 2800, 600));
+        assert!(front_covers(true, Some(&here), 1));
+        assert!(!front_covers(true, Some(&there), 1));
+        assert!(front_covers(true, Some(&there), 0)); // our monitor unknown: as before
+        assert!(front_covers(true, None, 1));
+        assert!(!front_covers(false, Some(&here), 1));
+    }
+
+    #[test]
+    fn full_screen_notes() {
+        assert_eq!(fullscreen_note(Quns::Other, &None), "no full screen");
+        assert_eq!(fullscreen_note(Quns::Busy, &None), "Windows says busy, ignored: nothing full screen on MINT AI's monitor");
+        assert!(fullscreen_note(Quns::Busy, &Some("x".into())).starts_with("holds still for full screen: x"));
     }
 }

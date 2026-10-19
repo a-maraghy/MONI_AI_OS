@@ -90,6 +90,8 @@ pub struct App {
     awaiting_ready: Option<Instant>,
     update: Option<String>,
     monitors_sig: String,
+    /// The last full-screen decision logged (policy::fullscreen_note): logged once per change.
+    fullscreen_note: String,
     wallpaper_sig: String,
     seen: policy::Seen,
     toasted: Vec<i64>,
@@ -1260,7 +1262,14 @@ fn env_loop(app: AppHandle, shared: Shared) {
             }
         }
         let front = platform::front(raw);
-        let fullscreen = platform::fullscreen();
+        // Full screen counts only on MINT AI's own monitor (policy::fullscreen_hold): Windows' "busy"
+        // is raised for a full-screen app on any monitor, and by some apps with nothing full screen.
+        let quns = platform::quns();
+        let fg = platform::front_window(raw);
+        let our_monitor = platform::monitor_of(raw);
+        let fs_why = policy::fullscreen_hold(quns, fg.as_ref(), our_monitor);
+        let fullscreen = fs_why.is_some();
+        let fs_note = policy::fullscreen_note(quns, &fs_why);
         let (on_battery, energy_saver) = platform::power();
         let locked = platform::locked();
         machine::on_locked(locked);
@@ -1281,7 +1290,22 @@ fn env_loop(app: AppHandle, shared: Shared) {
             let mut a = shared.lock().unwrap();
             a.seen.fullscreen = fullscreen;
             a.seen.locked = locked;
-            a.seen.covered = a.settings.mode == Mode::Desktop && !a.peek_open && front == Front::Other;
+            // Covered only by a window in front on MINT AI's own monitor (one on the second screen is not in the way).
+            a.seen.covered = a.settings.mode == Mode::Desktop && !a.peek_open && policy::front_covers(front == Front::Other, fg.as_ref(), our_monitor);
+            if fs_note != a.fullscreen_note {
+                let f = fg.as_ref();
+                mlog!(
+                    "full screen: {} (in front: {}{}, its monitor {:#x} {:?}, its bounds {:?}; MINT AI's monitor {:#x})",
+                    fs_note,
+                    f.map(|f| f.class.as_str()).unwrap_or("none"),
+                    f.map(|f| if f.ours { " (MINT AI)" } else if f.tool { " (tool window)" } else { "" }).unwrap_or(""),
+                    f.map(|f| f.monitor).unwrap_or(0),
+                    f.map(|f| f.monitor_rect).unwrap_or_default(),
+                    f.map(|f| f.rect).unwrap_or_default(),
+                    our_monitor
+                );
+                a.fullscreen_note = fs_note;
+            }
             // Desktop layer and "show desktop" (Win+D) or a click on the wallpaper: up on top while the
             // desktop has the focus, back to the bottom when anything else does (Rainmeter's approach).
             if a.settings.mode == Mode::Desktop && !a.settings.experimental_behind_icons && !a.ceremony {
@@ -1575,6 +1599,7 @@ pub fn run() {
                 awaiting_ready: None,
                 update: None,
                 monitors_sig: String::new(),
+                fullscreen_note: String::new(),
                 wallpaper_sig: String::new(),
                 seen: policy::Seen::default(),
                 toasted: Vec::new(),

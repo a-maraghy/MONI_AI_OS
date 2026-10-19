@@ -21,7 +21,10 @@
  *
  * Same instance contract as mint-core-d.js (cc-map.js, mint-shell.js, mint-dock.js and
  * mint-desktop.js drive both the same way):
- *   var core = window.MintCoreBot(canvas, { amp, dest, onFrame, backdrop, kids, beforeDraw, head, colors, force2d, noGuard })
+ *   var core = window.MintCoreBot(canvas, { amp, dest, onFrame, backdrop, kids, beforeDraw, head, colors, force2d, noGuard, desk })
+ * opts.desk: the desktop app's render mode (?shell=desktop): the page is transparent over the wallpaper, so
+ * every head gets a soft contrast backplate (dark under light lines, light under dark ones) and a stronger
+ * wireframe; the browser Command Center look is unchanged without it.
  *   core.S.concept === "E" · setState · setLight · resize(cx, cy, R, w, h) · start · stop · still · stats · draw
  *   · place · tick · adopt · destroy · setConcept (no-op) · setHead(id) · setColors({p, c}) · setOffline(bool)
  * opts.kids(): the Command Center's session spheres (cc-family.js meshKids) -- drawn here as
@@ -412,6 +415,14 @@
     " vec4 c=texture(u_tex,uv+vec2(-0.75,-0.75)*u_tx)+texture(u_tex,uv+vec2(0.75,-0.75)*u_tx)+texture(u_tex,uv+vec2(-0.75,0.75)*u_tx)+texture(u_tex,uv+vec2(0.75,0.75)*u_tx);",
     " c*=0.25; o=vec4(c.rgb,c.a*u_k); }",
   ].join("\n");
+  /* the desktop's contrast backplate: a soft disc of one colour, full to 45 % of its radius, gone at its edge */
+  var PLATE_FS = [
+    "#version 300 es",
+    "precision highp float;",
+    "uniform vec2 u_c; uniform float u_r; uniform vec4 u_col; out vec4 o;",
+    "void main(){ float L=length(gl_FragCoord.xy-u_c)/u_r; float a=u_col.a*(1.0-smoothstep(0.45,1.0,L)); o=vec4(u_col.rgb*a,a); }",
+  ].join("\n");
+  var PLATE = { dark: [8, 11, 18], light: [250, 251, 253], aDark: 0.76, aLight: 0.72, core: 1.8, kid: 1.7 };
   var STREAM_VS = [
     "#version 300 es",
     "precision highp float;",
@@ -576,18 +587,19 @@
   function create(canvas, opts) {
     opts = opts || {};
     var GLOW = opts.backdrop !== "none";
+    var DESK = !!opts.desk; // the desktop app: backplates + a stronger wireframe (see the header)
     var reduceMq = window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)") : null;
     var S = {
       concept: "E", state: "idle", amp: 0, ampSlow: 0, t: 0, c: [0, 0], R: 200, light: 0, lightT: 0, dpr: 1, cssW: 0, cssH: 0,
       head: HEADS[opts.head] ? opts.head : "cap", offline: false, bead: 0, arrive: 0,
-      running: false, wanted: false, still: !!(reduceMq && reduceMq.matches), frames: [], gl: false, lowRes: false,
+      desk: DESK, running: false, wanted: false, still: !!(reduceMq && reduceMq.matches), frames: [], gl: false, lowRes: false,
     };
     var W = {};
     KEYS.forEach(function (k) { W[k] = 0; });
     var colors = opts.colors || null, PAL = palettes(colors), pal = { wire: [0, 0, 0], rim: [[0, 0, 0], [0, 0, 0]], rimL: [0, 0, 0] };
     var ampFn = opts.amp || null, destFn = opts.dest || null, onFrame = opts.onFrame || null, lastSize = null;
     var gl = null, ctx = null, raf = 0, last = 0;
-    var progW = null, progQ = null, progC = null, progS = null, emptyVao = null, wtTex = null, fbo = null, fboTex = null, fboW = 0, fboH = 0, maxPt = 64;
+    var progW = null, progQ = null, progC = null, progS = null, progP = null, emptyVao = null, wtTex = null, fbo = null, fboTex = null, fboW = 0, fboH = 0, maxPt = 64;
     var W8 = new Uint8Array(NF * ROWS);
     var coreAnim = new Anim(11), kidAnims = {}, kidSeen = 0;
     var geos = {}; // detail -> { geo, vao, vbo, ibL, ibP, ibF, segVao, segN }
@@ -612,7 +624,7 @@
       try {
         gl = canvas.getContext("webgl2", { alpha: true, premultipliedAlpha: true, antialias: true, preserveDrawingBuffer: !!opts.preserve });
         if (!gl) return false;
-        progW = prog(WIRE_VS, WIRE_FS); progQ = prog(QUAD_VS, QUAD_FS); progC = prog(COMP_VS, COMP_FS); progS = prog(STREAM_VS, WIRE_FS);
+        progW = prog(WIRE_VS, WIRE_FS); progQ = prog(QUAD_VS, QUAD_FS); progC = prog(COMP_VS, COMP_FS); progS = prog(STREAM_VS, WIRE_FS); progP = prog(QUAD_VS, PLATE_FS);
         emptyVao = gl.createVertexArray();
         var range = gl.getParameter(gl.ALIASED_POINT_SIZE_RANGE);
         maxPt = range && range[1] ? range[1] : 64;
@@ -709,11 +721,12 @@
         dst = destFn ? destFn() : null;
         if (dst) { ddx = clamp((dst[0] - cc[0]) / (rc * 3.5), -1, 1); ddy = clamp((dst[1] - cc[1]) / (rc * 3.5), -1, 1); }
       }
-      var gl_ = an.glanceUntil > an.t ? 1 : 0;
+      var gl_ = !S.still && an.glanceUntil > an.t ? 1 : 0; // a still frame never freezes mid-glance
       an.gxT = S.state === "delegating" ? ddx * 2 : gl_ ? an.glx : 0;
       an.gyT = S.state === "delegating" ? (ddy > 0.35 ? 1 : ddy < -0.35 ? -1 : 0) : gl_ ? an.gly : 0;
       var ek = S.still ? 1 : 1 - Math.exp(-dt * 10);
       an.gx += (an.gxT - an.gx) * ek; an.gy += (an.gyT - an.gy) * ek;
+      if (S.still) an.gx = Math.round(an.gx); // a still frame: the eyes on whole nodes (a frozen in-between shift reads as a garbled face)
       var amp = W.speak > 0.05 ? S.amp : 0;
       weights(an, W8, 0, amp, rc < SMALL);
       var h = POOL[nHeads++];
@@ -726,11 +739,12 @@
       var c = an.color(pal);
       h.st[0] = c[0]; h.st[1] = c[1]; h.st[2] = c[2];
       var bt = beat(tt);
-      h.wa = pal.wireK * (S.light > 0.5 ? 1.1 : 1); h.alpha = 1;
+      h.wa = pal.wireK * (S.light > 0.5 ? 1.1 : 1) * (DESK ? 1.6 : 1); h.alpha = 1;
       h.lit = (1 + 0.3 * W.listen * S.amp) * (1 + W.need * (0.3 * bt - 0.12)) * (1 - 0.15 * W.err);
       h.glowK = (1 + 0.8 * W.listen * S.amp + 0.25 * W.speak * S.amp) * (1 + W.need * (0.5 * bt - 0.1));
-      h.rimK = GLOW ? (1 - S.light) * 0.32 + S.light * 0.1 : 0;
-      h.stK = GLOW ? ((1 - S.light) * 0.2 + S.light * 0.11) * h.glowK : 0;
+      // the desktop: the backglow is for a dark page; over a wallpaper it would wash out the dark backplate (and the lines)
+      h.rimK = GLOW ? ((1 - S.light) * 0.32 + S.light * 0.1) * (DESK ? 0.2 : 1) : 0;
+      h.stK = GLOW ? ((1 - S.light) * 0.2 + S.light * 0.11) * h.glowK * (DESK ? 0.6 : 1) : 0;
       h.shimA = W.think * 0.9 * M; h.shimX = -1.6 + ((tt * 0.62) % 1) * 3.2;
       h.form = 1; h.dis = 0; h.row = 0;
       // the sessions
@@ -747,8 +761,9 @@
           if (S.still) { ka.fk = 1; ka.ck = 1; } // still frames: the new face at once
           ka.step(dt, S.still, k.st === "idle");
           var dx = clamp((cc[0] - k.x) / (rc * 4), -1, 1), dy = clamp((cc[1] - k.y) / (rc * 4), -1, 1);
-          ka.gxT = ka.glanceUntil > ka.t ? ka.glx : dx * 1.2; ka.gyT = 0;
+          ka.gxT = !S.still && ka.glanceUntil > ka.t ? ka.glx : dx * 1.2; ka.gyT = 0;
           ka.gx += (ka.gxT - ka.gx) * ek; ka.gy = 0;
+          if (S.still) ka.gx = Math.round(ka.gx);
           weights(ka, W8, (i + 1) * NF, sf.state === "speaking" ? 0.35 + 0.55 * synthAmp(ka.t + ka.ph) : 0, k.r * 0.86 < SMALL);
           var q = POOL[nHeads++], kr = k.r * 0.86;
           q.detail = "lo"; q.cssR = kr; q.row = i + 1;
@@ -758,10 +773,10 @@
           q.sc = 1 + (S.still ? 0 : 0.012 * Math.sin(ka.t * 1.3 + ka.ph));
           var kc = ka.color(pal);
           q.st[0] = kc[0]; q.st[1] = kc[1]; q.st[2] = kc[2];
-          q.wa = pal.wireK * (S.light > 0.5 ? 0.9 : 0.85); q.alpha = Math.min(1.2, k.alpha == null ? 1 : k.alpha);
+          q.wa = pal.wireK * (S.light > 0.5 ? 0.9 : 0.85) * (DESK ? 1.5 : 1); q.alpha = Math.min(1.2, k.alpha == null ? 1 : k.alpha);
           var pb = sf.state === "needs" ? 1 + 0.25 * (k.amb || 0.5) : 1;
           q.lit = pb; q.glowK = pb;
-          q.rimK = GLOW ? ((1 - S.light) * 0.14 + S.light * 0.05) : 0;
+          q.rimK = GLOW ? ((1 - S.light) * 0.14 + S.light * 0.05) * (DESK ? 0.2 : 1) : 0;
           q.stK = GLOW ? ((1 - S.light) * 0.07 + S.light * 0.05) * pb : 0; // faint: the face itself carries the colour
           q.shimA = sf.state === "thinking" && !S.still ? 0.8 : 0; q.shimX = -1.6 + (((ka.t + ka.ph) * 0.62) % 1) * 3.2;
           q.form = k.form == null ? 1 : k.form; q.dis = k.dis || 0;
@@ -783,7 +798,7 @@
       gl.uniform1f(u.u_psz, ps); gl.uniform1f(u.u_jsz, 7.2 * ps);
       var small = h.cssR < SMALL;
       // small: a face pixel ~60 % of the coarse grid's spacing (2 x 2 face cells), strokes ~45 % so lit runs join into bars
-      gl.uniform1f(u.u_lsz, small ? Math.max(2, 0.118 * h.cssR * dpr) : Math.max(1.5, 0.062 * h.cssR) * dpr);
+      gl.uniform1f(u.u_lsz, small ? Math.max(2, 0.118 * h.cssR * dpr) : Math.max(1.5, 0.062 * h.cssR) * dpr * (DESK ? 1.2 : 1)); // the desktop: a slightly bolder face over the wallpaper
       gl.uniform1f(u.u_segK, small ? 0.75 : 0.45); gl.uniform1f(u.u_snap, small ? 1 : 0); gl.uniform1f(u.u_sq, small ? 1 : 0);
       gl.uniform1f(u.u_gsz, h.cssR * (h.cssR < 40 ? 0.4 : 0.24) * dpr * h.glowK);
     }
@@ -833,6 +848,21 @@
       }
       gl.viewport(0, 0, cw, ch);
       gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT);
+      if (DESK) {
+        gl.useProgram(progP.p); u = progP.u; gl.bindVertexArray(emptyVao);
+        gl.uniform2f(u.u_res, cw, ch);
+        var pk = S.light, pc = PLATE.dark, pl = PLATE.light, pa = PLATE.aDark + (PLATE.aLight - PLATE.aDark) * pk;
+        for (i = 0; i < nHeads; i++) {
+          h = POOL[i];
+          var pf = h.alpha * (h.form < 1 ? h.form : 1) * (1 - h.dis);
+          if (pf < 0.01) continue;
+          var PX = h.cx * dpr, PY = (S.cssH - h.cy) * dpr, PR = h.r * dpr * (i ? PLATE.kid : PLATE.core);
+          gl.uniform4f(u.u_box, PX - PR, PY - PR, PX + PR, PY + PR);
+          gl.uniform2f(u.u_c, PX, PY); gl.uniform1f(u.u_r, PR);
+          gl.uniform4f(u.u_col, (pc[0] + (pl[0] - pc[0]) * pk) / 255, (pc[1] + (pl[1] - pc[1]) * pk) / 255, (pc[2] + (pl[2] - pc[2]) * pk) / 255, Math.min(1, pa * pf));
+          gl.drawArrays(gl.TRIANGLES, 0, 6);
+        }
+      }
       if (GLOW) {
         gl.useProgram(progC.p); u = progC.u; gl.bindVertexArray(emptyVao);
         gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, fboTex); gl.uniform1i(u.u_tex, 1);
@@ -892,8 +922,20 @@
         o2.wire = pal.wire; o2.st = h.st; o2.wa = h.wa; o2.lit = h.lit; o2.alpha = h.alpha; o2.w = W8; o2.off = h.row * NF; o2.light = S.light > 0.5;
         o2.rimA = pal.rim[0]; o2.rimB = pal.rim[1]; o2.rimL = pal.rimL; o2.rimK = h.rimK * 0.8; o2.stK = h.stK * 1.2; o2.form = h.form; o2.dis = h.dis;
         o2.homeX = home[0]; o2.homeY = home[1]; o2.shimX = h.shimX; o2.shimA = h.shimA; o2.dpr = dpr;
+        if (DESK) plate2d(ctx, h, i ? PLATE.kid : PLATE.core);
         draw2dHead(ctx, o2);
       }
+    }
+
+    /** The desktop's contrast backplate on the 2D context (the GL one's twin). */
+    function plate2d(g, h, k) {
+      var pf = h.alpha * (h.form < 1 ? h.form : 1) * (1 - h.dis);
+      if (pf < 0.01) return;
+      var pk = S.light, c = [0, 1, 2].map(function (j) { return PLATE.dark[j] + (PLATE.light[j] - PLATE.dark[j]) * pk; });
+      var a = Math.min(1, (PLATE.aDark + (PLATE.aLight - PLATE.aDark) * pk) * pf), R = h.r * k;
+      var gr = g.createRadialGradient(h.cx, h.cy, 0, h.cx, h.cy, R);
+      gr.addColorStop(0, rgba(c, a)); gr.addColorStop(0.45, rgba(c, a)); gr.addColorStop(0.73, rgba(c, a * 0.5)); gr.addColorStop(1, rgba(c, 0));
+      g.fillStyle = gr; g.fillRect(h.cx - R, h.cy - R, R * 2, R * 2);
     }
 
     /* ---------------- simulation + loop */

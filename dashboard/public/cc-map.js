@@ -68,6 +68,7 @@
         onFrame: onFrame,
         backdrop: "glow", // D / E: only the glow round the core; the page keeps its own background
         head: botHead(), colors: botColors(), // E: the viewer's bot
+        desk: document.documentElement.classList.contains("cc-desk"), // E: the desktop app (over the wallpaper): backplates, a stronger wireframe
         // D draws the family's spheres as meshes on its own canvas, after the family has moved this frame.
         kids: function () { return family && family.enabled() ? family.meshKids() : null; },
         beforeDraw: function () { if (family && family.enabled()) family.frame(); },
