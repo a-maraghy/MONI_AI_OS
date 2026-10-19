@@ -246,6 +246,19 @@ const B = require(path.join(ROOT, "public", "mint-core-bot.js"));
         check(theme + ": hold still: no loop, the new state drawn at once (face fully there)", !still.running && still.frames === 0 && still.face === "speak" && still.fk === 1, JSON.stringify(still));
         await ctx.close();
       }
+      // prefers-reduced-motion: no loop, a still frame per change
+      {
+        const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 }, colorScheme: "dark", reducedMotion: "reduce", extraHTTPHeaders: { "X-Forwarded-Proto": "https" } });
+        await ctx.addCookies(String(A.cookie).split("; ").filter(Boolean).map((kv) => ({ name: kv.split("=")[0], value: kv.slice(kv.indexOf("=") + 1), url: "http://127.0.0.1:" + s.port })));
+        const page = await ctx.newPage();
+        page.on("pageerror", (e) => errs.push("reduced: " + e.message));
+        await page.goto("http://127.0.0.1:" + s.port + "/mint-ai", { waitUntil: "load" });
+        await page.waitForTimeout(1200);
+        const rm = await page.evaluate(() => ({ c: window.__mintCC.core.S.concept, still: window.__mintCC.core.S.still, running: window.__mintCC.core.S.running, frames: window.__mintCC.core.S.frames.length }));
+        const n = await nonBlank(page);
+        check("reduced motion: still frames only (no loop), and the head is drawn", rm.c === "E" && rm.still && !rm.running && rm.frames === 0 && n > 300, JSON.stringify(rm) + " lit " + n);
+        await ctx.close();
+      }
       // Settings ▸ Appearance
       {
         db.setUserBotColors(db.getUserByName("botadmin").id, "");

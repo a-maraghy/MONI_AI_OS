@@ -677,6 +677,7 @@
       var fo = coreFace(S.state, S.offline);
       var an = coreAnim;
       an.set(fo.face, fo.state);
+      if (S.still) { an.fk = 1; an.ck = 1; } // still frames (reduced motion, hold still): the new face at once
       an.step(dt, S.still || S.offline || W.err > 0.5, S.state === "idle" && !S.offline);
       var dst = null, ddx = 0, ddy = 0;
       if (W.deleg > 0.02) {
@@ -718,6 +719,7 @@
           ka.seen = kidSeen;
           var sf = k.form < 0.6 ? { state: "ready", face: "base" } : sessState(k);
           ka.set(sf.face, sf.state);
+          if (S.still) { ka.fk = 1; ka.ck = 1; } // still frames: the new face at once
           ka.step(dt, S.still, k.st === "idle");
           var dx = clamp((cc[0] - k.x) / (rc * 4), -1, 1), dy = clamp((cc[1] - k.y) / (rc * 4), -1, 1);
           ka.gxT = ka.glanceUntil > ka.t ? ka.glx : dx * 1.2; ka.gyT = 0;
@@ -966,7 +968,9 @@
       setHead: function (id) { if (!HEADS[id] || id === S.head) return; S.head = id; redrawIfIdle(); },
       /** The colours ({p, c} as MintLogic.normBotColors gives); every head takes them at once. */
       setColors: function (c) { colors = c; PAL = palettes(colors); redrawIfIdle(); },
-      resize: resize, start: start, stop: function () { stop(false); }, still: stillFrame, stats: stats, draw: draw,
+      resize: resize, start: start, stop: function () { stop(false); }, still: stillFrame, stats: stats,
+      /** Draw now (reduced motion / a stopped core: the sessions moved, so the heads are gathered again first). */
+      draw: function () { if (!S.running) prepare(0); draw(); },
       resetStats: function () { S.frames = []; },
       setGuard: function (on) { opts.noGuard = !on; },
       /** Driven from outside (mint-shell.js's flight): move without drawing (place), then advance and draw one frame (tick). */
