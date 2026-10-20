@@ -375,6 +375,13 @@
     openSheet: function (id) { return openSheet(id); },
     /* The voiceprint's verdict as the live socket delivers it ({kind, gated}); the checks drive the pill with it. */
     voiceprint: function (m) { showVoiceprint(m || {}); },
+    /* For proactive MINT AI (public/mint-proactive.js): a line in the event log, a send that skipped its
+       watcher check, and reading a brief aloud through the same read-aloud path as a reply. */
+    feed: function (item, quiet) { feedPush(item, quiet); },
+    send: function (text) { return send(text); },
+    say: function (text) { if (READY) { Voice.unlock(); Voice.say(text); return true; } return false; },
+    speaking: function () { return !!Voice.speaking; },
+    stopSpeaking: function () { Voice.stop(); },
   };
 
   /* ---- the core setting: A dotted sphere, B Siri fluid, C hybrid, D mesh (the default), E bot. The
@@ -1112,6 +1119,8 @@
   }
   $("cc-compose").addEventListener("submit", function (e) {
     e.preventDefault();
+    // "Tell me when ..." may be a watcher: proactive MINT AI asks first (public/mint-proactive.js).
+    if (window.MintProactive && window.MintProactive.intercept && window.MintProactive.intercept(input.value)) return;
     send(input.value);
   });
   $("cc-stop").addEventListener("click", function () { interrupt($("cc-stop")); });
@@ -2740,6 +2749,8 @@
   function liveStart(o) {
     o = o || {};
     if (LiveUI.active || !LIVE_OK) return;
+    // A morning brief not read yet, and "read it aloud" on: read first, then the call (public/mint-proactive.js).
+    if (!o.afterBrief && window.MintProactive && window.MintProactive.beforeLive && window.MintProactive.beforeLive(function () { o.afterBrief = true; liveStart(o); })) return;
     clearTimeout(LiveUI.retryT);
     liveEndedClose();
     LiveUI.active = true;

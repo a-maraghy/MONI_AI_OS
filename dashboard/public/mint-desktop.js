@@ -437,6 +437,20 @@
       }).join("") + "</ul>" : '<p class="dk-gl-empty">Nothing new. Sessions finishing, waiting on you or failing show here.</p>') + "</article>";
     return { key: "al", sig: list.map(function (a) { return a.key + a.ago; }).join("|") + "|" + (list.length ? "" : "e"), html: h };
   }
+  /* Proactive MINT AI's card (public/mint-proactive.js): the morning brief or "while you were away", on top,
+     until dismissed (here, in the Command Center or from another device). Four lines, the rest behind "More". */
+  var paOpen = {};
+  function paCard(b) {
+    var open = !!paOpen[b.id], lines = open ? b.lines : b.lines.slice(0, 4), more = b.lines.length - lines.length;
+    var label = b.title + ". " + b.lines.map(function (l) { return l.k + ": " + l.text; }).join(". ");
+    var h = '<article class="dk-gl-card dk-gl-pa dk-gl-hit' + (b.kind === "catchup" ? " catchup" : "") + '" role="group" aria-label="' + esc(clip(label, 600)) + '">' +
+      '<div class="dk-gl-k"><i class="dk-gl-dot ' + (b.lines.some(function (l) { return l.tone === "warn" || l.tone === "err"; }) ? "warn" : "ok") + '" aria-hidden="true"></i><span>' + esc(b.kind === "catchup" ? "While you were away" : "Morning brief") + '</span><span class="sp"></span>' +
+      (b.at ? "<time>" + esc(b.at) + "</time>" : "") + "</div>" +
+      '<ul class="dk-gl-pa-lines">' + lines.map(function (l) { return '<li class="t-' + esc(l.tone) + '"><b>' + esc(l.k) + "</b> " + esc(l.text) + "</li>"; }).join("") + "</ul>" +
+      '<div class="dk-gl-acts"><button type="button" class="dk-gl-b" data-gl-pa-dismiss="' + b.id + '" data-gl-fid="pa' + b.id + 'x">Dismiss</button>' +
+      (more > 0 || open ? '<span class="sp"></span><button type="button" class="dk-gl-b link" data-gl-pa-more="' + b.id + '" data-gl-fid="pa' + b.id + 'm" aria-expanded="' + open + '">' + (open ? "Less" : "+" + more + " more") + "</button>" : "") + "</div></article>";
+    return { key: "pa" + b.id, sig: h, html: h };
+  }
   function syncCards(box, cards) {
     var have = {}, kids = box.children, i;
     for (i = 0; i < kids.length; i++) have[kids[i].getAttribute("data-gl-key")] = kids[i];
@@ -474,6 +488,8 @@
     if (S.approvals && S.approvals.forEach) S.approvals.forEach(function (a) { aps.push(a); });
     var A = GL.approvals(aps, now), al = GL.alerts(S.feed, now);
     var cards = [];
+    var PA = window.MintProactive, pa = PA && PA.current ? PA.current() : null;
+    if (pa) cards.push(paCard(pa));
     // While the big decision card is open, the approval cards step back (it shows the same thing, larger);
     // they come back when it closes. The other cards stay.
     if (!bigCardOpen()) {
@@ -512,7 +528,7 @@
       if (left < 60 && !ts[i].classList.contains("low")) renderGlance(false);
     }
   }, 1000);
-  ["mint-cc", "mint-needs", "mint-turns"].forEach(function (n) { document.addEventListener(n, function () { renderGlance(false); }); });
+  ["mint-cc", "mint-needs", "mint-turns", "mint-proactive"].forEach(function (n) { document.addEventListener(n, function () { renderGlance(false); }); });
   /* The big decision card (#cc-need) opening or closing: the approval cards step back / return at once. */
   function bigCardOpen() { var n = $("cc-need"); return !!(n && !n.hidden); }
   (function () {
@@ -551,6 +567,8 @@
     if (t.hasAttribute("data-gl-more")) { if (cc && cc.openNeed) cc.openNeed(); return; }
     if ((v = t.getAttribute("data-gl-sess"))) { if (cc && cc.openSession) cc.openSession(v); return; }
     if ((v = t.getAttribute("data-gl-sheet"))) { if (cc && cc.openSheet) cc.openSheet(v); return; }
+    if ((v = t.getAttribute("data-gl-pa-dismiss"))) { if (window.MintProactive) window.MintProactive.dismiss(Number(v)); return; }
+    if ((v = t.getAttribute("data-gl-pa-more"))) { paOpen[v] = !paOpen[v]; renderGlance(true); return; }
     v = t.getAttribute("data-gl");
     if (v === "hide") { setGlance(false); if (glBtn && !glBtn.hidden) glBtn.focus(); return; }
     if (v === "pin" && L && L.glance) { setPin(L.glance.pinned ? null : pinHere(L.glance.x, L.glance.y)); return; }
@@ -841,6 +859,8 @@
   // The toast's Deny: the same call the card's Deny makes. (Open just shows the layer: the app does that.)
   listen("mint://toast-deny", function (p) {
     var cc = window.__mintCC;
+    // A proactive toast (a brief, a watcher) carries a negative id: its second button only dismisses it.
+    if (p && Number(p.id) < 0) { if (window.MintProactive && window.MintProactive.toastDeny) window.MintProactive.toastDeny(Number(p.id)); return; }
     if (cc && cc.decide && p && p.id) cc.decide(Number(p.id), "deny");
   });
 

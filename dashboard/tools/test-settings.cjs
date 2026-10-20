@@ -102,7 +102,7 @@ const server = net.createServer((c) => {
 const last = (op) => seen.filter((m) => m.op === op).pop();
 const count = (op) => seen.filter((m) => m.op === op).length;
 const navOf = (html) => [...((/<nav class="set-nav"[^>]*>([\s\S]*?)<\/nav>/.exec(html) || [])[1] || "").matchAll(/href="\/mint-ai\/settings\/([a-z]+)"/g)].map((m) => m[1]);
-const ALL = ["general", "voice", "appearance", "sessions", "screen", "approvals", "usage", "advanced"];
+const ALL = ["general", "voice", "appearance", "sessions", "screen", "approvals", "proactive", "usage", "advanced"];
 
 (async () => {
   await new Promise((r) => server.listen(SOCK, r));
@@ -131,7 +131,7 @@ const ALL = ["general", "voice", "appearance", "sessions", "screen", "approvals"
     let r = await s.req("GET", "/mint-ai/settings", { cookie: A.cookie });
     check("/mint-ai/settings -> the first section the viewer may open (admin: General)", r.status === 302 && r.headers.location === "/mint-ai/settings/general", r.status + " " + r.headers.location);
     r = await s.req("GET", "/mint-ai/settings/general", { cookie: A.cookie });
-    check("an administrator sees all eight sections", JSON.stringify(navOf(r.body)) === JSON.stringify(ALL), navOf(r.body).join());
+    check("an administrator sees all nine sections", JSON.stringify(navOf(r.body)) === JSON.stringify(ALL), navOf(r.body).join());
     const aTok = s.csrfOf(r.body);
     for (const k of ALL) {
       const x = await s.req("GET", "/mint-ai/settings/" + k, { cookie: A.cookie });
@@ -144,14 +144,14 @@ const ALL = ["general", "voice", "appearance", "sessions", "screen", "approvals"
     r = await s.req("GET", "/mint-ai/settings", { cookie: U.cookie });
     check("moniai.use only -> /mint-ai/settings/appearance", r.status === 302 && r.headers.location === "/mint-ai/settings/appearance", r.headers.location);
     r = await s.req("GET", "/mint-ai/settings/appearance", { cookie: U.cookie });
-    check("  sees Appearance only", r.status === 200 && navOf(r.body).join() === "appearance", navOf(r.body).join());
+    check("  sees Appearance and Briefs & watchers only (both their own)", r.status === 200 && navOf(r.body).join() === "appearance,proactive", navOf(r.body).join());
     const uTok = s.csrfOf(r.body);
     for (const k of ["general", "voice", "sessions", "screen", "approvals", "usage", "advanced"]) {
       const x = await s.req("GET", "/mint-ai/settings/" + k, { cookie: U.cookie });
       check(`  ${k} is refused (403)`, x.status === 403, x.status);
     }
     r = await s.req("GET", "/mint-ai/settings/voice", { cookie: Vo.cookie });
-    check("moniai.use + voice.manage sees Voice and Appearance", r.status === 200 && navOf(r.body).join() === "voice,appearance", r.status + " " + navOf(r.body).join());
+    check("moniai.use + voice.manage sees Voice, Appearance and Briefs & watchers", r.status === 200 && navOf(r.body).join() === "voice,appearance,proactive", r.status + " " + navOf(r.body).join());
     r = await s.req("GET", "/mint-ai/settings/usage", { cookie: Vo.cookie });
     check("  but not the administrator's sections", r.status === 403, r.status);
     r = await s.req("GET", "/mint-ai/settings", { cookie: Vw.cookie });
