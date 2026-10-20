@@ -38,7 +38,7 @@ use hit::Region;
 use layout::{Corner, Mode, Rect};
 use platform::{Front, Ink};
 use serde::Serialize;
-use settings::Settings;
+use settings::{Pin, Settings};
 use site::{same_site, user_agent};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -123,6 +123,10 @@ struct PageState {
     focus_composer: bool,
     /// Real blur is drawn behind the page's glass surfaces: the page uses its lighter glass tints (blur.rs).
     glass: bool,
+    /// The glance cards beside the core are on (the setting; focus mode hides them on the page).
+    glance: bool,
+    /// Where they were pinned on this monitor (Desktop layer), as fractions of the work area; None: beside the core.
+    glance_pin: Option<Pin>,
 }
 
 fn page_state(a: &App, monitor: &str, focus_composer: bool) -> PageState {
@@ -152,7 +156,15 @@ fn page_state(a: &App, monitor: &str, focus_composer: bool) -> PageState {
         hidden: a.hidden,
         focus_composer,
         glass: blur_glass(a, pm.opacity),
+        glance: a.settings.glance,
+        glance_pin: if a.settings.mode == Mode::Desktop { pm.glance_pin } else { None },
     }
+}
+
+/// The Floating window is widened for the glance column only while the cards can show: the setting on
+/// and someone signed in (the sign-in card needs no room beside it).
+fn glance_room(a: &App) -> bool {
+    a.settings.glance && a.signed_in
 }
 
 /* --------------------------------------------------------------- monitors */
@@ -214,7 +226,7 @@ fn apply(app: &AppHandle, shared: &Shared, focus_composer: bool) {
     let (rect, mode, visible, on_top, key, payload, behind) = {
         let mut a = shared.lock().unwrap();
         let pm = a.settings.monitor_prefs(&m.key);
-        let rect = layout::window_rect(a.settings.mode, m.work, m.scale, pm.size, a.settings.focus, pm.corner);
+        let rect = layout::window_rect(a.settings.mode, m.work, m.scale, pm.size, a.settings.focus, pm.corner, glance_room(&a));
         let mode = a.settings.mode;
         let visible = match mode {
             Mode::Floating => !a.hidden,
@@ -369,6 +381,21 @@ fn set_mode(app: &AppHandle, shared: &Shared, mode: Mode) {
 
 fn toggle_focus(app: &AppHandle, shared: &Shared) {
     shared.lock().unwrap().settings.focus ^= true;
+    save(shared);
+    apply(app, shared, false);
+}
+
+/// The glance cards on or off (the tray, the button by the core, the cards' own hide): saved, and the
+/// Floating window resized for them.
+fn set_glance_on(app: &AppHandle, shared: &Shared, on: bool) {
+    {
+        let mut a = shared.lock().unwrap();
+        if a.settings.glance == on {
+            return;
+        }
+        a.settings.glance = on;
+        a.ignoring = None;
+    }
     save(shared);
     apply(app, shared, false);
 }
@@ -576,6 +603,7 @@ fn build_menu(app: &AppHandle, shared: &Shared) -> tauri::Result<Menu<tauri::Wry
     let m_float = CheckMenuItem::with_id(app, "mode:floating", "Floating, always on top", true, a.settings.mode == Mode::Floating, None::<&str>)?;
     let m_peek = CheckMenuItem::with_id(app, "mode:peek", "Hidden until called (peek)", true, a.settings.mode == Mode::Peek, None::<&str>)?;
     let focus_i = CheckMenuItem::with_id(app, "focus", format!("Focus mode: just the core\t{}", a.settings.hotkeys.focus), true, a.settings.focus, None::<&str>)?;
+    let glance_i = CheckMenuItem::with_id(app, "glance", "Glance cards beside MINT AI", true, a.settings.glance, None::<&str>)?;
     let dnd = CheckMenuItem::with_id(app, "dnd", "Do not disturb (no toasts)", true, a.settings.do_not_disturb, None::<&str>)?;
     let full = MenuItem::with_id(app, "open", "Open the full Command Center", true, None::<&str>)?;
     let sett = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
@@ -598,7 +626,7 @@ fn build_menu(app: &AppHandle, shared: &Shared) -> tauri::Result<Menu<tauri::Wry
     let s2 = sep()?;
     let s3 = sep()?;
     let s4 = sep()?;
-    items.extend([&s1 as &dyn tauri::menu::IsMenuItem<tauri::Wry>, &show_i, &talk_i, &s2, &m_desk, &m_float, &m_peek, &focus_i]);
+    items.extend([&s1 as &dyn tauri::menu::IsMenuItem<tauri::Wry>, &show_i, &talk_i, &s2, &m_desk, &m_float, &m_peek, &focus_i, &glance_i]);
     let mon_sub;
     if mon_items.len() > 1 {
         let refs: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = mon_items.iter().map(|x| x as &dyn tauri::menu::IsMenuItem<tauri::Wry>).collect();
@@ -627,6 +655,10 @@ fn on_menu(app: &AppHandle, id: &str) {
         "mode:floating" => set_mode(app, &shared, Mode::Floating),
         "mode:peek" => set_mode(app, &shared, Mode::Peek),
         "focus" => toggle_focus(app, &shared),
+        "glance" => {
+            let on = !shared.lock().unwrap().settings.glance;
+            set_glance_on(app, &shared, on);
+        }
         "dnd" => {
             shared.lock().unwrap().settings.do_not_disturb ^= true;
             save(&shared);
@@ -899,6 +931,39 @@ fn tool(app: AppHandle, name: String, shared: State<'_, Shared>) {
     }
 }
 
+/// The glance cards, from the page: shown or hidden (`show`), pinned on the desktop where they were
+/// dropped (`pin`, fractions of the work area, Desktop layer only, remembered per monitor), or back
+/// beside the core (`unpin`). Nothing else: the values are clamped (settings::Pin::clean).
+#[tauri::command]
+fn set_glance(app: AppHandle, show: Option<bool>, pin: Option<Pin>, unpin: Option<bool>, shared: State<'_, Shared>) {
+    if let Some(on) = show {
+        set_glance_on(&app, &shared, on);
+    }
+    if pin.is_none() && unpin != Some(true) {
+        return;
+    }
+    let key = current_monitor_key(&app, &shared);
+    {
+        let mut a = shared.lock().unwrap();
+        if a.settings.mode != Mode::Desktop {
+            return;
+        }
+        let next = if unpin == Some(true) { None } else { pin.and_then(|p| Pin::clean(p.x, p.y)) };
+        let pm = a.settings.monitor_prefs_mut(&key);
+        if pm.glance_pin == next {
+            return;
+        }
+        pm.glance_pin = next;
+    }
+    save(&shared);
+    // The page already shows it there; tell it the saved value (no window change: the Desktop layer is the work area).
+    let payload = {
+        let a = shared.lock().unwrap();
+        page_state(&a, &key, false)
+    };
+    let _ = app.emit_to(MAIN, "mint://state", payload);
+}
+
 #[tauri::command]
 fn open_full_cc(app: AppHandle, shared: State<'_, Shared>) {
     open_full(&app, &shared);
@@ -906,15 +971,22 @@ fn open_full_cc(app: AppHandle, shared: State<'_, Shared>) {
 
 #[tauri::command]
 fn page_ready(app: AppHandle, signed_in: bool, shared: State<'_, Shared>) {
-    {
+    let resize = {
         let mut a = shared.lock().unwrap();
         a.awaiting_ready = None;
+        let was = glance_room(&a);
         a.signed_in = signed_in;
         if !signed_in {
             a.state = "signedout".into();
         }
+        // Signed in or out: the Floating window gains or loses the glance column's room.
+        was != glance_room(&a) && a.settings.mode == Mode::Floating
+    };
+    if resize {
+        apply(&app, &shared, false);
+    } else {
+        refresh_tray(&app, &shared);
     }
-    refresh_tray(&app, &shared);
 }
 
 /// The start card (dist/index.html) found the site answering: open the Command Center.
@@ -1544,6 +1616,7 @@ pub fn run() {
             hide_peek,
             start_drag,
             tool,
+            set_glance,
             open_full_cc,
             go_site,
             webauthn_ceremony,

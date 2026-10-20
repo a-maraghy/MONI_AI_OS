@@ -40,6 +40,24 @@ impl Across {
     }
 }
 
+/// Where the glance cards were pinned in the Desktop layer: their top left as fractions (0..1) of the
+/// monitor's work area, so a change of scaling or resolution keeps them in the same part of the screen.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Pin {
+    pub x: f64,
+    pub y: f64,
+}
+
+impl Pin {
+    /// A pin the page sent, made safe: finite, inside the work area; None if it is not a position.
+    pub fn clean(x: f64, y: f64) -> Option<Pin> {
+        if !x.is_finite() || !y.is_finite() {
+            return None;
+        }
+        Some(Pin { x: x.clamp(0.0, 0.98), y: y.clamp(0.0, 0.95) })
+    }
+}
+
 /// What is remembered per monitor (keyed by the monitor's name and size).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -48,11 +66,13 @@ pub struct PerMonitor {
     pub across: Across,
     pub size: Size,
     pub opacity: u8,
+    /// The glance cards pinned on the desktop (Desktop layer) here; None: beside the core.
+    pub glance_pin: Option<Pin>,
 }
 
 impl Default for PerMonitor {
     fn default() -> Self {
-        PerMonitor { corner: Corner::Br, across: Across::Right, size: Size::M, opacity: 100 }
+        PerMonitor { corner: Corner::Br, across: Across::Right, size: Size::M, opacity: 100, glance_pin: None }
     }
 }
 
@@ -85,6 +105,8 @@ pub struct Settings {
     pub battery_saver: bool,
     /// Real blur (acrylic) behind the cards, pills and panels (blur.rs, acrylic.rs); off: the tinted look.
     pub real_blur: bool,
+    /// The glance cards beside the core (approvals, sessions, today's tokens, alerts). Focus mode hides them.
+    pub glance: bool,
     pub autostart: bool,
     /// The monitor MINT AI lives on (its name); empty = the primary.
     pub monitor: String,
@@ -107,6 +129,7 @@ impl Default for Settings {
             do_not_disturb: false,
             battery_saver: true,
             real_blur: true,
+            glance: true,
             autostart: true,
             monitor: String::new(),
             per_monitor: BTreeMap::new(),
@@ -132,6 +155,7 @@ impl Settings {
     pub fn fix(&mut self) {
         for pm in self.per_monitor.values_mut() {
             pm.opacity = pm.opacity.clamp(35, 100);
+            pm.glance_pin = pm.glance_pin.and_then(|p| Pin::clean(p.x, p.y));
         }
         for (k, d) in [(&mut self.hotkeys.talk, DEFAULT_TALK), (&mut self.hotkeys.show, DEFAULT_SHOW), (&mut self.hotkeys.focus, DEFAULT_FOCUS), (&mut self.hotkeys.live, DEFAULT_LIVE), (&mut self.hotkeys.stop, DEFAULT_STOP)] {
             match normalize_hotkey(k) {
@@ -304,6 +328,23 @@ mod tests {
         // A settings file from 0.1.4 (no "real_blur") gets it on; an explicit off stays off.
         assert!(Settings::from_json(r#"{"mode":"floating"}"#).real_blur);
         assert!(!Settings::from_json(r#"{"real_blur":false}"#).real_blur);
+    }
+
+    #[test]
+    fn glance_setting_and_pins() {
+        // A 0.1.8 settings file (no "glance"): the cards are on; an explicit off stays off.
+        assert!(Settings::from_json(r#"{"mode":"floating"}"#).glance);
+        assert!(!Settings::from_json(r#"{"glance":false}"#).glance);
+        assert_eq!(Settings::default().monitor_prefs("x").glance_pin, None);
+        // A pin is remembered per monitor and survives a round trip; a stored one out of range is brought in.
+        let mut s = Settings::default();
+        s.monitor_prefs_mut("DISPLAY1 1920x1080").glance_pin = Pin::clean(0.1, 0.2);
+        assert_eq!(Settings::from_json(&s.to_json()), s);
+        assert_eq!(s.monitor_prefs("DISPLAY2 2560x1440").glance_pin, None, "another monitor keeps its own");
+        let s = Settings::from_json(r#"{"per_monitor":{"A":{"glance_pin":{"x":4,"y":-1}}}}"#);
+        assert_eq!(s.monitor_prefs("A").glance_pin, Some(Pin { x: 0.98, y: 0.0 }));
+        assert_eq!(Pin::clean(f64::NAN, 0.5), None);
+        assert_eq!(Pin::clean(0.5, f64::INFINITY), None);
     }
 
     #[test]

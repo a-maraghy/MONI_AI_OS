@@ -55,9 +55,17 @@
     ink: Q.get("ink") === "dark" ? "dark" : "light", opacity: 100, still: Q.get("still") === "1", peekOpen: Q.get("open") !== "0",
     talkKey: Q.get("talk") || "Ctrl+Space", liveKey: T ? "" : Q.get("livekey") || "Ctrl+Alt+L", hidden: false, host: !!T,
     glass: !T && Q.get("glass") === "1",
+    // The glance cards (0.1.9): in the app as its state says (on unless switched off); in a browser only with ?glance=1.
+    glance: !T && Q.get("glance") === "1", glancePin: T ? null : browserPin(),
   };
   // What the app's state carries (mint://state, get_state).
-  var STATE_KEYS = ["mode", "focus", "size", "pos", "ink", "opacity", "still", "peekOpen", "talkKey", "liveKey", "hidden", "glass"];
+  var STATE_KEYS = ["mode", "focus", "size", "pos", "ink", "opacity", "still", "peekOpen", "talkKey", "liveKey", "hidden", "glass", "glance", "glancePin"];
+  /** In a browser (no app to remember it): ?pin=x,y (fractions of the window), else this browser's last pin. */
+  function browserPin() {
+    var q = String(Q.get("pin") || "").split(",").map(Number);
+    if (q.length === 2 && isFinite(q[0]) && isFinite(q[1])) return { x: q[0], y: q[1] };
+    try { var v = JSON.parse(window.localStorage.getItem("mint-desk-glance-pin") || "null"); return v && isFinite(v.x) && isFinite(v.y) ? v : null; } catch (e) { return null; }
+  }
   html.classList.toggle("dk-host", !!T);
 
   /* ---------------------------------------------------------------- applying the app's state */
@@ -89,7 +97,7 @@
 
   var L = null;
   function layout() {
-    L = LAY.layout({ mode: st.mode, size: st.size, pos: st.pos, focus: st.focus, W: window.innerWidth, H: window.innerHeight });
+    L = LAY.layout({ mode: st.mode, size: st.size, pos: st.pos, focus: st.focus, W: window.innerWidth, H: window.innerHeight, glance: !!st.glance && !!$("cc"), pin: st.mode === "desktop" ? st.glancePin : null });
     if (!$("cc")) { layoutAuth(); return report(true); }
     var cap = $("cc-caption"), need = $("cc-need"), tools = $("dk-tools"), core = $("dk-corehit"), btn = $("dk-chatbtn"), panel = $("dk-panel");
     if (btn) place(btn, L.chatBtn.x - L.chatBtn.d / 2, L.chatBtn.y - L.chatBtn.d / 2, L.chatBtn.d, L.chatBtn.d);
@@ -109,6 +117,7 @@
     }
     if (tools) { tools.hidden = !L.tools; if (L.tools) place(tools, L.tools.x, L.tools.y); }
     if (core) place(core, L.cx - L.R, L.cy - L.R, 2 * L.R, 2 * L.R);
+    placeGlance();
     // "Not reachable": under the core, where the sign-in card goes, not over it.
     var off = $("cc-offline");
     if (off) { off.style.left = px(L.gate.x); off.style.top = px(L.gate.y); off.style.transform = "translateX(-50%)"; }
@@ -198,6 +207,7 @@
     state: function () { return st; },
     layout: function () { return L; },
     regions: function () { return lastRegions; },
+    glance: function () { var g = $("dk-glance"); return { on: !!(g && !g.hidden), layout: L && L.glance, caps: glCaps }; },
     glass: function () { return JSON.parse(glassSig || "[]"); },
     hint: function () { var kb = $("dk-kb"); return !kb ? "none" : kb.classList.contains("dk-kb-none") ? "hidden" : kb.classList.contains("dk-kb-short") ? "keys" : "full"; },
   };
@@ -222,6 +232,7 @@
     if (b) { b.setAttribute("aria-expanded", "true"); b.classList.add("on"); b.classList.remove("unread"); }
     seenAi = lastAi;
     renderChat(true);
+    placeGlance();
     if (focusInput !== false) setTimeout(function () { var i = $("cc-input"); if (i && !i.closest("[hidden]")) i.focus(); }, 30);
     report(true);
   }
@@ -232,6 +243,7 @@
     if (b) { b.setAttribute("aria-expanded", "false"); b.classList.remove("on"); }
     var a = document.activeElement;
     if (a && p.contains(a) && a.blur) a.blur();
+    placeGlance();
     report(true);
   }
   var lastAi = "", seenAi = "", primed = false, bornAt = Date.now();
@@ -275,6 +287,308 @@
     closeChat();
   }, true);
   document.addEventListener("mint-turns", function () { renderChat(false); });
+
+  /* ---------------------------------------------------------------- the glance cards (0.1.9)
+     Beside the core: the approvals waiting (Approve goes through the same call as every approval card,
+     so the server asks for Windows Hello first -- step-up.js -- and refuses without it; Deny; Open shows
+     the decision card), the sessions (working / waiting on you / idle, the names that matter, a click
+     opens one), today's tokens against the tightest daily cap, and the live alerts (from the Command
+     Center's own event log). What they show comes from the page's live state (the event stream);
+     only the caps are read on their own, once a minute (/mint-ai/api/caps). In Floating they stand
+     beside the box, on the side away from the screen's edge (the app widens the window for them); in
+     the Desktop layer beside the core, or pinned where they were dropped (remembered per monitor by
+     the app); never in focus mode. Shown or hidden from the tray, the app's Settings, the small button
+     on the core's rim, or their own X. Pure parts: public/mint-desktop-glance.js. */
+  var GL = window.MintGlance;
+  var glCaps = null, glCapsAt = 0, glBusy = {}, glErr = {}, glSeen = null, glDrag = null, glLiveSaid = "";
+  var glEl = $("dk-glance"), glBox = $("dk-gl-cards"), glBtn = $("dk-glbtn");
+  // What the page loads with in its first seconds (the history, the caps) is not news: no glow, no slide-in.
+  function glPrimed() { return Date.now() - bornAt > 4000; }
+  function glOn() { return !!(L && L.glance) && !st.focus && !!glEl; }
+  /** Place the column and the rim button where the layout says; hide the column under an open chat panel that it would cover. */
+  function placeGlance() {
+    if (glBtn) {
+      var b = L && L.glanceBtn;
+      glBtn.hidden = !b || !$("cc");
+      if (b) place(glBtn, b.x - b.d / 2, b.y - b.d / 2, b.d, b.d);
+      glBtn.setAttribute("aria-pressed", String(!!st.glance));
+      var lab = st.glance ? "Hide the glance cards" : "Show the glance cards";
+      if (glBtn.getAttribute("aria-label") !== lab) { glBtn.setAttribute("aria-label", lab); glBtn.title = lab; }
+      glBtn.classList.toggle("on", !!st.glance);
+    }
+    if (!glEl) return;
+    var on = glOn();
+    glEl.hidden = !on;
+    if (!on) return;
+    var g = L.glance;
+    if (!glCapsAt) loadCaps(true); // the first time they show
+    if (!glDrag) place(glEl, g.x, g.y, g.w, g.h);
+    glEl.setAttribute("data-align", g.align);
+    glEl.setAttribute("data-side", g.side);
+    glEl.classList.toggle("pinned", !!g.pinned);
+    var pin = $("dk-gl-pin"), grip = $("dk-gl-grip");
+    var desk = st.mode === "desktop";
+    if (pin) {
+      pin.hidden = !desk;
+      pin.setAttribute("aria-pressed", String(!!g.pinned));
+      var pl = g.pinned ? "Unpin: back beside MINT AI" : "Pin here on the desktop";
+      if (pin.title !== pl) { pin.title = pl; pin.setAttribute("aria-label", g.pinned ? "Unpin the cards: back beside MINT AI" : "Pin the cards here on the desktop"); }
+    }
+    if (grip) {
+      // On the desktop the header moves the cards (drag, or the arrow keys); elsewhere it is only a title.
+      if (desk) { grip.setAttribute("tabindex", "0"); grip.setAttribute("role", "button"); grip.setAttribute("aria-label", "Move the cards: drag, or use the arrow keys"); }
+      else { grip.removeAttribute("tabindex"); grip.removeAttribute("role"); grip.removeAttribute("aria-label"); }
+    }
+    // A small screen: the chat panel, when open, may sit where the cards are; they step aside while it is open.
+    var p = $("dk-panel"), under = false;
+    if (p && !p.hidden && L.panel) {
+      var a = L.panel;
+      under = !(g.x + g.w <= a.x || a.x + a.w <= g.x || g.y + g.h <= a.y || a.y + a.h <= g.y) && overlapsCards(a);
+    }
+    glEl.classList.toggle("dk-gl-under", under);
+    renderGlance(false);
+  }
+  function overlapsCards(a) {
+    var cs = glEl.querySelectorAll(".dk-gl-hit");
+    for (var i = 0; i < cs.length; i++) {
+      var r = cs[i].getBoundingClientRect();
+      if (r.width && !(r.right <= a.x || a.x + a.w <= r.left || r.bottom <= a.y || a.y + a.h <= r.top)) return true;
+    }
+    return false;
+  }
+
+  function setGlance(on) {
+    on = !!on;
+    if (st.glance === on) return;
+    st.glance = on;
+    invoke("set_glance", { show: on });
+    apply(); // at once here; the app resizes the Floating window and confirms with its state
+    if (on) loadCaps(true);
+  }
+  function setPin(p) {
+    st.glancePin = p;
+    if (T) invoke("set_glance", p ? { pin: p } : { unpin: true });
+    else { try { if (p) window.localStorage.setItem("mint-desk-glance-pin", JSON.stringify(p)); else window.localStorage.removeItem("mint-desk-glance-pin"); } catch (e) { /* not remembered */ } }
+    layout();
+  }
+  function pinHere(x, y) { return { x: Math.max(0, Math.min(0.98, x / L.W)), y: Math.max(0, Math.min(0.95, y / L.H)) }; }
+
+  /* The caps: once a minute while the cards show (the Command Center's own status poll is every 30 s). */
+  function loadCaps(now) {
+    if (!glOn() || !$("cc") || document.hidden) return;
+    if (!now && Date.now() - glCapsAt < 55000) return;
+    glCapsAt = Date.now();
+    try {
+      fetch("/mint-ai/api/caps", { credentials: "same-origin", headers: { Accept: "application/json" } })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (j) { if (j && Array.isArray(j.sessions)) { glCaps = j; renderGlance(true); } })
+        .catch(function () { /* the card says what it has */ });
+    } catch (e) { /* no fetch */ }
+  }
+  setInterval(function () { loadCaps(false); }, 60000);
+
+  /* ---- drawing: one keyed element per card, redrawn only when its own text changes (focus kept) ---- */
+  function svgI(d) { return '<svg class="cc-i" viewBox="0 0 24 24" aria-hidden="true">' + d + "</svg>"; }
+  var I_SHIELD = svgI('<path d="M12 3.5 5 6.5v5c0 4.3 3 7.6 7 9 4-1.4 7-4.7 7-9v-5z"/><path d="m9 12 2.2 2.2L15.5 10"/>');
+  function apCard(a, more) {
+    var busy = glBusy[a.id], err = glErr[a.id];
+    var h = '<article class="dk-gl-card dk-gl-ap dk-gl-hit" role="group" aria-label="' + esc("Approval waiting, from " + a.who + ": " + a.what) + '">' +
+      '<div class="dk-gl-k"><i class="dk-gl-dot warn" aria-hidden="true"></i><span>Needs you · ' + esc(a.who) + '</span><span class="sp"></span>' +
+      (a.leftText ? '<time class="dk-gl-left' + (a.low ? " low" : "") + '" data-gl-left="' + a.id + '" aria-label="' + esc(a.leftText + " left, then denied") + '">' + esc(a.leftText) + "</time>" : "") + "</div>" +
+      '<p class="dk-gl-sum">' + esc(a.what) + "</p>" +
+      (busy ? '<p class="dk-gl-note" role="status">' + (busy === "approve" ? I_SHIELD + "Confirm it is you…" : "Denying…") + "</p>" : "") +
+      (err ? '<p class="dk-gl-err" role="alert">' + esc(err) + "</p>" : "") +
+      '<div class="dk-gl-acts">' +
+      '<button type="button" class="dk-gl-b pri" data-gl-approve="' + a.id + '" data-gl-fid="ap' + a.id + 'a" title="Approve (Windows Hello first)"' + (busy ? " disabled" : "") + ">" + I_SHIELD + "Approve</button>" +
+      '<button type="button" class="dk-gl-b" data-gl-deny="' + a.id + '" data-gl-fid="ap' + a.id + 'd"' + (busy ? " disabled" : "") + ">Deny</button>" +
+      '<span class="sp"></span><button type="button" class="dk-gl-b link" data-gl-open="' + a.id + '" data-gl-fid="ap' + a.id + 'o" title="The whole card: what it runs, why, always-allow">Open</button></div>' +
+      (more ? '<button type="button" class="dk-gl-more" data-gl-more data-gl-fid="apmore">+' + more + " more waiting</button>" : "") +
+      "</article>";
+    return { key: "ap" + a.id, sig: [a.id, a.who, a.what, a.low ? 1 : 0, !!a.leftText, busy || "", err || "", more].join("|"), html: h };
+  }
+  function noApCard() {
+    return { key: "ap-none", sig: "none", html: '<article class="dk-gl-card dk-gl-quiet dk-gl-hit" role="group" aria-label="Approvals: none waiting"><div class="dk-gl-k"><i class="dk-gl-dot ok" aria-hidden="true"></i><span>No approvals waiting</span></div></article>' };
+  }
+  function sessCard(x) {
+    var label = "Sessions: " + x.working + " working, " + x.waiting + " waiting on you, " + x.idle + " idle";
+    var h = '<article class="dk-gl-card dk-gl-se dk-gl-hit" role="group" aria-label="' + esc(label) + '">' +
+      '<div class="dk-gl-k"><span>Sessions</span><span class="sp"></span><button type="button" class="dk-gl-b link" data-gl-sheet="sessions" data-gl-fid="se-all" aria-label="All sessions">All</button></div>' +
+      '<div class="dk-gl-counts" aria-hidden="true"><span class="w"><b>' + x.working + "</b>working</span><span class=\"a\"><b>" + x.waiting + "</b>waiting on you</span><span class=\"i\"><b>" + x.idle + "</b>idle</span></div>" +
+      (x.top.length ? '<ul class="dk-gl-names">' + x.top.map(function (t) {
+        return '<li><button type="button" data-gl-sess="' + esc(t.key) + '" data-gl-fid="se-' + esc(t.key) + '" aria-label="' + esc("Open " + t.name + ", " + t.note) + '"><i class="dk-gl-dot ' + (t.state === "waiting" ? "warn" : t.state === "working" ? "work" : "idle") + '" aria-hidden="true"></i><span class="nm">' + esc(t.name) + "</span><small>" + esc(t.note) + "</small></button></li>";
+      }).join("") + "</ul>" : '<p class="dk-gl-empty">No sessions running.</p>') + "</article>";
+    return { key: "se", sig: h, html: h };
+  }
+  function costCard(c) {
+    var label = "Today: " + (c.known ? c.totalText + " tokens" : "not known yet") + (c.capText ? ". " + c.capText : "") + (c.stateText ? ", " + c.stateText : "");
+    var h = '<article class="dk-gl-card dk-gl-co dk-gl-hit tone-' + c.tone + '" role="group" aria-label="' + esc(label) + '">' +
+      '<div class="dk-gl-k"><span>Today</span><span class="sp"></span>' + (c.usdText ? '<small title="API-equivalent estimate of today\'s use">' + esc(c.usdText) + "</small>" : "") +
+      '<button type="button" class="dk-gl-b link" data-gl-sheet="cost" data-gl-fid="co-more" aria-label="Usage">Usage</button></div>' +
+      '<div class="dk-gl-big" aria-hidden="true"><b>' + esc(c.known ? c.totalText : "—") + "</b><span>tokens</span>" + (c.stateText ? '<em>' + esc(c.stateText) + "</em>" : "") + "</div>" +
+      (c.pct != null ? '<div class="dk-gl-bar" aria-hidden="true"><i data-gl-pct="' + c.pct.toFixed(3) + '"></i></div>' : "") +
+      (c.capText ? '<div class="dk-gl-sub" aria-hidden="true">' + esc(c.capText) + "</div>" : "") + "</article>";
+    return { key: "co", sig: h, html: h };
+  }
+  function alertCard(list) {
+    var h = '<article class="dk-gl-card dk-gl-al dk-gl-hit" role="group" aria-label="Live alerts">' +
+      '<div class="dk-gl-k"><span>Live</span><span class="sp"></span><button type="button" class="dk-gl-b link" data-gl-sheet="dec" data-gl-fid="al-log" aria-label="The event log">Log</button></div>' +
+      (list.length ? '<ul class="dk-gl-alerts">' + list.map(function (a) {
+        return '<li class="t-' + a.tone + (glSeen && glPrimed() && !glSeen[a.key] ? " new" : "") + '"><i class="dk-gl-dot ' + a.tone + '" aria-hidden="true"></i><span>' + esc(a.text) + "</span>" + (a.ago ? "<time>" + esc(a.ago) + "</time>" : "") + "</li>";
+      }).join("") + "</ul>" : '<p class="dk-gl-empty">Nothing new. Sessions finishing, waiting on you or failing show here.</p>') + "</article>";
+    return { key: "al", sig: list.map(function (a) { return a.key + a.ago; }).join("|") + "|" + (list.length ? "" : "e"), html: h };
+  }
+  function syncCards(box, cards) {
+    var have = {}, kids = box.children, i;
+    for (i = 0; i < kids.length; i++) have[kids[i].getAttribute("data-gl-key")] = kids[i];
+    var ae = document.activeElement, fid = ae && box.contains(ae) ? ae.getAttribute("data-gl-fid") : null;
+    cards.forEach(function (c, idx) {
+      var el = have[c.key];
+      delete have[c.key];
+      if (!el || el.getAttribute("data-gl-sig") !== c.sig) {
+        var t = document.createElement("template");
+        t.innerHTML = c.html;
+        var n = t.content.firstElementChild;
+        n.setAttribute("data-gl-key", c.key);
+        n.setAttribute("data-gl-sig", c.sig);
+        if (!el && glSeen && glPrimed()) n.classList.add("dk-gl-in");
+        if (el) box.replaceChild(n, el);
+        el = n;
+      }
+      if (box.children[idx] !== el) box.insertBefore(el, box.children[idx] || null);
+    });
+    Object.keys(have).forEach(function (k) { if (have[k] && have[k].parentNode === box) box.removeChild(have[k]); });
+    // The bar's length (the CSSOM: no inline style in the markup).
+    var bars = box.querySelectorAll("[data-gl-pct]");
+    for (i = 0; i < bars.length; i++) bars[i].style.transform = "scaleX(" + bars[i].getAttribute("data-gl-pct") + ")";
+    if (fid && document.activeElement !== box.querySelector('[data-gl-fid="' + fid + '"]')) {
+      var f = box.querySelector('[data-gl-fid="' + (window.CSS && CSS.escape ? CSS.escape(fid) : fid) + '"]');
+      if (f && !f.disabled) f.focus();
+    }
+  }
+  function renderGlance(force) {
+    if (!GL || !glBox || !glOn()) return;
+    var cc = window.__mintCC, S = cc && cc.S;
+    if (!S) return;
+    var now = cc.now ? cc.now() : Date.now();
+    var aps = [];
+    if (S.approvals && S.approvals.forEach) S.approvals.forEach(function (a) { aps.push(a); });
+    var A = GL.approvals(aps, now), al = GL.alerts(S.feed, now);
+    var cards = [];
+    A.list.forEach(function (a, i) { cards.push(apCard(a, i === A.list.length - 1 ? A.more : 0)); });
+    if (!A.total) cards.push(noApCard());
+    cards.push(sessCard(GL.sessions(S.sessions)));
+    cards.push(costCard(GL.cost(glCaps, S.status)));
+    cards.push(alertCard(al));
+    syncCards(glBox, cards);
+    // A screen reader hears what is new (one polite line), not the whole column again.
+    var said = A.list.length ? "a" + A.list[0].id : al.length ? al[0].key : "";
+    if (glSeen && said && said !== glLiveSaid) {
+      var lv = $("dk-gl-live");
+      if (lv) lv.textContent = A.list.length && said.charAt(0) === "a" ? A.list[0].who + " needs your approval: " + A.list[0].what : al[0].text;
+    }
+    glLiveSaid = said;
+    var seen = {};
+    al.forEach(function (a) { seen[a.key] = 1; });
+    if (glSeen) Object.keys(glSeen).forEach(function (k) { seen[k] = 1; });
+    glSeen = seen; // what was there from the start is not "new"
+    if (force) report(false);
+  }
+  /* The countdown on each approval card, once a second (no redraw). */
+  setInterval(function () {
+    if (!glOn() || !glBox) return;
+    var cc = window.__mintCC, S = cc && cc.S, now = cc && cc.now ? cc.now() : Date.now();
+    var ts = glBox.querySelectorAll("[data-gl-left]");
+    for (var i = 0; i < ts.length; i++) {
+      var a = S && S.approvals && S.approvals.get(Number(ts[i].getAttribute("data-gl-left")));
+      if (!a) continue;
+      var left = Math.max(0, (Date.parse(a.expires_at) - now) / 1000);
+      if (!isFinite(left)) continue;
+      var t = GL.mmss(left);
+      if (ts[i].textContent !== t) ts[i].textContent = t;
+      if (left < 60 && !ts[i].classList.contains("low")) renderGlance(false);
+    }
+  }, 1000);
+  ["mint-cc", "mint-needs", "mint-turns"].forEach(function (n) { document.addEventListener(n, function () { renderGlance(false); }); });
+  // A slow guard: the "N min ago" times move on, and anything an event did not announce.
+  setInterval(function () { renderGlance(false); }, 15000);
+
+  /* ---- what the cards do ---- */
+  function glDecide(id, how) {
+    var cc = window.__mintCC;
+    if (!cc || glBusy[id]) return;
+    glBusy[id] = how;
+    delete glErr[id];
+    renderGlance(true);
+    var go = how === "approve" ? cc.approve(id) : cc.decide(id, "deny");
+    Promise.resolve(go).then(function () {
+      delete glBusy[id];
+      renderGlance(true);
+    }, function (e) {
+      delete glBusy[id];
+      var m = (e && e.message) || "it did not go through";
+      glErr[id] = /^Not (approved|denied)/.test(m) ? m : (how === "approve" ? "Not approved: " : "Not denied: ") + m;
+      renderGlance(true);
+    });
+  }
+  if (glEl) glEl.addEventListener("click", function (e) {
+    var t = e.target.closest ? e.target.closest("button") : null;
+    if (!t || t.disabled) return;
+    var cc = window.__mintCC;
+    var v;
+    if ((v = t.getAttribute("data-gl-approve"))) return glDecide(Number(v), "approve");
+    if ((v = t.getAttribute("data-gl-deny"))) return glDecide(Number(v), "deny");
+    if ((v = t.getAttribute("data-gl-open"))) { if (cc && cc.openNeed) cc.openNeed(Number(v)); return; }
+    if (t.hasAttribute("data-gl-more")) { if (cc && cc.openNeed) cc.openNeed(); return; }
+    if ((v = t.getAttribute("data-gl-sess"))) { if (cc && cc.openSession) cc.openSession(v); return; }
+    if ((v = t.getAttribute("data-gl-sheet"))) { if (cc && cc.openSheet) cc.openSheet(v); return; }
+    v = t.getAttribute("data-gl");
+    if (v === "hide") { setGlance(false); if (glBtn && !glBtn.hidden) glBtn.focus(); return; }
+    if (v === "pin" && L && L.glance) { setPin(L.glance.pinned ? null : pinHere(L.glance.x, L.glance.y)); return; }
+  });
+  if (glBtn) glBtn.addEventListener("click", function (e) { e.preventDefault(); e.stopPropagation(); setGlance(!st.glance); });
+
+  /* ---- moving the cards on the desktop: drag the header, or the arrow keys on it; where they stop, they are pinned ---- */
+  var grip = $("dk-gl-hd");
+  if (grip) {
+    grip.addEventListener("pointerdown", function (e) {
+      if (st.mode !== "desktop" || e.button !== 0 || !L || !L.glance || (e.target.closest && e.target.closest("button"))) return;
+      e.preventDefault();
+      var r = glEl.getBoundingClientRect();
+      glDrag = { dx: e.clientX - r.left, dy: e.clientY - r.top, x: r.left, y: r.top, moved: false, id: e.pointerId };
+      try { grip.setPointerCapture(e.pointerId); } catch (x) { /* the window still has it */ }
+      glEl.classList.add("dragging");
+      report(true); // the whole window catches the mouse while it moves
+    });
+    grip.addEventListener("pointermove", function (e) {
+      if (!glDrag) return;
+      var w = glEl.offsetWidth;
+      glDrag.x = Math.max(8, Math.min(L.W - w - 8, e.clientX - glDrag.dx));
+      glDrag.y = Math.max(8, Math.min(L.H - 140, e.clientY - glDrag.dy));
+      glDrag.moved = true;
+      glEl.style.left = px(glDrag.x);
+      glEl.style.top = px(glDrag.y);
+    });
+    var drop = function () {
+      if (!glDrag) return;
+      var d = glDrag;
+      glDrag = null;
+      glEl.classList.remove("dragging");
+      if (d.moved) setPin(pinHere(d.x, d.y));
+      report(true);
+    };
+    grip.addEventListener("pointerup", drop);
+    grip.addEventListener("pointercancel", drop);
+    grip.addEventListener("keydown", function (e) {
+      if (st.mode !== "desktop" || !L || !L.glance || e.target !== $("dk-gl-grip")) return;
+      var k = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] }[e.key];
+      if (!k) return;
+      e.preventDefault();
+      var step = e.shiftKey ? 64 : 16;
+      setPin(pinHere(L.glance.x + k[0] * step, L.glance.y + k[1] * step));
+      var g = $("dk-gl-grip");
+      if (g) g.focus();
+    });
+  }
 
   /* ---------------------------------------------------------------- the live-call button (and the app's live key)
      Not on a call: starts a hands-free live call, as a tap of the mic does. On one: ends it, as the voice
@@ -333,6 +647,8 @@
   var HIT = [
     "#dk-livebtn", "#dk-chatbtn", "#dk-panel", "#cc-cap-state", "#cc-cap-more", "#cc-need", "#dk-tools", "#cc-kids > *",
     "#cc-reply", "#cc-pop", "#cc-kcard.on", ".cc-smenu", ".cc-toast", ".dk-auth .auth-wrap .card", "#dk-gate", "#cc-offline", "#cc-needpill",
+    // The glance cards: each card and the column's header bar -- never the column itself, so the gaps between them let clicks through.
+    "#dk-glbtn", "#dk-glance:not(.dk-gl-under) .dk-gl-hit",
   ];
   // Open over everything: the whole window catches the mouse while one shows.
   // (#cc-overlay holds the conversation of a session -- the deep view -- and the forms: the whole window while one is open.)
@@ -354,6 +670,8 @@
     var full = st.mode === "peek" && st.peekOpen;
     // (Open counts from the first frame: an overlay fading in is already there to be clicked.)
     if (!full) for (var f = 0; f < FULL.length; f++) { var fe = document.querySelectorAll(FULL[f]); for (var j = 0; j < fe.length; j++) if (present(fe[j])) { full = true; break; } if (full) break; }
+    // Dragging the pinned cards: the whole window, so the drag never falls through to the desktop as it goes.
+    if (glDrag) full = true;
     if (full) return LAY.regions(L, [], { all: true });
     var els = [];
     for (var i = 0; i < HIT.length; i++) {
@@ -386,6 +704,8 @@
     ["#dk-panel", "card"], ["#cc-need", "alert"], ["#cc-cap-state", "pill"], ["#dk-chatbtn", "pill"], ["#dk-livebtn", "pill"],
     ["#dk-tools", "card"], [".cc-smenu", "card"], [".dk-auth .auth-wrap .card", "card"], ["#cc-offline", "card"],
     [".cc-deep", "card"], [".cc-modal:not([hidden])", "card"], [".cc-sdlg", "card"],
+    // The glance cards: frosted like the panel; an approval card near-solid, like the decision card.
+    ["#dk-glance:not(.dk-gl-under) .dk-gl-card:not(.dk-gl-ap)", "card"], ["#dk-glance:not(.dk-gl-under) .dk-gl-ap", "alert"], ["#dk-glance:not(.dk-gl-under) #dk-gl-hd", "pill"], ["#dk-glbtn", "pill"],
   ];
   var glassIds = typeof WeakMap === "function" ? new WeakMap() : null, glassN = 0, glassState = null, glassSig = "", glassMarked = [];
   function glassKey(el) { if (!glassIds) return null; var k = glassIds.get(el); if (!k) { k = "g" + ++glassN; glassIds.set(el, k); } return k; }
@@ -509,14 +829,27 @@
   // Quit: hang up first, so the server logs why.
   listen("mint://quit", function () { var lv = window.__mintLive; if (lv && lv.active && lv.active()) lv.end("unload"); });
   function escape() {
+    // Esc in the glance cards: out of them (the next Esc does the rest).
+    var ae = document.activeElement, gle = $("dk-glance");
+    if (gle && ae && gle.contains(ae) && ae.blur) { ae.blur(); return; }
     if (chatOpen()) { closeChat(); return; }
     var lv = window.__mintLive;
     if (lv && lv.active && lv.active()) { lv.end("esc"); return; }
     if (st.mode === "peek") invoke("hide_peek");
   }
-  var ESC_OWNERS = "#cc-overlay > *, .cc-sdlg-back, .cc-modal:not([hidden]), #cc-pop:not([hidden]), .cc-smenu, .cc-sheet.open, .cc-palette:not([hidden])";
+  var ESC_OWNERS = ".mint-su, #cc-overlay > *, .cc-sdlg-back, .cc-modal:not([hidden]), #cc-pop:not([hidden]), .cc-smenu, .cc-sheet.open, .cc-palette:not([hidden])";
   var escOwned = false;
-  window.addEventListener("keydown", function (e) { if (e.key === "Escape") escOwned = !!document.querySelector(ESC_OWNERS); }, true);
+  window.addEventListener("keydown", function (e) {
+    if (e.key !== "Escape") return;
+    escOwned = !!document.querySelector(ESC_OWNERS);
+    // The Windows Hello dialog (step-up.js) closes on Esc only with the focus in it; in the app the focus is
+    // often elsewhere (Hello's own window took it and gave it back to the page): Esc cancels it all the same.
+    var su = document.querySelector(".mint-su");
+    if (su && !su.contains(document.activeElement)) {
+      var bs = su.querySelectorAll("button");
+      for (var i = 0; i < bs.length; i++) if (bs[i].textContent.trim() === "Cancel") { e.preventDefault(); bs[i].click(); return; }
+    }
+  }, true);
   window.addEventListener("keydown", function (e) {
     // Esc closes the topmost thing open first (an overlay, a dialog, a menu, the sheet: their own handlers,
     // which run before this one -- so whether one was open is noted as the key goes down); only then the
@@ -607,5 +940,6 @@
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);
   else boot();
+  setTimeout(loadCaps, 1500);
   if (document.fonts && document.fonts.ready) document.fonts.ready.then(function () { layout(); });
 })();

@@ -11,8 +11,13 @@
  * monitor's work area. So every number here is in the window's own CSS
  * pixels, (0, 0) at its top left.
  *
- *   MintDesktopLayout.layout({ mode, size, pos, focus, W, H }) ->
- *     { mode, box, cx, cy, R, chatBtn, liveBtn, panel, caption, card, gate, tools }
+ *   MintDesktopLayout.layout({ mode, size, pos, focus, W, H, glance, pin }) ->
+ *     { mode, box, cx, cy, R, chatBtn, liveBtn, glanceBtn, panel, caption, card, gate, tools, glance }
+ *
+ * glance (0.1.9): the glance cards' column ({ x, y, w, h, align, pinned, side }, or null when the
+ * cards are off, in focus mode, or the Floating window was not widened for them). In Floating the
+ * window is GL_W + GL_GAP wider and the box sits at the screen-edge end of it; in the Desktop layer
+ * and Peek the column is beside the core, or where it was pinned (pin: fractions of the window).
  *
  * Since 0.1.2 nothing of the conversation shows by itself: the core, the
  * session spheres and the state pill; a small round chat button on the core's
@@ -34,6 +39,10 @@
   var MARGIN = 14;
   var BTN = 34; // the chat button's diameter
   var PANEL_MAX_H = 440;
+  // The glance cards (approvals, sessions, today's tokens, alerts) beside the core: a column this wide,
+  // this far from the Floating box. Not scaled with S/M/L (they are text). layout.rs has the same numbers.
+  var GL_W = 256;
+  var GL_GAP = 12;
 
   /*
    * The core's two round buttons, on its rim at the lower right: chat at 10
@@ -47,17 +56,25 @@
   }
   function chatBtn(L) { return rimBtn(L, 10); }
   function liveBtn(L) { return rimBtn(L, 42); }
+  // The glance cards' show / hide button: upper right of the rim (about 2 o'clock), clear of the tools.
+  function glanceBtn(L) { return rimBtn(L, -24); }
 
   function sizeK(s) { return SIZES[s] || 1; }
   function mode(m) { return MODES[m] ? m : "floating"; }
 
-  /** The Floating window: the box, plus the headroom above it (none in focus mode: no card shows). */
+  /**
+   * The Floating window: the box, plus the headroom above it (none in focus mode: no card shows),
+   * plus the glance column beside it when the cards are shown (o.glance; never in focus mode).
+   */
   function windowSize(o) {
     o = o || {};
     var k = sizeK(o.size);
     var bw = Math.round((o.focus ? 168 : 480) * k), bh = Math.round((o.focus ? 168 : 580) * k);
-    return { w: bw, h: bh + (o.focus ? 0 : HEADROOM), box: { w: bw, h: bh } };
+    var gl = o.glance && !o.focus ? GL_W + GL_GAP : 0;
+    return { w: bw + gl, h: bh + (o.focus ? 0 : HEADROOM), box: { w: bw, h: bh } };
   }
+  /** A Floating corner on the right of the screen (the default, "br"): the box at the window's right end, the cards to its left. */
+  function rightCorner(pos) { return !/l$/.test(pos || ""); }
 
   function layout(o) {
     o = o || {};
@@ -69,22 +86,29 @@
       // A top corner: the box at the top, the headroom below (the app places the window the same way).
       var up = /^t/.test(o.pos || "");
       var ws = windowSize(o), bw = ws.box.w, bh = ws.box.h, top = up ? 0 : H - bh;
-      L.box = { x: 0, y: top, w: bw, h: bh };
-      L.cx = bw / 2;
+      // The glance column beside the box, on the side away from the screen's edge -- only when the window
+      // was made wide enough for it (the app sizes it with the same numbers).
+      var gl = !!o.glance && !focus && W >= bw + GL_GAP + GL_W - 0.5, right = rightCorner(o.pos);
+      var bx = gl && right ? W - bw : 0;
+      L.box = { x: bx, y: top, w: bw, h: bh };
+      L.cx = bx + bw / 2;
       L.cy = focus ? top + bh / 2 : top + bh * 0.36;
       L.R = focus ? bw * 0.3 : bw * 0.163;
       L.caption = { x: L.cx, y: L.cy + L.R + 6 };
       L.chatBtn = chatBtn(L);
-    L.liveBtn = liveBtn(L);
       L.liveBtn = liveBtn(L);
+      L.glanceBtn = focus ? null : glanceBtn(L);
       // The chat panel: the box's lower part, under the state pill.
       var pTop = L.cy + L.R + 40;
-      L.panel = { x: MARGIN, y: pTop, w: bw - 2 * MARGIN, h: Math.max(120, top + bh - MARGIN - pTop) };
+      L.panel = { x: bx + MARGIN, y: pTop, w: bw - 2 * MARGIN, h: Math.max(120, top + bh - MARGIN - pTop) };
       // The card: in the headroom, 10 px off the box, right-aligned; never over the core.
       var cw = Math.min(330, bw - 16);
-      L.card = up ? { x: Math.max(8, bw - cw - 8), y: bh + 10, w: cw, h: Math.max(0, H - bh - 18), bottom: null } : { x: Math.max(8, bw - cw - 8), y: 8, w: cw, h: Math.max(0, top - 18), bottom: H - top + 10 };
-      L.gate = { x: bw / 2, y: top + bh - 170, w: Math.min(340, bw - 20) };
-      L.tools = { x: bw - 136, y: top + 8 };
+      L.card = up ? { x: bx + Math.max(8, bw - cw - 8), y: bh + 10, w: cw, h: Math.max(0, H - bh - 18), bottom: null } : { x: bx + Math.max(8, bw - cw - 8), y: 8, w: cw, h: Math.max(0, top - 18), bottom: H - top + 10 };
+      L.gate = { x: bx + bw / 2, y: top + bh - 170, w: Math.min(340, bw - 20) };
+      L.tools = { x: bx + bw - 136, y: top + 8 };
+      // The cards: the whole height of the window beside the box (the headroom too), stacked from the
+      // box's end of it: up from the bottom in a bottom corner, down from the top in a top corner.
+      L.glance = gl ? { x: right ? 0 : bw + GL_GAP, y: 8, w: GL_W, h: H - 16, align: up ? "start" : "end", pinned: false, side: right ? "left" : "right" } : null;
       return L;
     }
     var R = (m === "peek" ? 180 : 170) * k;
@@ -111,7 +135,38 @@
     L.card = { x: Math.max(16, W - 16 - 330), y: 72, w: Math.min(330, W - 32), h: H - 72 - 16, bottom: null };
     L.gate = { x: L.cx, y: L.cy + L.R + 60, w: 340 };
     L.tools = null;
+    L.glanceBtn = focus ? null : glanceBtn(L);
+    L.glance = focus || !o.glance ? null : glanceSlot(L, o.pin);
     return L;
+  }
+
+  /**
+   * Desktop layer and Peek: where the glance column goes. Pinned (o.pin: { x, y } as fractions of the
+   * window, i.e. of the monitor's work area, remembered per monitor by the app): there, kept on screen.
+   * Otherwise beside the core, on the side with more room (the left when the core is right of centre,
+   * so it never meets the decision card at the top right), clear of the core and the chat panel,
+   * starting level with the core's top.
+   */
+  function glanceSlot(L, pin) {
+    var W = L.W, H = L.H, w = Math.min(GL_W, W - 16);
+    if (pin && isFinite(pin.x) && isFinite(pin.y)) {
+      var px = Math.max(8, Math.min(W - w - 8, pin.x * W)), py = Math.max(8, Math.min(H - 140, pin.y * H));
+      return { x: px, y: py, w: w, h: Math.max(120, H - py - 16), align: "start", pinned: true, side: px + w / 2 < L.cx ? "left" : "right" };
+    }
+    var p = L.panel, beside = p.y < L.cy + L.R; // the chat panel went beside the core (no room under it)
+    var gap = 40;
+    var leftEnd = L.cx - L.R - gap, rightStart = L.cx + L.R + gap;
+    if (!beside) { leftEnd = Math.min(leftEnd, p.x - 16); rightStart = Math.max(rightStart, p.x + p.w + 16); }
+    // (A small screen puts the chat panel beside the core too: then the cards may share its side -- they
+    // step aside while the panel is open, mint-desktop.js -- rather than meet the decision card.)
+    var side = W - L.cx > L.cx ? "right" : "left";
+    var x = side === "left" ? leftEnd - w : rightStart;
+    // No room on that side: the other one, else as near as fits.
+    if (side === "left" && x < 16 && rightStart + w <= W - 16) { side = "right"; x = rightStart; }
+    else if (side === "right" && x + w > W - 16 && leftEnd - w >= 16) { side = "left"; x = leftEnd - w; }
+    x = Math.max(16, Math.min(W - 16 - w, x));
+    var y = Math.max(16, L.cy - L.R);
+    return { x: x, y: y, w: w, h: Math.max(120, H - y - 16), align: "start", pinned: false, side: side };
   }
 
   /**
@@ -166,5 +221,5 @@
     return { state: { seen: next }, rects: rects, keys: keys };
   }
 
-  return { layout: layout, windowSize: windowSize, regions: regions, glass: glass, GLASS_SETTLE_MS: GLASS_SETTLE_MS, SIZES: SIZES, HEADROOM: HEADROOM };
+  return { layout: layout, windowSize: windowSize, regions: regions, glass: glass, GLASS_SETTLE_MS: GLASS_SETTLE_MS, SIZES: SIZES, HEADROOM: HEADROOM, GL_W: GL_W, GL_GAP: GL_GAP };
 });

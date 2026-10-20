@@ -307,6 +307,7 @@
     });
     S.sessions = list;
     ALIAS.learnSessions(list);
+    deskPing();
   }
   // Every name a session was known by (sessions events, delegation rows): an old name still finds it.
   var ALIAS = ML.makeAliases();
@@ -360,6 +361,13 @@
     recent: function (n) { return recentTurns(n); },
     /* For the desktop app's toast: Deny, through the same call the card's Deny makes (never approve). */
     decide: function (id, how) { return how === "deny" ? denyApproval(id) : Promise.resolve(null); },
+    /* For the desktop app's glance cards: Approve, through the same call the cards make -- the server answers
+       428 and step-up.js asks for Windows Hello (or the code) first; without a valid proof nothing is approved. */
+    approve: function (id) { return approveApproval(id); },
+    /* ...the decision card on one approval (the glance card's Open), a session's conversation, the server's clock. */
+    openNeed: function (id) { openNeed(id ? "a" + Number(id) : undefined); },
+    openSession: function (key) { var s = findSess(key); if (s && P && P.openDeep) P.openDeep(key); else { openSheet("sessions"); highlightSess(key); } },
+    now: function () { return nowServer(); },
     /* The things a click on a session opens (the desktop render mode's checks drive them): its menu, the conversation, the retire dialog, a sheet. */
     get panels() { return P; },
     sessMenu: function (key, x, y) { return sessMenu(key, x, y); },
@@ -1397,6 +1405,22 @@
     }
     return out;
   }
+  /** Approve one approval (the desktop app's glance card): the cards' own call; api() runs the step-up on its 428. */
+  function approveApproval(id) {
+    var a = S.approvals.get(Number(id));
+    if (!a || a.status !== "pending") return Promise.resolve(null);
+    return api("approvals/" + Number(id) + "/approve", { body: {} }).then(function (r) {
+      if (r && r.approval) upsertApproval(r.approval, false);
+      renderNeed();
+      return r;
+    });
+  }
+  /** The desktop app's glance cards repaint when what they show changes (sessions, approvals, the event log, the status). */
+  var deskPingRaf = 0;
+  function deskPing() {
+    if (!DESKTOP || deskPingRaf) return;
+    deskPingRaf = requestAnimationFrame(function () { deskPingRaf = 0; document.dispatchEvent(new CustomEvent("mint-cc")); });
+  }
   /** Deny one approval (the desktop app's toast): the card's own call, and the card follows. */
   function denyApproval(id) {
     var a = S.approvals.get(Number(id));
@@ -1490,6 +1514,7 @@
     }
     paintState();
     renderRail();
+    deskPing();
   }
 
   /* One handler for every approval card on the page (conversation or inbox). */
@@ -1793,6 +1818,7 @@
     S.feed.sort(function (a, b) { return Date.parse(b.ts || 0) - Date.parse(a.ts || 0); });
     if (S.feed.length > FEED_MAX) S.feed.length = FEED_MAX;
     renderFeed();
+    deskPing();
   }
   var feedRaf = 0;
   function renderFeed() {
@@ -1876,6 +1902,7 @@
     S.status = st;
     if (st && !st.machine && keepMachine) st.machine = keepMachine;
     if (st && st.approvals) st.approvals.forEach(function (a) { S.approvals.set(a.id, a); });
+    deskPing();
   }
 
   function load() {

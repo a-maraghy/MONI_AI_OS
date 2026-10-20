@@ -24,7 +24,7 @@ Command Center reaches the app without a new release. Sign-in is the site's: pas
 | `platform.rs` | Windows only: what is in front, full-screen apps, power, lock screen, wallpaper brightness (ink), the WorkerW layer |
 | `trayicon.rs` | The tray icon's status dot |
 | `site.rs` | The user agent (`… MintDesktop/<version>`) and the "stay on the site" rule |
-| `capabilities/remote.json` | The **only** commands the site may call: hit regions, glass surfaces (real blur), status, needs-you toast, hide Peek, drag, the box's tools, open the full Command Center, start the browser sign-in, events. Nothing that runs a program, reads a file or changes settings |
+| `capabilities/remote.json` | The **only** commands the site may call: hit regions, glass surfaces (real blur), status, needs-you toast, hide Peek, drag, the box's tools, the glance cards (show / hide, pin), open the full Command Center, start the browser sign-in, events. Nothing that runs a program, reads a file or changes settings |
 | `capabilities/local.json` | The app's own pages (`dist/`): the connecting/offline card and the Settings window |
 
 `dist/index.html` is the first thing the window shows: "Connecting…" / "Offline — retrying in N s"; it
@@ -45,6 +45,16 @@ goes to the site as soon as the site answers (nothing typed is queued while offl
   focused. Ctrl+Alt+M raises it on top for a moment. **Experimental (off):** behind the icons (WorkerW) —
   no clicks reach it there.
 - **Focus mode** (Ctrl+Alt+F): only the core.
+- **Glance cards** (0.1.9; on by default): beside the core, the approvals waiting (Approve asks for Windows Hello
+  first, as every approval does -- the server enforces it; Deny; Open = the decision card), the sessions (working /
+  waiting on you / idle and the names that matter; a click opens one), today's tokens against the tightest daily cap,
+  and live alerts (a session done or waiting on you, errors, approvals) from the Command Center's own event stream.
+  Floating: a column beside the box on the side away from the screen edge (the window is `GLANCE_W` + `GLANCE_GAP` =
+  268 px wider; the box sits at the edge end; layout.rs and mint-desktop-layout.js share the numbers). Desktop layer:
+  beside the core, or dragged anywhere by its header and **pinned** there (per monitor, fractions of the work area,
+  `per_monitor.glance_pin`). Shown / hidden by the tray item "Glance cards beside MINT AI", Settings, the small button
+  on the core's rim or the cards' X (`settings.glance`, command `set_glance`). Focus mode hides them. Each card is a
+  hit region and a glass surface; the gaps between them let clicks through. Tests: `dashboard/tools/test-desktop-glance.cjs`.
 
 Click-through: the page reports its interactive parts ~10× a second when they change (`set_hit_regions`);
 a loop checks the cursor 30× a second and switches the window between catching and passing the mouse.

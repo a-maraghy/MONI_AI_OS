@@ -10,6 +10,7 @@ fn main() {
         "hide_peek",
         "start_drag",
         "tool",
+        "set_glance",
         "open_full_cc",
         "go_site",
         "webauthn_ceremony",

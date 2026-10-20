@@ -115,6 +115,22 @@ Note `winver` (build). Settings ▸ Behaviour ▸ "Real blur behind cards" is on
 - [ ] **Windows 10** (1809 or later, e.g. 22H2): the same frosting. Windows 10 before 1809: tinted look, Settings says why.
 - [ ] Note any lag of the blur behind the card when the panel opens (expected: the blur arrives ~0.1–0.3 s after the card, then the tint lightens).
 
+## 9c. Glance cards (0.1.9: approvals, sessions, today's tokens, live alerts)
+- [ ] Floating: the cards stand beside the box on the side away from the screen's edge (bottom right: on the left of the box); drag the box to a left corner: they move to its right. The window is wider by them; the snap still picks the corner the **box** is nearest to.
+- [ ] Click-through: the 8 px gaps between cards, and the empty strip above them, let clicks reach the desktop / windows underneath; every card catches clicks.
+- [ ] Real blur: each card is frosted (same look as the chat panel); an approval card is near-solid; while a card changes size (an alert arriving) its blur follows within a moment and never lags visibly behind.
+- [ ] Readable on a bright wallpaper (dark ink) and a dark one (light ink): text, counts, the bar.
+- [ ] An approval waiting: its card shows who asks, the command, the countdown. **Approve -> the Windows Hello prompt appears on top** (Floating and Desktop layer) -> approved; cancel Hello -> the card says "Not approved" and can be tried again; Esc closes the Hello dialog even with the focus elsewhere. Deny: no Hello. Open: the decision card on that approval.
+- [ ] Sessions: counts match the session spheres; a name click opens that session's conversation. Today: tokens and the bar match Settings > Usage > Token caps (the session nearest its cap).
+- [ ] Live: a session finishing ("... is done"), one waiting on you, an error appear within a second or two, newest first.
+- [ ] Hide: the X on the cards, the small grid button on the core's rim (about 2 o'clock), the tray's "Glance cards beside MINT AI", Settings > Glance cards -- each hides / shows them, and they stay as left after a restart. Focus mode hides them (and the button).
+- [ ] Desktop layer: they sit beside the core (left of it with the core on the right). Drag the header: they follow, the drag never falls through to the desktop; let go: pinned there (the pin button lit). Restart: still there. Unpin: back beside the core. Arrow keys on the focused header move them 16 px (Shift: 64).
+- [ ] Two monitors: pin on one, move MINT AI to the other (tray > Monitor): the other has its own place (beside the core until pinned); back: the first pin returns.
+- [ ] 100 / 125 / 150 % scaling: cards fully on screen, crisp text, clicks land exactly; after a scale change the pin stays in the same part of the screen.
+- [ ] Battery saver / hold still: no card animation (a new alert appears without the glow).
+- [ ] Keyboard: Tab from the rim button goes through the cards' buttons top to bottom; Enter acts; Esc leaves the cards. Narrator reads "At a glance...", each card's summary, and a new approval / alert once.
+- [ ] A small screen (1366 x 768 at 100 %, or 150 % on 1920 x 1080): the cards do not cover the decision card; with the chat panel open next to the core they step aside.
+
 ## 10. Updates
 - [ ] Publish a 0.1.1 feed (`build-windows.sh --feed`, bump the version): within 6 h or Settings ▸ Check for updates now, a notification; tray ▸ "Update to 0.1.1 and restart" installs and restarts.
 - [ ] A feed whose signature does not match is refused (rename a .sig) — the app says it could not update.

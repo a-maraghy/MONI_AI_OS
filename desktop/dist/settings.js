@@ -57,6 +57,7 @@
     (v.monitors || []).forEach(function (m) { var o = document.createElement("option"); o.value = m; o.textContent = m.replace(/^\\\\\.\\/, ""); sel.appendChild(o); });
     sel.value = S.monitor || "";
     $("focus").checked = !!S.focus;
+    $("glance").checked = S.glance !== false;
     $("dnd").checked = !!S.do_not_disturb;
     $("batt").checked = !!S.battery_saver;
     $("blur").checked = S.real_blur !== false;
@@ -83,6 +84,7 @@
   function collect() {
     S.monitor = $("monitor").value;
     S.focus = $("focus").checked; S.do_not_disturb = $("dnd").checked; S.battery_saver = $("batt").checked; S.real_blur = $("blur").checked;
+    S.glance = $("glance").checked;
     S.autostart = $("autostart").checked; S.check_updates = $("updates").checked; S.experimental_behind_icons = $("icons").checked;
     if (window.MintMachine) window.MintMachine.collect(S);
   }

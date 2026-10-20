@@ -371,7 +371,7 @@ ${perm && !desk ? dockMarkup(o.csrf, perm, { shell: true, noVoice: !vOk, core, b
     heading: null,
     pageClass: desk ? "cc-page cc-desk" : "cc-page",
     assets: desk
-      ? ["mint-desktop-webauthn.js", "voice-live.css", "mint-desktop.css", "console.js", "cc-logic.js", "mint-core.js", "mint-core-d.js", "mint-core-bot.js", "cc-family.js", "cc-map.js", "cc-panels.js", "voice-live-detect.js", "voice-live.js", "ui-actions.js", "mint-desktop-layout.js", "moni-ai.js", "mint-desktop.js"]
+      ? ["mint-desktop-webauthn.js", "voice-live.css", "mint-desktop.css", "console.js", "cc-logic.js", "mint-core.js", "mint-core-d.js", "mint-core-bot.js", "cc-family.js", "cc-map.js", "cc-panels.js", "voice-live-detect.js", "voice-live.js", "ui-actions.js", "mint-desktop-layout.js", "mint-desktop-glance.js", "moni-ai.js", "mint-desktop.js"]
       : ["voice-live.css", "mint-dock.css", "console.js", "cc-logic.js", "mint-core.js", "mint-core-d.js", "mint-core-bot.js", "cc-family.js", "cc-map.js", "cc-panels.js", "voice-live-detect.js", "voice-live.js", "ui-actions.js", "moni-ai.js", "mint-dock.js", "mint-shell.js"],
     topExtra: topExtra(),
     topEnd: TOP_CLOCK,
@@ -381,7 +381,8 @@ ${perm && !desk ? dockMarkup(o.csrf, perm, { shell: true, noVoice: !vOk, core, b
 /**
  * What only the desktop render mode adds (public/mint-desktop.js places it):
  * the live-call button and the chat button on the core and the chat panel it opens (the recent
- * conversation; mint-desktop.js moves the composer, #cc-dock, into it), the
+ * conversation; mint-desktop.js moves the composer, #cc-dock, into it), the glance cards beside the
+ * core and their button (approvals, sessions, today's tokens, alerts; mint-desktop.js fills them), the
  * core's own click target (in Floating the core is the handle you drag the
  * box by), and the Floating box's tools.
  */
@@ -395,6 +396,14 @@ function deskParts() {
     <div class="dk-log" id="dk-log" aria-live="polite"></div>
     <div class="dk-panel-dock" id="dk-panel-dock"></div>
   </section>
+  <button type="button" class="dk-glbtn" id="dk-glbtn" title="Glance cards" aria-label="Show the glance cards" aria-pressed="false" aria-controls="dk-glance" hidden>${svg('<rect x="4" y="4" width="7" height="7" rx="1.6"/><rect x="13" y="4" width="7" height="7" rx="1.6"/><rect x="4" y="13" width="7" height="7" rx="1.6"/><rect x="13" y="13" width="7" height="7" rx="1.6"/>')}</button>
+  <section class="dk-glance" id="dk-glance" aria-label="At a glance: approvals, sessions, today's tokens, alerts" hidden>
+    <div class="dk-gl-hd dk-gl-hit" id="dk-gl-hd"><span class="dk-gl-grip" id="dk-gl-grip" title="At a glance">${svg('<circle cx="9" cy="8" r="1.3"/><circle cx="15" cy="8" r="1.3"/><circle cx="9" cy="12" r="1.3"/><circle cx="15" cy="12" r="1.3"/><circle cx="9" cy="16" r="1.3"/><circle cx="15" cy="16" r="1.3"/>')}<b>At a glance</b></span>
+      <button type="button" class="dk-gl-ib" data-gl="pin" id="dk-gl-pin" title="Pin here on the desktop" aria-label="Pin the cards here on the desktop" aria-pressed="false" hidden>${svg('<path d="M9 4h6l-1 5 3 3v2H7v-2l3-3-1-5zM12 14v6"/>')}</button>
+      <button type="button" class="dk-gl-ib" data-gl="hide" title="Hide the glance cards" aria-label="Hide the glance cards">${svg('<path d="M6 6l12 12M18 6 6 18"/>')}</button></div>
+    <div class="dk-gl-cards" id="dk-gl-cards"></div>
+  </section>
+  <span class="cc-sr" id="dk-gl-live" aria-live="polite"></span>
   <div class="dk-corehit" id="dk-corehit" title="MINT AI" aria-hidden="true"></div>
   <div class="dk-tools" id="dk-tools" role="toolbar" aria-label="MINT AI window" hidden>${
     b("drag", "Drag to move", '<circle cx="9" cy="6" r="1.4"/><circle cx="15" cy="6" r="1.4"/><circle cx="9" cy="12" r="1.4"/><circle cx="15" cy="12" r="1.4"/><circle cx="9" cy="18" r="1.4"/><circle cx="15" cy="18" r="1.4"/>') +

@@ -5047,6 +5047,10 @@ function strip2(o) {
 // asks the CLI; no credential passes through here) and the token counts.
 app.get("/mint-ai/api/usage", ...moniAiGuard, (req, res) => moniAiOp(req, res, "usage", req.query.plan_only === "1" ? { plan_only: true } : {}, { timeout: 35000 }));
 
+// token caps, read only (the desktop app's "Today" glance card: today's tokens against the tightest daily
+// cap; the caps are set in Settings > Usage)
+app.get("/mint-ai/api/caps", ...moniAiGuard, (req, res) => moniAiOp(req, res, "token-caps"));
+
 // cost
 app.get("/mint-ai/api/cost", ...moniAiGuard, (req, res) => moniAiOp(req, res, "cost"));
 app.post("/mint-ai/api/cost/budget", ...moniAiWrite, (req, res) => {
