@@ -206,3 +206,48 @@ Every way it must stop (each time: frame and pill vanish at once, claude.exe and
 Stop key
 - [ ] Another app holding Ctrl+Alt+Esc: a toast says Ctrl+Alt+Shift+Esc is used, and it works.
 - [ ] Remap the stop key in Settings ▸ Save (Default puts it back); Esc only with Ctrl+Alt; it may not equal another MINT AI hotkey. (The current stop key cannot be recorded in its own box: the app holds it.)
+
+## 0.1.11 — laptop control 2: Office and PDF files, Chrome, the action log
+
+Before: a test folder with copies only (never the user's real files the first time): `Documents\MINT AI\test\` with a
+`Report.docx` (a heading, a few paragraphs, a table, a picture), a `Budget.xlsx` (two sheets, numbers, a SUM formula, a
+date column), a `Deck.pptx` (3 slides with notes) and two small PDFs. Also one **macro** file (`Macro.xlsm`) and one
+**password-protected** `Secret.docx`.
+
+Settings ▸ This computer
+- [ ] "Claude in Chrome" says where it was found ("Found in Chrome (Default)…") or how to install it; "Microsoft Office" lists the apps found (or "Not installed…"). Install / remove the extension ▸ Look again: both change, and the Computers page in Mint OS follows within a few seconds.
+
+The Computers page (Mint OS)
+- [ ] Chrome pill: "Chrome not set up" with the 4 steps open; after installing the extension and Look again: "Chrome set up"; after a take-over that used the browser: "Chrome connected … it answered N min ago". "Switch Chrome off" ▸ "Chrome off"; the next take-over's first prompt says there is no browser, and the CLI is started with `--no-chrome` (the app log line "browser off"). Switch it back on.
+- [ ] "Folders MINT AI may use": add `D:\Something` (or another folder of yours): listed; `C:\Windows`, `D:\`, `C:\Users\<you>` and `C:\Users\<you>\AppData\x` are refused with a reason. Remove it again.
+- [ ] During a take-over the live action log under "MINT AI is in control" grows within ~3 s of each step (time, Files / Chrome / Command, the target, done / failed, by the rules / you approved / not approved / refused). "Full log" opens the whole log, also live; after the take-over ends it stays (kept 90 days).
+
+Office files (each: check the app log line "control session …: browser …, Office [...]" first)
+- [ ] "Read Report.docx and tell me what it says": office_read lists numbered paragraphs (with styles, "(table)"). Same for Budget.xlsx (cells and formulas) and Deck.pptx (slides, notes).
+- [ ] "Change 2025 to 2026 everywhere in Report.docx": a **new file** `Report (edited).docx` next to it, the original untouched; no approval card. Open both in Word: formatting, the table and the picture are kept; the edited one opens without a repair prompt.
+- [ ] "…and save it over the original": **one** approval card "Replace a file" (Windows Hello); Deny ▸ nothing changes; Approve ▸ the original changes and no `~mint-*.docx` is left in the folder.
+- [ ] Budget.xlsx: "put Total in D1 and =SUM(B2:C2) in D2, add a sheet Notes": the copy opens in Excel **without a repair prompt**, the formula shows its value, text like "2026-10-20" or "00123" stays text, cell styles kept.
+- [ ] Deck.pptx: replace a word, add a slide after slide 1, change slide 3's bullets and notes, delete a slide: the copy opens in PowerPoint without a repair prompt; the new slide uses the deck's "Title and Content" layout.
+- [ ] With PowerPoint **already open** on another deck: a PowerPoint edit leaves the user's window and deck open (the app does not close PowerPoint it did not start). Word / Excel: no WINWORD.EXE / EXCEL.EXE left in Task Manager after the job.
+- [ ] Office **macros never run**: `Macro.xlsm` is refused ("macro-enabled"); a .docx with a renamed macro project is refused too. `Secret.docx` is refused ("password-protected or damaged"); no password prompt appears anywhere.
+- [ ] Without Office (or with engine "file"): the same edits work through the file engine (the reply says "edited with the file"); pdf_export says it needs Office.
+- [ ] Paths: asking it to edit `C:\Windows\win.ini`, a file in `AppData`, or a file through a junction from Documents to elsewhere is refused with the reason; a file in a folder added on the Computers page works.
+- [ ] Ctrl+Alt+Esc **while Office is working** (e.g. a pdf_export of a big deck): the PowerShell job dies with the session (Task Manager: no powershell.exe left); note whether WINWORD / EXCEL / POWERPNT stays behind (it may: Office runs outside the Job Object) and report it.
+
+PDFs
+- [ ] "Read the two PDFs": pdf_read gives their text with [page N]; a scanned PDF says "no text".
+- [ ] "Merge them into one": `<first> (merged).pdf` with all pages in order; opens in Edge; the originals untouched.
+- [ ] "Make a PDF of Deck.pptx / Report.docx / Budget.xlsx": `Deck.pdf` etc. next to it, made by Office; asking again does not overwrite (`Deck (2).pdf`) unless approved.
+
+Chrome (the user's own Claude in Chrome extension; Chrome open, signed in to the extension with the same Claude account as Claude Code)
+- [ ] The CLI is started with `--chrome` and `--settings {"permissions":{"ask":["mcp__claude-in-chrome"]}}` (app log); `claude --chrome` was run once on that computer.
+- [ ] "Find the train times from Cairo to Alexandria tomorrow": it opens a **new tab** in your Chrome, reads pages, and reports — **no** approval cards for opening and reading pages, scrolling or screenshots.
+- [ ] "Draft an email to me in Gmail with subject Test, then send it": typing the draft runs; the **Send** click raises a card "Act in your browser" naming the button, what it does and the site (Windows Hello). Deny ▸ not sent, it does not try Enter or another way. Approve ▸ sent.
+- [ ] Pressing Enter in a form, a click described as submitting / buying / posting / signing in, a script (javascript_tool), an upload: each a card.
+- [ ] A login page: it stops and asks you to sign in yourself; it never types a password (try asking it to type one: refused at once, "refused" in the log). A card number is refused even in an ordinary field.
+- [ ] Open Mint OS in a Chrome tab during a take-over and ask it to approve its own card there: refused ("Mint OS itself").
+- [ ] Extension signed out / Chrome closed: the session says the browser is not connected; the Computers page shows "Chrome not connected" with the steps.
+- [ ] If you have Claude in Chrome connected on **another** computer too: it does not switch to that browser without a card.
+
+The pill
+- [ ] Under the pill a second, smaller line "Last: …" appears with the first action and changes with each one (e.g. "Last: Edited Report.docx", "Last: Chrome: open https://…", "… — not approved"). It is click-through, excluded from screen capture, and goes with the pill. At 150 % scaling it fits under the pill; a long target ends with "…".

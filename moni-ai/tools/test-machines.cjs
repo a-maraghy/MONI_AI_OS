@@ -60,6 +60,54 @@ console.log("lib/machine-gate.js: the routing of a laptop session's questions");
     d("mcp__mint-hands__click", { summary: "Click Send", why: "Send button" }) === "ask" && G.decide("mcp__mint-hands__request_approval", { why: "about to email" }, ctx).reason === "about to email" && d("PowerShell", { command: "dir" }, { ...ctx, origin: "hands" }) === "ask");
   check("refused: SendMessage, cron, other MCP servers; unknown tools a card", d("SendMessage", { to: "x" }) === "deny" && d("CronCreate", {}) === "deny" && d("mcp__other__x", {}) === "deny" && d("SomethingNew", {}) === "ask");
   check("summaryOf: the command, the path, the hands' summary", G.summaryOf("PowerShell", { command: "dir" }) === "dir" && G.summaryOf("Write", { file_path: "a" }) === "Write a" && G.summaryOf("mcp__mint-hands__click", { summary: "Click Send" }) === "Click Send");
+  check("the hands' file approvals read as \"Replace a file\", request_approval as \"Your approval\"",
+    G.decide("mcp__mint-hands__office_edit", { summary: "Replace C:\\x.docx", why: "The original is replaced" }, ctx).label === "Replace a file" && G.decide("mcp__mint-hands__request_approval", { why: "x" }, ctx).label === "Your approval");
+  // Folders the user added on the Computers page count as their files (0.1.11).
+  const fctx = { home, folders: ["D:\\Work"] };
+  check("an added folder: its files are the user's (Write allowed, writing there no card); dot folders inside it are not; other folders still a card",
+    G.inUserFiles("D:\\Work\\q3\\a.xlsx", home, fctx.folders) && G.decide("Write", { file_path: "d:/work/a.md" }, fctx).decision === "allow" && G.decide("PowerShell", { command: "Set-Content -Path D:\\Work\\x.txt -Value 1" }, fctx).decision === "allow" &&
+      !G.inUserFiles("D:\\Work\\.git\\config", home, fctx.folders) && G.decide("Write", { file_path: "D:\\Other\\a.md" }, fctx).decision === "ask" && !G.inUserFiles("D:\\Workshop\\a", home, fctx.folders));
+}
+
+console.log("\nlib/machine-gate.js: the browser (Claude in Chrome, 0.1.11)");
+{
+  const ctx = { home: "C:\\Users\\Ahmed" };
+  const B = (t) => "mcp__claude-in-chrome__" + t;
+  const dd = (t, input, hint) => G.decide(B(t), input, { ...ctx, hint });
+  check("reading, tabs, screenshots, scrolling and opening web pages run without a card",
+    ["tabs_context_mcp", "read_page", "find", "get_page_text", "tabs_create_mcp", "read_console_messages"].every((t) => dd(t, { tabId: 1 }).decision === "allow") &&
+      dd("computer", { action: "screenshot", tabId: 1 }).decision === "allow" && dd("computer", { action: "scroll", coordinate: [1, 2], scroll_direction: "down", tabId: 1 }).decision === "allow" &&
+      dd("navigate", { url: "https://www.example.com/a" }).decision === "allow" && dd("navigate", { url: "example.com" }).decision === "allow" && dd("navigate", { url: "back", tabId: 1 }).decision === "allow");
+  const hint = { targets: [{ ref: "ref_12", label: 'button "Send"' }, { ref: "ref_3", label: 'link "Next page"' }, { ref: "ref_7", label: 'button "Sign in"' }, { ref: "ref_8", label: 'textbox "Password"' }], tab_urls: ["https://mail.google.com/mail/u/0/"] };
+  check("a click that sends / submits / buys / signs in -> a card (by its target's label or by what the step says it does)",
+    dd("computer", { action: "left_click", ref: "ref_12", tabId: 1 }, hint).decision === "ask" && dd("computer", { action: "left_click", coordinate: [5, 5], action_summary: "Submits the order form", tabId: 1 }, hint).decision === "ask" &&
+      dd("computer", { action: "left_click", ref: "ref_7", tabId: 1 }, hint).decision === "ask" && dd("computer", { action: "left_click", coordinate: [5, 5], action_summary: "Places the order", tabId: 1 }).decision === "ask" &&
+      dd("computer", { action: "left_click", coordinate: [5, 5], action_summary: "يرسل الرسالة ارسال", tabId: 1 }).decision === "ask" && dd("computer", { action: "left_click", coordinate: [5, 5], action_summary: "Logs in with Google", tabId: 1 }).decision === "ask");
+  check("  an ordinary click runs; a click nobody described is a card",
+    dd("computer", { action: "left_click", ref: "ref_3", action_summary: "Opens the next page of results", tabId: 1 }, hint).decision === "allow" && dd("computer", { action: "left_click", coordinate: [5, 5], tabId: 1 }).decision === "ask");
+  check("  Enter, Ctrl+Enter and Alt+S (send) -> a card; Shift+Enter, Tab and typing plain text run; text with a newline -> a card",
+    dd("computer", { action: "key", text: "Enter", tabId: 1 }).decision === "ask" && dd("computer", { action: "key", text: "ctrl+Return", tabId: 1 }).decision === "ask" && dd("computer", { action: "key", text: "alt+s", tabId: 1 }).decision === "ask" &&
+      dd("computer", { action: "key", text: "shift+Enter", tabId: 1 }).decision === "allow" && dd("computer", { action: "key", text: "Tab Tab", tabId: 1 }).decision === "allow" &&
+      dd("computer", { action: "type", text: "Thanks, see you Monday", action_summary: "Types the reply", tabId: 1 }).decision === "allow" && dd("computer", { action: "type", text: "hello\n", tabId: 1 }).decision === "ask");
+  check("passwords and payment details are refused (by label, by description, by a card number), never a card",
+    dd("form_input", { ref: "ref_8", value: "x", tabId: 1 }, hint).decision === "deny" && dd("computer", { action: "type", text: "secret", action_summary: "Types the password", tabId: 1 }).decision === "deny" &&
+      dd("form_input", { ref: "ref_1", value: "4111 1111 1111 1111", tabId: 1 }).decision === "deny" && dd("computer", { action: "type", text: "5555-5555-5555-4444", tabId: 1 }).decision === "deny" &&
+      dd("form_input", { ref: "ref_1", value: "Cairo", action_summary: "Sets the city to Cairo", tabId: 1 }).decision === "allow" && !G.hasCardNumber("order 123456789012") && G.hasCardNumber("4111111111111111"));
+  check("Mint OS's own pages are refused (navigate there, or any step on a tab that is Mint OS)",
+    dd("navigate", { url: "https://os.mint-stack.com/approvals" }).decision === "deny" && dd("navigate", { url: "os.mint-stack.com" }).decision === "deny" &&
+      dd("computer", { action: "left_click", coordinate: [1, 1], action_summary: "Opens a menu", tabId: 2 }, { tab_urls: ["https://os.mint-stack.com/mint-ai"] }).decision === "deny");
+  check("scripts, uploads, saved shortcuts, another computer's browser, non-web addresses -> a card",
+    dd("javascript_tool", { action: "javascript_exec", text: "document.title", tabId: 1 }).decision === "ask" && dd("file_upload", { paths: ["C:\\Users\\Ahmed\\Documents\\cv.pdf"], ref: "ref_2", tabId: 1 }).decision === "ask" &&
+      dd("shortcuts_execute", { shortcutId: "x", tabId: 1 }).decision === "ask" && dd("select_browser", { deviceId: "x" }).decision === "ask" && dd("navigate", { url: "javascript:alert(1)" }).decision === "ask" && dd("navigate", { url: "file:///C:/x" }).decision === "ask" && dd("something_new", {}).decision === "ask");
+  const batch = (actions) => dd("browser_batch", { actions }, hint);
+  check("a browser_batch: the strictest of its steps (refused > card > runs)",
+    batch([{ name: "navigate", input: { url: "https://a.example", tabId: 1 } }, { name: "computer", input: { action: "screenshot", tabId: 1 } }]).decision === "allow" &&
+      batch([{ name: "navigate", input: { url: "https://a.example", tabId: 1 } }, { name: "computer", input: { action: "left_click", ref: "ref_12", tabId: 1 } }]).decision === "ask" &&
+      batch([{ name: "computer", input: { action: "left_click", ref: "ref_12", tabId: 1 } }, { name: "form_input", input: { ref: "ref_8", value: "x", tabId: 1 } }]).decision === "deny");
+  check("labels: \"Act in your browser\" (card), \"Refused in your browser\"", dd("computer", { action: "key", text: "Enter", tabId: 1 }).label === "Act in your browser" && dd("form_input", { ref: "ref_8", value: "x", tabId: 1 }, hint).label === "Refused in your browser");
+  const sum = G.summaryOf(B("computer"), { action: "left_click", ref: "ref_12", action_summary: "Sends the reply to Pat", tabId: 1 }, hint);
+  check("the card says what, to what and where", sum === 'Chrome: left click button "Send" — Sends the reply to Pat (on mail.google.com)', sum);
+  check("other MCP servers are still refused", G.decide("mcp__other__x", {}, ctx).decision === "deny" && G.decide("mcp__claude-in-chrome__", {}, ctx).decision === "deny");
 }
 
 console.log("\nlib/machine-gate.js: a delete the user approved with request_approval (asked once, 2026-10-08)");
@@ -98,8 +146,11 @@ console.log("\nlib/machines.js (pure parts)");
   const fp = M.firstPrompt({ name: "Laptop control", machine: "Laptop", purpose: "Make a sheet.", minutes: 15 });
   check("firstPrompt: from MINT AI, the purpose, the lease, approvals, reports go to MINT AI", /^\[From MINT AI -- not the user typing/.test(fp) && /Make a sheet\./.test(fp) && /15 minutes/.test(fp) && /approval/.test(fp) && /passed to MINT AI/.test(fp));
   const fpClaims = fp.replace(/You have no screen, mouse, keyboard or browser control[^.]*\./, "");
-  check("  says what this build can do (files, PowerShell, Start-Process, create_document) and that it has no screen/mouse/keyboard/browser control; claims none of them",
-    /PowerShell/.test(fp) && /Start-Process/.test(fp) && /create_document/.test(fp) && /no screen, mouse, keyboard or browser control/.test(fp) && !/screen|mouse|keyboard|browser|click|screenshot|PDF/i.test(fpClaims), fp);
+  check("  without the browser: files, PowerShell, Start-Process, create_document, Office edits and PDFs; no screen/mouse/keyboard/browser control, and claims none",
+    /PowerShell/.test(fp) && /Start-Process/.test(fp) && /create_document/.test(fp) && /office_edit/.test(fp) && /pdf_merge/.test(fp) && /no screen, mouse, keyboard or browser control/.test(fp) && !/screen|mouse|keyboard|browser|click|screenshot/i.test(fpClaims), fp);
+  const fpb = M.firstPrompt({ name: "Laptop control", machine: "Laptop", purpose: "Find the train times.", minutes: 15, browser: true });
+  check("  with the browser: the user's Chrome through Claude in Chrome, nothing outside it, never passwords or payment details, signing in waits for approval",
+    /Claude in Chrome extension/.test(fpb) && /outside Chrome you have no screen, mouse or keyboard control/.test(fpb) && /Never type passwords or payment details/.test(fpb) && /signing in/.test(fpb) && !/no screen, mouse, keyboard or browser control/.test(fpb), fpb);
   check("notInstalled: names the computer, says to install and run `claude`, then Look again", /Claude Code is not installed on "Laptop"/.test(M.notInstalled("Laptop")) && /`claude`/.test(M.notInstalled("Laptop")) && /Look again/.test(M.notInstalled("Laptop")));
   const ft = M.endedText({ name: "L control", machine: "Laptop", why: "the computer did not start the session", failed: true });
   check("endedText: a start failure says it could not start, why, and to tell the user; an ordinary end does not", /could not start -- the computer did not start the session/.test(ft) && /Tell the user plainly/.test(ft) && /control of the user's computer ended \(timeout\)/.test(M.endedText({ name: "L control", machine: "Laptop", why: "timeout", failed: false })));
@@ -164,10 +215,13 @@ const machineEvents = (what) => events.filter((e) => e.type === "machine" && (!w
 
     console.log("\nthe registry");
     check("machines-sync only from the dashboard's relay (actor machines)", !(await call("machines-sync", { machines: [] }, "amaraghy")).ok);
-    const sy = await call("machines-sync", { machines: [{ id: 7, name: "Ahmed Laptop", online: true, platform: "windows", home: "C:\\Users\\Ahmed" }, { id: 8, name: "Office PC", online: false }] }, "machines");
-    check("  synced", sy.ok && sy.data.machines === 2, JSON.stringify(sy));
+    const sy = await call("machines-sync", { machines: [{ id: 7, name: "Ahmed Laptop", online: true, platform: "windows", home: "C:\\Users\\Ahmed", chrome: { extension: true, allowed: true, last: { connected: true } }, folders: ["D:\\Work"], office: ["Word", "Excel"] }, { id: 8, name: "Office PC", online: false }] }, "machines");
+    check("  synced (with the browser, the added folders and Office)", sy.ok && sy.data.machines === 2, JSON.stringify(sy));
     const ls = await call("machines", {}, "moni-ai");
     check("machines lists them, online state, no session yet", ls.ok && ls.data.machines.length === 2 && ls.data.machines[0].online === true && ls.data.machines[0].session === null, JSON.stringify(ls));
+    check("  machine_list says the browser is connected there and which Office apps it has; unknown for a computer that did not say",
+      ls.ok && ls.data.machines[0].browser === "connected" && JSON.stringify(ls.data.machines[0].office) === '["Word","Excel"]' && ls.data.machines[1].browser === "unknown", JSON.stringify(ls.data && ls.data.machines));
+    check("  a sync with an unexpected field is refused (the schema is exact)", !(await call("machines-sync", { machines: [{ id: 7, name: "x", online: true, chrome: { extension: true, sneaky: 1 } }] }, "machines")).ok);
 
     console.log("\ntaking over: who may");
     const r0 = await call("machine-take-over", { machine: "Ahmed Laptop", purpose: "Open Excel and make a budget sheet." }, "moni-ai");
@@ -191,6 +245,7 @@ const machineEvents = (what) => events.filter((e) => e.type === "machine" && (!w
     const slug = r2.ok && r2.data.hired.slug;
     const ev = await until(async () => machineEvents("start")[0], 3000);
     check("  event machine/start for the dashboard: computer, slug, purpose, minutes, first prompt", ev && ev.machine_id === 7 && ev.slug === slug && ev.minutes === 10 && /From MINT AI/.test(ev.first_prompt), JSON.stringify(ev));
+    check("  the first prompt offers the browser (the extension is set up there)", ev && /Claude in Chrome extension/.test(ev.first_prompt), ev && ev.first_prompt);
     const hired = await call("hired", {});
     const row = hired.ok && hired.data.hired.find((h) => h.slug === slug);
     check("  a hired session with machine_id, cwd machine:7", row && row.machine_id === 7 && row.cwd === "machine:7", JSON.stringify(row));
@@ -215,10 +270,22 @@ const machineEvents = (what) => events.filter((e) => e.type === "machine" && (!w
     check("  approved in Mint OS -> allowed", a3.ok && a3.data.behavior === "allow", JSON.stringify(a3));
     const pending2 = call("machine-ask", { slug, request_id: "r4", tool: "mcp__mint-hands__click", input: JSON.stringify({ summary: "Click \"Send\" in Outlook", why: "The button is Send" }), origin: "hands" }, A, 20000);
     const card2 = await until(async () => { const r = await call("ledger", { table: "approvals", limit: 20 }); return r.ok && r.data.rows.find((x) => x.status === "pending" && x.origin === "session:" + slug); }, 4000);
-    check("the hands' Send: a card (Act on your screen)", card2 && card2.label === "Act on your screen" && /Send/.test(card2.summary), JSON.stringify(card2));
+    check("the hands' own approval: a card (Your approval)", card2 && card2.label === "Your approval" && /Send/.test(card2.summary), JSON.stringify(card2));
     if (card2) await call("deny", { approval_id: card2.id, note: "not now" });
     const a4 = await pending2;
     check("  denied -> deny", a4.ok && a4.data.behavior === "deny", JSON.stringify(a4));
+    // The browser (0.1.11): reading runs, a send is a card with the app's hint on it, a password is refused.
+    const b1 = await call("machine-ask", { slug, request_id: "b1", tool: "mcp__claude-in-chrome__read_page", input: JSON.stringify({ tabId: 3 }), origin: "cli", hint: JSON.stringify({ targets: [], tab_urls: ["https://mail.google.com/"] }) }, A);
+    check("browser: read_page runs at once (auto)", b1.ok && b1.data.behavior === "allow" && b1.data.auto === true, JSON.stringify(b1));
+    const b2 = await call("machine-ask", { slug, request_id: "b2", tool: "mcp__claude-in-chrome__form_input", input: JSON.stringify({ ref: "ref_8", value: "x", tabId: 3 }), origin: "cli", hint: JSON.stringify({ targets: [{ ref: "ref_8", label: 'textbox "Password"' }], tab_urls: [] }) }, A);
+    check("browser: typing into a password field is refused, no card", b2.ok && b2.data.behavior === "deny" && /password/i.test(b2.data.message), JSON.stringify(b2));
+    const pb = call("machine-ask", { slug, request_id: "b3", tool: "mcp__claude-in-chrome__computer", input: JSON.stringify({ action: "left_click", ref: "ref_12", action_summary: "Sends the reply to Pat", tabId: 3 }), origin: "cli", hint: JSON.stringify({ targets: [{ ref: "ref_12", label: 'button "Send"' }], tab_urls: ["https://mail.google.com/mail/u/0/"] }) }, A, 20000);
+    const cardB = await until(async () => { const r = await call("ledger", { table: "approvals", limit: 20 }); return r.ok && r.data.rows.find((x) => x.status === "pending" && x.origin === "session:" + slug); }, 4000);
+    check("browser: a click on Send is a card \"Act in your browser\" naming the button, what it does and the site", cardB && cardB.label === "Act in your browser" && /button "Send"/.test(cardB.summary) && /Sends the reply/.test(cardB.summary) && /mail\.google\.com/.test(cardB.summary), JSON.stringify(cardB));
+    if (cardB) await call("approve", { approval_id: cardB.id });
+    const b3 = await pb;
+    check("  approved -> allowed (not auto: the user approved it)", b3.ok && b3.data.behavior === "allow" && !b3.data.auto, JSON.stringify(b3));
+    check("  a hint that is not JSON is ignored, not an error", (await call("machine-ask", { slug, request_id: "b4", tool: "mcp__claude-in-chrome__tabs_context_mcp", input: "{}", hint: "{not json" }, A)).data.behavior === "allow");
     const pending3 = call("machine-ask", { slug, request_id: "r5", tool: "WebFetch", input: JSON.stringify({ url: "https://example.com" }) }, A, 20000);
     const card3 = await until(async () => { const r = await call("ledger", { table: "approvals", limit: 20 }); return r.ok && r.data.rows.find((x) => x.status === "pending" && x.origin === "session:" + slug); }, 4000);
     const c3 = await call("machine-ask-cancel", { slug, request_id: "r5" }, A);

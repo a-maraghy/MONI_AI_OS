@@ -26,11 +26,24 @@
  * pill or here). It is enforced on the computer (the app) AND here: past its
  * end (plus a few seconds' grace) the lease is ended and the app told to stop.
  *
- * The action log. Every action the laptop session takes arrives with a
- * screenshot (JPEG); the row is kept with the file under <dir>/<machine>/,
- * for RETENTION_DAYS (7), then deleted with its screenshot. Summaries are
- * redacted again here; screenshots are served only to signed-in people with
- * moniai.use, never cached.
+ * The action log (0.1.11: table machine_action_log, LOG_RETENTION_DAYS = 90).
+ * Every action of a take-over -- the hands' file tools, the browser steps
+ * (Claude in Chrome), the CLI's commands -- arrives as `action` with its time,
+ * tool, a one-line target, who let it run (auto / approved / denied /
+ * refused), whether it worked and its result in a few words. Targets and
+ * results are redacted again here. The Computers page shows a take-over's log
+ * live (GET /machines/api/lease/:lid?after=<id>). The older table
+ * machine_actions (with a screenshot per row, from apps before 0.1.11 that
+ * planned screen capture) is still read for old take-overs and pruned after
+ * SHOT_RETENTION_DAYS (7) with its screenshots; nothing new is written there.
+ *
+ * The browser and the folders (0.1.11). The app's hello says whether the
+ * Claude in Chrome extension is installed on that computer (chrome_json) and
+ * which Office apps it has; a browser step's result says whether the
+ * extension answered (`browser`). The user may switch the browser off for a
+ * computer (browser_allowed) and add folders MINT AI may use there besides
+ * Documents, Desktop, Downloads and OneDrive (folders_json, at most 20): both
+ * go to the app in `start` and to the supervisor's gate in machines-sync.
  *
  * Pure apart from what it is given: the panel's database handle, a directory,
  * the supervisor client (call, subscribe) and a clock.
@@ -49,7 +62,10 @@ const DEFAULT_MINUTES = 15;
 const MAX_LEASE_MS = 60 * 60 * 1000;
 const EXTEND_MS = 15 * 60 * 1000;
 const GRACE_MS = 15 * 1000;
-const RETENTION_DAYS = 7;
+const RETENTION_DAYS = 90; // the action log (machine_action_log)
+const SHOT_RETENTION_DAYS = 7; // the old screenshot log (machine_actions)
+const MAX_FOLDERS = 20;
+const KINDS = ["hands", "browser", "cli"];
 const MAX_SHOT = 1536 * 1024;
 const ASK_TIMEOUT_MS = 3700 * 1000; // the supervisor's approval timeout is at most 3600 s
 // A start the app has not acknowledged (lease active / session starting) in this long is ended:
@@ -77,6 +93,35 @@ function claudeMissing(m) {
 }
 const END_REASONS = ["stop-hotkey", "pill-stop", "timeout", "locked", "signout", "app-exit", "link-lost", "runner-exited", "server", "unlinked", "revoked", "failed"];
 const DECISIONS = ["auto", "approved", "denied", "refused", "error"];
+
+/**
+ * A folder the user adds for a computer: a full local Windows path (no network or device paths), not a
+ * whole drive, not Windows' or the programs' folders, not app data or a hidden folder, not a whole
+ * profile. -> { path } normalised (C:\Work), or { error }. The app checks the same again.
+ */
+function cleanFolder(raw) {
+  let s = String(raw || "").trim().replace(/^["']|["']$/g, "").replace(/\//g, "\\");
+  if (!s || s.length > 240 || /[\u0000-\u001f<>"|?*]/.test(s)) return { error: "Give a full folder path on that computer, like D:\\Work." };
+  if (s.startsWith("\\\\")) return { error: "Network and device paths are not allowed: pick a folder on the computer's own drives." };
+  const m = /^([a-zA-Z]):(\\.*)?$/.exec(s);
+  if (!m) return { error: "Give a full folder path on that computer, like D:\\Work." };
+  const parts = [];
+  for (const p of (m[2] || "").split("\\")) {
+    if (!p || p === ".") continue;
+    if (p === "..") {
+      parts.pop();
+      continue;
+    }
+    if (p.includes(":") || /[. ]$/.test(p)) return { error: "That folder name is not a plain Windows folder name." };
+    parts.push(p);
+  }
+  if (!parts.length) return { error: "A whole drive is too wide: pick a folder on it." };
+  const low = parts.map((p) => p.toLowerCase());
+  if (["windows", "program files", "program files (x86)", "programdata", "$recycle.bin", "system volume information", "recovery", "boot", "perflogs"].includes(low[0])) return { error: "That is a Windows or programs folder: MINT AI never works there." };
+  if (low.includes("appdata") || low.some((p) => p.startsWith("."))) return { error: "That is a hidden or app-data folder: pick one of your own folders." };
+  if (low[0] === "users" && parts.length <= 2) return { error: "A whole user profile is too wide: pick a folder inside it." };
+  return { path: m[1].toUpperCase() + ":\\" + parts.join("\\") };
+}
 
 const sha = (s) => crypto.createHash("sha256").update(String(s)).digest("hex");
 const clip = (s, n) => (String(s == null ? "" : s).length > n ? String(s).slice(0, n - 1) + "…" : String(s == null ? "" : s));
@@ -144,7 +189,31 @@ CREATE TABLE IF NOT EXISTS machine_actions (
 );
 CREATE INDEX IF NOT EXISTS machine_actions_lease ON machine_actions(lease_id, id);
 CREATE INDEX IF NOT EXISTS machine_leases_machine ON machine_leases(machine_id, id);
+CREATE TABLE IF NOT EXISTS machine_action_log (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  machine_id    INTEGER NOT NULL,
+  lease_id      INTEGER NOT NULL,
+  slug          TEXT,
+  at            TEXT NOT NULL,
+  received_at   TEXT NOT NULL,
+  kind          TEXT NOT NULL,
+  tool          TEXT NOT NULL,
+  target        TEXT,
+  decision      TEXT NOT NULL,
+  approved      INTEGER NOT NULL DEFAULT 0,
+  result        TEXT NOT NULL,
+  detail        TEXT
+);
+CREATE INDEX IF NOT EXISTS machine_action_log_lease ON machine_action_log(lease_id, id);
+CREATE INDEX IF NOT EXISTS machine_action_log_at ON machine_action_log(at);
 `;
+/** Columns added to machines since 0.1.11 (added when missing; nothing else changes). */
+const MACHINE_COLUMNS = [
+  ["chrome_json", "TEXT"],
+  ["office_json", "TEXT"],
+  ["folders_json", "TEXT"],
+  ["browser_allowed", "INTEGER NOT NULL DEFAULT 1"],
+];
 
 function create(o) {
   const db = o.db;
@@ -156,6 +225,10 @@ function create(o) {
   const redact = o.redact || ((s) => s);
   const iso = (ms) => new Date(ms == null ? now() : ms).toISOString();
   db.exec(SCHEMA);
+  {
+    const have = new Set(db.prepare("PRAGMA table_info(machines)").all().map((c) => c.name));
+    for (const [col, type] of MACHINE_COLUMNS) if (!have.has(col)) db.exec(`ALTER TABLE machines ADD COLUMN ${col} ${type}`);
+  }
 
   const codes = new Map(); // code -> { userId, by, exp }
   const links = new Map(); // machine id -> { ws, hello, at }
@@ -188,7 +261,39 @@ function create(o) {
     action: db.prepare("SELECT * FROM machine_actions WHERE id = ?"),
     oldActions: db.prepare("SELECT id, shot FROM machine_actions WHERE at < ?"),
     delAction: db.prepare("DELETE FROM machine_actions WHERE id = ?"),
+    chrome: db.prepare("UPDATE machines SET chrome_json = ? WHERE id = ?"),
+    office: db.prepare("UPDATE machines SET office_json = ? WHERE id = ?"),
+    folders: db.prepare("UPDATE machines SET folders_json = ? WHERE id = ? AND revoked_at IS NULL"),
+    browserAllowed: db.prepare("UPDATE machines SET browser_allowed = ? WHERE id = ? AND revoked_at IS NULL"),
+    logIns: db.prepare("INSERT INTO machine_action_log (machine_id, lease_id, slug, at, received_at, kind, tool, target, decision, approved, result, detail) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"),
+    logOf: db.prepare("SELECT * FROM machine_action_log WHERE lease_id = ? AND id > ? ORDER BY id LIMIT 2000"),
+    logLast: db.prepare("SELECT * FROM machine_action_log WHERE lease_id = ? ORDER BY id DESC LIMIT ?"),
+    logCount: db.prepare("SELECT count(*) AS n FROM machine_action_log WHERE lease_id = ?"),
+    logOld: db.prepare("DELETE FROM machine_action_log WHERE at < ?"),
   };
+
+  const parse = (s, d) => {
+    try {
+      const v = JSON.parse(s);
+      return v == null ? d : v;
+    } catch (_) {
+      return d;
+    }
+  };
+  const foldersOf = (m) => (m && m.folders_json ? parse(m.folders_json, []).filter((f) => typeof f === "string") : []);
+  const officeOf = (m) => (m && m.office_json ? parse(m.office_json, []).filter((x) => ["Word", "Excel", "PowerPoint"].includes(x)) : []);
+  /** The computer's Chrome: { extension, browser, profile, allowed, last: { connected, at, detail } | null }, or null when its app never said. */
+  function chromeOf(m) {
+    if (!m || !m.chrome_json) return m && m.browser_allowed === 0 ? { extension: false, allowed: false, last: null } : null;
+    const c = parse(m.chrome_json, {});
+    return {
+      extension: c.extension === true,
+      browser: typeof c.browser === "string" ? c.browser : null,
+      profile: typeof c.profile === "string" ? c.profile : null,
+      allowed: m.browser_allowed !== 0,
+      last: c.last && typeof c.last === "object" ? { connected: c.last.connected === true, at: typeof c.last.at === "string" ? c.last.at : null, detail: typeof c.last.detail === "string" ? c.last.detail : "" } : null,
+    };
+  }
 
   function publicMachine(m) {
     const l = links.get(m.id);
@@ -203,6 +308,9 @@ function create(o) {
       app_version: m.app_version,
       host: m.host,
       claude,
+      chrome: chromeOf(m),
+      office: officeOf(m),
+      folders: foldersOf(m),
       created_at: m.created_at,
       created_by: m.created_by,
       lease: lease ? publicLease(lease) : null,
@@ -286,6 +394,45 @@ function create(o) {
     log(`machines: computer #${m.id} "${m.name}" revoked by ${by}`);
     syncSoon();
     return { ok: true };
+  }
+
+  /* ------------------------------------------- the browser and the folders --- */
+
+  /** The user switches MINT AI's use of Chrome on that computer on or off (from the next take-over). */
+  function setBrowser(id, on, by) {
+    if (!q.browserAllowed.run(on ? 1 : 0, Number(id)).changes) return { error: "No such computer." };
+    log(`machines: computer #${id} browser ${on ? "allowed" : "switched off"} by ${by}`);
+    syncSoon();
+    return { ok: true, on: !!on };
+  }
+
+  /** A folder the user adds for MINT AI on that computer (besides Documents, Desktop, Downloads, OneDrive). */
+  function addFolder(id, raw, by) {
+    const m = get(id);
+    if (!m) return { error: "No such computer." };
+    const f = cleanFolder(raw);
+    if (f.error) return f;
+    const list = foldersOf(m);
+    if (list.some((x) => x.toLowerCase() === f.path.toLowerCase())) return { ok: true, path: f.path, folders: list };
+    if (list.length >= MAX_FOLDERS) return { error: `At most ${MAX_FOLDERS} folders.` };
+    list.push(f.path);
+    q.folders.run(JSON.stringify(list), m.id);
+    log(`machines: computer #${m.id} folder added by ${by}: ${f.path}`);
+    syncSoon();
+    return { ok: true, path: f.path, folders: list };
+  }
+
+  function removeFolder(id, raw, by) {
+    const m = get(id);
+    if (!m) return { error: "No such computer." };
+    const list = foldersOf(m);
+    const want = String(raw || "").trim().toLowerCase();
+    const next = list.filter((x) => x.toLowerCase() !== want);
+    if (next.length === list.length) return { error: "That folder is not on the list." };
+    q.folders.run(JSON.stringify(next), m.id);
+    log(`machines: computer #${m.id} folder removed by ${by}: ${raw}`);
+    syncSoon();
+    return { ok: true, folders: next };
   }
 
   /* ------------------------------------------------------------ leases --- */
@@ -425,6 +572,13 @@ function create(o) {
         const before = q.byId.get(id);
         if (before && claude && before.claude_json !== claude) log(`machines: computer #${id} Claude Code: ${JSON.parse(claude).found ? "found" : "not found"}`);
         q.seen.run(iso(), /^\d+\.\d+\.\d+$/.test(String(m.app_version || "")) ? m.app_version : null, m.host ? clip(m.host, 64) : null, m.user ? clip(m.user, 64) : null, home, claude, id);
+        // 0.1.11: the Claude in Chrome extension and Office (older apps say neither: left as they were).
+        if (m.chrome && typeof m.chrome === "object") {
+          const prev = chromeOf(before) || {};
+          const last = m.chrome.last && typeof m.chrome.last === "object" ? { connected: m.chrome.last.connected === true, at: typeof m.chrome.last.at === "string" ? clip(m.chrome.last.at, 40) : iso(), detail: clip(redact(String(m.chrome.last.detail || "")), 200) } : prev.last || null;
+          q.chrome.run(JSON.stringify({ extension: m.chrome.extension === true, browser: m.chrome.browser ? clip(String(m.chrome.browser), 20) : null, profile: m.chrome.profile ? clip(String(m.chrome.profile), 60) : null, last }), id);
+        }
+        if (Array.isArray(m.office)) q.office.run(JSON.stringify(m.office.filter((x) => ["Word", "Excel", "PowerPoint"].includes(x))), id);
         const l = links.get(id);
         if (l) l.hello = { at: now() };
         syncSoon();
@@ -480,13 +634,16 @@ function create(o) {
               ...(m.reason ? { reason: clip(m.reason, 2000) } : {}),
               ...(m.tool_use_id && /^[A-Za-z0-9_-]{1,64}$/.test(m.tool_use_id) ? { tool_use_id: m.tool_use_id } : {}),
               origin: m.origin === "hands" ? "hands" : "cli",
+              // A browser step's hint from the app (element labels, tab addresses): data for the gate's rules.
+              ...(m.hint && typeof m.hint === "object" ? { hint: clip(JSON.stringify(m.hint), 8000) } : {}),
             },
             actor,
             { timeout: ASK_TIMEOUT_MS }
           );
           if (!pendingAsks.has(key)) return; // withdrawn meanwhile
           pendingAsks.delete(key);
-          send(id, { t: "answer", rid, behavior: r && r.behavior === "allow" ? "allow" : "deny", ...(r && r.message ? { message: clip(r.message, 1000) } : {}) });
+          // auto: Mint OS's rules let it run (no card) -- the app's action log tells that from "approved".
+          send(id, { t: "answer", rid, behavior: r && r.behavior === "allow" ? "allow" : "deny", ...(r && r.behavior === "allow" && r.auto ? { auto: true } : {}), ...(r && r.message ? { message: clip(r.message, 1000) } : {}) });
         } catch (e) {
           pendingAsks.delete(key);
           deny(`Mint OS could not be asked (${clip(e.message, 200)}), so it was denied.`);
@@ -503,6 +660,16 @@ function create(o) {
       }
       case "action":
         return recordAction(id, m);
+      case "browser": {
+        // What a browser step showed: the extension answered, or it is not connected.
+        const cur = q.byId.get(id);
+        const c = chromeOf(cur) || { extension: true };
+        const last = { connected: m.connected === true, at: typeof m.at === "string" && Number.isFinite(Date.parse(m.at)) ? new Date(Date.parse(m.at)).toISOString() : iso(), detail: clip(redact(String(m.detail || "")), 200) };
+        q.chrome.run(JSON.stringify({ extension: c.extension !== false, browser: c.browser || null, profile: c.profile || null, last }), id);
+        log(`machines: computer #${id} Claude in Chrome ${last.connected ? "answered" : "not connected"}`);
+        syncSoon();
+        return;
+      }
       case "report": {
         const l = lease();
         const text = String(m.text || "").trim();
@@ -531,40 +698,41 @@ function create(o) {
     }
   }
 
-  /** One action of the laptop session, with its screenshot. */
+  /**
+   * One action of the laptop session, into the action log: its time, kind (hands / browser / cli),
+   * tool, target, who let it run, whether it worked and the result. An older app (before 0.1.11)
+   * sends summary + decision only: decision "error" then means it failed. A screenshot is never kept.
+   */
   function recordAction(id, m) {
     const l = q.leaseActive.get(id) || (m.lease_id ? q.leaseGet.get(Number(m.lease_id)) : null);
     if (!l || Number(l.machine_id) !== id) return;
+    if (m.lease_id != null && Number(m.lease_id) !== l.id) return; // another (older) lease's late entry
     const tool = clip(String(m.tool || "action").replace(/[^\w.:-]/g, ""), 80) || "action";
-    const summary = clip(redact(String(m.summary || "")), 500);
-    const decision = DECISIONS.includes(m.decision) ? m.decision : "auto";
+    const target = clip(redact(String(m.target != null ? m.target : m.summary || "")), 500);
+    let decision = DECISIONS.includes(m.decision) ? m.decision : "auto";
+    let result = m.result === "ok" || m.result === "error" ? m.result : decision === "error" || decision === "denied" || decision === "refused" ? "error" : "ok";
+    if (decision === "error") decision = "auto"; // an older app's failure: it ran by the rules and failed
+    const kind = KINDS.includes(m.kind) ? m.kind : tool.startsWith("mcp__mint-hands__") ? "hands" : tool.startsWith("mcp__claude-in-chrome__") ? "browser" : "cli";
+    const detail = clip(redact(String(m.detail || "")), 300);
     const at = typeof m.at === "string" && Number.isFinite(Date.parse(m.at)) ? new Date(Date.parse(m.at)).toISOString() : iso();
-    const r = q.actIns.run(id, l.id, at, tool, summary, decision);
-    const aid = Number(r.lastInsertRowid);
-    if (typeof m.shot === "string" && m.shot.length) {
-      let buf = null;
-      try {
-        buf = Buffer.from(m.shot, "base64");
-      } catch (_) {
-        buf = null;
-      }
-      // A JPEG (FF D8 FF), at most MAX_SHOT: anything else is dropped, never served.
-      if (buf && buf.length > 3 && buf.length <= MAX_SHOT && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) {
-        const rel = path.join(String(id), `${l.id}-${aid}.jpg`);
-        try {
-          fs.mkdirSync(path.join(dir, String(id)), { recursive: true, mode: 0o700 });
-          fs.writeFileSync(path.join(dir, rel), buf, { mode: 0o600 });
-          q.actShot.run(rel, aid);
-        } catch (e) {
-          log(`machines: could not keep a screenshot: ${e.message}`);
-        }
-      }
-    }
-    return aid;
+    const r = q.logIns.run(id, l.id, l.slug, at, iso(), kind, tool, target, decision, decision === "approved" ? 1 : 0, result, detail);
+    return Number(r.lastInsertRowid);
+  }
+
+  function publicAction(a) {
+    return { id: a.id, at: a.at, kind: a.kind, tool: a.tool, target: a.target, decision: a.decision, approved: !!a.approved, result: a.result, detail: a.detail || "" };
+  }
+  /** A take-over's action log after `afterId` (0 = from the start), oldest first. */
+  function log2(leaseId, afterId) {
+    return q.logOf.all(Number(leaseId), Math.max(0, Number(afterId) || 0)).map(publicAction);
+  }
+  /** Its last `n` actions, oldest first (for the Computers page's live strip). */
+  function lastActions(leaseId, n) {
+    return q.logLast.all(Number(leaseId), Math.min(Math.max(Number(n) || 8, 1), 50)).reverse().map(publicAction);
   }
 
   function leases(id, limit) {
-    return q.leases.all(Number(id), Math.min(Number(limit) || 30, 200)).map(publicLease);
+    return q.leases.all(Number(id), Math.min(Number(limit) || 30, 200)).map((l) => ({ ...publicLease(l), actions: (l.actions || 0) + q.logCount.get(l.id).n }));
   }
   function lease(leaseId) {
     const l = q.leaseGet.get(Number(leaseId));
@@ -582,10 +750,12 @@ function create(o) {
     return fs.existsSync(p) ? p : null;
   }
 
-  /** Delete actions (and their screenshots) older than RETENTION_DAYS. */
+  /** The action log after RETENTION_DAYS (90); the old screenshot rows (and their files) after SHOT_RETENTION_DAYS (7). */
   function prune() {
-    const before = iso(now() - RETENTION_DAYS * 24 * 3600 * 1000);
-    let n = 0;
+    const n2 = q.logOld.run(iso(now() - RETENTION_DAYS * 24 * 3600 * 1000)).changes;
+    if (n2) log(`machines: ${n2} action-log row(s) older than ${RETENTION_DAYS} days deleted`);
+    const before = iso(now() - SHOT_RETENTION_DAYS * 24 * 3600 * 1000);
+    let n = n2;
     for (const a of q.oldActions.all(before)) {
       if (a.shot) {
         try {
@@ -597,7 +767,7 @@ function create(o) {
       q.delAction.run(a.id);
       n++;
     }
-    if (n) log(`machines: ${n} action(s) older than ${RETENTION_DAYS} days deleted with their screenshots`);
+    if (n > n2) log(`machines: ${n - n2} screenshot action(s) older than ${SHOT_RETENTION_DAYS} days deleted with their screenshots`);
     return n;
   }
 
@@ -647,7 +817,20 @@ function create(o) {
   function sync() {
     const machines = q.list.all().map((m) => {
       const c = claudeOf(m);
-      return { id: m.id, name: m.name, online: links.has(m.id), ...(m.platform ? { platform: m.platform } : {}), ...(m.home ? { home: m.home } : {}), ...(c ? { claude: { found: c.found, version: c.version, git_bash: c.git_bash } } : {}) };
+      const ch = chromeOf(m);
+      const folders = foldersOf(m);
+      const office = officeOf(m);
+      return {
+        id: m.id,
+        name: m.name,
+        online: links.has(m.id),
+        ...(m.platform ? { platform: m.platform } : {}),
+        ...(m.home ? { home: m.home } : {}),
+        ...(c ? { claude: { found: c.found, version: c.version, git_bash: c.git_bash } } : {}),
+        ...(ch ? { chrome: { extension: ch.extension, allowed: ch.allowed, ...(ch.last ? { last: { connected: ch.last.connected } } : {}) } } : {}),
+        ...(folders.length ? { folders } : {}),
+        ...(office.length ? { office } : {}),
+      };
     });
     return call("machines-sync", { machines }, "machines");
   }
@@ -671,7 +854,7 @@ function create(o) {
       const leaseId = Number(r.lastInsertRowid);
       log(`machines: lease #${leaseId} on computer #${id} for ${ev.slug}, ${minutes} min`);
       starting.set(leaseId, t);
-      const ok = send(id, { t: "start", slug: ev.slug, name: ev.name, purpose: ev.purpose, model: ev.model || null, first_prompt: ev.first_prompt, lease: { id: String(leaseId), minutes, expires_at: iso(t + minutes * 60000) } });
+      const ok = send(id, { t: "start", slug: ev.slug, name: ev.name, purpose: ev.purpose, model: ev.model || null, first_prompt: ev.first_prompt, lease: { id: String(leaseId), minutes, expires_at: iso(t + minutes * 60000) }, folders: foldersOf(m), browser: m.browser_allowed !== 0 });
       if (!ok) {
         endLease(id, q.leaseGet.get(leaseId), "failed");
         fail("the computer could not be reached");
@@ -727,7 +910,7 @@ function create(o) {
     }
   }
 
-  return { issueCode, withdrawCode, claim, list, get, rename, revoke, extend, stopControl, takeOver, authenticate, connected, onMessage, onSupervisorEvent, leases, lease, actions, shotFile, prune, sweep, sync, send, start, stop, publicMachine };
+  return { issueCode, withdrawCode, claim, list, get, rename, revoke, extend, stopControl, takeOver, authenticate, connected, onMessage, onSupervisorEvent, leases, lease, actions, actionLog: log2, lastActions, shotFile, prune, sweep, sync, send, start, stop, publicMachine, setBrowser, addFolder, removeFolder };
 }
 
-module.exports = { create, newCode, normCode, showCode, cleanName, newToken, claudeOf, claudeMissing, TOKEN_RE, CODE_MS, RETENTION_DAYS, DEFAULT_MINUTES, END_REASONS, START_TIMEOUT_MS, NOT_INSTALLED, NO_START };
+module.exports = { create, newCode, normCode, showCode, cleanName, cleanFolder, newToken, claudeOf, claudeMissing, TOKEN_RE, CODE_MS, RETENTION_DAYS, SHOT_RETENTION_DAYS, DEFAULT_MINUTES, END_REASONS, START_TIMEOUT_MS, NOT_INSTALLED, NO_START };

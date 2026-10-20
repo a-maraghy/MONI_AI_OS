@@ -24,10 +24,24 @@
  * prompts are for the user).
  *
  * "The user's own files": under their profile folder (ctx.home, from the
- * app's hello), not AppData, not a hidden (dot) folder, not NTUSER*.
+ * app's hello), not AppData, not a hidden (dot) folder, not NTUSER*; or in a
+ * folder the user added for that computer on the Computers page (ctx.folders).
+ *
+ * The browser (0.1.11): the user's own Chrome through their Claude in Chrome
+ * extension, tools mcp__claude-in-chrome__*. The CLI asks about every one of
+ * them (the app gives it an `ask` rule for the whole server), the app refuses
+ * passwords, card numbers and Mint OS's own pages at once and sends the rest
+ * here with a hint (the labels of the elements a step targets, the tabs'
+ * addresses). decideBrowser(): reading, scrolling, opening pages and plain
+ * typing run; a step that submits, sends, buys, pays, posts, publishes,
+ * deletes or signs in -- a click or a form choice whose description or
+ * target says so, Enter, a script, an upload, a saved shortcut, another
+ * computer's browser -- is a card (Windows Hello); passwords, payment details
+ * and Mint OS's own pages are refused here too.
  */
 
 const HANDS_PREFIX = "mcp__mint-hands__";
+const BROWSER_PREFIX = "mcp__claude-in-chrome__";
 
 /* -------------------------------------------------------------- paths --- */
 
@@ -55,11 +69,16 @@ function normPath(p, home) {
 }
 
 /** Is `p` (absolute, or relative to the session's Documents folder) one of the user's own files? */
-function inUserFiles(p, home) {
+function inUserFiles(p, home, folders) {
   if (!home) return false;
   const h = normPath(home, home);
   let n = normPath(p, home);
   if (!/^[a-z]:\\|^\\\\/.test(n)) n = normPath(home + "\\Documents\\" + p, home); // relative: the CLI's cwd
+  // A folder the user added on the Computers page (a full local path, checked when it was added).
+  for (const f of Array.isArray(folders) ? folders : []) {
+    const fn = normPath(f, home);
+    if (/^[a-z]:\\./.test(fn) && (n === fn || n.startsWith(fn + "\\")) && !n.slice(fn.length).split("\\").some((x) => x.startsWith("."))) return true;
+  }
   if (n !== h && !n.startsWith(h + "\\")) return false;
   const rest = n.slice(h.length + 1).split("\\").filter(Boolean);
   if (!rest.length) return true;
@@ -103,7 +122,7 @@ function decideCommand(cmd, ctx) {
   for (const [re, why] of DENY) if (re.test(c)) return { decision: "deny", category: "refused", label: "Refused on this computer", reason: `This command ${why}; MINT AI never does that on your computer.` };
   for (const [re, category, label] of ASK) if (re.test(c)) return { decision: "ask", category, label, reason: `${label}: needs your approval.` };
   if (WRITE_VERB.test(c)) {
-    const outside = pathsIn(c).filter((p) => !inUserFiles(p, ctx.home));
+    const outside = pathsIn(c).filter((p) => !inUserFiles(p, ctx.home, ctx.folders));
     if (outside.length) return { decision: "ask", category: "outside", label: "Change files outside your own", reason: `It writes to ${outside.slice(0, 2).join(", ")}, outside your own files.` };
   }
   return { decision: "allow", category: "command", label: "Command on your computer", reason: null };
@@ -245,6 +264,180 @@ function allowanceCovers(allowance, cmd, home, nowMs) {
   return uniq;
 }
 
+/* ------------------------------------------------------------ the browser --- */
+
+const B_READ = new Set(["tabs_context_mcp", "read_page", "find", "get_page_text", "read_console_messages", "read_network_requests", "list_connected_browsers", "shortcuts_list", "gif_creator", "resize_window", "tabs_create_mcp", "tabs_close_mcp"]);
+const B_LOOK = new Set(["screenshot", "zoom", "scroll", "scroll_to", "wait", "hover"]);
+const B_CLICK = new Set(["left_click", "right_click", "double_click", "triple_click", "left_click_drag"]);
+const OWN_HOST = /(^|\.)mint-stack\.com$/i;
+
+/** Words on a target (or in what a step says it does) that mean it cannot be taken back. */
+const RISKY_WORDS = [
+  "send", "submit", "post", "publish", "reply", "share", "tweet", "repost", "comment",
+  "pay", "buy", "purchase", "checkout", "check out", "place order", "order now", "complete order", "book", "reserve", "transfer", "donate", "subscribe", "unsubscribe",
+  "delete", "remove", "discard", "erase", "empty trash",
+  "confirm", "sign", "approve", "authorize", "authorise", "agree", "accept", "allow", "grant", "invite", "upload", "install", "register", "apply",
+  "sign in", "signin", "log in", "login", "logon", "sign up", "signup", "continue with google", "continue with microsoft", "continue with apple",
+  // the step's own words ("Sends the reply", "Submits the form", "Places the order")
+  "sends", "submits", "posts", "publishes", "pays", "buys", "purchases", "books", "deletes", "removes", "confirms", "signs", "logs in", "approves", "accepts", "agrees", "uploads", "subscribes", "transfers", "shares", "replies", "registers", "applies", "authorizes", "places the order", "places an order",
+  "ارسال", "ارسل", "ابعت", "نشر", "انشر", "شراء", "اشتر", "ادفع", "دفع", "حذف", "احذف", "تاكيد", "اكد", "تحويل", "مشاركه", "شارك", "اطلب", "تسجيل الدخول", "دخول", "اوافق", "توقيع",
+];
+const SECRET_WORDS = ["password", "passcode", "passwort", "pin", "cvv", "cvc", "csc", "security code", "card number", "credit card", "debit card", "iban", "one time code", "otp", "verification code", "2fa", "كلمة المرور", "كلمه السر", "الرقم السري", "رقم البطاقة"];
+
+/** Lower case, accents and Arabic marks folded, everything but letters / digits -> one space. */
+function fold(s) {
+  return ` ${String(s || "")
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f\u064b-\u065f\u0670\u0640]/g, "")
+    .replace(/[أإآٱ]/g, "ا")
+    .replace(/ة/g, "ه")
+    .replace(/ى/g, "ي")
+    .replace(/['’]/g, "")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim()} `;
+}
+function hasWord(text, words) {
+  const f = fold(text);
+  return words.find((w) => {
+    const fw = fold(w).trim();
+    if (!fw) return false;
+    if (f.includes(` ${fw} `)) return true;
+    // Arabic proclitics (و ف ب ل ال) on the first word.
+    return /[\u0600-\u06ff]/.test(fw) && ["ال", "وال", "بال", "و", "ف", "ب", "ل"].some((pre) => f.includes(` ${pre}${fw} `));
+  }) || null;
+}
+/** A Luhn-valid 13-19 digit run (single spaces / dashes allowed). */
+function hasCardNumber(text) {
+  const runs = String(text || "").match(/\d(?:[ -]?\d){12,18}/g) || [];
+  return runs.some((r) => {
+    const d = r.replace(/\D/g, "");
+    if (d.length < 13 || d.length > 19) return false;
+    let sum = 0;
+    for (let i = 0; i < d.length; i++) {
+      let x = Number(d[d.length - 1 - i]);
+      if (i % 2) {
+        x *= 2;
+        if (x > 9) x -= 9;
+      }
+      sum += x;
+    }
+    return sum % 10 === 0;
+  });
+}
+function hostOf(u) {
+  const m = /^[a-z][a-z0-9+.-]*:\/\/(?:[^@/?#]*@)?([^/:?#]+)/i.exec(String(u || "").trim());
+  return m ? m[1].toLowerCase().replace(/\.$/, "") : null;
+}
+
+/** The steps of a browser call (browser_batch runs several). */
+function browserSteps(tool, input) {
+  const t = String(tool).slice(BROWSER_PREFIX.length);
+  if (t === "browser_batch") {
+    const list = Array.isArray(input.actions) ? input.actions.slice(0, 100) : [];
+    return list.map((a) => ({ t: String((a && a.name) || "?").replace(BROWSER_PREFIX, ""), i: a && a.input && typeof a.input === "object" ? a.input : {} }));
+  }
+  return [{ t, i: input }];
+}
+
+/** One step: { decision, why }. labels = what the app knows of the target elements. */
+function browserStep(t, i, labels) {
+  const summary = typeof i.action_summary === "string" ? i.action_summary : "";
+  const target = i.ref && labels[i.ref] ? labels[i.ref] : "";
+  const said = `${summary} ${target}`;
+  if (B_READ.has(t)) return { decision: "allow" };
+  if (t === "navigate") {
+    const u = String(i.url || "").trim();
+    if (u === "back" || u === "forward") return { decision: "allow" };
+    const full = /^[a-z][a-z0-9+.-]*:/i.test(u) && !/^[a-z0-9-]+(\.[a-z0-9-]+)+(:\d+)?([/?#]|$)/i.test(u) ? u : "https://" + u;
+    if (OWN_HOST.test(hostOf(full) || "")) return { decision: "deny", why: "Mint OS's own pages are for the user; MINT AI does not open them in the browser." };
+    if (!/^https?:\/\//i.test(full)) return { decision: "ask", why: `It opens a non-web address (${full.slice(0, 80)}).` };
+    return { decision: "allow" };
+  }
+  if (t === "computer") {
+    const a = String(i.action || "");
+    if (B_LOOK.has(a)) return { decision: "allow" };
+    if (a === "type") {
+      const text = String(i.text || "");
+      if (hasCardNumber(text)) return { decision: "deny", why: "That looks like a payment card number; MINT AI never types card numbers." };
+      if (hasWord(said, SECRET_WORDS)) return { decision: "deny", why: "That is a password, PIN, code or payment field; MINT AI never types those." };
+      if (/[\r\n]/.test(text)) return { decision: "ask", why: "The text ends a line with Enter, which can submit or send." };
+      return { decision: "allow" };
+    }
+    if (a === "key") {
+      const keys = String(i.text || "").toLowerCase().split(/\s+/).filter(Boolean);
+      const sends = keys.some((k) => {
+        const parts = k.split("+");
+        const main = parts[parts.length - 1];
+        if (main === "enter" || main === "return" || main === "kp_enter") return !parts.includes("shift") || parts.includes("ctrl") || parts.includes("cmd");
+        return main === "s" && parts.includes("alt") && !parts.includes("ctrl");
+      });
+      if (sends) return { decision: "ask", why: `It presses ${String(i.text).slice(0, 40)}, which can submit or send.` };
+      const risky = summary && hasWord(summary, RISKY_WORDS);
+      return risky ? { decision: "ask", why: `It ${summary.slice(0, 160)}.` } : { decision: "allow" };
+    }
+    if (B_CLICK.has(a)) {
+      const risky = hasWord(said, RISKY_WORDS);
+      if (risky) return { decision: "ask", why: `It clicks ${target ? target.slice(0, 120) : "on the page"}${summary ? ` (${summary.slice(0, 160)})` : ""}: that can send, submit, buy, post or sign in.` };
+      if (!summary && !target) return { decision: "ask", why: "A click MINT AI did not describe." };
+      return { decision: "allow" };
+    }
+    return { decision: "ask", why: `Browser action "${a.slice(0, 40)}".` };
+  }
+  if (t === "form_input") {
+    const v = typeof i.value === "string" ? i.value : JSON.stringify(i.value);
+    if (hasCardNumber(v)) return { decision: "deny", why: "That looks like a payment card number; MINT AI never types card numbers." };
+    if (hasWord(said, SECRET_WORDS)) return { decision: "deny", why: "That is a password, PIN, code or payment field; MINT AI never fills those." };
+    if (hasWord(said, RISKY_WORDS)) return { decision: "ask", why: `It sets ${target ? target.slice(0, 120) : "a field"}${summary ? ` (${summary.slice(0, 160)})` : ""}.` };
+    return { decision: "allow" };
+  }
+  if (t === "javascript_tool") return { decision: "ask", why: "It runs a script on the page, which can do anything the page can (submit, send, buy)." };
+  if (t === "file_upload" || t === "upload_image") return { decision: "ask", why: "It uploads a file from your computer to a website." };
+  if (t === "shortcuts_execute") return { decision: "ask", why: "It runs one of your saved Claude in Chrome shortcuts." };
+  if (t === "switch_browser" || t === "select_browser") return { decision: "ask", why: "It switches to a browser on another of your computers." };
+  return { decision: "ask", why: `Browser tool ${t.slice(0, 60)}.` };
+}
+
+/** A browser call (one tool, or a browser_batch): the strictest of its steps. hint: { targets: [{ref, label}], tab_urls }. */
+function decideBrowser(tool, input, hint) {
+  const h = hint && typeof hint === "object" ? hint : {};
+  const labels = {};
+  for (const x of Array.isArray(h.targets) ? h.targets.slice(0, 100) : []) if (x && typeof x.ref === "string" && typeof x.label === "string") labels[x.ref] = x.label.slice(0, 200);
+  if ((Array.isArray(h.tab_urls) ? h.tab_urls : []).some((u) => OWN_HOST.test(hostOf(u) || ""))) {
+    return { decision: "deny", category: "refused", label: "Not on Mint OS's own pages", reason: "That tab is Mint OS itself; MINT AI never acts on its own approval pages." };
+  }
+  const steps = browserSteps(tool, input);
+  if (!steps.length) return { decision: "ask", category: "browser", label: "Act in your browser", reason: "An empty browser batch." };
+  const asks = [];
+  for (const s of steps) {
+    const d = browserStep(s.t, s.i, labels);
+    if (d.decision === "deny") return { decision: "deny", category: "refused", label: "Refused in your browser", reason: d.why };
+    if (d.decision === "ask") asks.push(d.why);
+  }
+  if (asks.length) return { decision: "ask", category: "browser", label: "Act in your browser", reason: asks.slice(0, 3).join(" ") };
+  return { decision: "allow", category: "browser", label: "Browse", reason: null };
+}
+
+/** The card's line for a browser call: what it does, to what, where. */
+function browserSummary(tool, input, hint) {
+  const h = hint && typeof hint === "object" ? hint : {};
+  const labels = {};
+  for (const x of Array.isArray(h.targets) ? h.targets : []) if (x && x.ref) labels[x.ref] = String(x.label || "").slice(0, 120);
+  const one = (s) => {
+    const i = s.i;
+    const summary = typeof i.action_summary === "string" ? ` — ${i.action_summary.slice(0, 200)}` : "";
+    const target = i.ref ? ` ${labels[i.ref] || i.ref}` : "";
+    if (s.t === "navigate") return `open ${String(i.url || "").slice(0, 200)}`;
+    if (s.t === "computer") return `${String(i.action || "").replace(/_/g, " ")}${target}${i.action === "key" ? " " + String(i.text || "").slice(0, 40) : ""}${summary}`;
+    if (s.t === "form_input") return `fill${target || " a field"}${summary}`;
+    if (s.t === "javascript_tool") return `run a script: ${String(i.text || "").replace(/\s+/g, " ").slice(0, 300)}`;
+    if (s.t === "file_upload") return `upload ${(Array.isArray(i.paths) ? i.paths : []).join(", ").slice(0, 300)}`;
+    return s.t.replace(/_/g, " ") + summary;
+  };
+  const where = (Array.isArray(h.tab_urls) ? h.tab_urls : []).map(hostOf).filter(Boolean);
+  return `Chrome: ${browserSteps(tool, input).map(one).join("; ")}${where.length ? ` (on ${[...new Set(where)].join(", ")})` : ""}`.slice(0, 1500);
+}
+
 /* ---------------------------------------------------------------- tools --- */
 
 const ALWAYS_ALLOW = new Set(["TodoWrite", "Task", "Agent", "WebSearch", "ToolSearch", "ExitPlanMode", "EnterPlanMode", "TaskOutput", "KillShell", "BashOutput", "Skill", "SlashCommand", "AskUserQuestion"]);
@@ -252,26 +445,29 @@ const NEVER = new Set(["SendMessage", "CronCreate", "CronDelete", "RemoteTrigger
 
 /**
  * decide(tool, input, ctx) -> { decision: allow|ask|deny, category, label, reason }
- * ctx: { home: "C:\\Users\\name" } (the laptop's profile folder, from the app's hello), origin: "cli" | "hands".
+ * ctx: { home: "C:\\Users\\name" (the laptop's profile folder, from the app's hello), folders: [the folders the
+ * user added], origin: "cli" | "hands", hint: the app's hint for a browser step }.
  */
 function decide(tool, input, ctx = {}) {
   const t = String(tool || "");
   const i = input && typeof input === "object" ? input : {};
   if (t.startsWith(HANDS_PREFIX) || ctx.origin === "hands") {
-    // The hands found a risky target (Send, Buy, Delete ...) or the session asked request_approval: always a card.
-    return { decision: "ask", category: "screen", label: "Act on your screen", reason: i.why ? String(i.why).slice(0, 500) : "MINT AI wants to do something on your screen that needs your approval." };
+    // The hands' own approvals: writing over a file, or the session's request_approval: always a card.
+    const files = /__(office_edit|pdf_merge|pdf_export|create_document)$/.test(t);
+    return { decision: "ask", category: files ? "file" : "approval", label: files ? "Replace a file" : "Your approval", reason: i.why ? String(i.why).slice(0, 500) : "MINT AI wants to do something on your computer that needs your approval." };
   }
   if (NEVER.has(t)) return { decision: "deny", category: "refused", label: "Not on this computer", reason: `${t} is not available to the laptop session; it reports to MINT AI with its final message.` };
-  if (t.startsWith("mcp__")) return { decision: "deny", category: "refused", label: "Unknown tool", reason: "Only the desktop app's own tools are allowed on this computer." };
+  if (t.startsWith(BROWSER_PREFIX) && t.length > BROWSER_PREFIX.length && ctx.origin !== "hands") return decideBrowser(t, i, ctx.hint);
+  if (t.startsWith("mcp__")) return { decision: "deny", category: "refused", label: "Unknown tool", reason: "Only the desktop app's own tools and your Claude in Chrome extension are allowed on this computer." };
   if (t === "PowerShell" || t === "Bash" || t === "Monitor") return decideCommand(i.command || i.script || "", ctx);
   if (t === "Write" || t === "Edit" || t === "MultiEdit" || t === "NotebookEdit") {
     const p = i.file_path || i.notebook_path || i.path || "";
-    if (p && inUserFiles(p, ctx.home)) return { decision: "allow", category: "file", label: "Write your files", reason: null };
+    if (p && inUserFiles(p, ctx.home, ctx.folders)) return { decision: "allow", category: "file", label: "Write your files", reason: null };
     return { decision: "ask", category: "outside", label: "Change files outside your own", reason: `It writes ${p || "a file"}, outside your own files.` };
   }
   if (t === "Read" || t === "Glob" || t === "Grep" || t === "LS") {
     const p = i.file_path || i.path || "";
-    if (!p || inUserFiles(p, ctx.home)) return { decision: "allow", category: "file", label: "Read your files", reason: null };
+    if (!p || inUserFiles(p, ctx.home, ctx.folders)) return { decision: "allow", category: "file", label: "Read your files", reason: null };
     return { decision: "ask", category: "outside", label: "Read outside your own files", reason: `It reads ${p}, outside your own files (app data, hidden folders or the system).` };
   }
   if (t === "WebFetch") return { decision: "ask", category: "network", label: "Fetch a web address", reason: `It fetches ${String(i.url || "a web page").slice(0, 300)}.` };
@@ -280,13 +476,14 @@ function decide(tool, input, ctx = {}) {
 }
 
 /** The card's one-line summary for a laptop question (never a secret: the supervisor redacts again). */
-function summaryOf(tool, input) {
+function summaryOf(tool, input, hint) {
   const i = input && typeof input === "object" ? input : {};
   if (String(tool).startsWith(HANDS_PREFIX)) return String(i.summary || tool.slice(HANDS_PREFIX.length)).slice(0, 500);
+  if (String(tool).startsWith(BROWSER_PREFIX)) return browserSummary(tool, i, hint);
   if (typeof i.command === "string") return i.command.slice(0, 2000);
   if (i.file_path || i.path) return `${tool} ${i.file_path || i.path}`;
   if (i.url) return `${tool} ${i.url}`;
   return `${tool} ${JSON.stringify(i).slice(0, 500)}`;
 }
 
-module.exports = { HANDS_PREFIX, ALLOWANCE_MS, normPath, inUserFiles, pathsIn, decideCommand, decide, summaryOf, approvalPath, approvalScope, deleteTargets, allowanceCovers };
+module.exports = { HANDS_PREFIX, BROWSER_PREFIX, ALLOWANCE_MS, normPath, inUserFiles, pathsIn, decideCommand, decide, decideBrowser, browserSummary, summaryOf, approvalPath, approvalScope, deleteTargets, allowanceCovers, hasCardNumber };

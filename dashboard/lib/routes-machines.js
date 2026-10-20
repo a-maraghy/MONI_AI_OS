@@ -7,10 +7,12 @@
  *     GET  /machines                       the list, pairing, take over / extend / stop
  *     POST /machines/pair                  a one-time pairing code (10 min)
  *     POST /machines/:id/rename|revoke|take-over|extend|stop
+ *     POST /machines/:id/browser           {on: "1"|"0"}: MINT AI may use Chrome there (Claude in Chrome)
+ *     POST /machines/:id/folders           {path}: a folder MINT AI may use there; /folders/remove {path}
  *     GET  /machines/:id                   its control sessions
- *     GET  /machines/:id/lease/:lid        a session's action log with screenshots
- *     GET  /machines/shot/:aid             one screenshot (no-store)
- *     GET  /machines/api/list | /machines/api/lease/:lid   JSON for public/machines.js
+ *     GET  /machines/:id/lease/:lid        a session's action log (live while it runs)
+ *     GET  /machines/shot/:aid             one screenshot of an old (pre-0.1.11) log row (no-store)
+ *     GET  /machines/api/list | /machines/api/lease/:lid[?after=<id>]   JSON for public/machines.js
  *   the desktop app (no cookie):
  *     POST /machines/api/claim             {code, name, platform, app_version} -> {machine_id, name, token}
  *     WS   /machines/api/link              Authorization: Bearer <token>   (upgrade(), from server.js)
@@ -43,7 +45,8 @@ function mount(app, deps) {
   app.get(["/machines", "/machines/"], ...guard, (req, res) => {
     const code = req.session.machinePairCode && Date.parse(req.session.machinePairCode.expires_at) > Date.now() ? req.session.machinePairCode : null;
     res.set("Cache-Control", "no-store");
-    res.send(V.list({ csrf: res.locals.csrf, user: ctx(req), machines: machines.list(), code, msg: req.query.msg, err: req.query.err, retention: M.RETENTION_DAYS }));
+    const list = machines.list().map((m) => (m.lease ? { ...m, recent: machines.lastActions(m.lease.id, 8) } : m));
+    res.send(V.list({ csrf: res.locals.csrf, user: ctx(req), machines: list, code, msg: req.query.msg, err: req.query.err, retention: M.RETENTION_DAYS }));
   });
 
   app.post("/machines/pair", ...write, (req, res) => {
@@ -91,6 +94,28 @@ function mount(app, deps) {
     back(res, r.error ? { err: r.error } : { msg: "Control stopped.", anchor: "machine-" + id });
   });
 
+  app.post("/machines/:id/browser", ...write, (req, res) => {
+    const id = idOf(req);
+    const on = String(req.body.on) === "1";
+    const r = id ? machines.setBrowser(id, on, who(req)) : { error: "No such computer." };
+    if (!r.error) audit(req, `computer #${id}: browser ${on ? "allowed" : "switched off"}`);
+    back(res, r.error ? { err: r.error } : { msg: on ? "MINT AI may use Chrome on that computer (from the next take-over)." : "MINT AI will not use Chrome on that computer.", anchor: "machine-" + id });
+  });
+
+  app.post("/machines/:id/folders", ...write, (req, res) => {
+    const id = idOf(req);
+    const r = id ? machines.addFolder(id, req.body.path, who(req)) : { error: "No such computer." };
+    if (!r.error) audit(req, `computer #${id}: folder added ${r.path}`);
+    back(res, r.error ? { err: r.error, anchor: "machine-" + id } : { msg: `MINT AI may use ${r.path} on that computer (from the next take-over).`, anchor: "machine-" + id });
+  });
+
+  app.post("/machines/:id/folders/remove", ...write, (req, res) => {
+    const id = idOf(req);
+    const r = id ? machines.removeFolder(id, req.body.path, who(req)) : { error: "No such computer." };
+    if (!r.error) audit(req, `computer #${id}: folder removed ${String(req.body.path || "").slice(0, 240)}`);
+    back(res, r.error ? { err: r.error, anchor: "machine-" + id } : { msg: "Folder removed.", anchor: "machine-" + id });
+  });
+
   app.get("/machines/api/list", ...guard, (req, res) => {
     res.set("Cache-Control", "no-store");
     res.json({ machines: machines.list() });
@@ -99,7 +124,9 @@ function mount(app, deps) {
     const l = /^[1-9][0-9]{0,9}$/.test(req.params.lid) ? machines.lease(Number(req.params.lid)) : null;
     res.set("Cache-Control", "no-store");
     if (!l) return res.status(404).json({ error: "No such control session." });
-    res.json({ lease: l, actions: machines.actions(l.id) });
+    // ?after=<id>: only the action-log rows after that one (the live log); without it the whole log.
+    const after = /^[0-9]{1,12}$/.test(String(req.query.after || "")) ? Number(req.query.after) : 0;
+    res.json({ lease: l, log: machines.actionLog(l.id, after), ...(after ? {} : { actions: machines.actions(l.id) }) });
   });
 
   app.get("/machines/shot/:aid", ...guard, (req, res) => {
@@ -123,7 +150,7 @@ function mount(app, deps) {
     const l = m && /^[1-9][0-9]{0,9}$/.test(req.params.lid) ? machines.lease(Number(req.params.lid)) : null;
     if (!m || !l || l.machine_id !== id) return res.redirect(303, "/machines?err=" + encodeURIComponent("No such control session."));
     res.set("Cache-Control", "no-store");
-    res.send(V.leaseLog({ csrf: res.locals.csrf, user: ctx(req), machine: machines.publicMachine(m), lease: l, actions: machines.actions(l.id) }));
+    res.send(V.leaseLog({ csrf: res.locals.csrf, user: ctx(req), machine: machines.publicMachine(m), lease: l, actions: machines.actions(l.id), log: machines.actionLog(l.id, 0), retention: M.RETENTION_DAYS }));
   });
 
   // The app's claim: no cookie, its own small budget (a code is 40 bits and single use).

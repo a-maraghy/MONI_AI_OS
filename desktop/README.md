@@ -133,12 +133,60 @@ chained commands, -Recurse); anything else is a card as before and refusals stil
 one-file summary "Delete the file <path>" counts too. The session is told not to ask first for commands
 that raise their own card.
 
-**What the laptop session can do in this build:** read, write and edit files; run PowerShell and other
+**What the laptop session can do (0.1.11):** read, write and edit files; run PowerShell and other
 commands; open files and apps with `Start-Process`; create Word / Excel / PowerPoint files with
-`create_document` (not opened for it, no PDF); `request_approval`; `wait`. It has **no** screen, mouse,
-keyboard or browser control (`hands::tool_defs()` offers only create_document, wait, request_approval), so
-the action log has no screenshots. The MCP tool text, `firstPrompt`, the CLI prompt, MINT AI's CLAUDE.md and
+`create_document`; read and edit existing ones (`office_read` / `office_edit`); read and merge PDFs and make
+a PDF from an Office file (`pdf_read` / `pdf_merge` / `pdf_export`); use the user's own Chrome through their
+Claude in Chrome extension; `request_approval`; `wait`. Outside Chrome it has **no** screen, mouse or keyboard
+control and takes no screenshots. The MCP tool text, `firstPrompt`, the CLI prompt, MINT AI's CLAUDE.md and
 the Computers page say exactly this (tests check it).
+
+### Laptop control 2 (0.1.11): Office and PDF files, Chrome, the action log — design note
+
+Built on 2026-10-20 at the user's request ("finish laptop control"). **Not built, on purpose:** generic screen
+capture, mouse or keyboard control (the earlier build was stopped there by a safety check; nothing here works
+around that). Office goes through files and COM, the browser only through the user's own Claude in Chrome
+extension.
+
+| File | What |
+|---|---|
+| `hands/mod.rs` | The tools: create_document, office_read, office_edit, pdf_read, pdf_merge, pdf_export, request_approval, wait. Every path through `paths.rs`, then again after links on disk are resolved (a junction cannot lead out). An existing file is only written over after the hands' own approval card ("Replace a file", Windows Hello); by default the result is a new copy next to the original (`Report (edited).docx`, then ` (2)`…), written to a `~mint-*.ext` temp file and renamed into place. |
+| `hands/paths.rs` | Pure: the allowed folders (Documents, Desktop, Downloads, each OneDrive the environment names, the folders the user added on the Computers page), `..` resolved before the check, no UNC / device / ADS paths, no hidden or AppData folders; the kinds (macro-enabled `.docm/.xlsm/.pptm…` refused, old `.doc/.xls/.ppt` refused). |
+| `hands/ooxml.rs` | Pure, the **file engine**: the zip unpacked, only the XML parts that change edited by splicing (every other byte kept), zipped again. Word: replace across runs (the text of one paragraph's runs, the new text into the run where a match starts), set / insert (with a style from styles.xml) / delete paragraphs (a table cell keeps one); Excel: set a block of cells from a top-left cell (text as inline strings, numbers, booleans, `=formulas`, styles kept), add a sheet; the calc chain is dropped and `fullCalcOnLoad` set; a shared/array formula's master cell is refused; PowerPoint: replace, set title / bullets / notes, add a slide on the deck's "Title and Content" layout, delete a slide (its notes, rels and content types with it). Reading lists numbered paragraphs / cells with formulas / slides with notes. A package with a vbaProject is refused; zip-bomb limits (20 000 parts, 400 MB). Checked with python-docx / openpyxl on the build box (`write_edited_samples`). |
+| `hands/office.ps1` + `hands/office_com.rs` | The **Office engine** (default when that Office app is installed: its COM class is registered): one fixed PowerShell script, never built from the model's words — `powershell -NoProfile -NonInteractive -EncodedCommand <bootstrap>` reads two base64 lines from stdin (the script and the job as JSON) and answers one base64 JSON line. In the session's Job Object (`Proc::contain`; the stop key kills it), 180 s limit. `AutomationSecurity = 3` (macros forced off) before anything is opened, events and alerts off, links not updated, the original opened **read-only** with a dummy password (a protected file fails instead of prompting) and saved to the temp file (`SaveAs2` / `SaveAs` / `ExportAsFixedFormat`); Word / Excel instances it started are quit; PowerPoint (one instance per user) is quit only if it was not running, and its AutomationSecurity put back. Word paragraph edits carry the text office_read showed (`expect`, from a dry run of the same edits in the file engine) because Word numbers paragraphs in tables a little differently. If Office fails under engine "auto", the file engine does the edit and says so. `pdf_export` needs Office. |
+| `hands/pdf.rs` | Pure (lopdf 0.44): text per page, merge (inherited Resources / MediaBox moved onto each page; the catalog's OpenAction, AA and Names dropped, so no document script is carried across). Protected PDFs refused. |
+| `machine/browser.rs` | Pure: the extension's check (`<User Data>\{Default,Profile N}\Extensions\fcoeoabgfenejglbffodgkkbkcdhcgfn` in Chrome, Edge, Brave, … — the CLI's own check), the `--settings` ask rule, a tracker of element labels (`ref_N` lines of read_page / find results) and tab addresses (tabs_context JSON), the steps the app refuses at once (Mint OS's own pages, typing into password / PIN / card fields, card numbers — also inside a browser_batch), the hint sent with a question, the log line ("Chrome: left click button "Send" — Sends the reply"). |
+
+**The browser.** The CLI is started with `--chrome` (only when the extension was found and the user did not
+switch the browser off on the Computers page; else `--no-chrome`) and always with
+`--settings {"permissions":{"ask":["mcp__claude-in-chrome"]}}`: an `ask` rule wins over any `allow` in the
+user's own Claude settings (tested on the build box with Claude Code 2.1.283: allow + ask → asked), so **every
+browser step comes to this app** as a permission question (the app is the CLI's permission prompt, stdio). A
+PreToolUse hook was considered and not needed: this is the same point (before the tool runs), with no extra
+process. The app refuses the never-cases itself, then asks Mint OS with the hint; the supervisor's gate
+(`moni-ai/lib/machine-gate.js decideBrowser`) lets reading, tabs, scrolling, screenshots, plain typing and
+opening web pages run (`auto`) and puts on a card (Windows Hello) a click or form choice whose target label
+or `action_summary` says send / submit / buy / pay / post / publish / delete / sign in / log in / confirm /
+accept (EN + AR), a click nobody described, Enter / Ctrl+Enter / Alt+S, text with a newline, javascript_tool,
+file uploads, saved shortcuts, switching to another computer's browser and non-web addresses; it refuses
+passwords, payment details and Mint OS's pages again. A browser_batch is the strictest of its steps. The step
+itself raises the card, so the session is told **not** to call request_approval first (the user would be
+asked twice — the 0.1.7 lesson). Whether the extension answers is learnt from the steps' results
+(`{t:"browser", connected, detail}`) and shown on the Computers page with the steps to set it up.
+
+**The action log.** Every step — the hands' tools, the browser steps, the CLI's commands — is one
+`{t:"action", lease_id, slug, at, tool, target, decision: auto|approved|denied|refused, result: ok|error,
+detail, kind: hands|browser|cli}` (an older server reads `summary`/`decision`). `auto` vs `approved` comes from
+Mint OS's answer (`answer.auto`: its rules let it run, no card). The dashboard keeps it in moni.db table
+`machine_action_log` for **90 days** and shows it per take-over on the Computers page, live (polling
+`/machines/api/lease/:lid?after=<id>` every 2.5 s). The pill shows the last one on a second line ("Last: …").
+No screenshots are taken; the old `machine_actions` table (screenshots, 7 days) is only read for old
+take-overs.
+
+**Wire additions (all optional, older peers ignore them):** hello `chrome {extension, browser, profile, last}`
+and `office [..]`; `start.folders [..]`, `start.browser bool`; `answer.auto`; `ask.hint {targets, tab_urls}`;
+`action` fields above; `{t:"browser"}`. Supervisor: `machines-sync` items gain `chrome`, `folders`, `office`;
+`machine-ask` gains `hint`; `machine_list` reports `browser` and `office`.
 
 ## Server side (dashboard)
 

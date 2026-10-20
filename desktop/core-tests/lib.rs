@@ -20,23 +20,10 @@ pub mod signin;
 pub mod trayicon;
 #[path = "../src-tauri/src/site.rs"]
 pub mod site;
-// Laptop control ("This computer"): the machine agent's pure parts.
-#[path = "../src-tauri/src/machine/lease.rs"]
-pub mod machine_lease;
-#[path = "../src-tauri/src/machine/prompt.rs"]
-pub mod machine_prompt;
-#[path = "../src-tauri/src/machine/wire.rs"]
-pub mod machine_wire;
-#[path = "../src-tauri/src/machine/mcp_http.rs"]
-pub mod machine_mcp_http;
-#[path = "../src-tauri/src/machine/claude.rs"]
-pub mod machine_claude;
-#[path = "../src-tauri/src/machine/overlay_layout.rs"]
-pub mod machine_overlay_layout;
-// Laptop control: the hands' pure parts (risk rules, coordinate / key mapping, document files).
-#[path = "../src-tauri/src/hands/risk.rs"]
-pub mod hands_risk;
-#[path = "../src-tauri/src/hands/mapping.rs"]
-pub mod hands_mapping;
-#[path = "../src-tauri/src/hands/docs.rs"]
-pub mod hands_docs;
+// Laptop control ("This computer"): the machine agent's pure parts, nested as in the app.
+#[path = "machine_mod.rs"]
+pub mod machine;
+// Laptop control: the hands' pure parts (risk rules, coordinate / key mapping, document files, the
+// Office / PDF tools' paths, file engine and PDF handling). Nested as in the app, so `crate::hands::x` works.
+#[path = "../src-tauri/src/hands/mod.rs"]
+pub mod hands;

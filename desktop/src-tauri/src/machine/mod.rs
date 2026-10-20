@@ -15,6 +15,7 @@
 //! exit, the link lost for 30 s, the server's `stop` / `revoked`, unlinking, or the CLI exiting.
 //! The site (capabilities/remote.json) can call none of this.
 
+pub mod browser;
 pub mod claude;
 pub mod lease;
 pub mod mcp_http;
@@ -71,6 +72,8 @@ struct Out {
 struct Answer {
     allow: bool,
     message: Option<String>,
+    /// Mint OS's rules allowed it without a card.
+    auto: bool,
 }
 
 struct Pending {
@@ -96,6 +99,13 @@ struct Run {
     mcp: mcp_http::Server,
 }
 
+/// What this computer has for the hands besides Claude Code: the Chrome extension, Office.
+#[derive(Clone, Default)]
+struct Extras {
+    chrome: Option<browser::Found>,
+    office: Vec<&'static str>,
+}
+
 struct St {
     online: bool,
     offline_since: Option<Instant>,
@@ -108,6 +118,11 @@ struct St {
     stop_fallback: bool,
     claude: ClaudeInfo,
     error: String,
+    extras: Extras,
+    /// What the last browser step showed about the extension.
+    chrome_seen: Option<browser::SeenState>,
+    /// The last action of this lease, for the pill.
+    last_action: String,
 }
 
 pub struct Ctl {
@@ -138,6 +153,9 @@ pub fn setup(app: &AppHandle) {
             stop_fallback: false,
             claude: ClaudeInfo::default(),
             error: String::new(),
+            extras: Extras::default(),
+            chrome_seen: None,
+            last_action: String::new(),
         }),
         outbox: Mutex::new(VecDeque::new()),
         pending: Mutex::new(HashMap::new()),
@@ -312,8 +330,15 @@ impl Ctl {
     }
 
     pub(crate) fn hello(&self) -> Value {
-        let c = self.st.lock().unwrap().claude.clone();
-        wire::hello(crate::VERSION, &computer_name(), &env("USERNAME"), &env("USERPROFILE"), &wire::Claude { path: c.path.as_deref(), version: c.version.as_deref(), git_bash: c.git_bash.is_some() })
+        let (c, x, seen) = {
+            let st = self.st.lock().unwrap();
+            (st.claude.clone(), st.extras.clone(), st.chrome_seen.clone())
+        };
+        let mut h = wire::hello(crate::VERSION, &computer_name(), &env("USERNAME"), &env("USERPROFILE"), &wire::Claude { path: c.path.as_deref(), version: c.version.as_deref(), git_bash: c.git_bash.is_some() });
+        // Since 0.1.11: the Claude in Chrome extension and Office, for the Computers page.
+        h["chrome"] = browser::hello_json(x.chrome.as_ref(), seen.as_ref());
+        h["office"] = json!(x.office);
+        h
     }
 
     pub(crate) fn drain_outbox(&self) -> Vec<String> {
@@ -367,10 +392,10 @@ impl Ctl {
                 mlog!("machine link: the server revoked this computer");
                 self.token_revoked();
             }
-            wire::In::Start { slug, name, purpose, model, first_prompt, lease } => {
-                mlog!("machine link: start for {} (lease {}, {:?} min)", slug, lease.id, lease.minutes);
+            wire::In::Start { slug, name, purpose, model, first_prompt, lease, folders, browser } => {
+                mlog!("machine link: start for {} (lease {}, {:?} min, {} added folder(s), browser {:?})", slug, lease.id, lease.minutes, folders.len(), browser);
                 let me = self.clone();
-                std::thread::spawn(move || me.start(slug, name, purpose, model, first_prompt, lease));
+                std::thread::spawn(move || me.start(slug, name, purpose, model, first_prompt, lease, folders, browser));
             }
             wire::In::Extend { lease_id, expires_at } => {
                 let Some(e) = wire::parse_iso(&expires_at) else { return };
@@ -407,9 +432,9 @@ impl Ctl {
                     self.end_lease("server");
                 }
             }
-            wire::In::Answer { rid, behavior, message } => {
+            wire::In::Answer { rid, behavior, message, auto } => {
                 if let Some(p) = self.pending.lock().unwrap().remove(&rid) {
-                    let _ = p.tx.send(Answer { allow: behavior == "allow", message });
+                    let _ = p.tx.send(Answer { allow: behavior == "allow", message, auto });
                 }
             }
             wire::In::Unknown => {}
@@ -440,6 +465,7 @@ impl Ctl {
             r.mcp.stop();
         }
         self.fail_pending();
+        self.st.lock().unwrap().last_action.clear();
         std::thread::spawn(crate::hands::shutdown);
         on_main(&self.app, overlay::hide);
         mlog!("control lease {} ended: {}", ended.id, ended.reason);
@@ -510,10 +536,13 @@ impl Ctl {
         a.map(|a| a.allow).unwrap_or(false) && self.lease_active_id(lease_id)
     }
 
-    fn log_action(&self, lease_id: &str, slug: &str, tool: &str, summary: &str, decision: &str, shot: Option<Vec<u8>>) {
-        use base64::Engine;
-        let b64 = shot.filter(|s| s.len() <= wire::MAX_SHOT).map(|s| base64::engine::general_purpose::STANDARD.encode(s));
-        self.send(wire::action(lease_id, slug, now_ms(), tool, summary, decision, b64.as_deref()));
+    /// One action-log entry (Mint OS > Computers) and the pill's "last action" line.
+    fn log_action(&self, lease_id: &str, slug: &str, a: &wire::Act) {
+        {
+            let mut st = self.st.lock().unwrap();
+            st.last_action = overlay_layout::last_action_text(a.tool, a.target, a.decision, a.ok);
+        }
+        self.send(wire::action_log(lease_id, slug, now_ms(), a));
     }
 
     /* ------------------------------------------------------------ start */
@@ -541,13 +570,13 @@ impl Ctl {
         }
     }
 
-    fn claude_key(&self) -> (Option<String>, Option<String>, bool) {
+    fn claude_key(&self) -> (Option<String>, Option<String>, bool, Option<browser::Found>, Vec<&'static str>) {
         let st = self.st.lock().unwrap();
-        (st.claude.path.clone(), st.claude.version.clone(), st.claude.git_bash.is_some())
+        (st.claude.path.clone(), st.claude.version.clone(), st.claude.git_bash.is_some(), st.extras.chrome.clone(), st.extras.office.clone())
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn start(self: Arc<Self>, slug: String, name: String, purpose: String, model: Option<String>, first_prompt: String, spec: wire::LeaseSpec) {
+    fn start(self: Arc<Self>, slug: String, name: String, purpose: String, model: Option<String>, first_prompt: String, spec: wire::LeaseSpec, folders: Vec<String>, browser_ok: Option<bool>) {
         if !wire::slug_ok(&slug) {
             return self.fail_start(&slug, None, "bad session name");
         }
@@ -585,7 +614,17 @@ impl Ctl {
         let mut secret = [0u8; 32];
         rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut secret);
         let secret = claude::hex(&secret);
-        let host = Arc::new(MachineHost { ctl: self.clone(), lease_id: lease_id.clone(), slug: slug.clone(), work_dir: self.work_dir() });
+        // The folders the file tools may use: Documents, Desktop, Downloads, OneDrive and the user's own.
+        let pd = self.app.path();
+        let profile_s = env("USERPROFILE");
+        let dir_s = |d: Result<PathBuf, tauri::Error>, fallback: &str| d.map(|p| p.to_string_lossy().to_string()).unwrap_or_else(|_| format!("{profile_s}\\{fallback}"));
+        let (docs_s, desk_s, down_s) = (dir_s(pd.document_dir(), "Documents"), dir_s(pd.desktop_dir(), "Desktop"), dir_s(pd.download_dir(), "Downloads"));
+        let onedrive: Vec<String> = ["OneDrive", "OneDriveConsumer", "OneDriveCommercial"].iter().map(|k| env(k)).filter(|v| !v.is_empty()).collect();
+        let onedrive_refs: Vec<&str> = onedrive.iter().map(String::as_str).collect();
+        let roots = crate::hands::paths::roots(&docs_s, &desk_s, &down_s, &onedrive_refs, &folders);
+        let extras = self.st.lock().unwrap().extras.clone();
+        let chrome = extras.chrome.is_some() && browser_ok != Some(false);
+        let host = Arc::new(MachineHost { ctl: self.clone(), lease_id: lease_id.clone(), slug: slug.clone(), work_dir: self.work_dir(), roots: roots.clone(), home: profile_s.clone() });
         let srv = match mcp_http::Server::start(secret.clone(), Arc::new(HandsTools { host: host.clone() })) {
             Ok(s) => s,
             Err(e) => return self.fail_start(&slug, Some(&lease_id), &format!("could not open the hands server: {}", e)),
@@ -597,13 +636,20 @@ impl Ctl {
         let docs = p.document_dir().unwrap_or_else(|_| profile.join("Documents"));
         let work = host.work_dir.clone();
         let _ = std::fs::create_dir_all(&work);
-        let add_dirs: Vec<String> = [p.desktop_dir().ok(), p.download_dir().ok(), p.picture_dir().ok()].into_iter().flatten().filter(|d| d.is_dir()).map(|d| d.to_string_lossy().to_string()).collect();
+        let mut add_dirs: Vec<String> = [p.desktop_dir().ok(), p.download_dir().ok(), p.picture_dir().ok()].into_iter().flatten().filter(|d| d.is_dir()).map(|d| d.to_string_lossy().to_string()).collect();
+        for r in &roots {
+            if !add_dirs.iter().any(|d| d.eq_ignore_ascii_case(&r.path)) && !r.path.eq_ignore_ascii_case(&docs.to_string_lossy()) && Path::new(&r.path).is_dir() {
+                add_dirs.push(r.path.clone());
+            }
+        }
 
         let defs = crate::hands::tool_defs();
         let allowed = claude::allowed_tools(crate::hands::SERVER_NAME, &defs);
         let mcp = claude::mcp_config(srv.port, &secret, crate::hands::SERVER_NAME);
         let minutes = (expires_at.saturating_sub(now) + 59_999) / 60_000;
-        let mut sys = prompt::system_prompt(&purpose, minutes, &work.to_string_lossy());
+        let folder_list: Vec<String> = roots.iter().map(|r| r.path.clone()).collect();
+        let work_s = work.to_string_lossy().to_string();
+        let mut sys = prompt::system_prompt(&prompt::Ctx { purpose: &purpose, minutes, work_dir: &work_s, folders: &folder_list, office: &extras.office, chrome });
         if info.program.to_ascii_lowercase().ends_with(".cmd") {
             sys = sys.replace('\n', " "); // cmd.exe cannot take a newline in an argument
         }
@@ -611,7 +657,8 @@ impl Ctl {
         rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut id);
         let session_id = claude::uuid_v4(id);
         let mut args = info.pre.clone();
-        args.extend(claude::args(&claude::CliOpts { name: &name, model: model.as_deref(), session_id: &session_id, mcp_config: &mcp, allowed_tools: &allowed, system_prompt: &sys, add_dirs: &add_dirs }));
+        args.extend(claude::args(&claude::CliOpts { name: &name, model: model.as_deref(), session_id: &session_id, mcp_config: &mcp, allowed_tools: &allowed, system_prompt: &sys, add_dirs: &add_dirs, chrome }));
+        mlog!("control session {}: browser {}, Office {:?}, {} folder(s)", slug, if chrome { "on" } else { "off" }, extras.office, roots.len());
         let mut envs: Vec<(String, String)> = Vec::new();
         match &info.git_bash {
             Some(b) => envs.push(("CLAUDE_CODE_GIT_BASH_PATH".into(), b.clone())),
@@ -743,9 +790,19 @@ impl Ctl {
             claude::Effect::Unsupported { request_id } => {
                 proc.send(&claude::unsupported(&request_id));
             }
-            claude::Effect::Ask { request_id, tool, input, tool_use_id, reason } => {
+            claude::Effect::Ask { request_id, tool, input, tool_use_id, reason, hint, refuse } => {
                 if !self.lease_active_id(lease_id) {
                     proc.send(&claude::deny(&request_id, "No active control lease: the user has not handed over control (or it ended). Stop and report."));
+                    return;
+                }
+                if let Some(why) = refuse {
+                    // Never, whatever anyone would answer (a password or card field, Mint OS's own page).
+                    if let Some(t) = &tool_use_id {
+                        stream.lock().unwrap().note_decision(t, "denied");
+                    }
+                    let target = browser::summarize(&tool, &input, &browser::Tracker::new());
+                    self.log_action(lease_id, slug, &wire::Act { tool: &tool, target: &target, decision: "refused", ok: false, detail: &why, kind: "browser" });
+                    proc.send(&claude::deny(&request_id, &format!("{why} Do not try it another way.")));
                     return;
                 }
                 if !self.st.lock().unwrap().online {
@@ -755,13 +812,18 @@ impl Ctl {
                 let rid = self.new_rid();
                 let (tx, rx) = mpsc::channel();
                 self.pending.lock().unwrap().insert(rid.clone(), Pending { tx, cli_request: Some(request_id.clone()) });
-                self.push(wire::ask(&rid, slug, &tool, &input, tool_use_id.as_deref(), reason.as_deref(), "cli"), true);
+                let mut q = wire::ask(&rid, slug, &tool, &input, tool_use_id.as_deref(), reason.as_deref(), "cli");
+                if let Some(h) = hint {
+                    q["hint"] = h;
+                }
+                self.push(q, true);
                 let (me, proc, stream, lease_id) = (self.clone(), proc.clone(), stream.clone(), lease_id.to_string());
                 std::thread::spawn(move || {
                     let a = me.ask_wait(&rid, &rx);
                     let ok = a.as_ref().map(|a| a.allow).unwrap_or(false) && me.lease_active_id(&lease_id);
                     if let Some(t) = &tool_use_id {
-                        stream.lock().unwrap().note_answer(t, ok);
+                        let auto = a.as_ref().map(|a| a.auto).unwrap_or(false);
+                        stream.lock().unwrap().note_decision(t, if !ok { "denied" } else if auto { "auto" } else { "approved" });
                     }
                     if ok {
                         proc.send(&claude::allow(&request_id, &input));
@@ -791,12 +853,20 @@ impl Ctl {
                 let text = if is_error && text.is_empty() { "The turn ended with an error.".to_string() } else { text };
                 self.send(wire::report(slug, &text));
             }
-            claude::Effect::Logged { tool, summary, decision } => {
-                let (me, lease_id, slug) = (self.clone(), lease_id.to_string(), slug.to_string());
-                std::thread::spawn(move || {
-                    let shot = if decision == "denied" { None } else { crate::hands::shot_for_log() };
-                    me.log_action(&lease_id, &slug, &tool, &summary, &decision, shot);
-                });
+            claude::Effect::Logged { tool, summary, decision, kind, ok, detail } => {
+                self.log_action(lease_id, slug, &wire::Act { tool: &tool, target: &summary, decision: &decision, ok, detail: &detail, kind: &kind });
+            }
+            claude::Effect::Browser { connected, detail } => {
+                let changed = {
+                    let mut st = self.st.lock().unwrap();
+                    let was = st.chrome_seen.as_ref().map(|s| s.connected);
+                    st.chrome_seen = Some(browser::SeenState { connected, at: wire::iso(now_ms()), detail: detail.clone() });
+                    was != Some(connected)
+                };
+                if changed {
+                    mlog!("control session {}: Claude in Chrome {}", slug, if connected { "answered" } else { "is not connected" });
+                    self.send(wire::browser_state(slug, connected, &detail, now_ms()));
+                }
             }
         }
     }
@@ -816,6 +886,9 @@ impl Ctl {
         let path_env = env("PATH");
         let cands = claude::candidates(&s.claude_path, &path_env, &env("USERPROFILE"), &env("APPDATA"));
         let found = claude::find(&cands, &exists);
+        let extras = detect_extras();
+        mlog!("this computer: Claude in Chrome {}, Office {:?}", extras.chrome.as_ref().map(|f| format!("in {} ({})", f.browser, f.profile)).unwrap_or_else(|| "not found".into()), extras.office);
+        self.st.lock().unwrap().extras = extras;
         let mut info = ClaudeInfo { checked: true, ..ClaudeInfo::default() };
         if let Some(f) = found {
             let (program, pre) = runner::plan(&f, &exists, &path_env, &env("ProgramFiles"));
@@ -829,6 +902,17 @@ impl Ctl {
         mlog!("claude code: {:?} version {:?}, git bash {}", info.path, info.version, info.git_bash.is_some());
         self.st.lock().unwrap().claude = info;
     }
+}
+
+/// The Claude in Chrome extension (in any Chromium browser profile) and the Office apps installed.
+fn detect_extras() -> Extras {
+    let dirs = browser::user_data_dirs(&env("LOCALAPPDATA"), &env("APPDATA"));
+    let list = |p: &str| -> Vec<String> { std::fs::read_dir(p).map(|rd| rd.flatten().filter(|e| e.path().is_dir()).map(|e| e.file_name().to_string_lossy().to_string()).collect()).unwrap_or_default() };
+    let exists = |p: &str| Path::new(p).is_dir();
+    let chrome = browser::find_extension(&dirs, &list, &exists);
+    use crate::hands::paths::Office;
+    let office = [Office::Docx, Office::Xlsx, Office::Pptx].into_iter().filter(|k| crate::hands::office_com::installed(*k)).map(|k| k.app()).collect();
+    Extras { chrome, office }
 }
 
 fn computer_name() -> String {
@@ -847,6 +931,8 @@ struct MachineHost {
     lease_id: String,
     slug: String,
     work_dir: PathBuf,
+    roots: Vec<crate::hands::paths::Root>,
+    home: String,
 }
 
 impl crate::hands::Host for MachineHost {
@@ -859,11 +945,23 @@ impl crate::hands::Host for MachineHost {
     fn approve_deletes(&self, tool: &str, summary: &str, why: &str, delete_paths: &[String]) -> bool {
         self.ctl.approve_blocking(&self.lease_id, &self.slug, tool, summary, why, delete_paths)
     }
-    fn log_action(&self, tool: &str, summary: &str, decision: &str, shot: Option<Vec<u8>>) {
-        self.ctl.log_action(&self.lease_id, &self.slug, tool, summary, decision, shot);
+    fn log_action(&self, tool: &str, target: &str, decision: &str, ok: bool, detail: &str) {
+        let tool = format!("mcp__{}__{}", crate::hands::SERVER_NAME, tool);
+        self.ctl.log_action(&self.lease_id, &self.slug, &wire::Act { tool: &tool, target, decision, ok, detail, kind: "hands" });
     }
     fn work_dir(&self) -> PathBuf {
         self.work_dir.clone()
+    }
+    fn home(&self) -> String {
+        self.home.clone()
+    }
+    fn roots(&self) -> Vec<crate::hands::paths::Root> {
+        self.roots.clone()
+    }
+    fn contain(&self, child: &std::process::Child) -> bool {
+        // Only this lease's session: when it has ended there is nothing to tie the helper to.
+        let st = self.ctl.st.lock().unwrap();
+        st.lease.active(now_ms()) && st.lease.current().map(|a| a.id == self.lease_id).unwrap_or(false) && st.run.as_ref().map(|r| r.proc.contain(child)).unwrap_or(false)
     }
 }
 
@@ -913,6 +1011,10 @@ pub struct Status {
     stop_key: String,
     stop_fallback: bool,
     error: String,
+    /// "Chrome (Default)" when the Claude in Chrome extension is found, else None.
+    chrome: Option<String>,
+    /// The Office apps installed.
+    office: Vec<&'static str>,
 }
 
 fn status_of(c: &Ctl) -> Status {
@@ -930,6 +1032,8 @@ fn status_of(c: &Ctl) -> Status {
         stop_key: st.stop_key.clone(),
         stop_fallback: st.stop_fallback,
         error: st.error.clone(),
+        chrome: st.extras.chrome.as_ref().map(|f| format!("{} ({})", f.browser, f.profile)),
+        office: st.extras.office.clone(),
     }
 }
 
@@ -1014,22 +1118,24 @@ pub struct PillView {
     active: bool,
     left: String,
     stop_key: String,
+    /// The last action, in one short line ("" before the first).
+    last: String,
 }
 
 pub fn machine_pill() -> PillView {
-    let Some(c) = ctl() else { return PillView { active: false, left: String::new(), stop_key: String::new() } };
+    let Some(c) = ctl() else { return PillView { active: false, left: String::new(), stop_key: String::new(), last: String::new() } };
     let st = c.st.lock().unwrap();
     let now = now_ms();
-    PillView { active: st.lease.active(now), left: lease::mmss(st.lease.remaining_ms(now)), stop_key: st.stop_key.clone() }
+    PillView { active: st.lease.active(now), left: lease::mmss(st.lease.remaining_ms(now)), stop_key: st.stop_key.clone(), last: st.last_action.clone() }
 }
 
 /// The same for the pill's own drawing on the main thread: never waits for the state lock (a thread
 /// holding it may be waiting for the main thread), None when it is busy -- that second is skipped.
 pub fn machine_pill_now() -> Option<PillView> {
-    let Some(c) = ctl() else { return Some(PillView { active: false, left: String::new(), stop_key: String::new() }) };
+    let Some(c) = ctl() else { return Some(PillView { active: false, left: String::new(), stop_key: String::new(), last: String::new() }) };
     let st = c.st.try_lock().ok()?;
     let now = now_ms();
-    Some(PillView { active: st.lease.active(now), left: lease::mmss(st.lease.remaining_ms(now)), stop_key: st.stop_key.clone() })
+    Some(PillView { active: st.lease.active(now), left: lease::mmss(st.lease.remaining_ms(now)), stop_key: st.stop_key.clone(), last: st.last_action.clone() })
 }
 
 /// "+15 min": extended here, then the server is told.

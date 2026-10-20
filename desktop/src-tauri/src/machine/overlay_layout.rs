@@ -238,9 +238,81 @@ pub fn time_text(active: bool, left: &str) -> String {
     }
 }
 
+/* ------------------------------------------------------------ the last action, under the pill */
+
+/// The "last action" line's height in logical px, and its gap under the pill.
+pub const LAST_H: f64 = 24.0;
+pub const LAST_GAP: f64 = 4.0;
+
+/// The line under the pill: as wide as the pill (never past the work area), just below it.
+pub fn last_line_rect(pill: Rect, work: Rect, scale: f64) -> Rect {
+    let s = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
+    let h = px(LAST_H, s);
+    let y = (pill.bottom() + px(LAST_GAP, s)).min(work.bottom() - h).max(work.y);
+    Rect::new(pill.x, y, pill.w.min(work.w), h)
+}
+
+/// The line's text: what was done, shortly. "Chrome: open https://…", "Edited Report.docx", "✓" / "✗".
+pub fn last_action_text(tool: &str, target: &str, decision: &str, ok: bool) -> String {
+    let short = tool.rsplit("__").next().unwrap_or(tool);
+    let what = match short {
+        "office_edit" => format!("Edited {}", file_name(target.split(" -> ").next().unwrap_or(target))),
+        "office_read" | "pdf_read" => format!("Read {}", file_name(target)),
+        "create_document" => format!("Created {}", file_name(target)),
+        "pdf_merge" => "Merged PDFs".to_string(),
+        "pdf_export" => format!("Made a PDF of {}", file_name(target.split(" -> ").next().unwrap_or(target))),
+        "request_approval" => format!("Asked: {target}"),
+        "wait" => "Waited".to_string(),
+        _ => target.to_string(),
+    };
+    let mark = match decision {
+        "denied" => " — not approved",
+        "refused" => " — refused",
+        _ if !ok => " — failed",
+        "approved" => " — approved",
+        _ => "",
+    };
+    let mut s: String = what.chars().filter(|c| !c.is_control()).collect();
+    if s.trim().is_empty() {
+        s = short.replace('_', " ");
+    }
+    clip_chars(&format!("Last: {}{}", s.trim(), mark), 90)
+}
+
+fn file_name(p: &str) -> &str {
+    p.rsplit(['\\', '/']).next().unwrap_or(p)
+}
+
+/// At most `n` characters, with "…" when cut.
+pub fn clip_chars(s: &str, n: usize) -> String {
+    if s.chars().count() <= n {
+        return s.to_string();
+    }
+    let mut o: String = s.chars().take(n.saturating_sub(1)).collect();
+    o.push('…');
+    o
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_last_action_line() {
+        let pill = Rect::new(500, 10, 600, 40);
+        let work = Rect::new(0, 0, 1920, 1040);
+        let r = last_line_rect(pill, work, 1.0);
+        assert_eq!(r, Rect::new(500, 54, 600, 24));
+        assert!(r.inside(&work));
+        assert_eq!(last_line_rect(pill, work, 1.5).h, 36);
+        assert_eq!(last_action_text("mcp__mint-hands__office_edit", "C:\\Users\\a\\Documents\\Report.docx -> C:\\Users\\a\\Documents\\Report (edited).docx", "auto", true), "Last: Edited Report.docx");
+        assert_eq!(last_action_text("mcp__claude-in-chrome__navigate", "Chrome: open https://example.com", "auto", true), "Last: Chrome: open https://example.com");
+        assert_eq!(last_action_text("mcp__claude-in-chrome__computer", "Chrome: left click button \"Send\"", "denied", false), "Last: Chrome: left click button \"Send\" — not approved");
+        assert_eq!(last_action_text("PowerShell", "PowerShell: dir", "auto", false), "Last: PowerShell: dir — failed");
+        let long = last_action_text("Bash", &"x".repeat(300), "auto", true);
+        assert_eq!(long.chars().count(), 90);
+        assert!(long.ends_with('…'));
+    }
 
     fn widths() -> TextWidths {
         TextWidths { label: 150, sep: 5, time: 64, more: 52, stop: 30, key: 120 }
