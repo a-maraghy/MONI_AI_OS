@@ -215,6 +215,7 @@ addColumn("users", "sessions_view", "TEXT NOT NULL DEFAULT ''"); // '' = spheres
 // ('' = the Default preset; else JSON {p} or {p: "custom", c: {item: "#RRGGBB"}}, cc-logic.js normBotColors).
 addColumn("users", "mint_bot_head", "TEXT NOT NULL DEFAULT ''");
 addColumn("users", "mint_bot_colors", "TEXT NOT NULL DEFAULT ''");
+addColumn("users", "mint_bot_team", "TEXT NOT NULL DEFAULT ''"); // core E: the heads pinned per session (cc-logic normBotTeam JSON)
 
 // How the voice speaks to this person, learned from how they speak to it
 // (lib/voice-persona.js): JSON {dialect, gender, updated_at}, empty = not known
@@ -488,6 +489,10 @@ module.exports = {
   /** Core E's colours (the JSON from cc-logic botColorsJson). The caller validates them. */
   setUserBotColors: (id, json) =>
     db.prepare("UPDATE users SET mint_bot_colors = ? WHERE id = ?").run(String(json), id),
+
+  /** Core E's per-session heads (the JSON from cc-logic botTeamJson). The caller validates it. */
+  setUserBotTeam: (id, json) =>
+    db.prepare("UPDATE users SET mint_bot_team = ? WHERE id = ?").run(String(json), id),
 
   /** The sessions view this person chose (spheres / orbit). The caller validates it. */
   setUserSessionsView: (id, view) =>

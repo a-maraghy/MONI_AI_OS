@@ -236,7 +236,7 @@
   } else if (root.getAttribute("data-core") === "E" && window.MintCoreBot) {
     // Core E: the viewer's bot head at dock size (mint-core-bot.js; its own 2D renderer without WebGL2).
     var LG = window.MintLogic;
-    meshCore = window.MintCoreBot(cv, { noGuard: true, head: root.getAttribute("data-bot-head") || "", colors: LG ? LG.normBotColors(root.getAttribute("data-bot-colors") || "") : null });
+    meshCore = window.MintCoreBot(cv, { noGuard: true, pointer: true, head: root.getAttribute("data-bot-head") || "", colors: LG ? LG.normBotColors(root.getAttribute("data-bot-colors") || "") : null });
     cv = meshCore.canvas || cv;
     // a change in Settings (another tab, or the shell's frame) reaches the dock's bot at once
     window.addEventListener("storage", function (e) {

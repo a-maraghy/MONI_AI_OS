@@ -236,6 +236,87 @@
     return { state: "ready", face: "base" };
   }
 
+  /*
+   * A team of bots (2026-10-20): with core E each session's head wears an accessory for its role instead of
+   * copying the core's. The rules, in order (the first that matches wins), read the session's name and its
+   * working directory (cwd); a session MINT AI hired matches before anything else:
+   *
+   *   role       head        matches
+   *   hired      cap         hired by MINT AI (hired: true, or a hire record)        cap & headphones
+   *   planning   mortar      plan / planning / planner / mandate / allocation       graduation cap
+   *   erp        headset     odoo / erp / giza / gizaseeds                          headset & mic
+   *   builder    antennas    mint os / moni ai / dashboard / desktop / builder / claude agents / MONI_AI_OS    twin antennas
+   *   other      headphones  anything else                                          headphones
+   *
+   * The viewer can pin a head for a session (users.mint_bot_team: JSON {session name (normName): head}); the
+   * pin follows the session's name, so it survives a restart. The core keeps the viewer's own head.
+   */
+  var BOT_ROLE_RULES = [
+    { role: "hired", head: "cap", label: "Hired", hired: true },
+    { role: "planning", head: "mortar", label: "Planning", re: /\bplan(?:s|ning|ner|ners)?\b|\bmandate\b|\ballocation\b/i },
+    { role: "erp", head: "headset", label: "Odoo / ERP", re: /\bodoo\b|\berp\b|\bgiza(?:seeds)?\b/i },
+    { role: "builder", head: "antennas", label: "Mint OS / builder", re: /\bmint ?os\b|\bmoni ?ai\b|\bmoni_ai_os\b|\bdashboard\b|\bdesktop\b|\bbuilder\b|\bclaude ?agents\b/i },
+  ];
+  var BOT_ROLE_DEFAULT = { role: "other", head: "headphones", label: "Other" };
+  /** A session's role and the head it wears by default: botRole({name, cwd, hired, hire}) -> {role, head, label}. */
+  function botRole(s) {
+    s = s || {};
+    var text = (String(s.name || "") + " " + String(s.cwd || "")).replace(/[_\/.-]+/g, " ");
+    for (var i = 0; i < BOT_ROLE_RULES.length; i++) {
+      var r = BOT_ROLE_RULES[i];
+      if (r.hired ? s.hired === true || !!s.hire : r.re.test(text) || r.re.test(String(s.cwd || ""))) return { role: r.role, head: r.head, label: r.label };
+    }
+    return { role: BOT_ROLE_DEFAULT.role, head: BOT_ROLE_DEFAULT.head, label: BOT_ROLE_DEFAULT.label };
+  }
+  var BOT_TEAM_MAX = 64;
+  /** The key a session's pin is stored under: its name, normalised (normName). */
+  function botTeamKey(name) { return normName(name).slice(0, 80); }
+  /** The stored pins (users.mint_bot_team), cleaned: {key: head}; anything that is not JSON, or not a head, is dropped. */
+  function normBotTeam(v) {
+    if (typeof v === "string") { try { v = v ? JSON.parse(v) : {}; } catch (e) { v = {}; } }
+    var out = {}, n = 0;
+    if (!v || typeof v !== "object" || Array.isArray(v)) return out;
+    Object.keys(v).forEach(function (k) {
+      var key = botTeamKey(k), h = v[k];
+      if (!key || n >= BOT_TEAM_MAX || !isBotHead(h) || Object.prototype.hasOwnProperty.call(out, key)) return;
+      out[key] = h; n++;
+    });
+    return out;
+  }
+  function botTeamJson(v) { return JSON.stringify(normBotTeam(v)); }
+  /**
+   * The API's check (POST /mint-ai/api/prefs/bot-team): { name, head } -- name a session's name (1-120 chars),
+   * head one of the ten or "" / null for "back to its role's". -> { ok, key, head } or { ok: false, error }.
+   */
+  function checkBotTeamEdit(b) {
+    if (!b || typeof b !== "object" || Array.isArray(b)) return { ok: false, error: "Send a session name and a head." };
+    if (typeof b.name !== "string" || !b.name.trim() || b.name.length > 120) return { ok: false, error: "The session name must be 1 to 120 characters." };
+    var key = botTeamKey(b.name);
+    if (!key) return { ok: false, error: "The session name must be 1 to 120 characters." };
+    if (b.head === "" || b.head === null || b.head === "auto") return { ok: true, key: key, head: null };
+    if (!isBotHead(b.head)) return { ok: false, error: "The head must be one of " + Object.keys(BOT_HEADS).join(", ") + ", or empty for its role's." };
+    return { ok: true, key: key, head: b.head };
+  }
+  /** The pins with one edit applied (head null: the pin removed); refuses a 65th pin. */
+  function applyBotTeamEdit(team, key, head) {
+    var t = normBotTeam(team);
+    if (head == null) { delete t[key]; return { ok: true, team: t }; }
+    if (!Object.prototype.hasOwnProperty.call(t, key) && Object.keys(t).length >= BOT_TEAM_MAX) return { ok: false, error: "At most " + BOT_TEAM_MAX + " sessions can have a head of their own." };
+    t[key] = head;
+    return { ok: true, team: t };
+  }
+  /** The head a session wears: its pin, else its role's. -> {head, role, label, pinned} */
+  function botHeadFor(s, team) {
+    var r = botRole(s), t = team && typeof team === "object" ? team : normBotTeam(team), key = botTeamKey(s && s.name);
+    var pin = key && Object.prototype.hasOwnProperty.call(t, key) && isBotHead(t[key]) ? t[key] : null;
+    return { head: pin || r.head, role: r.role, label: r.label, pinned: !!pin, auto: r.head };
+  }
+  /** A turn that ran long finished: the core grins (cc-map). Thinking / delegating (then maybe speaking) for 20 s or more, then idle. */
+  var BOT_LONG_TURN_MS = 20000;
+  function botTurnDone(prev, next, busyMs) {
+    return next === "idle" && (prev === "thinking" || prev === "delegating" || prev === "speaking") && (busyMs || 0) >= BOT_LONG_TURN_MS;
+  }
+
   /* The sessions view round the core: the family of spheres (the default) or the classic orbit of dots. */
   var SESS_VIEWS = { spheres: "Spheres", orbit: "Classic orbit" };
   var SESS_VIEW_DEFAULT = "spheres";
@@ -676,6 +757,8 @@
     botPresetBase: botPresetBase, normBotColors: normBotColors, checkBotColors: checkBotColors, botColorsJson: botColorsJson, botColorsLine: botColorsLine,
     botShade: botShade, botPalette: botPalette, botClosePairs: botClosePairs, contrast: contrast, deltaE: deltaE, hexRgb: hexRgb, rgbHex: rgbHex,
     botSessState: botSessState, botFace: botFace, BOT_STATE_FACE: BOT_STATE_FACE,
+    BOT_ROLE_RULES: BOT_ROLE_RULES, BOT_ROLE_DEFAULT: BOT_ROLE_DEFAULT, botRole: botRole, botTeamKey: botTeamKey, normBotTeam: normBotTeam, botTeamJson: botTeamJson,
+    checkBotTeamEdit: checkBotTeamEdit, applyBotTeamEdit: applyBotTeamEdit, botHeadFor: botHeadFor, BOT_TEAM_MAX: BOT_TEAM_MAX, botTurnDone: botTurnDone, BOT_LONG_TURN_MS: BOT_LONG_TURN_MS,
     SESS_VIEWS: SESS_VIEWS, SESS_VIEW_DEFAULT: SESS_VIEW_DEFAULT, normSessView: normSessView, isSessView: isSessView,
     STATES: STATES, LABEL: LABEL, coreState: coreState, caption: caption, vpBadge: vpBadge, VP_SHOW_MS: VP_SHOW_MS, VP_MIN_MS: VP_MIN_MS, CAPTION_REST_MS: CAPTION_REST_MS, captionRests: captionRests, captionRestIn: captionRestIn, composerCalm: composerCalm, lastSentence: lastSentence, gist: gist,
     needQueue: needQueue, card: card, doneText: doneText, approvalFrom: approvalFrom, approvalNoRule: approvalNoRule, HELLO_HINT: HELLO_HINT,
