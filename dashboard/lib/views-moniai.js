@@ -202,6 +202,7 @@ function page(o) {
 <div class="cc-shell" id="cc"${desk ? ' data-shell="desktop"' : ""}
      data-core="${core}" data-state="idle" data-sessview="${sessview}"
      data-bot-head="${esc(logic.normBotHead(o.botHead))}" data-bot-colors="${esc(logic.botColorsJson(o.botColors))}" data-bot-team="${esc(logic.botTeamJson(o.botTeam))}"
+     data-sound="${esc(require("../public/mint-sound").soundPrefsJson(o.sound))}"
      data-pages="${esc(pageMap.keys)}" data-page-map="${esc(pageMap.map)}"
      data-csrf="${esc(o.csrf)}"
      data-viewer="${esc(o.user && o.user.name)}"
@@ -371,8 +372,8 @@ ${perm && !desk ? dockMarkup(o.csrf, perm, { shell: true, noVoice: !vOk, core, b
     heading: null,
     pageClass: desk ? "cc-page cc-desk" : "cc-page",
     assets: desk
-      ? ["mint-desktop-webauthn.js", "voice-live.css", "mint-desktop.css", "console.js", "cc-logic.js", "mint-core.js", "mint-core-d.js", "mint-core-bot.js", "cc-family.js", "cc-map.js", "cc-panels.js", "voice-live-detect.js", "voice-live.js", "ui-actions.js", "mint-desktop-layout.js", "mint-desktop-glance.js", "moni-ai.js", "mint-desktop.js"]
-      : ["voice-live.css", "mint-dock.css", "console.js", "cc-logic.js", "mint-core.js", "mint-core-d.js", "mint-core-bot.js", "cc-family.js", "cc-map.js", "cc-panels.js", "voice-live-detect.js", "voice-live.js", "ui-actions.js", "moni-ai.js", "mint-dock.js", "mint-shell.js"],
+      ? ["mint-desktop-webauthn.js", "voice-live.css", "mint-desktop.css", "console.js", "cc-logic.js", "mint-sound.js", "mint-core.js", "mint-core-d.js", "mint-core-bot.js", "cc-family.js", "cc-map.js", "cc-panels.js", "voice-live-detect.js", "voice-live.js", "ui-actions.js", "mint-desktop-layout.js", "mint-desktop-glance.js", "moni-ai.js", "mint-desktop.js"]
+      : ["voice-live.css", "mint-dock.css", "console.js", "cc-logic.js", "mint-sound.js", "mint-core.js", "mint-core-d.js", "mint-core-bot.js", "cc-family.js", "cc-map.js", "cc-panels.js", "voice-live-detect.js", "voice-live.js", "ui-actions.js", "moni-ai.js", "mint-dock.js", "mint-shell.js"],
     topExtra: topExtra(),
     topEnd: TOP_CLOCK,
   });

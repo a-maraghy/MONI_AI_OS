@@ -66,3 +66,17 @@
 .mint-bot-strip canvas { width: 76px; max-width: 100%; height: auto; aspect-ratio: 1; display: block; }
 .mint-bot-strip em { font-style: normal; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 @media (max-width: 720px) { .mint-bot-strip .row { grid-template-columns: repeat(3, minmax(0, 1fr)); } .mint-bot-heads { grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); } }
+
+/* Appearance > Sounds (2026-10-20, mint-sound-settings.js) */
+.snd-vol { display: flex; align-items: center; gap: 12px; }
+.snd-vol input[type="range"] { width: min(280px, 100%); margin: 0; accent-color: var(--accent-2); }
+.snd-vol output { min-width: 3.5em; }
+.snd-quiet { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; }
+.snd-time { display: inline-flex; align-items: center; gap: 6px; margin: 0; font-size: 13px; color: var(--muted); }
+.snd-time input { width: auto; margin: 0; height: 32px; padding: 0 8px; }
+.snd-try { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px; width: 100%; }
+.snd-try + .snd-try { margin-top: 8px; }
+@media (max-width: 640px) { .snd-try { justify-content: flex-start; } }
+.snd-role select { width: auto; margin: 0; height: 32px; padding: 0 8px; }
+.mint-sound-set.snd-noquiet .snd-time { opacity: .5; }
+.mint-sound-set.snd-off #s-sound-vol, .mint-sound-set.snd-off #s-sound-quiet, .mint-sound-set.snd-off #s-sound-browser { opacity: .55; }

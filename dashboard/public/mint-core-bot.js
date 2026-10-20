@@ -1150,7 +1150,7 @@
     }
     function wake() {
       S.dozeT = 0;
-      if (S.doze > 0.5) react("wake");
+      if (S.doze > 0.5) { react("wake"); if (opts.onWake) try { opts.onWake(); } catch (e) { /* the page's hook (a chirp) */ } }
       if (S.still) S.doze = 0;
     }
     /** Something happened (a state change, a message, a card, a pointer near): the quiet spell restarts, a dozing bot wakes. */

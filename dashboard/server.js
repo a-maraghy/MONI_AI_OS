@@ -37,6 +37,7 @@ const accessViews = require("./lib/views-access");
 const consoleViews = require("./lib/views-console");
 const moniAiViews = require("./lib/views-moniai");
 const mintLogic = require("./public/cc-logic");
+const mintSound = require("./public/mint-sound"); // MINT AI's sounds: the prefs check (users.mint_sound)
 const claudeViews = require("./lib/views-claude");
 const moniai = require("./lib/moniai");
 const rbac = require("./lib/rbac");
@@ -4399,6 +4400,7 @@ app.get("/mint-ai", requireAuth, async (req, res) => {
       botHead: req.me.mint_bot_head,
       botColors: req.me.mint_bot_colors,
       botTeam: req.me.mint_bot_team,
+      sound: req.me.mint_sound,
       // The desktop app's render mode: the same page, no page round it (public/mint-desktop.js).
       shell: req.query.shell === "desktop" ? "desktop" : null,
     })
@@ -4493,6 +4495,24 @@ app.post("/mint-ai/api/prefs/bot-team", ...moniAiWrite, (req, res) => {
   const now = c.head || "auto";
   db.logLogin(req.ip, req.me.username, "account", `MINT AI bot head for "${c.key}" ${was} -> ${now}${was === now ? " (unchanged)" : ""}`);
   res.json({ key: c.key, head: c.head, headName: c.head ? mintLogic.BOT_HEADS[c.head] : null, team: ed.team });
+});
+
+/*
+ * MINT AI's sounds (2026-10-20, public/mint-sound.js): on / off, the volume (0-100) and quiet hours, per
+ * person (users.mint_sound, JSON; '' = the defaults). POST any of { on, vol, quiet, from, to }; audited
+ * ("MINT AI sounds ..."). Whether a plain browser plays them is that browser's own switch (localStorage),
+ * never stored here.
+ */
+app.post("/mint-ai/api/prefs/sound", ...moniAiWrite, (req, res) => {
+  const c = mintSound.checkSoundEdit(req.body);
+  if (!c.ok) return res.status(400).json({ error: c.error, code: "invalid" });
+  const me = db.getUser(req.me.id) || req.me;
+  const was = mintSound.soundPrefsLine(me.mint_sound);
+  const next = mintSound.applySoundEdit(me.mint_sound, c.edit);
+  db.setUserSound(req.me.id, mintSound.soundPrefsJson(next));
+  const now = mintSound.soundPrefsLine(next);
+  db.logLogin(req.ip, req.me.username, "account", `MINT AI sounds ${was} -> ${now}${was === now ? " (unchanged)" : ""}`);
+  res.json({ sound: next, line: now });
 });
 
 app.post("/mint-ai/api/prefs/core", ...moniAiWrite, (req, res) => {
