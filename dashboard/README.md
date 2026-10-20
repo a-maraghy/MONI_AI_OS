@@ -150,6 +150,17 @@ turns it off.
 - Tests: `tools/test-stepup.cjs` (server, a software authenticator),
   `tools/test-stepup-ui.cjs` (Chromium, the virtual authenticator; `--shots DIR`).
 
+## Proactive MINT AI: the brief, watchers, "while you were away" (2026-10-20)
+
+A morning brief at each person's time, watchers set in plain words (they only notify, at most 50
+per person), and a catch-up after 30 minutes away. The dashboard's own clock writes them every 20 s
+from read-only supervisor ops; they show in the Command Center and the desktop app only.
+`lib/proactive.js` (pure), `lib/proactive-store.js` (tables `proactive_*` in moni.db),
+`lib/routes-proactive.js` (clock, `/mint-ai/api/proactive/*`, Settings ▸ Briefs & watchers),
+`lib/proactive-writer.js` (the summaries' model, kept only when grounded), `public/mint-proactive.js`.
+Design note and screenshots: `mockups/proactive/`. Test: `tools/test-proactive.cjs` (`--shots DIR`).
+`MONI_PROACTIVE_TICK_MS` changes the clock (tests).
+
 ## Where you land
 
 `/` is not a page: it 302s to the signed-in role's default landing,

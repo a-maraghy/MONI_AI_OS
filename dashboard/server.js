@@ -6552,6 +6552,25 @@ try {
 }
 settingsRoutes.mount(app, { requireAuth, requireCsrf, ctx, db, moniai, pageMap, stepup, stepAudit, callStepped, steppedWith, desktopDays: () => desktop.days(), desktopSetDays: (d, by) => desktop.setDays(d, by) });
 
+/* --------------------- MINT AI, proactive: the brief, watchers, catch-up ---- */
+/*
+ * lib/routes-proactive.js (pure part lib/proactive.js, rows lib/proactive-store.js, the model's
+ * wording lib/proactive-writer.js; the page's half public/mint-proactive.js). Its clock runs here.
+ */
+const proactive = require("./lib/routes-proactive").mount(app, {
+  requireAuth,
+  requireCsrf,
+  apiGuard: moniAiGuard,
+  apiWrite: moniAiWrite,
+  db,
+  moniai,
+  rbac,
+  settingsRoutes,
+  tickMs: Number(process.env.MONI_PROACTIVE_TICK_MS) || undefined,
+  wsBase: process.env.MONI_OPENAI_WS || undefined,
+  voice: { enabled: () => voiceEnabled(), config: () => voiceConfig(), record: (row) => recordVoice(() => voiceLedger.add(row).usd) },
+});
+
 /* ------------------------------------- Computers (laptop control) ---- */
 /*
  * The user's own computers, linked through the MINT AI desktop app (lib/machines.js, routes

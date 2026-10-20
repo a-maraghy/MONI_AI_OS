@@ -136,7 +136,8 @@
   /**
    * feed: the Command Center's event log (S.feed: { key, ts, kind, html }, newest first).
    * Kept: approvals asked for and decided, errors, warnings (a session waiting on you, a failed
-   * service), a session done (its idle message) or ended. Left out: replies, notices, sessions starting.
+   * service), a session done (its idle message) or ended, a watcher that fired, a brief written.
+   * Left out: replies, notices, sessions starting.
    */
   function alerts(feed, now, max) {
     var out = [];
@@ -151,6 +152,9 @@
       else if (k === "idle") { tone = "ok"; var n = boldOf(f.html), q = /<span class="q">([\s\S]*?)<\/span>/.exec(str(f.html)); text = (n || "A session") + " is done" + (q && plain(q[1]) ? ": " + plain(q[1]) : ""); }
       else if (k === "session") { if (!/ ended$/.test(text)) return; tone = "info"; }
       else if (k === "approved") tone = "ok";
+      // Proactive MINT AI (public/mint-proactive.js): a watcher that fired, a brief or catch-up written.
+      else if (k === "watch") { tone = "warn"; text = text.replace(/^Watcher · /, ""); }
+      else if (k === "brief") tone = "info";
       else if (k === "denied" || k === "expired" || k === "withdrawn") tone = "info";
       if (!tone) return;
       out.push({ key: str(f.key), tone: tone, text: clip(text, 110), ago: isFinite(ts) ? ago(now - ts) : "", ts: isFinite(ts) ? ts : 0 });

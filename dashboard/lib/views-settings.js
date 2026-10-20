@@ -1,7 +1,7 @@
 "use strict";
 /**
  * MINT AI ▸ Settings (/mint-ai/settings/<section>): every setting of MINT AI
- * in one place, in eight sections. The left sub-nav becomes a chip row on a
+ * in one place, in nine sections. The left sub-nav becomes a chip row on a
  * narrow screen.
  *
  * Every setting is a row: label and help on the left, the control on the
@@ -13,7 +13,7 @@
  * same note without a reload.
  *
  * Who sees what (all need moniai.use): Voice needs voice.manage; Appearance
- * is the viewer's own; every other section is the administrator's. The
+ * and Briefs & watchers are the viewer's own; every other section is the administrator's. The
  * sections a viewer may not open are not listed.
  *
  * The Voice section's body is lib/views-settings-voice.js; the rest are here.
@@ -29,6 +29,7 @@ const SETTINGS_SECTIONS = [
   ["sessions", "Sessions & hiring", "agents"],
   ["screen", "Screen control", "monitor"],
   ["approvals", "Approvals & automations", "shield"],
+  ["proactive", "Briefs & watchers", "clock"],
   ["usage", "Usage & budget", "activity"],
   ["advanced", "Advanced", "settings"],
 ];
@@ -40,6 +41,8 @@ function mayOpen(perm, key) {
   if (key === "voice") return perm.can("voice.manage");
   // Appearance is the viewer's own (their core, their sessions view).
   if (key === "appearance") return true;
+  // Briefs & watchers are the viewer's own too (lib/routes-proactive.js).
+  if (key === "proactive") return true;
   return !!perm.admin;
 }
 
