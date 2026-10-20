@@ -182,9 +182,61 @@ sections.appearance = async (req, res) => {
         }) +
         `<div class="lr set-note"><span class="muted small" id="mint-appearance-note" role="status"></span><noscript><button class="btn small primary" type="submit">Save</button></noscript></div>`
     ) +
-    `</form>`;
-  return { body, assets: MV.APPEARANCE_ASSETS };
+    `</form>` +
+    soundSettings(req.me.mint_sound, csrf);
+  return { body, assets: MV.APPEARANCE_ASSETS.concat(["mint-sound.js", "mint-sound-settings.js"]) };
 };
+
+/*
+ * Appearance > Sounds (2026-10-20, public/mint-sound.js): MINT AI's sounds, per person (users.mint_sound,
+ * POST /mint-ai/api/prefs/sound): on / off, one volume, quiet hours; and this browser's own switch (a plain
+ * browser is silent until it is on). public/mint-sound-settings.js saves each change at once and plays the
+ * previews. Needs JavaScript (sounds are WebAudio); without it the rows say so.
+ */
+function soundSettings(saved, csrf) {
+  const SND = require("../public/mint-sound");
+  const p = SND.normSoundPrefs(saved);
+  const roleOpts = Object.keys(SND.ROLES).map((r) => `<option value="${esc(r)}">${esc(SND.ROLES[r].label)}</option>`).join("");
+  const chirp = (n, l) => `<button type="button" class="btn small" data-snd-try="${n}">${icon("play", 12)}${esc(l)}</button>`;
+  return `<div class="mint-sound-set" id="mint-sound-set" data-csrf="${esc(csrf)}" data-sound="${esc(SND.soundPrefsJson(p))}">` +
+    V.group(
+      "Sounds",
+      "voice",
+      V.row(
+        "Sounds",
+        "Small chirps when MINT AI or a session wakes, starts work, finishes, needs you or hits an error (each role has its own voice), a soft chime when an approval is waiting and another when a job is done. Never during a live call or while the voice speaks.",
+        V.sw('name="snd_on" data-snd="on"', p.on),
+        { scope: "you", id: "s-sound" }
+      ) +
+        V.row(
+          "Volume",
+          "Quiet by default. Several things at once make one sound, never a pile.",
+          `<div class="snd-vol"><input type="range" min="0" max="100" step="5" value="${p.vol}" data-snd="vol" aria-label="Volume of the sounds"><output class="muted-num" data-snd-out>${p.vol} %</output></div>`,
+          { scope: "you", id: "s-sound-vol" }
+        ) +
+        V.row(
+          "Quiet hours",
+          "No sounds between these times (your computer's clock).",
+          `<div class="snd-quiet">${V.sw('name="snd_quiet" data-snd="quiet"', p.quiet)}<label class="snd-time"><span>from</span><input type="time" value="${esc(p.from)}" data-snd="from" required></label><label class="snd-time"><span>to</span><input type="time" value="${esc(p.to)}" data-snd="to" required></label></div>`,
+          { scope: "you", id: "s-sound-quiet" }
+        ) +
+        V.row(
+          "This browser",
+          "The desktop app plays them (unless switched off above). A browser stays silent until you switch it on in that browser.",
+          V.sw('name="snd_browser" data-snd="browser"', false),
+          { scope: "this browser", id: "s-sound-browser" }
+        ) +
+        V.row(
+          "Listen",
+          "Plays at the volume above, whatever the switches and the hour say.",
+          `<div class="snd-try">${chirp("approval", "Approval waiting")}${chirp("job", "Job done")}</div>` +
+            `<div class="snd-try"><label class="snd-role"><span class="cc-sr">Whose voice</span><select data-snd-role aria-label="Whose voice">${roleOpts}</select></label>${chirp("wake", "Wake")}${chirp("think", "Starts")}${chirp("done", "Done")}${chirp("needs", "Needs you")}${chirp("error", "Error")}</div>`,
+          { id: "s-sound-try" }
+        ) +
+        `<div class="lr set-note"><span class="muted small" id="mint-sound-note" role="status"></span><noscript><span class="muted small">The sounds and these settings need JavaScript.</span></noscript></div>`
+    ) +
+    `</div>`;
+}
 
 function themeButtons() {
   const o = (v, ic, l) => `<button type="button" role="radio" data-theme-opt="${v}" aria-checked="${v === "system"}" title="${l}">${icon(ic, 14)}<span>${l}</span></button>`;

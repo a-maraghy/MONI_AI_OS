@@ -52,6 +52,8 @@
     function drawsKids() { return core.S.concept === "D" || core.S.concept === "E"; }
     function botHead() { return root.getAttribute("data-bot-head") || ""; }
     function botColors() { var L = window.MintLogic; return L ? L.normBotColors(root.getAttribute("data-bot-colors") || "") : null; }
+    /** MINT AI's sounds (mint-sound.js): every core plays them; the bot (E) also shows the reaction. */
+    function sound(name, role) { var M = window.MintSound; if (M && M.play) M.play(name, { role: role }); }
     function coreOpts(c) {
       return {
         concept: c,
@@ -71,6 +73,7 @@
         onFrame: onFrame,
         backdrop: "glow", // D / E: only the glow round the core; the page keeps its own background
         head: botHead(), colors: botColors(), // E: the viewer's bot
+        onWake: function () { sound("wake", "core"); }, // E: a dozing bot woke: its chirp
         desk: document.documentElement.classList.contains("cc-desk"), // E: the desktop app (over the wallpaper): backplates, a stronger wireframe
         // D draws the family's spheres as meshes on its own canvas, after the family has moved this frame.
         kids: function () { return family && family.enabled() ? family.meshKids() : null; },
@@ -280,18 +283,20 @@
     /*
      * Core E's small reactions to the sessions (2026-10-20): one that starts waiting on you gets a glance;
      * one that finishes (working -> idle) a glance and a grin. The first list only sets the baseline.
+     * The sounds (mint-sound.js, every core): the session's role chirps needs / done / think (work starts).
      */
     var lastSt = null;
     function botNotice(list) {
       var was = lastSt;
       lastSt = {};
       list.forEach(function (s) { lastSt[s.id] = s.st; });
-      if (!was || !core.react) return;
+      if (!was) return;
       list.forEach(function (s) {
         var p = was[s.id];
         if (!p || p === s.st) return;
-        if (s.st === "waiting") lookAtSess(s.id, 1600);
-        else if (p === "working" && s.st === "idle") { lookAtSess(s.id, 1400); core.react("grin"); }
+        if (s.st === "waiting") { sound("needs", s.role); if (core.react) lookAtSess(s.id, 1600); }
+        else if (p === "working" && s.st === "idle") { sound("done", s.role); if (core.react) { lookAtSess(s.id, 1400); core.react("grin"); } }
+        else if (s.st === "working" && p !== "waiting") sound("think", s.role);
       });
     }
     /** The core looks at a session for ms (its sphere, followed while it moves). */
@@ -329,7 +334,11 @@
         if (name === state) return;
         // core E: a long turn finished -> a grin (MintLogic.botTurnDone)
         var nowMs = Date.now(), ML = window.MintLogic;
-        if (ML && ML.botTurnDone && core.react && ML.botTurnDone(state, name, busySince ? nowMs - busySince : 0)) core.react("grin");
+        var long = !!(ML && ML.botTurnDone && ML.botTurnDone(state, name, busySince ? nowMs - busySince : 0));
+        if (long && core.react) core.react("grin");
+        // sounds: a long turn done is the "job" chime; MINT AI starting to think, its chirp
+        if (long) sound("job", "core");
+        else if (name === "thinking" && (state === "idle" || state === "listening")) sound("think", "core");
         busySince = name === "thinking" || name === "delegating" ? busySince || nowMs : name === "speaking" ? busySince : 0;
         state = name;
         core.setState(name);
@@ -348,7 +357,7 @@
         if (core.S.concept === "E") { if (head && core.setHead) core.setHead(head); if (colors && core.setColors) core.setColors(window.MintLogic ? window.MintLogic.normBotColors(colors) : colors); }
       },
       /** MINT AI unreachable: core E shows its error face (the other cores have no offline look). */
-      setOffline: function (on) { offline = !!on; if (core.setOffline) core.setOffline(offline); },
+      setOffline: function (on) { if (!!on && !offline) sound("error", "core"); offline = !!on; if (core.setOffline) core.setOffline(offline); },
       /** A delegation went out to this session: the stream of dots flies there. */
       send: function (id, ms) {
         var n = node(id);

@@ -342,6 +342,28 @@
 
   document.addEventListener("moni-theme", function () { Orb.palette(); });
 
+  /* ================================================================ sounds (2026-10-20)
+     MINT AI's sounds (public/mint-sound.js): the person's switch, volume and quiet hours (#cc data-sound,
+     users.mint_sound), the desktop app follows them, a plain browser only once switched on there.
+     Silent during a live call or while the voice speaks. The hooks: cc-map.js (the bot's chirps), the
+     approvals, delegations and turns below. */
+  var Snd = window.MintSound || null;
+  function sound(name, role) { if (Snd && Snd.play) Snd.play(name, { role: role }); }
+  if (Snd) {
+    Snd.setPrefs(root.getAttribute("data-sound") || "");
+    Snd.setHost({ desktop: DESKTOP });
+    Snd.mutedBy(function () {
+      if (liveActive()) return "call";
+      if (typeof Voice !== "undefined" && Voice && Voice.speaking) return "speaking";
+      return "";
+    });
+    // Changed in Settings (another tab, or the page in the shell's frame): take it now.
+    window.addEventListener("storage", function (e) {
+      if (e.key !== "mint-sound" || !e.newValue) return;
+      try { var v = JSON.parse(e.newValue); if (v && v.sound) { Snd.setPrefs(v.sound); root.setAttribute("data-sound", JSON.stringify(Snd.prefs())); } } catch (x) { /* ignored */ }
+    });
+  }
+
   /* ================================================================ the core and its orbit */
 
   var Orb = window.MoniMap({
@@ -737,6 +759,7 @@
       hired: s.hired === true,
       slug: s.hire && s.hire.slug ? s.hire.slug : null, // hired through MINT AI (kept or not): its menu has Keep / Retire
       head: sessHead(s).head, // core E: its role's accessory, or the viewer's pin
+      role: sessHead(s).role, // its role (cc-logic BOT_ROLE_RULES): the voice of its chirps (mint-sound.js)
     };
   }
   // A sphere's id: the session id first (it survives a restart), then the pid.
@@ -1197,8 +1220,9 @@
     }
     // A snapshot taken before the turn ended (the reply to POST send, when the
     // turn was quick) must not put a finished turn back to queued or running.
-    var stale = cur.ended_at && !row.ended_at;
+    var stale = cur.ended_at && !row.ended_at, wasSt = cur.status;
     if (!stale) for (var k in row) if (Object.prototype.hasOwnProperty.call(row, k)) cur[k] = row[k];
+    if (wasSt && wasSt !== cur.status && cur.status === "error") sound("error", "core"); // a turn ended with an error
     if (S.oldestTurn == null || row.id < S.oldestTurn) S.oldestTurn = row.id;
     renderTurn(cur);
     return cur;
@@ -1540,6 +1564,7 @@
       openNeed("a" + a.id);
       feedPush({ key: "ap" + a.id + "p", ts: a.created_at, kind: "approval", html: "<b>Approval needed</b> · " + esc(clip(a.summary, 140)) });
       if (Voice.on) Voice.say("I need your approval before I go on.");
+      sound("approval");
     }
     if (!replay && a.status !== "pending" && (!cur || cur.status === "pending")) {
       if (a.status === "approved" && Orb.react) Orb.react("nod"); // core E: a nod when an approval goes through
@@ -1830,6 +1855,8 @@
       feedPush({ key: "d" + d.id + "sent", ts: d.created_at, kind: "live", label: "sent", html: "Delegated to <b>" + esc(d.target_name) + "</b> · " + esc(clip(d.summary || firstLine(d.text), 120)) });
     }
     // (The session's answer comes home once, with its inbound message -- inboundFeed -- not again on the ack.)
+    if (!replay && cur && cur.status !== d.status && d.status === "done") sound("job");
+    if (!replay && cur && cur.status !== d.status && d.status === "failed") sound("error", s ? sessHead(s).role : "other");
     if (!replay && cur && cur.status !== d.status && (d.status === "failed" || d.status === "held")) {
       feedPush({ key: "d" + d.id + d.status, ts: d.updated_at, kind: d.status === "failed" ? "failed" : "held", html: "<b>" + esc(d.target_name) + "</b> · delegation " + esc(d.status) + (d.note ? " — " + esc(clip(d.note, 120)) : "") });
     }

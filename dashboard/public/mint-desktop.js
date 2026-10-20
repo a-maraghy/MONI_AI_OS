@@ -845,7 +845,17 @@
   });
 
   /* ---------------------------------------------------------------- the app's hotkeys and state, in */
+  /*
+   * MINT AI's sounds (mint-sound.js) stay quiet while the app says do-not-disturb: its own tray switch
+   * ("dnd") or Windows Focus / quiet hours ("focusAssist") -- once the app sends them in its state. The
+   * app (0.1.10) does not yet: then only the person's quiet hours apply.
+   */
+  function soundHost(p) {
+    if (!p || !window.MintSound || (p.dnd === undefined && p.focusAssist === undefined)) return;
+    window.MintSound.setHost({ dnd: !!p.dnd || !!p.focusAssist });
+  }
   listen("mint://state", function (p) {
+    soundHost(p);
     var was = JSON.stringify(st);
     STATE_KEYS.forEach(function (k) { if (p[k] !== undefined) st[k] = p[k]; });
     if (JSON.stringify(st) !== was) apply();
@@ -969,6 +979,7 @@
   function boot() {
     invoke("get_state").then(function (p) {
       if (p) STATE_KEYS.forEach(function (k) { if (p[k] !== undefined) st[k] = p[k]; });
+      soundHost(p);
       apply();
       invoke("page_ready", { signedIn: !!$("cc") });
     });
