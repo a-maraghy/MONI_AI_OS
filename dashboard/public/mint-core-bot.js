@@ -12,7 +12,7 @@
  *
  *   ready (idle)  base smile; slow breathing, a slow yaw sway, a blink every 3-6 s, a glance now and then
  *   listening     wide eyes; the glow and the lit nodes pulse with the microphone level
- *   thinking      furrowed brows; a shimmer sweeps across the head's nodes
+ *   thinking      calm, lidded eyes; a shimmer sweeps across the head's nodes
  *   speaking      a waveform mouth driven by the voice's real output level
  *   delegating    thinking's colour; the eyes and the head turn toward the session, a stream of dots flies there
  *   needs you     wide eyes with pupils, amber, a soft double pulse
@@ -72,7 +72,8 @@
     base: ["..................", "..................", "...cccc....cccc...", "..c.cc.c..c.cc.c..", "..cccccc..cccccc..", "..c.cc.c..c.cc.c..", "...cccc....cccc...", "..................", "..................", "..m............m..", "...m..........m...", "....mmmmmmmmmm....", ".................."],
     grin: ["..................", "...ccc......ccc...", "..c...c....c...c..", ".c.....c..c.....c.", "..................", "..................", "..mmmmmmmmmmmmmm..", "..m.w.w.w.w.w.wm..", "...m..........m...", "....mmmmmmmmmm....", ".................."],
     pupils: ["..................", "..vvvvv....vvvvv..", ".v.....v..v.....v.", ".v..ww.v..v..ww.v.", ".v..ww.v..v..ww.v.", "..vvvvv....vvvvv..", "..................", "..................", ".......mmmm.......", "......m....m......", ".................."],
-    focus: ["..cc..........cc..", "....cc......cc....", "......c....c......", "..................", "..vvvvv....vvvvv..", "..vvvvv....vvvvv..", "..................", "..................", "......mmmmmm......", ".................."],
+    // working (2026-10-20): calm, lidded eyes -- the old slanted brows read as horns on a small head
+    focus: ["..................", "..................", ".cccccc....cccccc.", ".vvvvvv....vvvvvv.", "..vvvv......vvvv..", "..................", "..................", ".......mmmm.......", "..................", ".................."],
     listen: ["..................", "..cccccc..cccccc..", "..cccccc..cccccc..", "..cccccc..cccccc..", "..cccccc..cccccc..", "..cccccc..cccccc..", "..................", "..................", ".......mmmm.......", ".......mmmm.......", ".................."],
     speak: ["..................", "...cccc....cccc...", "...cccc....cccc...", "...cccc....cccc...", "..................", "..................", "...m.m.m.m.m.m....", "..mmmmmmmmmmmmmm..", "...m.m.m.m.m.m....", ".................."],
     err: ["..................", "..c...c....c...c..", "...c.c......c.c...", "....c........c....", "...c.c......c.c...", "..c...c....c...c..", "..................", "..................", ".....cccccccc.....", ".................."],
@@ -167,7 +168,7 @@
     return out;
   }
   // eye band (map rows that blink and glance) and, for speak, the mouth band drawn from the voice level
-  var FBAND = { base: [2, 6], grin: [1, 3], pupils: [1, 5], focus: [4, 5], listen: [1, 5], speak: [1, 3], err: null, sleep: null };
+  var FBAND = { base: [2, 6], grin: [1, 3], pupils: [1, 5], focus: [2, 4], listen: [1, 5], speak: [1, 3], err: null, sleep: null };
   var FACES = {};
   Object.keys(FMAP).forEach(function (k) {
     var m = FMAP[k], fr = m.length, fc = m[0].length, bits = new Uint8Array(fr * fc);
