@@ -176,7 +176,7 @@ const KEEP = [
   ["replies read aloud (toggle, remembered per browser) and the Full reply's Read aloud", /\$\("cc-speak-toggle"\)/.test(main) && /\$\("cc-reply-read"\)\.addEventListener/.test(main) && /READ_KEY = "mint-read-aloud"/.test(main)],
   ["Remote Control link (claude.ai only) and Interrupt", /function openRemoteControl\(\)/.test(main) && /function interrupt\(btn\)/.test(main)],
   ["the Ctrl+K palette", /String\(e\.key\)\.toLowerCase\(\) === "k"/.test(panels) && /function openPalette\(q\)/.test(panels)],
-  ["the session deep view (5 s refresh, Interrupt / Open in Claude for MINT AI only)", /function openDeep\(key\)/.test(panels) && /data-deep="interrupt"/.test(panels)],
+  ["the session deep view (5 s refresh, Interrupt / Open in Claude for MINT AI only)", /function openDeep\(key(, opt)?\)/.test(panels) && /data-deep="interrupt"/.test(panels)],
   ["new mission, standing order editor, usage detail, Always allow", /function openNewMission\(goal\)/.test(panels) && /function openOrder\(id\)/.test(panels) && /function openCost\(\)/.test(panels) && /function openAlways\(id\)/.test(panels)],
   ["watchers on/off, rule add/edit/delete/test", /function toggleWatcher\(btn\)/.test(panels) && /api\("rules\/test"/.test(panels) && /"\/delete", \{ body: \{\} \}/.test(panels)],
   ["the active mission chip", /id="cc-mis-chip"/.test(html) && /function renderMisChip\(\)/.test(panels)],

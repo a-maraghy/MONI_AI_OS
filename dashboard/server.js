@@ -5085,6 +5085,34 @@ app.get("/mint-ai/api/sessions/:sid/mirror", ...moniAiGuard, (req, res) => {
   moniAiOp(req, res, "session-mirror", { session_id: req.params.sid });
 });
 
+// The session story and the day timeline (public/cc-story.js): read-only, cached a few seconds (lib/story-api.js).
+const storyApi = require("./lib/story-api");
+const storyCache = storyApi.createCache();
+app.get("/mint-ai/api/sessions/:sid/story", ...moniAiGuard, async (req, res) => {
+  let sid;
+  try {
+    sid = storyApi.cleanSession(req.params.sid);
+  } catch (e) {
+    return res.status(404).json({ error: e.message });
+  }
+  try {
+    const out = await storyCache.get("session", sid, () => moniai.call("session-story", { session_id: sid }, req.me.username, { timeout: 30000 }));
+    res.set("Cache-Control", "private, no-store").json(out);
+  } catch (e) {
+    moniAiFail(res, e);
+  }
+});
+app.get("/mint-ai/api/story/day", ...moniAiGuard, async (req, res) => {
+  const day = moniAiClean(res, () => storyApi.cleanDay(req.query && req.query.day));
+  if (day === undefined) return;
+  try {
+    const out = await storyCache.get("day", day || "today", () => moniai.call("story-day", day ? { day } : {}, req.me.username, { timeout: 30000 }));
+    res.set("Cache-Control", "private, no-store").json(out);
+  } catch (e) {
+    moniAiFail(res, e);
+  }
+});
+
 /* ------------------------------------------------------- channel members --- */
 
 app.post("/channels/:slug/members/add", requireAuth, requirePerm("channels.edit"), requireChannelScope, requireCsrf, async (req, res) => {

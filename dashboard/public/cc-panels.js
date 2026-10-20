@@ -1183,7 +1183,9 @@
       if (e.role === "peer") return '<div class="cc-msg me"><div class="who"><span class="cc-av"></span><b>MINT AI</b> (delegation) · ' + tm + '</div><div class="cc-bubble">' + esc(clip(e.text, 4000)) + "</div></div>";
       return '<div class="cc-msg ai"><div class="who"><b>' + esc(s.self ? "MINT AI" : s.name || "Session") + "</b> · " + tm + '</div><div class="cc-bubble">' + CC.md(clip(e.text, 6000)) + "</div></div>";
     }
-    function openDeep(key) {
+    function openDeep(key, opt) {
+      // Opening a session shows its story (cc-story.js); the story's "Live mirror" comes back here with { mirror: true }.
+      if (!(opt && opt.mirror) && window.MintStory && window.MintStory.openKey(key)) return;
       var s = CC.findSess(key);
       if (!s) return;
       overlay("deep", '<div id="cc-deep-in"></div>', "cc-deep", "Session " + (s.self ? "MINT AI" : s.name || ""));

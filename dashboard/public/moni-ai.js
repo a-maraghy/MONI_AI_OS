@@ -350,7 +350,7 @@
   }, {
     onClick: function (key) { openSheet("sessions"); highlightSess(key); },
     // A sphere: its conversation (the existing deep view), or the sessions sheet if that is not there.
-    onOpen: function (key) { if (P && P.openDeep && findSess(key)) P.openDeep(key); else { openSheet("sessions"); highlightSess(key); } },
+    onOpen: function (key) { if (window.MintStory && window.MintStory.openKey(key)) return; if (P && P.openDeep && findSess(key)) P.openDeep(key); else { openSheet("sessions"); highlightSess(key); } },
     onMenu: function (key, x, y) { sessMenu(key, x, y); },
     // The desktop app's render mode (?shell=desktop) places the core itself (public/mint-desktop.js).
     layoutOverride: function () { return DESKTOP && window.MintDesktop ? window.MintDesktop.coreLayout() : null; },
@@ -795,7 +795,9 @@
     // The core's sessions (the orbit's dots or the family of spheres): what each is doing, its last message, today's cost.
     var nodes = sortSessions(live).map(familyNode);
     var nodeSig = JSON.stringify(nodes);
-    if (nodeSig !== nodesSig || force) { nodesSig = nodeSig; Orb.setNodes(nodes); }
+    // The day timeline (cc-story.js) is replaying a past moment: it sets the spheres; live comes back on "Now".
+    if (window.MintStory && window.MintStory.replaying()) nodesSig = "";
+    else if (nodeSig !== nodesSig || force) { nodesSig = nodeSig; Orb.setNodes(nodes); }
     if (sig === sessSig && !force) return;
     sessSig = sig;
     Orb.mark(S.target !== "auto" ? (function () { var x = sessionNamed(S.target); return x ? sessKey(x) : null; })() : null);
@@ -3428,6 +3430,8 @@
     resyncSessions: function () { setSessions(S.sessions.filter(function (s) { return !s.synthetic; })); renderSessions(true); },
   };
   var P = window.MoniPanels(CC);
+  // The session story and the day timeline (cc-story.js): opening a session shows its story.
+  if (window.MintStory) window.MintStory.attach(CC, P);
 
   /* ================================================================ keys */
 

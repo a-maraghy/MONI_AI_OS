@@ -139,6 +139,9 @@ const OPS = {
   // command. `turns`: the desk's own earlier requests, to learn their replies.
   snapshot: { mutating: false, params: { turns: optIntList(1, Number.MAX_SAFE_INTEGER, 20) } },
   "session-mirror": { mutating: false, params: { session_id: str(36, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/) } },
+  // The session story and the day timeline (lib/story.js).
+  "session-story": { mutating: false, params: { session_id: str(36, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/) } },
+  "story-day": { mutating: false, params: { day: optString(10, /^\d{4}-\d{2}-\d{2}$/) } },
 
   /* ---- writes ---- */
   "mission-create": { mutating: true, params: { title: text(1, 200), goal: optText(4000), steps: optArray(stepSpec(), 50) } },
