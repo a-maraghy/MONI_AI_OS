@@ -273,7 +273,7 @@ app.use(
 // Pages link the stamped /static copy; this unstamped one is kept a day, not a
 // week, so a new icon replaces the old one in bookmarks within a day.
 app.get("/favicon.ico", (req, res) => {
-  res.sendFile(path.join(__dirname, "public", "favicon.ico"), {
+  res.sendFile(path.join(__dirname, "public", ui.appIcons().ico) /* MINT_APP_ICON: lib/ui.js */, {
     maxAge: "1d",
     headers: { "Content-Type": "image/x-icon" },
   });
@@ -4398,6 +4398,7 @@ app.get("/mint-ai", requireAuth, async (req, res) => {
       sessview: req.me.sessions_view,
       botHead: req.me.mint_bot_head,
       botColors: req.me.mint_bot_colors,
+      botTeam: req.me.mint_bot_team,
       // The desktop app's render mode: the same page, no page round it (public/mint-desktop.js).
       shell: req.query.shell === "desktop" ? "desktop" : null,
     })
@@ -4472,6 +4473,26 @@ app.post("/mint-ai/api/prefs/bot", ...moniAiWrite, (req, res) => {
   const head = mintLogic.normBotHead(b.head !== undefined ? b.head : me ? me.mint_bot_head : req.me.mint_bot_head);
   const cur = colors || mintLogic.normBotColors(me ? me.mint_bot_colors : req.me.mint_bot_colors);
   res.json({ head, headName: mintLogic.BOT_HEADS[head], colors: cur, colorsName: mintLogic.botColorsLine(cur), close: mintLogic.botClosePairs(cur) });
+});
+
+/*
+ * Core E's team (2026-10-20): a session's head is its role's (cc-logic botRole) unless the viewer pins one.
+ * POST { name, head } -- head one of the ten, or "" / null to go back to the role's. Stored per person
+ * (users.mint_bot_team, JSON {normalised session name: head}, at most 64), audited ("MINT AI bot head for
+ * <session> ...").
+ */
+app.post("/mint-ai/api/prefs/bot-team", ...moniAiWrite, (req, res) => {
+  const c = mintLogic.checkBotTeamEdit(req.body);
+  if (!c.ok) return res.status(400).json({ error: c.error, code: "invalid" });
+  const me = db.getUser(req.me.id) || req.me;
+  const team = mintLogic.normBotTeam(me.mint_bot_team);
+  const was = team[c.key] || "auto";
+  const ed = mintLogic.applyBotTeamEdit(team, c.key, c.head);
+  if (!ed.ok) return res.status(400).json({ error: ed.error, code: "full" });
+  db.setUserBotTeam(req.me.id, mintLogic.botTeamJson(ed.team));
+  const now = c.head || "auto";
+  db.logLogin(req.ip, req.me.username, "account", `MINT AI bot head for "${c.key}" ${was} -> ${now}${was === now ? " (unchanged)" : ""}`);
+  res.json({ key: c.key, head: c.head, headName: c.head ? mintLogic.BOT_HEADS[c.head] : null, team: ed.team });
 });
 
 app.post("/mint-ai/api/prefs/core", ...moniAiWrite, (req, res) => {

@@ -389,6 +389,31 @@
     try { b = JSON.parse(e.newValue); } catch (x) { b = null; }
     if (b && Orb.setBot) Orb.setBot(ML.isBotHead(b.head) ? b.head : null, b.colors ? ML.normBotColors(b.colors) : null);
   });
+  /*
+   * Core E's team (2026-10-20): each session's head wears its role's accessory (MintLogic.botRole), unless
+   * the viewer pinned one in the Sessions sheet (users.mint_bot_team, POST prefs/bot-team; #cc data-bot-team).
+   */
+  var botTeam = ML.normBotTeam(root.getAttribute("data-bot-team") || "");
+  function sessHead(s) { return ML.botHeadFor(s, botTeam); }
+  function setSessHead(name, head) {
+    var ed = ML.applyBotTeamEdit(botTeam, ML.botTeamKey(name), head || null);
+    if (!ed.ok) { toast(ed.error, true); return; }
+    botTeam = ed.team;
+    root.setAttribute("data-bot-team", JSON.stringify(botTeam));
+    renderSessions(true);
+    api("prefs/bot-team", { body: { name: name, head: head || "" } }).then(function (r) {
+      if (r && r.team) { botTeam = ML.normBotTeam(r.team); root.setAttribute("data-bot-team", JSON.stringify(botTeam)); }
+      toast(clip(name, 30) + ": " + (head ? ML.BOT_HEADS[head] : "its role's head again"));
+    }).catch(function (e) { toast("The head changed here, but was not saved: " + e.message, true); });
+  }
+  /** The Sessions sheet's head picker for one session (core E only). */
+  function botPick(s) {
+    if (coreNow() !== "E" || !s.name) return "";
+    var b = sessHead(s);
+    var o = '<option value="">Auto · ' + esc(ML.BOT_HEADS[b.auto]) + "</option>" +
+      Object.keys(ML.BOT_HEADS).map(function (k) { return '<option value="' + k + '"' + (b.pinned && b.head === k ? " selected" : "") + ">" + esc(ML.BOT_HEADS[k]) + "</option>"; }).join("");
+    return '<label class="cc-botpick" title="The head this session wears as a bot. Auto: its role\'s (' + esc(b.label) + ')">Bot <select data-bot-sess="' + esc(s.name) + '" aria-label="Bot head for ' + esc(s.name) + '">' + o + "</select></label>";
+  }
   function paintCoreSwitches() {
     var bs = document.querySelectorAll("[data-core-set]");
     for (var i = 0; i < bs.length; i++) bs[i].setAttribute("aria-checked", String(bs[i].getAttribute("data-core-set") === coreNow()));
@@ -398,6 +423,7 @@
     var was = coreNow();
     Orb.setConcept(c);
     paintCoreSwitches();
+    if (c !== was) renderSessions(true); // core E adds a head picker to each session
     try { window.localStorage.setItem(CORE_KEY, c); } catch (e) { /* the server keeps it */ }
     if (c === was) return Promise.resolve(c);
     return api("prefs/core", { body: { core: c } }).then(function (r) {
@@ -702,6 +728,7 @@
       act: 1 + dels * 3 + Math.min(20, ((s.tokens_today && s.tokens_today.total) || 0) / 5e5) + (st === "working" ? 2 : 0),
       hired: s.hired === true,
       slug: s.hire && s.hire.slug ? s.hire.slug : null, // hired through MINT AI (kept or not): its menu has Keep / Retire
+      head: sessHead(s).head, // core E: its role's accessory, or the viewer's pin
     };
   }
   // A sphere's id: the session id first (it survives a restart), then the pid.
@@ -746,7 +773,7 @@
       return [s.pid, s.name, s.status, s.waiting_for, s.where, s.open_delegations, s.last_delegation && [s.last_delegation.id, s.last_delegation.status],
         s.mission && [s.mission.ref, s.mission.step_n, s.mission.step_status], s.tokens_today && s.tokens_today.total, s.cwd,
         (s.subagents || []).map(function (a) { return [a.id, a.status, a.description]; })];
-    })) + "|" + S.target + "|" + (S.status && S.status.busy) + "|" + (S.status && S.status.process && S.status.process.model);
+    })) + "|" + S.target + "|" + (S.status && S.status.busy) + "|" + (S.status && S.status.process && S.status.process.model) + "|" + coreNow() + JSON.stringify(botTeam);
     var live = liveSessions();
     $("cc-sess-aside").textContent = live.length + " live" + (S.status && S.status.sessions_at ? " · polled " + ago(S.status.sessions_at) : "");
     // Hiring (M-6): how many of the 7 places are taken, and how many of those MINT AI hired.
@@ -793,7 +820,7 @@
         '<div class="m">' + sessLine(s) + " · " + esc(sessWhere(s)) + "</div>" +
         (subs.length ? '<div class="cc-subagents">' + subs.map(function (a) { return "<div><i></i><b>" + esc(a.type || "agent") + "</b> " + esc(clip(a.description || "", 80)) + "</div>"; }).join("") + "</div>" : "") +
         '<div class="acts"><button type="button" class="cc-btn sm" data-deep-open="' + esc(key) + '">' + ic("eye") + "Deep view</button>" +
-        (s.name ? '<button type="button" class="cc-btn sm" data-at="' + esc(s.name) + '">' + ic("message") + "Message via MINT AI</button>" : "") +
+        (s.name ? '<button type="button" class="cc-btn sm" data-at="' + esc(s.name) + '">' + ic("message") + "Message via MINT AI</button>" : "") + botPick(s) +
         (s.hire ? '<button type="button" class="cc-btn sm" data-hire-keep="' + esc(key) + '" aria-pressed="' + (s.hire.kept ? "true" : "false") + '">' + (s.hire.kept ? "Stop keeping" : "Keep") + "</button>" +
           '<button type="button" class="cc-btn sm" data-hire-retire="' + esc(key) + '"' + (s.hire.kept ? ' disabled title="Kept: stop keeping it first"' : "") + ">Retire…</button>" : "") + "</div></div>";
     });
@@ -810,6 +837,10 @@
     setTimeout(function () { el.classList.remove("hl"); }, 2400);
   }
 
+  $("cc-sessions").addEventListener("change", function (e) {
+    var sel = e.target.closest && e.target.closest("[data-bot-sess]");
+    if (sel) setSessHead(sel.getAttribute("data-bot-sess"), sel.value || null);
+  });
   $("cc-sessions").addEventListener("click", function (e) {
     var d = e.target.closest("[data-deep-open]");
     if (d) { P.openDeep(d.getAttribute("data-deep-open")); return; }
@@ -1006,6 +1037,7 @@
   input.addEventListener("blur", capActivity);
   input.addEventListener("input", function () {
     capActivity();
+    if (Orb.poke) Orb.poke(); // core E: typing wakes a dozing bot
     paintCalm();
     $("cc-send").classList.toggle("ready", !!input.value.trim());
     var m = /^@(\S+)\s/.exec(input.value);
@@ -1486,6 +1518,7 @@
       if (Voice.on) Voice.say("I need your approval before I go on.");
     }
     if (!replay && a.status !== "pending" && (!cur || cur.status === "pending")) {
+      if (a.status === "approved" && Orb.react) Orb.react("nod"); // core E: a nod when an approval goes through
       feedPush({ key: "ap" + a.id + a.status, ts: a.decided_at, kind: a.status === "approved" ? "approved" : a.status, html: "<b>" + esc(a.status === "approved" ? "Approved" : a.status === "denied" ? "Denied" : a.status === "expired" ? "Expired" : "Withdrawn") + "</b>" + (a.decided_by && a.decided_by !== "timeout" ? " by " + esc(decidedBy(a)) : "") + " · " + esc(clip(a.summary, 120)) });
     }
     paintState();
@@ -2266,6 +2299,15 @@
       return Math.sqrt(sum / outBuf.length);
     }
     Orb.outSource(outLevel);
+    /* core E's mouth: the same analyser's spectrum (the live call has its own, VoiceLive.spectrum); null: level only */
+    var outSpec = { bins: null, hz: 0 };
+    if (Orb.outSpectrum) Orb.outSpectrum(function () {
+      if (liveOn()) return window.VoiceLive && window.VoiceLive.spectrum ? window.VoiceLive.spectrum() : null;
+      if (!api_.speaking || !source || !outAn) return null;
+      if (!outSpec.bins) { outSpec.bins = new Uint8Array(outAn.frequencyBinCount); outSpec.hz = outCtx.sampleRate / outAn.fftSize; }
+      outAn.getByteFrequencyData(outSpec.bins);
+      return outSpec;
+    });
 
     function setUi() {
       paintState();

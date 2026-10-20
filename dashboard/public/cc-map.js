@@ -41,7 +41,7 @@
     var target = null, lastTarget = null, targetTimer = 0;
     var lastPos = {};        // a sphere's last position (a stream keeps its aim if she dissolves mid-beam)
     var ghostAt = null;      // the edge marker for a target with no sphere
-    var micLevel = null, outLevel = null;
+    var micLevel = null, outLevel = null, outSpec = null;
     var state = "idle";
 
     var GHOST = "\u0000ghost";
@@ -65,6 +65,9 @@
           }
           return null;
         },
+        // E: the mouth takes its shape from the voice's spectrum (outSpectrum); the eyes follow the pointer
+        spec: function () { return outSpec ? outSpec() : null; },
+        pointer: true,
         onFrame: onFrame,
         backdrop: "glow", // D / E: only the glow round the core; the page keeps its own background
         head: botHead(), colors: botColors(), // E: the viewer's bot
@@ -250,6 +253,7 @@
       });
       Object.keys(old).forEach(function (k) { old[k].el.remove(); delete pos[k]; });
       nodes = next;
+      botNotice(list || []);
       place(core.S.t);
       if (family) family.setNodes(list || []);
     }
@@ -273,6 +277,30 @@
     }
     var sampler = null;
 
+    /*
+     * Core E's small reactions to the sessions (2026-10-20): one that starts waiting on you gets a glance;
+     * one that finishes (working -> idle) a glance and a grin. The first list only sets the baseline.
+     */
+    var lastSt = null;
+    function botNotice(list) {
+      var was = lastSt;
+      lastSt = {};
+      list.forEach(function (s) { lastSt[s.id] = s.st; });
+      if (!was || !core.react) return;
+      list.forEach(function (s) {
+        var p = was[s.id];
+        if (!p || p === s.st) return;
+        if (s.st === "waiting") lookAtSess(s.id, 1600);
+        else if (p === "working" && s.st === "idle") { lookAtSess(s.id, 1400); core.react("grin"); }
+      });
+    }
+    /** The core looks at a session for ms (its sphere, followed while it moves). */
+    function lookAtSess(id, ms) {
+      if (!core.glance || !id) return false;
+      core.glance(function () { var p = family && family.enabled() ? family.positions()[id] : pos[id]; return p || null; }, ms);
+      return true;
+    }
+    var busySince = 0;
     function node(id) { for (var i = 0; i < nodes.length; i++) if (nodes[i].id === id) return nodes[i]; return null; }
     function flash(id, cls, ms) {
       var n = node(id);
@@ -299,6 +327,10 @@
       /** The core's state: idle, listening, thinking, delegating, speaking or needs. */
       setState: function (name) {
         if (name === state) return;
+        // core E: a long turn finished -> a grin (MintLogic.botTurnDone)
+        var nowMs = Date.now(), ML = window.MintLogic;
+        if (ML && ML.botTurnDone && core.react && ML.botTurnDone(state, name, busySince ? nowMs - busySince : 0)) core.react("grin");
+        busySince = name === "thinking" || name === "delegating" ? busySince || nowMs : name === "speaking" ? busySince : 0;
         state = name;
         core.setState(name);
         root.setAttribute("data-state", name);
@@ -345,7 +377,12 @@
         return true;
       },
       /** A session answered: its point flashes (and a thread of dots comes home to her). */
-      reply: function (id) { if (family && family.enabled()) family.reply(id); return flash(id, "reply", 1400); },
+      reply: function (id) { if (family && family.enabled()) family.reply(id); lookAtSess(id, 1400); return flash(id, "reply", 1400); },
+      /** Core E: a reaction ("grin", "nod", "surprise"), or "something happened" (poke: a message, a card, typing). */
+      react: function (kind) { return core.react ? core.react(kind) : false; },
+      poke: function () { if (core.poke) core.poke(); },
+      /** Core E: the voice's spectrum for the mouth's shape: fn() -> { bins (getByteFrequencyData), hz per bin } or null. */
+      outSpectrum: function (fn) { outSpec = fn; },
       /** Mark the session the composer is addressed to. */
       mark: function (id) { nodes.forEach(function (x) { x.el.classList.toggle("addressed", x.id === id); }); },
       micSource: function (fn) { micLevel = fn; },

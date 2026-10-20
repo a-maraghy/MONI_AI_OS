@@ -502,13 +502,27 @@ function themeSwitch() {
  * page load instead of when a month-long cache runs out. The manifest makes the
  * panel installable as an app with the same icon (manifest() below).
  */
+/*
+ * Which icon set the pages link (2026-10-20): "mesh" -- the live Mesh icon (tools/make-app-icon.cjs) -- or
+ * "bot", the core E head (tools/make-bot-icon.cjs, public/brand/bot/), a candidate kept OFF until it is
+ * approved. The switch is the dashboard's environment: MINT_APP_ICON=bot (e.g. a systemd drop-in for the
+ * dashboard service with Environment=MINT_APP_ICON=bot, then a restart); unset or anything else is Mesh.
+ * The pages' links, the web manifest's icons and the root /favicon.ico (server.js) all follow it.
+ */
+const ICON_SETS = {
+  mesh: { f16: "brand/favicon-16.svg", f32: "brand/favicon-32.svg", any: "favicon.svg", ico: "favicon.ico", a180: "brand/app-icon-180.png", a192: "brand/app-icon-192.png", a512: "brand/app-icon-512.png", mask: "brand/app-icon-maskable-512.png" },
+  bot: { f16: "brand/bot/favicon-16.svg", f32: "brand/bot/favicon-32.svg", any: "brand/bot/favicon.svg", ico: "brand/bot/favicon.ico", a180: "brand/bot/app-icon-180.png", a192: "brand/bot/app-icon-192.png", a512: "brand/bot/app-icon-512.png", mask: "brand/bot/app-icon-maskable-512.png" },
+};
+function appIconSet() { return process.env.MINT_APP_ICON === "bot" ? "bot" : "mesh"; }
+function appIcons() { return ICON_SETS[appIconSet()]; }
 function iconLinks() {
+  const I = appIcons();
   return [
-    `<link rel="icon" href="${asset("brand/favicon-16.svg")}" type="image/svg+xml" sizes="16x16">`,
-    `<link rel="icon" href="${asset("brand/favicon-32.svg")}" type="image/svg+xml" sizes="32x32">`,
-    `<link rel="icon" href="${asset("favicon.svg")}" type="image/svg+xml" sizes="any">`,
-    `<link rel="alternate icon" href="${asset("favicon.ico")}" type="image/x-icon" sizes="16x16 32x32 48x48">`,
-    `<link rel="apple-touch-icon" href="${asset("brand/app-icon-180.png")}" sizes="180x180">`,
+    `<link rel="icon" href="${asset(I.f16)}" type="image/svg+xml" sizes="16x16">`,
+    `<link rel="icon" href="${asset(I.f32)}" type="image/svg+xml" sizes="32x32">`,
+    `<link rel="icon" href="${asset(I.any)}" type="image/svg+xml" sizes="any">`,
+    `<link rel="alternate icon" href="${asset(I.ico)}" type="image/x-icon" sizes="16x16 32x32 48x48">`,
+    `<link rel="apple-touch-icon" href="${asset(I.a180)}" sizes="180x180">`,
     `<link rel="manifest" href="/manifest.webmanifest?v=${MANIFEST_VERSION()}">`,
   ].join("\n");
 }
@@ -532,10 +546,10 @@ function manifest() {
     background_color: APP_COLOURS.background,
     theme_color: APP_COLOURS.theme,
     icons: [
-      { src: asset("brand/app-icon-192.png"), sizes: "192x192", type: "image/png", purpose: "any" },
-      { src: asset("brand/app-icon-512.png"), sizes: "512x512", type: "image/png", purpose: "any" },
-      { src: asset("brand/app-icon-maskable-512.png"), sizes: "512x512", type: "image/png", purpose: "maskable" },
-      { src: asset("favicon.svg"), sizes: "any", type: "image/svg+xml", purpose: "any" },
+      { src: asset(appIcons().a192), sizes: "192x192", type: "image/png", purpose: "any" },
+      { src: asset(appIcons().a512), sizes: "512x512", type: "image/png", purpose: "any" },
+      { src: asset(appIcons().mask), sizes: "512x512", type: "image/png", purpose: "maskable" },
+      { src: asset(appIcons().any), sizes: "any", type: "image/svg+xml", purpose: "any" },
     ],
   };
 }
@@ -734,6 +748,9 @@ function empty(iconName, title, body) {
 module.exports = {
   dockMarkup,
   iconLinks,
+  appIcons,
+  appIconSet,
+  ICON_SETS,
   manifest,
   MANIFEST_VERSION,
   pageMapFor,

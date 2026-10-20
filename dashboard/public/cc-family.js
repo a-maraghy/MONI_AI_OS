@@ -246,6 +246,7 @@
       k.label = d.label || "session"; k.st = d.st === "working" || d.st === "waiting" ? d.st : "idle";
       k.kept = d.hired !== true;
       k.menu = !!d.slug; // hired through MINT AI (kept or not): Keep / Retire in its menu
+      k.head = d.head || ""; // core E: the head its role (or the viewer's pin) gives it (MintLogic.botHeadFor)
       if (!k.tint) k.tint = d.tint && TINTS[d.tint] ? d.tint : freeTint(d.name || d.label || d.id);
       k.act = Math.max(1, +d.act || 1); k.tok = d.tok || ""; k.tokTip = d.tokTip || ""; k.task = d.task || ""; k.last = d.last || ""; k.mission = d.mission || "";
       if (!fresh && was === "working" && k.st === "idle") { k.bloom = 1; k.doneUntil = t + 3.5; }
@@ -620,7 +621,7 @@
             form: k.form, dis: k.dis || 0, catchK: Math.min(1, k.catchK * 1.4), seed: k.ph[2],
             tint: tc.dark, tintL: tc.light,
             // core E (bot heads): which session, its state and what just happened, for the face (MintLogic.botSessState)
-            key: k.id, st: k.st, glow: k.glow, bloom: k.bloom,
+            key: k.id, st: k.st, glow: k.glow, bloom: k.bloom, head: k.head,
           });
         });
         return out;

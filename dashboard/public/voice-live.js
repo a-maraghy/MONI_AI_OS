@@ -126,6 +126,8 @@
         me.cap = new AudioWorkletNode(ctx, "mint-live-capture", { numberOfInputs: 1, numberOfOutputs: 0 });
         me.player = new AudioWorkletNode(ctx, "mint-live-player", { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [1] });
         me.src.connect(me.cap);
+        // core E's mouth shapes (spectrum() below): a tap on the reply's audio, nothing else listens to it
+        try { me.an = ctx.createAnalyser(); me.an.fftSize = 512; me.player.connect(me.an); me.spec = { bins: new Uint8Array(me.an.frequencyBinCount), hz: ctx.sampleRate / me.an.fftSize }; } catch (e) { me.an = null; }
         me.player.port.onmessage = function (e) { onPlayer(me, e.data || {}); };
         me.cap.port.onmessage = function (e) { onFrame(me, e.data || {}); };
         if (ctx.state === "suspended" && ctx.resume) ctx.resume();
@@ -654,6 +656,8 @@
       try { S.ws.send(JSON.stringify({ type: "ui-undoable", ms: Math.max(0, Math.min(60000, Number(ms) || 0)) })); } catch (e) { /* closed */ }
     },
     speaking: function () { return !!(S && S.playing); },
+    /* The reply's spectrum while it plays ({ bins: getByteFrequencyData, hz per bin }), else null: core E shapes its mouth from it. */
+    spectrum: function () { if (!S || !S.an || !S.playing) return null; S.an.getByteFrequencyData(S.spec.bins); return S.spec; },
     route: function () { return S ? S.route : ""; },
     muted: function () { return !!(S && S.muted); },
     active: function () { return !!S; },

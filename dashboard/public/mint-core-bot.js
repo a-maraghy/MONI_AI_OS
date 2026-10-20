@@ -19,19 +19,32 @@
  *   error/offline red x x, still
  * A face change cross-fades the lit nodes over ~250 ms (colours over ~300 ms): nothing pops.
  *
+ * Expressive (2026-10-20, mockups/bot-design-upgrades):
+ *   the mouth     speaking: four viseme-like shapes (closed / open / wide / round, MOUTH) mixed per node from the
+ *                 voice's spectrum (opts.spec: an AnalyserNode's bytes, viseme()); level only without one
+ *   the eyes      follow the pointer (opts.pointer: the window's pointer moves; core.look by hand) and drift back
+ *                 when it leaves; glance at a session that needs you or replied (core.glance, cc-map.js)
+ *   dozing        idle and 10 quiet minutes, or at night (23:00-06:00 local) after one: lids down, the sleep face,
+ *                 slow deep breaths, z z z rising on the left (dozeWanted); a message, a card, voice, typing or
+ *                 the pointer near wakes it (core.poke): a blink and a hop
+ *   reactions     core.react: surprise (going offline), grin + hops (a job done), nod (approved), wake
+ *   still frames  (reduced motion, hold still): the faces only -- a still sleep face, a grin for its moment; no motion
+ * The sessions wear their own heads (k.head, cc-logic.js botHeadFor: by role, or the viewer's pin).
+ *
  * Same instance contract as mint-core-d.js (cc-map.js, mint-shell.js, mint-dock.js and
  * mint-desktop.js drive both the same way):
- *   var core = window.MintCoreBot(canvas, { amp, dest, onFrame, backdrop, kids, beforeDraw, head, colors, force2d, noGuard, desk })
+ *   var core = window.MintCoreBot(canvas, { amp, dest, onFrame, backdrop, kids, beforeDraw, head, colors, force2d, noGuard, desk, spec, pointer, now, hour })
  * opts.desk: the desktop app's render mode (?shell=desktop): the page is transparent over the wallpaper, so
  * every head gets a soft contrast backplate (dark under light lines, light under dark ones) and a stronger
  * wireframe; the browser Command Center look is unchanged without it.
  *   core.S.concept === "E" · setState · setLight · resize(cx, cy, R, w, h) · start · stop · still · stats · draw
  *   · place · tick · adopt · destroy · setConcept (no-op) · setHead(id) · setColors({p, c}) · setOffline(bool)
+ *   · poke() · react(kind) · glance(point | fn, ms) · look(x, y | null)
  * opts.kids(): the Command Center's session spheres (cc-family.js meshKids) -- drawn here as
  * small bot heads in the same style, with their own state in the same colour + face language
  * (MintLogic.botSessState): waiting -> needs you, working -> thinking, a delegation landing ->
  * listening, a reply going back -> speaking, just finished -> a grin, idle -> ready; born out of
- * the core's dots, dissolving back into them. The sessions wear the core's head style.
+ * the core's dots, dissolving back into them. The sessions wear their role's head (k.head), else the core's.
  *
  * WebGL2 (lines + point sprites; the glows drawn at quarter resolution and blended up), else a
  * Canvas-2D renderer of the same geometry (also used for the Settings thumbnails: MintBot.thumb).
@@ -63,9 +76,98 @@
     listen: ["..................", "..cccccc..cccccc..", "..cccccc..cccccc..", "..cccccc..cccccc..", "..cccccc..cccccc..", "..cccccc..cccccc..", "..................", "..................", ".......mmmm.......", ".......mmmm.......", ".................."],
     speak: ["..................", "...cccc....cccc...", "...cccc....cccc...", "...cccc....cccc...", "..................", "..................", "...m.m.m.m.m.m....", "..mmmmmmmmmmmmmm..", "...m.m.m.m.m.m....", ".................."],
     err: ["..................", "..c...c....c...c..", "...c.c......c.c...", "....c........c....", "...c.c......c.c...", "..c...c....c...c..", "..................", "..................", ".....cccccccc.....", ".................."],
+    // dozing (2026-10-20): the eyes shut as two downward arcs, a small slack mouth
+    sleep: ["..................", "..................", "..................", "..c....c..c....c..", "...cccc....cccc...", "..................", "..................", "..................", ".......mmmm.......", ".................."],
   };
+  /*
+   * Speaking mouths (2026-10-20): four viseme-like shapes, drawn on the speak face's mouth rows (map rows
+   * 5..9) and mixed by the voice's spectrum (viseme() below): closed (silence, m b p), open (a), wide
+   * (ee, s -- energy high up), round (o u -- energy low down). Mixed per node, so a change of shape fades.
+   */
+  var MOUTH = {
+    closed: ["..................", "..................", "...mmmmmmmmmmmm...", "..................", ".................."],
+    open: [".....mmmmmmmm.....", "....m........m....", "....m........m....", "....m........m....", ".....mmmmmmmm....."],
+    wide: ["..................", "..mmmmmmmmmmmmmm..", "..m............m..", "...mmmmmmmmmmmm...", ".................."],
+    round: [".......mmmm.......", "......m....m......", "......m....m......", ".......mmmm.......", ".................."],
+  };
+  var VIS = ["closed", "open", "wide", "round"];
+  var MOUTHB = {};
+  VIS.forEach(function (k) { var m = MOUTH[k], b = new Uint8Array(5 * 18); for (var r = 0; r < 5; r++) for (var c = 0; c < 18; c++) b[r * 18 + c] = m[r].charAt(c) !== "." ? 1 : 0; MOUTHB[k] = b; });
+  function mouthAt(vm, ri, ci) {
+    if (ci < 0 || ci > 17) return 0;
+    var o = (ri - 5) * 18 + ci;
+    return Math.min(1, vm.closed * MOUTHB.closed[o] + vm.open * MOUTHB.open[o] + vm.wide * MOUTHB.wide[o] + vm.round * MOUTHB.round[o]);
+  }
+  function sstep(a, b, x) { x = (x - a) / (b - a); x = x < 0 ? 0 : x > 1 ? 1 : x; return x * x * (3 - 2 * x); }
+  /** Mean of a byte spectrum's bins between f0 and f1 Hz, above a noise floor, 0..1. */
+  function bandOf(bins, hz, f0, f1) {
+    var a = Math.max(1, Math.floor(f0 / hz)), b = Math.min(bins.length - 1, Math.ceil(f1 / hz)), s = 0;
+    if (b < a) return 0;
+    for (var i = a; i <= b; i++) { var v = bins[i] - 70; if (v > 0) s += v; }
+    return s / (b - a + 1) / 185;
+  }
+  /**
+   * The mouth shape for this instant: viseme(bins, hz, level, out) -> out {closed, open, wide, round}
+   * (they sum to 1). bins: an AnalyserNode's getByteFrequencyData (hz = sampleRate / fftSize per bin), or
+   * null: then level only (closed <-> open). How far the mouth opens follows the level; which shape it opens
+   * into follows where the energy sits: low (150-600 Hz) round, the middle (0.6-1.8 kHz) open, high up
+   * (1.8-9 kHz: ee, s, t) wide. No allocation (out is filled in place).
+   */
+  function viseme(bins, hz, level, out) {
+    out = out || { closed: 1, open: 0, wide: 0, round: 0 };
+    level = level > 1 ? 1 : level > 0 ? level : 0;
+    var k = sstep(0.06, 0.5, level);
+    if (!bins || !hz || !bins.length) { out.closed = 1 - k; out.open = k; out.wide = 0; out.round = 0; return out; }
+    var lo = bandOf(bins, hz, 150, 600), mid = bandOf(bins, hz, 600, 1800), hi = bandOf(bins, hz, 1800, 4500) + 1.2 * bandOf(bins, hz, 4500, 9000), tot = lo + mid + hi;
+    if (tot < 0.015) { out.closed = 1; out.open = out.wide = out.round = 0; return out; }
+    var R = Math.max(0, lo / tot - 0.5) * 2.4, Wd = Math.max(0, hi / tot - 0.3) * 2.6, O = mid / tot + 0.25, n = R + Wd + O;
+    out.closed = 1 - k; out.open = k * O / n; out.wide = k * Wd / n; out.round = k * R / n;
+    return out;
+  }
+
+  /* ------------------------------------------------------------ moods and reactions (2026-10-20) */
+  var DOZE_QUIET_MS = 10 * 60 * 1000, NIGHT_QUIET_MS = 60 * 1000;
+  function isNight(hour) { return hour >= 23 || hour < 6; }
+  /**
+   * Should the bot doze? Only when idle and reachable, nobody's pointer near it, and either nothing has
+   * happened for 10 minutes or it is night (23:00-06:00 local) and a minute has passed quietly.
+   */
+  function dozeWanted(o) {
+    if (!o || o.state !== "idle" || o.offline || o.near) return false;
+    var q = o.quietMs || 0;
+    return q >= DOZE_QUIET_MS || (isNight(o.hour) && q >= NIGHT_QUIET_MS);
+  }
+  // reactions: how long each plays (s); surprise (an error / going offline), grin (a job done), nod (approved), wake
+  var REACT = { surprise: 0.9, grin: 1.6, nod: 0.9, wake: 0.6 };
+  /**
+   * The core's face and colour item: the state's (FACE_OF), unless a reaction or dozing shows over it.
+   * surprise: wide eyes; grin: the grin (in the ready colour, while idle or speaking); dozing (doze > 0.65,
+   * idle): the sleep face.
+   */
+  function pickFace(state, offline, rk, doze) {
+    var fo = coreFace(state, offline);
+    if (rk === "surprise") return { face: "listen", state: fo.state };
+    if (rk === "grin" && !offline && (state === "idle" || state === "speaking")) return { face: "grin", state: "ready" };
+    if (!offline && state === "idle" && doze > 0.65 && rk !== "wake") return FACE_SLEEP;
+    return fo;
+  }
+  var FACE_SLEEP = { face: "sleep", state: "ready" };
+  /**
+   * One dot of the dozing "z z z" (i: 0..29, three z's of ten grid dots: a top bar of four, a two-dot
+   * diagonal, a bottom bar of four) at time t: [dx, dy, size, alpha] in head radii, y up. They rise up and
+   * to the LEFT of the head (the cap's antenna and the brim are on its right).
+   */
+  var ZD = [-1.5, 1.5, -0.5, 1.5, 0.5, 1.5, 1.5, 1.5, 0.5, 0.5, -0.5, -0.5, -1.5, -1.5, -0.5, -1.5, 0.5, -1.5, 1.5, -1.5], ZN = 30;
+  function zDot(i, t, out) {
+    var zi = (i / 10) | 0, d = i % 10, p = (t / 3.6 + zi / 3) % 1, s = 0.038 + 0.03 * p;
+    out[0] = -0.98 - 0.36 * p + 0.05 * Math.sin(t * 1.3 + zi * 2.1) + ZD[d * 2] * s;
+    out[1] = 0.55 + 0.95 * p + ZD[d * 2 + 1] * s;
+    out[2] = 0.55 + 0.6 * p;
+    out[3] = Math.sin(PI * p);
+    return out;
+  }
   // eye band (map rows that blink and glance) and, for speak, the mouth band drawn from the voice level
-  var FBAND = { base: [2, 6], grin: [1, 3], pupils: [1, 5], focus: [4, 5], listen: [1, 5], speak: [1, 3], err: null };
+  var FBAND = { base: [2, 6], grin: [1, 3], pupils: [1, 5], focus: [4, 5], listen: [1, 5], speak: [1, 3], err: null, sleep: null };
   var FACES = {};
   Object.keys(FMAP).forEach(function (k) {
     var m = FMAP[k], fr = m.length, fc = m[0].length, bits = new Uint8Array(fr * fc);
@@ -76,8 +178,11 @@
     FACES[k] = { fr: fr, fc: fc, bits: bits, band: band, col: col, oR: Math.round((G - fr + 1) / 2), oC: Math.round((G - fc + 1) / 2), wave: k === "speak" };
   });
   function px(F, r, c) { return r >= 0 && r < F.fr && c >= 0 && c < F.fc ? F.bits[r * F.fc + c] : 0; }
-  /** One face's lit value (0..1) at front node (row r, col c), with the eyes shifted (gx, gy), blinking (s: 1 open .. 0 shut) and the voice (amp, t). */
-  function faceAt(F, r, c, gxi, gy, s, amp, t) {
+  /**
+   * One face's lit value (0..1) at front node (row r, col c), with the eyes shifted (gx, gy), blinking (s: 1 open
+   * .. 0 shut) and the voice: vm (the viseme mix, the core) shapes the mouth, else amp / t draw the waveform (sessions).
+   */
+  function faceAt(F, r, c, gxi, gy, s, amp, t, vm) {
     var ri = r - F.oR, ci = c - F.oC, B = F.band;
     if (B) {
       var rs = ri - gy, cs = ci - gxi;
@@ -91,6 +196,7 @@
       if (ri >= B[0] && ri <= B[1]) return 0; // the eyes moved away from here
     }
     if (F.wave && ri >= 5 && ri <= 9) {
+      if (vm) return mouthAt(vm, ri, ci);
       if (ci < 2 || ci > 15) return 0;
       var h = amp * 2.4 * (0.55 + 0.45 * Math.sin(ci * 1.7 + t * 11) * Math.sin(ci * 0.6 - t * 5.3));
       return Math.abs(ri - 7) <= h + 0.25 ? 1 : 0;
@@ -268,7 +374,7 @@
     var s = seed || 1;
     this.r = function () { s = (s * 16807) % 2147483647; return s / 2147483647; };
     this.blinkAt = 1.5 + this.r() * 3; this.blinkP = -1; this.glanceAt = 4 + this.r() * 4; this.glanceUntil = 0;
-    this.gx = 0; this.gy = 0; this.gxT = 0; this.gyT = 0; this.ph = this.r() * 6.28; this.t = 0; this.seen = 0; this.fresh = true;
+    this.gx = 0; this.gy = 0; this.gxT = 0; this.gyT = 0; this.ph = this.r() * 6.28; this.t = 0; this.seen = 0; this.fresh = true; this.lid = 1;
   }
   Anim.prototype.set = function (face, col) {
     if (this.fresh) { this.fresh = false; this.face = this.prev = face; this.col = col; this.fk = this.ck = 1; this.pcol[0] = -1; return; }
@@ -287,7 +393,7 @@
       if (idle && this.t > this.glanceAt) { this.glanceAt = this.t + 4 + this.r() * 5; this.glanceUntil = this.t + 0.7 + this.r() * 0.6; this.glx = this.r() < 0.5 ? -1.6 : 1.6; this.gly = this.r() < 0.3 ? -1 : 0; }
     }
   };
-  Anim.prototype.blink = function () { return this.blinkP < 0 ? 1 : 1 - 0.95 * Math.sin(Math.min(1, this.blinkP) * PI); };
+  Anim.prototype.blink = function () { var b = this.blinkP < 0 ? 1 : 1 - 0.95 * Math.sin(Math.min(1, this.blinkP) * PI); return b < this.lid ? b : this.lid; };
   Anim.prototype.settle = function () { this.fk = 1; this.ck = 1; this.blinkP = -1; this.gx = this.gxT; this.gy = this.gyT; };
   Anim.prototype.color = function (pal) {
     var c = pal[this.col] || pal.ready, k = this.ck * this.ck * (3 - 2 * this.ck);
@@ -302,9 +408,9 @@
    * by the brightest of the 2 x 2 face pixels it stands for -- eyes and mouth become a few clear pixels
    * instead of a blur of 2-px dots.
    */
-  function weights(an, out, off, amp, coarse) {
+  function weights(an, out, off, amp, coarse, vm) {
     if (coarse) {
-      weights(an, FW, -1, amp, false);
+      weights(an, FW, -1, amp, false, vm);
       for (var rr = 0; rr < GN; rr++) for (var cc = 0; cc < GN; cc++) {
         var v = 0;
         if (!(rr & 1) && !(cc & 1)) {
@@ -320,12 +426,12 @@
     var A = FACES[an.face] || FACES.base, P = FACES[an.prev] || FACES.base, k = an.fk * an.fk * (3 - 2 * an.fk), s = an.blink();
     var gx = an.gx, g0 = Math.floor(gx), gf = gx - g0, gy = Math.round(an.gy), t = an.t;
     for (var r = 0; r < GN; r++) for (var c = 0; c < GN; c++) {
-      var a = faceAt(A, r, c, g0, gy, s, amp, t);
-      if (gf > 0.01) a = a * (1 - gf) + faceAt(A, r, c, g0 + 1, gy, s, amp, t) * gf;
+      var a = faceAt(A, r, c, g0, gy, s, amp, t, vm);
+      if (gf > 0.01) a = a * (1 - gf) + faceAt(A, r, c, g0 + 1, gy, s, amp, t, vm) * gf;
       var w = a;
       if (k < 1) {
-        var b = faceAt(P, r, c, g0, gy, s, amp, t);
-        if (gf > 0.01) b = b * (1 - gf) + faceAt(P, r, c, g0 + 1, gy, s, amp, t) * gf;
+        var b = faceAt(P, r, c, g0, gy, s, amp, t, vm);
+        if (gf > 0.01) b = b * (1 - gf) + faceAt(P, r, c, g0 + 1, gy, s, amp, t, vm) * gf;
         w = b + (a - b) * k;
       }
       if (off < 0) out[r * GN + c] = w; else out[off + r * GN + c] = (w * 255 + 0.5) | 0;
@@ -437,6 +543,19 @@
     " float a=u_deleg*u_deleg*pow(sin(3.14159*s),0.5)*(0.5+0.5*h.z)*1.6;",
     " v_c=vec4(mix(u_st,vec3(1.0),0.2*e),clamp(a,0.0,1.0)); v_j=0.0;",
     " gl_Position=a<0.003?vec4(2.0,2.0,0.0,1.0):vec4(px/u_res*2.0-1.0,0.0,1.0); gl_PointSize=u_psz*(0.9+1.2*h.w); }",
+  ].join("\n");
+
+  /* the dozing "z z z": 21 square dots (three z's of seven, zDot's twin), rising up and to the right of the head */
+  var ZZZ_VS = [
+    "#version 300 es",
+    "precision highp float;",
+    "uniform vec2 u_res,u_c; uniform float u_r,u_t,u_k,u_psz; uniform vec3 u_st;",
+    "out vec4 v_c; out float v_j;",
+    "const float ZD[20]=float[20](-1.5,1.5,-0.5,1.5,0.5,1.5,1.5,1.5,0.5,0.5,-0.5,-0.5,-1.5,-1.5,-0.5,-1.5,0.5,-1.5,1.5,-1.5);",
+    "void main(){ int i=gl_VertexID; int zi=i/10; int d=i-zi*10; float p=fract(u_t/3.6+float(zi)/3.0); float s=0.038+0.03*p;",
+    " vec2 q=vec2(-0.98-0.36*p+0.05*sin(u_t*1.3+float(zi)*2.1)+ZD[d*2]*s, 0.55+0.95*p+ZD[d*2+1]*s);",
+    " float a=u_k*sin(3.14159*p); v_c=vec4(u_st,clamp(a,0.0,1.0)); v_j=0.0;",
+    " vec2 px=u_c+q*u_r; gl_Position=a<0.003?vec4(2.0,2.0,0.0,1.0):vec4(px/u_res*2.0-1.0,0.0,1.0); gl_PointSize=max(2.0,floor(u_psz*(0.55+0.6*p)+0.5)); }",
   ].join("\n");
 
   /* ------------------------------------------------------------ Canvas 2D (the fallback, and the thumbnails) */
@@ -593,13 +712,22 @@
       concept: "E", state: "idle", amp: 0, ampSlow: 0, t: 0, c: [0, 0], R: 200, light: 0, lightT: 0, dpr: 1, cssW: 0, cssH: 0,
       head: HEADS[opts.head] ? opts.head : "cap", offline: false, bead: 0, arrive: 0,
       desk: DESK, running: false, wanted: false, still: !!(reduceMq && reduceMq.matches), frames: [], gl: false, lowRes: false,
+      // expressive (2026-10-20): the mouth's viseme mix, the pointer, a glance, dozing, a reaction
+      vis: { closed: 1, open: 0, wide: 0, round: 0 }, ptr: [0, 0], ptrOn: false, near: false, lookK: 0,
+      gzUntil: 0, gzAt: null, doze: 0, dozeT: 0, dozeChk: 0, actAt: 0, rk: "", rt: 0, rd: 0,
     };
+    var now = opts.now || function () { return Date.now(); };
+    var hourOf = opts.hour || function () { return new Date().getHours(); };
+    var specFn = opts.spec || null; // () -> { bins: Uint8Array (getByteFrequencyData), hz: Hz per bin } | null
+    S.actAt = now();
+    var VT = { closed: 1, open: 0, wide: 0, round: 0 }; // this frame's viseme target (reused)
+    var ZP = [0, 0, 0, 0];
     var W = {};
     KEYS.forEach(function (k) { W[k] = 0; });
     var colors = opts.colors || null, PAL = palettes(colors), pal = { wire: [0, 0, 0], rim: [[0, 0, 0], [0, 0, 0]], rimL: [0, 0, 0] };
     var ampFn = opts.amp || null, destFn = opts.dest || null, onFrame = opts.onFrame || null, lastSize = null;
     var gl = null, ctx = null, raf = 0, last = 0;
-    var progW = null, progQ = null, progC = null, progS = null, progP = null, emptyVao = null, wtTex = null, fbo = null, fboTex = null, fboW = 0, fboH = 0, maxPt = 64;
+    var progW = null, progQ = null, progC = null, progS = null, progP = null, progZ = null, emptyVao = null, wtTex = null, fbo = null, fboTex = null, fboW = 0, fboH = 0, maxPt = 64;
     var W8 = new Uint8Array(NF * ROWS);
     var coreAnim = new Anim(11), kidAnims = {}, kidSeen = 0;
     var geos = {}; // detail -> { geo, vao, vbo, ibL, ibP, ibF, segVao, segN }
@@ -624,7 +752,7 @@
       try {
         gl = canvas.getContext("webgl2", { alpha: true, premultipliedAlpha: true, antialias: true, preserveDrawingBuffer: !!opts.preserve });
         if (!gl) return false;
-        progW = prog(WIRE_VS, WIRE_FS); progQ = prog(QUAD_VS, QUAD_FS); progC = prog(COMP_VS, COMP_FS); progS = prog(STREAM_VS, WIRE_FS); progP = prog(QUAD_VS, PLATE_FS);
+        progW = prog(WIRE_VS, WIRE_FS); progQ = prog(QUAD_VS, QUAD_FS); progC = prog(COMP_VS, COMP_FS); progS = prog(STREAM_VS, WIRE_FS); progP = prog(QUAD_VS, PLATE_FS); progZ = prog(ZZZ_VS, WIRE_FS);
         emptyVao = gl.createVertexArray();
         var range = gl.getParameter(gl.ALIASED_POINT_SIZE_RANGE);
         maxPt = range && range[1] ? range[1] : 64;
@@ -641,10 +769,10 @@
         return false;
       }
     }
-    function geoFor(detail) {
-      var key = S.head + ":" + detail;
+    function geoFor(head, detail) {
+      var key = head + ":" + detail;
       if (geos[key]) return geos[key];
-      var geo = build(S.head, detail), o = { geo: geo };
+      var geo = build(head, detail), o = { geo: geo };
       if (gl) {
         o.vao = gl.createVertexArray(); gl.bindVertexArray(o.vao);
         o.vbo = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, o.vbo); gl.bufferData(gl.ARRAY_BUFFER, geo.v, gl.STATIC_DRAW);
@@ -690,7 +818,7 @@
 
     /* ---------------- per frame: the heads to draw (no allocation: a fixed pool) */
     var POOL = [];
-    for (var pi = 0; pi < MAXK + 1; pi++) POOL.push({ cx: 0, cy: 0, r: 0, yaw: 0, tilt: 0, sc: 1, st: [0, 0, 0], wa: 1, lit: 1, alpha: 1, row: 0, form: 1, dis: 0, rimK: 0, stK: 0, shimX: 0, shimA: 0, detail: "hi", glowK: 1, cssR: 0 });
+    for (var pi = 0; pi < MAXK + 1; pi++) POOL.push({ cx: 0, cy: 0, r: 0, yaw: 0, tilt: 0, sc: 1, st: [0, 0, 0], wa: 1, lit: 1, alpha: 1, row: 0, form: 1, dis: 0, rimK: 0, stK: 0, shimX: 0, shimA: 0, detail: "hi", head: "cap", glowK: 1, cssR: 0 });
     var nHeads = 0;
     function mixPal() {
       var a = PAL.dark, b = PAL.light, k = S.light;
@@ -710,38 +838,57 @@
       nHeads = 0;
       var dpr = S.dpr, cc = coreCss(), rc = headR(), cfg = HEADS[S.head];
       var M = 1 - W.err; // offline: still
-      // the core
-      var fo = coreFace(S.state, S.offline);
+      var dz = S.doze, awake = 1 - dz;
+      // the core: its state's face, unless a reaction or dozing shows over it
+      var fo = pickFace(S.state, S.offline, S.rk, dz);
       var an = coreAnim;
       an.set(fo.face, fo.state);
+      an.lid = S.rk === "surprise" ? 1 : 1 - 0.8 * sstep(0, 0.6, dz); // drowsy: the lids come down before the sleep face
       if (S.still) { an.fk = 1; an.ck = 1; } // still frames (reduced motion, hold still): the new face at once
-      an.step(dt, S.still || S.offline || W.err > 0.5, S.state === "idle" && !S.offline);
+      an.step(dt, S.still || S.offline || W.err > 0.5, S.state === "idle" && !S.offline && dz < 0.3);
       var dst = null, ddx = 0, ddy = 0;
       if (W.deleg > 0.02) {
         dst = destFn ? destFn() : null;
         if (dst) { ddx = clamp((dst[0] - cc[0]) / (rc * 3.5), -1, 1); ddy = clamp((dst[1] - cc[1]) / (rc * 3.5), -1, 1); }
       }
-      var gl_ = !S.still && an.glanceUntil > an.t ? 1 : 0; // a still frame never freezes mid-glance
-      an.gxT = S.state === "delegating" ? ddx * 2 : gl_ ? an.glx : 0;
-      an.gyT = S.state === "delegating" ? (ddy > 0.35 ? 1 : ddy < -0.35 ? -1 : 0) : gl_ ? an.gly : 0;
-      var ek = S.still ? 1 : 1 - Math.exp(-dt * 10);
+      // where the eyes go: a delegation's target, else a glance at a session (it needs you, it replied), else the pointer, else an idle glance
+      var gzOn = !S.still && S.gzUntil > S.t, gp = null, follow = false, lx = 0, ly = 0;
+      if (gzOn) { gp = typeof S.gzAt === "function" ? S.gzAt() : S.gzAt; if (!gp) gzOn = false; }
+      if (gzOn) { lx = clamp((gp[0] - cc[0]) / (rc * 3), -1, 1); ly = clamp((gp[1] - cc[1]) / (rc * 3), -1, 1); }
+      else if (S.ptrOn && !S.still && dz < 0.5) { follow = true; lx = clamp((S.ptr[0] - cc[0]) / (rc * 3.2), -1, 1); ly = clamp((S.ptr[1] - cc[1]) / (rc * 3.2), -1, 1); }
+      var gl_ = !S.still && !gzOn && !follow && an.glanceUntil > an.t ? 1 : 0; // a still frame never freezes mid-glance
+      if (S.state === "delegating") { an.gxT = ddx * 2; an.gyT = ddy > 0.35 ? 1 : ddy < -0.35 ? -1 : 0; }
+      else if (gzOn || follow) { an.gxT = lx * (gzOn ? 2 : 1.5); an.gyT = ly > 0.4 ? 1 : ly < -0.4 ? -1 : 0; }
+      else { an.gxT = gl_ ? an.glx : 0; an.gyT = gl_ ? an.gly : 0; }
+      if (dz > 0.5) { an.gxT = 0; an.gyT = 0; }
+      var back = !gzOn && !follow && an.gxT === 0 && an.gyT === 0;
+      var ek = S.still ? 1 : 1 - Math.exp(-dt * (back ? 3 : 10)); // the pointer left: drift back, slowly
       an.gx += (an.gxT - an.gx) * ek; an.gy += (an.gyT - an.gy) * ek;
       if (S.still) an.gx = Math.round(an.gx); // a still frame: the eyes on whole nodes (a frozen in-between shift reads as a garbled face)
-      var amp = W.speak > 0.05 ? S.amp : 0;
-      weights(an, W8, 0, amp, rc < SMALL);
+      S.lookK += ((gzOn || follow ? 1 : 0) - S.lookK) * (S.still ? 1 : 1 - Math.exp(-dt * 4));
+      weights(an, W8, 0, W.speak > 0.05 ? S.amp : 0, rc < SMALL, S.vis);
       var h = POOL[nHeads++];
       var tt = S.t;
-      h.detail = detailFor(rc); h.cssR = rc;
-      h.cx = cc[0]; h.cy = cc[1]; h.r = rc;
-      h.yaw = cfg.yaw * (1 - 0.5 * W.deleg) + M * (0.15 * Math.sin(tt * 0.37 + 0.6) + 0.05 * gl_ * (an.glx || 0) / 1.6) + W.deleg * ddx * 0.7;
-      h.tilt = (cfg.tilt || 0.1) + M * 0.03 * Math.sin(tt * 0.29) + W.deleg * ddy * 0.35;
-      h.sc = 1 + M * 0.014 * Math.sin(tt * 1.25);
+      h.head = S.head; h.detail = detailFor(rc); h.cssR = rc;
+      // a reaction's motion: a hop (grin: two, waking: one), a start (surprise), a nod; never in a still frame
+      var rp = S.rk && !S.still ? Math.min(1, S.rt / S.rd) : 0, bob = 0, nod = 0, pop = 0;
+      if (rp) {
+        if (S.rk === "grin") bob = Math.abs(Math.sin(rp * 2 * PI)) * (1 - rp) * 0.09;
+        else if (S.rk === "wake") bob = Math.sin(rp * PI) * 0.06;
+        else if (S.rk === "surprise") { bob = Math.sin(Math.min(1, rp * 2.5) * PI) * 0.05; pop = 0.04 * Math.sin(Math.min(1, rp * 2) * PI); }
+        else if (S.rk === "nod") nod = 0.22 * Math.sin(rp * 4 * PI) * (1 - rp);
+      }
+      h.cx = cc[0]; h.cy = cc[1] - bob * rc; h.r = rc;
+      var lk = S.lookK * (1 - W.deleg);
+      h.yaw = cfg.yaw * (1 - 0.5 * W.deleg) + M * awake * (0.15 * Math.sin(tt * 0.37 + 0.6) + 0.05 * gl_ * (an.glx || 0) / 1.6) + W.deleg * ddx * 0.7 + lk * 0.14 * an.gx;
+      h.tilt = (cfg.tilt || 0.1) + M * 0.03 * awake * Math.sin(tt * 0.29) + W.deleg * ddy * 0.35 + lk * 0.1 * an.gy + 0.12 * dz + nod;
+      h.sc = 1 + M * (0.014 * awake * Math.sin(tt * 1.25) + 0.03 * dz * Math.sin(tt * 0.55)) + pop; // dozing: slow, deeper breaths
       var c = an.color(pal);
       h.st[0] = c[0]; h.st[1] = c[1]; h.st[2] = c[2];
       var bt = beat(tt);
       h.wa = pal.wireK * (S.light > 0.5 ? 1.1 : 1) * (DESK ? 1.6 : 1); h.alpha = 1;
-      h.lit = (1 + 0.3 * W.listen * S.amp) * (1 + W.need * (0.3 * bt - 0.12)) * (1 - 0.15 * W.err);
-      h.glowK = (1 + 0.8 * W.listen * S.amp + 0.25 * W.speak * S.amp) * (1 + W.need * (0.5 * bt - 0.1));
+      h.lit = (1 + 0.3 * W.listen * S.amp) * (1 + W.need * (0.3 * bt - 0.12)) * (1 - 0.15 * W.err) * (1 - 0.3 * dz);
+      h.glowK = (1 + 0.8 * W.listen * S.amp + 0.25 * W.speak * S.amp) * (1 + W.need * (0.5 * bt - 0.1)) * (1 - 0.4 * dz);
       // the desktop: the backglow is for a dark page; over a wallpaper it would wash out the dark backplate (and the lines)
       h.rimK = GLOW ? ((1 - S.light) * 0.32 + S.light * 0.1) * (DESK ? 0.2 : 1) : 0;
       h.stK = GLOW ? ((1 - S.light) * 0.2 + S.light * 0.11) * h.glowK * (DESK ? 0.6 : 1) : 0;
@@ -760,12 +907,16 @@
           ka.set(sf.face, sf.state);
           if (S.still) { ka.fk = 1; ka.ck = 1; } // still frames: the new face at once
           ka.step(dt, S.still, k.st === "idle");
+          var kr = k.r * 0.86;
           var dx = clamp((cc[0] - k.x) / (rc * 4), -1, 1), dy = clamp((cc[1] - k.y) / (rc * 4), -1, 1);
-          ka.gxT = !S.still && ka.glanceUntil > ka.t ? ka.glx : dx * 1.2; ka.gyT = 0;
+          // the pointer close by: that session looks at it
+          var pdx = S.ptr[0] - k.x, pdy = S.ptr[1] - k.y, kp = S.ptrOn && !S.still && Math.abs(pdx) < kr * 3 && Math.abs(pdy) < kr * 3;
+          ka.gxT = kp ? clamp(pdx / (kr * 2.2), -1, 1) * 1.6 : !S.still && ka.glanceUntil > ka.t ? ka.glx : dx * 1.2; ka.gyT = 0;
           ka.gx += (ka.gxT - ka.gx) * ek; ka.gy = 0;
           if (S.still) ka.gx = Math.round(ka.gx);
-          weights(ka, W8, (i + 1) * NF, sf.state === "speaking" ? 0.35 + 0.55 * synthAmp(ka.t + ka.ph) : 0, k.r * 0.86 < SMALL);
-          var q = POOL[nHeads++], kr = k.r * 0.86;
+          weights(ka, W8, (i + 1) * NF, sf.state === "speaking" ? 0.35 + 0.55 * synthAmp(ka.t + ka.ph) : 0, kr < SMALL, null);
+          var q = POOL[nHeads++];
+          q.head = k.head && HEADS[k.head] ? k.head : S.head; // its role's accessory (cc-logic botHeadFor), else the core's
           q.detail = "lo"; q.cssR = kr; q.row = i + 1;
           q.cx = k.x; q.cy = k.y + k.r * 0.06; q.r = kr;
           q.yaw = 0.45 * dx + (S.still ? 0 : 0.1 * Math.sin(ka.t * 0.4 + ka.ph));
@@ -837,7 +988,7 @@
         gl.uniform2f(u.u_res, fboW, fboH); gl.uniform1i(u.u_wt, 0); gl.uniform1f(u.u_maxPt, maxPt);
         gl.uniform1f(u.u_pt, 1); gl.uniform1f(u.u_soft, 1); gl.uniform1f(u.u_mode, 4);
         for (i = 0; i < nHeads; i++) {
-          h = POOL[i]; o = geoFor(h.detail);
+          h = POOL[i]; o = geoFor(h.head, h.detail);
           if (h.cssR < SMALL) continue; // small heads: no blurred face glow (it would swallow the pixels)
           setHeadU(u, h, fs, dpr, home);
           gl.uniform1f(u.u_lit, h.lit * (S.light > 0.5 ? 0.26 : 0.55));
@@ -889,7 +1040,7 @@
       gl.uniform3f(u.u_wire, pal.wire[0] / 255, pal.wire[1] / 255, pal.wire[2] / 255);
       var lineGain = dpr > 1.4 ? 1.25 : 0.85;
       for (i = nHeads - 1; i >= 0; i--) { // the sessions first, the core on top
-        h = POOL[i]; o = geoFor(h.detail);
+        h = POOL[i]; o = geoFor(h.head, h.detail);
         setHeadU(u, h, 1, dpr, home);
         gl.bindVertexArray(o.vao);
         gl.uniform1f(u.u_pt, 0); gl.uniform1f(u.u_mode, 0); gl.uniform1f(u.u_wa, h.wa * lineGain);
@@ -905,6 +1056,17 @@
         gl.uniform1f(u.u_mode, 2);
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, o.ibF); gl.drawElements(gl.POINTS, o.geo.front.length, gl.UNSIGNED_SHORT, 0);
       }
+      // 4. dozing: the z z z
+      var zk = zzzK();
+      if (zk > 0.01) {
+        var c0z = POOL[0];
+        gl.useProgram(progZ.p); u = progZ.u; gl.bindVertexArray(emptyVao);
+        gl.uniform2f(u.u_res, cw, ch); gl.uniform2f(u.u_c, c0z.cx * dpr, (S.cssH - c0z.cy) * dpr); gl.uniform1f(u.u_r, c0z.r * dpr);
+        gl.uniform1f(u.u_t, zzzT()); gl.uniform1f(u.u_k, zk); gl.uniform1f(u.u_psz, Math.max(2, 0.05 * c0z.cssR * dpr));
+        gl.uniform3f(u.u_st, c0z.st[0] / 255, c0z.st[1] / 255, c0z.st[2] / 255);
+        gl.uniform1f(u.u_pt, 1); gl.uniform1f(u.u_soft, 0); gl.uniform1f(u.u_sq, 1); gl.uniform1f(u.u_mode, 2);
+        gl.drawArrays(gl.POINTS, 0, ZN);
+      }
       gl.bindVertexArray(null);
     }
 
@@ -918,14 +1080,28 @@
       var home = coreCss();
       for (var i = nHeads - 1; i >= 0; i--) {
         var h = POOL[i];
-        o2.geo = build(S.head, h.detail); o2.cx = h.cx; o2.cy = h.cy; o2.r = h.r; o2.yaw = h.yaw; o2.tilt = h.tilt; o2.sc = h.sc;
+        o2.geo = build(h.head, h.detail); o2.cx = h.cx; o2.cy = h.cy; o2.r = h.r; o2.yaw = h.yaw; o2.tilt = h.tilt; o2.sc = h.sc;
         o2.wire = pal.wire; o2.st = h.st; o2.wa = h.wa; o2.lit = h.lit; o2.alpha = h.alpha; o2.w = W8; o2.off = h.row * NF; o2.light = S.light > 0.5;
         o2.rimA = pal.rim[0]; o2.rimB = pal.rim[1]; o2.rimL = pal.rimL; o2.rimK = h.rimK * 0.8; o2.stK = h.stK * 1.2; o2.form = h.form; o2.dis = h.dis;
         o2.homeX = home[0]; o2.homeY = home[1]; o2.shimX = h.shimX; o2.shimA = h.shimA; o2.dpr = dpr;
         if (DESK) plate2d(ctx, h, i ? PLATE.kid : PLATE.core);
         draw2dHead(ctx, o2);
       }
+      var zk = zzzK();
+      if (zk > 0.01) {
+        var c0 = POOL[0], zt = zzzT(), zs = Math.max(2 / dpr, 0.05 * c0.cssR);
+        for (var j = 0; j < ZN; j++) {
+          zDot(j, zt, ZP);
+          var za = ZP[3] * zk, sz = zs * ZP[2];
+          if (za < 0.01) continue;
+          ctx.fillStyle = rgba(c0.st, za);
+          ctx.fillRect(c0.cx + ZP[0] * c0.r - sz / 2, c0.cy - ZP[1] * c0.r - sz / 2, sz, sz);
+        }
+      }
     }
+    /** How visible the dozing z z z are (0..1), and their clock (a still frame: one fixed moment). */
+    function zzzK() { return S.offline || S.state !== "idle" ? 0 : sstep(0.6, 1, S.doze); }
+    function zzzT() { return S.still ? 1.3 : S.t; }
 
     /** The desktop's contrast backplate on the 2D context (the GL one's twin). */
     function plate2d(g, h, k) {
@@ -951,8 +1127,79 @@
       S.ampSlow += (S.amp - S.ampSlow) * (1 - Math.exp(-dt * 3));
       S.bead += dt * 0.38;
       S.arrive += ((S.state === "delegating" ? 1 : 0) - S.arrive) * (1 - Math.exp(-dt * 2));
+      // the mouth: a viseme from the voice's spectrum (level only without one), eased so shapes flow
+      var sp = S.state === "speaking" && real != null && real >= 0 && specFn ? specFn() : null;
+      if (S.state === "speaking") viseme(sp ? sp.bins : null, sp ? sp.hz : 0, S.amp, VT);
+      else { VT.closed = 1; VT.open = VT.wide = VT.round = 0; }
+      var vk = 1 - Math.exp(-dt * 20);
+      S.vis.closed += (VT.closed - S.vis.closed) * vk; S.vis.open += (VT.open - S.vis.open) * vk;
+      S.vis.wide += (VT.wide - S.vis.wide) * vk; S.vis.round += (VT.round - S.vis.round) * vk;
+      // moods: dozing is checked once a second; it settles over ~2 s and lifts at once
+      S.dozeChk -= dt;
+      if (S.dozeChk <= 0) { S.dozeChk = 1; evalDoze(); }
+      S.doze += (S.dozeT - S.doze) * (1 - Math.exp(-dt * (S.dozeT > S.doze ? 0.6 : 6)));
+      if (S.rk) { S.rt += dt; if (S.rt >= S.rd) S.rk = ""; }
       prepare(dt);
     }
+    /* ---------------- moods, reactions, the pointer, glances */
+    function evalDoze() {
+      var want = dozeWanted({ state: S.state, offline: S.offline, near: S.near, quietMs: now() - S.actAt, hour: hourOf() });
+      if (want && !S.dozeT) S.dozeT = 1;
+      else if (!want && S.dozeT) wake();
+    }
+    function wake() {
+      S.dozeT = 0;
+      if (S.doze > 0.5) react("wake");
+      if (S.still) S.doze = 0;
+    }
+    /** Something happened (a state change, a message, a card, a pointer near): the quiet spell restarts, a dozing bot wakes. */
+    function poke() { S.actAt = now(); if (S.dozeT) { wake(); if (S.still) stillFrame(); } }
+    var rkTimer = 0;
+    /** A short reaction: "surprise" (error / offline), "grin" (a job done), "nod" (approved), "wake". Still frames: the face only. */
+    function react(kind) {
+      if (!REACT[kind]) return false;
+      S.actAt = now();
+      if (S.dozeT && kind !== "wake") { S.dozeT = 0; if (S.still) S.doze = 0; }
+      if (S.still) {
+        if (kind !== "grin" && kind !== "surprise") return false; // motion only: nothing to show in a still frame
+        S.rk = kind; S.rt = 0; S.rd = REACT[kind]; S.rkStill = true;
+        clearTimeout(rkTimer);
+        rkTimer = setTimeout(function () { S.rk = ""; if (S.still) stillFrame(); }, REACT[kind] * 1000);
+        stillFrame();
+        return true;
+      }
+      S.rk = kind; S.rt = 0; S.rd = REACT[kind]; S.rkStill = false;
+      if (kind === "wake" || kind === "surprise") coreAnim.blinkP = 0;
+      return true;
+    }
+    /** Look at a point (CSS px, or a function giving one each frame) for ms: a session that needs you, a reply. */
+    function glance(at, ms) {
+      if (!at) return;
+      S.gzAt = at; S.gzUntil = S.t + (ms || 1400) / 1000;
+      poke();
+    }
+    var ptrRect = null, ptrRectAt = 0;
+    function onPtr(e) {
+      var tn = e.timeStamp || 0;
+      if (!ptrRect || tn - ptrRectAt > 500 || tn < ptrRectAt) { ptrRect = canvas.getBoundingClientRect(); ptrRectAt = tn; }
+      S.ptr[0] = e.clientX - ptrRect.left; S.ptr[1] = e.clientY - ptrRect.top; S.ptrOn = true;
+      var cc = coreCss(), r = headR(), dx = S.ptr[0] - cc[0], dy = S.ptr[1] - cc[1], near = dx * dx + dy * dy < r * r * 6.25;
+      if (near && !S.near) { S.near = true; poke(); } else S.near = near;
+      if (near) S.actAt = now();
+    }
+    function onPtrOut(e) { if (!e.relatedTarget) { S.ptrOn = false; S.near = false; } }
+    function onBlur() { S.ptrOn = false; S.near = false; }
+    if (opts.pointer) {
+      window.addEventListener("pointermove", onPtr, { passive: true });
+      document.addEventListener("pointerout", onPtrOut);
+      window.addEventListener("blur", onBlur);
+    }
+    // still frames (reduced motion, hold still): no loop to notice a quiet spell, so look now and then
+    var stillTimer = setInterval(function () {
+      if (!S.still || !S.wanted) return;
+      var was = S.dozeT; evalDoze();
+      if (S.dozeT !== was) { S.doze = S.dozeT; stillFrame(); }
+    }, 20000);
     function draw() {
       if (!canvas.width || !canvas.height) return;
       if (!nHeads) prepare(0);
@@ -993,6 +1240,8 @@
       KEYS.forEach(function (k) { W[k] = tg[k] || 0; });
       S.light = S.lightT;
       S.amp = S.state === "listening" || S.state === "speaking" ? 0.55 : 0;
+      if (S.rk && !S.rkStill) S.rk = ""; // a reaction the loop was playing does not freeze into a still frame
+      S.doze = S.dozeT; S.lookK = 0; viseme(null, 0, S.amp, S.vis);
       var wasStill = S.still; S.still = true;
       prepare(0);
       coreAnim.settle(); Object.keys(kidAnims).forEach(function (k) { kidAnims[k].settle(); });
@@ -1031,9 +1280,14 @@
       S: S, W: W, STATES: STATES,
       get isGL() { return !!gl; },
       get canvas() { return canvas; },
-      setState: function (s) { if (STATES.indexOf(s) < 0) s = "idle"; if (s === S.state) return; S.state = s; if (S.still) stillFrame(); },
+      setState: function (s) { if (STATES.indexOf(s) < 0) s = "idle"; if (s === S.state) return; S.state = s; poke(); if (S.still) stillFrame(); },
       /** MINT AI unreachable: red x x, still (the Command Center's offline state). */
-      setOffline: function (on) { on = !!on; if (on === S.offline) return; S.offline = on; redrawIfIdle(); },
+      setOffline: function (on) { on = !!on; if (on === S.offline) return; S.offline = on; if (on) react("surprise"); else { if (S.rk === "surprise") S.rk = ""; poke(); } redrawIfIdle(); },
+      /** Expressive (2026-10-20): something happened (poke), a reaction (react), a look at a point (glance), the pointer by hand (look). */
+      poke: poke, react: react, glance: glance,
+      look: function (x, y) { if (x == null) { S.ptrOn = false; S.near = false; return; } S.ptr[0] = x; S.ptr[1] = y; S.ptrOn = true; var cc = coreCss(), r = headR(), dx = x - cc[0], dy = y - cc[1]; S.near = dx * dx + dy * dy < r * r * 6.25; if (S.near) poke(); },
+      /** Checks: whether it would doze now (and evaluate it). */
+      _doze: function () { evalDoze(); return S.dozeT; },
       setLight: function (on, instant) { S.lightT = on ? 1 : 0; if (instant) S.light = S.lightT; if (S.still || !S.running) { S.light = S.lightT; redrawIfIdle(); } },
       /** The head style (one of MintBot.HEADS); the sessions follow. */
       setHead: function (id) { if (!HEADS[id] || id === S.head) return; S.head = id; redrawIfIdle(); },
@@ -1056,7 +1310,7 @@
       adopt: function (o) {
         if (!o || !o.S || o.S.concept !== "E") return;
         var a = o.S;
-        ["t", "amp", "ampSlow", "bead", "arrive", "light", "lightT"].forEach(function (k) { if (typeof a[k] === "number") S[k] = a[k]; });
+        ["t", "amp", "ampSlow", "bead", "arrive", "light", "lightT", "doze", "dozeT", "actAt"].forEach(function (k) { if (typeof a[k] === "number") S[k] = a[k]; });
         S.state = a.state; S.offline = !!a.offline; if (a.head && HEADS[a.head]) S.head = a.head;
         KEYS.forEach(function (k) { if (typeof o.W[k] === "number") W[k] = o.W[k]; });
         if (o._anim) { var src = o._anim(); ["face", "prev", "fk", "col", "ck", "t", "blinkAt", "blinkP", "gx", "gy", "glanceAt", "glanceUntil"].forEach(function (k) { coreAnim[k] = src[k]; }); coreAnim.pcol = src.pcol.slice(); }
@@ -1067,6 +1321,8 @@
       destroy: function () {
         stop(false);
         document.removeEventListener("visibilitychange", onVis);
+        window.removeEventListener("pointermove", onPtr); document.removeEventListener("pointerout", onPtrOut); window.removeEventListener("blur", onBlur);
+        clearInterval(stillTimer); clearTimeout(rkTimer);
         if (reduceMq && reduceMq.removeEventListener) reduceMq.removeEventListener("change", onReduce);
         try { freeGeos(); var lc = gl && gl.getExtension("WEBGL_lose_context"); if (lc) lc.loseContext(); } catch (e) { /* gone already */ }
         gl = null; ctx = null;
@@ -1099,5 +1355,6 @@
   return {
     create: create, thumb: thumb, build: build, HEADS: HEADS, HEAD_IDS: HEAD_IDS, FACES: FACES, FMAP: FMAP, faceAt: faceAt, weights: weights, Anim: Anim,
     FACE_OF: FACE_OF, coreFace: coreFace, sessState: sessState, NF: NF, GN: GN,
+    viseme: viseme, MOUTH: MOUTH, VIS: VIS, dozeWanted: dozeWanted, isNight: isNight, DOZE_QUIET_MS: DOZE_QUIET_MS, NIGHT_QUIET_MS: NIGHT_QUIET_MS, pickFace: pickFace, REACT: REACT, zDot: zDot, ZN: ZN,
   };
 });

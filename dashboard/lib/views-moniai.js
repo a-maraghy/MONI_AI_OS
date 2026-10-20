@@ -201,7 +201,7 @@ function page(o) {
   const body = `${sprite()}
 <div class="cc-shell" id="cc"${desk ? ' data-shell="desktop"' : ""}
      data-core="${core}" data-state="idle" data-sessview="${sessview}"
-     data-bot-head="${esc(logic.normBotHead(o.botHead))}" data-bot-colors="${esc(logic.botColorsJson(o.botColors))}"
+     data-bot-head="${esc(logic.normBotHead(o.botHead))}" data-bot-colors="${esc(logic.botColorsJson(o.botColors))}" data-bot-team="${esc(logic.botTeamJson(o.botTeam))}"
      data-pages="${esc(pageMap.keys)}" data-page-map="${esc(pageMap.map)}"
      data-csrf="${esc(o.csrf)}"
      data-viewer="${esc(o.user && o.user.name)}"

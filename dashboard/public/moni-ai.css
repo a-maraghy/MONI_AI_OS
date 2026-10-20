@@ -457,6 +457,11 @@ html.cc-page .cc-pane .sh-hd h2 { margin: 0; font: 600 18px var(--brand-font); l
 .cc-btn.danger:hover { filter: brightness(1.08); color: var(--bad-ink); }
 .cc-btn.sm { padding: 3px 9px; font-size: 11.5px; border-radius: 7px; }
 .cc-btn:disabled { opacity: .45; cursor: not-allowed; }
+/* core E: the head a session wears (Sessions sheet) */
+.cc-botpick { display: inline-flex; align-items: center; align-self: center; gap: 6px; font-size: 11.5px; font-weight: 650; line-height: 1; color: var(--muted, var(--body)); margin-left: auto; }
+.cc-botpick select { font: inherit; font-weight: 600; line-height: 1.3; color: var(--body); background: transparent; border: 1px solid var(--line-strong); border-radius: 7px; padding: 3px 6px; max-width: 190px; }
+.cc-botpick select:hover, .cc-botpick select:focus-visible { border-color: var(--accent); color: var(--ink); }
+.cc-botpick option { color: initial; }
 .cc-count { font-size: 10px; padding: 0 5px; border-radius: 999px; background: var(--accent-soft); color: var(--accent); line-height: 16px; font-weight: 700; }
 .cc-count.warn { background: color-mix(in srgb, var(--bad) 14%, transparent); color: var(--bad); }
 .cc-badge { font-size: 9.5px; font-weight: 800; letter-spacing: .07em; padding: 1px 6px; border-radius: 5px; text-transform: uppercase; white-space: nowrap;
