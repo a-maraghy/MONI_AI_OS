@@ -20,6 +20,9 @@ Environment=MONI_DATA_DIR=/var/lib/moni-dashboard
 Environment=MONI_LOG_DIR=/var/log/moni-dashboard
 Environment=MONI_PUBLIC_HOST=vmi3567127.contaboserver.net
 Environment=MONI_PUBLIC_PORT=8443
+# The app icon (lib/ui.js appIconSet): "bot" = MINT AI's head with the cap (public/brand/bot/, since
+# desktop 0.1.9, 2026-10-20); unset or anything else = the Mesh icon.
+Environment=MINT_APP_ICON=bot
 
 # --- sandboxing -------------------------------------------------------------
 # NOTE: NoNewPrivileges MUST stay false. The dashboard escalates through

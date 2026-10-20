@@ -504,9 +504,9 @@ function themeSwitch() {
  */
 /*
  * Which icon set the pages link (2026-10-20): "mesh" -- the live Mesh icon (tools/make-app-icon.cjs) -- or
- * "bot", the core E head (tools/make-bot-icon.cjs, public/brand/bot/), a candidate kept OFF until it is
- * approved. The switch is the dashboard's environment: MINT_APP_ICON=bot (e.g. a systemd drop-in for the
- * dashboard service with Environment=MINT_APP_ICON=bot, then a restart); unset or anything else is Mesh.
+ * "bot", the core E head with the cap (tools/make-bot-icon.cjs, public/brand/bot/), live since desktop 0.1.9.
+ * The switch is the dashboard's environment: MINT_APP_ICON=bot (deploy/moni-dashboard.service sets it;
+ * a restart applies a change); unset or anything else is Mesh.
  * The pages' links, the web manifest's icons and the root /favicon.ico (server.js) all follow it.
  */
 const ICON_SETS = {
