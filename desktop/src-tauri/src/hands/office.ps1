@@ -257,6 +257,83 @@ function Ppt-Edit($pres, $ops) {
   }
 }
 
+# ------------------------------------------------------------- the end of a take-over (close_started)
+# inspect: the instance COM hands out for that app (GetActiveObject, the Running Object Table): its
+# window handle and the full names of the files open in it. close_own / quit act on that instance
+# only while its window handle is still the one inspect saw (never on another one): close_own closes
+# the take-over's own files without saving and leaves the app running (the user has files open in
+# it); quit closes them without saving, then quits the app (no save prompts).
+
+function App-Name([string]$kind) {
+  switch ($kind) { 'docx' { 'Word.Application' } 'xlsx' { 'Excel.Application' } 'pptx' { 'PowerPoint.Application' } default { throw "Unknown kind $kind" } }
+}
+
+function App-Hwnd($app, [string]$kind) {
+  try {
+    switch ($kind) {
+      'docx' { if ($app.Windows.Count -gt 0) { return [int64]$app.Windows.Item(1).Hwnd } else { return [int64]0 } }
+      'xlsx' { return [int64]$app.Hwnd }
+      'pptx' { return [int64]$app.HWND }
+    }
+  } catch {}
+  return [int64]0
+}
+
+function App-Files($app, [string]$kind) {
+  $c = switch ($kind) { 'docx' { $app.Documents } 'xlsx' { $app.Workbooks } 'pptx' { $app.Presentations } }
+  return @(@($c) | ForEach-Object { [string]$_.FullName })
+}
+
+function Close-Own($app, [string]$kind, $own) {
+  $closed = 0
+  $c = switch ($kind) { 'docx' { $app.Documents } 'xlsx' { $app.Workbooks } 'pptx' { $app.Presentations } }
+  foreach ($f in @(@($c))) {
+    if ($own -contains ([string]$f.FullName).ToLowerInvariant()) {
+      switch ($kind) {
+        'docx' { $f.Close(0) }
+        'xlsx' { $f.Close($false) }
+        'pptx' { $f.Saved = -1; $f.Close() }
+      }
+      $closed++
+    }
+  }
+  return $closed
+}
+
+if (@('inspect', 'close_own', 'quit') -contains [string]$Job.action) {
+  $r = @{ ok = $true; hwnd = [int64]0; files = @(); closed = 0 }
+  $app = $null
+  try {
+    try { $app = [System.Runtime.InteropServices.Marshal]::GetActiveObject((App-Name ([string]$Job.kind))) } catch { $app = $null }
+    if ($null -ne $app) {
+      $h = App-Hwnd $app ([string]$Job.kind)
+      $r.hwnd = $h
+      if ($Job.action -eq 'inspect') {
+        $r.files = @(App-Files $app ([string]$Job.kind))
+      } elseif (($h -eq 0) -or ($h -ne [int64]$Job.hwnd)) {
+        $r = @{ ok = $false; error = 'Office is not the same instance any more.' }
+      } else {
+        $own = @(@($Job.own) | ForEach-Object { ([string]$_).ToLowerInvariant() })
+        $r.closed = Close-Own $app ([string]$Job.kind) $own
+        if ($Job.action -eq 'quit') {
+          switch ([string]$Job.kind) {
+            'docx' { $app.Quit(0) }
+            'xlsx' { $app.DisplayAlerts = $false; $app.Quit() }
+            'pptx' { $app.Quit() }
+          }
+        }
+      }
+    }
+  } catch {
+    $r = @{ ok = $false; error = ($_.Exception.Message -replace '\s+', ' ').Trim() }
+  } finally {
+    if ($null -ne $app) { try { [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($app) } catch {} }
+  }
+  $json = ConvertTo-Json -InputObject $r -Compress -Depth 4
+  [Console]::Out.Write([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json)))
+  return
+}
+
 # ------------------------------------------------------------------------------------------ run
 
 $app = $null; $file = $null; $restore = @{}

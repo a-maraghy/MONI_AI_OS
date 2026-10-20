@@ -164,9 +164,9 @@ pub fn call(name: &str, args: &Value, host: &dyn Host) -> ToolResult {
 
 /// The lease ended (stop key, Stop, expiry, link lost, sign-out): close the Word, Excel and PowerPoint
 /// instances this take-over started (an Office job's app is COM-started, outside the Job Object, so
-/// killing the CLI's tree does not end it). Instances that were running before it are left alone.
-/// Returns how many were closed.
-pub fn shutdown() -> usize {
+/// killing the CLI's tree does not end it). Instances that were running before it are left alone, and
+/// one the user has files open in is never closed (office_com::EndPlan). Returns a log line per app.
+pub fn shutdown() -> Vec<String> {
     // A job the stop just cut short may still be bringing its app up.
     if cfg!(windows) {
         std::thread::sleep(std::time::Duration::from_millis(400));

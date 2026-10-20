@@ -45,11 +45,16 @@ pub fn stdin_payload(job: &Value) -> String {
     format!("{}\n{}\n", b.encode(SCRIPT.as_bytes()), b.encode(job.to_string().as_bytes()))
 }
 
-/// office.ps1's answer -> its notes, or the error it gave.
-pub fn parse_answer(stdout: &str) -> Result<Vec<String>, String> {
+/// office.ps1's answer as JSON (the one base64 line it writes).
+pub fn parse_value(stdout: &str) -> Result<Value, String> {
     let line = stdout.trim();
     let bytes = base64::engine::general_purpose::STANDARD.decode(line.lines().last().unwrap_or("").trim()).map_err(|_| "Office did not answer (PowerShell could not run the Office script).".to_string())?;
-    let v: Value = serde_json::from_slice(&bytes).map_err(|_| "Office's answer could not be read.".to_string())?;
+    serde_json::from_slice(&bytes).map_err(|_| "Office's answer could not be read.".to_string())
+}
+
+/// office.ps1's answer -> its notes, or the error it gave.
+pub fn parse_answer(stdout: &str) -> Result<Vec<String>, String> {
+    let v = parse_value(stdout)?;
     let notes: Vec<String> = match v.get("notes") {
         Some(Value::Array(a)) => a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect(),
         Some(Value::String(s)) => vec![s.clone()],
@@ -123,8 +128,30 @@ pub fn installed(_kind: Office) -> bool {
 }
 
 /// Run one job. `contain` puts the PowerShell process in the session's Job Object (false = refused).
+/// What Office was running before is noted, so an app this job starts (and leaves behind) is closed at
+/// the end of the take-over; the files it opens and writes are the take-over's own.
 #[cfg(windows)]
 pub fn run(job: &Value, contain: &dyn Fn(&std::process::Child) -> bool) -> Result<Vec<String>, String> {
+    struct Done(u64);
+    impl Drop for Done {
+        fn drop(&mut self) {
+            job_done(self.0, &office_processes());
+        }
+    }
+    let _done = Done(job_begins(office_processes(), job_files(job)));
+    let (out, err) = run_script(job, contain, TIMEOUT_SECS)?;
+    parse_answer(&out).map_err(|e| {
+        let said = err.lines().find(|l| !l.trim().is_empty()).map(|l| l.chars().take(200).collect::<String>());
+        match said {
+            Some(s) if e.starts_with("Office did not answer") => format!("{e} ({s})"),
+            _ => e,
+        }
+    })
+}
+
+/// office.ps1 with one job: (stdout, stderr), or why it did not finish.
+#[cfg(windows)]
+fn run_script(job: &Value, contain: &dyn Fn(&std::process::Child) -> bool, timeout_secs: u64) -> Result<(String, String), String> {
     use std::io::{Read, Write};
     use std::os::windows::process::CommandExt;
     use std::process::{Command, Stdio};
@@ -140,15 +167,6 @@ pub fn run(job: &Value, contain: &dyn Fn(&std::process::Child) -> bool) -> Resul
         .creation_flags(CREATE_NO_WINDOW)
         .spawn()
         .map_err(|e| format!("PowerShell could not start: {e}"))?;
-    // What Office was running before: an app this job starts (and leaves behind) is closed at the end
-    // of the take-over; the ones already running are not.
-    struct Done(u64);
-    impl Drop for Done {
-        fn drop(&mut self) {
-            job_done(self.0, &office_processes());
-        }
-    }
-    let _done = Done(job_begins(office_processes()));
     if !contain(&child) {
         let _ = child.kill();
         let _ = child.wait();
@@ -174,10 +192,10 @@ pub fn run(job: &Value, contain: &dyn Fn(&std::process::Child) -> bool) -> Resul
     loop {
         match child.try_wait() {
             Ok(Some(_)) => break,
-            Ok(None) if t0.elapsed() > Duration::from_secs(TIMEOUT_SECS) => {
+            Ok(None) if t0.elapsed() > Duration::from_secs(timeout_secs) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(format!("Office did not finish within {TIMEOUT_SECS} seconds (it may be showing a message on screen); the job was stopped."));
+                return Err(format!("Office did not finish within {timeout_secs} seconds (it may be showing a message on screen); the job was stopped."));
             }
             Ok(None) => std::thread::sleep(Duration::from_millis(100)),
             Err(e) => return Err(e.to_string()),
@@ -185,13 +203,7 @@ pub fn run(job: &Value, contain: &dyn Fn(&std::process::Child) -> bool) -> Resul
     }
     let out = rx.recv_timeout(Duration::from_secs(5)).unwrap_or_default();
     let err = err_t.join().unwrap_or_default();
-    parse_answer(&out).map_err(|e| {
-        let said = err.lines().find(|l| !l.trim().is_empty()).map(|l| l.chars().take(200).collect::<String>());
-        match said {
-            Some(s) if e.starts_with("Office did not answer") => format!("{e} ({s})"),
-            _ => e,
-        }
-    })
+    Ok((out, err))
 }
 
 #[cfg(not(windows))]
@@ -253,17 +265,34 @@ pub fn to_close(owned: &[OfficeProc], open_jobs: &[Vec<OfficeProc>], now: &[Offi
 struct Started {
     owned: Vec<OfficeProc>,
     open_jobs: Vec<(u64, Vec<OfficeProc>)>,
+    files: Vec<String>,
     next: u64,
 }
 
-static STARTED: std::sync::Mutex<Started> = std::sync::Mutex::new(Started { owned: Vec::new(), open_jobs: Vec::new(), next: 0 });
+static STARTED: std::sync::Mutex<Started> = std::sync::Mutex::new(Started { owned: Vec::new(), open_jobs: Vec::new(), files: Vec::new(), next: 0 });
 
-/// Before a job: remember what was running. Returns the job's ticket for `job_done`.
-pub fn job_begins(before: Vec<OfficeProc>) -> u64 {
+/// A path as Office shows it (FullName), ready to compare: trimmed, backslashes, lower case.
+pub fn norm_file(p: &str) -> String {
+    p.trim().replace('/', "\\").to_lowercase()
+}
+
+/// The files a job opens and writes (`src`, and `out`: the temp file it saves to): the take-over's own.
+pub fn job_files(job: &Value) -> Vec<String> {
+    ["src", "out"].iter().filter_map(|k| job.get(*k).and_then(Value::as_str)).filter(|s| !s.trim().is_empty()).map(norm_file).collect()
+}
+
+/// Before a job: remember what was running and the files the job will open. Returns the job's ticket
+/// for `job_done`.
+pub fn job_begins(before: Vec<OfficeProc>, files: Vec<String>) -> u64 {
     let mut s = STARTED.lock().unwrap_or_else(|e| e.into_inner());
     s.next += 1;
     let t = s.next;
     s.open_jobs.push((t, before));
+    for f in files {
+        if !s.files.contains(&f) {
+            s.files.push(f);
+        }
+    }
     t
 }
 
@@ -281,15 +310,78 @@ pub fn job_done(ticket: u64, now: &[OfficeProc]) {
     }
 }
 
+/// At the end of a take-over: the Office processes it started that still run, and the files it opened.
+#[derive(Debug, PartialEq)]
+pub struct EndOfTakeOver {
+    pub close: Vec<OfficeProc>,
+    pub own_files: Vec<String>,
+}
+
 /// The end of a take-over (stop key, Stop, expiry, link lost): pick what to close from `now` and forget
-/// the take-over's list.
-pub fn end_of_take_over(now: &[OfficeProc]) -> Vec<OfficeProc> {
+/// the take-over's lists.
+pub fn end_of_take_over(now: &[OfficeProc]) -> EndOfTakeOver {
     let mut s = STARTED.lock().unwrap_or_else(|e| e.into_inner());
     let jobs: Vec<Vec<OfficeProc>> = s.open_jobs.iter().map(|(_, b)| b.clone()).collect();
-    let out = to_close(&s.owned, &jobs, now);
+    let close = to_close(&s.owned, &jobs, now);
+    let own_files = std::mem::take(&mut s.files);
     s.owned.clear();
     s.open_jobs.clear();
-    out
+    EndOfTakeOver { close, own_files }
+}
+
+/// How long a quit or a close request gets before the process is force-closed.
+pub const QUIT_WAIT_MS: u32 = 5000;
+
+/// What to do with one Office process the take-over started, so the user's own work is never lost.
+#[derive(Debug, PartialEq)]
+pub enum EndPlan {
+    /// The user has files open in it (PowerPoint is one instance per user; a Word / Excel file opened
+    /// into it): close only the take-over's own files, without saving (`own_open` of them are open), and
+    /// leave the app running.
+    CloseOwnKeepApp { own_open: usize },
+    /// COM cannot reach it, but it has a window on screen the user may be using: leave it running.
+    Keep,
+    /// Only the take-over's files (or none) are open: quit it through COM (no save prompts for its
+    /// files), force-close it if it is still running after QUIT_WAIT_MS.
+    Quit,
+    /// COM cannot reach it and nothing of it is on screen (a hidden automation instance): ask its windows
+    /// to close, force-close it if it is still running after QUIT_WAIT_MS.
+    CloseWindows,
+}
+
+/// The files open in it that are not the take-over's.
+pub fn others_files(open: &[String], own: &[String]) -> Vec<String> {
+    open.iter().filter(|f| !own.contains(&norm_file(f))).cloned().collect()
+}
+
+/// `com_files`: the files open in that process, when COM reached it (None = it could not tell);
+/// `visible`: it has a visible window.
+pub fn end_plan(com_files: Option<&[String]>, own: &[String], visible: bool) -> EndPlan {
+    match com_files {
+        Some(open) if !others_files(open, own).is_empty() => EndPlan::CloseOwnKeepApp { own_open: open.len() - others_files(open, own).len() },
+        Some(_) => EndPlan::Quit,
+        None if visible => EndPlan::Keep,
+        None => EndPlan::CloseWindows,
+    }
+}
+
+/// The app's name for the log.
+pub fn app_name(exe: &str) -> &'static str {
+    match exe {
+        "winword.exe" => "Word",
+        "excel.exe" => "Excel",
+        "powerpnt.exe" => "PowerPoint",
+        _ => "Office",
+    }
+}
+
+/// The job kind office.ps1 knows the app by.
+pub fn kind_of_exe(exe: &str) -> &'static str {
+    match exe {
+        "winword.exe" => "docx",
+        "excel.exe" => "xlsx",
+        _ => "pptx",
+    }
 }
 
 /// The Office processes running now.
@@ -350,30 +442,151 @@ pub fn office_processes() -> Vec<OfficeProc> {
     Vec::new()
 }
 
-/// Close the Office apps this take-over started; the ones already running before it are left alone.
-/// Returns how many were closed.
+/// office.ps1's end-of-take-over actions (inspect / close_own / quit), outside the Job Object (the
+/// take-over is over), 30 s at most: its answer, or why there is none.
 #[cfg(windows)]
-pub fn close_started() -> usize {
+fn ask_office(job: &Value) -> Result<Value, String> {
+    let (out, _) = run_script(job, &|_| true, 30)?;
+    let v = parse_value(&out)?;
+    if v.get("ok").and_then(Value::as_bool) == Some(true) {
+        Ok(v)
+    } else {
+        Err(v.get("error").and_then(Value::as_str).unwrap_or("Office reported an error.").chars().take(200).collect())
+    }
+}
+
+/// The top-level windows of a process, and whether each is visible.
+#[cfg(windows)]
+fn windows_of(pid: u32) -> Vec<(windows::Win32::Foundation::HWND, bool)> {
+    use windows::Win32::Foundation::{HWND, LPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, GetWindowThreadProcessId, IsWindowVisible};
+    struct Acc {
+        pid: u32,
+        out: Vec<(HWND, bool)>,
+    }
+    unsafe extern "system" fn each(h: HWND, l: LPARAM) -> windows::core::BOOL {
+        let acc = &mut *(l.0 as *mut Acc);
+        let mut p = 0u32;
+        GetWindowThreadProcessId(h, Some(&mut p));
+        if p == acc.pid {
+            acc.out.push((h, IsWindowVisible(h).as_bool()));
+        }
+        windows::core::BOOL(1)
+    }
+    let mut acc = Acc { pid, out: Vec::new() };
+    unsafe {
+        let _ = EnumWindows(Some(each), LPARAM(&mut acc as *mut Acc as isize));
+    }
+    acc.out
+}
+
+#[cfg(windows)]
+fn window_pid(hwnd: i64) -> u32 {
+    use windows::Win32::Foundation::HWND;
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
+    let mut p = 0u32;
+    unsafe {
+        GetWindowThreadProcessId(HWND(hwnd as isize as *mut core::ffi::c_void), Some(&mut p));
+    }
+    p
+}
+
+/// Wait up to `ms` for that process (the same one: pid and creation time) to end. True = it is gone.
+#[cfg(windows)]
+fn ends_within(p: &OfficeProc, ms: u32) -> bool {
+    use windows::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+    use windows::Win32::System::Threading::{OpenProcess, WaitForSingleObject, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE};
+    unsafe {
+        let Ok(h) = OpenProcess(PROCESS_SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, false, p.pid) else { return true };
+        let gone = times_of(h) != Some(p.created) || WaitForSingleObject(h, ms) == WAIT_OBJECT_0;
+        let _ = CloseHandle(h);
+        gone
+    }
+}
+
+/// Force-close that process (the same one: pid and creation time).
+#[cfg(windows)]
+fn terminate(p: &OfficeProc) -> bool {
     use windows::Win32::Foundation::CloseHandle;
     use windows::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE};
-    let mut n = 0;
-    for p in end_of_take_over(&office_processes()) {
-        unsafe {
-            let Ok(h) = OpenProcess(PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION, false, p.pid) else { continue };
-            // The same process, not a new one that got its pid.
-            if times_of(h) == Some(p.created) && TerminateProcess(h, 1).is_ok() {
-                n += 1;
+    unsafe {
+        let Ok(h) = OpenProcess(PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION, false, p.pid) else { return false };
+        let ok = times_of(h) == Some(p.created) && TerminateProcess(h, 1).is_ok();
+        let _ = CloseHandle(h);
+        ok
+    }
+}
+
+/// Wait for it to end after a quit / close request; force-close it if it is still there. The log line's end.
+#[cfg(windows)]
+fn finish_off(p: &OfficeProc) -> String {
+    if ends_within(p, QUIT_WAIT_MS) {
+        "it closed".into()
+    } else if terminate(p) {
+        format!("it was still running after {} s, so it was force-closed", QUIT_WAIT_MS / 1000)
+    } else {
+        format!("it was still running after {} s and could not be force-closed", QUIT_WAIT_MS / 1000)
+    }
+}
+
+/// The end of a take-over: the Office apps it started are closed, the user's own work never lost
+/// (EndPlan). Instances that were running before it are not touched. One log line per app.
+#[cfg(windows)]
+pub fn close_started() -> Vec<String> {
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE};
+    let end = end_of_take_over(&office_processes());
+    let mut log = Vec::new();
+    // What COM hands out for each app with a process to close: the pid behind its window, its window
+    // handle (close_own / quit check it again) and the files open in it.
+    let mut com: Vec<(u32, i64, Vec<String>)> = Vec::new();
+    for exe in OFFICE_EXES {
+        if !end.close.iter().any(|p| p.exe == exe) {
+            continue;
+        }
+        if let Ok(v) = ask_office(&json!({ "action": "inspect", "kind": kind_of_exe(exe) })) {
+            let hwnd = v.get("hwnd").and_then(Value::as_i64).unwrap_or(0);
+            if hwnd != 0 {
+                let files = v.get("files").and_then(Value::as_array).map(|a| a.iter().filter_map(|x| x.as_str().map(str::to_string)).collect()).unwrap_or_default();
+                com.push((window_pid(hwnd), hwnd, files));
             }
-            let _ = CloseHandle(h);
         }
     }
-    n
+    for p in &end.close {
+        let name = app_name(&p.exe);
+        let reach = com.iter().find(|c| c.0 == p.pid);
+        let wins = windows_of(p.pid);
+        let plan = end_plan(reach.map(|c| c.2.as_slice()), &end.own_files, wins.iter().any(|w| w.1));
+        let act = |action: &str| ask_office(&json!({ "action": action, "kind": kind_of_exe(&p.exe), "hwnd": reach.map(|c| c.1).unwrap_or(0), "own": end.own_files }));
+        let line = match plan {
+            EndPlan::CloseOwnKeepApp { own_open: 0 } => format!("{name} (pid {}): the user has files open in it, so it was left running", p.pid),
+            EndPlan::CloseOwnKeepApp { .. } => match act("close_own") {
+                Ok(v) => format!("{name} (pid {}): the user has files open in it, so it was left running; {} of the take-over's file(s) closed without saving", p.pid, v.get("closed").and_then(Value::as_u64).unwrap_or(0)),
+                Err(e) => format!("{name} (pid {}): the user has files open in it, so it was left running; the take-over's files could not be closed ({e})", p.pid),
+            },
+            EndPlan::Keep => format!("{name} (pid {}): COM could not reach it and it has a window on screen the user may be using, so it was left running", p.pid),
+            EndPlan::Quit => match act("quit") {
+                Ok(_) => format!("{name} (pid {}): asked to quit (the take-over's files closed without saving); {}", p.pid, finish_off(p)),
+                Err(e) => format!("{name} (pid {}): could not be asked to quit ({e}); {}", p.pid, finish_off(p)),
+            },
+            EndPlan::CloseWindows => {
+                for (h, _) in &wins {
+                    unsafe {
+                        let _ = PostMessageW(Some(*h), WM_CLOSE, WPARAM(0), LPARAM(0));
+                    }
+                }
+                format!("{name} (pid {}): a hidden instance COM could not reach; its windows were asked to close; {}", p.pid, finish_off(p))
+            }
+        };
+        log.push(line);
+    }
+    log
 }
 
 #[cfg(not(windows))]
-pub fn close_started() -> usize {
+pub fn close_started() -> Vec<String> {
     let _ = end_of_take_over(&[]);
-    0
+    Vec::new()
 }
 
 #[cfg(test)]
@@ -452,16 +665,54 @@ mod tests {
     #[test]
     fn a_take_over_remembers_and_forgets_its_office_apps() {
         let users = proc(10, 100, "winword.exe", "explorer.exe");
-        let t1 = job_begins(vec![users.clone()]);
+        let j1 = job("edit", Office::Xlsx, "C:\\Users\\A\\Documents\\Budget.xlsx", "C:/Users/A/Documents/~mint-1a2b.xlsx", None);
+        let t1 = job_begins(vec![users.clone()], job_files(&j1));
         let left = proc(50, 500, "excel.exe", "svchost.exe");
         job_done(t1, &[users.clone(), left.clone()]); // an error left Excel running
-        let t2 = job_begins(vec![users.clone(), left.clone()]);
+        let j2 = job("export", Office::Pptx, "C:\\Users\\A\\Documents\\Q3.pptx", "C:\\Users\\A\\Documents\\~mint-3c4d.pdf", None);
+        let t2 = job_begins(vec![users.clone(), left.clone()], job_files(&j2));
         let flying = proc(51, 510, "powerpnt.exe", "svchost.exe");
         // The stop comes while job 2 runs.
         let now = vec![users.clone(), left.clone(), flying.clone()];
-        assert_eq!(end_of_take_over(&now), vec![left, flying]);
+        let end = end_of_take_over(&now);
+        assert_eq!(end.close, vec![left, flying]);
+        assert_eq!(
+            end.own_files,
+            vec!["c:\\users\\a\\documents\\budget.xlsx", "c:\\users\\a\\documents\\~mint-1a2b.xlsx", "c:\\users\\a\\documents\\q3.pptx", "c:\\users\\a\\documents\\~mint-3c4d.pdf"]
+        );
         job_done(t2, &now); // finishing after the end adds nothing
-        assert!(end_of_take_over(&now).is_empty(), "the list is forgotten at the end");
+        let again = end_of_take_over(&now);
+        assert!(again.close.is_empty() && again.own_files.is_empty(), "the lists are forgotten at the end");
+    }
+
+    #[test]
+    fn the_users_own_work_is_never_lost() {
+        let own = vec![norm_file("C:\\Users\\A\\Documents\\Q3.pptx"), norm_file("C:\\Users\\A\\Documents\\~mint-3c4d.pptx")];
+        let files = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        // PowerPoint the take-over started, and the user opened a deck of their own into it: keep it,
+        // close only the take-over's (one of its two files is still open; Office spells it its own way).
+        let mixed = files(&["C:\\Users\\A\\Documents\\Q3.PPTX", "D:\\Talks\\Mine.pptx"]);
+        assert_eq!(end_plan(Some(&mixed), &own, true), EndPlan::CloseOwnKeepApp { own_open: 1 });
+        assert_eq!(others_files(&mixed, &own), files(&["D:\\Talks\\Mine.pptx"]));
+        // Only the user's file in it: keep it, nothing of the take-over's to close.
+        assert_eq!(end_plan(Some(&files(&["D:\\Talks\\Mine.pptx"])), &own, true), EndPlan::CloseOwnKeepApp { own_open: 0 });
+        // Only the take-over's files, or none: quit (then force-close after QUIT_WAIT_MS).
+        assert_eq!(end_plan(Some(&files(&["c:/users/a/documents/~mint-3c4d.pptx"])), &own, false), EndPlan::Quit);
+        assert_eq!(end_plan(Some(&[]), &own, true), EndPlan::Quit);
+        // COM could not tell: a window on screen may be the user's -> leave it; a hidden instance -> close it.
+        assert_eq!(end_plan(None, &own, true), EndPlan::Keep);
+        assert_eq!(end_plan(None, &own, false), EndPlan::CloseWindows);
+        assert_eq!(QUIT_WAIT_MS, 5000);
+        assert_eq!((app_name("winword.exe"), app_name("excel.exe"), app_name("powerpnt.exe")), ("Word", "Excel", "PowerPoint"));
+        assert_eq!((kind_of_exe("winword.exe"), kind_of_exe("excel.exe"), kind_of_exe("powerpnt.exe")), ("docx", "xlsx", "pptx"));
+        assert_eq!(job_files(&json!({"action": "inspect", "kind": "docx"})), Vec::<String>::new());
+    }
+
+    #[test]
+    fn the_end_actions_are_in_the_fixed_script() {
+        for must in ["'inspect', 'close_own', 'quit'", "GetActiveObject", "$f.Close(0)", "$f.Close($false)", "$f.Saved = -1", "($h -ne [int64]$Job.hwnd)", "$app.Quit(0)"] {
+            assert!(SCRIPT.contains(must), "missing: {must}");
+        }
     }
 
     #[test]
