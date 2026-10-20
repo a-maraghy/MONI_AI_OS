@@ -4697,6 +4697,8 @@ function uiDeliver(ev, req, tab, res) {
     return;
   }
   if (!r.deliver) return;
+  // A widget (MINT AI's ui_widget, the living canvas): checked again and offered unless they keep dismissing its kind.
+  if (ev.action === "widget.show") return uiWidgetDeliver(ev, req, res, ack);
   const v = UiActions.validate(ev.action, ev.args || {});
   if (!v.ok) return void ack(false, v.why);
   if (uiVoiceOff(v.action)) return void ack(false, "voice is off");
@@ -4716,6 +4718,24 @@ function uiDeliver(ev, req, tab, res) {
     return void ack(out.ok, out.why);
   }
   res.write(`event: ui\ndata: ${JSON.stringify({ type: "ui", nonce: ev.nonce, action: v.action, args: v.args, toast: UiActions.toast(v.action, v.args), deep: true })}\n\n`);
+}
+
+/**
+ * One of MINT AI's widgets (its MCP ui_widget, relayed like a screen action) for the tab that asked:
+ * the building blocks are checked again here (public/mint-widgets.js), the person's switch for screen
+ * actions applies, and a kind they always dismiss is no longer offered (lib/routes-canvas.js) -- MINT
+ * AI is told so and answers in words. The page draws it on the board and answers through /ui/ack.
+ */
+function uiWidgetDeliver(ev, req, res, ack) {
+  const actor = req.me.username;
+  if (!settingsRoutes.uiActionsEnabled(db, req.me.id)) return void ack(false, "screen actions are off (the administrator switched them off in Settings > Screen control)");
+  const o = canvas.offer(req.me, ev.widget);
+  if (!o.ok) {
+    db.logLogin(req.ip, actor, "mint-ui", `widget.show by MINT AI (turn ${ev.turn_id}) not offered: ${String(o.why).slice(0, 160)}`);
+    return void ack(false, o.why);
+  }
+  db.logLogin(req.ip, actor, "mint-ui", `widget.show ${o.key} "${o.value.title.slice(0, 80)}" by MINT AI (turn ${ev.turn_id}), to the tab that asked`);
+  res.write(`event: ui\ndata: ${JSON.stringify({ type: "ui", nonce: ev.nonce, action: "widget.show", args: {}, widget: o.value, key: o.key, turn_id: ev.turn_id, toast: "MINT AI added a widget: " + o.value.title, deep: true })}\n\n`);
 }
 
 /**
@@ -6598,6 +6618,13 @@ const proactive = require("./lib/routes-proactive").mount(app, {
   wsBase: process.env.MONI_OPENAI_WS || undefined,
   voice: { enabled: () => voiceEnabled(), config: () => voiceConfig(), record: (row) => recordVoice(() => voiceLedger.add(row).usd) },
 });
+
+/* ------------------------------------- the living canvas (the board) ---- */
+/*
+ * lib/routes-canvas.js (rows lib/canvas-store.js; the page's half public/mint-canvas.js with the
+ * building blocks public/mint-widgets.js and the layout policy public/mint-canvas-policy.js).
+ */
+const canvas = require("./lib/routes-canvas").mount(app, { requireAuth, requireCsrf, apiGuard: moniAiGuard, apiWrite: moniAiWrite, db, settingsRoutes });
 
 /* ------------------------------------- Computers (laptop control) ---- */
 /*

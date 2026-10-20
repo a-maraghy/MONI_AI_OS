@@ -2519,6 +2519,8 @@ async function handle(req, sock) {
       return await freshStart(req.actor, p);
     case "ui-action":
       return await uiAction(req.actor, p);
+    case "ui-widget":
+      return await uiWidget(req.actor, p);
     case "session-hire":
       return await sessionHire(req.actor, p);
     case "session-retire":
@@ -2625,6 +2627,44 @@ async function uiAction(actor, p) {
   if (!a.ok) return { status: "refused", why: a.why || "the screen refused it", note: "Tell the administrator plainly that it was not done, and why." };
   if (a.pending) return { status: "confirm", note: "Nothing has changed yet: their screen asks them to confirm. Say so, and ask them to say yes or click Confirm; never say it is done." };
   return { status: "ok", done: toast };
+}
+
+/*
+ * MINT AI's ui_widget (its MCP tool; the living canvas, 2026-10-20): a widget alongside its answer, for
+ * the tab that asked. Exactly the terms of ui_do -- actor moni-ai, during a turn the administrator
+ * started from the Command Center with a ui token, live-only, a tag of the token, answered by that
+ * administrator's tab -- and the widget is built only from the fixed building blocks (lib/mint-widgets.js,
+ * checked by the protocol; never HTML, script, style or a URL). At most 3 a turn, and they count toward
+ * the screen actions' per-minute limit. The page may refuse it (a kind they always dismiss): refused.
+ */
+const UI_WIDGETS_PER_TURN = 3;
+const uiWidgetCount = new Map(); // turn id -> widgets sent
+async function uiWidget(actor, p) {
+  if (actor !== "moni-ai") throw new Error("ui-widget is MINT AI's own tool (actor moni-ai)");
+  const running = turns.running;
+  if (!running) throw new Error("no turn is running: a widget goes with your answer to the administrator's own request, during it");
+  const tok = uiTokens.get(running.id);
+  if (!tok || (running.source !== "dashboard" && running.source !== "voice-desk")) throw new Error("this turn was not started by the administrator from the Command Center, so it cannot put a widget on their screen");
+  const n = uiWidgetCount.get(running.id) || 0;
+  if (n >= UI_WIDGETS_PER_TURN) throw new Error(`at most ${UI_WIDGETS_PER_TURN} widgets in one turn`);
+  const lim = uiLimit.take(running.id + ":w" + n, "widget.show", Date.now());
+  if (lim) throw new Error(lim);
+  uiWidgetCount.set(running.id, n + 1);
+  if (uiWidgetCount.size > 200) uiWidgetCount.delete(uiWidgetCount.keys().next().value);
+  const w = p.widget; // checked by lib/protocol.js (widgetSpec)
+  const nonce = crypto.randomBytes(12).toString("hex");
+  const toast = "MINT AI added a widget: " + w.title;
+  const answer = new Promise((resolve) => {
+    uiWaiting.set(nonce, { actor: tok.actor, resolve });
+    setTimeout(() => {
+      if (uiWaiting.delete(nonce)) resolve(null);
+    }, UI_ACK_MS).unref();
+  });
+  emitLive("ui", { actor: tok.actor, ut_tag: uiTag(tok.ut), nonce, action: "widget.show", args: {}, widget: w, toast, turn_id: running.id, expires: new Date(Date.now() + UI_ACK_MS).toISOString() });
+  const a = await answer;
+  if (!a) return { status: "no-screen", note: "No Command Center answered: the administrator's screen is not open. Answer in words." };
+  if (!a.ok) return { status: "refused", why: a.why || "the screen refused it", note: "The widget was not shown. Answer in words; do not say it is on their screen." };
+  return { status: "ok", shown: w.title, note: "It is on their board beside your answer; they may pin, resize or dismiss it. Still say the answer in words." };
 }
 
 /**
@@ -2741,6 +2781,7 @@ function auditDetail(req) {
   if (p.ut) p.ut = "(set)"; // the ui token is never written down
   if (typeof p.text === "string") p.text = clip(p.text, 300);
   if (Array.isArray(p.pages)) p.pages = `(${p.pages.length} pages)`;
+  if (p.widget && typeof p.widget === "object") p.widget = `(widget ${p.widget.kind} "${clip(String(p.widget.title || ""), 80)}", ${(p.widget.blocks || []).length} blocks)`;
   return p;
 }
 
