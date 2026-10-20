@@ -254,3 +254,18 @@ Chrome (the user's own Claude in Chrome extension; Chrome open, signed in to the
 
 The pill
 - [ ] Under the pill a second, smaller line "Last: …" appears with the first action and changes with each one (e.g. "Last: Edited Report.docx", "Last: Chrome: open https://…", "… — not approved"). It is click-through, excluded from screen capture, and goes with the pill. At 150 % scaling it fits under the pill; a long target ends with "…".
+
+## 0.1.11 — the page's new parts inside the app (served by the site; checked here because they run in WebView2)
+
+Morning brief, watchers, "while you were away"
+- [ ] After 08:00 (Cairo) the first glance card is the morning brief: 4 lines plus "+N more"; Open shows it in full; Dismiss hides it here **and** in the browser.
+- [ ] Settings ▸ the brief and the watchers sections load; set a watcher (e.g. "tell me when a session waits for me") and make it fire: a Windows toast (only when MINT AI cannot be seen), a glance alert and a short chirp. The toast's second button only dismisses — it never denies an approval.
+- [ ] Leave the app untouched for a while (away), come back: a "while you were away" card summarises what happened, once, only if something happened.
+
+Session story and replay the day
+- [ ] A session's line in the brief (or a watcher toast's Story button) opens the story of that session: what it did, step by step, in plain words. Esc closes it.
+- [ ] "Replay the day" at the top: drag or play the timeline; the spheres replay the day; Now goes back to live and the live sessions take the map back.
+
+Sounds
+- [ ] Short quiet chirps per role (MINT AI, builders, hired sessions…) when a session needs you or a brief arrives; nothing plays during a live call or while the voice speaks; nothing before the first click / key in the window.
+- [ ] Settings ▸ Sounds ▸ off: silence everywhere; on again: back.
