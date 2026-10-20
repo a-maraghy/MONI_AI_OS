@@ -79,10 +79,22 @@ console.log("\nlib/machine-gate.js: the browser (Claude in Chrome, 0.1.11)");
       dd("computer", { action: "screenshot", tabId: 1 }).decision === "allow" && dd("computer", { action: "scroll", coordinate: [1, 2], scroll_direction: "down", tabId: 1 }).decision === "allow" &&
       dd("navigate", { url: "https://www.example.com/a" }).decision === "allow" && dd("navigate", { url: "example.com" }).decision === "allow" && dd("navigate", { url: "back", tabId: 1 }).decision === "allow");
   const hint = { targets: [{ ref: "ref_12", label: 'button "Send"' }, { ref: "ref_3", label: 'link "Next page"' }, { ref: "ref_7", label: 'button "Sign in"' }, { ref: "ref_8", label: 'textbox "Password"' }], tab_urls: ["https://mail.google.com/mail/u/0/"] };
-  check("a click that sends / submits / buys / signs in -> a card (by its target's label or by what the step says it does)",
+  check("a click that sends / submits / buys / deletes -> a card (by its target's label or by what the step says it does)",
     dd("computer", { action: "left_click", ref: "ref_12", tabId: 1 }, hint).decision === "ask" && dd("computer", { action: "left_click", coordinate: [5, 5], action_summary: "Submits the order form", tabId: 1 }, hint).decision === "ask" &&
-      dd("computer", { action: "left_click", ref: "ref_7", tabId: 1 }, hint).decision === "ask" && dd("computer", { action: "left_click", coordinate: [5, 5], action_summary: "Places the order", tabId: 1 }).decision === "ask" &&
-      dd("computer", { action: "left_click", coordinate: [5, 5], action_summary: "يرسل الرسالة ارسال", tabId: 1 }).decision === "ask" && dd("computer", { action: "left_click", coordinate: [5, 5], action_summary: "Logs in with Google", tabId: 1 }).decision === "ask");
+      dd("computer", { action: "left_click", coordinate: [5, 5], action_summary: "Places the order", tabId: 1 }).decision === "ask" && dd("computer", { action: "left_click", coordinate: [5, 5], action_summary: "Deletes the draft", tabId: 1 }).decision === "ask" &&
+      dd("computer", { action: "left_click", coordinate: [5, 5], action_summary: "يرسل الرسالة ارسال", tabId: 1 }).decision === "ask" && dd("computer", { action: "left_click", coordinate: [5, 5], action_summary: "Pays the invoice", tabId: 1 }).decision === "ask");
+  const click = (summary, ref) => dd("computer", { action: "left_click", ...(ref ? { ref } : { coordinate: [5, 5] }), action_summary: summary, tabId: 1 }, hint).decision;
+  check("signing in / logging in runs without a card (the user, 2026-10-20), English and Arabic",
+    click("", "ref_7") === "allow" && click("Logs in with Google") === "allow" && click("Signs in to the portal") === "allow" && click("Clicks Log in") === "allow" && click("Continue with Microsoft") === "allow" &&
+      click("Clicks Sign into your account") === "allow" && click("يضغط تسجيل الدخول") === "allow" && click("زر بتسجيل الدخول") === "allow" && click("سجل الدخول") === "allow" &&
+      dd("form_input", { ref: "ref_1", value: "ahmed@example.com", action_summary: "Fills the login email", tabId: 1 }).decision === "allow",
+    [click("", "ref_7"), click("Logs in with Google"), click("يضغط تسجيل الدخول"), click("زر بتسجيل الدخول")].join(" "));
+  check("  but signing in next to a risky word still asks; signing up, signing a document and paying still ask",
+    click("Signs in and sends the message") === "ask" && click("Signs up for the newsletter") === "ask" && click("Signs the contract") === "ask" && click("Clicks Sign in, then Buy now") === "ask" &&
+      click("Log in and pay") === "ask" && click("تسجيل الدخول ثم ارسال") === "ask" && !G.riskyWord("Sign in") && G.riskyWord("Sign in to send") === "send");
+  check("  a password on a sign-in page is still refused outright",
+    dd("form_input", { ref: "ref_8", value: "hunter22", action_summary: "Fills the password to sign in", tabId: 1 }, hint).decision === "deny" &&
+      dd("computer", { action: "type", text: "1234", action_summary: "Types the PIN to log in", tabId: 1 }).decision === "deny" && dd("computer", { action: "type", text: "x", action_summary: "Types the one time code to sign in", tabId: 1 }).decision === "deny");
   check("  an ordinary click runs; a click nobody described is a card",
     dd("computer", { action: "left_click", ref: "ref_3", action_summary: "Opens the next page of results", tabId: 1 }, hint).decision === "allow" && dd("computer", { action: "left_click", coordinate: [5, 5], tabId: 1 }).decision === "ask");
   check("  Enter, Ctrl+Enter and Alt+S (send) -> a card; Shift+Enter, Tab and typing plain text run; text with a newline -> a card",
@@ -149,8 +161,8 @@ console.log("\nlib/machines.js (pure parts)");
   check("  without the browser: files, PowerShell, Start-Process, create_document, Office edits and PDFs; no screen/mouse/keyboard/browser control, and claims none",
     /PowerShell/.test(fp) && /Start-Process/.test(fp) && /create_document/.test(fp) && /office_edit/.test(fp) && /pdf_merge/.test(fp) && /no screen, mouse, keyboard or browser control/.test(fp) && !/screen|mouse|keyboard|browser|click|screenshot/i.test(fpClaims), fp);
   const fpb = M.firstPrompt({ name: "Laptop control", machine: "Laptop", purpose: "Find the train times.", minutes: 15, browser: true });
-  check("  with the browser: the user's Chrome through Claude in Chrome, nothing outside it, never passwords or payment details, signing in waits for approval",
-    /Claude in Chrome extension/.test(fpb) && /outside Chrome you have no screen, mouse or keyboard control/.test(fpb) && /Never type passwords or payment details/.test(fpb) && /signing in/.test(fpb) && !/no screen, mouse, keyboard or browser control/.test(fpb), fpb);
+  check("  with the browser: the user's Chrome through Claude in Chrome, nothing outside it, never passwords or payment details, pressing Sign in is fine, a password is the user's",
+    /Claude in Chrome extension/.test(fpb) && /outside Chrome you have no screen, mouse or keyboard control/.test(fpb) && /Never type passwords, PINs, codes or payment details/.test(fpb) && /pressing Sign in is fine/.test(fpb) && !/signing in/.test(fpb) && !/no screen, mouse, keyboard or browser control/.test(fpb), fpb);
   check("notInstalled: names the computer, says to install and run `claude`, then Look again", /Claude Code is not installed on "Laptop"/.test(M.notInstalled("Laptop")) && /`claude`/.test(M.notInstalled("Laptop")) && /Look again/.test(M.notInstalled("Laptop")));
   const ft = M.endedText({ name: "L control", machine: "Laptop", why: "the computer did not start the session", failed: true });
   check("endedText: a start failure says it could not start, why, and to tell the user; an ordinary end does not", /could not start -- the computer did not start the session/.test(ft) && /Tell the user plainly/.test(ft) && /control of the user's computer ended \(timeout\)/.test(M.endedText({ name: "L control", machine: "Laptop", why: "timeout", failed: false })));

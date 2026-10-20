@@ -232,7 +232,8 @@ Office files (each: check the app log line "control session …: browser …, Of
 - [ ] Office **macros never run**: `Macro.xlsm` is refused ("macro-enabled"); a .docx with a renamed macro project is refused too. `Secret.docx` is refused ("password-protected or damaged"); no password prompt appears anywhere.
 - [ ] Without Office (or with engine "file"): the same edits work through the file engine (the reply says "edited with the file"); pdf_export says it needs Office.
 - [ ] Paths: asking it to edit `C:\Windows\win.ini`, a file in `AppData`, or a file through a junction from Documents to elsewhere is refused with the reason; a file in a folder added on the Computers page works.
-- [ ] Ctrl+Alt+Esc **while Office is working** (e.g. a pdf_export of a big deck): the PowerShell job dies with the session (Task Manager: no powershell.exe left); note whether WINWORD / EXCEL / POWERPNT stays behind (it may: Office runs outside the Job Object) and report it.
+- [ ] Ctrl+Alt+Esc **while Office is working** (e.g. a pdf_export of a big deck): the PowerShell job dies with the session (Task Manager: no powershell.exe left), and within about a second the WINWORD / EXCEL / POWERPNT the take-over started is closed too (app log "closed N Office app(s) the take-over had started").
+- [ ] Open a document of your own in Word (and a deck in PowerPoint) **before** the take-over, then ask for a Word edit and a PowerPoint export and press Stop (or let the lease run out): your own Word and PowerPoint windows stay open with your document; only the hidden instances the take-over started are gone. Also with Word opened by you **during** the take-over (from the Start menu): it stays open.
 
 PDFs
 - [ ] "Read the two PDFs": pdf_read gives their text with [page N]; a scanned PDF says "no text".
@@ -243,8 +244,9 @@ Chrome (the user's own Claude in Chrome extension; Chrome open, signed in to the
 - [ ] The CLI is started with `--chrome` and `--settings {"permissions":{"ask":["mcp__claude-in-chrome"]}}` (app log); `claude --chrome` was run once on that computer.
 - [ ] "Find the train times from Cairo to Alexandria tomorrow": it opens a **new tab** in your Chrome, reads pages, and reports — **no** approval cards for opening and reading pages, scrolling or screenshots.
 - [ ] "Draft an email to me in Gmail with subject Test, then send it": typing the draft runs; the **Send** click raises a card "Act in your browser" naming the button, what it does and the site (Windows Hello). Deny ▸ not sent, it does not try Enter or another way. Approve ▸ sent.
-- [ ] Pressing Enter in a form, a click described as submitting / buying / posting / signing in, a script (javascript_tool), an upload: each a card.
-- [ ] A login page: it stops and asks you to sign in yourself; it never types a password (try asking it to type one: refused at once, "refused" in the log). A card number is refused even in an ordinary field.
+- [ ] Pressing Enter in a form, a click described as submitting / buying / posting / paying / deleting, a script (javascript_tool), an upload: each a card.
+- [ ] A **Sign in** / **Log in** / "Continue with Google" button, and "تسجيل الدخول" on an Arabic site: clicked **without** a card ("by the rules" in the log). A button that signs in **and** sends / buys ("Sign in and pay"), "Sign up" and "Sign the document": still a card.
+- [ ] A login page that wants a password: it stops and asks you to type it yourself; it never types a password, PIN or one-time code (try asking it to type one: refused at once, "refused" in the log). A card number is refused even in an ordinary field.
 - [ ] Open Mint OS in a Chrome tab during a take-over and ask it to approve its own card there: refused ("Mint OS itself").
 - [ ] Extension signed out / Chrome closed: the session says the browser is not connected; the Computers page shows "Chrome not connected" with the steps.
 - [ ] If you have Claude in Chrome connected on **another** computer too: it does not switch to that browser without a card.

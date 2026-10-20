@@ -127,7 +127,7 @@ function chromeBlock(m, csrf) {
   const needsSteps = s.state === "missing" || s.state === "not-connected" || s.state === "unknown";
   return `<div class="mc-chrome" data-chrome="${m.id}" data-chrome-state="${s.state}" data-chrome-sig="${chromeSig(m.chrome)}">
       <div class="mc-chrome-head"><span class="pill ${cls} nodot" data-chrome-pill="${m.id}">${esc({ connected: "Chrome connected", "set-up": "Chrome set up", "not-connected": "Chrome not connected", missing: "Chrome not set up", off: "Chrome off", unknown: "Chrome unknown" }[s.state])}</span> <span class="small">${s.text}</span> ${toggle}</div>
-      ${needsSteps ? `<details class="mc-steps"${s.state === "missing" || s.state === "not-connected" ? " open" : ""}><summary class="small">How to connect Chrome</summary>${SETUP_STEPS}<p class="muted small">MINT AI then works in your own Chrome, through the extension only. Anything that sends, submits, buys, posts or signs in waits for your approval (Windows Hello); it never types passwords or payment details.</p></details>` : ""}
+      ${needsSteps ? `<details class="mc-steps"${s.state === "missing" || s.state === "not-connected" ? " open" : ""}><summary class="small">How to connect Chrome</summary>${SETUP_STEPS}<p class="muted small">MINT AI then works in your own Chrome, through the extension only. Anything that sends, submits, buys, posts or deletes waits for your approval (Windows Hello); it may press Sign in, but never types passwords, PINs, codes or payment details.</p></details>` : ""}
     </div>`;
 }
 
@@ -153,7 +153,7 @@ function takeOverForm(m, csrf) {
         <label>What should it do?<textarea name="purpose" rows="3" minlength="10" maxlength="4000" required placeholder="e.g. Update the totals in Budget.xlsx and make a PDF of the Q3 deck."></textarea></label>
         <label>For <select name="minutes"><option value="15" selected>15 minutes</option><option value="30">30 minutes</option><option value="60">60 minutes</option></select></label>
         <button class="btn primary" type="submit">${icon("core", 14)} Take over</button>
-        <p class="muted small">You will see a glowing frame on that computer; Ctrl+Alt+Esc there stops it. Sending, submitting, buying, posting, signing in, deleting, installing or writing over a file waits for your approval.</p>
+        <p class="muted small">You will see a glowing frame on that computer; Ctrl+Alt+Esc there stops it. Sending, submitting, buying, posting, deleting, installing or writing over a file waits for your approval.</p>
       </form></details>`;
 }
 
@@ -205,7 +205,7 @@ function list(o) {
         <li><b>Only when you ask.</b> MINT AI takes over for your own request (typed, or said aloud when the voiceprint recognises you), never on its own.</li>
         <li><b>A lease.</b> 15 minutes by default; extend it here or on the computer. It ends on stop, timeout, lock or sign-out.</li>
         <li><b>Always visible.</b> A glowing frame and a pill on the computer, with its last action; <span class="mono">Ctrl+Alt+Esc</span> stops it instantly, on the computer itself.</li>
-        <li><b>Your approval</b> (Windows Hello) before sending, submitting, buying, posting, signing in, deleting, installing, writing over a file or touching files outside yours: the usual approval cards.</li>
+        <li><b>Your approval</b> (Windows Hello) before sending, submitting, buying, posting, deleting, installing, writing over a file or touching files outside yours: the usual approval cards.</li>
         <li><b>Your files stay yours.</b> Office edits go to a new copy next to the original; macros never run.</li>
         <li><b>Never</b> passwords, card numbers or ids typed; never CAPTCHAs; Windows security prompts are yours.</li>
         <li><b>A log</b> of every action — what, on what, the result and who approved it — kept ${esc(String(o.retention))} days.</li>

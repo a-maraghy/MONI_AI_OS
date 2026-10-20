@@ -34,7 +34,7 @@
  * here with a hint (the labels of the elements a step targets, the tabs'
  * addresses). decideBrowser(): reading, scrolling, opening pages and plain
  * typing run; a step that submits, sends, buys, pays, posts, publishes,
- * deletes or signs in -- a click or a form choice whose description or
+ * or deletes -- a click or a form choice whose description or
  * target says so, Enter, a script, an upload, a saved shortcut, another
  * computer's browser -- is a card (Windows Hello); passwords, payment details
  * and Mint OS's own pages are refused here too.
@@ -277,11 +277,37 @@ const RISKY_WORDS = [
   "pay", "buy", "purchase", "checkout", "check out", "place order", "order now", "complete order", "book", "reserve", "transfer", "donate", "subscribe", "unsubscribe",
   "delete", "remove", "discard", "erase", "empty trash",
   "confirm", "sign", "approve", "authorize", "authorise", "agree", "accept", "allow", "grant", "invite", "upload", "install", "register", "apply",
-  "sign in", "signin", "log in", "login", "logon", "sign up", "signup", "continue with google", "continue with microsoft", "continue with apple",
+  "sign up", "signup",
   // the step's own words ("Sends the reply", "Submits the form", "Places the order")
-  "sends", "submits", "posts", "publishes", "pays", "buys", "purchases", "books", "deletes", "removes", "confirms", "signs", "logs in", "approves", "accepts", "agrees", "uploads", "subscribes", "transfers", "shares", "replies", "registers", "applies", "authorizes", "places the order", "places an order",
-  "ارسال", "ارسل", "ابعت", "نشر", "انشر", "شراء", "اشتر", "ادفع", "دفع", "حذف", "احذف", "تاكيد", "اكد", "تحويل", "مشاركه", "شارك", "اطلب", "تسجيل الدخول", "دخول", "اوافق", "توقيع",
+  "sends", "submits", "posts", "publishes", "pays", "buys", "purchases", "books", "deletes", "removes", "confirms", "signs", "approves", "accepts", "agrees", "uploads", "subscribes", "transfers", "shares", "replies", "registers", "applies", "authorizes", "places the order", "places an order",
+  "ارسال", "ارسل", "ابعت", "نشر", "انشر", "شراء", "اشتر", "ادفع", "دفع", "حذف", "احذف", "تاكيد", "اكد", "تحويل", "مشاركه", "شارك", "اطلب", "اوافق", "توقيع",
 ];
+/**
+ * Signing in / logging in is not a card (the user, 2026-10-20): these phrases are taken out of a step's
+ * words before RISKY_WORDS are looked for, so "Sign in" or "Log in with Google" runs, while "Sign in and
+ * send" still asks and "Sign the contract" / "Sign up" still ask. Typing into a password, PIN, code or
+ * payment field is refused whatever the button says (SECRET_WORDS, card numbers).
+ */
+const SIGN_IN_PHRASES = [
+  "sign in", "signin", "sign into", "signs in", "signing in", "sign me in", "log in", "login", "log into", "logs in", "logging in", "log on", "logon", "log me in",
+  "continue with google", "continue with microsoft", "continue with apple",
+  "تسجيل الدخول", "سجل الدخول", "سجل دخول", "دخول",
+];
+function withoutSignIn(text) {
+  let f = fold(text);
+  const phrases = SIGN_IN_PHRASES.map((p) => fold(p).trim()).sort((a, b) => b.length - a.length);
+  for (const p of phrases) {
+    const forms = /[؀-ۿ]/.test(p) ? ["", "ال", "وال", "بال", "و", "ف", "ب", "ل"].map((pre) => pre + p) : [p];
+    for (const w of forms) {
+      while (f.includes(` ${w} `)) f = f.replace(` ${w} `, " ");
+    }
+  }
+  return f;
+}
+/** The risky word a step's words carry, once signing in is set aside (null = none). */
+function riskyWord(text) {
+  return hasWord(withoutSignIn(text), RISKY_WORDS);
+}
 const SECRET_WORDS = ["password", "passcode", "passwort", "pin", "cvv", "cvc", "csc", "security code", "card number", "credit card", "debit card", "iban", "one time code", "otp", "verification code", "2fa", "كلمة المرور", "كلمه السر", "الرقم السري", "رقم البطاقة"];
 
 /** Lower case, accents and Arabic marks folded, everything but letters / digits -> one space. */
@@ -373,12 +399,12 @@ function browserStep(t, i, labels) {
         return main === "s" && parts.includes("alt") && !parts.includes("ctrl");
       });
       if (sends) return { decision: "ask", why: `It presses ${String(i.text).slice(0, 40)}, which can submit or send.` };
-      const risky = summary && hasWord(summary, RISKY_WORDS);
+      const risky = summary && riskyWord(summary);
       return risky ? { decision: "ask", why: `It ${summary.slice(0, 160)}.` } : { decision: "allow" };
     }
     if (B_CLICK.has(a)) {
-      const risky = hasWord(said, RISKY_WORDS);
-      if (risky) return { decision: "ask", why: `It clicks ${target ? target.slice(0, 120) : "on the page"}${summary ? ` (${summary.slice(0, 160)})` : ""}: that can send, submit, buy, post or sign in.` };
+      const risky = riskyWord(said);
+      if (risky) return { decision: "ask", why: `It clicks ${target ? target.slice(0, 120) : "on the page"}${summary ? ` (${summary.slice(0, 160)})` : ""}: that can send, submit, buy, post or delete.` };
       if (!summary && !target) return { decision: "ask", why: "A click MINT AI did not describe." };
       return { decision: "allow" };
     }
@@ -388,7 +414,7 @@ function browserStep(t, i, labels) {
     const v = typeof i.value === "string" ? i.value : JSON.stringify(i.value);
     if (hasCardNumber(v)) return { decision: "deny", why: "That looks like a payment card number; MINT AI never types card numbers." };
     if (hasWord(said, SECRET_WORDS)) return { decision: "deny", why: "That is a password, PIN, code or payment field; MINT AI never fills those." };
-    if (hasWord(said, RISKY_WORDS)) return { decision: "ask", why: `It sets ${target ? target.slice(0, 120) : "a field"}${summary ? ` (${summary.slice(0, 160)})` : ""}.` };
+    if (riskyWord(said)) return { decision: "ask", why: `It sets ${target ? target.slice(0, 120) : "a field"}${summary ? ` (${summary.slice(0, 160)})` : ""}.` };
     return { decision: "allow" };
   }
   if (t === "javascript_tool") return { decision: "ask", why: "It runs a script on the page, which can do anything the page can (submit, send, buy)." };
@@ -486,4 +512,4 @@ function summaryOf(tool, input, hint) {
   return `${tool} ${JSON.stringify(i).slice(0, 500)}`;
 }
 
-module.exports = { HANDS_PREFIX, BROWSER_PREFIX, ALLOWANCE_MS, normPath, inUserFiles, pathsIn, decideCommand, decide, decideBrowser, browserSummary, summaryOf, approvalPath, approvalScope, deleteTargets, allowanceCovers, hasCardNumber };
+module.exports = { HANDS_PREFIX, BROWSER_PREFIX, riskyWord, ALLOWANCE_MS, normPath, inUserFiles, pathsIn, decideCommand, decide, decideBrowser, browserSummary, summaryOf, approvalPath, approvalScope, deleteTargets, allowanceCovers, hasCardNumber };

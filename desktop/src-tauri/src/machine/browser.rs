@@ -6,7 +6,7 @@
 //! question and the action-log line.
 //!
 //! The rule (also in the session's instructions, and decided again on the server, machine-gate.js):
-//! anything that submits a form, sends, buys, posts or signs in waits for the user's approval (an
+//! anything that submits a form, sends, buys, posts or deletes waits for the user's approval (an
 //! approval card, Windows Hello); passwords and payment details are never typed; MINT AI's own pages
 //! are never touched. How it is enforced: the CLI is started with `--settings` holding an `ask` rule
 //! for every browser tool, and `ask` beats any `allow` the user's own settings may have, so no

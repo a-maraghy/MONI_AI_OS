@@ -347,8 +347,8 @@ async function part2() {
     const visible = page.body.replace(/<[^>]+>/g, " ").replace(/no\s+other screen, mouse or keyboard control/g, "");
     check("  says what MINT AI can do there (files, PowerShell, Office edits, PDFs, your Chrome through Claude in Chrome) and plainly that it has no other screen / mouse / keyboard control",
       /no<\/b> other screen, mouse or keyboard control/.test(page.body) && /PowerShell/.test(page.body) && /edit existing ones/.test(page.body) && /PDFs/.test(page.body) && /Claude in Chrome extension/.test(page.body) && !/\b(screen|mouse|keyboard|screenshot)\b/i.test(visible.replace(/A glowing frame/g, "")), visible.match(/.{0,60}\b(screen|mouse|keyboard|screenshot)\b.{0,60}/i));
-    check("  the safety card: approval (Windows Hello) before sending / submitting / buying / posting / signing in / writing over a file; a new copy by default; macros never run; the log kept 90 days",
-      /Windows Hello/.test(page.body) && /signing in/.test(page.body) && /writing over a file/.test(page.body) && /new copy next to the original/.test(page.body) && /macros never run/.test(page.body) && /kept 90 days/.test(page.body));
+    check("  the safety card: approval (Windows Hello) before sending / submitting / buying / posting / deleting / writing over a file (signing in is not asked); a new copy by default; macros never run; the log kept 90 days",
+      /Windows Hello/.test(page.body) && /posting, deleting/.test(page.body) && !/signing in/.test(page.body) && /writing over a file/.test(page.body) && /new copy next to the original/.test(page.body) && /macros never run/.test(page.body) && /kept 90 days/.test(page.body));
     const csrf = (/name="_csrf" value="([^"]+)"/.exec(page.body) || [])[1];
     const pr = await srv.req("POST", "/machines/pair", { cookie: who.cookie, body: new URLSearchParams({ _csrf: csrf }).toString() });
     const page2 = await srv.req("GET", "/machines", { cookie: who.cookie });

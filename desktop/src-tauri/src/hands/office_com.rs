@@ -140,6 +140,15 @@ pub fn run(job: &Value, contain: &dyn Fn(&std::process::Child) -> bool) -> Resul
         .creation_flags(CREATE_NO_WINDOW)
         .spawn()
         .map_err(|e| format!("PowerShell could not start: {e}"))?;
+    // What Office was running before: an app this job starts (and leaves behind) is closed at the end
+    // of the take-over; the ones already running are not.
+    struct Done(u64);
+    impl Drop for Done {
+        fn drop(&mut self) {
+            job_done(self.0, &office_processes());
+        }
+    }
+    let _done = Done(job_begins(office_processes()));
     if !contain(&child) {
         let _ = child.kill();
         let _ = child.wait();
@@ -190,6 +199,183 @@ pub fn run(_job: &Value, _contain: &dyn Fn(&std::process::Child) -> bool) -> Res
     Err("Office is only used on Windows.".into())
 }
 
+/* ------------------------------------------------- the Office apps a take-over started, closed at its end */
+
+/// One running Office process: pid + creation time (a reused pid never matches), its exe and its
+/// parent's exe (lower case).
+#[derive(Clone, Debug, PartialEq)]
+pub struct OfficeProc {
+    pub pid: u32,
+    pub created: u64,
+    pub exe: String,
+    pub parent_exe: String,
+}
+
+/// The Office apps the hands drive through COM.
+pub const OFFICE_EXES: [&str; 3] = ["winword.exe", "excel.exe", "powerpnt.exe"];
+
+/// COM starts an automation instance from DcomLaunch (svchost.exe): one the user opened has Explorer,
+/// a shortcut or Outlook as its parent, so it is never taken for the take-over's.
+fn com_started(p: &OfficeProc) -> bool {
+    p.parent_exe.eq_ignore_ascii_case("svchost.exe")
+}
+
+/// The Office processes that appeared between `before` and `now` and were started by COM: the job's.
+/// An instance already running before the job (same pid and creation time) is never one of them.
+pub fn started_between(before: &[OfficeProc], now: &[OfficeProc]) -> Vec<OfficeProc> {
+    now.iter()
+        .filter(|p| OFFICE_EXES.contains(&p.exe.as_str()) && com_started(p))
+        .filter(|p| !before.iter().any(|b| b.pid == p.pid && b.created == p.created))
+        .cloned()
+        .collect()
+}
+
+/// What to close at the end: the take-over's instances still running (pid AND creation time match),
+/// plus any a job still in flight started since its snapshot. Each pid once.
+pub fn to_close(owned: &[OfficeProc], open_jobs: &[Vec<OfficeProc>], now: &[OfficeProc]) -> Vec<OfficeProc> {
+    let mut out: Vec<OfficeProc> = Vec::new();
+    let mut add = |p: &OfficeProc| {
+        if !out.iter().any(|o| o.pid == p.pid) {
+            out.push(p.clone());
+        }
+    };
+    for p in now.iter().filter(|p| owned.iter().any(|o| o.pid == p.pid && o.created == p.created)) {
+        add(p);
+    }
+    for before in open_jobs {
+        for p in started_between(before, now) {
+            add(&p);
+        }
+    }
+    out
+}
+
+struct Started {
+    owned: Vec<OfficeProc>,
+    open_jobs: Vec<(u64, Vec<OfficeProc>)>,
+    next: u64,
+}
+
+static STARTED: std::sync::Mutex<Started> = std::sync::Mutex::new(Started { owned: Vec::new(), open_jobs: Vec::new(), next: 0 });
+
+/// Before a job: remember what was running. Returns the job's ticket for `job_done`.
+pub fn job_begins(before: Vec<OfficeProc>) -> u64 {
+    let mut s = STARTED.lock().unwrap_or_else(|e| e.into_inner());
+    s.next += 1;
+    let t = s.next;
+    s.open_jobs.push((t, before));
+    t
+}
+
+/// After a job: whatever it started and left running is the take-over's (normally none: the script quits
+/// the app it started; one left behind by an error or a timeout is counted here).
+pub fn job_done(ticket: u64, now: &[OfficeProc]) {
+    let mut s = STARTED.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(i) = s.open_jobs.iter().position(|(t, _)| *t == ticket) {
+        let (_, before) = s.open_jobs.remove(i);
+        for p in started_between(&before, now) {
+            if !s.owned.iter().any(|o| o.pid == p.pid && o.created == p.created) {
+                s.owned.push(p);
+            }
+        }
+    }
+}
+
+/// The end of a take-over (stop key, Stop, expiry, link lost): pick what to close from `now` and forget
+/// the take-over's list.
+pub fn end_of_take_over(now: &[OfficeProc]) -> Vec<OfficeProc> {
+    let mut s = STARTED.lock().unwrap_or_else(|e| e.into_inner());
+    let jobs: Vec<Vec<OfficeProc>> = s.open_jobs.iter().map(|(_, b)| b.clone()).collect();
+    let out = to_close(&s.owned, &jobs, now);
+    s.owned.clear();
+    s.open_jobs.clear();
+    out
+}
+
+/// The Office processes running now.
+#[cfg(windows)]
+pub fn office_processes() -> Vec<OfficeProc> {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS};
+    let mut all: Vec<(u32, u32, String)> = Vec::new();
+    unsafe {
+        let Ok(snap) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else { return Vec::new() };
+        let mut e = PROCESSENTRY32W { dwSize: std::mem::size_of::<PROCESSENTRY32W>() as u32, ..Default::default() };
+        if Process32FirstW(snap, &mut e).is_ok() {
+            loop {
+                let n = e.szExeFile.iter().position(|&c| c == 0).unwrap_or(e.szExeFile.len());
+                all.push((e.th32ProcessID, e.th32ParentProcessID, String::from_utf16_lossy(&e.szExeFile[..n]).to_ascii_lowercase()));
+                if Process32NextW(snap, &mut e).is_err() {
+                    break;
+                }
+            }
+        }
+        let _ = CloseHandle(snap);
+    }
+    let mut out = Vec::new();
+    for (pid, ppid, exe) in &all {
+        if !OFFICE_EXES.contains(&exe.as_str()) {
+            continue;
+        }
+        let Some(created) = creation_time(*pid) else { continue };
+        let parent_exe = all.iter().find(|(p, _, _)| p == ppid).map(|(_, _, e)| e.clone()).unwrap_or_default();
+        out.push(OfficeProc { pid: *pid, created, exe: exe.clone(), parent_exe });
+    }
+    out
+}
+
+#[cfg(windows)]
+fn times_of(h: windows::Win32::Foundation::HANDLE) -> Option<u64> {
+    use windows::Win32::Foundation::FILETIME;
+    use windows::Win32::System::Threading::GetProcessTimes;
+    let (mut c, mut x, mut k, mut u) = (FILETIME::default(), FILETIME::default(), FILETIME::default(), FILETIME::default());
+    unsafe { GetProcessTimes(h, &mut c, &mut x, &mut k, &mut u).ok()? };
+    Some(((c.dwHighDateTime as u64) << 32) | c.dwLowDateTime as u64)
+}
+
+#[cfg(windows)]
+fn creation_time(pid: u32) -> Option<u64> {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    unsafe {
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+        let t = times_of(h);
+        let _ = CloseHandle(h);
+        t
+    }
+}
+
+#[cfg(not(windows))]
+pub fn office_processes() -> Vec<OfficeProc> {
+    Vec::new()
+}
+
+/// Close the Office apps this take-over started; the ones already running before it are left alone.
+/// Returns how many were closed.
+#[cfg(windows)]
+pub fn close_started() -> usize {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_TERMINATE};
+    let mut n = 0;
+    for p in end_of_take_over(&office_processes()) {
+        unsafe {
+            let Ok(h) = OpenProcess(PROCESS_TERMINATE | PROCESS_QUERY_LIMITED_INFORMATION, false, p.pid) else { continue };
+            // The same process, not a new one that got its pid.
+            if times_of(h) == Some(p.created) && TerminateProcess(h, 1).is_ok() {
+                n += 1;
+            }
+            let _ = CloseHandle(h);
+        }
+    }
+    n
+}
+
+#[cfg(not(windows))]
+pub fn close_started() -> usize {
+    let _ = end_of_take_over(&[]);
+    0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,6 +419,49 @@ mod tests {
         assert_eq!(parse_answer(&enc(json!({"ok": false, "error": "There is no slide 9."}))).unwrap_err(), "Office: There is no slide 9.");
         assert!(parse_answer("garbage!").unwrap_err().contains("did not answer"));
         assert!(parse_answer("").is_err());
+    }
+
+    fn proc(pid: u32, created: u64, exe: &str, parent: &str) -> OfficeProc {
+        OfficeProc { pid, created, exe: exe.into(), parent_exe: parent.into() }
+    }
+
+    #[test]
+    fn only_the_office_apps_a_job_started_are_its_own() {
+        let users_word = proc(10, 100, "winword.exe", "explorer.exe");
+        let users_excel_com = proc(11, 101, "excel.exe", "svchost.exe"); // automation instance, but running before
+        let before = vec![users_word.clone(), users_excel_com.clone()];
+        let jobs_word = proc(20, 200, "winword.exe", "svchost.exe");
+        let opened_by_user_meanwhile = proc(21, 201, "powerpnt.exe", "explorer.exe");
+        let notepad = proc(22, 202, "notepad.exe", "svchost.exe");
+        let reused_pid = proc(10, 999, "winword.exe", "svchost.exe"); // pid 10 again, a new process
+        let now = vec![users_word.clone(), users_excel_com.clone(), jobs_word.clone(), opened_by_user_meanwhile, notepad, reused_pid.clone()];
+        let got = started_between(&before, &now);
+        assert_eq!(got, vec![jobs_word.clone(), reused_pid.clone()]);
+        // At the end: an owned instance that has since gone is not closed; one whose pid was reused is not ours.
+        let owned = vec![jobs_word.clone(), proc(30, 300, "excel.exe", "svchost.exe")];
+        let later = vec![users_word.clone(), users_excel_com.clone(), jobs_word.clone(), proc(30, 301, "excel.exe", "svchost.exe")];
+        assert_eq!(to_close(&owned, &[], &later), vec![jobs_word.clone()]);
+        // A job still running at the stop: what it started since its snapshot goes too, each pid once.
+        let flying = proc(40, 400, "powerpnt.exe", "svchost.exe");
+        let mut later2 = later.clone();
+        later2.push(flying.clone());
+        assert_eq!(to_close(&owned, &[later.clone(), later.clone()], &later2), vec![jobs_word.clone(), flying.clone()]);
+        assert!(to_close(&owned, &[before.clone()], &before).is_empty(), "the user's own Office is never closed");
+    }
+
+    #[test]
+    fn a_take_over_remembers_and_forgets_its_office_apps() {
+        let users = proc(10, 100, "winword.exe", "explorer.exe");
+        let t1 = job_begins(vec![users.clone()]);
+        let left = proc(50, 500, "excel.exe", "svchost.exe");
+        job_done(t1, &[users.clone(), left.clone()]); // an error left Excel running
+        let t2 = job_begins(vec![users.clone(), left.clone()]);
+        let flying = proc(51, 510, "powerpnt.exe", "svchost.exe");
+        // The stop comes while job 2 runs.
+        let now = vec![users.clone(), left.clone(), flying.clone()];
+        assert_eq!(end_of_take_over(&now), vec![left, flying]);
+        job_done(t2, &now); // finishing after the end adds nothing
+        assert!(end_of_take_over(&now).is_empty(), "the list is forgotten at the end");
     }
 
     #[test]

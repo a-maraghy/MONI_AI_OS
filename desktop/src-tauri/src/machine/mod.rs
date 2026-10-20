@@ -227,7 +227,7 @@ pub fn on_exit() {
     let Some(c) = ctl() else { return };
     let reason = if shutting_down() { "signout" } else { "app-exit" };
     if c.end_lease(reason) {
-        crate::hands::shutdown();
+        let _ = crate::hands::shutdown();
         // Give the link a moment to send "lease ended".
         let t0 = Instant::now();
         while t0.elapsed() < Duration::from_millis(800) && c.st.lock().unwrap().online && !c.outbox.lock().unwrap().is_empty() {
@@ -466,7 +466,12 @@ impl Ctl {
         }
         self.fail_pending();
         self.st.lock().unwrap().last_action.clear();
-        std::thread::spawn(crate::hands::shutdown);
+        std::thread::spawn(|| {
+            let n = crate::hands::shutdown();
+            if n > 0 {
+                mlog!("closed {n} Office app(s) the take-over had started");
+            }
+        });
         on_main(&self.app, overlay::hide);
         mlog!("control lease {} ended: {}", ended.id, ended.reason);
         self.send(wire::lease(&ended.id, "ended", None, Some(&ended.reason)));

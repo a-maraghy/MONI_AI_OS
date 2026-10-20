@@ -285,7 +285,7 @@ const TOOLS = [
       "and make PDFs; ask the user for approval; wait. When machine_list says its browser is set up, it can also use the user's own Chrome " +
       "through their Claude in Chrome extension (open and read pages, fill in fields, click). Outside Chrome it has NO screen, mouse or keyboard " +
       "control: it cannot see the screen or click or type into other apps, so do not offer those. The user sees a glowing frame and can stop it " +
-      "at any moment; sending, submitting, buying, posting, signing in, deleting, installing, writing over a file or touching files outside " +
+      "at any moment; sending, submitting, buying, posting, deleting, installing, writing over a file or touching files outside " +
       "theirs waits for their approval in Mint OS (Windows Hello); it never types passwords or payment details. Refused " +
       "unless this turn is the administrator's own request (typed in the Command Center, or said aloud and recognised by the voiceprint as someone " +
       "who may give commands). Refused at once when that computer reports Claude Code is not installed (the error says what the user must do). " +
