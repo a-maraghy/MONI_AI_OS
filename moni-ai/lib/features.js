@@ -24,6 +24,7 @@ const names = require("./names");
 const caps = require("./caps");
 const settings = require("./settings");
 const { redact, redactDeep, clip } = require("./redact");
+const { createStory } = require("./story");
 
 const MORNING_BRIEFING = {
   seed_key: "morning-briefing",
@@ -973,6 +974,18 @@ function createFeatures(deps) {
     return redactDeep({ session, entries: tail, tools_today: toolsToday, delegations, cost: sessionCost(sid) });
   }
 
+  const story = createStory({
+    projectsDir: deps.projectsDir,
+    db,
+    tz,
+    sessions: () => deps.sessionsWithLedger() || [],
+    selfIds: () => selfIdSet(),
+    selfBusy: () => deps.currentTurnId() != null,
+    describeTool: (n, i) => deps.describeTool(n, i),
+    sessionCost: (sid) => sessionCost(sid),
+    isSelfName: (n) => names.isSelfName(n),
+  });
+
   /* ======================================================= public view === */
 
   function sessionExtras(s) {
@@ -1078,6 +1091,9 @@ function createFeatures(deps) {
     cost: () => costReport(),
     usage: (p) => usageReport(p),
     "session-mirror": (p) => mirror(p.session_id),
+    // The session story and the day timeline (lib/story.js): read-only, cached.
+    "session-story": (p) => story.sessionStory(p.session_id),
+    "story-day": (p) => story.day(p.day || null),
 
     "mission-create": (p, req) => {
       const m = missions.create({ title: p.title, goal: p.goal, steps: p.steps || [], actor: req.actor, turn_id: turnId() });

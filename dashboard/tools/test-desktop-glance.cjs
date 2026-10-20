@@ -425,7 +425,8 @@ function paintWallpaper(kind, w, h) {
       }
       await v.page.click("#dk-glance [data-gl-sess]");
       await sleep(500);
-      check("a session's name opens its conversation (the deep view)", await v.page.evaluate(() => !!document.querySelector(".cc-deep")));
+      // since 2026-10-20 opening a session shows its story (cc-story.js), whose Live mirror is the deep view
+      check("a session's name opens it (its story, or the deep view)", await v.page.evaluate(() => !!document.querySelector(".cc-deep") || !!document.querySelector("#cc-story:not([hidden])")));
       await v.close();
     }
 

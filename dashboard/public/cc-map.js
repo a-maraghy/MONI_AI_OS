@@ -141,6 +141,7 @@
       add("#cc-reply", 10, "reply");
       add("#cc-pop", 6, "menu");
       add("#cc-offline", 8, "offline note");
+      add("[data-cc-obstacle]", 8, "panel"); // e.g. the day timeline (cc-story.js)
       return out;
     }
     function sceneRight() {
@@ -385,6 +386,8 @@
         targetTimer = setTimeout(function () { target = null; }, ms || 2600);
         return true;
       },
+      /** A hand-off between two sessions (the day replay): dots from one head to the other; the classic orbit flashes the target. */
+      link: function (fromId, toId) { if (family && family.enabled()) return family.link(fromId, toId); return flash(toId, "reply", 1400); },
       /** A session answered: its point flashes (and a thread of dots comes home to her). */
       reply: function (id) { if (family && family.enabled()) family.reply(id); lookAtSess(id, 1400); return flash(id, "reply", 1400); },
       /** Core E: a reaction ("grin", "nod", "surprise"), or "something happened" (poke: a message, a card, typing). */

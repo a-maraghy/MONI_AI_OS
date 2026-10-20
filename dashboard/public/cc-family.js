@@ -300,6 +300,7 @@
     /* ---------------------------------------------------------- streams */
     function kidPos(k) { return { x: k.x, y: k.y - 8 * k.lift, r: k.r * (1 + 0.12 * k.hover + 0.07 * k.lift + 0.18 * Math.sin(Math.min(1, k.bloom) * PI)) }; }
     function streamPos(pt) {
+      if (pt.k2) return linkPos(pt);
       var k = pt.k, kp = kidPos(k), p = pt.p;
       var dx = kp.x - L.cx, dy = kp.y - L.cy, dl = Math.hypot(dx, dy) || 1, ux = dx / dl, uy = dy / dl, nx = -uy, ny = ux;
       var hx = L.cx + ux * L.R * 0.9 + nx * pt.jx * L.R * 0.35, hy = L.cy + uy * L.R * 0.9 + ny * pt.jx * L.R * 0.35;
@@ -310,6 +311,21 @@
       var u = 1 - p, x = u * u * sx + 2 * u * p * mx + p * p * ex, y = u * u * sy + 2 * u * p * my + p * p * ey;
       var wob = Math.sin(p * PI * 3 + pt.w) * (pt.kind === "del" ? 7 : 3) * Math.sin(p * PI);
       return [x + nx * wob, y + ny * wob];
+    }
+    /** A hand-off between two sessions (the day replay, cc-story.js): from one head's rim to the other's. */
+    function linkPos(pt) {
+      var a = kidPos(pt.k2), b = kidPos(pt.k), p = pt.p;
+      var dx = b.x - a.x, dy = b.y - a.y, dl = Math.hypot(dx, dy) || 1, ux = dx / dl, uy = dy / dl, nx = -uy, ny = ux;
+      var sx = a.x + ux * a.r * 0.8 + nx * pt.jx * a.r * 0.4, sy = a.y + uy * a.r * 0.8 + ny * pt.jx * a.r * 0.4;
+      var ex = b.x - ux * b.r * 0.75 + nx * pt.jx * b.r * 0.4, ey = b.y - uy * b.r * 0.75 + ny * pt.jx * b.r * 0.4;
+      var bend = 0.16 * dl + pt.jx * 40, mx = (sx + ex) / 2 + nx * bend, my = (sy + ey) / 2 + ny * bend;
+      var u = 1 - p, x = u * u * sx + 2 * u * p * mx + p * p * ex, y = u * u * sy + 2 * u * p * my + p * p * ey;
+      var wob = Math.sin(p * PI * 3 + pt.w) * 5 * Math.sin(p * PI);
+      return [x + nx * wob, y + ny * wob];
+    }
+    function linkStream(a, b) {
+      if (reduced) { b.catchK = 1; a.glow = 1; draw(); return; }
+      for (var i = 0; i < 70; i++) parts.push({ kind: "lnk", k: b, k2: a, t0: t + (i / 70) * 1.4 + rand() * 0.05, dur: 1.3 * (0.85 + rand() * 0.3), jx: (rand() - 0.5) * 0.7, w: rand() * TAU, p: 0, big: rand() < 0.2 });
     }
     function stream(kind, k, count, spread, dur) {
       if (reduced) { if (kind === "del") k.catchK = 1; else k.glow = 1; draw(); return; }
@@ -385,7 +401,7 @@
       }
       for (var q = parts.length - 1; q >= 0; q--) {
         var pt = parts[q]; pt.p = (t - pt.t0) / pt.dur;
-        if (pt.p >= 1 || pt.k.dead) { if (pt.kind === "del") pt.k.catchK = Math.min(1, pt.k.catchK + 0.06); parts.splice(q, 1); }
+        if (pt.p >= 1 || pt.k.dead || (pt.k2 && pt.k2.dead)) { if (pt.kind === "del" || pt.kind === "lnk") pt.k.catchK = Math.min(1, pt.k.catchK + 0.06); parts.splice(q, 1); }
       }
     }
 
@@ -443,7 +459,7 @@
           var pp = pt.p - tr * 0.018; if (pp <= 0) continue;
           var save = pt.p; pt.p = pp; var xy = streamPos(pt); pt.p = save;
           g.globalAlpha = (0.9 - tr * 0.3) * Math.min(1, pp * 6) * (pt.kind === "rep" ? 0.85 : 1);
-          g.fillStyle = pt.kind === "del" ? (pp < 0.6 ? PAL.main[4 + ((pp * 16) | 0)] : tp[14]) : pp < 0.5 ? tp[16] : PAL.main[20];
+          g.fillStyle = pt.kind === "lnk" ? (pp < 0.5 ? PAL[pt.k2.tint][16] : tp[14]) : pt.kind === "del" ? (pp < 0.6 ? PAL.main[4 + ((pp * 16) | 0)] : tp[14]) : pp < 0.5 ? tp[16] : PAL.main[20];
           var s = (pt.big ? 2.8 : 1.9) * (1 - tr * 0.25);
           g.fillRect(xy[0] - s / 2, xy[1] - s / 2, s, s);
         }
@@ -554,7 +570,7 @@
       card.style.left = x.toFixed(0) + "px";
       card.style.top = clamp(p.y - ch / 2 - 10, L.top + 8, H - ch - 100).toFixed(0) + "px";
     }
-    var UI = "button, a, input, textarea, select, form, label, .cc-sheet, .cc-need, .cc-pop, .cc-reply, .cc-rail, .topbar, .cc-dock, .cc-caption, [role=dialog], [role=alertdialog], #cc-ov";
+    var UI = "button, a, input, textarea, select, form, label, .cc-sheet, .cc-need, .cc-pop, .cc-reply, .cc-rail, .topbar, .cc-dock, .cc-caption, [role=dialog], [role=alertdialog], #cc-ov, [data-cc-obstacle]";
     function uiTarget(el) { return !!(el && el.closest && el.closest(UI)); }
     var lastFrame = 0; // no frames (reduced motion, or the desktop app's still core): hover is worked out on the move itself
     document.addEventListener("pointermove", function (e) { if (!on) return; mouse.x = e.clientX; mouse.y = e.clientY; mouse.over = !uiTarget(e.target); if (reduced || Date.now() - lastFrame > 250) { var hk = mouse.over && !phone ? hit(mouse.x, mouse.y) : null; if (hk !== hoverKid) { hoverKid = hk; if (hk) { showCard(hk); placeCard(hk); } else hideCard(); els.root.classList.toggle("kid-hover", !!hk); } } });
@@ -640,6 +656,8 @@
       ghost: function (name, where) { return !!ghost(name, where); },
       ghosts: function () { return ghosts.map(function (gk) { return { name: gk.el.querySelector(".nm").firstChild.textContent, where: gk.el.querySelector(".st").textContent, x: gk.x, y: gk.y }; }); },
       reply: function (id) { var k = find(id); if (k) { k.glow = 1; stream("rep", k, 60, 1.6, 1.25); } return !!k; },
+      /** A hand-off from one session to another (both spheres here): a stream of dots between the two heads. */
+      link: function (fromId, toId) { var a = find(fromId), b = find(toId); if (a && b && a !== b) { a.glow = 1; linkStream(a, b); return true; } return false; },
       positions: function () { var o = {}; kids.forEach(function (k) { if (!k.dis) { var p = kidPos(k); o[k.id] = [p.x, p.y]; } }); return o; },
       /** Checks: sphere/name boxes that overlap her, each other or the chrome (should be none). */
       audit: function () {
