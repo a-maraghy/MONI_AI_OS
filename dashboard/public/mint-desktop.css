@@ -348,7 +348,7 @@ html.cc-desk.dk-focus .dk-glance, html.cc-desk.dk-focus .dk-glbtn { display: non
    taskbar and the window in front. Only the bot (one canvas: its head, its own backplate, the session bots by it)
    shows; the Command Center's pieces rest until a click on the bot opens them (the app's Peek). No glass here. */
 #dk-comp { display: none; }
-html.cc-desk.dk-comp-out body > *:not(#dk-comp) { visibility: hidden !important; }
+html.cc-desk.dk-comp-out body > *:not(#dk-comp):not(#mp-cam) { visibility: hidden !important; } /* (eye contact's "Camera on" pill stays: the camera is open) */
 html.cc-desk.dk-comp-out #dk-comp:not([hidden]) { display: block; position: fixed; inset: 0; z-index: 40; pointer-events: none; visibility: visible; }
 #dk-comp-cv, #dk-comp-fx { position: absolute; left: 0; top: 0; width: 100%; height: 100%; }
 .dk-comp-hit, .dk-comp-kid { position: absolute; box-sizing: border-box; margin: 0; padding: 0; border: 0; border-radius: 50%; background: transparent; cursor: pointer; pointer-events: auto; }

@@ -156,7 +156,7 @@ const S = (st, name, extra) => Object.assign({ session_id: name, name, status: s
     const views = fs.readFileSync(path.join(ROOT, "lib", "views-moniai.js"), "utf8");
     check("the page loads the companion before mint-desktop.js (the desktop render mode only)", /"mint-desktop-companion\.js", "moni-ai\.js"[^\]]*"mint-desktop\.js"\]/.test(views));
     const md = fs.readFileSync(path.join(ROOT, "public", "mint-desktop.js"), "utf8");
-    check("mint-desktop.js: the bot's regions only while it is out; Esc / empty space close its Peek; the Command Center's core rests", /if \(compOut\(\) && comp\) return comp\.regions\(\)/.test(md) && /if \(peekish\(\)\) invoke\("hide_peek"\)/.test(md) && /st\.hidden \|\| compOut\(\)/.test(md));
+    check("mint-desktop.js: the bot's regions only while it is out; Esc / empty space close its Peek; the Command Center's core rests", /if \(compOut\(\) && comp\) return withCam\(comp\.regions\(\)/.test(md) && /if \(peekish\(\)\) invoke\("hide_peek"\)/.test(md) && /st\.hidden \|\| compOut\(\)/.test(md));
   }
 
   section("in the browser (a scratch server, a stand-in for the app's bridge)");
@@ -203,6 +203,33 @@ const S = (st, name, extra) => Object.assign({ session_id: name, name, status: s
         });
         check("the bot is out: its own core E in the small window, the Command Center's pieces resting (hidden, its core still)", st.mode === "companion" && st.out && st.comp && st.ccVis === "hidden" && st.core === "E" && st.ccStill, JSON.stringify(st));
         check("  only the bot catches the mouse: one circle", st.last && st.last.length === 1 && st.last[0].w === 2 * C.BODY_R && st.last[0].r === C.BODY_R, JSON.stringify(st.last));
+        // the living canvas rests while the bot is out (nothing drawn); the "Camera on" pill stays and catches the mouse
+        const cv = await page.evaluate(async () => {
+          const cc = document.getElementById("cc");
+          const r = { has: !!window.MintCanvas, loaded: !!(window.MintCanvas && window.MintCanvas.state.loaded) };
+          cc.removeAttribute("data-cv-mode");
+          if (window.MintCanvas) window.MintCanvas.refresh();
+          await new Promise((res) => setTimeout(res, 1300));
+          r.drew = cc.hasAttribute("data-cv-mode");
+          const pill = document.createElement("div");
+          pill.className = "mp-cam"; pill.id = "mp-cam";
+          pill.innerHTML = '<span class="mp-dot"></span><span class="mp-t">Camera on · eye contact</span><button type="button" class="mp-off">Off</button>';
+          document.body.appendChild(pill);
+          await new Promise((res) => setTimeout(res, 300));
+          const regs = window.__calls.filter((c) => c[0] === "set_hit_regions").map((c) => c[1].regions);
+          const last = regs[regs.length - 1] || [];
+          const b = pill.querySelector(".mp-off").getBoundingClientRect(), x = b.left + b.width / 2, y = b.top + b.height / 2;
+          r.pillVis = getComputedStyle(pill).visibility; r.offShown = b.width > 0;
+          r.offHit = last.some((q) => x >= q.x && x <= q.x + q.w && y >= q.y && y <= q.y + q.h);
+          r.n = last.length;
+          pill.remove();
+          await new Promise((res) => setTimeout(res, 300));
+          const regs2 = window.__calls.filter((c) => c[0] === "set_hit_regions").map((c) => c[1].regions);
+          r.n2 = (regs2[regs2.length - 1] || []).length;
+          return r;
+        });
+        check("  the living canvas rests while the bot is out: nothing is drawn", cv.has && cv.loaded && !cv.drew, JSON.stringify(cv));
+        check("  eye contact's \"Camera on\" pill stays visible out on the desk; its Off button is a hit region (gone with the pill)", cv.pillVis === "visible" && cv.offShown && cv.offHit && cv.n === 2 && cv.n2 === 1, JSON.stringify(cv));
         // the app's poses
         const pz = await page.evaluate(async () => {
           window.__emit("mint://companion", { kind: "walk", ms: 1200, dir: 1 });
@@ -236,6 +263,8 @@ const S = (st, name, extra) => Object.assign({ session_id: name, name, status: s
         await page.waitForTimeout(400);
         const pk = await page.evaluate(() => { const regs = window.__calls.filter((c) => c[0] === "set_hit_regions").map((c) => c[1].regions); const r = regs[regs.length - 1]; return { mode: document.documentElement.getAttribute("data-dk-mode"), open: document.documentElement.classList.contains("dk-peek-open"), comp: document.getElementById("dk-comp").hidden, ccVis: getComputedStyle(document.getElementById("cc")).visibility, all: r && r.length === 1 && r[0].w === 1440 }; });
         check("  its Peek: laid out as Peek, the whole window catches the mouse, the bot's canvas away", pk.mode === "peek" && pk.open && pk.comp && pk.ccVis === "visible" && pk.all, JSON.stringify(pk));
+        await page.waitForTimeout(1300);
+        check("  the living canvas draws again once the Command Center is open", await page.evaluate(() => document.getElementById("cc").hasAttribute("data-cv-mode")));
         await page.keyboard.press("Escape");
         await page.waitForTimeout(150);
         check("  Esc asks the app to close it (hide_peek)", await page.evaluate(() => window.__calls.some((c) => c[0] === "hide_peek")));

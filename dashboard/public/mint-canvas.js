@@ -544,6 +544,9 @@
 
   function render() {
     if (!C.loaded || !mcc()) return;
+    // Companion mode out on the desk (mint-desktop-companion.js): only the bot shows, so the board rests --
+    // nothing is drawn or measured; the first tick after the Command Center opens again redraws it whole.
+    if (DESK && document.documentElement.classList.contains("dk-comp-out")) { force = true; return; }
     var plan = POL.plan(facts());
     C.plan = plan;
     cc.setAttribute("data-cv-mode", plan.mode);

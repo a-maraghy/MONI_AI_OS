@@ -699,6 +699,8 @@
     "#dk-glbtn", "#dk-glance:not(.dk-gl-under) .dk-gl-hit",
     // The living canvas (mint-canvas.js): each widget card beside the core (never the column itself).
     "#cv-board:not(.cv-under) .cv-w",
+    // Eye contact's "Camera on" pill (mint-presence.js): its Off button must be clickable in the app too.
+    "#mp-cam",
   ];
   // Open over everything: the whole window catches the mouse while one shows.
   // (#cc-overlay holds the conversation of a session -- the deep view -- and the forms: the whole window while one is open.)
@@ -715,10 +717,19 @@
     var cs = getComputedStyle(el);
     return cs.visibility !== "hidden" && cs.display !== "none";
   }
+  // Eye contact's "Camera on" pill out on the desk (companion mode): added to the bot's own regions, so its Off button works there too.
+  function withCam(regs) {
+    var cam = document.getElementById("mp-cam");
+    if (!cam || !shown(cam)) return regs;
+    var pr = cam.getBoundingClientRect();
+    if (!(pr.width > 0 && pr.height > 0)) return regs;
+    var rad = parseFloat(getComputedStyle(cam).borderTopLeftRadius) || 0;
+    return regs.concat([{ x: Math.max(0, Math.floor(pr.left)), y: Math.max(0, Math.floor(pr.top)), w: Math.ceil(pr.width), h: Math.ceil(pr.height), r: Math.round(Math.min(rad, pr.height / 2)) }]);
+  }
   function measure() {
     if (!L) return [];
     // Companion out: the bot and the session bots by it, nothing else.
-    if (compOut() && comp) return comp.regions().map(function (r) { return { x: r.x, y: r.y, w: r.w, h: r.h, r: r.r }; });
+    if (compOut() && comp) return withCam(comp.regions().map(function (r) { return { x: r.x, y: r.y, w: r.w, h: r.h, r: r.r }; }));
     var full = peekish() && st.peekOpen;
     // (Open counts from the first frame: an overlay fading in is already there to be clicked.)
     if (!full) for (var f = 0; f < FULL.length; f++) { var fe = document.querySelectorAll(FULL[f]); for (var j = 0; j < fe.length; j++) if (present(fe[j])) { full = true; break; } if (full) break; }
@@ -1026,7 +1037,7 @@
   if (CMP && CMP.mount && $("cc")) {
     comp = CMP.mount({
       invoke: invoke, listen: listen, state: function () { return st; }, still: function () { return !!(st.still || st.hidden); },
-      report: function (regs) { lastRegions = regs; lastSig = JSON.stringify(regs); invoke("set_hit_regions", { regions: regs, dpr: window.devicePixelRatio || 1 }); },
+      report: function (regs) { regs = withCam(regs); lastRegions = regs; lastSig = JSON.stringify(regs); invoke("set_hit_regions", { regions: regs, dpr: window.devicePixelRatio || 1 }); },
     });
     window.MintDesktop.companion = function () { return comp; };
   }

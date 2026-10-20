@@ -399,6 +399,25 @@ const SIDEWAYS = { cx: 0.5, cy: 0.5, w: 0.24, yaw: 55, pitch: -5 };
         const bat = await ap.page.evaluate(() => window.MintPresence.diag());
         check("  on battery: kept, at 2 frames a second", bat.fps === 2, JSON.stringify(bat));
         check("  the app's last word was 'let go' -> it was told (presence_status false)", (await cam()).st.includes(false));
+        // the "Camera on" pill in the app: its Off button shows and is a hit region (mint-desktop.js HIT), so a click reaches it
+        await ap.page.evaluate((p) => window.__emit("mint://state", { presence: p }), pv({}));
+        await ap.page.waitForTimeout(1800);
+        const pl = await ap.page.evaluate(async () => {
+          const pill = document.getElementById("mp-cam"), b = pill && pill.querySelector(".mp-off");
+          if (!b) return { pill: !!pill };
+          await new Promise((r) => setTimeout(r, 300));
+          const q = b.getBoundingClientRect(), x = q.left + q.width / 2, y = q.top + q.height / 2;
+          const regs = window.MintDesktop.regions();
+          return { pill: true, shown: q.width > 0 && q.height > 0 && getComputedStyle(b).display !== "none", hit: regs.some((g) => x >= g.x && x <= g.x + g.w && y >= g.y && y <= g.y + g.h), top: document.elementFromPoint(x, y) === b };
+        });
+        check("  the \"Camera on\" pill in the app: its Off button shows and catches the mouse (a hit region, on top)", pl.pill && pl.shown && pl.hit && pl.top, JSON.stringify(pl));
+        if (pl.shown) {
+          await ap.page.evaluate(() => { window.__calls.length = 0; });
+          await ap.page.click("#mp-cam .mp-off");
+          await ap.page.waitForTimeout(200);
+          const pc = await ap.page.evaluate(() => ({ off: window.__calls.some((c) => c[0] === "presence_off"), open: window.__camOpen() }));
+          check("  a click on Off: the camera is let go and the app is told (presence_off)", pc.off && pc.open === 0, JSON.stringify(pc));
+        }
         const csp3 = await ap.page.evaluate(() => window.__csp);
         check("  no page errors, no CSP violations", ap.errs.length === 0 && csp3.length === 0, JSON.stringify(ap.errs.concat(csp3)));
         await ap.ctx.close();

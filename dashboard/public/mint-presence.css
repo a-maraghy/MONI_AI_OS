@@ -11,9 +11,10 @@
 .mp-cam .mp-off { height: 20px; padding: 0 9px; border: 0; border-radius: 10px; background: rgba(128, 128, 128, .22); color: inherit; font: inherit; cursor: pointer; }
 .mp-cam .mp-off:hover { background: rgba(128, 128, 128, .36); }
 .mp-cam .mp-off:focus-visible { outline: 2px solid #5ad1ff; outline-offset: 1px; }
-html.cc-desk .mp-cam { left: 8px; bottom: auto; top: 8px; height: 22px; padding: 0 8px; font-size: 10.5px; }
-html.cc-desk .mp-cam .mp-off { display: none; } /* in the app the tray's "Camera presence" switches it off */
-html.dk-comp-out .mp-cam { top: 4px; left: 4px; height: 18px; padding: 0 6px; }
+html.cc-desk .mp-cam { left: 8px; bottom: auto; top: 8px; height: 22px; padding: 0 3px 0 8px; font-size: 10.5px; }
+html.cc-desk .mp-cam .mp-off { height: 16px; padding: 0 7px; } /* a hit region in the app (mint-desktop.js HIT); the tray's "Camera presence" switches it off too */
+html.dk-comp-out .mp-cam { top: 4px; left: 4px; height: 18px; padding: 0 2px 0 6px; }
+html.dk-comp-out .mp-cam .mp-off { height: 14px; padding: 0 5px; font-size: 9.5px; }
 html.dk-comp-out .mp-cam .mp-t { display: none; }
 
 /* Back at the desk: one summary of what was held. */
