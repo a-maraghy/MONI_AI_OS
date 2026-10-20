@@ -42,6 +42,7 @@
   var T = window.__TAURI__ || null;
   function invoke(cmd, args) {
     if (!T || !T.core || !T.core.invoke) return Promise.resolve(null);
+    if (cmd === "needs_you" && window.MintPresenceHold && window.MintPresenceHold.native(args)) return Promise.resolve(false); // eye contact: you are away
     try { return T.core.invoke(cmd, args || {}).catch(function () { return null; }); } catch (e) { return Promise.resolve(null); }
   }
   function listen(name, fn) {

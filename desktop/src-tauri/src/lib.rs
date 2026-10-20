@@ -33,6 +33,7 @@ pub mod layout;
 pub mod machine; // laptop control: the paired link, the lease, the CLI runner (machine/mod.rs)
 pub mod platform;
 pub mod policy;
+pub mod presence; // eye contact: camera presence, the permission policy (presence.rs)
 pub mod settings;
 pub mod signin;
 pub mod site;
@@ -101,6 +102,13 @@ pub struct App {
     toasted: Vec<i64>,
     /// Companion mode: where the bot is and what it is doing (companion_host.rs).
     comp: companion_host::CompState,
+    /// Eye contact (presence.rs): the page says the camera is open; when the setting went off; another app's
+    /// meeting; the power state (the page lets go of the camera in energy saver, looks less often on battery).
+    cam_in_use: bool,
+    cam_off_at: Option<Instant>,
+    meeting: bool,
+    on_battery: bool,
+    energy_saver: bool,
 }
 
 type Shared = Arc<Mutex<App>>;
@@ -135,6 +143,8 @@ struct PageState {
     glance_pin: Option<Pin>,
     /// Companion mode: its settings and how the bot stands (None in the other modes).
     companion: Option<companion_host::View>,
+    /// Eye contact: camera presence's switches and what decides whether the page may hold the camera now.
+    presence: presence::View,
 }
 
 fn page_state(a: &App, monitor: &str, focus_composer: bool) -> PageState {
@@ -167,7 +177,94 @@ fn page_state(a: &App, monitor: &str, focus_composer: bool) -> PageState {
         glance: a.settings.glance,
         glance_pin: if a.settings.mode == Mode::Desktop { pm.glance_pin } else { None },
         companion: companion_host::view(a),
+        presence: presence_view(a),
     }
+}
+
+/// Eye contact: what the page is told (presence.rs).
+fn presence_view(a: &App) -> presence::View {
+    presence::view(&a.settings.presence, a.on_battery, a.energy_saver, a.seen.locked, a.meeting, a.cam_in_use)
+}
+
+/// Eye contact: the WebView2 profile's stored camera permission for the site follows the setting -- Deny while
+/// it is off (a decision WebView2 kept could never open the camera), Default while it is on (the request is
+/// raised, and on_permission_request answers it). And every camera request is answered for this time only
+/// (SavesInProfile false), so no grant outlives the setting.
+#[cfg(windows)]
+fn camera_profile(app: &AppHandle, shared: &Shared) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2Profile4, ICoreWebView2_13, COREWEBVIEW2_PERMISSION_KIND_CAMERA, COREWEBVIEW2_PERMISSION_STATE_DEFAULT, COREWEBVIEW2_PERMISSION_STATE_DENY};
+    use windows_core::Interface;
+    let Some(w) = main_window(app) else { return };
+    let (on, origin) = {
+        let a = shared.lock().unwrap();
+        (a.settings.presence.camera, origin(&a.settings).origin().ascii_serialization())
+    };
+    let _ = w.with_webview(move |pw| unsafe {
+        let r: windows_core::Result<()> = (|| {
+            let core = pw.controller().CoreWebView2()?;
+            let profile = core.cast::<ICoreWebView2_13>()?.Profile()?.cast::<ICoreWebView2Profile4>()?;
+            let st = match presence::profile_state(on) {
+                presence::ProfilePerm::Default => COREWEBVIEW2_PERMISSION_STATE_DEFAULT,
+                presence::ProfilePerm::Deny => COREWEBVIEW2_PERMISSION_STATE_DENY,
+            };
+            let o = windows_core::HSTRING::from(origin.as_str());
+            profile.SetPermissionState(COREWEBVIEW2_PERMISSION_KIND_CAMERA, &o, st, &webview2_com::SetPermissionStateCompletedHandler::create(Box::new(|_| Ok(()))))?;
+            Ok(())
+        })();
+        mlog!("camera presence: the profile's camera permission for {} set to {} ({})", origin, if on { "default" } else { "deny" }, if r.is_ok() { "ok" } else { "failed" });
+    });
+}
+#[cfg(not(windows))]
+fn camera_profile(_app: &AppHandle, _shared: &Shared) {}
+
+/// Eye contact: a camera request is never kept in the profile (registered once, after wry's own handler, which
+/// has set the answer by then).
+#[cfg(windows)]
+fn camera_once(w: &WebviewWindow) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{ICoreWebView2PermissionRequestedEventArgs3, COREWEBVIEW2_PERMISSION_KIND, COREWEBVIEW2_PERMISSION_KIND_CAMERA};
+    use windows_core::Interface;
+    let _ = w.with_webview(|pw| unsafe {
+        let Ok(core) = pw.controller().CoreWebView2() else { return };
+        let mut token = 0i64;
+        let _ = core.add_PermissionRequested(
+            &webview2_com::PermissionRequestedEventHandler::create(Box::new(|_, args| {
+                let Some(args) = args else { return Ok(()) };
+                let mut kind = COREWEBVIEW2_PERMISSION_KIND::default();
+                args.PermissionKind(&mut kind)?;
+                if kind == COREWEBVIEW2_PERMISSION_KIND_CAMERA {
+                    if let Ok(a3) = args.cast::<ICoreWebView2PermissionRequestedEventArgs3>() {
+                        let _ = a3.SetSavesInProfile(false);
+                    }
+                }
+                Ok(())
+            })),
+            &mut token,
+        );
+    });
+}
+#[cfg(not(windows))]
+fn camera_once(_w: &WebviewWindow) {}
+
+/// Eye contact: the setting changed (the tray, the Settings window, the page switching it off).
+fn presence_changed(app: &AppHandle, shared: &Shared, was_on: bool) {
+    let on = {
+        let mut a = shared.lock().unwrap();
+        let on = a.settings.presence.camera;
+        if was_on && !on {
+            a.cam_off_at = Some(Instant::now());
+        }
+        if on {
+            a.cam_off_at = None;
+        }
+        on
+    };
+    mlog!("camera presence {}", if on { "on" } else { "off" });
+    save(shared);
+    camera_profile(app, shared);
+    let key = current_monitor_key(app, shared);
+    let payload = page_state(&shared.lock().unwrap(), &key, false);
+    let _ = app.emit_to(MAIN, "mint://state", payload);
+    refresh_tray(app, shared);
 }
 
 /// The Floating window is widened for the glance column only while the cards can show: the setting on
@@ -599,14 +696,14 @@ fn tray_base() -> (Vec<u8>, u32, u32) {
 
 fn refresh_tray(app: &AppHandle, shared: &Shared) {
     let Some(tray) = app.tray_by_id("main") else { return };
-    let (dot, line) = {
+    let (dot, line, cam) = {
         let a = shared.lock().unwrap();
-        (policy::tray_dot(&a.state, a.needs), policy::status_line(&a.state, a.needs, a.sessions))
+        (policy::tray_dot(&a.state, a.needs), policy::status_line(&a.state, a.needs, a.sessions), a.cam_in_use && a.settings.presence.camera)
     };
     let (base, w, h) = tray_base();
     let px = trayicon::with_dot(&base, w, h, dot);
     let _ = tray.set_icon(Some(tauri::image::Image::new_owned(px, w, h)));
-    let _ = tray.set_tooltip(Some(format!("MINT AI · {}", line)));
+    let _ = tray.set_tooltip(Some(format!("MINT AI · {}{}", line, presence::tooltip_note(cam))));
     if let Ok(menu) = build_menu(app, shared) {
         let _ = tray.set_menu(Some(menu));
     }
@@ -621,12 +718,13 @@ struct MenuSnap {
     signed_in: bool,
     settings: Settings,
     update: Option<String>,
+    cam_in_use: bool,
 }
 
 fn build_menu(app: &AppHandle, shared: &Shared) -> tauri::Result<Menu<tauri::Wry>> {
     let a = {
         let g = shared.lock().unwrap();
-        MenuSnap { state: g.state.clone(), needs: g.needs, sessions: g.sessions, talk_key: g.talk_key.clone(), signed_in: g.signed_in, settings: g.settings.clone(), update: g.update.clone() }
+        MenuSnap { state: g.state.clone(), needs: g.needs, sessions: g.sessions, talk_key: g.talk_key.clone(), signed_in: g.signed_in, settings: g.settings.clone(), update: g.update.clone(), cam_in_use: g.cam_in_use }
     };
     let line = policy::status_line(&a.state, a.needs, a.sessions);
     let talk = if a.talk_key.is_empty() { "Talk".to_string() } else { format!("Talk (hold {})", a.talk_key) };
@@ -640,6 +738,8 @@ fn build_menu(app: &AppHandle, shared: &Shared) -> tauri::Result<Menu<tauri::Wry
     let m_comp = CheckMenuItem::with_id(app, "mode:companion", "Companion: MINT AI out on your desk", true, a.settings.mode == Mode::Companion, None::<&str>)?;
     let focus_i = CheckMenuItem::with_id(app, "focus", format!("Focus mode: just the core\t{}", a.settings.hotkeys.focus), true, a.settings.focus, None::<&str>)?;
     let glance_i = CheckMenuItem::with_id(app, "glance", "Glance cards beside MINT AI", true, a.settings.glance, None::<&str>)?;
+    // Eye contact: the camera's one switch -- off at once; on directly only once it was switched on in Settings.
+    let cam_i = CheckMenuItem::with_id(app, "presence", presence::tray_label(a.settings.presence.camera, a.cam_in_use), true, a.settings.presence.camera, None::<&str>)?;
     let dnd = CheckMenuItem::with_id(app, "dnd", "Do not disturb (no toasts)", true, a.settings.do_not_disturb, None::<&str>)?;
     let full = MenuItem::with_id(app, "open", "Open the full Command Center", true, None::<&str>)?;
     let sett = MenuItem::with_id(app, "settings", "Settings…", true, None::<&str>)?;
@@ -662,7 +762,7 @@ fn build_menu(app: &AppHandle, shared: &Shared) -> tauri::Result<Menu<tauri::Wry
     let s2 = sep()?;
     let s3 = sep()?;
     let s4 = sep()?;
-    items.extend([&s1 as &dyn tauri::menu::IsMenuItem<tauri::Wry>, &show_i, &talk_i, &s2, &m_desk, &m_float, &m_peek, &m_comp, &focus_i, &glance_i]);
+    items.extend([&s1 as &dyn tauri::menu::IsMenuItem<tauri::Wry>, &show_i, &talk_i, &s2, &m_desk, &m_float, &m_peek, &m_comp, &focus_i, &glance_i, &cam_i]);
     let mon_sub;
     if mon_items.len() > 1 {
         let refs: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = mon_items.iter().map(|x| x as &dyn tauri::menu::IsMenuItem<tauri::Wry>).collect();
@@ -701,6 +801,25 @@ fn on_menu(app: &AppHandle, id: &str) {
         "glance" => {
             let on = !shared.lock().unwrap().settings.glance;
             set_glance_on(app, &shared, on);
+        }
+        "presence" => {
+            let click = presence::tray_click(&shared.lock().unwrap().settings.presence);
+            match click {
+                presence::TrayClick::OpenSettings => {
+                    refresh_tray(app, &shared); // the check mark stays off
+                    open_settings_eye(app);
+                }
+                presence::TrayClick::On | presence::TrayClick::Off => {
+                    let was = {
+                        let mut a = shared.lock().unwrap();
+                        let was = a.settings.presence.camera;
+                        a.settings.presence.camera = click == presence::TrayClick::On;
+                        a.settings.presence.fix();
+                        was
+                    };
+                    presence_changed(app, &shared, was);
+                }
+            }
         }
         "dnd" => {
             shared.lock().unwrap().settings.do_not_disturb ^= true;
@@ -843,6 +962,20 @@ fn open_settings(app: &AppHandle) {
         .build();
 }
 
+/// Eye contact: the tray's "Camera presence" before it was ever switched on -- Settings, at its explanation.
+fn open_settings_eye(app: &AppHandle) {
+    open_settings(app);
+    let h = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(700));
+        on_main(&h, |app| {
+            if let Some(w) = app.get_webview_window(SETTINGS_WIN) {
+                let _ = w.eval("var e=document.getElementById('eye-contact');if(e)e.scrollIntoView();");
+            }
+        });
+    });
+}
+
 /* ------------------------------------------------------------- updates */
 
 fn check_update(app: AppHandle) {
@@ -932,6 +1065,33 @@ fn needs_you(app: AppHandle, id: i64, title: String, body: String, shared: State
         notify_needs(&app, id, &t, &b);
     }
     go
+}
+
+/// Eye contact: the page says whether it holds the camera now (the tray shows it).
+#[tauri::command]
+fn presence_status(app: AppHandle, in_use: bool, shared: State<'_, Shared>) {
+    let changed = {
+        let mut a = shared.lock().unwrap();
+        let c = a.cam_in_use != in_use;
+        a.cam_in_use = in_use;
+        c
+    };
+    if changed {
+        mlog!("camera presence: the page {} the camera", if in_use { "opened" } else { "let go of" });
+        refresh_tray(&app, &shared);
+    }
+}
+
+/// Eye contact: the page's Off (its Settings row). The page can only switch it off (presence::page_set).
+#[tauri::command]
+fn presence_off(app: AppHandle, shared: State<'_, Shared>) {
+    let was = {
+        let mut a = shared.lock().unwrap();
+        let was = a.settings.presence.camera;
+        a.settings.presence = presence::page_set(&a.settings.presence, Some(false), Some(false), None);
+        was
+    };
+    presence_changed(&app, &shared, was);
 }
 
 #[tauri::command]
@@ -1172,6 +1332,7 @@ fn settings_set(app: AppHandle, value: Settings, shared: State<'_, Shared>) -> R
         return Err("The hotkeys must all be different.".into());
     }
     let autostart = v.autostart;
+    let (cam_was, cam_changed);
     {
         let mut a = shared.lock().unwrap();
         let mode_changed = a.settings.mode != v.mode;
@@ -1181,6 +1342,10 @@ fn settings_set(app: AppHandle, value: Settings, shared: State<'_, Shared>) -> R
             }
             a.comp.reset();
         }
+        let p_old = a.settings.presence.clone();
+        v.presence = presence::from_settings(&p_old, &v.presence);
+        cam_was = p_old.camera;
+        cam_changed = p_old.camera != v.presence.camera;
         a.settings = v;
         if mode_changed {
             a.peek_open = a.settings.mode == Mode::Peek;
@@ -1192,6 +1357,9 @@ fn settings_set(app: AppHandle, value: Settings, shared: State<'_, Shared>) -> R
     set_autostart(&app, autostart);
     register_hotkeys(&app, &shared);
     apply(&app, &shared, false);
+    if cam_changed {
+        presence_changed(&app, &shared, cam_was);
+    }
     Ok(())
 }
 
@@ -1417,6 +1585,7 @@ fn env_loop(app: AppHandle, shared: Shared) {
             None
         };
         let mut stuck = false;
+        let mut reload_page = false;
         // Real blur: what Windows allows (transparency effects, high contrast), every 5 s.
         if tick % 5 == 3 && acrylic::refresh_system().1 {
             repaint = true;
@@ -1424,7 +1593,26 @@ fn env_loop(app: AppHandle, shared: Shared) {
         {
             let mut a = shared.lock().unwrap();
             a.seen.fullscreen = fullscreen;
+            // Eye contact: what decides whether the page may hold the camera (repainted when it changes).
+            let pv0 = presence_view(&a);
+            a.on_battery = on_battery;
+            a.energy_saver = energy_saver;
             a.seen.locked = locked;
+            if a.settings.presence.camera && tick % 3 == 0 {
+                let our_call = a.talking || a.state == "listening" || a.state == "speaking";
+                a.meeting = companion::meeting(&platform::cap_use("webcam"), &platform::cap_use("microphone"), our_call);
+            } else if !a.settings.presence.camera {
+                a.meeting = false;
+            }
+            if presence_view(&a) != pv0 {
+                repaint = true;
+            }
+            if presence::must_reload(a.settings.presence.camera, a.cam_in_use, a.cam_off_at.map(|t| t.elapsed().as_millis() as u64)) {
+                mlog!("camera presence is off but the page still holds the camera: reloading it");
+                a.cam_off_at = None;
+                a.cam_in_use = false;
+                reload_page = true;
+            }
             // Covered only by a window in front on MINT AI's own monitor (one on the second screen is not in the way).
             a.seen.covered = a.settings.mode == Mode::Desktop && !a.peek_open && policy::front_covers(front == Front::Other, fg.as_ref(), our_monitor);
             if fs_note != a.fullscreen_note {
@@ -1500,6 +1688,13 @@ fn env_loop(app: AppHandle, shared: Shared) {
                     }
                 }
             }
+        }
+        if reload_page {
+            on_main(&app, |app| {
+                if let Some(w) = main_window(app) {
+                    let _ = w.eval("location.reload()");
+                }
+            });
         }
         if reapply {
             let sh = shared.clone();
@@ -1682,6 +1877,8 @@ pub fn run() {
             tool,
             set_glance,
             companion,
+            presence_status,
+            presence_off,
             open_full_cc,
             go_site,
             webauthn_ceremony,
@@ -1742,6 +1939,11 @@ pub fn run() {
                 seen: policy::Seen::default(),
                 toasted: Vec::new(),
                 comp: companion_host::CompState::default(),
+                cam_in_use: false,
+                cam_off_at: None,
+                meeting: false,
+                on_battery: false,
+                energy_saver: false,
             }));
             app.manage(shared.clone());
             machine::setup(&handle);
@@ -1797,12 +1999,24 @@ pub fn run() {
                 .on_permission_request({
                     let site = site.clone();
                     move |wv, kind| {
-                        // The microphone, for the site only (voice); nothing else is granted.
+                        // The microphone, for the site only (voice); the camera for the site only while camera
+                        // presence is on (eye contact, presence.rs); nothing else is granted.
                         let ours = wv.url().map(|u| same_site(&u, &site)).unwrap_or(false);
-                        match kind {
-                            PermissionKind::Microphone if ours => PermissionResponse::Allow,
-                            PermissionKind::ClipboardRead => PermissionResponse::Default,
-                            _ => PermissionResponse::Deny,
+                        let camera_on = wv.app_handle().try_state::<Shared>().map(|s| s.lock().unwrap().settings.presence.camera).unwrap_or(false);
+                        let ask = match kind {
+                            PermissionKind::Microphone => presence::Ask::Microphone,
+                            PermissionKind::Camera => presence::Ask::Camera,
+                            PermissionKind::ClipboardRead => presence::Ask::ClipboardRead,
+                            _ => presence::Ask::Other,
+                        };
+                        let ans = presence::permission(ask, ours, camera_on);
+                        if ask == presence::Ask::Camera {
+                            mlog!("camera requested by the {}: {}", if ours { "site" } else { "page (not the site)" }, if ans == presence::Answer::Allow { "allowed (camera presence is on)" } else { "refused" });
+                        }
+                        match ans {
+                            presence::Answer::Allow => PermissionResponse::Allow,
+                            presence::Answer::Deny => PermissionResponse::Deny,
+                            presence::Answer::Default => PermissionResponse::Default,
                         }
                     }
                 })
@@ -1810,6 +2024,9 @@ pub fn run() {
             let _ = w.set_ignore_cursor_events(true);
             shared.lock().unwrap().ignoring = Some(true);
             blur_init(&handle, &w);
+            // Eye contact: camera requests are never kept, and the profile's camera permission follows the setting.
+            camera_once(&w);
+            camera_profile(&handle, &shared);
 
             // A dragged Floating box: note each move (hit_loop snaps it when the moves stop).
             let sh = shared.clone();

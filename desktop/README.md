@@ -16,6 +16,7 @@ Command Center reaches the app without a new release. Sign-in is the site's: pas
 | `lib.rs` | The window, the three modes, tray and menu, hotkeys, toasts, the click-through and environment loops, updates, the commands the page may call |
 | `layout.rs` | Window geometry per mode, size (S/M/L), corner, monitor and DPI; corner snapping after a drag |
 | `companion.rs` | Companion mode (pure): where the bot perches (taskbar edges, auto-hide, the window in front, per-monitor DPI), the monitor it lives on, settle and dwell, its path (walk, hop, step out / cross / step in), stepping aside from the cursor, ducking out (full screen on its monitor, a meeting), its pace |
+| `presence.rs` | Eye contact (pure; mockups/eye-contact/DESIGN.md): camera presence's setting (off by default), the WebView2 permission policy (the camera only for the site, only while on), the profile's stored camera permission, what the page may change (only off), the tray switch, the reload guard |
 | `companion_host.rs` | Companion mode in the app: its loop (own thread) reads window geometry, moves the small window (asynchronous SetWindowPos), tells the page what the bot does |
 | `hit.rs` | Per-pixel click-through: is the cursor on a region the page reported (rounded rectangles / circles)? |
 | `blur.rs` | Real blur behind the cards (pure): when it is drawn (setting, Windows build, transparency effects, high contrast, opacity, dragging, scale), where each acrylic window goes, the pool's next state |

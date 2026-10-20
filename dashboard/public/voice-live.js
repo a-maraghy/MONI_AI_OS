@@ -10,6 +10,7 @@
  *                                    devicechange or error:<message>
  *   VoiceLive.mute(on) / .muted()    a hard mute: the microphone sends nothing
  *   VoiceLive.interrupt()            stop the voice now (a tap, Space or Esc)
+ *   VoiceLive.pause(on) / .paused()  hold the reply where it is / go on (eye contact: looking away)
  *   VoiceLive.duplex(mode?)          "speakers" (half-duplex: the microphone is
  *                                    not heard while the voice speaks) | "full"
  *                                    (headphones: talk over it)
@@ -656,6 +657,14 @@
       try { S.ws.send(JSON.stringify({ type: "ui-undoable", ms: Math.max(0, Math.min(60000, Number(ms) || 0)) })); } catch (e) { /* closed */ }
     },
     speaking: function () { return !!(S && S.playing); },
+    /* Eye contact (2026-10-20): the reply playing pauses (on) and goes on from the same place (off); nothing is dropped. */
+    pause: function (on) {
+      if (!S || !S.player) return false;
+      S.paused = !!on;
+      S.player.port.postMessage({ type: "hold", on: !!on });
+      return true;
+    },
+    paused: function () { return !!(S && S.paused); },
     /* The reply's spectrum while it plays ({ bins: getByteFrequencyData, hz per bin }), else null: core E shapes its mouth from it. */
     spectrum: function () { if (!S || !S.an || !S.playing) return null; S.an.getByteFrequencyData(S.spec.bins); return S.spec; },
     route: function () { return S ? S.route : ""; },

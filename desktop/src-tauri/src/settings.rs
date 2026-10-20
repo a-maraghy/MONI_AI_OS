@@ -141,6 +141,8 @@ pub struct Settings {
     pub companion: Companion,
     /// The mode the tray's Companion switch goes back to when it is switched off.
     pub before_companion: Mode,
+    /// Eye contact (presence.rs): camera presence and look and speak. Off by default.
+    pub presence: crate::presence::Presence,
 }
 
 impl Default for Settings {
@@ -162,6 +164,7 @@ impl Default for Settings {
             claude_path: String::new(),
             companion: Companion::default(),
             before_companion: Mode::Floating,
+            presence: crate::presence::Presence::default(),
         }
     }
 }
@@ -196,6 +199,7 @@ impl Settings {
         if self.before_companion == Mode::Companion {
             self.before_companion = Mode::Floating;
         }
+        self.presence.fix();
         if !origin_ok(&self.origin) {
             self.origin = DEFAULT_ORIGIN.into();
         }

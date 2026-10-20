@@ -145,6 +145,7 @@
 
   /* ---------------------------------------------------------------- toasts */
   function pageToast(text, sub, link) {
+    if (window.MintPresenceHold && window.MintPresenceHold.toast(text + (sub ? ": " + sub : ""))) return; // eye contact: you are away
     var box = $("pa-toasts");
     if (!box) { box = document.createElement("div"); box.id = "pa-toasts"; box.className = "pa-toasts"; box.setAttribute("aria-live", "polite"); document.body.appendChild(box); }
     var t = document.createElement("div");
@@ -169,6 +170,7 @@
   function nativeToast(id, title, body) {
     if (!T || P.toasted[id]) return;
     P.toasted[id] = 1;
+    if (window.MintPresenceHold && window.MintPresenceHold.native({ title: title, body: body })) return; // eye contact: you are away
     invoke("needs_you", { id: -(TOAST_BASE + Number(id)), title: String(title).slice(0, 120), body: String(body).slice(0, 280) });
   }
 

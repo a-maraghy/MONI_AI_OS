@@ -70,6 +70,7 @@ class MintLivePlayer extends AudioWorkletProcessor {
     this.sinceReport = 0;
     this.level = 0;
     this.wasPlaying = false;
+    this.held = false; // eye contact: the reply paused while the person looks away (nothing is dropped)
     var self = this;
     this.port.onmessage = function (e) {
       var m = e.data || {};
@@ -81,7 +82,10 @@ class MintLivePlayer extends AudioWorkletProcessor {
       } else if (m.type === "flush") {
         var seg = self.q.length ? self.q[0].seg : self.cur;
         self.q = [];
+        self.held = false; // a barge-in ends a paused reply too
         self.port.postMessage({ type: "flushed", seg: seg, ms: self.ms(seg), at: m.at || 0 });
+      } else if (m.type === "hold") {
+        self.held = !!m.on;
       } else if (m.type === "drop") {
         // A segment the server cut: what was not played yet is dropped.
         self.q = self.q.filter(function (c) { return c.seg !== m.seg; });
@@ -100,6 +104,7 @@ class MintLivePlayer extends AudioWorkletProcessor {
     var out = outputs[0][0];
     var sum = 0;
     for (var i = 0; i < out.length; i++) {
+      if (this.held) { out[i] = 0; continue; } // paused: silence, the queue keeps its place
       var c = this.q[0];
       while (c && c.at >= c.data.length - 1) {
         this.q.shift();

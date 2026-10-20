@@ -207,7 +207,7 @@
     var store = env.storage || null;
     var AC = env.AudioContext || null;
     var TAB = Math.random().toString(36).slice(2, 10);
-    var prefs = normSoundPrefs(""), host = { desktop: false, dnd: false }, probes = [], lim = new Limiter();
+    var prefs = normSoundPrefs(""), host = { desktop: false, dnd: false }, probes = [], holds = [], lim = new Limiter();
     var ctx = null, unlocked = false, timer = 0, log = [], gestureOn = false, seenOther = 0;
     function sget(k) { try { return store ? store.getItem(k) : null; } catch (e) { return null; } }
     function sset(k, v) { try { if (store) store.setItem(k, v); } catch (e) { /* storage blocked: this tab only */ } }
@@ -332,6 +332,9 @@
         o = o || {};
         if (NAMES.indexOf(name) < 0) return note({ ok: false, name: name, why: "unknown" });
         var role = SHAPES[name] ? roleOf(o.role) : "";
+        // Eye contact (mint-presence-bind.js): you are away -- kept for the one sound of the summary when you are
+        // back (which asks again then: quiet hours, a call, sounds off still silence it).
+        for (var h = 0; h < holds.length; h++) { var held = false; try { held = holds[h](name, role); } catch (e) { held = false; } if (held) return note({ ok: false, name: name, role: role, why: "away", t: now() }); }
         var why = silentWhy();
         if (why) return note({ ok: false, name: name, role: role, why: why, t: now() });
         var r = lim.offer({ name: name, role: role }, now());
@@ -360,6 +363,8 @@
       browserOn: browserOn,
       /** A probe that silences it while it returns a reason (a live call, the voice speaking). */
       mutedBy: function (fn) { if (typeof fn === "function") probes.push(fn); },
+      /** A hook that takes a sound for later (returns true: held, not played now) -- eye contact's "away". */
+      heldBy: function (fn) { if (typeof fn === "function") holds.push(fn); },
       silentWhy: silentWhy,
       /** The last decisions (for checks and the console). */
       log: function () { return log.slice(); },

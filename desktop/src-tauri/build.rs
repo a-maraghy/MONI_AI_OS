@@ -13,6 +13,9 @@ fn main() {
         "set_glance",
         // Companion mode: the page's word (a click on the bot opens its Command Center; it dozes / wakes).
         "companion",
+        // Eye contact: the page says it holds the camera (the tray shows it), and may switch camera presence off.
+        "presence_status",
+        "presence_off",
         "open_full_cc",
         "go_site",
         "webauthn_ceremony",

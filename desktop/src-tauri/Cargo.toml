@@ -43,6 +43,9 @@ lopdf = { version = "=0.44.0", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 tauri-winrt-notification = "0.7"
+# Eye contact (lib.rs camera_profile / camera_once): the WebView2 profile's camera permission, the same crates wry uses.
+webview2-com = "0.39"
+windows-core = "0.62"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "bmp"] }
 windows = { version = "0.61", features = [
   "Win32_Foundation",

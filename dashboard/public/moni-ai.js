@@ -154,6 +154,8 @@
   // While another page is up in the shell (M-5 part 2), the Command Center is under it: its notes go to the dock.
   function shellUp() { return !!(window.MintShell && window.MintShell.active()); }
   function toast(text, bad) {
+    // Eye contact (mint-presence-bind.js): while the camera sees you away, notes are held for one summary.
+    if (window.MintPresenceHold && window.MintPresenceHold.toast(text, bad)) return;
     if (shellUp()) return window.MintShell.toast(text, null, null, bad);
     var old = document.querySelector(".cc-toast");
     if (old) old.remove();
@@ -404,6 +406,8 @@
     say: function (text) { if (READY) { Voice.unlock(); Voice.say(text); return true; } return false; },
     speaking: function () { return !!Voice.speaking; },
     stopSpeaking: function () { Voice.stop(); },
+    /* Eye contact (mint-presence-bind.js): a reply read aloud pauses while you look away. */
+    pauseSpeaking: function (on) { return Voice.pause ? Voice.pause(on) : false; },
   };
 
   /* ---- the core setting: A dotted sphere, B Siri fluid, C hybrid, D mesh (the default), E bot. The
@@ -2342,6 +2346,7 @@
     /* ---- the speaker: one AudioContext, an analyser in front of it, so the
        seed core pulses with the reply's real loudness ---- */
     var outCtx = null, outAn = null, outBuf = null, source = null;
+    var heldBack = false; // eye contact: the reading paused while the person looks away (the context suspended)
     function outContext() {
       if (!AC) return null;
       if (!outCtx) {
@@ -2351,7 +2356,7 @@
         outAn.connect(outCtx.destination);
         outBuf = new Uint8Array(outAn.fftSize);
       }
-      if (outCtx.state === "suspended" && outCtx.resume) outCtx.resume().catch(function () { /* needs a gesture */ });
+      if (!heldBack && outCtx.state === "suspended" && outCtx.resume) outCtx.resume().catch(function () { /* needs a gesture */ });
       return outCtx;
     }
     function outLevel() {
@@ -2523,7 +2528,7 @@
       return new Promise(function (resolve) {
         var c = outContext();
         if (!c) { resolve(); return; }
-        if (c.state !== "running" && c.resume) c.resume().then(function () { if (c.state !== "running") blocked(c); }, function () { blocked(c); });
+        if (!heldBack && c.state !== "running" && c.resume) c.resume().then(function () { if (c.state !== "running") blocked(c); }, function () { blocked(c); });
         var gain = null, gains = [], at = 0, live = [], started = false, finished = false, rec = null;
         function freshGain() { gain = c.createGain(); gain.connect(outAn); gains.push(gain); at = 0; }
         freshGain();
@@ -2660,7 +2665,15 @@
     api_.tag = function (id, meta) { if (id != null && meta) tags.set(id, meta); };
     api_.unlock = function () { if (READY) outContext(); };
     api_.say = function (text) { if (READY) enqueue(text); };
-    api_.stop = function () { silence(); setUi(); };
+    api_.stop = function () { if (heldBack) api_.pause(false); silence(); setUi(); };
+    /* Eye contact: hold the reading where it is (the speaker's clock stops) / go on from there. */
+    api_.pause = function (on) {
+      on = !!on;
+      if (on === heldBack || !outCtx) return false;
+      heldBack = on;
+      (on ? outCtx.suspend() : outCtx.resume()).catch(function () { /* gone */ });
+      return true;
+    };
     var spokenTurn = null;
     api_.feed = function (id, text) {
       text = String(text || "");
@@ -3059,6 +3072,19 @@
     latched: function () { return !!LiveUI.latched; },
     // "live" (hands-free), "ptt" (hold-to-talk, warm or held) or "" (no call): the desktop page's live button.
     mode: function () { return LiveUI.active ? (LiveUI.ptt ? "ptt" : "live") : ""; },
+    // Eye contact's "look and speak" (mint-presence.js): you faced MINT AI and started talking -- a turn opens as a
+    // tap of the talk key does (latched: it is sent after a pause, or by the key), on the same hold-to-talk path.
+    lookTalk: function () {
+      if (!LIVE_OK || LiveUI.held || LiveUI.latched || (LiveUI.active && !LiveUI.ptt) || liveSpeaking()) return false;
+      if (!pttPress(false)) return false;
+      LiveUI.latched = true;
+      LiveUI.lv = null;
+      LiveUI.latchT = setTimeout(pttSend, PTT_LATCH_MS);
+      if (LiveUI.state) paintLive(LiveUI.state);
+      paintState();
+      return true;
+    },
+    busy: function () { return !!(LiveUI.held || LiveUI.latched || liveSpeaking() || LiveUI.state === "thinking" || LiveUI.state === "waiting" || (LiveUI.active && !LiveUI.ptt)); },
     // The microphone's level (0..1) while a call is on: the desktop page's state pill shows it.
     level: function () { return LiveUI.active ? LiveUI.mic || 0 : 0; } };
   /*

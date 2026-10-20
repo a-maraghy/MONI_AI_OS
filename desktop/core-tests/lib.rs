@@ -10,6 +10,8 @@ pub mod blur;
 pub mod layout;
 #[path = "../src-tauri/src/companion.rs"]
 pub mod companion;
+#[path = "../src-tauri/src/presence.rs"]
+pub mod presence;
 #[path = "../src-tauri/src/platform.rs"]
 pub mod platform;
 #[path = "../src-tauri/src/policy.rs"]

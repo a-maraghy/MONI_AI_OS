@@ -183,9 +183,37 @@ sections.appearance = async (req, res) => {
         `<div class="lr set-note"><span class="muted small" id="mint-appearance-note" role="status"></span><noscript><button class="btn small primary" type="submit">Save</button></noscript></div>`
     ) +
     `</form>` +
-    soundSettings(req.me.mint_sound, csrf);
-  return { body, assets: MV.APPEARANCE_ASSETS.concat(["mint-sound.js", "mint-sound-settings.js"]) };
+    soundSettings(req.me.mint_sound, csrf) +
+    presenceSettings();
+  return { body, assets: MV.APPEARANCE_ASSETS.concat(["mint-sound.js", "mint-sound-settings.js", "mint-presence.css", "mint-presence-logic.js", "mint-presence-settings.js"]) };
 };
+
+/*
+ * Appearance > Eye contact (2026-10-20, mockups/eye-contact/DESIGN.md): camera presence. Never stored on the
+ * server and never per person: it is this browser's switch (localStorage "mint-presence"), and in the desktop
+ * app the app's own setting -- which only the app's Settings window or its tray can switch ON (this page can
+ * switch it off). Off by default. public/mint-presence-settings.js runs the rows; without JavaScript they say so.
+ */
+function presenceSettings() {
+  const sw = (k, label) => V.sw(`data-mp="${k}" aria-label="${esc(label)}"`, false);
+  return `<div class="mp-set" id="mp-set">` +
+    V.group(
+      "Eye contact",
+      "eye",
+      `<div class="mp-explain"><b>Use this computer's camera so MINT AI knows when you are there.</b> Off unless you switch it on.<ul>` +
+        `<li>The bot looks at you and follows you as you move, looks up when you sit down and dozes when you walk away.</li>` +
+        `<li>The glance cards come forward while you look at this screen. Notes and sounds wait while you are away and come as one summary when you are back.</li>` +
+        `<li>Everything happens on this computer: the picture is read a few times a second by a small face model in the page and thrown away. No picture, video or face data is stored or sent anywhere — not to Mint OS, not to anyone. Only “here / looking / away” is used.</li>` +
+        `<li>The camera light is on while it works. It lets go of the camera when you switch this off, when the window is hidden, the screen locks, or another app is in a meeting.</li>` +
+        `</ul></div>` +
+        V.row("Camera presence", `<span class="mp-browser-only">For this browser only. The browser asks you once for the camera.</span><span class="mp-app-only">In the MINT AI app, switch it on in the app's Settings or its tray menu (“Camera presence”) — so only you, at this computer, can turn the camera on. Here you can switch it off.</span>`, sw("cam", "Camera presence") + ` <button type="button" class="btn small mp-app-only" data-mp-off hidden>Switch off</button>`, { scope: "this browser", id: "mp-cam-row" }) +
+        V.row("Look and speak", "Face MINT AI and start talking: it listens without the talk key. While you face it, a microphone level meter runs on this computer (nothing is recorded or sent until you speak). A reply pauses when you look away and goes on when you look back.", sw("speak", "Look and speak"), { scope: "this browser", id: "mp-speak-row", tag: "" }) +
+        V.row("Energy saver", "Let go of the camera while Windows' energy saver is on. On battery it looks less often.", sw("saver", "Release the camera in energy saver"), { scope: "this browser", id: "mp-saver-row" }) +
+        V.row("Now", null, `<span class="mp-state" data-mp-state>Off</span>`, { id: "mp-now" }) +
+        `<div class="lr set-note"><span class="muted small" id="mp-note" role="status"></span><noscript><span class="muted small">Eye contact needs JavaScript.</span></noscript></div>`
+    ) +
+    `</div>`;
+}
 
 /*
  * Appearance > Sounds (2026-10-20, public/mint-sound.js): MINT AI's sounds, per person (users.mint_sound,

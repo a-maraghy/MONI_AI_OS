@@ -263,6 +263,12 @@ app.use(
       if (!/[?&]v=/.test(res.req.originalUrl || "")) {
         res.setHeader("Cache-Control", "public, max-age=300");
       }
+      // Eye contact's camera worker (public/mint-presence-worker.js) runs the face model as WebAssembly: its
+      // own policy allows compiling that ('wasm-unsafe-eval', never eval of JavaScript) and loading this
+      // site's files -- nothing else, no other host. The pages keep the policy above.
+      if (path.basename(filePath) === "mint-presence-worker.js") {
+        res.setHeader("Content-Security-Policy", "default-src 'none'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self'; worker-src 'none'; img-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
+      }
     },
   })
 );

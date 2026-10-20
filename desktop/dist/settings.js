@@ -20,6 +20,10 @@
     return S.per_monitor[monKey];
   }
   function comp() { S.companion = S.companion || { perch: "both", session_bots: true, stay_on_monitor: false, side: 0.8 }; return S.companion; }
+  // Eye contact (presence.rs): off by default; "consented" is the app's own record, kept as it is.
+  function pres() { S.presence = S.presence || { camera: false, look_and_speak: false, release_on_saver: true, consented: false }; return S.presence; }
+  $("cam-on").addEventListener("change", function () { $("cam-speak").disabled = !this.checked; if (!this.checked) $("cam-speak").checked = false; });
+  if (location.hash === "#eye-contact") setTimeout(function () { var h = $("eye-contact"); if (h && h.scrollIntoView) h.scrollIntoView(); }, 300);
   function val(k) { return k === "mode" ? S.mode : k === "perch" ? comp().perch : pm()[k]; }
   function setVal(k, v) { if (k === "mode") S.mode = v; else if (k === "perch") comp().perch = v; else pm()[k] = v; segs(); }
   document.querySelectorAll(".seg[data-k]").forEach(function (s) {
@@ -61,6 +65,8 @@
     $("glance").checked = S.glance !== false;
     $("comp-bots").checked = comp().session_bots !== false;
     $("comp-stay").checked = !!comp().stay_on_monitor;
+    $("cam-on").checked = !!pres().camera; $("cam-speak").checked = !!pres().look_and_speak; $("cam-saver").checked = pres().release_on_saver !== false;
+    $("cam-speak").disabled = !pres().camera;
     $("dnd").checked = !!S.do_not_disturb;
     $("batt").checked = !!S.battery_saver;
     $("blur").checked = S.real_blur !== false;
@@ -89,6 +95,7 @@
     S.focus = $("focus").checked; S.do_not_disturb = $("dnd").checked; S.battery_saver = $("batt").checked; S.real_blur = $("blur").checked;
     S.glance = $("glance").checked;
     comp().session_bots = $("comp-bots").checked; comp().stay_on_monitor = $("comp-stay").checked;
+    pres().camera = $("cam-on").checked; pres().look_and_speak = $("cam-on").checked && $("cam-speak").checked; pres().release_on_saver = $("cam-saver").checked;
     S.autostart = $("autostart").checked; S.check_updates = $("updates").checked; S.experimental_behind_icons = $("icons").checked;
     if (window.MintMachine) window.MintMachine.collect(S);
   }

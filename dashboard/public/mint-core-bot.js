@@ -28,6 +28,10 @@
  *                 slow deep breaths, z z z rising on the left (dozeWanted); a message, a card, voice, typing or
  *                 the pointer near wakes it (core.poke): a blink and a hop
  *   reactions     core.react: surprise (going offline), grin + hops (a job done), nod (approved), wake
+ *   eye contact   (2026-10-20, mockups/eye-contact; opt-in camera presence, mint-presence*.js) core.contact({x, y}):
+ *                 the eyes meet the person's and follow them as they lean or move; core.presence(state): with the
+ *                 camera on, dozing follows presence instead of the timer (away -> it dozes; back -> it wakes and
+ *                 looks up; looking -> never; here but not looking -> the night rule only)
  *   still frames  (reduced motion, hold still): the faces only -- a still sleep face, a grin for its moment; no motion
  * The sessions wear their own heads (k.head, cc-logic.js botHeadFor: by role, or the viewer's pin).
  *
@@ -39,7 +43,7 @@
  * wireframe; the browser Command Center look is unchanged without it.
  *   core.S.concept === "E" · setState · setLight · resize(cx, cy, R, w, h) · start · stop · still · stats · draw
  *   · place · tick · adopt · destroy · setConcept (no-op) · setHead(id) · setColors({p, c}) · setOffline(bool)
- *   · poke() · react(kind) · glance(point | fn, ms) · look(x, y | null)
+ *   · poke() · react(kind) · glance(point | fn, ms) · look(x, y | null) · presence(state | null) · contact({x, y} | null)
  * opts.kids(): the Command Center's session spheres (cc-family.js meshKids) -- drawn here as
  * small bot heads in the same style, with their own state in the same colour + face language
  * (MintLogic.botSessState): waiting -> needs you, working -> thinking, a delegation landing ->
@@ -136,6 +140,12 @@
   function dozeWanted(o) {
     if (!o || o.state !== "idle" || o.offline || o.near) return false;
     var q = o.quietMs || 0;
+    // Eye contact (2026-10-20): with the camera on, presence replaces the 10-minute timer -- it dozes when the
+    // person has walked away, never while they look at it, and the night rule still holds while they are
+    // here but not looking.
+    if (o.presence === "away") return true;
+    if (o.presence === "looking") return false;
+    if (o.presence === "present") return isNight(o.hour) && q >= NIGHT_QUIET_MS;
     return q >= DOZE_QUIET_MS || (isNight(o.hour) && q >= NIGHT_QUIET_MS);
   }
   // reactions: how long each plays (s); surprise (an error / going offline), grin (a job done), nod (approved), wake
@@ -716,6 +726,8 @@
       // expressive (2026-10-20): the mouth's viseme mix, the pointer, a glance, dozing, a reaction
       vis: { closed: 1, open: 0, wide: 0, round: 0 }, ptr: [0, 0], ptrOn: false, near: false, lookK: 0,
       gzUntil: 0, gzAt: null, doze: 0, dozeT: 0, dozeChk: 0, actAt: 0, rk: "", rt: 0, rd: 0,
+      // eye contact (2026-10-20, mint-presence-bind.js): the camera's presence state and where the person is
+      presence: null, contact: null, lookUpUntil: 0,
     };
     var now = opts.now || function () { return Date.now(); };
     var hourOf = opts.hour || function () { return new Date().getHours(); };
@@ -856,10 +868,13 @@
       var gzOn = !S.still && S.gzUntil > S.t, gp = null, follow = false, lx = 0, ly = 0;
       if (gzOn) { gp = typeof S.gzAt === "function" ? S.gzAt() : S.gzAt; if (!gp) gzOn = false; }
       if (gzOn) { lx = clamp((gp[0] - cc[0]) / (rc * 3), -1, 1); ly = clamp((gp[1] - cc[1]) / (rc * 3), -1, 1); }
+      // eye contact: just sat down -> a look up; then the eyes meet the person's (their place, from the camera)
+      else if (!S.still && dz < 0.5 && S.lookUpUntil > S.t) { follow = true; lx = S.contact ? S.contact.x * 0.5 : 0; ly = -1; }
+      else if (!S.still && dz < 0.5 && S.contact) { follow = true; lx = S.contact.x; ly = S.contact.y; }
       else if (S.ptrOn && !S.still && dz < 0.5) { follow = true; lx = clamp((S.ptr[0] - cc[0]) / (rc * 3.2), -1, 1); ly = clamp((S.ptr[1] - cc[1]) / (rc * 3.2), -1, 1); }
       var gl_ = !S.still && !gzOn && !follow && an.glanceUntil > an.t ? 1 : 0; // a still frame never freezes mid-glance
       if (S.state === "delegating") { an.gxT = ddx * 2; an.gyT = ddy > 0.35 ? 1 : ddy < -0.35 ? -1 : 0; }
-      else if (gzOn || follow) { an.gxT = lx * (gzOn ? 2 : 1.5); an.gyT = ly > 0.4 ? 1 : ly < -0.4 ? -1 : 0; }
+      else if (gzOn || follow) { an.gxT = lx * (gzOn || S.contact ? 2 : 1.5); an.gyT = ly > 0.4 ? 1 : ly < -0.4 ? -1 : 0; }
       else { an.gxT = gl_ ? an.glx : 0; an.gyT = gl_ ? an.gly : 0; }
       if (dz > 0.5) { an.gxT = 0; an.gyT = 0; }
       var back = !gzOn && !follow && an.gxT === 0 && an.gyT === 0;
@@ -1144,7 +1159,7 @@
     }
     /* ---------------- moods, reactions, the pointer, glances */
     function evalDoze() {
-      var want = dozeWanted({ state: S.state, offline: S.offline, near: S.near, quietMs: now() - S.actAt, hour: hourOf() });
+      var want = dozeWanted({ state: S.state, offline: S.offline, near: S.near, quietMs: now() - S.actAt, hour: hourOf(), presence: S.presence });
       if (want && !S.dozeT) S.dozeT = 1;
       else if (!want && S.dozeT) wake();
     }
@@ -1286,6 +1301,25 @@
       setOffline: function (on) { on = !!on; if (on === S.offline) return; S.offline = on; if (on) react("surprise"); else { if (S.rk === "surprise") S.rk = ""; poke(); } redrawIfIdle(); },
       /** Expressive (2026-10-20): something happened (poke), a reaction (react), a look at a point (glance), the pointer by hand (look). */
       poke: poke, react: react, glance: glance,
+      /**
+       * Eye contact (2026-10-20, mint-presence-bind.js): the camera's state -- "present" | "looking" | "away", or
+       * null with the camera off (the 10-minute timer again). Back from away: it wakes and looks up; away: it dozes.
+       */
+      presence: function (p) {
+        p = p === "present" || p === "looking" || p === "away" ? p : null;
+        var was = S.presence;
+        if (p === was) return;
+        S.presence = p;
+        if (p && p !== "away") {
+          S.actAt = now();
+          if (was === "away") S.lookUpUntil = S.t + 0.9; // sat down again: it looks up at them
+          if (S.dozeT && (was === "away" || p === "looking")) { wake(); if (S.still) stillFrame(); }
+        }
+        S.dozeChk = 0; // checked on the next frame
+        if (S.still || !S.running) { var d = S.dozeT; evalDoze(); if (S.dozeT !== d) { S.doze = S.dozeT; if (S.still) stillFrame(); } }
+      },
+      /** Where the person is, seen from the bot ({x, y} in -1..1; x right, y down), or null: the eyes go there. */
+      contact: function (g) { S.contact = g && isFinite(g.x) && isFinite(g.y) ? { x: clamp(+g.x, -1, 1), y: clamp(+g.y, -1, 1) } : null; },
       look: function (x, y) { if (x == null) { S.ptrOn = false; S.near = false; return; } S.ptr[0] = x; S.ptr[1] = y; S.ptrOn = true; var cc = coreCss(), r = headR(), dx = x - cc[0], dy = y - cc[1]; S.near = dx * dx + dy * dy < r * r * 6.25; if (S.near) poke(); },
       /** Checks: whether it would doze now (and evaluate it). */
       _doze: function () { evalDoze(); return S.dozeT; },

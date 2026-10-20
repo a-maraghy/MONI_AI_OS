@@ -425,6 +425,9 @@
     window.addEventListener("resize", function () { if (on) { size(); sendRegions(true); } });
     return {
       setOn: setOn, applyStill: applyStill, size: size,
+      // Eye contact (mint-presence-bind.js): the companion bot meets your eyes and dozes when you leave, as the core does.
+      presence: function (p) { if (core && core.presence) core.presence(p); },
+      contact: function (g) { if (core && core.contact) core.contact(g); },
       regions: function () { return regions(L, view.sessionBots === false ? [] : kidsAt(heads, now(), L, isStill()), lastM); },
       // For the checks and the preview (a browser has no app to send the events).
       debug: {

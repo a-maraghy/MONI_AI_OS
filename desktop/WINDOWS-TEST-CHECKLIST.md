@@ -308,3 +308,44 @@ Performance and power
 - [ ] On battery with Battery saver on (or Windows' Energy saver): it no longer walks — it jumps straight to its new place; its face is a still picture. Plugged in again: it walks.
 - [ ] **No blur** anywhere in Companion mode (no frosted patches, no grey squares), also after switching from Floating with glance cards shown. Its own backplate keeps it readable on a light and a dark wallpaper.
 - [ ] Switch back with the tray item: the mode it came from (Floating, Desktop layer or Peek) returns where it was.
+
+## Eye contact — camera presence (built 2026-10-20, not released; design: mockups/eye-contact/DESIGN.md)
+
+The laptop's own webcam. App log open (`%LOCALAPPDATA%\MINT AI\logs\mint-desktop.log`, lines "camera presence …" / "camera requested …"). Core E (Bot) as the core.
+
+Off by default, opt-in, and only the app can switch it on
+- [ ] Fresh install / existing settings: tray ▸ **Camera presence** is unchecked; the webcam light never comes on; the log has "the profile's camera permission for https://os.mint-stack.com set to deny (ok)" at start.
+- [ ] Tray ▸ Camera presence (never switched on before): it does **not** switch on — Settings opens at **Eye contact** with the explanation. Tick Camera presence there, Save: the webcam light comes on within about 2 s, a small "Camera on · eye contact" pill shows top-left in the box, the tray tooltip ends "· camera on", the tray item reads "Camera presence (camera on now)". Log: "camera requested by the site: allowed (camera presence is on)".
+- [ ] Tray ▸ Camera presence again: **off at once** — the webcam light goes out within a second, the pill goes. Tray ▸ Camera presence once more: on directly now (it was switched on in Settings before).
+- [ ] No Windows / WebView2 camera prompt ever appears (the app answers for its own site only). Settings ▸ Privacy & security ▸ Camera ▸ "Recent activity" lists MINT AI (msedgewebview2) only while it is on.
+- [ ] In MINT AI ▸ Settings ▸ Appearance ▸ Eye contact (inside the app): the switches show the app's state, say "switch it on in the app's Settings or tray"; **Switch off** works; there is no way to switch it on from that page.
+- [ ] Off, then (devtools in the app, if available, or a test page) a `navigator.mediaDevices.getUserMedia({video:true})` from the site: refused (NotAllowedError), no light. Log: "camera requested … refused".
+- [ ] The plain browser (Edge / Chrome on the same laptop, MINT AI ▸ Command Center): off — no camera prompt. Settings ▸ Appearance ▸ Eye contact ▸ Camera presence on (this browser only): the browser asks once for the camera; then it works there as in the app; switching it off there lets go at once.
+
+It looks at you
+- [ ] Sit in front of the laptop, look at the bot: within about half a second its eyes come to you; lean left / right, sit up / lean in: the eyes follow (a little lag is fine, 5 looks a second). **Check the direction**: when you move to your right, its eyes move to *your* right (the screen's right). If it is mirrored, note it (one sign in mint-presence-logic.js `where()` / `poseOf()`).
+- [ ] Look away at the second monitor for a few seconds and back: it keeps looking where you are; the glance cards **step back** (dim, slightly smaller) after about a second and come **forward** when you look at the laptop screen again. Hovering a card brings it forward too.
+- [ ] Walk away (out of the camera's view) with nothing waiting on you: after about 8 s it dozes ("z z z") — not after 10 minutes. Come back and sit down: it wakes and looks **up** at you, then meets your eyes.
+- [ ] Sitting there, not looking at it, in the daytime: it does not doze. After 23:00: it dozes after a quiet minute unless you look at it; looking at it wakes it.
+- [ ] Companion mode: the companion bot on the taskbar does the same (eyes, doze, wake); dozing on a window it walks back to the taskbar first.
+- [ ] Two people in view (a colleague behind you): it keeps looking at the nearer face (you), does not jump between you.
+
+Held while you are away
+- [ ] Walk away; from your phone approve nothing, but trigger a session finishing / a watcher alert / an approval request: no Windows toast, no sound while you are away. Come back: one "While you were away" summary (in the box) lists them, one Windows toast "While you were away" (only if MINT AI is not visible), one sound. The morning brief / catch-up card shows if it was due.
+- [ ] Camera off: toasts and sounds behave exactly as before (nothing held).
+
+Look and speak (Settings ▸ Eye contact ▸ Look and speak, separately)
+- [ ] Face the bot squarely and start talking ("what's on my plate today"): it starts listening without the talk key (the state pill shows Listening) and the turn is sent after you pause. The first syllable may be clipped — note if words go missing.
+- [ ] Facing the screen but not the bot, or turned to a colleague, and talking: it does **not** start. Someone else talking while you look at the bot silently (mouth closed): it does not start. A cough / a door: no start.
+- [ ] While MINT AI answers aloud, turn away for 2 s: the voice **pauses**; look back: it continues where it stopped. Press the talk key while paused: it interrupts as usual.
+- [ ] The microphone indicator (taskbar) shows only while you face the bot (the level meter) and during a turn — never while you look elsewhere or are away.
+
+Released when it should be
+- [ ] Win+L: the light goes out at once; unlock: back within ~2 s. Floating put away (tool ▸ hide): light out at once. Peek closed (the window hidden) or the Desktop layer fully covered: out after ~10 s (a quick switch does not flash it); note whether WebView2 reports a covered Desktop layer as hidden at all.
+- [ ] Join a Teams / Zoom call with its camera: MINT AI lets go within ~3 s (the meeting app gets the camera; the companion ducks out as before); after the call it comes back.
+- [ ] Energy saver on (Settings ▸ System ▸ Power): light out (default "let go in energy saver"). Untick that in Settings: kept, 2 looks a second. On battery (saver off): kept, 2 looks a second.
+- [ ] Quit MINT AI from the tray: light out.
+
+Performance
+- [ ] Task Manager with it on: MINT AI's WebView2 adds only a few % CPU on the laptop (a 320 × 240 frame 5 times a second, the model in a worker); on battery less. Note the numbers.
+- [ ] Network: Resource Monitor ▸ Network for msedgewebview2 while it runs for a minute: no traffic beyond the page's usual polling (no upload grows with the camera on).

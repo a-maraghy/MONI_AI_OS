@@ -1,0 +1,240 @@
+"use strict";
+/*
+ * Eye contact (2026-10-20; mockups/eye-contact/DESIGN.md): the camera module. Off unless the person switched
+ * "Camera presence" on (Settings > Appearance > Eye contact in a browser -- per browser; the app's Settings
+ * or tray in the desktop app); mint-presence-bind.js decides that and hands the module its host's state.
+ *
+ * What it does with the camera, all of it here and in mint-presence-worker.js:
+ *   - opens it small (320 x 240) and reads it slowly: 5 frames a second, 2 on battery / in energy saver /
+ *     while nobody is there; it lets go of it at once when switched off, the screen locked, another app holds a
+ *     meeting, or (by default) in energy saver -- and when the page has been hidden for 10 s (never opened hidden);
+ *   - hands each frame to the worker (transferred -- no copy is kept) which runs the face model on this
+ *     computer and answers with a few numbers per face; MintPresenceLogic turns them into the state.
+ *
+ * What leaves this module (MintPresence.on / snapshot): the state ("present" | "looking" | "away", or null
+ * while the camera is off), a coarse direction for the bot's eyes ({x, y} in quarters), and whether the
+ * camera is in use (for the indicator and the app's tray). No frame, image, landmark or face record ever
+ * does: they live in this closure and the worker, and nothing here makes a network request. The frames are
+ * not stored anywhere.
+ *
+ * Look and speak (its own switch, off by default): while the person faces the bot (frontal, nobody else in
+ * view) a microphone level meter runs here -- the level only, nothing recorded or sent -- and speech starting
+ * then (with their own mouth moving) calls hooks.speak(), which starts a voice turn the way the talk key
+ * does. A reply that is playing pauses after ~1.5 s looking away (hooks.pause(true)) and resumes on looking
+ * back. A small "Camera on" pill shows while the camera is open; its button switches it off (hooks.off).
+ *
+ *   MintPresence.configure({ prefs: {cam, speak, saver}, host: {hidden, locked, meeting, saver, battery}, bot: {x, y} })
+ *   MintPresence.on(fn)          fn({ state, gaze, camera }) on every change
+ *   MintPresence.snapshot()      { state, gaze, camera, why }
+ *   MintPresence.hooks({ speak, busy, speaking, pause, off })
+ *   MintPresence.release(why)    let go of the camera now
+ *   MintPresence.diag()          counts only (frames, fps, ms per frame, opened, released, why)
+ */
+(function () {
+  var Logic = window.MintPresenceLogic;
+  if (!Logic || window.MintPresence) return;
+  var me = document.currentScript && document.currentScript.src;
+  // Next to this file, unstamped (kept 5 minutes, then revalidated): its own CSP comes with it (server.js).
+  var WORKER = me ? new URL("mint-presence-worker.js", me).pathname : "/static/mint-presence-worker.js";
+  var W = 320, H = 240;
+
+  var cfg = { prefs: Logic.normPrefs(null), host: {}, bot: null };
+  var H_ = { speak: null, busy: null, speaking: null, pause: null, off: null };
+  var subs = [];
+  var C = { stream: null, video: null, worker: null, ready: false, inflight: false, timer: 0, fps: 0, opening: false, denied: false, lostAt: 0, why: "off" };
+  var tracker = Logic.createTracker({ bot: null });
+  var gate = Logic.createSpeakGate();
+  var rp = Logic.createReplyPause();
+  var pub = { state: null, gaze: null, camera: false };
+  var diag = { frames: 0, faces: 0, ms: 0, opened: 0, released: 0, why: "off", errors: 0 };
+  var mic = { stream: null, ctx: null, an: null, buf: null, t: 0, offAt: 0 };
+
+  function call(fn, a) { try { return fn ? fn(a) : undefined; } catch (e) { return undefined; } }
+  function emit() { subs.slice().forEach(function (fn) { call(fn, { state: pub.state, gaze: pub.gaze, camera: pub.camera }); }); }
+  function setPub(state, gaze, camera) {
+    var g = gaze ? { x: gaze.x, y: gaze.y } : null;
+    var same = state === pub.state && camera === pub.camera && (g === pub.gaze || (g && pub.gaze && g.x === pub.gaze.x && g.y === pub.gaze.y));
+    pub = { state: state, gaze: g, camera: camera };
+    if (!same) emit();
+  }
+
+  /* ---------------------------------------------------------------- the indicator */
+  var pill = null;
+  function indicator(on) {
+    if (on && !pill) {
+      pill = document.createElement("div");
+      pill.className = "mp-cam";
+      pill.id = "mp-cam";
+      pill.setAttribute("role", "status");
+      pill.innerHTML = '<span class="mp-dot" aria-hidden="true"></span><span class="mp-t">Camera on · eye contact</span><button type="button" class="mp-off" aria-label="Switch camera presence off">Off</button>';
+      pill.querySelector(".mp-off").addEventListener("click", function () { release("switched off"); call(H_.off); });
+      pill.title = "The camera only tells MINT AI whether you are here and looking. Nothing leaves this computer.";
+      (document.body || document.documentElement).appendChild(pill);
+    } else if (!on && pill) { pill.remove(); pill = null; }
+    document.documentElement.classList.toggle("mp-cam-on", !!on);
+  }
+
+  /* ---------------------------------------------------------------- the camera */
+  function want() {
+    var h = cfg.host || {};
+    return Logic.rate({ on: cfg.prefs.cam && !C.denied, hidden: hiddenLong() || h.hidden, locked: h.locked, meeting: h.meeting, saver: h.saver, releaseOnSaver: cfg.prefs.saver, battery: h.battery, state: pub.state });
+  }
+  function apply() {
+    var r = want();
+    C.why = r.why; diag.why = r.why;
+    if (!r.fps) { if (C.stream || C.opening) release(r.why); else setPub(null, null, false); return; }
+    C.fps = r.fps;
+    if (!C.stream && !C.opening) open();
+  }
+  function open() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.Worker || !window.createImageBitmap) { C.why = diag.why = "unsupported"; return; }
+    if (C.lostAt && Date.now() - C.lostAt < 30000) return;
+    C.opening = true;
+    navigator.mediaDevices.getUserMedia({ audio: false, video: { width: { ideal: W }, height: { ideal: H }, frameRate: { ideal: 10, max: 15 }, facingMode: "user" } }).then(function (stream) {
+      C.opening = false;
+      if (!want().fps) { stream.getTracks().forEach(function (t) { t.stop(); }); return; }
+      C.stream = stream; diag.opened++;
+      stream.getVideoTracks().forEach(function (t) { t.onended = function () { C.lostAt = Date.now(); release("camera lost"); }; });
+      var v = document.createElement("video"); // never in the page: nobody sees it, nothing draws it
+      v.muted = true; v.playsInline = true; v.autoplay = true;
+      v.srcObject = stream;
+      var p = v.play(); if (p && p.catch) p.catch(function () { /* plays once it can */ });
+      C.video = v;
+      indicator(true);
+      setPub(pub.state, pub.gaze, true);
+      startWorker();
+      loop();
+    }, function (e) {
+      C.opening = false;
+      var n = e && e.name;
+      // A refusal (the browser's prompt, or the app's policy) is final until the switch is turned on again.
+      if (n === "NotAllowedError" || n === "SecurityError") { C.denied = true; C.why = diag.why = "denied"; }
+      else { C.lostAt = Date.now(); C.why = diag.why = "no camera"; }
+      diag.errors++;
+      setPub(null, null, false);
+    });
+  }
+  function startWorker() {
+    if (C.worker) return;
+    try { C.worker = new Worker(WORKER); } catch (e) { diag.errors++; return; }
+    C.ready = false; C.inflight = false;
+    C.worker.onmessage = function (e) {
+      var m = e.data || {};
+      if (m.type === "ready") { C.ready = true; return; }
+      if (m.type === "error") { diag.errors++; diag.why = "model: " + m.message; return; }
+      if (m.type === "faces") { C.inflight = false; if (m.faces) frame(m.faces, m.ms); }
+    };
+    C.worker.onerror = function () { diag.errors++; };
+    C.worker.postMessage({ type: "init" });
+  }
+  function loop() {
+    clearTimeout(C.timer);
+    if (!C.stream) return;
+    C.timer = setTimeout(loop, Math.round(1000 / (C.fps || 5)));
+    var v = C.video;
+    if (!C.ready || C.inflight || !v || v.readyState < 2) return;
+    C.inflight = true;
+    createImageBitmap(v, { resizeWidth: W, resizeHeight: H, resizeQuality: "low" }).then(function (bmp) {
+      if (!C.worker) { bmp.close(); C.inflight = false; return; }
+      C.worker.postMessage({ type: "frame", bmp: bmp, t: performance.now() }, [bmp]);
+    }, function () { C.inflight = false; });
+  }
+  function frame(faces, ms) {
+    diag.frames++; diag.ms = ms; if (faces.length) diag.faces++;
+    var s = tracker.push(faces, performance.now());
+    gate.vision(s, performance.now());
+    var r = rp.feed(s.turnedAwayMs, s.state === "looking", !!call(H_.speaking));
+    if (r) call(H_.pause, r === "pause");
+    speakMic(s);
+    var was = pub.state;
+    setPub(s.state, s.gaze, true);
+    if (was !== s.state) { var f = want().fps; if (f && f !== C.fps) C.fps = f; }
+  }
+  function release(why) {
+    clearTimeout(C.timer);
+    if (C.stream) { C.stream.getTracks().forEach(function (t) { t.onended = null; t.stop(); }); diag.released++; }
+    C.stream = null;
+    if (C.video) { C.video.srcObject = null; C.video = null; }
+    if (C.worker) { try { C.worker.postMessage({ type: "close" }); } catch (e) { /* gone */ } C.worker.terminate(); C.worker = null; }
+    C.ready = false; C.inflight = false;
+    C.why = diag.why = why || "off";
+    micOff();
+    var r = rp.reset(); if (r) call(H_.pause, false);
+    tracker.reset();
+    indicator(false);
+    setPub(null, null, false);
+  }
+
+  /* ---------------------------------------------------------------- look and speak: the level meter */
+  function speakMic(s) {
+    if (!cfg.prefs.speak || !C.stream) { micOff(); return; }
+    var busy = !!call(H_.busy);
+    if (s.atBot && s.speak && !s.others && !busy) { mic.offAt = 0; micOn(); }
+    else if (mic.stream) { if (!mic.offAt) mic.offAt = performance.now(); else if (performance.now() - mic.offAt > 2000) micOff(); }
+  }
+  function micOn() {
+    if (mic.stream || mic.opening) return;
+    var AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    mic.opening = true;
+    navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false }).then(function (st) {
+      mic.opening = false;
+      if (!C.stream || !cfg.prefs.speak) { st.getTracks().forEach(function (t) { t.stop(); }); return; }
+      mic.stream = st;
+      mic.ctx = new AC();
+      var src = mic.ctx.createMediaStreamSource(st);
+      mic.an = mic.ctx.createAnalyser(); mic.an.fftSize = 512;
+      src.connect(mic.an); // to the meter only: never to the speakers, never recorded
+      mic.buf = new Float32Array(mic.an.fftSize);
+      mic.t = setInterval(meter, 50);
+    }, function () { mic.opening = false; });
+  }
+  function meter() {
+    if (!mic.an) return;
+    mic.an.getFloatTimeDomainData(mic.buf);
+    var s = 0;
+    for (var i = 0; i < mic.buf.length; i++) s += mic.buf[i] * mic.buf[i];
+    var lvl = Math.sqrt(s / mic.buf.length);
+    if (gate.audio(lvl, performance.now(), !!call(H_.busy)) === "start") {
+      micOff(); // the voice turn opens its own microphone
+      call(H_.speak);
+    }
+  }
+  function micOff() {
+    clearInterval(mic.t); mic.t = 0;
+    if (mic.stream) mic.stream.getTracks().forEach(function (t) { t.stop(); });
+    if (mic.ctx && mic.ctx.close) mic.ctx.close().catch(function () {});
+    mic.stream = null; mic.ctx = null; mic.an = null; mic.offAt = 0;
+  }
+
+  // Hidden (another tab, minimised, a covered app window): let go once it has stayed hidden for HIDDEN_MS -- a quick
+  // switch away and back does not flash the camera light off and on.
+  var HIDDEN_MS = 10000, hiddenAt = Date.now(), hiddenT = 0, seenVisible = !document.hidden;
+  function hiddenLong() { return !!(document.hidden && (!seenVisible || Date.now() - hiddenAt >= HIDDEN_MS)); } // never shown yet: not at all
+  document.addEventListener("visibilitychange", function () {
+    clearTimeout(hiddenT);
+    if (document.hidden) { hiddenAt = Date.now(); hiddenT = setTimeout(apply, HIDDEN_MS + 50); } else { seenVisible = true; apply(); }
+  });
+  window.addEventListener("pagehide", function () { release("page closed"); });
+
+  window.MintPresence = {
+    configure: function (o) {
+      o = o || {};
+      if (o.prefs) {
+        var p = Logic.normPrefs(o.prefs);
+        if (p.cam && !cfg.prefs.cam) { C.denied = false; C.lostAt = 0; } // switched on again: ask again
+        cfg.prefs = p;
+      }
+      if (o.host) cfg.host = Object.assign({}, cfg.host, o.host);
+      if (o.bot) { cfg.bot = o.bot; tracker.setBot(o.bot); }
+      apply();
+    },
+    on: function (fn) { if (typeof fn === "function") subs.push(fn); },
+    snapshot: function () { return { state: pub.state, gaze: pub.gaze, camera: pub.camera, why: C.why }; },
+    hooks: function (h) { Object.keys(H_).forEach(function (k) { if (h && typeof h[k] === "function") H_[k] = h[k]; }); },
+    release: function (why) { release(why || "released"); },
+    /** Look and speak finished a turn (the voice went quiet): the gate waits its cool-down from now. */
+    turnEnded: function () { gate.ended(performance.now()); },
+    diag: function () { return { frames: diag.frames, withFace: diag.faces, ms: diag.ms, fps: C.stream ? C.fps : 0, opened: diag.opened, released: diag.released, why: diag.why, errors: diag.errors, mic: !!mic.stream, worker: !!C.worker, ready: C.ready }; },
+  };
+})();

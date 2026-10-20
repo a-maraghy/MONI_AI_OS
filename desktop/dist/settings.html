@@ -30,6 +30,13 @@
   <div class="row"><span>Session bots<small>Sessions waiting on you gather beside it, and wander off when they are back at work.</small></span><input type="checkbox" id="comp-bots"></div>
   <div class="row"><span>Stay on this monitor<small>Off: it follows the window you are using to the other monitor.</small></span><input type="checkbox" id="comp-stay"></div>
 
+  <h2 id="eye-contact">Eye contact</h2>
+  <p class="note">Use this computer's camera so MINT AI knows when you are there. <b>Off unless you switch it on.</b> The bot looks at you and follows you as you move, looks up when you sit down and dozes when you walk away; the glance cards come forward while you look at the screen; toasts and sounds wait while you are away and come as one summary when you are back.</p>
+  <p class="note">Everything happens on this computer: a small face model in MINT AI's page reads a small picture a few times a second and throws it away. No picture, video or face data is stored or sent anywhere — not to Mint OS, not to anyone; only "here / looking / away" is used. The camera light is on while it works. It lets go of the camera when you switch this off (here, or the tray's "Camera presence"), when MINT AI is hidden, the screen locks, or another app is in a meeting. Only this window and the tray can switch it on.</p>
+  <div class="row"><span>Camera presence</span><input type="checkbox" id="cam-on"></div>
+  <div class="row"><span>Look and speak<small>Face MINT AI and start talking: it listens without the talk key. While you face it, a microphone level meter runs (nothing is recorded or sent until you speak). A reply pauses when you look away and goes on when you look back.</small></span><input type="checkbox" id="cam-speak"></div>
+  <div class="row"><span>Let go of the camera in energy saver<small>On battery it looks less often (2 times a second instead of 5).</small></span><input type="checkbox" id="cam-saver"></div>
+
   <h2>Hotkeys</h2>
   <p class="note">Click a box, then press the keys. Ctrl or Alt plus one key. Esc (hide Peek, end a call) works while MINT AI has the focus.</p>
   <div class="row"><span>Talk (hold)<small id="talk-note"></small></span><input type="text" class="key" id="hk-talk" readonly></div>

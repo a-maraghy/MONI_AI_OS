@@ -372,8 +372,8 @@ ${perm && !desk ? dockMarkup(o.csrf, perm, { shell: true, noVoice: !vOk, core, b
     heading: null,
     pageClass: desk ? "cc-page cc-desk" : "cc-page",
     assets: desk
-      ? ["mint-desktop-webauthn.js", "voice-live.css", "mint-desktop.css", "console.js", "cc-logic.js", "mint-sound.js", "mint-core.js", "mint-core-d.js", "mint-core-bot.js", "cc-family.js", "cc-map.js", "cc-panels.js", "cc-story.css", "cc-story.js", "voice-live-detect.js", "voice-live.js", "ui-actions.js", "mint-desktop-layout.js", "mint-desktop-glance.js", "mint-desktop-companion.js", "moni-ai.js", "mint-proactive.css", "mint-proactive.js", "mint-desktop.js"]
-      : ["voice-live.css", "mint-dock.css", "console.js", "cc-logic.js", "mint-sound.js", "mint-core.js", "mint-core-d.js", "mint-core-bot.js", "cc-family.js", "cc-map.js", "cc-panels.js", "cc-story.css", "cc-story.js", "voice-live-detect.js", "voice-live.js", "mint-proactive.css", "mint-proactive.js", "ui-actions.js", "moni-ai.js", "mint-dock.js", "mint-shell.js"],
+      ? ["mint-desktop-webauthn.js", "voice-live.css", "mint-desktop.css", "console.js", "cc-logic.js", "mint-sound.js", "mint-core.js", "mint-core-d.js", "mint-core-bot.js", "cc-family.js", "cc-map.js", "cc-panels.js", "cc-story.css", "cc-story.js", "voice-live-detect.js", "voice-live.js", "ui-actions.js", "mint-desktop-layout.js", "mint-desktop-glance.js", "mint-desktop-companion.js", "moni-ai.js", "mint-proactive.css", "mint-proactive.js", "mint-presence.css", "mint-presence-logic.js", "mint-presence.js", "mint-presence-bind.js", "mint-desktop.js"]
+      : ["voice-live.css", "mint-dock.css", "console.js", "cc-logic.js", "mint-sound.js", "mint-core.js", "mint-core-d.js", "mint-core-bot.js", "cc-family.js", "cc-map.js", "cc-panels.js", "cc-story.css", "cc-story.js", "voice-live-detect.js", "voice-live.js", "mint-proactive.css", "mint-proactive.js", "mint-presence.css", "mint-presence-logic.js", "mint-presence.js", "mint-presence-bind.js", "ui-actions.js", "moni-ai.js", "mint-dock.js", "mint-shell.js"],
     topExtra: topExtra(),
     topEnd: TOP_CLOCK,
   });
