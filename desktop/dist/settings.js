@@ -141,6 +141,11 @@
     var c = st.claude || {};
     $("m-claude").textContent = !c.checked ? "Looking…" : c.path ? c.path + (c.version ? " · version " + c.version : " · it did not say its version") + (c.git_bash ? "" : " · no Git Bash: it will use PowerShell")
       : "Not found — install Claude Code and sign in once by running `claude` in a terminal.";
+    if (c.checked) {
+      $("m-chrome").textContent = st.chrome ? "Found in " + st.chrome + ". MINT AI can use your Chrome through it while it is in control; sending, buying, posting and signing in wait for your approval."
+        : "Not found. Install Claude in Chrome from claude.ai/chrome, sign in with the same Claude account as Claude Code, then press Look again.";
+      $("m-office").textContent = (st.office && st.office.length) ? st.office.join(", ") + " — used to edit files and make PDFs (macros always off)." : "Not installed: files are edited directly; making PDFs needs Office.";
+    }
     $("stop-note").textContent = st.stop_fallback ? "Ctrl+Alt+Esc is taken by another app: using " + st.stop_key + " for now." : st.stop_key ? "Now: " + st.stop_key + ". Ends control at once, here on this computer." : "Not set: the key is taken by another app (the pill's Stop always works).";
     if (st.error) $("m-err").textContent = st.error;
   }

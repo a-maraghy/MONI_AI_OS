@@ -162,6 +162,23 @@ impl Proc {
         }
     }
 
+    /// Put a helper process (PowerShell driving Office for the hands) in this session's Job Object,
+    /// so the lease's end -- the stop key included -- kills it with the CLI. False when it could not be.
+    pub fn contain(&self, child: &Child) -> bool {
+        #[cfg(windows)]
+        {
+            match self.job.lock().unwrap().as_ref() {
+                Some(j) => j.assign(child),
+                None => false,
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = child;
+            !self.killed()
+        }
+    }
+
     /// Killed by the app (lease end), not exited on its own.
     pub fn killed(&self) -> bool {
         self.killed.load(Ordering::SeqCst)

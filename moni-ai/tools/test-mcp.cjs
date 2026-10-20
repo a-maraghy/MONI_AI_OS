@@ -183,13 +183,17 @@ function hasKeyDeep(v, keys) {
       check("session_hire's schema is the frozen one {name, cwd, purpose, model?}", hire && JSON.stringify(hire.inputSchema) === FROZEN_HIRE, hire && JSON.stringify(hire.inputSchema));
       check("session_retire's schema is the frozen one {name | ref | session_id, note?}", ret && JSON.stringify(ret.inputSchema) === FROZEN_RETIRE, ret && JSON.stringify(ret.inputSchema));
       check("  its description says it only ASKS (a consent card)", ret && /never ends a session by itself/.test(ret.description) && /consent card/.test(ret.description));
-      // Laptop control in this build: files, commands, Start-Process, create_document, approval, wait -- no screen/input/browser.
+      // Laptop control (0.1.11): files, commands, Start-Process, Office edits, PDFs, the user's Chrome through Claude in Chrome -- no other screen/input control.
       const tko = list.result.tools.find((t) => t.name === "machine_take_over");
       const tkd = tko ? tko.description : "";
-      const claims = tkd.replace(/It has NO screen, mouse, keyboard or browser control: it cannot see the screen, click, type into apps or drive a web browser, so do not offer those\./, "");
-      check("machine_take_over says what the laptop session can do (files, PowerShell, Start-Process, create_document) and plainly that it has no screen / mouse / keyboard / browser control",
-        /PowerShell/.test(tkd) && /Start-Process/.test(tkd) && /create_document/.test(tkd) && /NO screen, mouse, keyboard or browser control/.test(tkd), tkd);
-      check("  and claims none of them anywhere else (no screen, mouse, keyboard, browser, click, screenshot, PDF)", tko && !/screen|mouse|keyboard|browser|click|screenshot|PDF/i.test(claims), claims);
+      const claims = tkd
+        .replace(/When machine_list says its browser is set up, it can also use the user's own Chrome through their Claude in Chrome extension \(open and read pages, fill in fields, click\)\./, "")
+        .replace(/Outside Chrome it has NO screen, mouse or keyboard control: it cannot see the screen or click or type into other apps, so do not offer those\./, "");
+      check("machine_take_over says what the laptop session can do (files, PowerShell, Start-Process, create_document, Office edits, PDFs, Chrome through Claude in Chrome) and plainly that outside Chrome it has no screen / mouse / keyboard control",
+        /PowerShell/.test(tkd) && /Start-Process/.test(tkd) && /create_document/.test(tkd) && /edit existing Word, Excel and PowerPoint/.test(tkd) && /PDFs/.test(tkd) && /Claude in Chrome extension/.test(tkd) && /Outside Chrome it has NO screen, mouse or keyboard control/.test(tkd) && /sending, submitting, buying, posting, deleting/.test(tkd) && !/signing in/.test(tkd) && /never types passwords or payment details/.test(tkd), tkd);
+      check("  and claims no other screen, mouse, keyboard, click or screenshot control anywhere else", tko && !/screen|mouse|keyboard|click|screenshot/i.test(claims.replace(/sees a glowing frame/, "")), claims);
+      const mlo = list.result.tools.find((t) => t.name === "machine_list");
+      check("machine_list says whether the browser can be used there and its Office apps", mlo && /browser: connected/.test(mlo.description) && /office/.test(mlo.description), mlo && mlo.description);
       seen.length = 0;
       await rpc({ jsonrpc: "2.0", id: 11, method: "tools/call", params: { name: "session_hire", arguments: { name: "Demo Worker", cwd: "/root/moni", purpose: "A demo purpose text." } } });
       check("session_hire is op session-hire as moni-ai with exactly its arguments", seen[0] && seen[0].op === "session-hire" && seen[0].actor === "moni-ai" && seen[0].name === "Demo Worker" && seen[0].cwd === "/root/moni", JSON.stringify(seen[0]));

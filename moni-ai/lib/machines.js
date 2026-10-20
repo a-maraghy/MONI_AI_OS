@@ -51,15 +51,18 @@ function sessionName(machineName) {
   return (n + " control").slice(0, 48);
 }
 
-/** The laptop session's first message: from MINT AI, carrying the purpose and the lease. */
-function firstPrompt({ name, machine, purpose, minutes }) {
+/** The laptop session's first message: from MINT AI, carrying the purpose and the lease. browser: Chrome is set up there. */
+function firstPrompt({ name, machine, purpose, minutes, browser }) {
   return (
     `[From MINT AI -- not the user typing. At the user's request, MINT AI hired this session ("${name}") to work on the user's own Windows computer "${machine}".]\n\n` +
     `What to do:\n${purpose}\n\n` +
     `You have a control lease of ${minutes} minutes; the user can stop it at any moment. ` +
-    "You can read, write and edit files, run PowerShell and other commands, open files and apps with Start-Process, create Word / Excel / PowerPoint files with create_document, ask for approval and wait. " +
-    "You have no screen, mouse, keyboard or browser control: if the job needs those, say so plainly instead of trying. " +
-    "Anything consequential (sending, posting, buying, deleting, installing, acting outside the user's files) waits for the user's approval. " +
+    "You can read, write and edit files, run PowerShell and other commands, open files and apps with Start-Process, create Word / Excel / PowerPoint files with create_document, " +
+    "read and edit existing Word / Excel / PowerPoint files with office_read and office_edit (a new copy by default), read and merge PDFs and make PDFs (pdf_read, pdf_merge, pdf_export), ask for approval and wait. " +
+    (browser
+      ? "You can use the user's own Chrome through their Claude in Chrome extension (the mcp__claude-in-chrome__ tools); outside Chrome you have no screen, mouse or keyboard control. Never type passwords, PINs, codes or payment details (pressing Sign in is fine; when a page asks for a password, ask the user). "
+      : "You have no screen, mouse, keyboard or browser control in this session (the Claude in Chrome extension is not set up there): if the job needs those, say so plainly instead of trying. ") +
+    "Anything consequential (sending, posting, buying, deleting, installing, writing over a file, acting outside the user's files) waits for the user's approval. " +
     "Commands that delete, install, send data or change the system raise an approval card by themselves: just run them, do not call request_approval first (the user would be asked twice). " +
     "If you do ask with request_approval before deleting, list the exact files in delete_paths: the delete of exactly those files within 5 minutes is not asked again. " +
     "Your final message of each turn is passed to MINT AI: say plainly what you did and what is left."
@@ -88,7 +91,26 @@ function create(deps) {
 
   function publicMachine(m) {
     const s = activeOn(m.id);
-    return { id: m.id, name: m.name, online: !!m.online, platform: m.platform || null, claude_code: m.claude ? (m.claude.found ? "found" + (m.claude.version ? " " + m.claude.version : "") : "not found") : "unknown", session: s ? { slug: s.slug, name: s.name, purpose: s.purpose, hired_at: s.hired_at, hired_by: s.hired_by } : null };
+    return {
+      id: m.id,
+      name: m.name,
+      online: !!m.online,
+      platform: m.platform || null,
+      claude_code: m.claude ? (m.claude.found ? "found" + (m.claude.version ? " " + m.claude.version : "") : "not found") : "unknown",
+      browser: browserOf(m),
+      office: m.office || [],
+      session: s ? { slug: s.slug, name: s.name, purpose: s.purpose, hired_at: s.hired_at, hired_by: s.hired_by } : null,
+    };
+  }
+  /** "connected" (the extension answered in the last session), "set up", "not set up", "off" (the user said no), "unknown". */
+  function browserOf(m) {
+    const c = m.chrome;
+    if (!c) return "unknown";
+    if (c.allowed === false) return "off";
+    if (!c.extension) return "not set up";
+    if (c.last && c.last.connected === false) return "set up, not connected in the last session";
+    if (c.last && c.last.connected) return "connected";
+    return "set up";
   }
   function activeOn(id) {
     return ledger.hiredList(false).find((h) => Number(h.machine_id) === Number(id)) || null;
@@ -123,7 +145,11 @@ function create(deps) {
       if (!m || !Number.isInteger(m.id)) continue;
       // claude: what the computer's app last said about Claude Code (null = not said yet).
       const c = m.claude && typeof m.claude === "object" ? { found: m.claude.found === true, version: m.claude.version ? String(m.claude.version).slice(0, 60) : null, git_bash: !!m.claude.git_bash } : null;
-      next.set(m.id, { id: m.id, name: String(m.name || "Computer").slice(0, 64), online: !!m.online, platform: m.platform ? String(m.platform).slice(0, 20) : null, home: m.home ? String(m.home).slice(0, 260) : null, claude: c });
+      // chrome: the Claude in Chrome extension there (and the user's on/off); folders: the ones the user added; office: its apps.
+      const ch = m.chrome && typeof m.chrome === "object" ? { extension: m.chrome.extension === true, allowed: m.chrome.allowed !== false, last: m.chrome.last && typeof m.chrome.last === "object" ? { connected: m.chrome.last.connected === true } : null } : null;
+      const folders = Array.isArray(m.folders) ? m.folders.filter((f) => typeof f === "string" && f.length <= 260).slice(0, 20) : [];
+      const office = Array.isArray(m.office) ? m.office.filter((x) => ["Word", "Excel", "PowerPoint"].includes(x)) : [];
+      next.set(m.id, { id: m.id, name: String(m.name || "Computer").slice(0, 64), online: !!m.online, platform: m.platform ? String(m.platform).slice(0, 20) : null, home: m.home ? String(m.home).slice(0, 260) : null, claude: c, chrome: ch, folders, office });
     }
     // A computer that went offline (or was revoked) loses its session: the app ends the lease on its side too.
     for (const h of ledger.hiredList(false)) {
@@ -167,7 +193,7 @@ function create(deps) {
     if (!slug) throw new Error("too many sessions have had that name");
     const model = p.model || null;
     const h = ledger.addHired({ slug, name, cwd: "machine:" + m.id, purpose, model, session_id: crypto.randomUUID(), hired_by: actor, machine_id: m.id });
-    const first = firstPrompt({ name, machine: m.name, purpose, minutes });
+    const first = firstPrompt({ name, machine: m.name, purpose, minutes, browser: !!(m.chrome && m.chrome.extension && m.chrome.allowed !== false) });
     log(`machine: "${name}" (${slug}) hired on computer #${m.id} "${m.name}" by ${actor}, ${minutes} min`);
     emit("machine", { what: "start", machine_id: m.id, slug, name, purpose, model, minutes, first_prompt: first, by: actor });
     emit("hired", { hired: deps.publicHired(h), what: "hired" });
@@ -224,7 +250,16 @@ function create(deps) {
     }
     if (isPaused(h.slug)) return { behavior: "deny", message: "Paused at the daily token cap: nothing runs until the administrator resumes it." };
     const m = registry.get(Number(h.machine_id)) || {};
-    const d = gate.decide(p.tool, input, { home: m.home, origin: p.origin });
+    // The app's hint for a browser step (labels of the elements it targets, the tabs' addresses): data for the rules.
+    let hint = null;
+    if (p.hint) {
+      try {
+        hint = JSON.parse(p.hint);
+      } catch (_) {
+        hint = null;
+      }
+    }
+    const d = gate.decide(p.tool, input, { home: m.home, folders: m.folders || [], origin: p.origin, hint });
     if (d.decision === "allow") return { behavior: "allow", auto: true, label: d.label };
     if (d.decision === "deny") return { behavior: "deny", message: d.reason + " Do not retry it." };
     // A delete the user approved a moment ago (request_approval naming exactly these files): no second card.
@@ -232,7 +267,7 @@ function create(deps) {
       const used = useAllowance(h, input.command || input.script || "", m.home);
       if (used) return { behavior: "allow", auto: true, label: "Delete you approved a moment ago" };
     }
-    const r = await raiseCard(h, { ...p, summary: gate.summaryOf(p.tool, input), input_obj: input }, d);
+    const r = await raiseCard(h, { ...p, summary: gate.summaryOf(p.tool, input, hint), input_obj: input }, d);
     if (r && r.behavior === "allow" && p.tool === gate.HANDS_PREFIX + "request_approval") grantAllowance(h, input, m.home);
     return r;
   }

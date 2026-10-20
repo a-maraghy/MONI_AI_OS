@@ -55,6 +55,12 @@ pub enum In {
         #[serde(default)]
         first_prompt: String,
         lease: LeaseSpec,
+        /// Folders the user added on the Computers page (the Office / PDF tools may use them too).
+        #[serde(default)]
+        folders: Vec<String>,
+        /// The user lets this session use Chrome (absent from an older Mint OS: yes, when the extension is set up).
+        #[serde(default)]
+        browser: Option<bool>,
     },
     Extend {
         #[serde(deserialize_with = "id_string")]
@@ -76,6 +82,9 @@ pub enum In {
         behavior: String,
         #[serde(default)]
         message: Option<String>,
+        /// Allowed by Mint OS's rules without a card (else the user answered one).
+        #[serde(default)]
+        auto: bool,
     },
     #[serde(other)]
     Unknown,
@@ -209,6 +218,40 @@ pub fn action(lease_id: &str, slug: &str, at: u64, tool: &str, summary: &str, de
         v["shot"] = json!(s);
     }
     v
+}
+
+/// One action-log entry, as the server keeps it (Mint OS > Computers, 90 days).
+pub struct Act<'a> {
+    /// The tool (mcp__mint-hands__office_edit, mcp__claude-in-chrome__navigate, PowerShell ...).
+    pub tool: &'a str,
+    /// What it acted on, in one line (a file, an address, a button, a command).
+    pub target: &'a str,
+    /// Who let it run: auto (the rules) | approved (the user, on a card) | denied | refused | error.
+    pub decision: &'a str,
+    /// It worked.
+    pub ok: bool,
+    /// The result in a few words (an error's first line, "Saved C:\...").
+    pub detail: &'a str,
+    /// hands | browser | cli
+    pub kind: &'a str,
+}
+
+/// The action with its result (since 0.1.11; `summary` and `decision` are what older servers read).
+pub fn action_log(lease_id: &str, slug: &str, at: u64, a: &Act) -> Value {
+    let mut v = action(lease_id, slug, at, a.tool, a.target, a.decision, None);
+    v["target"] = json!(clip(a.target, MAX_SUMMARY));
+    v["result"] = json!(if a.ok { "ok" } else { "error" });
+    v["detail"] = json!(clip(a.detail, 300));
+    v["kind"] = json!(match a.kind {
+        "hands" | "browser" | "cli" => a.kind,
+        _ => "cli",
+    });
+    v
+}
+
+/// What a browser step showed about the Claude in Chrome extension (for the Computers page).
+pub fn browser_state(slug: &str, connected: bool, detail: &str, at: u64) -> Value {
+    json!({ "t": "browser", "slug": slug, "connected": connected, "detail": clip(detail, 200), "at": iso(at) })
 }
 
 pub fn report(slug: &str, text: &str) -> Value {
@@ -363,7 +406,12 @@ mod tests {
         assert_eq!(parse_in(r#"{"t":"extend","lease_id":"L1","expires_at":"2026-10-08T12:15:00Z"}"#), Some(In::Extend { lease_id: "L1".into(), expires_at: "2026-10-08T12:15:00Z".into() }));
         assert_eq!(parse_in(r#"{"t":"tell","slug":"s","text":"more"}"#), Some(In::Tell { slug: "s".into(), text: "more".into() }));
         assert_eq!(parse_in(r#"{"t":"stop","lease_id":"L1","reason":"user"}"#), Some(In::Stop { lease_id: "L1".into(), reason: Some("user".into()) }));
-        assert_eq!(parse_in(r#"{"t":"answer","rid":"r1","behavior":"allow"}"#), Some(In::Answer { rid: "r1".into(), behavior: "allow".into(), message: None }));
+        assert_eq!(parse_in(r#"{"t":"answer","rid":"r1","behavior":"allow"}"#), Some(In::Answer { rid: "r1".into(), behavior: "allow".into(), message: None, auto: false }));
+        assert_eq!(parse_in(r#"{"t":"answer","rid":"r1","behavior":"allow","auto":true}"#), Some(In::Answer { rid: "r1".into(), behavior: "allow".into(), message: None, auto: true }));
+        match parse_in(r#"{"t":"start","slug":"s","lease":{"id":"L"},"folders":["D:\\Work"],"browser":false}"#) {
+            Some(In::Start { folders, browser, .. }) => assert_eq!((folders, browser), (vec!["D:\\Work".to_string()], Some(false))),
+            other => panic!("{other:?}"),
+        }
         assert_eq!(parse_in(r#"{"t":"something-new","x":1}"#), Some(In::Unknown));
         assert_eq!(parse_in("not json"), None);
         assert_eq!(parse_in(r#"{"t":"start","slug":"s"}"#), None, "a start without a lease is not one");
@@ -437,6 +485,11 @@ mod tests {
         assert_eq!(x["at"], "1970-01-01T00:00:01.000Z");
         assert_eq!(x["shot"], "AAA");
         assert!(action("L", "s", 0, "t", "s", "denied", None).get("shot").is_none());
+        let a = action_log("L1", "s", 0, &Act { tool: "mcp__mint-hands__office_edit", target: "C:\\a\\R.docx", decision: "approved", ok: false, detail: "Office: There is no slide 9.", kind: "hands" });
+        assert_eq!(a["summary"], "C:\\a\\R.docx", "older servers read summary");
+        assert_eq!((a["target"].as_str(), a["result"].as_str(), a["decision"].as_str(), a["kind"].as_str()), (Some("C:\\a\\R.docx"), Some("error"), Some("approved"), Some("hands")));
+        assert_eq!(action_log("L", "s", 0, &Act { tool: "x", target: "", decision: "auto", ok: true, detail: "", kind: "weird" })["kind"], "cli");
+        assert_eq!(browser_state("s", false, "not connected", 0), json!({"t":"browser","slug":"s","connected":false,"detail":"not connected","at":"1970-01-01T00:00:00.000Z"}));
         assert_eq!(report("s", "done"), json!({"t":"report","slug":"s","text":"done"}));
         assert_eq!(session("s", "failed", Some("already under control")), json!({"t":"session","slug":"s","state":"failed","detail":"already under control"}));
         assert_eq!(session("s", "running", None), json!({"t":"session","slug":"s","state":"running"}));

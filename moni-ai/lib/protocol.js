@@ -204,7 +204,7 @@ const OPS = {
   // claude: what the computer's app says about Claude Code there (left out: not said yet).
   "machines-sync": {
     mutating: false,
-    params: { machines: optArray(objOf({ id: int(1, 9999999999), name: text(1, 64), online: bool(), platform: optString(20, /^[a-z0-9_-]{1,20}$/), home: optText(260), claude: optObjOf({ found: bool(), version: optText(60), git_bash: optBool() }) }), 200) },
+    params: { machines: optArray(objOf({ id: int(1, 9999999999), name: text(1, 64), online: bool(), platform: optString(20, /^[a-z0-9_-]{1,20}$/), home: optText(260), claude: optObjOf({ found: bool(), version: optText(60), git_bash: optBool() }), chrome: optObjOf({ extension: bool(), allowed: optBool(), last: optObjOf({ connected: bool() }) }), folders: optArray(text(3, 260), 20), office: optArray(enumOf(["Word", "Excel", "PowerPoint"]), 3) }), 200) },
   },
   machines: { mutating: false, params: {} },
   // MINT AI (during a turn the administrator started) or the administrator: hire a session on a computer, under a lease.
@@ -214,7 +214,7 @@ const OPS = {
   // The dashboard, for one linked computer (actor "machine.<id>", after it checked that computer's token).
   "machine-ask": {
     mutating: false,
-    params: { slug: str(40, /^[a-z0-9][a-z0-9-]{0,39}$/), request_id: str(64, /^[^\n\r\u0000]{1,64}$/), tool: str(80, /^[A-Za-z0-9_.:-]{1,80}$/), input: text(2, 16000), reason: optText(2000), tool_use_id: optString(64, /^[A-Za-z0-9_-]{1,64}$/), origin: optEnum(["cli", "hands"]) },
+    params: { slug: str(40, /^[a-z0-9][a-z0-9-]{0,39}$/), request_id: str(64, /^[^\n\r\u0000]{1,64}$/), tool: str(80, /^[A-Za-z0-9_.:-]{1,80}$/), input: text(2, 16000), reason: optText(2000), tool_use_id: optString(64, /^[A-Za-z0-9_-]{1,64}$/), origin: optEnum(["cli", "hands"]), hint: optText(8000) },
   },
   "machine-ask-cancel": { mutating: false, params: { slug: str(40, /^[a-z0-9][a-z0-9-]{0,39}$/), request_id: str(64, /^[^\n\r\u0000]{1,64}$/) } },
   "machine-report": { mutating: true, params: { slug: str(40, /^[a-z0-9][a-z0-9-]{0,39}$/), text: text(1, MAX_TEXT) } },

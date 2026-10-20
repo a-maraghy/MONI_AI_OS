@@ -100,6 +100,8 @@ pub struct CliOpts<'a> {
     pub allowed_tools: &'a [String],
     pub system_prompt: &'a str,
     pub add_dirs: &'a [String],
+    /// The user's Claude in Chrome extension for this session (`--chrome`), else `--no-chrome`.
+    pub chrome: bool,
 }
 
 /// The CLI's arguments. Never --dangerously-*, never bypassPermissions: every tool outside the
@@ -127,6 +129,11 @@ pub fn args(o: &CliOpts) -> Vec<String> {
         a.push("--add-dir".into());
         a.push(d.clone());
     }
+    // Every browser step asks this app (an ask rule beats any allow rule in the user's own settings),
+    // with or without the browser this session.
+    a.push(if o.chrome { "--chrome" } else { "--no-chrome" }.into());
+    a.push("--settings".into());
+    a.push(super::browser::cli_settings());
     a.push("--append-system-prompt".into());
     a.push(o.system_prompt.to_string());
     a
@@ -196,26 +203,32 @@ pub fn unsupported(request_id: &str) -> Value {
 pub enum Effect {
     /// The init answer came: the session runs; send the first prompt.
     Initialized,
-    /// A permission question: answer it with allow / deny.
-    Ask { request_id: String, tool: String, input: Value, tool_use_id: Option<String>, reason: Option<String> },
+    /// A permission question: answer it with allow / deny. For a browser step: `refuse` = the app
+    /// says no at once (MINT AI's own pages, passwords, card numbers), `hint` = what it knows of the
+    /// page (element labels, tab addresses) for Mint OS's rules and the card.
+    Ask { request_id: String, tool: String, input: Value, tool_use_id: Option<String>, reason: Option<String>, hint: Option<Value>, refuse: Option<String> },
     /// The CLI withdrew a question.
     Cancel { request_id: String },
     /// A control request we do not serve: answer unsupported().
     Unsupported { request_id: String },
     /// The end of a turn: its text goes to MINT AI.
     Report { text: String, is_error: bool },
-    /// A tool outside the hands finished: log it (with a screenshot). decision: auto | approved | denied | error.
-    Logged { tool: String, summary: String, decision: String },
+    /// A tool outside the hands finished: log it. decision: auto | approved | denied | error (who
+    /// let it run); kind: cli | browser; ok: it worked; detail: the first line of an error.
+    Logged { tool: String, summary: String, decision: String, kind: String, ok: bool, detail: String },
+    /// A browser step's result says whether the Claude in Chrome extension answered.
+    Browser { connected: bool, detail: String },
 }
 
 #[derive(Default)]
 pub struct Stream {
     initialised: bool,
-    /// tool_use id -> (tool name, summary)
-    uses: HashMap<String, (String, String)>,
-    /// tool_use id -> "approved" | "denied" (from the questions' answers)
+    /// tool_use id -> (tool name, summary, input)
+    uses: HashMap<String, (String, String, Value)>,
+    /// tool_use id -> "auto" | "approved" | "denied" (from the questions' answers)
     decided: HashMap<String, &'static str>,
     hands_prefix: String,
+    browser: super::browser::Tracker,
 }
 
 impl Stream {
@@ -229,8 +242,13 @@ impl Stream {
 
     /// The answer given to a question about `tool_use_id` (for the action log's decision).
     pub fn note_answer(&mut self, tool_use_id: &str, allowed: bool) {
+        self.note_decision(tool_use_id, if allowed { "approved" } else { "denied" });
+    }
+
+    /// "auto" (Mint OS's rules let it run), "approved" (the user did, on a card) or "denied".
+    pub fn note_decision(&mut self, tool_use_id: &str, decision: &'static str) {
         if !tool_use_id.is_empty() {
-            self.decided.insert(tool_use_id.to_string(), if allowed { "approved" } else { "denied" });
+            self.decided.insert(tool_use_id.to_string(), decision);
         }
     }
 
@@ -243,13 +261,10 @@ impl Stream {
                 let rid = ev.get("request_id").map(|r| r.as_str().map(|x| x.to_string()).unwrap_or_else(|| r.to_string())).unwrap_or_default();
                 let req = ev.get("request").cloned().unwrap_or(json!({}));
                 if req.get("subtype").and_then(|x| x.as_str()) == Some("can_use_tool") {
-                    out.push(Effect::Ask {
-                        request_id: rid,
-                        tool: req.get("tool_name").and_then(s).unwrap_or_else(|| "unknown".into()),
-                        input: req.get("input").cloned().filter(|i| i.is_object()).unwrap_or(json!({})),
-                        tool_use_id: req.get("tool_use_id").and_then(s),
-                        reason: req.get("decision_reason").and_then(s),
-                    });
+                    let tool = req.get("tool_name").and_then(s).unwrap_or_else(|| "unknown".into());
+                    let input = req.get("input").cloned().filter(|i| i.is_object()).unwrap_or(json!({}));
+                    let (hint, refuse) = if super::browser::is_browser(&tool) { (Some(super::browser::hint(&tool, &input, &self.browser)), super::browser::refusal(&tool, &input, &self.browser)) } else { (None, None) };
+                    out.push(Effect::Ask { request_id: rid, tool, input, tool_use_id: req.get("tool_use_id").and_then(s), reason: req.get("decision_reason").and_then(s), hint, refuse });
                 } else {
                     out.push(Effect::Unsupported { request_id: rid });
                 }
@@ -270,8 +285,9 @@ impl Stream {
                 for b in ev.pointer("/message/content").and_then(|c| c.as_array()).cloned().unwrap_or_default() {
                     if b.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
                         if let (Some(id), Some(name)) = (b.get("id").and_then(s), b.get("name").and_then(s)) {
-                            let summary = summarize(&name, b.get("input").unwrap_or(&Value::Null));
-                            self.uses.insert(id, (name, summary));
+                            let input = b.get("input").cloned().unwrap_or(Value::Null);
+                            let summary = if super::browser::is_browser(&name) { super::browser::summarize(&name, &input, &self.browser) } else { summarize(&name, &input) };
+                            self.uses.insert(id, (name, summary, input));
                         }
                     }
                 }
@@ -282,19 +298,32 @@ impl Stream {
                         continue;
                     }
                     let Some(id) = b.get("tool_use_id").and_then(s) else { continue };
-                    let Some((tool, summary)) = self.uses.remove(&id) else { continue };
+                    let Some((tool, summary, input)) = self.uses.remove(&id) else { continue };
                     let decided = self.decided.remove(&id);
                     if tool.starts_with(&self.hands_prefix) {
                         continue; // the hands log their own actions
                     }
                     let is_err = b.get("is_error").and_then(|e| e.as_bool()).unwrap_or(false);
+                    let text = result_text(b.get("content"));
+                    let browser = super::browser::is_browser(&tool);
+                    if browser {
+                        if !is_err {
+                            self.browser.note_result(&tool, &input, &text);
+                        }
+                        if decided != Some("denied") {
+                            if let Some((connected, detail)) = super::browser::connection_from_result(&text, is_err) {
+                                out.push(Effect::Browser { connected, detail });
+                            }
+                        }
+                    }
                     let decision = match decided {
                         Some("denied") => "denied",
-                        Some(d) if !is_err => d,
-                        _ if is_err => "error",
-                        _ => "auto",
+                        Some(d) => d,
+                        None if is_err => "error",
+                        None => "auto",
                     };
-                    out.push(Effect::Logged { tool, summary, decision: decision.to_string() });
+                    let detail = if is_err && decision != "denied" { text.lines().find(|l| !l.trim().is_empty()).unwrap_or("").chars().take(200).collect() } else { String::new() };
+                    out.push(Effect::Logged { tool, summary, decision: decision.to_string(), kind: if browser { "browser" } else { "cli" }.to_string(), ok: !is_err, detail });
                 }
             }
             "result" => {
@@ -307,6 +336,15 @@ impl Stream {
             _ => {}
         }
         out
+    }
+}
+
+/// A tool_result's text: a string, or the text blocks of a list (images are left out).
+pub fn result_text(c: Option<&Value>) -> String {
+    match c {
+        Some(Value::String(s)) => s.chars().take(400_000).collect(),
+        Some(Value::Array(a)) => a.iter().filter_map(|b| b.get("text").and_then(|t| t.as_str())).collect::<Vec<_>>().join("\n").chars().take(400_000).collect(),
+        _ => String::new(),
     }
 }
 
@@ -363,14 +401,19 @@ mod tests {
         let tools = vec!["mcp__mint-hands__screenshot".to_string(), "mcp__mint-hands__click".to_string()];
         let dirs = vec!["C:\\Users\\a\\Desktop".to_string()];
         let cfg = mcp_config(5123, "abc", "mint-hands");
-        let a = args(&CliOpts { name: "Laptop", model: Some("claude-opus-5-5"), session_id: "u-1", mcp_config: &cfg, allowed_tools: &tools, system_prompt: "rules", add_dirs: &dirs });
+        let a = args(&CliOpts { name: "Laptop", model: Some("claude-opus-5-5"), session_id: "u-1", mcp_config: &cfg, allowed_tools: &tools, system_prompt: "rules", add_dirs: &dirs, chrome: true });
         let s = a.join(" ");
         assert!(s.starts_with("-p --input-format stream-json --output-format stream-json --verbose -n Laptop --model claude-opus-5-5 --permission-mode default --permission-prompt-tool stdio --session-id u-1 --strict-mcp-config --mcp-config "));
         assert!(s.contains("--allowedTools mcp__mint-hands__screenshot,mcp__mint-hands__click"));
         assert!(s.contains("--add-dir C:\\Users\\a\\Desktop"));
         assert_eq!(a.last().unwrap(), "rules");
+        // The browser: --chrome, and the ask rule for every browser tool (beats any allow in the user's settings).
+        assert!(s.contains(" --chrome --settings {\"permissions\":{\"ask\":[\"mcp__claude-in-chrome\"]}} --append-system-prompt"), "{s}");
+        assert!(!s.contains("mcp__claude-in-chrome__"), "no browser tool is pre-allowed");
         assert!(!s.to_ascii_lowercase().contains("dangerously") && !s.contains("bypassPermissions"));
-        let a = args(&CliOpts { name: "", model: Some("x; rm -rf"), session_id: "u", mcp_config: "{}", allowed_tools: &[], system_prompt: "", add_dirs: &[] });
+        let a = args(&CliOpts { name: "", model: Some("x; rm -rf"), session_id: "u", mcp_config: "{}", allowed_tools: &[], system_prompt: "", add_dirs: &[], chrome: false });
+        assert!(a.contains(&"--no-chrome".to_string()) && !a.contains(&"--chrome".to_string()));
+        assert!(a.contains(&"--settings".to_string()), "the ask rule even without the browser");
         assert!(!a.contains(&"--model".to_string()), "a strange model name is dropped");
         assert!(!a.contains(&"--allowedTools".to_string()));
         assert_eq!(a[7], "MINT AI on this laptop");
@@ -399,7 +442,7 @@ mod tests {
         assert!(st.initialised());
         assert_eq!(st.on_line(r#"{"type":"control_response","response":{"request_id":"init"}}"#), vec![], "once");
         let ask = st.on_line(r#"{"type":"control_request","request_id":"q1","request":{"subtype":"can_use_tool","tool_name":"Bash","input":{"command":"del x"},"tool_use_id":"tu1","decision_reason":"not allowed"}}"#);
-        assert_eq!(ask, vec![Effect::Ask { request_id: "q1".into(), tool: "Bash".into(), input: json!({"command":"del x"}), tool_use_id: Some("tu1".into()), reason: Some("not allowed".into()) }]);
+        assert_eq!(ask, vec![Effect::Ask { request_id: "q1".into(), tool: "Bash".into(), input: json!({"command":"del x"}), tool_use_id: Some("tu1".into()), reason: Some("not allowed".into()), hint: None, refuse: None }]);
         assert_eq!(st.on_line(r#"{"type":"control_request","request_id":"q2","request":{"subtype":"hook_callback"}}"#), vec![Effect::Unsupported { request_id: "q2".into() }]);
         assert_eq!(st.on_line(r#"{"type":"control_cancel_request","request_id":"q1"}"#), vec![Effect::Cancel { request_id: "q1".into() }]);
         // Tool uses: a Bash that was approved, a Read that ran by itself, a hands tool (not logged here), a denied Write.
@@ -410,15 +453,41 @@ mod tests {
         assert_eq!(
             r,
             vec![
-                Effect::Logged { tool: "Bash".into(), summary: "Bash: del x".into(), decision: "approved".into() },
-                Effect::Logged { tool: "Read".into(), summary: "Read: C:\\a.txt".into(), decision: "auto".into() },
-                Effect::Logged { tool: "Write".into(), summary: "Write: C:\\b.txt".into(), decision: "denied".into() },
+                Effect::Logged { tool: "Bash".into(), summary: "Bash: del x".into(), decision: "approved".into(), kind: "cli".into(), ok: true, detail: String::new() },
+                Effect::Logged { tool: "Read".into(), summary: "Read: C:\\a.txt".into(), decision: "auto".into(), kind: "cli".into(), ok: true, detail: String::new() },
+                Effect::Logged { tool: "Write".into(), summary: "Write: C:\\b.txt".into(), decision: "denied".into(), kind: "cli".into(), ok: false, detail: String::new() },
             ]
         );
         st.on_line(r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu5","name":"Glob","input":{"pattern":"*.md"}}]}}"#);
-        assert_eq!(st.on_line(r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu5","is_error":true}]}}"#)[0], Effect::Logged { tool: "Glob".into(), summary: "Glob: *.md".into(), decision: "error".into() });
+        assert_eq!(st.on_line(r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu5","is_error":true,"content":"No such folder\nmore"}]}}"#)[0], Effect::Logged { tool: "Glob".into(), summary: "Glob: *.md".into(), decision: "error".into(), kind: "cli".into(), ok: false, detail: "No such folder".into() });
         assert_eq!(st.on_line(r#"{"type":"result","subtype":"success","result":"Done: made the PDF.","is_error":false}"#), vec![Effect::Report { text: "Done: made the PDF.".into(), is_error: false }]);
         assert_eq!(summarize("TodoWrite", &json!({"todos":[]})), "TodoWrite");
+        // A command Mint OS's rules let run is "auto"; one the user approved on a card is "approved".
+        st.on_line(r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tu6","name":"PowerShell","input":{"command":"dir"}}]}}"#);
+        st.note_decision("tu6", "auto");
+        assert_eq!(st.on_line(r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tu6","content":"ok"}]}}"#)[0], Effect::Logged { tool: "PowerShell".into(), summary: "PowerShell: dir".into(), decision: "auto".into(), kind: "cli".into(), ok: true, detail: String::new() });
         assert_eq!(summarize("Bash", &json!({"command":"a\nb"})), "Bash: a b");
+    }
+
+    #[test]
+    fn browser_in_the_stream() {
+        let mut st = Stream::new("mint-hands");
+        // read_page teaches the labels; the next question about a click carries them, and the log line names them.
+        st.on_line(r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"b1","name":"mcp__claude-in-chrome__read_page","input":{"tabId":7}}]}}"#);
+        st.note_decision("b1", "auto");
+        let r = st.on_line(r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"b1","content":[{"type":"text","text":"button \"Send\" [ref_12]\ntextbox \"Password\" [ref_4]"}]}]}}"#);
+        assert_eq!(r[0], Effect::Browser { connected: true, detail: String::new() });
+        assert!(matches!(&r[1], Effect::Logged { kind, decision, .. } if kind == "browser" && decision == "auto"));
+        let ask = st.on_line(r#"{"type":"control_request","request_id":"q9","request":{"subtype":"can_use_tool","tool_name":"mcp__claude-in-chrome__computer","input":{"action":"left_click","ref":"ref_12","tabId":7,"action_summary":"Sends the reply"},"tool_use_id":"b2"}}"#);
+        match &ask[0] {
+            Effect::Ask { hint: Some(h), refuse: None, .. } => assert_eq!(h["targets"][0]["label"], "button \"Send\""),
+            other => panic!("{other:?}"),
+        }
+        let ask = st.on_line(r#"{"type":"control_request","request_id":"q10","request":{"subtype":"can_use_tool","tool_name":"mcp__claude-in-chrome__form_input","input":{"ref":"ref_4","value":"x","tabId":7},"tool_use_id":"b3"}}"#);
+        assert!(matches!(&ask[0], Effect::Ask { refuse: Some(_), .. }), "a password field is refused at once");
+        st.on_line(r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"b4","name":"mcp__claude-in-chrome__tabs_context_mcp","input":{}}]}}"#);
+        let r = st.on_line(r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"b4","is_error":true,"content":"Browser extension is not connected."}]}}"#);
+        assert_eq!(r[0], Effect::Browser { connected: false, detail: "Browser extension is not connected.".into() });
+        assert!(matches!(&r[1], Effect::Logged { ok: false, decision, detail, .. } if decision == "error" && detail.contains("not connected")));
     }
 }

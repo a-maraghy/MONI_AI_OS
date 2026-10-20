@@ -97,6 +97,10 @@ mod imp {
         layout: ol::PillLayout,
         fonts: Fonts,
         hover: Option<Btn>,
+        /// The "Last: …" line under the pill (click-through; shown from the first action on).
+        last: Option<HWND>,
+        last_rect: Rect,
+        last_shown: String,
     }
 
     #[derive(Default)]
@@ -342,6 +346,45 @@ mod imp {
         });
     }
 
+    /// The last action under the pill: drawn when it changed, hidden while there is none.
+    fn draw_last(p: &mut Pill) {
+        let Some(h) = p.last else { return };
+        let Some(v) = super::super::machine_pill_now() else { return };
+        let text = if v.active { v.last.clone() } else { String::new() };
+        if text == p.last_shown {
+            return;
+        }
+        let first = p.last_shown.is_empty();
+        p.last_shown = text.clone();
+        if text.is_empty() {
+            unsafe {
+                let _ = ShowWindow(h, SW_HIDE);
+            }
+            return;
+        }
+        let r = p.last_rect;
+        let f = p.fonts.text;
+        let drawn = paint(h, r, |dc, px| {
+            fill(px, FILL);
+            // Cut to fit the line (with "…"), measured in the line's own font.
+            let pad = (r.h / 2).max(6);
+            let mut s = text.clone();
+            let mut n = s.chars().count();
+            while n > 4 && measure(dc, f, &s).cx > r.w - 2 * pad {
+                n -= 4;
+                s = ol::clip_chars(&text, n);
+            }
+            text_at(dc, f, KEY, pad, r.h, &s);
+            unsafe {
+                let _ = GdiFlush();
+            }
+            shape(px, r.w, r.h, r.h / 2, 1, FILL_A, ENDED_EDGE, None);
+        });
+        if drawn && first {
+            reveal(h);
+        }
+    }
+
     fn draw_button(p: &Pill, b: Btn) {
         let l = p.layout;
         let (h, part, text, base, hover_c, edge) = match b {
@@ -396,7 +439,10 @@ mod imp {
             mlog!("control pill: its buttons could not be created");
             return None;
         };
-        let p = Pill { body, more, stop, layout, fonts: f, hover: None };
+        let last_rect = ol::last_line_rect(layout.window, work, scale);
+        let last = create(WS_EX_TRANSPARENT, last_rect, Some(body), w!("MINT AI's last action"));
+        let mut p = Pill { body, more, stop, layout, fonts: f, hover: None, last, last_rect, last_shown: String::new() };
+        draw_last(&mut p);
         draw_body(&p);
         draw_button(&p, Btn::More);
         draw_button(&p, Btn::Stop);
@@ -580,11 +626,17 @@ mod imp {
                 LRESULT(0)
             }
             WM_TIMER if wp.0 == TIMER_TICK => {
-                with_pill(|p| draw_body(p));
+                with_pill(|p| {
+                    draw_body(p);
+                    draw_last(p);
+                });
                 LRESULT(0)
             }
             WM_REFRESH => {
-                with_pill(|p| draw_body(p));
+                with_pill(|p| {
+                    draw_body(p);
+                    draw_last(p);
+                });
                 LRESULT(0)
             }
             _ if msg == WM_DISPLAYCHANGE || msg == WM_DPICHANGED || (msg == WM_SETTINGCHANGE && wp.0 == SPI_SETWORKAREA.0 as usize) => {
