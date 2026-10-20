@@ -130,6 +130,15 @@ Note `winver` (build). Settings ▸ Behaviour ▸ "Real blur behind cards" is on
 - [ ] Battery saver / hold still: no card animation (a new alert appears without the glow).
 - [ ] Keyboard: Tab from the rim button goes through the cards' buttons top to bottom; Enter acts; Esc leaves the cards. Narrator reads "At a glance...", each card's summary, and a new approval / alert once.
 - [ ] A small screen (1366 x 768 at 100 %, or 150 % on 1920 x 1080): the cards do not cover the decision card; with the chat panel open next to the core they step aside.
+- [ ] (0.1.9) An approval arrives: the big decision card opens and the glance column's approval card **steps back** (gone); sessions, today and live stay. Later (or Approve / Deny on the big card): the glance approval cards come back at once, and they catch clicks again.
+
+## 9d. The bot and the new icon (0.1.9)
+- [ ] The new icon everywhere: the installer, the Start menu, the taskbar, Alt+Tab, the exe in Explorer -- MINT AI's head with the cap and headphones (not the round Mesh). Tray at 100 % (16 px): the head, two eyes and the smile read; the status dot still shows in the corner. At 150 %: crisp.
+- [ ] Core E (Bot) on a live call: the mouth moves with MINT AI's voice (open, round, wide shapes), closed when quiet.
+- [ ] The eyes follow the mouse pointer over the core, and come back to the middle when it leaves.
+- [ ] Quiet for 10 minutes (or 1 minute at night, 23:00-06:00): the bot dozes (eyes shut, small z's); typing or talking wakes it.
+- [ ] Reactions: a surprise (then x x eyes) when the connection drops, a nod when an approval goes through, a grin when a session or a long turn finishes.
+- [ ] Session heads by role: hired sessions wear the cap, planning a mortarboard, ERP a headset, the builder twin antennas, the rest headphones. Sessions sheet > a session > pick another bot: it changes at once and stays after a restart (the browser shows the same).
 
 ## 10. Updates
 - [ ] Publish a 0.1.1 feed (`build-windows.sh --feed`, bump the version): within 6 h or Settings ▸ Check for updates now, a notification; tray ▸ "Update to 0.1.1 and restart" installs and restarts.

@@ -1764,7 +1764,7 @@ pub fn run() {
                 _ => {}
             });
 
-            // The tray: the round Mesh icon, a click shows the menu (either button).
+            // The tray: the bot icon (icons/32x32.png), a click shows the menu (either button).
             let menu = build_menu(&handle, &shared)?;
             let (base, iw, ih) = tray_base();
             let _tray: TrayIcon = TrayIconBuilder::with_id("main")

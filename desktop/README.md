@@ -173,6 +173,7 @@ for d in *.deb; do dpkg -x "$d" ../root; done
 # then link clang-cl/lld-link/llvm-lib/llvm-rc into ~/.local/wintools/bin and wrap makensis with
 # NSISDIR=~/.local/wintools/root/usr/share/nsis (see the box's ~/.local/wintools/bin)
 
+PW=/path/to/node_modules/playwright node desktop/tools/make-icons.cjs   # src-tauri/icons/ from the bot icon (head "cap"; 0.1.9)
 desktop/tools/build-windows.sh --feed /tmp/mint-feed      # signed installer + update feed
 node desktop/tools/test-feed.cjs                          # the feed tool
 (cd desktop/core-tests && cargo test)                     # the app's pure modules (91 tests)

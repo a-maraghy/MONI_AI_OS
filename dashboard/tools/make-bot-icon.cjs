@@ -1,6 +1,6 @@
 /**
- * The Mint OS icon, "Bot" variant (2026-10-20, a CANDIDATE: the live icon stays "Mesh",
- * tools/make-app-icon.cjs): MINT AI's core E head -- a faint wireframe rounded box with
+ * The Mint OS icon, "Bot" variant (2026-10-20; live since 0.1.9 with MINT_APP_ICON=bot -- unset, the icon is
+ * "Mesh", tools/make-app-icon.cjs): MINT AI's core E head -- a faint wireframe rounded box with
  * its face lit in mint on the grid's nodes -- drawn as an icon from the renderer's own
  * geometry (public/mint-core-bot.js build() and faces), so the icon and the core are one
  * drawing. The same set of files as the Mesh icon, in public/brand/bot/:
@@ -14,13 +14,14 @@
  *     brand/bot/app-icon-512.png     manifest "any"
  *     brand/bot/app-icon-maskable-512.png   manifest "maskable": full-bleed field, the head inside the 80 % safe circle
  *
- *     node dashboard/tools/make-bot-icon.cjs [--head antennas] [--out DIR]               the SVGs
+ *     node dashboard/tools/make-bot-icon.cjs [--head cap] [--out DIR]               the SVGs
  *     PW=/path/to/node_modules/playwright node dashboard/tools/make-bot-icon.cjs --raster  ...and the PNGs and the .ico
  *     ... --preview DIR     sheets of every size on light and dark (for review)
  *
- * The head defaults to "antennas" (the Mint OS / builder role's twin antennas); --head picks
- * another of the ten. Turning it on is one switch (lib/ui.js appIcon(): MINT_APP_ICON=bot in the
- * dashboard's environment); until then nothing links these files.
+ * The head defaults to "cap" (MINT AI's own core head: the cap, its antenna and the headphones -- the
+ * user's pick, 2026-10-20); --head picks another of the ten. The switch is lib/ui.js appIcon():
+ * MINT_APP_ICON=bot in the dashboard's environment (a systemd drop-in). The Windows app's icons
+ * (desktop/src-tauri/icons/) are made from the same files by desktop/tools/make-icons.cjs.
  */
 "use strict";
 const fs = require("fs");
@@ -68,7 +69,7 @@ function faceWeights(face) {
  * depth bands), the accessory's rods and joints, the lit face (a blurred mint glow under crisp dots and
  * the strokes between neighbouring lit nodes). lite: every other grid line ("lo"), one decimal.
  */
-function full({ head = "antennas", lite = false, box = [12, 9, 76, 82], face = "base" } = {}) {
+function full({ head = "cap", lite = false, box = [12, 9, 76, 82], face = "base" } = {}) {
   PREC = lite ? 1 : 2;
   const P = projected(head, lite ? "lo" : "hi", box), V = P.geo.v, L = P.geo.lines, W8 = faceWeights(face);
   const band = ["", "", ""], rods = [], lit = [];
@@ -156,7 +157,7 @@ const field = `<defs><linearGradient id="bg" gradientUnits="userSpaceOnUse" x1="
 
 /** The SVGs shipped in public/brand/bot/ (deterministic). */
 function files(head) {
-  head = B.HEADS[head] ? head : "antennas";
+  head = B.HEADS[head] ? head : "cap";
   return {
     "favicon-16.svg": svg(16, 16, fav16(head)),
     "favicon-32.svg": svg(32, 32, fav32(head)),
@@ -165,7 +166,7 @@ function files(head) {
 }
 /** Drawings that are only rasterised. */
 function rasterSources(head) {
-  head = B.HEADS[head] ? head : "antennas";
+  head = B.HEADS[head] ? head : "cap";
   return {
     master: svg(100, 512, disc + full({ head, box: [17, 13, 66, 72] })),
     tile: svg(100, 512, field + full({ head, box: [15, 11, 70, 76] })),
@@ -231,7 +232,7 @@ module.exports = { files, rasterSources, RASTERS, ICO, OUT_FILES, full, fav16, f
 
 if (require.main === module) {
   (async () => {
-    const head = arg("--head", "antennas");
+    const head = arg("--head", "cap");
     const dir = arg("--out", path.join(PUB, "brand", "bot"));
     fs.mkdirSync(dir, { recursive: true });
     const out = files(head);

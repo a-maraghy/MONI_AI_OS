@@ -1,4 +1,4 @@
-//! The tray icon: the round Mesh icon with a small status dot (policy::tray_dot)
+//! The tray icon: the bot icon (MINT AI's head with the cap, 0.1.9) with a small status dot (policy::tray_dot)
 //! drawn into its lower right corner. Pure pixel work on RGBA.
 
 /// Draw a dot of `rgb` with a dark ring into a copy of `base` (w x h RGBA).
