@@ -46,6 +46,9 @@
   }
   function changed() { try { document.dispatchEvent(new CustomEvent("mint-proactive")); } catch (e) { /* old engine */ } }
   function mcc() { return window.__mintCC || null; }
+  var SID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+  function sound(name) { if (window.MintSound && window.MintSound.play) window.MintSound.play(name, { role: "core" }); }
+  function story(sid, t) { return !!(sid && window.MintStory && window.MintStory.open && window.MintStory.open(sid, t || null)); }
 
   /* ---------------------------------------------------------------- the inbox */
   function take(items, quiet) {
@@ -62,17 +65,19 @@
     var text = b.text || it.title;
     if (c && c.feed) c.feed({ key: "pa" + it.id, ts: it.created_at, kind: "watch", label: "watcher", html: "<b>Watcher</b> · " + esc(text) }, quiet);
     if (quiet) return;
+    sound("needs");
     if (DESK) nativeToast(it.id, "MINT AI · watcher", text + (b.watcher ? " (" + b.watcher + ")" : ""));
-    else pageToast(text, b.watcher || "");
+    else pageToast(text, b.watcher || "", SID_RE.test(String(b.session || "")) ? { sid: b.session, t: it.created_at } : null);
   }
   function cardItem(it, quiet) {
     if (it.dismissed_at || P.dismissed[it.id]) return;
     var b = it.body || {};
     var cur = P.cards[it.kind];
     if (cur && cur.id > it.id) return;
-    P.cards[it.kind] = { id: it.id, kind: it.kind, title: it.title, lines: (b.lines || []).map(function (l) { return { k: String(l.k || ""), text: String(l.text || ""), tone: /^(ok|warn|err|info)$/.test(l.tone) ? l.tone : "info" }; }), source: b.source || "template", why: b.why || "", speech: b.speech || "", at: hm(it.created_at), created_at: it.created_at };
+    P.cards[it.kind] = { id: it.id, kind: it.kind, title: it.title, lines: (b.lines || []).map(function (l) { return { k: String(l.k || ""), text: String(l.text || ""), tone: /^(ok|warn|err|info)$/.test(l.tone) ? l.tone : "info", sid: SID_RE.test(String(l.sid || "")) ? l.sid : null }; }), source: b.source || "template", why: b.why || "", speech: b.speech || "", at: hm(it.created_at), created_at: it.created_at, from: b.from || null };
     var c = mcc();
     if (c && c.feed) c.feed({ key: "pa" + it.id, ts: it.created_at, kind: "brief", label: it.kind === "catchup" ? "catch-up" : "brief", html: "<b>" + esc(it.kind === "catchup" ? "While you were away" : "Morning brief") + "</b> · " + esc(firstLine(P.cards[it.kind])) }, quiet);
+    if (!quiet) sound("wake");
     if (!quiet && DESK) nativeToast(it.id, it.kind === "catchup" ? "While you were away" : "MINT AI · morning brief", firstLine(P.cards[it.kind]));
   }
   function firstLine(card) {
@@ -116,7 +121,7 @@
     el.innerHTML =
       '<header><span class="pa-ic" aria-hidden="true">' + (card.kind === "catchup" ? "↩" : "☀") + '</span><div class="pa-h"><b>' + esc(card.title.split(" · ")[0]) + "</b><small>" + esc(card.title.split(" · ").slice(1).join(" · ") || "") + (card.at ? " · " + esc(card.at) : "") + "</small></div>" +
       '<button type="button" class="pa-x" data-pa="dismiss" aria-label="Dismiss">×</button></header>' +
-      '<ul class="pa-lines">' + card.lines.map(function (l) { return '<li class="t-' + l.tone + '"><i aria-hidden="true"></i><b>' + esc(l.k) + "</b><span>" + esc(l.text) + "</span></li>"; }).join("") + "</ul>" +
+      '<ul class="pa-lines">' + card.lines.map(function (l) { var lab = l.sid && window.MintStory ? '<button type="button" class="pa-st" data-pa="story" data-sid="' + esc(l.sid) + '" title="Open the story of ' + esc(l.k) + '">' + esc(l.k) + "</button>" : esc(l.k); return '<li class="t-' + l.tone + '"><i aria-hidden="true"></i><b>' + lab + "</b><span>" + esc(l.text) + "</span></li>"; }).join("") + "</ul>" +
       '<footer><small title="' + esc(card.source === "model" ? "Worded by MINT AI's summary model; every number checked against the data." : card.why ? "From the data (" + card.why + ")." : "From the data.") + '">' + (card.source === "model" ? "Checked against the data" : "From the data") + "</small><span class=\"sp\"></span>" +
       (can && card.speech ? '<button type="button" class="pa-b" data-pa="read">Read aloud</button>' : "") +
       '<a class="pa-b" href="/mint-ai/settings/proactive">Settings</a><button type="button" class="pa-b pri" data-pa="dismiss">Dismiss</button></footer>';
@@ -129,6 +134,7 @@
     var a = b.getAttribute("data-pa");
     if (a === "dismiss") dismiss(card.id);
     if (a === "read") readAloud(card);
+    if (a === "story") story(b.getAttribute("data-sid"), card.from);
   }
   function readAloud(card) {
     var c = mcc();
@@ -138,7 +144,7 @@
   }
 
   /* ---------------------------------------------------------------- toasts */
-  function pageToast(text, sub) {
+  function pageToast(text, sub, link) {
     var box = $("pa-toasts");
     if (!box) { box = document.createElement("div"); box.id = "pa-toasts"; box.className = "pa-toasts"; box.setAttribute("aria-live", "polite"); document.body.appendChild(box); }
     var t = document.createElement("div");
@@ -148,6 +154,13 @@
     t.querySelector("span").textContent = text;
     if (sub) t.querySelector("small").textContent = sub;
     t.querySelector("button").addEventListener("click", function () { t.remove(); });
+    if (link && window.MintStory) {
+      var st = document.createElement("button");
+      st.type = "button"; st.className = "pa-b"; st.textContent = "Story";
+      st.setAttribute("aria-label", "Open the session's story");
+      st.addEventListener("click", function () { if (story(link.sid, link.t)) t.remove(); });
+      t.querySelector("div").appendChild(st);
+    }
     box.appendChild(t);
     while (box.children.length > 3) box.removeChild(box.firstChild);
     setTimeout(function () { t.classList.add("out"); setTimeout(function () { t.remove(); }, 400); }, 9000);

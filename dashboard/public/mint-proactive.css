@@ -25,6 +25,9 @@
 .pa-lines .t-warn i { background: var(--warn); }
 .pa-lines .t-err i { background: var(--bad); }
 .pa-lines b { font-weight: 600; white-space: nowrap; }
+.pa-lines .pa-st { all: unset; cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
+.pa-lines .pa-st:hover { text-decoration-style: solid; }
+.pa-lines .pa-st:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
 .pa-lines .t-warn b { color: var(--warn); }
 .pa-lines .t-err b { color: var(--bad); }
 .pa-lines span { color: var(--muted); overflow-wrap: anywhere; }
@@ -48,6 +51,7 @@
 .pa-toast b { font: 600 10.5px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--warn); }
 .pa-toast small { color: var(--dim); font-size: 11px; }
 .pa-toast button { flex: none; width: 22px; height: 22px; border: 0; border-radius: 6px; background: transparent; color: var(--dim); cursor: pointer; font-size: 16px; line-height: 1; padding: 0; }
+.pa-toast button.pa-b { width: auto; height: 24px; align-self: flex-start; margin-top: 6px; padding: 0 9px; font-size: 12px; color: var(--ink); border: 1px solid var(--line-strong, var(--line)); }
 
 /* ---- "Set a watcher?" above the composer ---- */
 .pa-offer { position: relative; z-index: 2; width: min(760px, 100%); box-sizing: border-box; display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 14px; background: var(--panel);

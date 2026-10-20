@@ -726,8 +726,10 @@ function names(list, max) {
   return list.slice(0, max).join(", ") + " and " + (n - max) + " more";
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
 /**
- * The words: { title, lines: [{ k: label, text, tone }] } -- at most eight
+ * The words: { title, lines: [{ k: label, text, tone, sid? }] } (sid: a session's line, for its story) -- at most eight
  * short lines, what needs you first. `whenText` names the window's start
  * ("since 8:00 yesterday"); the caller formats it in the person's time zone.
  */
@@ -757,7 +759,9 @@ function compose(f, o) {
     if (s.workedMs >= 60000) bits.push("worked " + span(s.workedMs));
     if (s.finished > 1) bits.push("finished " + s.finished + " times");
     if (s.delegated) bits.push(plural(s.delegated, "task") + " from MINT AI");
-    lines.push({ k: s.name, text: (bits.length ? bits.join(", ") : "active") + (s.did.length ? ": " + clip(s.did[0], 90) : "") + (s.state === "busy" ? " (still working)" : ""), tone: "info" });
+    const line = { k: s.name, text: (bits.length ? bits.join(", ") : "active") + (s.did.length ? ": " + clip(s.did[0], 90) : "") + (s.state === "busy" ? " (still working)" : ""), tone: "info" };
+    if (UUID_RE.test(str(s.key))) line.sid = s.key; // the card links the line into the session's story
+    lines.push(line);
   }
   if (f.sessions.length > did.length + shown.size && f.sessions.length > 3) lines.push({ k: "Also", text: names(f.sessions.slice(did.length).map((s) => s.name).filter((n) => !shown.has(normName(n))), 4) + " were active.", tone: "info" });
   if (f.started.length || f.ended.length) lines.push({ k: "Sessions", text: [f.started.length ? names(f.started) + " started" : "", f.ended.length ? names(f.ended) + " ended" : ""].filter(Boolean).join("; "), tone: "info" });
@@ -828,8 +832,8 @@ function grounded(text, c) {
  * lines in a row under the same label are one line again (the model splits a line at its "; ").
  */
 function linesFrom(text, c) {
-  const tones = {};
-  for (const l of c.lines) tones[l.k.toLowerCase()] = l.tone;
+  const tones = {}, sids = {};
+  for (const l of c.lines) { tones[l.k.toLowerCase()] = l.tone; if (l.sid) sids[l.k.toLowerCase()] = l.sid; }
   const out = [];
   str(text)
     .split(/\n+/)
@@ -843,7 +847,10 @@ function linesFrom(text, c) {
     .forEach((l) => {
       const last = out[out.length - 1];
       if (last && last.k.toLowerCase() === l.k.toLowerCase()) last.text += " · " + l.text;
-      else out.push(l);
+      else {
+        if (sids[l.k.toLowerCase()]) l.sid = sids[l.k.toLowerCase()];
+        out.push(l);
+      }
     });
   return out;
 }
