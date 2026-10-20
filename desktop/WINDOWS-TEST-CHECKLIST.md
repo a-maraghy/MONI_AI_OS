@@ -270,7 +270,7 @@ Sounds
 - [ ] Short quiet chirps per role (MINT AI, builders, hired sessions…) when a session needs you or a brief arrives; nothing plays during a live call or while the voice speaks; nothing before the first click / key in the window.
 - [ ] Settings ▸ Sounds ▸ off: silence everywhere; on again: back.
 
-## Companion mode (built 2026-10-20, not released; design: mockups/desk-companion/DESIGN.md)
+## 0.1.12 — Companion mode (design: mockups/desk-companion/DESIGN.md)
 
 The laptop at 150 % with the Samsung LF27T35 at 100 % to its right, as every day. Tray ▸ **Companion: MINT AI out on your desk** (or Settings ▸ Mode ▸ Companion). Keep the app log open (`%LOCALAPPDATA%\MINT AI\logs\mint-desktop.log`, lines "companion: …").
 
@@ -309,7 +309,7 @@ Performance and power
 - [ ] **No blur** anywhere in Companion mode (no frosted patches, no grey squares), also after switching from Floating with glance cards shown. Its own backplate keeps it readable on a light and a dark wallpaper.
 - [ ] Switch back with the tray item: the mode it came from (Floating, Desktop layer or Peek) returns where it was.
 
-## Eye contact — camera presence (built 2026-10-20, not released; design: mockups/eye-contact/DESIGN.md)
+## 0.1.12 — Eye contact, camera presence (design: mockups/eye-contact/DESIGN.md)
 
 The laptop's own webcam. App log open (`%LOCALAPPDATA%\MINT AI\logs\mint-desktop.log`, lines "camera presence …" / "camera requested …"). Core E (Bot) as the core.
 
@@ -317,6 +317,7 @@ Off by default, opt-in, and only the app can switch it on
 - [ ] Fresh install / existing settings: tray ▸ **Camera presence** is unchecked; the webcam light never comes on; the log has "the profile's camera permission for https://os.mint-stack.com set to deny (ok)" at start.
 - [ ] Tray ▸ Camera presence (never switched on before): it does **not** switch on — Settings opens at **Eye contact** with the explanation. Tick Camera presence there, Save: the webcam light comes on within about 2 s, a small "Camera on · eye contact" pill shows top-left in the box, the tray tooltip ends "· camera on", the tray item reads "Camera presence (camera on now)". Log: "camera requested by the site: allowed (camera presence is on)".
 - [ ] Tray ▸ Camera presence again: **off at once** — the webcam light goes out within a second, the pill goes. Tray ▸ Camera presence once more: on directly now (it was switched on in Settings before).
+- [ ] The pill's own **Off** button (top-left in the box, and as a small dot + Off beside the bot in Companion mode): one click switches the camera off — the light goes out within a second, the pill goes, the tray item is unchecked. The click lands on the button (it does not fall through to the window behind).
 - [ ] No Windows / WebView2 camera prompt ever appears (the app answers for its own site only). Settings ▸ Privacy & security ▸ Camera ▸ "Recent activity" lists MINT AI (msedgewebview2) only while it is on.
 - [ ] In MINT AI ▸ Settings ▸ Appearance ▸ Eye contact (inside the app): the switches show the app's state, say "switch it on in the app's Settings or tray"; **Switch off** works; there is no way to switch it on from that page.
 - [ ] Off, then (devtools in the app, if available, or a test page) a `navigator.mediaDevices.getUserMedia({video:true})` from the site: refused (NotAllowedError), no light. Log: "camera requested … refused".
@@ -349,3 +350,12 @@ Released when it should be
 Performance
 - [ ] Task Manager with it on: MINT AI's WebView2 adds only a few % CPU on the laptop (a 320 × 240 frame 5 times a second, the model in a worker); on battery less. Note the numbers.
 - [ ] Network: Resource Monitor ▸ Network for msedgewebview2 while it runs for a minute: no traffic beyond the page's usual polling (no upload grows with the camera on).
+
+## 0.1.12 — the living Command Center inside the app (served by the site; checked here because it runs in WebView2)
+
+- [ ] Calm: the bot with a few quiet tiles beside it. A session failing (or waiting 10 minutes or more) becomes the big centre card with **Fix it**; Fix it shows the message before it is sent to MINT AI.
+- [ ] Ask MINT AI for a chart / table / comparison ("compare today's sessions"): a widget card appears beside the core. Pin, resize and dismiss it; each card catches the mouse (the gaps between cards let clicks through to the desktop in the Desktop layer); a frosted card gets the real blur behind it.
+- [ ] Reload the app: the widget is still with its reply in the conversation history; a pinned widget is still on the board.
+- [ ] An approval widget: Approve asks for Windows Hello every time; Deny works.
+- [ ] Lock the layout (the board's control): nothing rearranges until unlocked. Settings shows the pin / dismiss counts and Reset.
+- [ ] Companion mode: while the bot is out on the desk no widget card shows anywhere and nothing catches the mouse but the bot; open the Command Center from the bot: the board is there, up to date.
