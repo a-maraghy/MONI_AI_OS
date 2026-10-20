@@ -16,6 +16,11 @@
 //! blur window in the ~33 ms before the click-through loop notices, the window asks the app at once to
 //! make the main window catch the mouse (`on_cursor`) -- the next event goes to the page, as it would have.
 //!
+//! A shown blur window is never moved or resized (blur::plan): Windows draws the acrylic of a window that
+//! moves or changes size late, and sometimes leaves it where it was -- 0.1.9's grey corners and strips round
+//! the glance cards. A surface that moves or changes size gets a fresh window; the old one is destroyed.
+//! And the page's rectangles are used only in the window size it measured them in (blur::view_matches).
+//!
 //! They follow the main window without any polling: the main window is subclassed and every
 //! WM_WINDOWPOSCHANGED (moved, resized, shown, hidden, raised or lowered -- including Tauri's own
 //! always-on-bottom, which pushes it to HWND_BOTTOM on every z-order change) re-places them under it.
@@ -31,6 +36,8 @@ use std::sync::Mutex;
 struct Input {
     rects: Vec<Region>,
     dpr: f64,
+    /// The page's viewport (CSS px) when it measured them (None: a page from before 0.1.10).
+    view: Option<(f64, f64)>,
     /// blur::page_glass: the setting, the system, the opacity, not behind the icons.
     glass: bool,
     dragging: bool,
@@ -45,13 +52,14 @@ fn with_input<R>(f: impl FnOnce(&mut Input) -> R) -> R {
     f(g.get_or_insert_with(Input::default))
 }
 
-/// The page's glass surfaces (CSS px) and its devicePixelRatio.
-pub fn set_rects(rects: Vec<Region>, dpr: f64) {
+/// The page's glass surfaces (CSS px), its devicePixelRatio and the viewport it measured them in.
+pub fn set_rects(rects: Vec<Region>, dpr: f64, view: Option<(f64, f64)>) {
     let rects = blur::clean(rects);
     let changed = with_input(|i| {
-        let ch = i.rects != rects || i.dpr != dpr;
+        let ch = i.rects != rects || i.dpr != dpr || i.view != view;
         i.rects = rects;
         i.dpr = dpr;
+        i.view = view;
         ch
     });
     if changed {
@@ -124,16 +132,23 @@ mod imp {
     /// The app's two callbacks (main thread): the cursor reached a blur window (make the main window catch
     /// the mouse now); what Windows allows changed (tell the page).
     static HOOKS: std::sync::OnceLock<(fn(), fn())> = std::sync::OnceLock::new();
+    thread_local! {
+        /// The tint the shown windows have (main thread only).
+        static TINT: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    }
 
-    /// The pool (main thread only).
+    /// One shown acrylic window: where it was shown (it never moves -- blur::plan), its band, its tint.
+    struct Win {
+        hw: HWND,
+        at: Place,
+        topmost: bool,
+    }
+    /// The pool (main thread only): a slot holds a shown window or nothing.
     struct Pool {
-        wins: Vec<HWND>,
-        at: Vec<Option<Place>>,
-        topmost: Vec<bool>,
-        tint: Vec<u32>,
+        slots: Vec<Option<Win>>,
     }
     thread_local! {
-        static POOL: RefCell<Pool> = const { RefCell::new(Pool { wins: Vec::new(), at: Vec::new(), topmost: Vec::new(), tint: Vec::new() }) };
+        static POOL: RefCell<Pool> = const { RefCell::new(Pool { slots: Vec::new() }) };
     }
 
     fn h(raw: isize) -> HWND {
@@ -289,7 +304,7 @@ mod imp {
             return;
         }
         let mw = h(main);
-        let (rects, dpr, glass, dragging, light) = with_input(|i| (i.rects.clone(), i.dpr, i.glass, i.dragging, i.light_ink));
+        let (rects, dpr, view, glass, dragging, light) = with_input(|i| (i.rects.clone(), i.dpr, i.view, i.glass, i.dragging, i.light_ink));
         let visible = unsafe { IsWindowVisible(mw).as_bool() && !IsIconic(mw).as_bool() };
         let dpi = unsafe { GetDpiForWindow(mw) };
         let show = blur::showing(glass, visible, dragging, blur::dpr_matches(dpr, dpi));
@@ -300,7 +315,14 @@ mod imp {
                 let _ = ClientToScreen(mw, &mut o);
                 let _ = GetClientRect(mw, &mut c);
             }
-            blur::place(&rects, dpr, (o.x, o.y), c.right - c.left, c.bottom - c.top)
+            let (cw, ch) = (c.right - c.left, c.bottom - c.top);
+            // Measured in another window size (the app resized it; the page has not measured again yet):
+            // nothing until it has, rather than blur out of place.
+            if blur::view_matches(view, dpr, cw, ch) {
+                blur::place(&rects, dpr, (o.x, o.y), cw, ch)
+            } else {
+                Vec::new()
+            }
         } else {
             Vec::new()
         };
@@ -317,56 +339,68 @@ mod imp {
     }
 
     fn apply(pool: &mut Pool, main: HWND, next: &[Place], topmost: bool, colour: u32) {
-        while pool.wins.len() < next.len() {
-            match new_blur_window() {
-                Some(w) => {
-                    pool.wins.push(w);
-                    pool.at.push(None);
-                    pool.topmost.push(false);
-                    pool.tint.push(0);
-                }
-                None => break,
-            }
-        }
-        let next = &next[..next.len().min(pool.wins.len())];
-        let ops = blur::plan(&pool.at, next);
-        // For the laptop check: a line whenever the set of blur windows changes (not when they only follow
-        // the main window in the z-order), with where they are and whether they are topmost.
-        let shown: Vec<Place> = pool.at.iter().flatten().copied().collect();
-        if shown.as_slice() != next || (!next.is_empty() && pool.topmost.iter().take(next.len()).any(|t| *t != topmost)) {
+        let next = &next[..next.len().min(blur::MAX_BLUR)];
+        let current: Vec<Option<Place>> = pool.slots.iter().map(|w| w.as_ref().map(|w| w.at)).collect();
+        let ops = blur::plan(&current, next);
+        // For the laptop check: a line whenever the set of blur windows changes (not when they are only
+        // re-stacked under the main window), with where they are and whether they are topmost.
+        let changed = ops.iter().any(|o| !matches!(o, blur::Op::Keep { .. }));
+        let band = pool.slots.iter().flatten().any(|w| w.topmost != topmost);
+        if changed || band {
             let list: Vec<String> = next.iter().map(|p| format!("({}, {}) {}x{}", p.x, p.y, p.w, p.h)).collect();
             mlog!("acrylic: {} blur window(s){}{}", next.len(), if next.is_empty() { String::new() } else { format!(" at {}", list.join(", ")) }, if topmost { ", topmost" } else { "" });
         }
         unsafe {
-            // Hides first; then every shown one, in order, right under the main window.
+            // Hides first (their windows destroyed: a window that showed one place never shows another);
+            // then every placement, in order, right under the main window.
             for op in &ops {
                 if let blur::Op::Hide { slot } = *op {
-                    let _ = ShowWindow(pool.wins[slot], SW_HIDE);
-                    pool.at[slot] = None;
+                    if let Some(w) = pool.slots.get_mut(slot).and_then(|s| s.take()) {
+                        let _ = ShowWindow(w.hw, SW_HIDE);
+                        let _ = DestroyWindow(w.hw);
+                    }
                 }
             }
             let mut after = main;
             for op in &ops {
-                let blur::Op::Show { slot, at, reshape } = *op else { continue };
-                let w = pool.wins[slot];
-                if pool.tint[slot] != colour {
-                    if accent(w, true, colour) {
-                        pool.tint[slot] = colour;
+                match *op {
+                    blur::Op::Hide { .. } => {}
+                    blur::Op::Keep { slot, .. } => {
+                        let Some(w) = pool.slots.get_mut(slot).and_then(|s| s.as_mut()) else { continue };
+                        // In the same band as the main window: topmost with it (Floating, Peek), not (Desktop layer).
+                        if w.topmost != topmost {
+                            let _ = SetWindowPos(w.hw, Some(if topmost { HWND_TOPMOST } else { HWND_NOTOPMOST }), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+                            w.topmost = topmost;
+                        }
+                        // Re-stacked only: never moved or resized while shown.
+                        let _ = SetWindowPos(w.hw, Some(after), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+                        after = w.hw;
+                    }
+                    blur::Op::Show { slot, at } => {
+                        // A fresh window: tint, rounded region and band set while it is still hidden, then
+                        // shown once, at its place, right under the one before.
+                        let Some(hw) = new_blur_window() else { continue };
+                        let _ = accent(hw, true, colour);
+                        // The region's right / bottom edges are exclusive: one more pixel each way.
+                        let rgn = CreateRoundRectRgn(0, 0, at.w + 1, at.h + 1, 2 * at.r, 2 * at.r);
+                        SetWindowRgn(hw, Some(rgn), false); // the system owns the region now
+                        if topmost {
+                            let _ = SetWindowPos(hw, Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+                        }
+                        let _ = SetWindowPos(hw, Some(after), at.x, at.y, at.w, at.h, SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_NOOWNERZORDER);
+                        if pool.slots.len() <= slot {
+                            pool.slots.resize_with(slot + 1, || None);
+                        }
+                        pool.slots[slot] = Some(Win { hw, at, topmost });
+                        after = hw;
                     }
                 }
-                if reshape {
-                    // The region's right / bottom edges are exclusive: one more pixel each way.
-                    let rgn = CreateRoundRectRgn(0, 0, at.w + 1, at.h + 1, 2 * at.r, 2 * at.r);
-                    SetWindowRgn(w, Some(rgn), false); // the system owns the region now
+            }
+            // The tint follows the ink on the windows kept (new ones were made with it).
+            if TINT.with(|t| t.replace(colour)) != colour {
+                for w in pool.slots.iter().flatten() {
+                    let _ = accent(w.hw, true, colour);
                 }
-                // In the same band as the main window: topmost with it (Floating, Peek), not (Desktop layer).
-                if pool.topmost[slot] != topmost {
-                    let _ = SetWindowPos(w, Some(if topmost { HWND_TOPMOST } else { HWND_NOTOPMOST }), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
-                    pool.topmost[slot] = topmost;
-                }
-                let _ = SetWindowPos(w, Some(after), at.x, at.y, at.w, at.h, SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_NOOWNERZORDER);
-                pool.at[slot] = Some(at);
-                after = w;
             }
         }
     }

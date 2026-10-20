@@ -87,7 +87,7 @@ const near = (a, b, e) => Math.abs(a - b) <= (e || 0.5);
     const remote = fs.readFileSync(path.join(D, "capabilities", "remote.json"), "utf8");
     const lib = fs.readFileSync(path.join(D, "src", "lib.rs"), "utf8");
     const acr = fs.readFileSync(path.join(D, "src", "acrylic.rs"), "utf8");
-    check("the app: set_blur_rects is a command the site may call; it only stores rectangles (no window, no file)", /"allow-set-blur-rects"/.test(remote) && /"set_blur_rects"/.test(fs.readFileSync(path.join(D, "build.rs"), "utf8")) && /fn set_blur_rects\(rects: Vec<Region>, dpr: f64\) \{\s*acrylic::set_rects\(rects, dpr\);\s*\}/.test(lib));
+    check("the app: set_blur_rects is a command the site may call; it only stores rectangles (no window, no file)", /"allow-set-blur-rects"/.test(remote) && /"set_blur_rects"/.test(fs.readFileSync(path.join(D, "build.rs"), "utf8")) && /fn set_blur_rects\(rects: Vec<Region>, dpr: f64, view: Option<\(f64, f64\)>\) \{\s*acrylic::set_rects\(rects, dpr, view\);\s*\}/.test(lib));
     check("  the acrylic windows never take the focus or a click, follow the main window by its own messages (no polling), and use the accent that stays blurred when inactive", /WS_EX_TOOLWINDOW \| WS_EX_NOACTIVATE/.test(acr) && /MA_NOACTIVATE/.test(acr) && /WM_WINDOWPOSCHANGED/.test(acr) && /SetWindowSubclass/.test(acr) && /state: if on \{ 4 \}/.test(acr) && !/thread::sleep/.test(acr));
     check("  the page's glass flag comes from page_state (so the page and the native blur never disagree); the setting is on by default", /glass: blur_glass\(a, pm\.opacity\)/.test(lib) && /real_blur: true/.test(fs.readFileSync(path.join(D, "src", "settings.rs"), "utf8")));
   }

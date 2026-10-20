@@ -518,6 +518,122 @@ function paintWallpaper(kind, w, h) {
       await v.close();
     }
 
+    section("real blur under the glance cards (0.1.10: the grey corners and strips of 0.1.9)");
+    {
+      // The laptop's case: Desktop layer at 150 %, the cards pinned, real blur on. The page's reports
+      // (set_blur_rects) are recorded while the cards change -- a session's state, a new alert, an
+      // approval arriving and being put away -- and replayed through the app's two pool rules:
+      //   0.1.9:  slot i takes placement i, its shown window moved / resized there (SetWindowPos);
+      //   0.1.10: a shown window keeps its exact place or is destroyed; a new place gets a fresh window
+      //           (blur::plan, tested in Rust: the_glance_cards_settling_never_move_a_shown_window).
+      // Windows draws the acrylic of a window moved or resized while shown late or not at all (the
+      // window-vibrancy crate's documented acrylic lag on Windows 10 1903+ / 11, and why acrylic.rs already
+      // hides the blur while the box is dragged). Modelled at its worst: such a window keeps drawing
+      // where it was shown. Then no blur may be drawn outside the cards.
+      const dh = { mode: "desktop", glance: true, glass: true, pos: "right", liveKey: "Ctrl+Alt+L", talkKey: "Ctrl+Space", glancePin: { x: 0.04, y: 0.08 } };
+      const v = await open(1280, 688, "", { host: dh, dpr: 1.5 });
+      await sleep(600);
+      const reports = async () => (await v.page.evaluate(() => window.__calls.filter((c) => c[0] === "set_blur_rects").map((c) => c[1])));
+      // The cards wholly in the column (at 150 % on a 1080p screen the last one may scroll past its end).
+      const surfaces = () => v.page.evaluate(() => { const col = document.getElementById("dk-glance").getBoundingClientRect(); return [...document.querySelectorAll("#dk-glance .dk-gl-hit")].map((e) => { const r = e.getBoundingClientRect(); return { x: r.left, y: r.top, w: r.width, h: r.height, r: parseFloat(getComputedStyle(e).borderTopLeftRadius) || 0, whole: r.top >= col.top - 0.5 && r.bottom <= col.bottom + 0.5 }; }); });
+      const settle = async () => { await sleep(700); };
+      // The changes the laptop sees in a day.
+      W.sessions[2] = { ...W.sessions[2], status: "busy" };
+      push("sessions", { sessions: W.sessions });
+      await settle();
+      push("inbound", { inbound: { id: 21, kind: "idle", from_name: "Customs docs", text: "Filed the November declarations and the certificate of origin.", received_at: new Date().toISOString() } });
+      await settle();
+      W.sessions[2] = { ...W.sessions[2], status: "idle" };
+      push("sessions", { sessions: W.sessions });
+      await settle();
+      const a51 = approval(51, "rm -rf /srv/old-builds/2026-08", "moni-ai", "MINT AI", 6);
+      W.approvals.push(a51);
+      push("approval", { approval: a51 });
+      await settle();
+      await later(v.page); // the big card put away: the approval card comes into the column, the others move down
+      await settle();
+      const reps = await reports();
+      const cards = await surfaces();
+      const last = reps[reps.length - 1];
+      const view = await v.page.evaluate(() => [window.innerWidth, window.innerHeight]);
+      check("every report carries the viewport it was measured in", reps.length > 3 && reps.every((r) => Array.isArray(r.view) && r.view.length === 2) && JSON.stringify(last.view) === JSON.stringify(view), JSON.stringify(reps.map((r) => r.view)));
+      const near = (a, b) => Math.abs(a.x - b.x) <= 0.5 && Math.abs(a.y - b.y) <= 0.5 && Math.abs(a.w - b.w) <= 0.5 && Math.abs(a.h - b.h) <= 0.5;
+      const whole = cards.filter((c) => c.whole), cutOff = cards.filter((c) => !c.whole);
+      check("  settled: the last report has every whole glance card exactly (none left out, none stale); a card the column cuts has none", whole.length >= 5 && whole.every((c) => last.rects.some((g) => near(g, c))) && cutOff.every((c) => !last.rects.some((g) => Math.abs(g.x - c.x) <= 0.5 && Math.abs(g.y - c.y) <= 0.5)), JSON.stringify({ cards, last: last.rects }));
+      // The two pool rules, replayed (CSS px; blur.rs's 1 px inset left out -- it only makes them smaller).
+      const same = (a, b) => a && b && a.x === b.x && a.y === b.y && a.w === b.w && a.h === b.h && a.r === b.r;
+      function replay(fresh) {
+        let pool = []; // { at, drawn }
+        let moved = 0;
+        for (const rep of reps) {
+          const next = rep.rects;
+          if (!fresh) {
+            next.forEach((at, i) => {
+              const w = pool[i];
+              if (!w) pool[i] = { at, drawn: at };
+              else { if (!same(w.at, at)) moved++; pool[i] = { at, drawn: w.drawn }; } // moved while shown: the acrylic stays
+            });
+            pool = pool.slice(0, next.length);
+          } else {
+            const left = pool.slice();
+            pool = next.map((at) => { const k = left.findIndex((w) => w && same(w.at, at)); if (k >= 0) { const w = left[k]; left[k] = null; return w; } return { at, drawn: at }; });
+          }
+        }
+        return { moved, drawn: pool.map((w) => w.drawn) };
+      }
+      const stray = (drawn) => drawn.filter((d) => !last.rects.some((g) => same(g, d)));
+      const old = replay(false), now = replay(true);
+      console.log("  replayed " + reps.length + " reports: 0.1.9 moved shown windows " + old.moved + " times; blur left off its card: " + JSON.stringify(stray(old.drawn)));
+      check("reproduced with 0.1.9's rule: shown blur windows were moved while the cards changed, and blur is left where no card is", old.moved > 0 && stray(old.drawn).length > 0, JSON.stringify({ moved: old.moved, stray: stray(old.drawn) }));
+      check("  with 0.1.10's rule: no shown window is ever moved; every blur drawn is exactly under a card", stray(now.drawn).length === 0 && now.drawn.length === last.rects.length, JSON.stringify(stray(now.drawn)));
+      if (SHOTS) {
+        const dir = path.join(SHOTS, "blur-fix");
+        fs.mkdirSync(dir, { recursive: true });
+        const png = await v.page.screenshot({ omitBackground: true });
+        const wallPage = await browser.newPage({ viewport: { width: 1280, height: 688 } });
+        const wall = await wallPage.evaluate(paintWallpaper.toString().replace(/^function paintWallpaper/, "(function") + ")(\"dark\",1280,688)");
+        for (const [name, drawn] of [["before-0.1.9-stale-blur", old.drawn], ["after-0.1.10", now.drawn]]) {
+          await wallPage.setContent("<html><body style=\"margin:0;background:#000\"><canvas id=c width=1920 height=1032></canvas></body></html>");
+          await wallPage.setViewportSize({ width: 1920, height: 1032 });
+          await wallPage.evaluate(async ([wallSrc, shotSrc, drawn]) => {
+            const load = (src) => new Promise((res) => { const i = new Image(); i.onload = () => res(i); i.src = src; });
+            const wi = await load(wallSrc), si = await load(shotSrc), k = 1.5;
+            const g = document.getElementById("c").getContext("2d");
+            g.drawImage(wi, 0, 0, 1920, 1032);
+            // the acrylic, as Windows draws it: blurred, a little light (DWM's luminosity), each where its window is drawn
+            drawn.forEach((r) => { g.save(); g.beginPath(); g.roundRect(r.x * k, r.y * k, r.w * k, r.h * k, r.r * k); g.clip(); g.filter = "blur(26px) saturate(1.25)"; g.drawImage(wi, 0, 0, 1920, 1032); g.filter = "none"; g.fillStyle = "rgba(200, 206, 220, .30)"; g.fillRect(0, 0, 1920, 1032); g.restore(); });
+            g.drawImage(si, 0, 0, 1920, 1032);
+          }, [wall, "data:image/png;base64," + png.toString("base64"), drawn]);
+          const box = cards.reduce((b, c) => ({ x0: Math.min(b.x0, c.x), y0: Math.min(b.y0, c.y), x1: Math.max(b.x1, c.x + c.w), y1: Math.max(b.y1, c.y + c.h) }), { x0: 1e9, y0: 1e9, x1: 0, y1: 0 });
+          const clip = { x: Math.max(0, box.x0 * 1.5 - 60), y: Math.max(0, box.y0 * 1.5 - 60), width: Math.min(1920, (box.x1 - box.x0) * 1.5 + 120), height: Math.min(1032 - Math.max(0, box.y0 * 1.5 - 60), (box.y1 - box.y0) * 1.5 + 200) };
+          await wallPage.screenshot({ path: path.join(dir, name + ".png"), clip });
+        }
+        await wallPage.close();
+        console.log("  before / after written to " + dir);
+      }
+      // The app resizes or moves the window before the page measures again: a new viewport is a new report.
+      const n0 = (await reports()).length;
+      await v.page.setViewportSize({ width: 1240, height: 660 });
+      await sleep(500);
+      const r2 = await reports();
+      check("the window resized: the page reports again with the new viewport (the app shows no blur until then)", r2.length > n0 && JSON.stringify(r2[r2.length - 1].view) === JSON.stringify([1240, 660]), JSON.stringify(r2.slice(n0).map((r) => r.view)));
+      await v.close();
+      // Pinned low: the column is short and scrolls; a card cut by it gets no blur (none hangs past the column).
+      const lowPin = Object.assign({}, dh, { glancePin: { x: 0.04, y: 0.72 } });
+      const v2 = await open(1280, 688, "", { host: lowPin, dpr: 1.5 });
+      await sleep(600);
+      const cut = await v2.page.evaluate(() => {
+        const col = document.getElementById("dk-glance").getBoundingClientRect();
+        const rep = window.__calls.filter((c) => c[0] === "set_blur_rects").pop()[1].rects;
+        const cards = [...document.querySelectorAll("#dk-glance .dk-gl-hit")].map((e) => e.getBoundingClientRect());
+        const inCol = (g) => g.x >= col.left - 0.5 && g.y >= col.top - 0.5 && g.x + g.w <= col.right + 0.5 && g.y + g.h <= col.bottom + 0.5;
+        const isCard = (g) => cards.some((c) => Math.abs(c.left - g.x) <= 0.5 && Math.abs(c.top - g.y) <= 0.5);
+        return { overflow: cards.some((c) => c.bottom > col.bottom + 0.5), glance: rep.filter(isCard).length, out: rep.filter((g) => isCard(g) && !inCol(g)).length };
+      });
+      check("  a column too short for its cards: the cut cards get no blur, the whole ones do", cut.overflow && cut.glance > 0 && cut.out === 0, JSON.stringify(cut));
+      await v2.close();
+    }
+
     /* ================================================================ the preview */
     if (SHOTS) await preview(open, info);
     check("zero CSP violations and page errors", problems.length === 0, problems.join(" | "));

@@ -242,7 +242,11 @@ minisign signature, not the Authenticode one).
   they take a lighter tint only once their blur is there. Windows 10 1809+ and Windows 11 alike (the accent
   API: Windows 11's system backdrop goes flat on windows that are never active). Off, unsupported, with
   transparency effects off, high contrast or opacity under 70 %: the tinted look. The session-name pills
-  stay tinted (they move with their spheres). Unverified on real Windows: checklist 9b. Arabic/RTL and
+  stay tinted (they move with their spheres). A shown blur window is never moved or resized (0.1.10): Windows
+  draws the acrylic of a window moved while shown late, sometimes not again, which left grey corners and strips
+  round the glance cards in 0.1.9; a surface that moves or changes size gets a fresh window. The page reports the
+  viewport it measured in and the app shows no blur while its window is another size; a card cut by a scrolling
+  box (the glance column) gets none. Unverified on real Windows: checklist 9b. Arabic/RTL and
   screen-reader behaviour of the desktop mode are not designed yet (as in the design).
 - The talk key's release is Windows' `GetAsyncKeyState` poll (global-hotkey, every 50 ms) on the main
   key; releasing only Ctrl while still holding Space keeps talking until Space is released.

@@ -208,7 +208,7 @@
     layout: function () { return L; },
     regions: function () { return lastRegions; },
     glance: function () { var g = $("dk-glance"); return { on: !!(g && !g.hidden), layout: L && L.glance, caps: glCaps }; },
-    glass: function () { return JSON.parse(glassSig || "[]"); },
+    glass: function () { return glassSent.slice(); },
     hint: function () { var kb = $("dk-kb"); return !kb ? "none" : kb.classList.contains("dk-kb-none") ? "hidden" : kb.classList.contains("dk-kb-short") ? "keys" : "full"; },
   };
 
@@ -717,7 +717,7 @@
     // The glance cards: frosted like the panel; an approval card near-solid, like the decision card.
     ["#dk-glance:not(.dk-gl-under) .dk-gl-card:not(.dk-gl-ap)", "card"], ["#dk-glance:not(.dk-gl-under) .dk-gl-ap", "alert"], ["#dk-glance:not(.dk-gl-under) #dk-gl-hd", "pill"], ["#dk-glbtn", "pill"],
   ];
-  var glassIds = typeof WeakMap === "function" ? new WeakMap() : null, glassN = 0, glassState = null, glassSig = "", glassMarked = [];
+  var glassIds = typeof WeakMap === "function" ? new WeakMap() : null, glassN = 0, glassState = null, glassSig = "", glassSent = [], glassMarked = [];
   function glassKey(el) { if (!glassIds) return null; var k = glassIds.get(el); if (!k) { k = "g" + ++glassN; glassIds.set(el, k); } return k; }
   /** Fully there: shown, and neither it nor anything round it (bar the user's own opacity on #cc) fading. */
   function solid(el) {
@@ -725,6 +725,25 @@
     for (var e = el; e && e !== html; e = e.parentElement) {
       if (e.id === "cc") continue;
       if (Number(getComputedStyle(e).opacity) < 0.95) return false;
+    }
+    return true;
+  }
+  /** Wholly visible: inside the window and not cut by a scrolling or clipping box round it (the glance
+      column scrolls). A cut card would get a blur window hanging past what is drawn of it. Only the boxes
+      that hold it (its containing blocks) can cut it: a fixed panel inside a short clipping box is not cut. */
+  function unclipped(el, r) {
+    if (r.left < -0.5 || r.top < -0.5 || r.right > window.innerWidth + 0.5 || r.bottom > window.innerHeight + 0.5) return false;
+    var pos = getComputedStyle(el).position;
+    for (var e = el.parentElement; e && e !== html && e !== document.body; e = e.parentElement) {
+      var cs = getComputedStyle(e);
+      var transformed = cs.transform !== "none" || cs.filter !== "none" || cs.perspective !== "none" || /paint|layout|strict|content/.test(cs.contain || "");
+      if (pos === "fixed" && !transformed) continue; // not its containing block: cannot cut it
+      if (pos === "absolute" && cs.position === "static" && !transformed) continue;
+      pos = cs.position;
+      if (cs.overflowX === "visible" && cs.overflowY === "visible") continue;
+      var c = e.getBoundingClientRect(), bl = parseFloat(cs.borderLeftWidth) || 0, bt = parseFloat(cs.borderTopWidth) || 0;
+      var x0 = c.left + bl, y0 = c.top + bt, x1 = x0 + e.clientWidth, y1 = y0 + e.clientHeight;
+      if (r.left < x0 - 0.5 || r.top < y0 - 0.5 || r.right > x1 + 0.5 || r.bottom > y1 + 0.5) return false;
     }
     return true;
   }
@@ -738,6 +757,7 @@
           var el = list[i], key = glassKey(el);
           if (!key || els[key] || !solid(el)) continue;
           var r = el.getBoundingClientRect(), rad = parseFloat(getComputedStyle(el).borderTopLeftRadius) || 0;
+          if (!unclipped(el, r)) continue;
           els[key] = { el: el, kind: g[1] };
           items.push({ key: key, x: r.left, y: r.top, w: r.width, h: r.height, r: Math.min(rad, r.width / 2, r.height / 2) });
         }
@@ -747,10 +767,15 @@
       rects = step.rects;
       keys = step.keys;
     } else glassState = null;
-    var sig = JSON.stringify(rects);
+    // With the viewport they were measured in: the app uses them only while its window is that size (the
+    // app can resize it before the page measures again), and a new size is a new report even when the
+    // rectangles read the same.
+    var view = [window.innerWidth, window.innerHeight];
+    var sig = JSON.stringify(rects) + "@" + view.join("x");
     if (sig !== glassSig) {
       glassSig = sig;
-      invoke("set_blur_rects", { rects: rects, dpr: window.devicePixelRatio || 1 });
+      glassSent = rects;
+      invoke("set_blur_rects", { rects: rects, dpr: window.devicePixelRatio || 1, view: view });
     }
     // The lighter tint only where the blur now is.
     var on = keys.map(function (k) { return els[k].el; });

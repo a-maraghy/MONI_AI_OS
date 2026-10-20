@@ -110,13 +110,6 @@ pub struct Place {
     pub r: i32,
 }
 
-impl Place {
-    /// The shape only (a new window region is needed when it changes, not when it only moves).
-    pub fn shape(&self) -> (i32, i32, i32) {
-        (self.w, self.h, self.r)
-    }
-}
-
 /// CSS rectangles -> screen rectangles: scaled by `dpr`, offset by the main window's client origin
 /// (screen px), clipped to its client area (`cw` x `ch` physical px). Edges are rounded to whole pixels
 /// (each edge on its own, so neighbours never overlap or gap by a pixel).
@@ -138,30 +131,70 @@ pub fn place(rects: &[Region], dpr: f64, origin: (i32, i32), cw: i32, ch: i32) -
     out
 }
 
-/// What to do with one of the pooled windows.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Op {
-    /// Put it here (and keep it right under the main window); `reshape`: its rounded region changes.
-    Show { slot: usize, at: Place, reshape: bool },
-    /// It is not needed now.
-    Hide { slot: usize },
+/// Do the page's rectangles belong to the window as it is now? `view` is the page's viewport (CSS px)
+/// when it measured them (None: a page from before 0.1.10, which does not say); the client area is
+/// `cw` x `ch` physical px at `dpr`. The window can be resized or moved by the app (the glance column,
+/// a mode or monitor change) before the page has measured again: until it has, the old rectangles
+/// would be placed against the new window -- out of place, or hanging past their cards -- so no blur.
+pub fn view_matches(view: Option<(f64, f64)>, dpr: f64, cw: i32, ch: i32) -> bool {
+    let Some((vw, vh)) = view else { return true };
+    if !(vw.is_finite() && vh.is_finite() && dpr.is_finite() && dpr > 0.0) || cw <= 0 || ch <= 0 {
+        return false;
+    }
+    (cw as f64 / dpr - vw).abs() <= 1.5 && (ch as f64 / dpr - vh).abs() <= 1.5
 }
 
-/// The pool's next state: slot i takes placement i; the rest hide. Nothing is done for a slot that is
-/// already hidden and stays so. A shown slot is always re-placed (that also puts it back under the main
-/// window in the z-order, which is the point of most calls); its region is only rebuilt when its size or
-/// radius changed.
+/// What to do with the pool. A shown acrylic window is **never moved or resized**: Windows draws the
+/// accent's blur of a window that moves or changes size late, and sometimes not again at all -- the
+/// frosted patch stays where (and as big as) the window was, round a card that has moved or shrunk
+/// (0.1.9's grey corners and strips round the glance cards). So a window keeps exactly the place it was
+/// shown at, or goes; a new place always gets a fresh window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Op {
+    /// Already shown exactly here: left in place, only put back right under the main window (z-order).
+    Keep { slot: usize, at: Place },
+    /// Not needed (or needed somewhere else): hidden and its window destroyed.
+    Hide { slot: usize },
+    /// A new window, created for this place and shown there (in a slot that holds no window).
+    Show { slot: usize, at: Place },
+}
+
+/// The pool's next state. `current`: what each slot shows now (None: no window). Every placement of
+/// `next` that a slot already shows exactly is kept; every other shown slot hides; the remaining
+/// placements get new windows in free slots (the lowest first, a hidden one included). The ops come as
+/// all the hides first, then one Keep or Show per placement in `next`'s order (the z-order: each right
+/// under the one before, the first right under the main window).
 pub fn plan(current: &[Option<Place>], next: &[Place]) -> Vec<Op> {
-    let n = current.len().max(next.len());
+    let mut used = vec![false; current.len()];
+    let mut keep: Vec<Option<usize>> = Vec::with_capacity(next.len());
+    for at in next {
+        let k = (0..current.len()).find(|&s| !used[s] && current[s] == Some(*at));
+        if let Some(s) = k {
+            used[s] = true;
+        }
+        keep.push(k);
+    }
     let mut ops = Vec::new();
-    for slot in 0..n {
-        let was = current.get(slot).copied().flatten();
-        match next.get(slot) {
-            Some(at) => ops.push(Op::Show { slot, at: *at, reshape: was.map(|w| w.shape() != at.shape()).unwrap_or(true) }),
+    let mut free: Vec<usize> = Vec::new();
+    for (s, was) in current.iter().enumerate() {
+        if was.is_some() && !used[s] {
+            ops.push(Op::Hide { slot: s });
+        }
+        if !used[s] {
+            free.push(s);
+        }
+    }
+    let mut free = free.into_iter();
+    let mut extra = current.len();
+    for (at, k) in next.iter().zip(keep) {
+        match k {
+            Some(slot) => ops.push(Op::Keep { slot, at: *at }),
             None => {
-                if was.is_some() {
-                    ops.push(Op::Hide { slot });
-                }
+                let slot = free.next().unwrap_or_else(|| {
+                    extra += 1;
+                    extra - 1
+                });
+                ops.push(Op::Show { slot, at: *at });
             }
         }
     }
@@ -269,19 +302,109 @@ mod tests {
     fn the_pool_plan() {
         let a = Place { x: 0, y: 0, w: 100, h: 40, r: 12 };
         let b = Place { x: 0, y: 50, w: 100, h: 40, r: 12 };
-        // From nothing: two windows, both shaped.
-        assert_eq!(plan(&[], &[a, b]), vec![Op::Show { slot: 0, at: a, reshape: true }, Op::Show { slot: 1, at: b, reshape: true }]);
-        // The same shapes moved: re-placed, no new regions.
+        // From nothing: two new windows, in order.
+        assert_eq!(plan(&[], &[a, b]), vec![Op::Show { slot: 0, at: a }, Op::Show { slot: 1, at: b }]);
+        // Nothing changed: both kept (re-stacked only).
+        assert_eq!(plan(&[Some(a), Some(b)], &[a, b]), vec![Op::Keep { slot: 0, at: a }, Op::Keep { slot: 1, at: b }]);
+        // One moved: its window goes and a fresh one takes the new place (never a shown window moved).
         let a2 = Place { x: 30, ..a };
-        assert_eq!(plan(&[Some(a), Some(b)], &[a2, b]), vec![Op::Show { slot: 0, at: a2, reshape: false }, Op::Show { slot: 1, at: b, reshape: false }]);
-        // One goes: its slot hides; a slot already hidden is left alone.
-        assert_eq!(plan(&[Some(a), Some(b), None], &[a]), vec![Op::Show { slot: 0, at: a, reshape: false }, Op::Hide { slot: 1 }]);
-        // A new size: reshaped.
+        assert_eq!(plan(&[Some(a), Some(b)], &[a2, b]), vec![Op::Hide { slot: 0 }, Op::Show { slot: 0, at: a2 }, Op::Keep { slot: 1, at: b }]);
+        // One goes: its slot hides; a slot already empty is left alone.
+        assert_eq!(plan(&[Some(a), Some(b), None], &[a]), vec![Op::Hide { slot: 1 }, Op::Keep { slot: 0, at: a }]);
+        // A new size: a new window.
         let big = Place { h: 300, ..a };
-        assert_eq!(plan(&[Some(a)], &[big]), vec![Op::Show { slot: 0, at: big, reshape: true }]);
+        assert_eq!(plan(&[Some(a)], &[big]), vec![Op::Hide { slot: 0 }, Op::Show { slot: 0, at: big }]);
         // Blur off: everything shown hides.
         assert_eq!(plan(&[Some(a), None, Some(b)], &[]), vec![Op::Hide { slot: 0 }, Op::Hide { slot: 2 }]);
         assert!(plan(&[None, None], &[]).is_empty());
+        // The order of `next` is kept (z-order), whichever slots the windows are in.
+        assert_eq!(plan(&[Some(a), Some(b)], &[b, a]), vec![Op::Keep { slot: 1, at: b }, Op::Keep { slot: 0, at: a }]);
+    }
+
+    /// Apply a plan to a pool and check the rule: a shown window keeps its exact place or goes.
+    fn run(pool: &mut Vec<Option<Place>>, next: &[Place]) -> (usize, usize) {
+        let ops = plan(pool, next);
+        let (mut made, mut kept) = (0, 0);
+        let mut order = Vec::new();
+        for op in &ops {
+            match *op {
+                Op::Hide { slot } => {
+                    assert!(pool[slot].is_some(), "only a shown window hides");
+                    pool[slot] = None;
+                }
+                Op::Keep { slot, at } => {
+                    assert_eq!(pool[slot], Some(at), "a kept window is exactly where it was: never moved or resized");
+                    kept += 1;
+                    order.push(at);
+                }
+                Op::Show { slot, at } => {
+                    if slot >= pool.len() {
+                        pool.resize(slot + 1, None);
+                    }
+                    assert!(pool[slot].is_none(), "a new place gets a fresh window, in a slot with none");
+                    pool[slot] = Some(at);
+                    made += 1;
+                    order.push(at);
+                }
+            }
+        }
+        assert_eq!(order, next, "every placement once, in the page's order");
+        let mut shown: Vec<Place> = pool.iter().flatten().copied().collect();
+        let mut want = next.to_vec();
+        shown.sort_by_key(|p| (p.x, p.y, p.w, p.h, p.r));
+        want.sort_by_key(|p| (p.x, p.y, p.w, p.h, p.r));
+        assert_eq!(shown, want, "nothing else is shown: no blur outlives its card");
+        (made, kept)
+    }
+
+    /// 0.1.9 on the laptop (150 %): the glance column -- the header pill, "No approvals", Sessions, Today,
+    /// Live. A card's text changes, so the page drops it from the report while it settles (80 ms) and
+    /// sends it again. 0.1.9 gave placement i to slot i, so every card after the dropped one had its
+    /// shown window moved into its neighbour's place and back (and resized and re-shaped), and Windows
+    /// left the acrylic where it had been: grey corners round Today, a strip under Live.
+    #[test]
+    fn the_glance_cards_settling_never_move_a_shown_window() {
+        let card = |y: f64, h: f64, r: f64| Region { x: 30.0, y, w: 320.0, h, r };
+        let page = |cards: &[Region]| place(&clean(cards.to_vec()), 1.5, (0, 0), 2880, 1620);
+        let hd = card(40.0, 30.0, 15.0);
+        let noap = card(78.0, 44.0, 14.0);
+        let se = card(130.0, 158.0, 14.0);
+        let co = card(296.0, 114.0, 14.0);
+        let al = card(418.0, 98.0, 14.0);
+        let mut pool: Vec<Option<Place>> = Vec::new();
+        assert_eq!(run(&mut pool, &page(&[hd, noap, se, co, al])), (5, 0));
+        // Sessions redrawn (same size): out while it settles, then back. Only its own window changes.
+        assert_eq!(run(&mut pool, &page(&[hd, noap, co, al])), (0, 4));
+        assert_eq!(run(&mut pool, &page(&[hd, noap, se, co, al])), (1, 4));
+        // Live grows by an alert, then shrinks back to "Nothing new": a new window each time, the others stay.
+        let al2 = card(418.0, 140.0, 14.0);
+        assert_eq!(run(&mut pool, &page(&[hd, noap, se, co])), (0, 4));
+        assert_eq!(run(&mut pool, &page(&[hd, noap, se, co, al2])), (1, 4));
+        assert_eq!(run(&mut pool, &page(&[hd, noap, se, co, al])), (1, 4));
+        // The approval card arrives above: every card below moves down -- fresh windows, none dragged along.
+        let ap = card(78.0, 120.0, 14.0);
+        let down = |c: Region| Region { y: c.y + 76.0, ..c };
+        let (made, kept) = run(&mut pool, &page(&[hd, ap, down(se), down(co), down(al)]));
+        assert_eq!((made, kept), (4, 1), "the header stays; the moved cards get new windows");
+        // The old rule (slot i takes placement i) on the same step moved shown windows: that is the bug.
+        let before = page(&[hd, noap, se, co, al]);
+        let after = page(&[hd, noap, co, al]);
+        let moved = (0..after.len()).filter(|&i| before[i] != after[i]).count();
+        assert_eq!(moved, 2, "0.1.9: Today's and Live's shown windows were moved into their neighbours' places");
+    }
+
+    #[test]
+    fn the_page_must_have_measured_this_window() {
+        // A page from before 0.1.10 does not say: as before.
+        assert!(view_matches(None, 1.5, 100, 100));
+        // 150 %: a 1920 x 1080 CSS page in a 2880 x 1620 client; WebView2 rounding is allowed.
+        assert!(view_matches(Some((1920.0, 1080.0)), 1.5, 2880, 1620));
+        assert!(view_matches(Some((1919.33, 1080.0)), 1.5, 2880, 1621));
+        // The window was resized (the glance column, a mode change) before the page measured again: no blur.
+        assert!(!view_matches(Some((748.0, 860.0)), 1.5, 1122 + 450, 1290));
+        assert!(!view_matches(Some((748.0, 860.0)), 1.5, 1122, 1290 - 30));
+        assert!(!view_matches(Some((f64::NAN, 860.0)), 1.5, 1122, 1290));
+        assert!(!view_matches(Some((748.0, 860.0)), 1.5, 0, 0));
     }
 
     #[test]

@@ -1177,10 +1177,11 @@ fn blur_note() -> Option<&'static str> {
     blur::unavailable(&acrylic::system())
 }
 
-/// The page's glass surfaces, in CSS px, settled (not moving), only when they change.
+/// The page's glass surfaces, in CSS px, settled (not moving), only when they change; `view` the viewport
+/// (CSS px, [width, height]) they were measured in (0.1.10; a page that does not send it is taken as is).
 #[tauri::command]
-fn set_blur_rects(rects: Vec<Region>, dpr: f64) {
-    acrylic::set_rects(rects, dpr);
+fn set_blur_rects(rects: Vec<Region>, dpr: f64, view: Option<(f64, f64)>) {
+    acrylic::set_rects(rects, dpr, view);
 }
 
 fn blur_init(app: &AppHandle, w: &WebviewWindow) {
