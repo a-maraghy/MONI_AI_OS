@@ -516,13 +516,25 @@ const H = 3600e3, M = 60e3;
         const feed = await v.page.evaluate(() => window.__mintCC.S.feed.filter((f) => f.kind === "watch" || f.kind === "brief").map((f) => f.kind + ":" + f.html));
         check(`${theme}: today's watcher alerts and the brief are in the Live feed (as history)`, feed.some((f) => /^watch:<b>Watcher<\/b> · Today(&#39;|')s spend passed/.test(f)) && feed.some((f) => /^brief:/.test(f)), JSON.stringify(feed));
         await shot(v.page, `cc-brief-${theme}`);
+        // Joins: a session's line opens its story; a watcher alert chirps (MintSound) and its toast links the story.
+        await v.page.evaluate(() => { window.__calls = []; window.MintStory.open = (sid, t) => { window.__calls.push(["story", sid, t]); return true; }; const p = window.MintSound.play; window.MintSound.play = (n, o) => { window.__calls.push(["sound", n, o && o.role]); return p.call(window.MintSound, n, o); }; });
+        if (theme === "dark") {
+          const st = await v.page.evaluate(() => [...document.querySelectorAll('#pa-card [data-pa="story"]')].map((b) => b.textContent + "=" + b.getAttribute("data-sid")));
+          check("dark: a brief line about one session links its story (its id)", st.some((x) => /^Planning engine=bbbbbbbb-0000-4000-8000-000000000001$/.test(x)) && !st.some((x) => /^(Needs you|Spend|Finished|Failed)=/.test(x)), JSON.stringify(st));
+          if (st.length) { await v.page.click('#pa-card [data-pa="story"]'); check("  clicking it opens MintStory at the window's start", await v.page.evaluate(() => window.__calls.some((c) => c[0] === "story" && /^[0-9a-f-]{36}$/.test(c[1]) && /^\d{4}-\d\d-\d\dT/.test(c[2] || "")))); }
+        }
         // A watcher fires while the page is open.
         const wt = theme === "dark" ? ["Customs docs has been waiting on you 26 min (for the October rates).", "When any session waits on you 10 min or more · once"] : ["Invoice audit wrote “done”: Done — 214 invoices checked, 3 flagged.", "When any session writes “done” · every time"];
-        put("watch", wt[0], { text: wt[0], watcher: wt[1] });
+        put("watch", wt[0], { text: wt[0], watcher: wt[1], session: theme === "dark" ? "bbbbbbbb-0000-4000-8000-000000000002" : null });
         await v.page.evaluate(() => window.MintProactive.poll());
         await v.page.waitForSelector(".pa-toast", { timeout: 4000 }).catch(() => {});
         const toast = await v.page.evaluate(() => { const t = document.querySelector(".pa-toast"); return t ? t.innerText : null; });
         check(`${theme}: a watcher firing: a toast with the alert and the watcher, and a new line in the Live feed`, toast && toast.includes(wt[0]) && toast.includes(wt[1]) && (await v.page.evaluate(() => window.__mintCC.S.feed[0].kind)) === "watch", toast);
+        check(`${theme}: the alert asks MintSound for 'needs' (MINT AI's voice)`, await v.page.evaluate(() => window.__calls.some((c) => c[0] === "sound" && c[1] === "needs" && c[2] === "core")));
+        const tb = await v.page.evaluate(() => { const b = document.querySelector(".pa-toast .pa-b"); return b ? b.textContent : null; });
+        if (theme === "dark") {
+          check("  a toast about one session has a Story button that opens it", tb === "Story" && (await v.page.evaluate(() => { document.querySelector(".pa-toast .pa-b").click(); return window.__calls.some((c) => c[0] === "story" && c[1] === "bbbbbbbb-0000-4000-8000-000000000002"); })));
+        } else check("  a toast with no session has no Story button", tb === null, tb);
         await v.page.waitForTimeout(450); // the slide-in done
         await shot(v.page, `cc-watcher-fires-${theme}`);
         // The composer: "tell me when ..." -> Set a watcher?
