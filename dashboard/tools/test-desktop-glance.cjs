@@ -266,8 +266,17 @@ function paintWallpaper(kind, w, h) {
       await page.waitForFunction(() => window.__mintCC && window.__mintCC.S && window.__mintCC.S.online && window.__mintCC.S.sessions.length > 1, null, { timeout: 15000 });
       await page.waitForFunction(() => !document.getElementById("dk-glance") || document.getElementById("dk-glance").hidden || document.querySelectorAll("#dk-gl-cards > *").length >= 4, null, { timeout: 8000 }).catch(() => {});
       await page.waitForFunction(() => { const g = window.MintDesktop.glance(); return !g.on || !!g.caps; }, null, { timeout: 8000 }).catch(() => {});
+      // Approvals already waiting open the big decision card at once, and the glance approval cards step back
+      // while it is open; most checks below want them, so the card is put away ("Later") unless asked to stay.
+      if (!o.keepCard) await later(page);
       await page.waitForTimeout(400);
       return { ctx, page, cdp, auth, close: async () => { const c = await page.evaluate(() => window.__csp).catch(() => []); c.forEach((x) => problems.push(tag + ": CSP " + x)); await ctx.close(); } };
+    }
+    async function later(page) {
+      await page.waitForFunction(() => !document.getElementById("cc-need").hidden, null, { timeout: 3000 }).catch(() => {});
+      await page.evaluate(() => { const n = document.getElementById("cc-need"); if (n.hidden) return; const b = Array.from(n.querySelectorAll("[data-need-act]")).find((x) => /^\s*later\s*$/i.test(x.textContent)); if (b) b.click(); });
+      await page.waitForFunction(() => document.getElementById("cc-need").hidden, null, { timeout: 3000 }).catch(() => {});
+      await sleep(150);
     }
     const info = (page) => page.evaluate(() => {
       const g = document.getElementById("dk-glance"), cards = [...document.querySelectorAll("#dk-glance .dk-gl-hit")];
@@ -318,6 +327,7 @@ function paintWallpaper(kind, w, h) {
       const a43 = approval(43, "Remove-Item C:\\Users\\amr\\Downloads\\old.zip", "session:laptop", "Laptop session", 6);
       W.approvals.push(a43);
       push("approval", { approval: a43 });
+      await later(v.page); // a new approval opens the big card; put it away to see the glance cards
       await v.page.waitForFunction(() => /1\s*waiting on you/.test(document.querySelector("#dk-glance .dk-gl-se").innerText), null, { timeout: 5000 }).catch(() => {});
       await sleep(400);
       i = await info(v.page);
@@ -328,6 +338,37 @@ function paintWallpaper(kind, w, h) {
       check("  the screen reader hears the newest line once", /needs your approval|is done|waiting/.test(await v.page.evaluate(() => document.getElementById("dk-gl-live").textContent)));
       const capCalls = seen.filter((m) => m.op === "token-caps").length;
       check("  the caps are read once on open, not on every event (no polling faster than today's)", capCalls >= 1 && capCalls <= 2, capCalls);
+      await v.close();
+    }
+
+    section("Step-back: while the big decision card is open, the glance approval cards step back");
+    {
+      const v = await open(748, 860, "mode=floating&glance=1", { keepCard: true });
+      const st = (page) => page.evaluate(() => ({
+        need: !document.getElementById("cc-need").hidden, ap: document.querySelectorAll("#dk-glance .dk-gl-ap").length,
+        none: document.querySelectorAll('#dk-glance [data-gl-key="ap-none"]').length, text: document.getElementById("dk-glance").innerText,
+        hits: window.MintDesktop.regions(), apRects: Array.from(document.querySelectorAll("#dk-glance .dk-gl-ap")).map((e) => e.getBoundingClientRect().toJSON()),
+      }));
+      let s1 = await st(v.page);
+      check("approvals waiting at load: the decision card is open and the glance has no approval card", s1.need && s1.ap === 0 && s1.none === 0, JSON.stringify({ need: s1.need, ap: s1.ap }));
+      check("  the other cards stay: sessions, today, live", /Sessions/i.test(s1.text) && /Today/i.test(s1.text) && /Live/i.test(s1.text), s1.text);
+      if (SHOTS) { fs.mkdirSync(SHOTS, { recursive: true }); fs.writeFileSync(path.join(SHOTS, "stepback-card-open.png"), await v.page.screenshot({ omitBackground: true })); }
+      await later(v.page);
+      s1 = await st(v.page);
+      check("the card put away (Later): the two approval cards come back", !s1.need && s1.ap === 2, JSON.stringify({ need: s1.need, ap: s1.ap }));
+      check("  each a hit region again", s1.apRects.length === 2 && s1.apRects.every((r) => s1.hits.some((g) => inside(g, r.x + r.width / 2, r.y + r.height / 2))));
+      if (SHOTS) fs.writeFileSync(path.join(SHOTS, "stepback-card-closed.png"), await v.page.screenshot({ omitBackground: true }));
+      const a44 = approval(44, "git push --force origin main", "session:planning", "Planning engine", 7);
+      W.approvals.push(a44);
+      push("approval", { approval: a44 });
+      await v.page.waitForFunction(() => !document.getElementById("cc-need").hidden, null, { timeout: 5000 }).catch(() => {});
+      await sleep(300);
+      s1 = await st(v.page);
+      check("a new approval arrives: the decision card opens on it and the glance approval cards step back again", s1.need && s1.ap === 0 && /Sessions/i.test(s1.text), JSON.stringify({ need: s1.need, ap: s1.ap }));
+      await later(v.page);
+      s1 = await st(v.page);
+      check("  closed again: back, with the new one counted", !s1.need && s1.ap === 2 && /\+\d+ more waiting/i.test(s1.text), JSON.stringify({ need: s1.need, ap: s1.ap, t: s1.text.replace(/\s+/g, " ") }));
+      W.approvals = W.approvals.filter((a) => a.id !== 44);
       await v.close();
     }
 
@@ -364,6 +405,24 @@ function paintWallpaper(kind, w, h) {
       await v.page.click('#dk-glance [data-gl-open="43"]');
       await sleep(400);
       check("Open: the decision card, on that approval", await v.page.evaluate(() => !document.getElementById("cc-need").hidden && /Remove-Item/.test(document.getElementById("cc-need").innerText)));
+      {
+        const step = await v.page.evaluate(() => ({
+          ap: document.querySelectorAll("#dk-glance .dk-gl-ap").length, none: document.querySelectorAll('#dk-glance [data-gl-key="ap-none"]').length,
+          keys: Array.from(document.querySelectorAll("#dk-glance [data-gl-key]")).map((e) => e.getAttribute("data-gl-key")),
+          text: document.getElementById("dk-glance").innerText,
+          hit: window.MintDesktop.regions().length,
+        }));
+        check("step-back: while the decision card is open, the glance approval cards are gone (no 'No approvals' card either)", step.ap === 0 && step.none === 0, JSON.stringify(step.keys));
+        check("  the other cards stay: sessions, today, live", /Sessions/i.test(step.text) && /Today/i.test(step.text) && /Live/i.test(step.text), step.text);
+        await v.page.evaluate(() => { const b = Array.from(document.querySelectorAll("#cc-need [data-need-act]")).find((x) => /later/i.test(x.textContent)); if (b) b.click(); });
+        await sleep(400);
+        const back = await v.page.evaluate(() => ({ need: document.getElementById("cc-need").hidden, ap: document.querySelectorAll("#dk-glance .dk-gl-ap").length, open43: !!document.querySelector('#dk-glance [data-gl-open="43"]') }));
+        check("  the decision card closed (Later): the approval cards are back", back.need && back.ap >= 1 && back.open43, JSON.stringify(back));
+        const rg = await v.page.evaluate(() => { const r = document.querySelector('#dk-glance [data-gl-key="ap43"]').getBoundingClientRect(); return window.MintDesktop.regions().some((g) => r.x + r.width / 2 >= g.x && r.x + r.width / 2 < g.x + g.w && r.y + r.height / 2 >= g.y && r.y + r.height / 2 < g.y + g.h); });
+        check("  and the returned card is a hit region again", rg);
+        await v.page.click('#dk-glance [data-gl-open="43"]');
+        await sleep(400);
+      }
       await v.page.click("#dk-glance [data-gl-sess]");
       await sleep(500);
       check("a session's name opens its conversation (the deep view)", await v.page.evaluate(() => !!document.querySelector(".cc-deep")));

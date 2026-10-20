@@ -474,8 +474,12 @@
     if (S.approvals && S.approvals.forEach) S.approvals.forEach(function (a) { aps.push(a); });
     var A = GL.approvals(aps, now), al = GL.alerts(S.feed, now);
     var cards = [];
-    A.list.forEach(function (a, i) { cards.push(apCard(a, i === A.list.length - 1 ? A.more : 0)); });
-    if (!A.total) cards.push(noApCard());
+    // While the big decision card is open, the approval cards step back (it shows the same thing, larger);
+    // they come back when it closes. The other cards stay.
+    if (!bigCardOpen()) {
+      A.list.forEach(function (a, i) { cards.push(apCard(a, i === A.list.length - 1 ? A.more : 0)); });
+      if (!A.total) cards.push(noApCard());
+    }
     cards.push(sessCard(GL.sessions(S.sessions)));
     cards.push(costCard(GL.cost(glCaps, S.status)));
     cards.push(alertCard(al));
@@ -509,6 +513,12 @@
     }
   }, 1000);
   ["mint-cc", "mint-needs", "mint-turns"].forEach(function (n) { document.addEventListener(n, function () { renderGlance(false); }); });
+  /* The big decision card (#cc-need) opening or closing: the approval cards step back / return at once. */
+  function bigCardOpen() { var n = $("cc-need"); return !!(n && !n.hidden); }
+  (function () {
+    var n = $("cc-need");
+    if (n && window.MutationObserver) new MutationObserver(function () { renderGlance(true); }).observe(n, { attributes: true, attributeFilter: ["hidden"] });
+  })();
   // A slow guard: the "N min ago" times move on, and anything an event did not announce.
   setInterval(function () { renderGlance(false); }, 15000);
 
