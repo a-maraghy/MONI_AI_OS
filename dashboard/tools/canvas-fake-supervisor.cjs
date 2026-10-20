@@ -17,6 +17,7 @@ const ROOT = path.join(__dirname, "..", "..");
 const { createStory } = require(path.join(ROOT, "moni-ai", "lib", "story.js"));
 const names = require(path.join(ROOT, "moni-ai", "lib", "names.js"));
 
+const Widgets = require(path.join(ROOT, "moni-ai", "lib", "mint-widgets.js"));
 const tagOf = (ut) => crypto.createHash("sha256").update(String(ut)).digest("hex").slice(0, 16);
 
 function costReport(now) {
@@ -76,6 +77,15 @@ function startCanvasFake(sock, W, o) {
   const uts = [];
   let turnId = 500;
   let seq = 1000;
+  // The conversation: turns as the ledger keeps them, with the widgets shown with each reply (the
+  // supervisor's turnWidgets: re-validated on the way out). pendingWidgets: nonce -> { turn, widget }.
+  const turnRows = [];
+  const pendingWidgets = new Map();
+  const outTurn = (r) => {
+    const widgets = [];
+    for (const w of r.widgets || []) { const v = Widgets.validate(w.widget); if (v.ok) widgets.push({ id: w.id, at: w.at, key: v.key, widget: v.value }); }
+    return Object.assign({}, r, { widgets });
+  };
   const server = net.createServer((c) => {
     let buf = "";
     c.setEncoding("utf8");
@@ -106,6 +116,7 @@ function startCanvasFake(sock, W, o) {
             const t = m.table;
             if (t === "delegations") data = { rows: W.ledger.db.prepare("SELECT * FROM delegations ORDER BY id DESC LIMIT 30").all() };
             else if (t === "approvals") data = { rows: W.ledger.db.prepare("SELECT * FROM approvals ORDER BY id DESC LIMIT 30").all() };
+            else if (t === "turns") data = { rows: turnRows.slice().reverse().map(outTurn) };
             else data = { rows: [] };
           } else if (m.op === "missions") data = { missions: [] };
           else if (m.op === "decisions") data = { decisions: [] };
@@ -117,8 +128,21 @@ function startCanvasFake(sock, W, o) {
           else if (m.op === "story-day") data = await story.day(m.day || null);
           else if (m.op === "send") {
             if (m.ut) uts.push(m.ut);
-            data = { turn: { id: ++turnId, status: "queued" }, queued: 0 };
+            const row = { id: ++turnId, source: "dashboard", actor: m.actor, text: m.text, status: "done", created_at: new Date().toISOString(), started_at: new Date().toISOString(), ended_at: new Date().toISOString(), result_text: o.reply || "Here it is.", widgets: [] };
+            turnRows.push(row);
+            data = { turn: { id: row.id, status: "queued" }, queued: 0 };
+            setTimeout(() => push({ type: "turn", phase: "end", turn: outTurn(row) }), 50);
           } else if (m.op === "ui-ack") {
+            // As the supervisor's uiWidget: a widget the tab showed is kept with its turn and told to every viewer.
+            const pw = pendingWidgets.get(m.nonce);
+            pendingWidgets.delete(m.nonce);
+            if (pw && m.ok) {
+              const row = turnRows.find((r) => r.id === pw.turn);
+              if (row && row.widgets.length < 3) {
+                row.widgets.push({ id: m.nonce, at: new Date().toISOString(), widget: pw.widget });
+                push({ type: "turn", phase: "widget", turn: outTurn(row) });
+              }
+            }
             data = { acked: true };
           }
         } catch (e) {
@@ -130,6 +154,7 @@ function startCanvasFake(sock, W, o) {
     c.on("error", () => {});
   });
   function push(ev) {
+    if (ev.type === "ui" && ev.action === "widget.show" && ev.nonce) pendingWidgets.set(ev.nonce, { turn: ev.turn_id, widget: ev.widget });
     const e = Object.assign({ ts: new Date().toISOString() }, ev);
     if (!("seq" in e)) e.seq = ev.type === "ui" ? 0 : ++seq;
     const line = JSON.stringify({ event: e }) + "\n";
@@ -144,6 +169,7 @@ function startCanvasFake(sock, W, o) {
         push,
         lastUt: () => uts[uts.length - 1] || null,
         lastTurn: () => turnId,
+        turns: turnRows,
         tagOf,
         streams: () => streams.size,
       })

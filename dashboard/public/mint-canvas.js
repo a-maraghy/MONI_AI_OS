@@ -86,7 +86,10 @@
     }
   }
   function dur(ms) { ms = Math.max(0, ms || 0); var m = Math.round(ms / 60e3); return m < 60 ? m + " min" : Math.floor(m / 60) + " h " + String(m % 60).padStart(2, "0"); }
-  function hm(t) { var d = new Date(t); if (isNaN(d)) return ""; return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0"); }
+  // Times as the Command Center shows them (moni-ai.js TZ: Cairo), so a widget's time matches its reply's.
+  var HM = null;
+  try { HM = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: "Africa/Cairo" }); } catch (e) { HM = null; }
+  function hm(t) { var d = new Date(t); if (isNaN(d)) return ""; return HM ? HM.format(d) : String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0"); }
   function clip(s, n) { s = String(s == null ? "" : s).replace(/\s+/g, " ").trim(); return s.length > n ? s.slice(0, n - 1) + "…" : s; }
 
   /* ---------------------------------------------------------------- sources */
@@ -400,22 +403,22 @@
     var w = el("section", "cv-w cv-k-" + spec.kind + (t.quiet ? " quiet" : "") + (t.type === "offered" ? " offered" : ""));
     w.setAttribute("data-cv", t.id);
     w.setAttribute("data-size", t.size);
-    w.setAttribute("data-cc-obstacle", "");
+    if (t.type !== "history") w.setAttribute("data-cc-obstacle", ""); // in the conversation sheet it is no obstacle
     w.setAttribute("aria-label", spec.title);
     if (spec.blocks[0] && spec.blocks[0].type === "approval") w.classList.add("cv-ap-w");
     var hd = el("header", "cv-h");
     var tt = el("div", "cv-t");
     tt.appendChild(el("b", null, spec.title));
-    var meta = t.type === "offered" ? "From MINT AI's answer · " + hm(t.at) : t.type === "standing" ? (t.learned ? "You keep this one" : "") : "";
+    var meta = t.type === "offered" ? "From MINT AI's answer · " + hm(t.at) : t.type === "history" ? "Shown with this reply" + (t.at ? " · " + hm(t.at) : "") : t.type === "standing" ? (t.learned ? "You keep this one" : "") : "";
     if (spec.source) meta = (meta ? meta + " · " : "") + "live";
     if (meta) tt.appendChild(el("small", spec.source ? "live" : null, meta));
     hd.appendChild(tt);
     var acts = el("div", "cv-acts");
     var btn = function (act, label, txt) { var b = el("button", "cv-ib", txt); b.type = "button"; b.setAttribute("data-cv-act", act); b.setAttribute("aria-label", label); b.title = label; acts.appendChild(b); return b; };
-    if (t.type === "offered") btn("pin", "Pin to the board", "Pin");
+    if (t.type === "offered" || t.type === "history") btn("pin", "Pin to the board", "Pin");
     if (t.type === "pinned" || t.type === "offered") btn("size", "Size: " + t.size.toUpperCase() + " (change)", t.size.toUpperCase());
     if (t.type === "pinned") btn("unpin", "Unpin", "Unpin");
-    btn("x", t.type === "pinned" ? "Unpin and dismiss" : "Dismiss", "×");
+    if (t.type !== "history") btn("x", t.type === "pinned" ? "Unpin and dismiss" : "Dismiss", "×");
     hd.appendChild(acts);
     w.appendChild(hd);
     var bd = el("div", "cv-bd");
@@ -546,6 +549,7 @@
     cc.setAttribute("data-cv-mode", plan.mode);
     // The page state a widget shows changes every tick: redraw when the plan or the data moved.
     var dataSig = dataSignature(plan);
+    paintHistory(false);
     var sig = JSON.stringify(plan) + "|" + dataSig + "|" + (C.fix ? C.fix.id : "") + "|" + window.innerWidth + "x" + window.innerHeight;
     if (!force && sig === C.sig) { placeDesk(); return; }
     force = false;
@@ -592,9 +596,12 @@
     return w;
   }
   function dataSignature(plan) {
+    return specsSignature(plan.tiles.map(function (t) { return specFor(t); }));
+  }
+  /** What the given widgets show, as a string: it changes when their sources' data does. */
+  function specsSignature(list) {
     var c = mcc(), S = (c && c.S) || {}, parts = [];
-    plan.tiles.forEach(function (t) {
-      var s = specFor(t);
+    list.forEach(function (s) {
       if (!s || !s.spec) return;
       var src = s.spec.source;
       if (src && FETCHED[src.name]) { var e = C.data[srcKey(src)]; parts.push(e ? e.at + (e.err || "") : "-"); }
@@ -801,6 +808,61 @@
     return { ok: true };
   }
 
+  /* ---------------------------------------------------------------- the conversation's widgets (history)
+     A widget MINT AI showed is kept with its reply in the supervisor's ledger (the conversation's own store)
+     and comes back with the turn: after a reload, in another tab, on another device. moni-ai.js hands each
+     painted turn here; every widget is checked again before it is drawn, live sources refresh as usual, and
+     it is shown whatever the learning says (it was offered then). Pin puts it on the board. */
+  var hist = []; // { box, turn, items: [{ id, at, spec, key }], sig }
+  function history(turnEl, tr) {
+    var items = [];
+    (tr.widgets || []).slice(0, 3).forEach(function (w) {
+      var v = w && MW.validate(w.widget);
+      if (v && v.ok) items.push({ id: "h" + tr.id + ":" + String(w.id || "").slice(0, 24), at: Date.parse(w.at) || null, spec: v.value, key: v.key });
+    });
+    if (!items.length) return;
+    var host = turnEl.querySelector(".cc-msg.ai .cc-bubble") || turnEl;
+    var box = el("div", "cv-hist");
+    box.setAttribute("data-turn", String(tr.id));
+    host.appendChild(box);
+    hist = hist.filter(function (h) { return h.box.isConnected && h.turn !== tr.id; });
+    var h = { box: box, turn: tr.id, items: items, sig: "" };
+    hist.push(h);
+    drawHistory(h);
+  }
+  function drawHistory(h) {
+    h.sig = specsSignature(h.items);
+    while (h.box.firstChild) h.box.removeChild(h.box.firstChild);
+    h.items.forEach(function (it) {
+      var t = { id: it.id, type: "history", key: it.key, size: "m", at: it.at };
+      h.box.appendChild(card(t, it.spec));
+    });
+  }
+  function paintHistory(all) {
+    hist = hist.filter(function (h) { return h.box.isConnected; });
+    hist.forEach(function (h) { if (all || specsSignature(h.items) !== h.sig) drawHistory(h); });
+  }
+  function onHistClick(e) {
+    var b = e.target.closest ? e.target.closest("[data-cv-act]") : null;
+    if (!b || !b.closest(".cv-hist")) return;
+    var w = b.closest(".cv-w"), id = w && w.getAttribute("data-cv");
+    var it = null;
+    hist.forEach(function (h) { h.items.forEach(function (x) { if (x.id === id) it = x; }); });
+    if (!it) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (b.getAttribute("data-cv-act") === "pin") {
+      api("/mint-ai/api/canvas/pin", { widget: it.spec, size: it.spec.size }).then(function (j) {
+        C.pins.push(j.pin);
+        takeLearned(j);
+        b.textContent = "Pinned";
+        b.disabled = true;
+        schedule(true);
+      }, function (x) { toast("Not pinned: " + x.message); });
+    }
+  }
+  document.addEventListener("click", onHistClick, true);
+
   board.addEventListener("click", onClick);
   centre.addEventListener("click", onClick);
   ctl.addEventListener("click", onClick);
@@ -821,7 +883,7 @@
   setInterval(function () { if (!document.hidden || DESK) render(); }, TICK_MS);
 
   window.MintCanvas = {
-    offer: offer, state: C, plan: function () { return C.plan; }, refresh: function () { schedule(true); }, reload: load,
+    offer: offer, history: history, state: C, plan: function () { return C.plan; }, refresh: function () { schedule(true); }, reload: load,
     pin: pin, dismiss: dismiss, size: size, lock: lock, QUIET: QUIET,
   };
 })();

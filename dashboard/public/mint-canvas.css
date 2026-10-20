@@ -148,6 +148,11 @@
 .cv-att { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 50%, transparent); }
 .cc-shell[data-cv-mode="incident"] .cv-lock span { color: var(--bad); }
 
+/* ---- a widget kept with its reply, in the conversation ---- */
+.cv-hist { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.cv-hist .cv-w { box-shadow: none; backdrop-filter: none; background: var(--cc-glass, transparent); }
+.cv-hist .cv-w[data-size="m"] .cv-bd { max-height: 320px; }
+
 /* ---- Settings ▸ Appearance ▸ Board ---- */
 .cv-learn { width: 100%; border-collapse: collapse; font-size: 13px; }
 .cv-learn th, .cv-learn td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line); }

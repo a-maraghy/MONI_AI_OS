@@ -8,7 +8,8 @@
  * Command Center (with a ui token) runs, only widgets the building blocks accept (refused at the
  * socket otherwise), at most 3 a turn; the "ui" event (action widget.show) is live-only and carries a
  * tag of the token, never the token, and the canonical widget; the tab's answer comes back as ok /
- * refused (with why); no answer is no-screen; the audit shows a summary of the widget, never the token.
+ * refused (with why); no answer is no-screen; a shown one is kept with its turn in the ledger (read back
+ * re-validated, sent to every viewer as a turn event); the audit shows a summary of the widget, never the token.
  */
 const fs = require("fs");
 const net = require("net");
@@ -208,15 +209,24 @@ const UT = "UtUtUtUtUtUtUtUtUtUtUt01";
     const res = await pending;
     check("the tab's ok comes back: status ok, and a reminder to say it in words", res.ok && res.data.status === "ok" && res.data.shown === SPEND.title && /in words/.test(res.data.note), JSON.stringify(res));
 
+    const tev = await sub.waitFor((e) => e.type === "turn" && e.phase === "widget", 3000);
+    check("shown: kept with the reply -- a turn event (phase widget) carries it, checked, for every viewer", tev && tev.turn.id === sent.data.turn.id && tev.turn.widgets.length === 1 && tev.turn.widgets[0].widget.title === SPEND.title && tev.turn.widgets[0].key === "chart:usage.spend" && tev.turn.widgets[0].id === ev.nonce, JSON.stringify(tev && tev.turn.widgets));
+    const lt = await call("ledger", { table: "turns", limit: 5 });
+    const row = lt.ok && lt.data.rows.find((r) => r.id === sent.data.turn.id);
+    check("  the ledger's turn row holds it (the conversation's own store): read back re-validated, as a list", row && Array.isArray(row.widgets) && row.widgets.length === 1 && row.widgets[0].widget.blocks[0].view === "days", JSON.stringify(row && row.widgets));
     const p2 = uw({ v: 1, kind: "table", title: "Disk", blocks: [{ type: "table", columns: [{ key: "d", label: "Dir" }], rows: [{ d: "/var" }] }] });
     const ev2 = await sub.waitFor((e) => e.type === "ui" && e.action === "widget.show" && e.nonce !== ev.nonce, 3000);
     await call("ui-ack", { nonce: ev2.nonce, ok: false, why: "the administrator keeps dismissing table widgets; answer in words" }, "admin");
     const r2 = await p2;
     check("a refusal (a kind always dismissed) comes back as refused, with why", r2.ok && r2.data.status === "refused" && /keeps dismissing/.test(r2.data.why) && /in words/.test(r2.data.note), JSON.stringify(r2));
 
+    const row2 = (await call("ledger", { table: "turns", limit: 5 })).data.rows.find((r) => r.id === sent.data.turn.id);
+    check("a refused widget is not kept with the reply", row2.widgets.length === 1, JSON.stringify(row2.widgets));
     const t0 = Date.now();
     const r3 = await uw(SPEND);
     check("no answer in 5 s: no-screen", r3.ok && r3.data.status === "no-screen" && Date.now() - t0 >= 4800, JSON.stringify(r3));
+    const row3 = (await call("ledger", { table: "turns", limit: 5 })).data.rows.find((r) => r.id === sent.data.turn.id);
+    check("nor one no screen answered", row3.widgets.length === 1);
     const r4 = await uw(SPEND);
     check("at most 3 widgets a turn", !r4.ok && /at most 3 widgets/.test(r4.error), JSON.stringify(r4));
 

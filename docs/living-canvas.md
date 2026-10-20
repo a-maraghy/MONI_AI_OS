@@ -10,6 +10,7 @@ Screenshots and GIFs are in `mockups/living-canvas/`:
 - a widget answer being pinned: `widget-pinned.gif`, `answer-widget-dark` and `pinned-board-dark`;
 - Fix it: `failure-fixit.gif` and `failure-fixit-dark`;
 - the other block types: `widgets-gallery-dark`;
+- the conversation keeping them: `conversation-history-light`;
 - the lock: `locked-light`;
 - learning: `learned-standing-dark` and `settings-board-light`;
 - the phone: `phone-*`;
@@ -45,6 +46,23 @@ widget's header has three controls:
 - **Pin** keeps it on the board. The server stores it, so it survives a reload.
 - **S / M / L** cycles its size.
 - **×** dismisses it.
+
+**The conversation keeps them (user, 2026-10-20).** A widget the tab showed is stored with its reply,
+in the supervisor's ledger, which is where the conversation itself is kept:
+- `turns.widgets` is a JSON list of `{ id, at, widget }`, at most 3 per turn, each ≤ 12,000 bytes;
+- a widget that was refused or that no screen answered is not stored.
+
+The turn then goes out to every viewer as a `turn` event (phase `widget`), and it comes back with the
+turn on every load (`ledger turns`, `publicTurn`). Each widget is checked again on the way out by the
+supervisor's `turnWidgets` and once more on the page.
+
+The Conversation shows it under its reply, marked "Shown with this reply · time":
+- after a reload, and in other tabs and on other devices;
+- live sources refresh as usual;
+- **Pin** puts it on the board.
+
+Old history is history: a kind that has since stopped being offered is still shown there. The board
+offers nothing again after a reload; pinned widgets stay on it.
 
 The approval kind is the existing decision card, never a new approval path. The widget names only the
 approval's id, so its text comes from the real approval. It has three buttons:
@@ -208,10 +226,13 @@ Unpinning is tidying the board, so it is not counted as a dismissal.
   - Browser: the new assets plus `mint-desktop-glance.js` go before `ui-actions.js`. The list still keeps
     `"ui-actions.js", "moni-ai.js"` together and ends with `"moni-ai.js", "mint-dock.js", "mint-shell.js"`.
   - Desktop: the new assets go before `mint-desktop.js`.
-- `moni-ai.js`: the hand-off of `widget.show`.
+- `moni-ai.js`: the hand-off of `widget.show`, and `paintTurn` handing a turn's widgets to
+  `MintCanvas.history`.
 - `mint-desktop.js`: `HIT` and `GLASS`.
 - `moni-ai/lib/protocol.js`: the op.
-- `moni-ai/supervisor.js`: `uiWidget`, plus the audit summary of a widget.
+- `moni-ai/supervisor.js`: `uiWidget` (stores a shown widget with its turn), `turnWidgets` (re-validates
+  on the way out, in `publicTurn` and the `turns` ledger rows), plus the audit summary of a widget.
+- `moni-ai/lib/ledger.js`: the column `turns.widgets`, added by the existing migration.
 - `moni-ai/bin/moni-ai-mcp`: the two tools.
 - `moni-ai/home/CLAUDE.md`: the charter's widget rule.
 

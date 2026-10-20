@@ -1414,6 +1414,8 @@
         (tr.duration_ms ? " · " + dur(tr.duration_ms) : "") + '</div><div class="cc-bubble' + (tr.status === "error" ? " err" : "") + '">' + body + "</div></div>";
     }
     el.innerHTML = h;
+    // The widgets MINT AI showed with this reply (kept with the turn; the living canvas draws them).
+    if (tr.widgets && tr.widgets.length && window.MintCanvas && window.MintCanvas.history) window.MintCanvas.history(el, tr);
   }
 
   /* Approvals whose turn is not on screen (older than what was loaded, or raised

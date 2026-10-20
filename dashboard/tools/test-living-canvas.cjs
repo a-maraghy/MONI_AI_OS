@@ -237,6 +237,7 @@ const XSS = { v: 1, kind: "table", title: "Folders by size", blocks: [{ type: "t
       check("  the quiet tiles stay small and dim", i.right.every((x) => x.size === "s"));
       await shot(v.page, "failure-dark", { wait: 500 });
       await v.page.click('#cv-centre [data-cv-act="fix"]');
+      await v.page.waitForFunction(() => !!document.querySelector(".cv-fix-t"), null, { timeout: 4000 }).catch(() => {});
       for (let j = 0; j < 6; j++) await frame();
       const fixText = await v.page.evaluate(() => document.querySelector(".cv-fix-t") && document.querySelector(".cv-fix-t").textContent);
       check("Fix it shows the request it will send to MINT AI (an ordinary turn: delegation, approvals as ever)", /^Fix it: the work sent to Planning engine failed/.test(fixText || "") && /delegate the fix/.test(fixText) && /ask me before anything destructive/.test(fixText), fixText);
@@ -354,6 +355,51 @@ const XSS = { v: 1, kind: "table", title: "Folders by size", blocks: [{ type: "t
       await sleep(1500);
       check("Reset (with its confirm): the counts are forgotten", (await api("/mint-ai/api/canvas")).learned.rows.length === 0);
       await set.close();
+    }
+
+    section("the conversation keeps the widgets (after a reload, on another device)");
+    {
+      const csrf = s.csrfOf((await s.req("GET", "/mint-ai", { cookie })).body);
+      const v = await open(1440, 900, "");
+      await answer(v.page, Object.assign({}, SPEND, { title: "Spend for the history" }), "what did we spend? (history)");
+      await sleep(600);
+      const histOf = (page) => page.evaluate(() => {
+        window.__mintCC.openSheet("conv");
+        return [...document.querySelectorAll("#cc-chat .cv-hist .cv-w")].map((w) => ({ text: w.textContent.replace(/\s+/g, " ").trim().slice(0, 200), rects: w.querySelectorAll(".cv-chart rect").length, turn: w.closest(".cc-turn") && w.closest(".cc-turn").getAttribute("data-turn") }));
+      });
+      await sleep(400);
+      let h = await histOf(v.page);
+      const mine = h.find((x) => /Spend for the history/.test(x.text));
+      check("shown with its reply in the conversation too (live: the 14-day chart), marked as shown with this reply", mine && mine.rects === 28 && /Shown with this reply/.test(mine.text), JSON.stringify(h));
+      await v.close();
+      // A reload: nothing is offered on the board any more, but the conversation still has it.
+      const v2 = await open(1440, 900, "");
+      await sleep(500);
+      h = await histOf(v2.page);
+      check("after a reload: the conversation shows it again (from the ledger, re-validated), the board offers nothing", h.some((x) => /Spend for the history/.test(x.text) && x.rects === 28) && (await v2.page.evaluate(() => window.MintCanvas.state.offered.length)) === 0, JSON.stringify(h.map((x) => x.text.slice(0, 40))));
+      // Learning: a kind no longer offered is still shown in old history.
+      for (let n = 0; n < 3; n++) await s.req("POST", "/mint-ai/api/canvas/event", { cookie, headers: { "X-CSRF-Token": csrf }, body: { key: "table:payload", what: "dismiss" } });
+      check("  (table widgets are no longer offered now)", (await api("/mint-ai/api/canvas")).learned.suppressed.includes("table:payload"));
+      await v2.close();
+      const v3 = await open(1280, 860, "", { theme: "light" });
+      await sleep(500);
+      h = await histOf(v3.page);
+      check("another tab or device (light): the same widgets, including a kind no longer offered (old history keeps it)", h.some((x) => /Spend for the history/.test(x.text)) && h.some((x) => /Folders by size/.test(x.text)), JSON.stringify(h.map((x) => x.text.slice(0, 40))));
+      await v3.page.evaluate(() => { const w = [...document.querySelectorAll("#cc-chat .cv-hist .cv-w")].find((x) => /Spend for the history/.test(x.textContent)); w.scrollIntoView({ block: "center" }); });
+      await shot(v3.page, "conversation-history-light", { wait: 700 });
+      const pinsBefore = (await api("/mint-ai/api/canvas")).pins.length;
+      await v3.page.evaluate(() => { const w = [...document.querySelectorAll("#cc-chat .cv-hist .cv-w")].find((x) => /Spend for the history/.test(x.textContent)); w.querySelector('[data-cv-act="pin"]').click(); });
+      await sleep(800);
+      check("Pin from the conversation puts it on the board", (await api("/mint-ai/api/canvas")).pins.length === pinsBefore + 1);
+      const bad = await v3.page.evaluate(() => {
+        const d = document.createElement("div");
+        d.innerHTML = '<div class="cc-msg ai"><div class="cc-bubble"></div></div>';
+        window.MintCanvas.history(d, { id: 99999, widgets: [{ id: "x", widget: { v: 1, kind: "list", title: "<img src=x onerror=window.__xss=1>", blocks: [{ type: "list", items: [{ text: "x" }] }] } }, { id: "y", widget: { v: 1, kind: "metric", title: "ok", blocks: [{ type: "metric", label: "n", value: 1 }] } }] });
+        return { n: d.querySelectorAll(".cv-w").length, img: d.querySelectorAll("img").length, xss: window.__xss };
+      });
+      check("a stored widget that does not pass is left out on load; the rest is drawn", bad.n === 1 && bad.img === 0 && bad.xss === 0, JSON.stringify(bad));
+      await s.req("POST", "/mint-ai/api/canvas/reset", { cookie, headers: { "X-CSRF-Token": csrf }, body: {} });
+      await v3.close();
     }
 
     section("a phone");
