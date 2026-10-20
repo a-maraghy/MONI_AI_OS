@@ -1037,9 +1037,9 @@
   input.addEventListener("blur", capActivity);
   input.addEventListener("input", function () {
     capActivity();
-    if (Orb.poke) Orb.poke(); // core E: typing wakes a dozing bot
     paintCalm();
     $("cc-send").classList.toggle("ready", !!input.value.trim());
+    if (Orb.poke) Orb.poke(); // core E: typing wakes a dozing bot
     var m = /^@(\S+)\s/.exec(input.value);
     if (!m) return;
     var q = m[1].toLowerCase(), hit = null;

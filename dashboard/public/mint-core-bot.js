@@ -159,7 +159,7 @@
    */
   var ZD = [-1.5, 1.5, -0.5, 1.5, 0.5, 1.5, 1.5, 1.5, 0.5, 0.5, -0.5, -0.5, -1.5, -1.5, -0.5, -1.5, 0.5, -1.5, 1.5, -1.5], ZN = 30;
   function zDot(i, t, out) {
-    var zi = (i / 10) | 0, d = i % 10, p = (t / 3.6 + zi / 3) % 1, s = 0.038 + 0.03 * p;
+    var zi = (i / 10) | 0, d = i % 10, p = (t / 3.6 + zi / 3) % 1, s = 0.05 + 0.035 * p;
     out[0] = -0.98 - 0.36 * p + 0.05 * Math.sin(t * 1.3 + zi * 2.1) + ZD[d * 2] * s;
     out[1] = 0.55 + 0.95 * p + ZD[d * 2 + 1] * s;
     out[2] = 0.55 + 0.6 * p;
@@ -552,7 +552,7 @@
     "uniform vec2 u_res,u_c; uniform float u_r,u_t,u_k,u_psz; uniform vec3 u_st;",
     "out vec4 v_c; out float v_j;",
     "const float ZD[20]=float[20](-1.5,1.5,-0.5,1.5,0.5,1.5,1.5,1.5,0.5,0.5,-0.5,-0.5,-1.5,-1.5,-0.5,-1.5,0.5,-1.5,1.5,-1.5);",
-    "void main(){ int i=gl_VertexID; int zi=i/10; int d=i-zi*10; float p=fract(u_t/3.6+float(zi)/3.0); float s=0.038+0.03*p;",
+    "void main(){ int i=gl_VertexID; int zi=i/10; int d=i-zi*10; float p=fract(u_t/3.6+float(zi)/3.0); float s=0.05+0.035*p;",
     " vec2 q=vec2(-0.98-0.36*p+0.05*sin(u_t*1.3+float(zi)*2.1)+ZD[d*2]*s, 0.55+0.95*p+ZD[d*2+1]*s);",
     " float a=u_k*sin(3.14159*p); v_c=vec4(u_st,clamp(a,0.0,1.0)); v_j=0.0;",
     " vec2 px=u_c+q*u_r; gl_Position=a<0.003?vec4(2.0,2.0,0.0,1.0):vec4(px/u_res*2.0-1.0,0.0,1.0); gl_PointSize=max(2.0,floor(u_psz*(0.55+0.6*p)+0.5)); }",
@@ -1062,7 +1062,7 @@
         var c0z = POOL[0];
         gl.useProgram(progZ.p); u = progZ.u; gl.bindVertexArray(emptyVao);
         gl.uniform2f(u.u_res, cw, ch); gl.uniform2f(u.u_c, c0z.cx * dpr, (S.cssH - c0z.cy) * dpr); gl.uniform1f(u.u_r, c0z.r * dpr);
-        gl.uniform1f(u.u_t, zzzT()); gl.uniform1f(u.u_k, zk); gl.uniform1f(u.u_psz, Math.max(2, 0.05 * c0z.cssR * dpr));
+        gl.uniform1f(u.u_t, zzzT()); gl.uniform1f(u.u_k, zk); gl.uniform1f(u.u_psz, Math.max(2, 0.036 * c0z.cssR * dpr));
         gl.uniform3f(u.u_st, c0z.st[0] / 255, c0z.st[1] / 255, c0z.st[2] / 255);
         gl.uniform1f(u.u_pt, 1); gl.uniform1f(u.u_soft, 0); gl.uniform1f(u.u_sq, 1); gl.uniform1f(u.u_mode, 2);
         gl.drawArrays(gl.POINTS, 0, ZN);
@@ -1089,7 +1089,7 @@
       }
       var zk = zzzK();
       if (zk > 0.01) {
-        var c0 = POOL[0], zt = zzzT(), zs = Math.max(2 / dpr, 0.05 * c0.cssR);
+        var c0 = POOL[0], zt = zzzT(), zs = Math.max(2 / dpr, 0.036 * c0.cssR);
         for (var j = 0; j < ZN; j++) {
           zDot(j, zt, ZP);
           var za = ZP[3] * zk, sz = zs * ZP[2];

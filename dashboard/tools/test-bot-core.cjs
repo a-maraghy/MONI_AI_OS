@@ -237,7 +237,8 @@ const B = require(path.join(ROOT, "public", "mint-core-bot.js"));
         }
         check(theme + ": each state shows its face and colour", states.join(" ") === "listening:listen:listening thinking:focus:thinking speaking:speak:speaking needs:pupils:needs delegating:base:thinking idle:base:ready", states.join(" "));
         await page.evaluate(() => window.__mintCC.core.setOffline(true));
-        await page.waitForTimeout(1200); // a start of surprise (0.9 s, wide eyes) comes first since 2026-10-20
+        // a start of surprise (0.9 s of animation, wide eyes) comes first since 2026-10-20; a loaded machine draws it slower
+        await page.waitForFunction(() => window.__mintCC.core._anim().face === "err", null, { timeout: 6000 }).catch(() => {});
         check(theme + ": offline: the red x x", await page.evaluate(() => window.__mintCC.core._anim().face === "err" && window.__mintCC.core._anim().col === "error"));
         await page.evaluate(() => window.__mintCC.core.setOffline(false));
         // a live change of head and colours (the setting reaching an open page)
