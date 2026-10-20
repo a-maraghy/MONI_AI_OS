@@ -5,9 +5,11 @@
 //! core, the sessions, the chat, the voice and the approval cards are the
 //! site's own, and sign-in is the site's (password, then Windows Hello). This
 //! process adds only what a web page cannot do:
-//!   - the three modes: Floating (a box in a corner, on top), Peek (hidden until
+//!   - the modes: Floating (a box in a corner, on top), Peek (hidden until
 //!     called, then on top), Desktop layer (at the bottom of the window stack,
-//!     above the icons; behind the icons only as an Experimental switch);
+//!     above the icons; behind the icons only as an Experimental switch), and
+//!     Companion (the bot out of its box, on the taskbar or the window in front:
+//!     companion.rs, companion_host.rs);
 //!   - per-pixel click-through (hit.rs), from the regions the page reports;
 //!   - global hotkeys, remappable: hold Ctrl+Space to talk, Ctrl+Alt+M show /
 //!     hide, Ctrl+Alt+F focus mode (Esc is the page's, when it has focus);
@@ -23,6 +25,8 @@
 pub mod log;
 pub mod acrylic;
 pub mod blur;
+pub mod companion;
+pub mod companion_host;
 pub mod hands;
 pub mod hit;
 pub mod layout;
@@ -95,6 +99,8 @@ pub struct App {
     wallpaper_sig: String,
     seen: policy::Seen,
     toasted: Vec<i64>,
+    /// Companion mode: where the bot is and what it is doing (companion_host.rs).
+    comp: companion_host::CompState,
 }
 
 type Shared = Arc<Mutex<App>>;
@@ -127,6 +133,8 @@ struct PageState {
     glance: bool,
     /// Where they were pinned on this monitor (Desktop layer), as fractions of the work area; None: beside the core.
     glance_pin: Option<Pin>,
+    /// Companion mode: its settings and how the bot stands (None in the other modes).
+    companion: Option<companion_host::View>,
 }
 
 fn page_state(a: &App, monitor: &str, focus_composer: bool) -> PageState {
@@ -139,7 +147,7 @@ fn page_state(a: &App, monitor: &str, focus_composer: bool) -> PageState {
             Corner::Br => "br",
         },
         Mode::Desktop => pm.across.as_str(),
-        Mode::Peek => "centre",
+        Mode::Peek | Mode::Companion => "centre",
     };
     PageState {
         mode: a.settings.mode.as_str(),
@@ -150,7 +158,7 @@ fn page_state(a: &App, monitor: &str, focus_composer: bool) -> PageState {
         opacity: pm.opacity,
         still: a.still,
         // A raised Desktop layer is not Peek's dimmed overlay: the page only needs to know Peek's.
-        peek_open: a.peek_open && a.settings.mode == Mode::Peek,
+        peek_open: a.peek_open && matches!(a.settings.mode, Mode::Peek | Mode::Companion),
         talk_key: a.talk_key.clone(),
         live_key: a.live_key.clone(),
         hidden: a.hidden,
@@ -158,6 +166,7 @@ fn page_state(a: &App, monitor: &str, focus_composer: bool) -> PageState {
         glass: blur_glass(a, pm.opacity),
         glance: a.settings.glance,
         glance_pin: if a.settings.mode == Mode::Desktop { pm.glance_pin } else { None },
+        companion: companion_host::view(a),
     }
 }
 
@@ -193,6 +202,14 @@ fn mon_of(m: &tauri::Monitor) -> Mon {
 /// same lock in commands and in the navigation handler, so holding it there deadlocks the window
 /// (it froze on the "Connecting" card while the site's first page had already arrived).
 fn monitor_for(app: &AppHandle, settings: &Settings) -> Option<Mon> {
+    // Companion: the monitor the bot is on (its Peek opens there too).
+    if settings.mode == Mode::Companion {
+        if let Some((x, y)) = companion_host::anchor() {
+            if let Ok(Some(m)) = app.monitor_from_point(x as f64, y as f64) {
+                return Some(mon_of(&m));
+            }
+        }
+    }
     if settings.mode == Mode::Peek {
         if let Ok(c) = app.cursor_position() {
             if let Ok(Some(m)) = app.monitor_from_point(c.x, c.y) {
@@ -226,17 +243,24 @@ fn apply(app: &AppHandle, shared: &Shared, focus_composer: bool) {
     let (rect, mode, visible, on_top, key, payload, behind) = {
         let mut a = shared.lock().unwrap();
         let pm = a.settings.monitor_prefs(&m.key);
-        let rect = layout::window_rect(a.settings.mode, m.work, m.scale, pm.size, a.settings.focus, pm.corner, glance_room(&a));
         let mode = a.settings.mode;
+        // Companion: its small window where the bot is (companion_host), the work area while its Peek is open.
+        let rect = if mode == Mode::Companion && !a.peek_open {
+            companion_host::rect(&a, m.work, m.scale)
+        } else {
+            layout::window_rect(a.settings.mode, m.work, m.scale, pm.size, a.settings.focus, pm.corner, glance_room(&a))
+        };
         let visible = match mode {
             Mode::Floating => !a.hidden,
             Mode::Peek => a.peek_open,
             Mode::Desktop => true,
+            // Hidden only while it ducked out (a full-screen app, a meeting, the lock screen).
+            Mode::Companion => a.peek_open || a.comp.ducked.is_none(),
         };
         // A Windows Hello sign-in in progress keeps it on top whatever the mode (webauthn_ceremony).
         let on_top = a.ceremony
             || match mode {
-                Mode::Floating | Mode::Peek => true,
+                Mode::Floating | Mode::Peek | Mode::Companion => true,
                 Mode::Desktop => a.peek_open || a.raised_for_desktop,
             };
         let behind = mode == Mode::Desktop && a.settings.experimental_behind_icons && !a.peek_open;
@@ -267,7 +291,7 @@ fn apply(app: &AppHandle, shared: &Shared, focus_composer: bool) {
         if w.is_minimized().unwrap_or(false) {
             let _ = w.unminimize();
         }
-        if focus_composer || (mode == Mode::Peek) {
+        if focus_composer || (mode == Mode::Peek) || (mode == Mode::Companion && a_peek(shared)) {
             let _ = w.set_focus();
         }
     } else {
@@ -275,6 +299,10 @@ fn apply(app: &AppHandle, shared: &Shared, focus_composer: bool) {
     }
     let _ = w.emit_to(MAIN, "mint://state", payload);
     refresh_tray(app, shared);
+}
+
+fn a_peek(shared: &Shared) -> bool {
+    shared.lock().unwrap().peek_open
 }
 
 /// Experimental: behind the desktop icons (platform::behind_icons). Nothing can be clicked there.
@@ -329,7 +357,7 @@ fn toggle_show(app: &AppHandle, shared: &Shared) {
     let focus = {
         let mut a = shared.lock().unwrap();
         match a.settings.mode {
-            Mode::Peek | Mode::Desktop => {
+            Mode::Peek | Mode::Desktop | Mode::Companion => {
                 a.peek_open = !a.peek_open;
                 a.peek_open
             }
@@ -347,7 +375,7 @@ fn show(app: &AppHandle, shared: &Shared, focus_composer: bool) {
     {
         let mut a = shared.lock().unwrap();
         match a.settings.mode {
-            Mode::Peek | Mode::Desktop => a.peek_open = true,
+            Mode::Peek | Mode::Desktop | Mode::Companion => a.peek_open = true,
             Mode::Floating => a.hidden = false,
         }
     }
@@ -359,6 +387,12 @@ fn set_mode(app: &AppHandle, shared: &Shared, mode: Mode) {
     let reveal = policy::reveal_after_mode_change(was_visible, mode);
     {
         let mut a = shared.lock().unwrap();
+        if a.settings.mode != mode && (mode == Mode::Companion || a.settings.mode == Mode::Companion) {
+            if mode == Mode::Companion {
+                a.settings.before_companion = a.settings.mode;
+            }
+            a.comp.reset();
+        }
         a.settings.mode = mode;
         a.peek_open = mode == Mode::Peek;
         a.hidden = false;
@@ -602,6 +636,8 @@ fn build_menu(app: &AppHandle, shared: &Shared) -> tauri::Result<Menu<tauri::Wry
     let m_desk = CheckMenuItem::with_id(app, "mode:desktop", "On the desktop", true, a.settings.mode == Mode::Desktop, None::<&str>)?;
     let m_float = CheckMenuItem::with_id(app, "mode:floating", "Floating, always on top", true, a.settings.mode == Mode::Floating, None::<&str>)?;
     let m_peek = CheckMenuItem::with_id(app, "mode:peek", "Hidden until called (peek)", true, a.settings.mode == Mode::Peek, None::<&str>)?;
+    // Companion: on and off from here (off goes back to the mode it came from).
+    let m_comp = CheckMenuItem::with_id(app, "mode:companion", "Companion: MINT AI out on your desk", true, a.settings.mode == Mode::Companion, None::<&str>)?;
     let focus_i = CheckMenuItem::with_id(app, "focus", format!("Focus mode: just the core\t{}", a.settings.hotkeys.focus), true, a.settings.focus, None::<&str>)?;
     let glance_i = CheckMenuItem::with_id(app, "glance", "Glance cards beside MINT AI", true, a.settings.glance, None::<&str>)?;
     let dnd = CheckMenuItem::with_id(app, "dnd", "Do not disturb (no toasts)", true, a.settings.do_not_disturb, None::<&str>)?;
@@ -626,7 +662,7 @@ fn build_menu(app: &AppHandle, shared: &Shared) -> tauri::Result<Menu<tauri::Wry
     let s2 = sep()?;
     let s3 = sep()?;
     let s4 = sep()?;
-    items.extend([&s1 as &dyn tauri::menu::IsMenuItem<tauri::Wry>, &show_i, &talk_i, &s2, &m_desk, &m_float, &m_peek, &focus_i, &glance_i]);
+    items.extend([&s1 as &dyn tauri::menu::IsMenuItem<tauri::Wry>, &show_i, &talk_i, &s2, &m_desk, &m_float, &m_peek, &m_comp, &focus_i, &glance_i]);
     let mon_sub;
     if mon_items.len() > 1 {
         let refs: Vec<&dyn tauri::menu::IsMenuItem<tauri::Wry>> = mon_items.iter().map(|x| x as &dyn tauri::menu::IsMenuItem<tauri::Wry>).collect();
@@ -654,6 +690,13 @@ fn on_menu(app: &AppHandle, id: &str) {
         "mode:desktop" => set_mode(app, &shared, Mode::Desktop),
         "mode:floating" => set_mode(app, &shared, Mode::Floating),
         "mode:peek" => set_mode(app, &shared, Mode::Peek),
+        "mode:companion" => {
+            let (now, back) = {
+                let a = shared.lock().unwrap();
+                (a.settings.mode, a.settings.before_companion)
+            };
+            set_mode(app, &shared, if now == Mode::Companion { back } else { Mode::Companion });
+        }
         "focus" => toggle_focus(app, &shared),
         "glance" => {
             let on = !shared.lock().unwrap().settings.glance;
@@ -685,7 +728,12 @@ fn on_menu(app: &AppHandle, id: &str) {
         }
         other => {
             if let Some(name) = other.strip_prefix("monitor:") {
-                shared.lock().unwrap().settings.monitor = name.to_string();
+                {
+                    let mut a = shared.lock().unwrap();
+                    a.settings.monitor = name.to_string();
+                    // Companion: it moves there (and, staying on one monitor, stays on that one).
+                    a.comp.reset();
+                }
                 save(&shared);
                 apply(app, &shared, false);
             }
@@ -964,6 +1012,13 @@ fn set_glance(app: AppHandle, show: Option<bool>, pin: Option<Pin>, unpin: Optio
     let _ = app.emit_to(MAIN, "mint://state", payload);
 }
 
+/// Companion mode, from the page: "open" (a click on the bot: its Command Center, Peek), "doze" / "wake"
+/// (it goes back to the taskbar to sleep). Nothing else (companion_host::page_says).
+#[tauri::command]
+fn companion(app: AppHandle, kind: String, shared: State<'_, Shared>) {
+    companion_host::page_says(&app, &shared, &kind);
+}
+
 #[tauri::command]
 fn open_full_cc(app: AppHandle, shared: State<'_, Shared>) {
     open_full(&app, &shared);
@@ -1120,6 +1175,12 @@ fn settings_set(app: AppHandle, value: Settings, shared: State<'_, Shared>) -> R
     {
         let mut a = shared.lock().unwrap();
         let mode_changed = a.settings.mode != v.mode;
+        if mode_changed && (v.mode == Mode::Companion || a.settings.mode == Mode::Companion) {
+            if v.mode == Mode::Companion {
+                v.before_companion = a.settings.mode;
+            }
+            a.comp.reset();
+        }
         a.settings = v;
         if mode_changed {
             a.peek_open = a.settings.mode == Mode::Peek;
@@ -1162,7 +1223,8 @@ static BLUR_APP: std::sync::OnceLock<AppHandle> = std::sync::OnceLock::new();
 fn blur_glass(a: &App, opacity: u8) -> bool {
     // Behind the icons, or about to be (apply asks for the state before it moves the window there).
     let behind = a.behind_icons || (a.settings.mode == Mode::Desktop && a.settings.experimental_behind_icons && !a.peek_open);
-    let glass = acrylic::live() && blur::page_glass(a.settings.real_blur, &acrylic::system(), opacity, behind);
+    // Companion: never -- the bot has its own backplate, and its window moves (a shown blur window never may).
+    let glass = a.settings.mode != Mode::Companion && acrylic::live() && blur::page_glass(a.settings.real_blur, &acrylic::system(), opacity, behind);
     acrylic::set_glass(glass, a.ink == Ink::Light);
     glass
 }
@@ -1270,7 +1332,7 @@ fn hit_loop(app: AppHandle, shared: Shared) {
             continue;
         }
         // Peek showing, or Windows Hello asking (the dialog needs an ordinary window under it): all of it catches the mouse.
-        let want_ignore = if (mode == Mode::Peek && peek_open) || ceremony {
+        let want_ignore = if (matches!(mode, Mode::Peek | Mode::Companion) && peek_open) || ceremony {
             false
         } else {
             let Some((cx, cy)) = platform::cursor() else { continue };
@@ -1458,6 +1520,7 @@ fn env_loop(app: AppHandle, shared: Shared) {
                     Mode::Floating => !a.hidden,
                     Mode::Desktop => true,
                     Mode::Peek => a.peek_open,
+                    Mode::Companion => a.peek_open || a.comp.ducked.is_none(),
                 }
             };
             if should {
@@ -1618,6 +1681,7 @@ pub fn run() {
             start_drag,
             tool,
             set_glance,
+            companion,
             open_full_cc,
             go_site,
             webauthn_ceremony,
@@ -1677,6 +1741,7 @@ pub fn run() {
                 wallpaper_sig: String::new(),
                 seen: policy::Seen::default(),
                 toasted: Vec::new(),
+                comp: companion_host::CompState::default(),
             }));
             app.manage(shared.clone());
             machine::setup(&handle);
@@ -1785,6 +1850,9 @@ pub fn run() {
                 std::thread::spawn(move || env_loop(a2, s2));
                 let a3 = handle.clone();
                 std::thread::spawn(move || watchdog(a3));
+                // Companion mode: the bot's own loop (idle in the other modes).
+                let (a5, s5) = (handle.clone(), shared.clone());
+                std::thread::spawn(move || companion_host::run(a5, s5));
                 // Power: told by Windows, not only polled; and not slowed down by Energy saver itself.
                 mlog!("power throttling (EcoQoS) off for this process: {}", platform::keep_full_speed());
                 let (a4, s4) = (handle.clone(), shared.clone());

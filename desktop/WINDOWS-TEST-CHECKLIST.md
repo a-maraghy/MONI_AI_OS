@@ -269,3 +269,42 @@ Session story and replay the day
 Sounds
 - [ ] Short quiet chirps per role (MINT AI, builders, hired sessions…) when a session needs you or a brief arrives; nothing plays during a live call or while the voice speaks; nothing before the first click / key in the window.
 - [ ] Settings ▸ Sounds ▸ off: silence everywhere; on again: back.
+
+## Companion mode (built 2026-10-20, not released; design: mockups/desk-companion/DESIGN.md)
+
+The laptop at 150 % with the Samsung LF27T35 at 100 % to its right, as every day. Tray ▸ **Companion: MINT AI out on your desk** (or Settings ▸ Mode ▸ Companion). Keep the app log open (`%LOCALAPPDATA%\MINT AI\logs\mint-desktop.log`, lines "companion: …").
+
+Where it sits
+- [ ] Switched on from Floating: the box goes; the bot appears standing on the **taskbar's top edge**, on its right part, feet on the edge, nothing of it over the taskbar's icons or the tray. Log: "companion: placed on Taskbar(Bottom) …".
+- [ ] Click a window (not maximized, with some room above it): after about half a second the bot **walks** along the taskbar toward it and **hops** up onto its top edge, a quarter in from its left. Click another window: it walks / hops over. A maximized window: it goes back to (or stays on) the taskbar.
+- [ ] Alt+Tab quickly through several windows: it does not chase each one; it moves once you settle (and not again within about 2.5 s of arriving, unless its window closes or moves).
+- [ ] Drag the window it sits on: it waits until you let go, then hops to the new top edge. Minimize or close that window: it leaves it.
+- [ ] Settings ▸ Where it sits ▸ **Taskbar**: it stays on the taskbar whatever is in front; **Windows**: on windows (taskbar only when a window cannot hold it); **Both** (default).
+- [ ] Taskbar on the **top** (if your Windows build allows it) / on the **left** or **right** (Windows 10, or a tool like ExplorerPatcher): it hangs under a top taskbar; it stands in the bottom corner against a side one.
+- [ ] Taskbar **auto-hide** on: the bot stands on the screen's bottom edge with the reveal strip free (move the mouse to the very bottom: the taskbar slides up as usual); when the taskbar is up the bot hops onto it, and back down when it hides.
+
+The second monitor and DPI
+- [ ] Click a window on the Samsung: the bot walks to the laptop's right edge, steps out, steps in at the Samsung's left edge **at the Samsung's size** (no giant or tiny bot, no blur), walks to the window and hops up. Back again the other way.
+- [ ] The bot's size looks the same on both screens (it is the same logical size at 150 % and 100 %); its hit circle matches what you see (hover the edge of the head on each screen).
+- [ ] Settings ▸ **Stay on this monitor** on: windows on the other monitor no longer pull it over; it stays on the monitor it is on. Tray ▸ Monitor ▸ the other one: it moves there and stays.
+- [ ] Unplug the Samsung while the bot is on it: it reappears on the laptop's taskbar; plug it back: nothing breaks.
+
+Never in the way
+- [ ] Click anywhere around the bot, right next to it, in the gaps between it and the session bots: every click goes to what is under it (title bars, the taskbar, the desktop). Only the bot and the session bots themselves catch the mouse.
+- [ ] Move the mouse towards the bot and stop just beside it: it **steps aside** (a short walk away from the cursor). Move fast across it: nothing happens. Rest the mouse **on** it: it looks up, "Click to open" shows; if you do not click within about 1.5 s it steps aside after all.
+- [ ] **Click** the bot: the usual Command Center opens as Peek on the bot's monitor, the composer focused; Esc or a click on empty space closes it and the bot is back where it was. Ctrl+Alt+M opens / closes the same Peek.
+- [ ] A **full-screen video** (YouTube in full screen, F11 in Chrome) on the bot's monitor: the bot ducks down and is gone; leave full screen: it pops up again. Full screen on the **other** monitor: the bot stays out (and does not follow the video there). A full-screen game: the same. Log "companion: ducks out: …" / "pops up again".
+- [ ] A **Teams / Zoom / Meet call with the camera on**: it ducks out within about 3 s and comes back after the call (camera off). With the camera off but the microphone on in the call: it ducks out too. A MINT AI live call of its own (Ctrl+Alt+L): it does **not** duck out. Note the app names the log shows if a meeting is not noticed — Windows records some apps under different names (Settings ▸ Privacy ▸ Camera / Microphone ▸ "Recent activity" lists them).
+- [ ] Lock the screen (Win+L) and unlock: it was hidden, it comes back.
+
+Alive
+- [ ] Now and then (every half minute or so, when nothing happens) it stretches or looks around; its eyes follow the mouse when the mouse is near.
+- [ ] A session finishes: it grins and hops; an approval goes through: a nod.
+- [ ] After 23:00 and a quiet minute (or ten quiet minutes in the day) it dozes — "z z z" — and, if it was on a window, it walks back to the taskbar first. Moving the mouse to it or a message wakes it.
+- [ ] Session bots: a session waiting on you (an approval, a question) walks in and stands beside the bot, its own head (by role); at most three (the longest waiting first); click one: the Command Center opens on that session. When it is back at work it wanders off. Settings ▸ Session bots off: none come.
+
+Performance and power
+- [ ] Task Manager while it walks back and forth: MINT AI's process and its WebView2 stay low (the window is 264 × 140 logical px, moved, never a full-screen overlay); idle: near zero.
+- [ ] On battery with Battery saver on (or Windows' Energy saver): it no longer walks — it jumps straight to its new place; its face is a still picture. Plugged in again: it walks.
+- [ ] **No blur** anywhere in Companion mode (no frosted patches, no grey squares), also after switching from Floating with glance cards shown. Its own backplate keeps it readable on a light and a dark wallpaper.
+- [ ] Switch back with the tray item: the mode it came from (Floating, Desktop layer or Peek) returns where it was.

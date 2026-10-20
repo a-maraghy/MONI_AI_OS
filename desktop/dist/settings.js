@@ -19,8 +19,9 @@
     S.per_monitor[monKey] = S.per_monitor[monKey] || { corner: "br", across: "right", size: "M", opacity: 100 };
     return S.per_monitor[monKey];
   }
-  function val(k) { return k === "mode" ? S.mode : pm()[k]; }
-  function setVal(k, v) { if (k === "mode") S.mode = v; else pm()[k] = v; segs(); }
+  function comp() { S.companion = S.companion || { perch: "both", session_bots: true, stay_on_monitor: false, side: 0.8 }; return S.companion; }
+  function val(k) { return k === "mode" ? S.mode : k === "perch" ? comp().perch : pm()[k]; }
+  function setVal(k, v) { if (k === "mode") S.mode = v; else if (k === "perch") comp().perch = v; else pm()[k] = v; segs(); }
   document.querySelectorAll(".seg[data-k]").forEach(function (s) {
     s.addEventListener("click", function (e) { var b = e.target.closest("button"); if (b) setVal(s.getAttribute("data-k"), b.getAttribute("data-v")); });
   });
@@ -58,6 +59,8 @@
     sel.value = S.monitor || "";
     $("focus").checked = !!S.focus;
     $("glance").checked = S.glance !== false;
+    $("comp-bots").checked = comp().session_bots !== false;
+    $("comp-stay").checked = !!comp().stay_on_monitor;
     $("dnd").checked = !!S.do_not_disturb;
     $("batt").checked = !!S.battery_saver;
     $("blur").checked = S.real_blur !== false;
@@ -85,6 +88,7 @@
     S.monitor = $("monitor").value;
     S.focus = $("focus").checked; S.do_not_disturb = $("dnd").checked; S.battery_saver = $("batt").checked; S.real_blur = $("blur").checked;
     S.glance = $("glance").checked;
+    comp().session_bots = $("comp-bots").checked; comp().stay_on_monitor = $("comp-stay").checked;
     S.autostart = $("autostart").checked; S.check_updates = $("updates").checked; S.experimental_behind_icons = $("icons").checked;
     if (window.MintMachine) window.MintMachine.collect(S);
   }

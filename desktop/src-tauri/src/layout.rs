@@ -26,6 +26,8 @@ pub enum Mode {
     Floating,
     Peek,
     Desktop,
+    /// The bot out of its box, on the taskbar or the window in front (companion.rs places its small window).
+    Companion,
 }
 
 impl Mode {
@@ -34,6 +36,7 @@ impl Mode {
             Mode::Floating => "floating",
             Mode::Peek => "peek",
             Mode::Desktop => "desktop",
+            Mode::Companion => "companion",
         }
     }
     pub fn parse(s: &str) -> Option<Mode> {
@@ -41,6 +44,7 @@ impl Mode {
             "floating" => Some(Mode::Floating),
             "peek" => Some(Mode::Peek),
             "desktop" => Some(Mode::Desktop),
+            "companion" => Some(Mode::Companion),
             _ => None,
         }
     }
@@ -88,7 +92,7 @@ pub enum Corner {
 }
 
 /// A rectangle in physical pixels (the monitor's), as Windows places windows.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct Rect {
     pub x: i32,
     pub y: i32,
@@ -119,11 +123,12 @@ pub fn floating_logical(size: Size, focus: bool, glance: bool) -> (f64, f64) {
     (bw + gl, bh + if focus { 0.0 } else { HEADROOM })
 }
 
-/// Where the window goes: Floating in a corner of the work area; Peek and Desktop layer cover it.
+/// Where the window goes: Floating in a corner of the work area; Peek and Desktop layer cover it. Companion:
+/// its small window is placed by companion.rs; this is the Peek it opens (a click on the bot).
 pub fn window_rect(mode: Mode, work: Rect, scale: f64, size: Size, focus: bool, corner: Corner, glance: bool) -> Rect {
     let scale = if scale.is_finite() && scale > 0.0 { scale } else { 1.0 };
     match mode {
-        Mode::Peek | Mode::Desktop => work,
+        Mode::Peek | Mode::Desktop | Mode::Companion => work,
         Mode::Floating => {
             let (lw, lh) = floating_logical(size, focus, glance);
             let w = ((lw * scale).round() as u32).min(work.w);
@@ -254,7 +259,7 @@ mod tests {
 
     #[test]
     fn mode_names_round_trip() {
-        for m in [Mode::Floating, Mode::Peek, Mode::Desktop] {
+        for m in [Mode::Floating, Mode::Peek, Mode::Desktop, Mode::Companion] {
             assert_eq!(Mode::parse(m.as_str()), Some(m));
         }
         assert_eq!(Mode::parse("x"), None);

@@ -13,8 +13,8 @@
   <p class="note">The app's own settings, on this computer. MINT AI's settings (voice, approvals, sessions) are on the site, in MINT AI ▸ Settings.</p>
 
   <h2>Where it lives</h2>
-  <div class="row"><span>Mode<small>Floating sits in a corner above every window; Peek stays hidden until you call it; Desktop layer lives on the wallpaper, under every window.</small></span>
-    <span class="seg" data-k="mode"><button data-v="floating">Floating</button><button data-v="peek">Peek</button><button data-v="desktop">Desktop layer</button></span></div>
+  <div class="row"><span>Mode<small>Floating sits in a corner above every window; Peek stays hidden until you call it; Desktop layer lives on the wallpaper, under every window; Companion steps out of the box and lives on your desk.</small></span>
+    <span class="seg" data-k="mode"><button data-v="floating">Floating</button><button data-v="peek">Peek</button><button data-v="desktop">Desktop layer</button><button data-v="companion">Companion</button></span></div>
   <div class="row"><span>Focus mode<small>Just the core; its colour and motion still say what it is doing.</small></span><input type="checkbox" id="focus"></div>
   <div class="row"><span>Glance cards<small>Beside MINT AI: approvals waiting, sessions, today's tokens and live alerts. On the desktop you can drag them anywhere and pin them there (remembered per monitor). Focus mode hides them.</small></span><input type="checkbox" id="glance"></div>
   <div class="row"><span>Monitor<small>Peek always opens where the mouse is.</small></span><select id="monitor"></select></div>
@@ -23,6 +23,12 @@
   <div class="row"><span>Desktop layer position</span><span class="seg" data-k="across"><button data-v="left">Left</button><button data-v="centre">Centre</button><button data-v="right">Right</button></span></div>
   <div class="row"><span>Floating corner</span><span class="seg" data-k="corner"><button data-v="tl">↖</button><button data-v="tr">↗</button><button data-v="bl">↙</button><button data-v="br">↘</button></span></div>
   <div class="row"><span>Opacity <b id="opv"></b></span><input type="range" id="opacity" min="35" max="100"></div>
+
+  <h2>Companion</h2>
+  <p class="note">The bot out of its box: it sits on the taskbar or on the top edge of the window you are using, walks over when you switch windows or monitors, steps aside when the mouse comes near (rest the mouse on it to click it), and ducks out of full-screen video, games and meetings. Click it for the Command Center. The tray switches it on and off.</p>
+  <div class="row"><span>Where it sits</span><span class="seg" data-k="perch"><button data-v="taskbar">Taskbar</button><button data-v="windows">Windows</button><button data-v="both">Both</button></span></div>
+  <div class="row"><span>Session bots<small>Sessions waiting on you gather beside it, and wander off when they are back at work.</small></span><input type="checkbox" id="comp-bots"></div>
+  <div class="row"><span>Stay on this monitor<small>Off: it follows the window you are using to the other monitor.</small></span><input type="checkbox" id="comp-stay"></div>
 
   <h2>Hotkeys</h2>
   <p class="note">Click a box, then press the keys. Ctrl or Alt plus one key. Esc (hide Peek, end a call) works while MINT AI has the focus.</p>

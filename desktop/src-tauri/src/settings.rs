@@ -3,6 +3,7 @@
 //! No secrets live here -- the sign-in is the webview's own cookie (its profile,
 //! which Windows keeps per user).
 
+use crate::companion::PerchPref;
 use crate::layout::{Corner, Mode, Size};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -76,6 +77,24 @@ impl Default for PerMonitor {
     }
 }
 
+/// Companion mode (companion.rs): where the bot perches, whether the session bots gather by it, whether it
+/// stays on one monitor (`Settings::monitor`, the one it is on when this is switched on) instead of following
+/// the active one, and where along the taskbar it sits (0 left .. 1 right; where it last stepped to).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Companion {
+    pub perch: PerchPref,
+    pub session_bots: bool,
+    pub stay_on_monitor: bool,
+    pub side: f64,
+}
+
+impl Default for Companion {
+    fn default() -> Self {
+        Companion { perch: PerchPref::Both, session_bots: true, stay_on_monitor: false, side: crate::companion::DEFAULT_SIDE }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Hotkeys {
@@ -118,6 +137,10 @@ pub struct Settings {
     pub origin: String,
     /// Laptop control: claude.exe (or claude.cmd) to run; empty = look on PATH and the usual places.
     pub claude_path: String,
+    /// Companion mode's own settings.
+    pub companion: Companion,
+    /// The mode the tray's Companion switch goes back to when it is switched off.
+    pub before_companion: Mode,
 }
 
 impl Default for Settings {
@@ -137,6 +160,8 @@ impl Default for Settings {
             check_updates: true,
             origin: DEFAULT_ORIGIN.into(),
             claude_path: String::new(),
+            companion: Companion::default(),
+            before_companion: Mode::Floating,
         }
     }
 }
@@ -164,6 +189,13 @@ impl Settings {
             }
         }
         self.claude_path = self.claude_path.trim().trim_matches('"').chars().filter(|c| !c.is_control()).take(400).collect();
+        if !self.companion.side.is_finite() {
+            self.companion.side = crate::companion::DEFAULT_SIDE;
+        }
+        self.companion.side = self.companion.side.clamp(0.0, 1.0);
+        if self.before_companion == Mode::Companion {
+            self.before_companion = Mode::Floating;
+        }
         if !origin_ok(&self.origin) {
             self.origin = DEFAULT_ORIGIN.into();
         }
@@ -345,6 +377,22 @@ mod tests {
         assert_eq!(s.monitor_prefs("A").glance_pin, Some(Pin { x: 0.98, y: 0.0 }));
         assert_eq!(Pin::clean(f64::NAN, 0.5), None);
         assert_eq!(Pin::clean(0.5, f64::INFINITY), None);
+    }
+
+    #[test]
+    fn companion_settings() {
+        // A 0.1.11 settings file (no "companion"): the defaults -- both perches, the session bots on, following
+        // the active monitor, on the right part of the taskbar.
+        let s = Settings::from_json(r#"{"mode":"floating"}"#);
+        assert_eq!(s.companion, Companion::default());
+        assert_eq!((s.companion.perch, s.companion.session_bots, s.companion.stay_on_monitor), (PerchPref::Both, true, false));
+        assert_eq!(s.before_companion, Mode::Floating);
+        let s = Settings::from_json(r#"{"mode":"companion","companion":{"perch":"taskbar","session_bots":false,"stay_on_monitor":true,"side":7},"before_companion":"desktop"}"#);
+        assert_eq!(s.mode, Mode::Companion);
+        assert_eq!((s.companion.perch, s.companion.session_bots, s.companion.stay_on_monitor, s.companion.side), (PerchPref::Taskbar, false, true, 1.0));
+        assert_eq!(s.before_companion, Mode::Desktop);
+        assert_eq!(Settings::from_json(&s.to_json()), s);
+        assert_eq!(Settings::from_json(r#"{"before_companion":"companion"}"#).before_companion, Mode::Floating, "the switch never goes back to Companion");
     }
 
     #[test]

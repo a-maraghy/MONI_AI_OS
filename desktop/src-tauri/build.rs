@@ -11,6 +11,8 @@ fn main() {
         "start_drag",
         "tool",
         "set_glance",
+        // Companion mode: the page's word (a click on the bot opens its Command Center; it dozes / wakes).
+        "companion",
         "open_full_cc",
         "go_site",
         "webauthn_ceremony",

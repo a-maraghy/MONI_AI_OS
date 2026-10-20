@@ -32,6 +32,8 @@ pub fn should_toast(s: &Seen, dnd: bool) -> bool {
         Some(Mode::Floating) => false,
         Some(Mode::Peek) => !s.peek_open,
         Some(Mode::Desktop) => s.covered,
+        // The bot on the taskbar or a window can be seen unless it ducked out (hidden, full screen, locked).
+        Some(Mode::Companion) => false,
         None => true,
     }
 }
@@ -151,6 +153,8 @@ pub type Rect = (i32, i32, i32, i32);
 /// The foreground window, as far as the full-screen check needs it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FrontWin {
+    /// The window itself (HWND as a number; 0 unknown): the companion's perch remembers which window it sits on.
+    pub hwnd: isize,
     /// Its root owner's window class.
     pub class: String,
     /// MINT AI's own window.
@@ -246,6 +250,10 @@ mod tests {
         assert!(should_toast(&Seen { focus: true, ..seen(Mode::Floating) }, false));
         assert!(should_toast(&Seen { fullscreen: true, ..seen(Mode::Floating) }, false));
         assert!(should_toast(&Seen { locked: true, ..seen(Mode::Floating) }, false));
+        // Companion: seen while it is out; a toast when it ducked out (hidden) for a full-screen app or a meeting.
+        assert!(!should_toast(&seen(Mode::Companion), false));
+        assert!(should_toast(&Seen { hidden: true, ..seen(Mode::Companion) }, false));
+        assert!(should_toast(&Seen { fullscreen: true, ..seen(Mode::Companion) }, false));
     }
 
     #[test]

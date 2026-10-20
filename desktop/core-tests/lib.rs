@@ -8,6 +8,8 @@ pub mod hit;
 pub mod blur;
 #[path = "../src-tauri/src/layout.rs"]
 pub mod layout;
+#[path = "../src-tauri/src/companion.rs"]
+pub mod companion;
 #[path = "../src-tauri/src/platform.rs"]
 pub mod platform;
 #[path = "../src-tauri/src/policy.rs"]

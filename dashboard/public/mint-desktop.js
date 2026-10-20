@@ -21,7 +21,10 @@
  *     the layer cannot be seen -- the app decides; a toast only opens or
  *     denies, never approves);
  *   - on the sign-in pages, makes the card float on the desktop and offers
- *     "sign in in your browser" (the app's one-time-code hand-off).
+ *     "sign in in your browser" (the app's one-time-code hand-off);
+ *   - Companion mode (2026-10-20): the bot out of its box, in a small window the app moves along the taskbar
+ *     and the window in front -- public/mint-desktop-companion.js draws it; a click on it opens the app's
+ *     Peek (st.peekOpen), laid out as Peek.
  *
  * The bridge to the app is Tauri's (window.__TAURI__, injected by the app
  * only into os.mint-stack.com): a fixed list of commands, none of which can
@@ -59,7 +62,12 @@
     glance: !T && Q.get("glance") === "1", glancePin: T ? null : browserPin(),
   };
   // What the app's state carries (mint://state, get_state).
-  var STATE_KEYS = ["mode", "focus", "size", "pos", "ink", "opacity", "still", "peekOpen", "talkKey", "liveKey", "hidden", "glass", "glance", "glancePin"];
+  var STATE_KEYS = ["mode", "focus", "size", "pos", "ink", "opacity", "still", "peekOpen", "talkKey", "liveKey", "hidden", "glass", "glance", "glancePin", "companion"];
+  /* Companion mode: the bot out on the desk (its own small window), or -- a click on it -- its Command Center, laid out as Peek. */
+  function compOut() { return st.mode === "companion" && !st.peekOpen; }
+  function lmode() { return st.mode === "companion" ? (st.peekOpen ? "peek" : "companion") : st.mode; }
+  function peekish() { return st.mode === "peek" || st.mode === "companion"; }
+  var CMP = window.MintDesktopCompanion, comp = null;
   /** In a browser (no app to remember it): ?pin=x,y (fractions of the window), else this browser's last pin. */
   function browserPin() {
     var q = String(Q.get("pin") || "").split(",").map(Number);
@@ -70,9 +78,12 @@
 
   /* ---------------------------------------------------------------- applying the app's state */
   function apply() {
-    html.setAttribute("data-dk-mode", st.mode);
+    html.setAttribute("data-dk-mode", lmode());
+    html.classList.toggle("dk-companion", st.mode === "companion");
     html.classList.toggle("dk-focus", !!st.focus);
-    html.classList.toggle("dk-peek-open", st.mode === "peek" && !!st.peekOpen);
+    html.classList.toggle("dk-peek-open", peekish() && !!st.peekOpen);
+    // Companion and signed out: the sign-in card needs the room -- open its Peek.
+    if (compOut() && !$("cc") && T) invoke("companion", { kind: "open" });
     html.classList.toggle("dk-still", !!st.still);
     html.classList.toggle("dk-acrylic", !!st.glass);
     // Ink follows the wallpaper: light ink (the dark theme) on a dark or busy wallpaper, dark ink on a light one.
@@ -97,7 +108,15 @@
 
   var L = null;
   function layout() {
-    L = LAY.layout({ mode: st.mode, size: st.size, pos: st.pos, focus: st.focus, W: window.innerWidth, H: window.innerHeight, glance: !!st.glance && !!$("cc"), pin: st.mode === "desktop" ? st.glancePin : null });
+    if (comp) comp.setOn(compOut() && !!$("cc"), st.companion || null);
+    if (compOut() && $("cc")) {
+      // The bot out on the desk: the Command Center's own pieces stay hidden (mint-desktop.css); the core's spot is the bot's.
+      var cl = CMP.layout(window.innerWidth, window.innerHeight, st.companion && st.companion.stance, st.companion && st.companion.openSide, st.companion && st.companion.lean);
+      L = { mode: "companion", W: cl.W, H: cl.H, cx: cl.cx, cy: cl.cy, R: cl.R, box: { x: 0, y: 0, w: cl.W, h: cl.H }, glance: null, panel: null, card: null, tools: null };
+      if (chatOpen()) closeChat();
+      return report(true);
+    }
+    L = LAY.layout({ mode: lmode(), size: st.size, pos: st.pos, focus: st.focus, W: window.innerWidth, H: window.innerHeight, glance: !!st.glance && !!$("cc"), pin: st.mode === "desktop" ? st.glancePin : null });
     if (!$("cc")) { layoutAuth(); return report(true); }
     var cap = $("cc-caption"), need = $("cc-need"), tools = $("dk-tools"), core = $("dk-corehit"), btn = $("dk-chatbtn"), panel = $("dk-panel");
     if (btn) place(btn, L.chatBtn.x - L.chatBtn.d / 2, L.chatBtn.y - L.chatBtn.d / 2, L.chatBtn.d, L.chatBtn.d);
@@ -695,7 +714,9 @@
   }
   function measure() {
     if (!L) return [];
-    var full = st.mode === "peek" && st.peekOpen;
+    // Companion out: the bot and the session bots by it, nothing else.
+    if (compOut() && comp) return comp.regions().map(function (r) { return { x: r.x, y: r.y, w: r.w, h: r.h, r: r.r }; });
+    var full = peekish() && st.peekOpen;
     // (Open counts from the first frame: an overlay fading in is already there to be clicked.)
     if (!full) for (var f = 0; f < FULL.length; f++) { var fe = document.querySelectorAll(FULL[f]); for (var j = 0; j < fe.length; j++) if (present(fe[j])) { full = true; break; } if (full) break; }
     // Dragging the pinned cards: the whole window, so the drag never falls through to the desktop as it goes.
@@ -900,7 +921,7 @@
     if (chatOpen()) { closeChat(); return; }
     var lv = window.__mintLive;
     if (lv && lv.active && lv.active()) { lv.end("esc"); return; }
-    if (st.mode === "peek") invoke("hide_peek");
+    if (peekish()) invoke("hide_peek");
   }
   var ESC_OWNERS = ".mint-su, #cc-overlay > *, .cc-sdlg-back, .cc-modal:not([hidden]), #cc-pop:not([hidden]), .cc-smenu, .cc-sheet.open, .cc-palette:not([hidden])";
   var escOwned = false;
@@ -923,7 +944,7 @@
   });
   // Peek: a click on empty space sends it away (the whole window catches clicks while it shows).
   document.addEventListener("pointerdown", function (e) {
-    if (st.mode !== "peek" || !st.peekOpen) return;
+    if (!peekish() || !st.peekOpen) return;
     var t = e.target;
     if (t === document.body || t === html || t.id === "cc" || t.classList.contains("cc-main") || t.id === "cc-stage" || t.id === "cc-family" || t.tagName === "CANVAS") {
       if (!(L && Math.hypot(e.clientX - L.cx, e.clientY - L.cy) < L.R)) invoke("hide_peek");
@@ -961,7 +982,9 @@
   function still() {
     var cc = window.__mintCC, core = cc && cc.core;
     if (!core) return;
-    var hold = !!(st.still || st.hidden);
+    // Companion out: the Command Center's core rests (the companion's own bot moves instead, mint-desktop-companion.js).
+    var hold = !!(st.still || st.hidden || compOut());
+    if (comp) comp.applyStill();
     if (hold) {
       if (core.S) core.S.still = true;
       if (core.stop) core.stop();
@@ -973,7 +996,7 @@
     }
   }
   setInterval(function () {
-    if (!(st.still || st.hidden)) return;
+    if (!(st.still || st.hidden || compOut())) return;
     var cc = window.__mintCC, core = cc && cc.core;
     if (core && core.S && (core.S.running || !core.S.still)) still();
   }, 2000);
@@ -992,6 +1015,15 @@
         if (r && r.error && note) note.textContent = r.error;
       });
     });
+  }
+
+  /* ---------------------------------------------------------------- Companion mode */
+  if (CMP && CMP.mount && $("cc")) {
+    comp = CMP.mount({
+      invoke: invoke, listen: listen, state: function () { return st; }, still: function () { return !!(st.still || st.hidden); },
+      report: function (regs) { lastRegions = regs; lastSig = JSON.stringify(regs); invoke("set_hit_regions", { regions: regs, dpr: window.devicePixelRatio || 1 }); },
+    });
+    window.MintDesktop.companion = function () { return comp; };
   }
 
   /* ---------------------------------------------------------------- boot */
