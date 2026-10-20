@@ -697,6 +697,8 @@
     "#cc-reply", "#cc-pop", "#cc-kcard.on", ".cc-smenu", ".cc-toast", ".dk-auth .auth-wrap .card", "#dk-gate", "#cc-offline", "#cc-needpill",
     // The glance cards: each card and the column's header bar -- never the column itself, so the gaps between them let clicks through.
     "#dk-glbtn", "#dk-glance:not(.dk-gl-under) .dk-gl-hit",
+    // The living canvas (mint-canvas.js): each widget card beside the core (never the column itself).
+    "#cv-board:not(.cv-under) .cv-w",
   ];
   // Open over everything: the whole window catches the mouse while one shows.
   // (#cc-overlay holds the conversation of a session -- the deep view -- and the forms: the whole window while one is open.)
@@ -756,6 +758,8 @@
     [".cc-deep", "card"], [".cc-modal:not([hidden])", "card"], [".cc-sdlg", "card"],
     // The glance cards: frosted like the panel; an approval card near-solid, like the decision card.
     ["#dk-glance:not(.dk-gl-under) .dk-gl-card:not(.dk-gl-ap)", "card"], ["#dk-glance:not(.dk-gl-under) .dk-gl-ap", "alert"], ["#dk-glance:not(.dk-gl-under) #dk-gl-hd", "pill"], ["#dk-glbtn", "pill"],
+    // The living canvas's widget cards: frosted like the glance cards; an approval widget near-solid.
+    ["#cv-board:not(.cv-under) .cv-w:not(.cv-ap-w)", "card"], ["#cv-board:not(.cv-under) .cv-w.cv-ap-w", "alert"],
   ];
   var glassIds = typeof WeakMap === "function" ? new WeakMap() : null, glassN = 0, glassState = null, glassSig = "", glassSent = [], glassMarked = [];
   function glassKey(el) { if (!glassIds) return null; var k = glassIds.get(el); if (!k) { k = "g" + ++glassN; glassIds.set(el, k); } return k; }

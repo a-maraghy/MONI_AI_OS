@@ -1418,6 +1418,8 @@
         (tr.duration_ms ? " · " + dur(tr.duration_ms) : "") + '</div><div class="cc-bubble' + (tr.status === "error" ? " err" : "") + '">' + body + "</div></div>";
     }
     el.innerHTML = h;
+    // The widgets MINT AI showed with this reply (kept with the turn; the living canvas draws them).
+    if (tr.widgets && tr.widgets.length && window.MintCanvas && window.MintCanvas.history) window.MintCanvas.history(el, tr);
   }
 
   /* Approvals whose turn is not on screen (older than what was loaded, or raised
@@ -2071,6 +2073,12 @@
       // MINT AI's own screen action (its ui_action), sent to this tab only by the
       // server; done like the voice's, and answered so MINT AI knows.
       if (!ev || !ev.nonce || typeof runUiAction !== "function") return;
+      // A widget (MINT AI's ui_widget): the living canvas draws it beside the reply (mint-canvas.js).
+      if (ev.action === "widget.show") {
+        var wr = window.MintCanvas ? window.MintCanvas.offer(ev) : { ok: false, why: "this page has no board" };
+        api("ui/ack", { body: { nonce: ev.nonce, ok: !!wr.ok, why: wr.ok ? undefined : String(wr.why || "").slice(0, 200) } }).catch(function () { /* the supervisor times out */ });
+        return;
+      }
       var res = runUiAction(ev);
       if (ev.confirm) return; // a Tier-2 question: the server already told MINT AI it waits for a confirm
       api("ui/ack", { body: { nonce: ev.nonce, ok: !!res.ok, why: res.ok ? undefined : String(res.why || "").slice(0, 200) } }).catch(function () { /* the supervisor times out */ });

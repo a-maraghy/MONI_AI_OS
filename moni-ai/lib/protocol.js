@@ -91,6 +91,10 @@ const OPS = {
   // the tab that asked. Accepted only from actor "moni-ai", only while a turn
   // the administrator started (dashboard / voice-desk) with a ui token runs.
   "ui-action": { mutating: true, params: { action: str(40, /^[a-z]+(\.[a-z_]+)?$/), args: uiArgs() } },
+  // MINT AI's ui_widget (its MCP tool, the living canvas): a widget for the tab that asked, built only
+  // from the fixed, versioned building blocks (lib/mint-widgets.js -- the dashboard's copy is checked
+  // to be the same file). Accepted on the same terms as ui-action.
+  "ui-widget": { mutating: true, params: { widget: widgetSpec() } },
   // The Command Center's answer to one ui event (the page did it, or refused).
   // pending: a Tier-2 preference shown for the administrator's confirm (nothing changed yet).
   "ui-ack": { mutating: true, params: { nonce: str(40, /^[A-Za-z0-9]{8,40}$/), ok: bool(), why: optText(200), pending: optBool() } },
@@ -253,6 +257,16 @@ function pageSpec() {
   return (v, name) => {
     const e = spec(v, name);
     return { key: e.key, parent: e.parent || null, kind: e.kind, label: e.label, url: e.url, perm: e.perm || null };
+  };
+}
+
+/** A widget: checked and made canonical by the building blocks' own validator (lib/mint-widgets.js). */
+function widgetSpec() {
+  const Widgets = require("./mint-widgets");
+  return (v, name) => {
+    const r = Widgets.validate(v);
+    if (!r.ok) throw new Error(`${name}: ${r.why}`);
+    return r.value;
   };
 }
 

@@ -1,0 +1,28 @@
+{
+ "shots": [
+  "calm-dark",
+  "calm-light",
+  "answer-widget-dark",
+  "pinned-board-dark",
+  "widgets-gallery-dark",
+  "failure-dark",
+  "failure-fixit-dark",
+  "failure-light",
+  "locked-light",
+  "waiting-dark",
+  "morning-light",
+  "morning-dark",
+  "learned-standing-dark",
+  "settings-board-light",
+  "conversation-history-light",
+  "phone-dark",
+  "phone-light",
+  "desktop-shell-dark",
+  "desktop-shell-light",
+  "desktop-floating-dark"
+ ],
+ "gifs": [
+  "widget-pinned",
+  "failure-fixit"
+ ]
+}
