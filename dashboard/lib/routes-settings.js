@@ -131,7 +131,7 @@ sections.general = async (req, res, deps) => {
   return { body };
 };
 
-sections.appearance = async (req, res) => {
+sections.appearance = async (req, res, deps) => {
   const L = require("../public/cc-logic");
   const MV = require("./views-moniai");
   const core = L.normCore(req.me.mint_core);
@@ -184,8 +184,8 @@ sections.appearance = async (req, res) => {
     ) +
     `</form>` +
     soundSettings(req.me.mint_sound, csrf) +
-    presenceSettings();
-  return { body, assets: MV.APPEARANCE_ASSETS.concat(["mint-sound.js", "mint-sound-settings.js", "mint-presence.css", "mint-presence-logic.js", "mint-presence-settings.js"]) };
+    presenceSettings(await voiceState(req, deps));
+  return { body, assets: MV.APPEARANCE_ASSETS.concat(["mint-sound.js", "mint-sound-settings.js", "mint-presence.css", "mint-presence-logic.js", "mint-presence.js", "mint-presence-settings.js"]) };
 };
 
 /*
@@ -194,9 +194,23 @@ sections.appearance = async (req, res) => {
  * app the app's own setting -- which only the app's Settings window or its tray can switch ON (this page can
  * switch it off). Off by default. public/mint-presence-settings.js runs the rows; without JavaScript they say so.
  */
-function presenceSettings() {
+/** Whether voice works for this viewer (look and speak needs it): { live, manage }; unknown -> assumed on. */
+async function voiceState(req, deps) {
+  try {
+    const v = deps && deps.voicePublic ? await deps.voicePublic(req) : null;
+    return v ? { live: !!v.live, manage: !!v.manage, on: !!v.on, configured: !!v.configured } : { live: true };
+  } catch (_) {
+    return { live: true };
+  }
+}
+
+function presenceSettings(voice) {
+  voice = voice || { live: true };
+  const voiceOff = voice.live
+    ? ""
+    : `<span class="mp-voiceoff" data-mp-voiceoff>Look and speak needs voice, and voice is off${voice.manage ? `: <a href="/mint-ai/settings/voice">${voice.on && !voice.configured ? "add a token in" : "switch it on in"} Settings ▸ Voice</a>` : " for you (ask an administrator)"}.</span>`;
   const sw = (k, label) => V.sw(`data-mp="${k}" aria-label="${esc(label)}"`, false);
-  return `<div class="mp-set" id="mp-set">` +
+  return `<div class="mp-set" id="mp-set" data-voice-ready="${voice.live ? "1" : ""}">` +
     V.group(
       "Eye contact",
       "eye",
@@ -207,7 +221,21 @@ function presenceSettings() {
         `<li>The camera light is on while it works. It lets go of the camera when you switch this off, when the window is hidden, the screen locks, or another app is in a meeting.</li>` +
         `</ul></div>` +
         V.row("Camera presence", `<span class="mp-browser-only">For this browser only. The browser asks you once for the camera.</span><span class="mp-app-only">In the MINT AI app, switch it on in the app's Settings or its tray menu (“Camera presence”) — so only you, at this computer, can turn the camera on. Here you can switch it off.</span>`, sw("cam", "Camera presence") + ` <button type="button" class="btn small mp-app-only" data-mp-off hidden>Switch off</button>`, { scope: "this browser", id: "mp-cam-row" }) +
-        V.row("Look and speak", "Face MINT AI and start talking: it listens without the talk key. While you face it, a microphone level meter runs on this computer (nothing is recorded or sent until you speak). A reply pauses when you look away and goes on when you look back.", sw("speak", "Look and speak"), { scope: "this browser", id: "mp-speak-row", tag: "" }) +
+        V.row(
+          "Camera",
+          `Which camera to use. Automatic takes this computer's own camera and never a phone (Phone Link) or a virtual one unless there is nothing else. <span class="mp-browser-only">Remembered by this browser only.</span><span class="mp-app-only">Remembered by the app on this computer.</span> The camera's name stays on this computer.`,
+          `<div class="mp-camsel"><select data-mp-camsel aria-label="Camera for eye contact"><option value="">Automatic</option></select>` +
+            `<span class="muted small mp-camhint" data-mp-camhint hidden>Allow the camera once to see the camera names. <button type="button" class="btn small" data-mp-allow>Allow the camera once</button></span>` +
+            `<span class="muted small mp-camused" data-mp-camused role="status"></span></div>`,
+          { scope: "this browser", id: "mp-camera-row" }
+        ) +
+        V.row("Look and speak", "Face MINT AI and start talking: it listens without the talk key. While you face it, a microphone level meter runs on this computer (nothing is recorded or sent until you speak). A reply pauses when you look away and goes on when you look back.", sw("speak", "Look and speak"), { scope: "this browser", id: "mp-speak-row", tag: "" }).replace("</p></div>", "</p>" + voiceOff + "</div>") +
+        V.row(
+          "Show what it sees",
+          "If look and speak does not start, open this, face MINT AI's bot and talk: each condition shows a tick or a cross with its numbers. It uses the camera (and the microphone level) on this page only while it is open; numbers only, nothing is stored or sent.",
+          `<details class="mp-show" data-mp-show><summary>Show what it sees</summary><ul class="mp-checks" data-mp-checks aria-live="polite"></ul><p class="muted small mp-show-note" data-mp-show-note></p></details>`,
+          { scope: "this browser", id: "mp-show-row", full: true }
+        ) +
         V.row("Energy saver", "Let go of the camera while Windows' energy saver is on. On battery it looks less often.", sw("saver", "Release the camera in energy saver"), { scope: "this browser", id: "mp-saver-row" }) +
         V.row("Now", null, `<span class="mp-state" data-mp-state>Off</span>`, { id: "mp-now" }) +
         `<div class="lr set-note"><span class="muted small" id="mp-note" role="status"></span><noscript><span class="muted small">Eye contact needs JavaScript.</span></noscript></div>`

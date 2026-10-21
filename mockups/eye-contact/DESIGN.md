@@ -229,3 +229,45 @@ Frames are 320 × 240. In headless Chromium a frame takes 16 ms in the worker.
   which was left untouched. The tray is the off switch there. Adding the pill to the regions is a two-line change
   in mint-desktop.js once the living-canvas work has merged.
 - **Should the summary also list held sounds' sources?** Today it plays one sound and lists the notes.
+
+## Which camera (2026-10-21)
+
+Reported on 0.1.12: the phone's camera (Phone Link) was used, because the module asked for "a camera" and Windows'
+default won. Now (page only, no new app version):
+
+- **Automatic** (the default): the built-in camera first, then another real one, then an IR camera, and a phone /
+  virtual one (Phone Link, Connected Camera, OBS, NVIDIA Broadcast, DroidCam, Iriun, Camo, EpocCam, Snap,
+  Continuity, "Virtual") only if there is nothing else. Opened by `deviceId: {exact}` (`MintPresenceLogic.pickCamera`).
+- **Settings ▸ Appearance ▸ Eye contact ▸ Camera** lists Automatic plus each camera by name, in the browser and in the
+  app's page alike. The choice is kept in `localStorage["mint-presence-camera"]` = `{ id, label }` (the name is the
+  fallback when Windows changes the id) and is never sent. An open Command Center switches at once (storage event);
+  a camera plugged in or out is looked at again (devicechange).
+- Names only show once the camera has been allowed: "Allow the camera once" asks and lets go at once (by itself only
+  while eye contact is on).
+- A chosen camera that is gone or fails: Automatic, and both the state's `why` and Settings say so.
+- The pill reads "Camera on · Integrated Webcam".
+- The app's own Settings window (desktop/dist, shipped inside the app) is unchanged: a hint pointing to the page's
+  selector needs the next app build.
+
+Screens: `camera-selector/`.
+
+## Look and speak never started (2026-10-21)
+
+Cause, from reading the gate end to end: "facing the bot" was judged from the **head's** angles alone, within 7°
+sideways (to speak) and 10° up/down, and every single frame outside that restarted the 0.6 s hold. A person 55 cm
+from a laptop looks at a bot 12° right / 18° down mostly with the eyes: the head turns ~4° and tips ~8°, so the
+head is ~8° sideways and ~10° up off the bot, and MediaPipe's head pose jitters ±3° frame to frame. The hold
+practically never completed. Also, with voice off, look and speak did nothing and said nothing.
+
+Now:
+- the eyes' up/down (eyeLookUp / eyeLookDown blendshapes: no left/right ambiguity) is added to the head's pitch;
+- "at the bot" / "frontal to speak" use the median of the last three frames (at the screen stays per frame);
+- tolerances 12° / 10° sideways (bot / speak), +13° / −12° up/down;
+- one or two frames off (≤ 450 ms) no longer restart the 0.6 s hold;
+- voice off: the pill reads "… · look and speak: voice is off", Settings says so with a link, and no
+  microphone is opened for it;
+- Settings ▸ Appearance ▸ Eye contact ▸ **Show what it sees**: a live checklist (face, facing with degrees off,
+  mouth, level vs needed, voice ready, not busy, cool-down), numbers only, camera on that page only while open.
+
+The negative cases still hold (reading the screen's middle and talking, a side glance, someone else talking, a TV,
+someone as close beside you): dashboard/tools/test-presence.cjs.

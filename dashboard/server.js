@@ -6604,7 +6604,7 @@ try {
 } catch (e) {
   console.error("page map: the scan failed, page.open keeps its built-in pages: " + e.message);
 }
-settingsRoutes.mount(app, { requireAuth, requireCsrf, ctx, db, moniai, pageMap, stepup, stepAudit, callStepped, steppedWith, desktopDays: () => desktop.days(), desktopSetDays: (d, by) => desktop.setDays(d, by) });
+settingsRoutes.mount(app, { requireAuth, requireCsrf, ctx, db, moniai, pageMap, voicePublic, stepup, stepAudit, callStepped, steppedWith, desktopDays: () => desktop.days(), desktopSetDays: (d, by) => desktop.setDays(d, by) });
 
 /* --------------------- MINT AI, proactive: the brief, watchers, catch-up ---- */
 /*

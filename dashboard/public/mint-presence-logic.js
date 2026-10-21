@@ -21,6 +21,7 @@
  *   createHolder(o)            toasts and sounds held while away, one summary on return
  *   rate(o)                    frames per second (0 = release the camera)
  *   normPrefs(p)               the switches (all off by default, but "release in energy saver")
+ *   pickCamera(devs, choice)   which camera: the stored choice, else Automatic (built-in first, phone / virtual last)
  */
 (function (root, factory) {
   var api = factory();
@@ -49,8 +50,14 @@
   var GEO = { screenW: 34, screenH: 21, faceW: 15, tanH: Math.tan(30 / DEG), aspect: 0.75 };
   var TOL = {
     screenYaw: 12, screenUp: 15, screenDown: 10,   // degrees beyond the screen's edges still "at the screen"
-    botYaw: 9, botUp: 10, botDown: 10,            // around the bot (the eyes go a little further than the head)
-    speakYaw: 7,                                  // look and speak: a tighter, frontal look
+    // Around the bot. 2026-10-21 (look and speak never armed on a real laptop): a person looks at a bot 12 deg
+    // aside mostly with the EYES -- the head turns maybe a third of it -- and MediaPipe's head pose jitters by a
+    // few degrees, so the old 9 / 10 (and 7 for speaking) almost never held for 0.6 s. Now the eyes' up/down
+    // (the eyeLookUp / eyeLookDown blendshapes, which have no left/right ambiguity) is added to the head's
+    // pitch, the angles are the median of the last three frames, and the tolerances are realistic.
+    botYaw: 12, botUp: 13, botDown: 12,
+    speakYaw: 10,                                 // look and speak: still a frontal look toward the bot's side
+    eyePitch: 25,                                 // degrees of gaze for eyeLookUp / eyeLookDown going 0 -> 1
     frontal: 30,                                  // |yaw| beyond this is not frontal at all
   };
 
@@ -103,8 +110,11 @@
       var mx = res.facialTransformationMatrixes && res.facialTransformationMatrixes[i];
       var pose = poseOf(mx && (mx.data || mx));
       if (!pose) continue;
-      var jaw = blend(res.faceBlendshapes && res.faceBlendshapes[i], "jawOpen");
-      out.push({ cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, w: Math.max(0.001, x1 - x0), yaw: pose.yaw, pitch: pose.pitch, jaw: jaw == null ? null : jaw });
+      var bs = res.faceBlendshapes && res.faceBlendshapes[i];
+      var jaw = blend(bs, "jawOpen");
+      var up = (blend(bs, "eyeLookUpLeft") || 0) + (blend(bs, "eyeLookUpRight") || 0), dn = (blend(bs, "eyeLookDownLeft") || 0) + (blend(bs, "eyeLookDownRight") || 0);
+      var hasEye = blend(bs, "eyeLookDownLeft") != null || blend(bs, "eyeLookUpLeft") != null;
+      out.push({ cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, w: Math.max(0.001, x1 - x0), yaw: pose.yaw, pitch: pose.pitch, jaw: jaw == null ? null : jaw, ey: hasEye ? ((up - dn) / 2) * TOL.eyePitch : null });
     }
     return out;
   }
@@ -138,12 +148,13 @@
   /** Is this face turned toward the screen / the bot / frontal enough to speak to it? */
   function classify(face, bot, geo) {
     var a = aim(face, bot, geo), s = a.screen, yw = face.yaw, pt = face.pitch;
+    var gp = face.ey != null ? pt + face.ey : pt; // where the eyes point, up / down (the head plus the eyes)
     var frontal = Math.abs(yw) <= TOL.frontal;
     var screen = frontal && yw >= s.yaw0 - TOL.screenYaw && yw <= s.yaw1 + TOL.screenYaw && pt <= s.up + TOL.screenUp && pt >= s.down - TOL.screenDown;
-    var dy = yw - a.bot.yaw, dp = pt - a.bot.pitch;
+    var dy = yw - a.bot.yaw, dp = gp - a.bot.pitch;
     var atBot = screen && Math.abs(dy) <= TOL.botYaw && dp <= TOL.botUp && dp >= -TOL.botDown;
     var speak = atBot && Math.abs(dy) <= TOL.speakYaw;
-    return { screen: screen, bot: atBot, speak: speak, frontal: frontal };
+    return { screen: screen, bot: atBot, speak: speak, frontal: frontal, dy: dy, dp: dp };
   }
   /** The bot's eyes toward the person (from the bot's place on the screen), in quarters of -1..1. */
   function gazeFor(face, bot, geo) {
@@ -182,13 +193,20 @@
     var S;
     function reset() {
       S = { state: null, lastFace: -1e12, runStart: null, screenSince: null, notScreenSince: null, botSince: null, notBotSince: null, atBot: false, looking: false,
-        prev: null, gaze: null, jaw: [], lastLook: -1e12, others: 0, speak: false, face: null };
+        prev: null, gaze: null, jaw: [], lastLook: -1e12, others: 0, speak: false, face: null, poses: [], dy: null, dp: null };
+    }
+    function med3(a) { var b = a.slice().sort(function (x, y) { return x - y; }); return b[Math.floor(b.length / 2)]; }
+    /** The face with its angles as the median of the last three frames: one jittery frame changes nothing. */
+    function steady(f) {
+      S.poses.push([f.yaw, f.pitch, f.ey]); if (S.poses.length > 3) S.poses.shift();
+      var e = S.poses.map(function (p) { return p[2]; }).filter(function (v) { return v != null; });
+      return Object.assign({}, f, { yaw: med3(S.poses.map(function (p) { return p[0]; })), pitch: med3(S.poses.map(function (p) { return p[1]; })), ey: e.length ? med3(e) : null });
     }
     reset();
     function snap(changed) {
       var t = S.t || 0;
       return { state: S.state, gaze: S.gaze, changed: !!changed, atBot: S.atBot, speak: S.speak && S.atBot, others: S.others, mouth: mouthActive(t),
-        turnedAwayMs: S.state ? Math.max(0, t - S.lastLook) : 0, face: !!S.face };
+        turnedAwayMs: S.state ? Math.max(0, t - S.lastLook) : 0, face: !!S.face, dy: S.dy, dp: S.dp };
     }
     function mouthActive(t) {
       var j = S.jaw.filter(function (e) { return t - e[0] <= T.MOUTH_MS; });
@@ -201,7 +219,11 @@
       S.t = t;
       var pk = pickPrimary(faces, S.prev), f = pk.face, was = S.state;
       S.face = f; S.others = pk.others;
-      var cl = f ? classify(f, bot, geo) : { screen: false, bot: false, speak: false };
+      if (!f && t - S.lastFace > T.GAP_MS) S.poses = [];
+      // at the screen: this frame (quick, as before); at the bot / frontal to speak: the median of three frames
+      var cl = f ? classify(f, bot, geo) : { screen: false, bot: false, speak: false, dy: null, dp: null };
+      if (f) { var cs = classify(steady(f), bot, geo); cl = { screen: cl.screen, bot: cl.screen && cs.bot, speak: cl.screen && cs.speak, dy: cs.dy, dp: cs.dp }; }
+      S.dy = cl.dy == null ? null : Math.round(cl.dy * 10) / 10; S.dp = cl.dp == null ? null : Math.round(cl.dp * 10) / 10;
       if (f) {
         if (t - S.lastFace > T.GAP_MS) S.runStart = t;
         S.lastFace = t; S.prev = f;
@@ -246,20 +268,24 @@
    *   the person has faced the bot (frontal, within TOL.speakYaw) for ARM_MS, nobody else is in view,
    *   speech starts (the level over the room's floor for ONSET_MS), the person's own mouth moved lately
    *   (when the model reports it), nothing else is going on (busy: a call held, the voice speaking), and
-   *   COOL_MS have passed since the last turn.
+   *   COOL_MS have passed since the last turn. A frame or two off (GRACE_MS) does not restart the hold.
    */
   function createSpeakGate(o) {
     o = o || {};
-    var ARM_MS = o.armMs || 600, ONSET_MS = o.onsetMs || 160, COOL_MS = o.coolMs || 3000, MIN = o.min || 0.02;
-    var G = { since: null, ok: false, mouth: null, floor: 0.004, loudSince: null, last: -1e12 };
+    // GRACE_MS (2026-10-21): one or two frames off (a blink, the model's jitter) no longer restart the 0.6 s.
+    var ARM_MS = o.armMs || 600, ONSET_MS = o.onsetMs || 160, COOL_MS = o.coolMs || 3000, MIN = o.min || 0.02, GRACE_MS = o.graceMs == null ? 450 : o.graceMs;
+    var G = { since: null, badSince: null, ok: false, mouth: null, floor: 0.004, loudSince: null, last: -1e12, level: 0, t: 0, v: null, busy: false };
     function vision(s, t) {
       var good = !!(s && s.state === "looking" && s.atBot && s.speak && !s.others);
-      if (good) { if (G.since == null) G.since = t; } else G.since = null;
-      G.ok = good && G.since != null && t - G.since >= ARM_MS;
+      if (good) { G.badSince = null; if (G.since == null) G.since = t; }
+      else if (G.since != null) { if (G.badSince == null) G.badSince = t; if (t - G.badSince > GRACE_MS || !s || s.others || s.state !== "looking") { G.since = null; G.badSince = null; } }
+      G.ok = G.since != null && G.badSince == null && t - G.since >= ARM_MS;
       G.mouth = s ? s.mouth : null;
+      G.v = s || null; G.t = t;
     }
     function audio(level, t, busy) {
       level = +level || 0;
+      G.level = level; G.t = t; G.busy = !!busy;
       // the room's floor: down quickly to a quieter room, up slowly (~5 s) to a steady noise (a fan), so a
       // steady sound is never "speech starting" while a voice's onset (a jump within 160 ms) still is
       if (level < G.floor) G.floor = Math.max(0.001, G.floor * 0.9 + level * 0.1);
@@ -274,6 +300,17 @@
       vision: vision, audio: audio,
       ended: function (t) { G.last = t; },
       armed: function () { return G.ok; },
+      /** "Show what it sees": each condition, numbers only. */
+      status: function (t) {
+        t = t == null ? G.t : t;
+        var v = G.v || {};
+        return {
+          face: !!v.face, others: v.others || 0, looking: v.state === "looking",
+          facing: !!(v.atBot && v.speak), dy: v.dy == null ? null : v.dy, dp: v.dp == null ? null : v.dp, held: G.since != null ? Math.round(t - G.since) : 0, armMs: ARM_MS, armed: G.ok,
+          mouth: G.mouth, level: Math.round(G.level * 1000) / 1000, need: Math.round(Math.max(MIN, G.floor * 4) * 1000) / 1000,
+          loud: G.loudSince != null, busy: G.busy, coolLeft: Math.max(0, Math.round(COOL_MS - (t - G.last))),
+        };
+      },
       _g: G,
     };
   }
@@ -363,10 +400,81 @@
     return { cam: p.cam === true, speak: p.cam === true && p.speak === true, saver: p.saver !== false };
   }
 
+  /* ------------------------------------------------------------ which camera (2026-10-21)
+   * Windows' default camera is often not the laptop's own: Phone Link / "Connected Camera" puts the phone first,
+   * and OBS / NVIDIA Broadcast / DroidCam... add virtual ones. The choice is this browser's / app's own
+   * (localStorage "mint-presence-camera" = { id, label }; ids can change, so the label is the fallback) and is
+   * never sent anywhere. "Automatic" (no choice): a built-in RGB camera, else another real one, else an IR
+   * camera (Windows Hello's; useless for the face model unless it is all there is), else a phone / virtual one,
+   * else the browser's default.
+   */
+  var CAM_VIRTUAL = /phone|\blink\b|connected camera|windows virtual|virtual|\bobs\b|nvidia broadcast|\bsnap\b|droidcam|iriun|\bcamo\b|epoccam|continuity/i;
+  var CAM_IR = /\bIR\b|infra-?red/; // "Integrated IR Camera" (case matters: "Iriun", "firmware")
+  var CAM_BUILTIN = /integrated|built-?in|internal|hd webcam|hd camera|hd user facing|facetime|\bfront\b|uvc|user facing/i;
+  /** A label without the USB ids Windows appends ("Integrated Webcam (0c45:6a1d)" -> "Integrated Webcam"). */
+  function camLabel(l) { return String(l || "").replace(/\s*\([0-9a-f]{4}:[0-9a-f]{4}\)\s*$/i, "").replace(/\s+/g, " ").trim(); }
+  /** "virtual" | "ir" | "builtin" | "other" ("" for a camera whose label is not known yet). */
+  function cameraKind(label) {
+    var l = camLabel(label);
+    if (!l) return "";
+    if (CAM_VIRTUAL.test(l)) return "virtual";
+    if (CAM_IR.test(l)) return "ir";
+    if (CAM_BUILTIN.test(l)) return "builtin";
+    return "other";
+  }
+  /** The short name for the pill ("Camera on · Integrated Webcam"). */
+  function shortCam(label, max) {
+    var l = camLabel(label).replace(/^(?:\d+\s*-\s*)/, ""); // "1 - Integrated Camera" (some drivers)
+    max = max || 26;
+    return l.length > max ? l.slice(0, max - 1).replace(/\s+$/, "") + "…" : l;
+  }
+  /** The stored choice: { id, label } or null (Automatic). */
+  function normCamChoice(v) {
+    if (typeof v === "string") { try { v = JSON.parse(v); } catch (e) { v = null; } }
+    if (!v || typeof v !== "object") return null;
+    var id = typeof v.id === "string" ? v.id.slice(0, 256) : "", label = typeof v.label === "string" ? v.label.slice(0, 200) : "";
+    return id || label ? { id: id, label: label } : null;
+  }
+  /** The video inputs (MediaDeviceInfo-like), in Automatic's order of preference (stable within a kind). */
+  function rankCameras(devs) {
+    var R = { builtin: 0, other: 1, ir: 2, virtual: 3, "": 4 };
+    return (devs || []).filter(function (d) { return d && d.kind === "videoinput"; })
+      .map(function (d, i) { return { d: d, i: i, r: R[cameraKind(d.label)] }; })
+      .sort(function (a, b) { return a.r - b.r || a.i - b.i; })
+      .map(function (x) { return x.d; });
+  }
+  /**
+   * Which camera to open: { id, label, how, note }. id null = no deviceId constraint (the browser's default:
+   * nothing better known -- before the camera was ever allowed the labels and ids are hidden).
+   *   how  "chosen" (the stored id) | "chosen-label" (the same camera under a new id) | "auto" | "default"
+   *   note why the choice was not followed (the chosen camera is gone or failed), else ""
+   * o.avoid: ids that failed to open this time.
+   */
+  function pickCamera(devs, choice, o) {
+    var avoid = (o && o.avoid) || [];
+    var vids = (devs || []).filter(function (d) { return d && d.kind === "videoinput" && d.deviceId && avoid.indexOf(d.deviceId) < 0; });
+    choice = normCamChoice(choice);
+    var note = "";
+    if (choice) {
+      var byId = choice.id && vids.filter(function (d) { return d.deviceId === choice.id; })[0];
+      if (byId) return { id: byId.deviceId, label: byId.label || choice.label, how: "chosen", note: "" };
+      var cl = camLabel(choice.label).toLowerCase();
+      var byLabel = cl && vids.filter(function (d) { return camLabel(d.label).toLowerCase() === cl; })[0];
+      if (byLabel) return { id: byLabel.deviceId, label: byLabel.label, how: "chosen-label", note: "" };
+      var gone = shortCam(choice.label, 40) || "The camera you chose";
+      note = (choice.id && avoid.indexOf(choice.id) >= 0 ? gone + " could not be opened" : gone + " is not connected") + " — using Automatic";
+    }
+    var known = vids.filter(function (d) { return camLabel(d.label); });
+    var best = rankCameras(known)[0];
+    if (best) return { id: best.deviceId, label: best.label, how: "auto", note: note };
+    return { id: null, label: "", how: "default", note: note };
+  }
+
   return {
     T: T, GEO: GEO, TOL: TOL, SOUND_RANK: SOUND_RANK,
     poseOf: poseOf, matrixOf: matrixOf, summarize: summarize, where: where, aim: aim, classify: classify, gazeFor: gazeFor, pickPrimary: pickPrimary,
     createTracker: createTracker, createSpeakGate: createSpeakGate, createReplyPause: createReplyPause, createHolder: createHolder,
     rate: rate, normPrefs: normPrefs,
+    camLabel: camLabel, cameraKind: cameraKind, shortCam: shortCam, normCamChoice: normCamChoice, rankCameras: rankCameras, pickCamera: pickCamera,
   };
 });

@@ -4,6 +4,8 @@
  * render mode) does with the camera module's state. The camera module (mint-presence.js) only ever says
  * "present" | "looking" | "away" (null: off) and a coarse direction for the eyes; this file:
  *
+ *   - which camera: the choice made in Settings > Appearance > Eye contact (localStorage "mint-presence-camera",
+ *     in the browser and in the app alike; never sent), else Automatic (the camera module decides);
  *   - decides whether it may run: OFF unless switched on -- in a browser by that browser's own switch
  *     (localStorage "mint-presence", Settings > Appearance > Eye contact); in the desktop app by the app's
  *     setting (its Settings window or the tray; the page can only switch it OFF), with the app's lock /
@@ -23,7 +25,7 @@
   var html = document.documentElement;
   var T = window.__TAURI__ || null;
   var DESK = !!T && html.classList.contains("cc-desk");
-  var KEY = "mint-presence";
+  var KEY = "mint-presence", CAMKEY = "mint-presence-camera"; // the camera choice: this browser's / app's own, in both
   function invoke(cmd, a) { if (!T || !T.core || !T.core.invoke) return Promise.resolve(null); try { return T.core.invoke(cmd, a || {}).catch(function () { return null; }); } catch (e) { return Promise.resolve(null); } }
   function listen(n, fn) { if (T && T.event && T.event.listen) try { T.event.listen(n, function (e) { try { fn(e.payload || {}); } catch (x) { /* never stops the page */ } }); } catch (e) { /* no events */ } }
 
@@ -38,6 +40,9 @@
     host = { hidden: !!p.hidden, locked: !!v.locked, meeting: !!v.meeting, saver: !!v.energySaver, battery: !!v.onBattery };
     configure();
   }
+  function camChoice() { var v = null; try { v = window.localStorage.getItem(CAMKEY); } catch (e) { v = null; } return Logic.normCamChoice(v); }
+  var camera = camChoice();
+  window.addEventListener("storage", function (e) { if (e.key === CAMKEY || e.key === null) { camera = camChoice(); configure(); } });
   if (DESK) {
     invoke("get_state").then(function (p) { if (p) fromApp(p); });
     listen("mint://state", fromApp);
@@ -60,7 +65,14 @@
     }
     return { x: (window.screenX + x) / sw, y: (window.screenY + y) / sh };
   }
-  function configure() { MP.configure({ prefs: prefs, host: host, bot: botAt() }); }
+  var botSaid = "";
+  function configure() {
+    var b = botAt();
+    MP.configure({ prefs: prefs, host: host, bot: b, camera: camera });
+    // Where the bot sits (two fractions of the screen), for Settings' "Show what it sees": this computer only.
+    var k = Math.round(b.x * 50) / 50 + "," + Math.round(b.y * 50) / 50;
+    if (k !== botSaid) { botSaid = k; try { window.localStorage.setItem("mint-presence-bot", JSON.stringify({ x: b.x, y: b.y })); } catch (e) { /* no storage */ } }
+  }
   setInterval(function () { if (prefs.cam) configure(); }, 2000);
 
   /* ---------------------------------------------------------------- the state, applied */
@@ -128,7 +140,9 @@
   /* ---------------------------------------------------------------- look and speak, a reply's pause */
   function live() { return window.__mintLive || null; }
   MP.hooks({
-    speak: function () { var lv = live(); if (lv && lv.lookTalk) lv.lookTalk(); },
+    speak: function () { var lv = live(); return !!(lv && lv.lookTalk && lv.lookTalk()); },
+    // Voice off (Settings > Voice) or not usable here: look and speak cannot start a turn -- the pill says so.
+    ready: function () { var lv = live(); return !!(lv && lv.ok && lv.ok()); },
     busy: function () { var lv = live(); return !!(lv && lv.busy && lv.busy()); },
     speaking: function () { var V = window.VoiceLive, c = window.__mintCC; return !!((V && V.speaking && V.speaking()) || (c && c.speaking && c.speaking())); },
     pause: function (on) {

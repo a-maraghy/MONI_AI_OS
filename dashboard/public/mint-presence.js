@@ -23,10 +23,19 @@
  * does. A reply that is playing pauses after ~1.5 s looking away (hooks.pause(true)) and resumes on looking
  * back. A small "Camera on" pill shows while the camera is open; its button switches it off (hooks.off).
  *
- *   MintPresence.configure({ prefs: {cam, speak, saver}, host: {hidden, locked, meeting, saver, battery}, bot: {x, y} })
+ * Which camera (2026-10-21): the one chosen in Settings > Appearance > Eye contact (localStorage
+ * "mint-presence-camera" = { id, label }, this browser's / app's own, never sent), else Automatic -- the
+ * built-in camera, never a phone (Phone Link) or virtual one unless it is all there is
+ * (MintPresenceLogic.pickCamera). If the chosen one is gone or fails, Automatic, and the state's why and
+ * Settings say so (localStorage "mint-presence-cam-used": the camera in use, local only). A camera plugged in
+ * or out (devicechange) is looked at again.
+ *
+ *   MintPresence.configure({ prefs: {cam, speak, saver}, host: {hidden, locked, meeting, saver, battery}, bot: {x, y}, camera: {id, label} | null })
  *   MintPresence.on(fn)          fn({ state, gaze, camera }) on every change
  *   MintPresence.snapshot()      { state, gaze, camera, why }
- *   MintPresence.hooks({ speak, busy, speaking, pause, off })
+ *   MintPresence.device()        the camera in use: { label, name, how, note } (null while closed)
+ *   MintPresence.hooks({ speak, busy, speaking, pause, off, ready })   ready(): can a voice turn start at all (voice on)?
+ *   MintPresence.look()          look and speak's checklist, numbers only ("Show what it sees" in Settings)
  *   MintPresence.release(why)    let go of the camera now
  *   MintPresence.diag()          counts only (frames, fps, ms per frame, opened, released, why)
  */
@@ -38,10 +47,12 @@
   var WORKER = me ? new URL("mint-presence-worker.js", me).pathname : "/static/mint-presence-worker.js";
   var W = 320, H = 240;
 
-  var cfg = { prefs: Logic.normPrefs(null), host: {}, bot: null };
-  var H_ = { speak: null, busy: null, speaking: null, pause: null, off: null };
+  var cfg = { prefs: Logic.normPrefs(null), host: {}, bot: null, camera: null, show: false };
+  var USED = "mint-presence-cam-used";
+  var H_ = { speak: null, busy: null, speaking: null, pause: null, off: null, ready: null };
+  var turns = { tried: 0, opened: 0, refused: 0, last: null }; // look and speak's starts (for "Show what it sees")
   var subs = [];
-  var C = { stream: null, video: null, worker: null, ready: false, inflight: false, timer: 0, fps: 0, opening: false, denied: false, lostAt: 0, why: "off" };
+  var C = { stream: null, video: null, worker: null, ready: false, inflight: false, timer: 0, fps: 0, opening: false, denied: false, lostAt: 0, why: "off", dev: null, note: "", failed: [], gen: 0 };
   var tracker = Logic.createTracker({ bot: null });
   var gate = Logic.createSpeakGate();
   var rp = Logic.createReplyPause();
@@ -68,11 +79,19 @@
       pill.setAttribute("role", "status");
       pill.innerHTML = '<span class="mp-dot" aria-hidden="true"></span><span class="mp-t">Camera on · eye contact</span><button type="button" class="mp-off" aria-label="Switch camera presence off">Off</button>';
       pill.querySelector(".mp-off").addEventListener("click", function () { release("switched off"); call(H_.off); });
-      pill.title = "The camera only tells MINT AI whether you are here and looking. Nothing leaves this computer.";
       (document.body || document.documentElement).appendChild(pill);
     } else if (!on && pill) { pill.remove(); pill = null; }
+    if (pill) {
+      var name = C.dev && Logic.shortCam(C.dev.label);
+      pill.querySelector(".mp-t").textContent = (name ? "Camera on · " + name : "Camera on · eye contact") + (cfg.prefs.speak && !voiceReady() ? " · look and speak: voice is off" : "");
+      pill.title = (C.dev && C.dev.label ? "Camera: " + Logic.camLabel(C.dev.label) + (C.note ? " (" + C.note + ")" : "") + ". " : "") +
+        "The camera only tells MINT AI whether you are here and looking. Nothing leaves this computer.";
+    }
     document.documentElement.classList.toggle("mp-cam-on", !!on);
   }
+
+  /** Can look and speak start a voice turn here? (No hook: assume it can.) Voice off -> it says so instead of nothing. */
+  function voiceReady() { if (!H_.ready) return true; return !!call(H_.ready); }
 
   /* ---------------------------------------------------------------- the camera */
   function want() {
@@ -86,34 +105,94 @@
     C.fps = r.fps;
     if (!C.stream && !C.opening) open();
   }
+  function videoC(id) {
+    var v = { width: { ideal: W }, height: { ideal: H }, frameRate: { ideal: 10, max: 15 } };
+    if (id) v.deviceId = { exact: id }; else v.facingMode = "user";
+    return { audio: false, video: v };
+  }
+  function devices() {
+    var md = navigator.mediaDevices;
+    if (!md.enumerateDevices) return Promise.resolve([]);
+    return md.enumerateDevices().then(function (l) { return l || []; }, function () { return []; });
+  }
+  function stopAll(stream) { stream.getTracks().forEach(function (t) { t.onended = null; t.stop(); }); }
+  function idOf(stream) { var t = stream.getVideoTracks()[0], s = t && t.getSettings ? t.getSettings() : null; return (s && s.deviceId) || ""; }
+  function used() { // what Settings shows ("in use: ..."): on this computer only
+    try { window.localStorage.setItem(USED, JSON.stringify({ label: C.dev ? Logic.camLabel(C.dev.label) : "", how: C.dev ? C.dev.how : "", note: C.note, t: Date.now() })); } catch (e) { /* no storage */ }
+  }
   function open() {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.Worker || !window.createImageBitmap) { C.why = diag.why = "unsupported"; return; }
     if (C.lostAt && Date.now() - C.lostAt < 30000) return;
     C.opening = true;
-    navigator.mediaDevices.getUserMedia({ audio: false, video: { width: { ideal: W }, height: { ideal: H }, frameRate: { ideal: 10, max: 15 }, facingMode: "user" } }).then(function (stream) {
-      C.opening = false;
-      if (!want().fps) { stream.getTracks().forEach(function (t) { t.stop(); }); return; }
-      C.stream = stream; diag.opened++;
-      stream.getVideoTracks().forEach(function (t) { t.onended = function () { C.lostAt = Date.now(); release("camera lost"); }; });
-      var v = document.createElement("video"); // never in the page: nobody sees it, nothing draws it
-      v.muted = true; v.playsInline = true; v.autoplay = true;
-      v.srcObject = stream;
-      var p = v.play(); if (p && p.catch) p.catch(function () { /* plays once it can */ });
-      C.video = v;
-      indicator(true);
-      setPub(pub.state, pub.gaze, true);
-      startWorker();
-      loop();
+    var gen = ++C.gen;
+    devices().then(function (devs) { tryOpen(gen, Logic.pickCamera(devs, cfg.camera, { avoid: C.failed }), 0); });
+  }
+  function tryOpen(gen, pick, n) {
+    if (gen !== C.gen) return;
+    navigator.mediaDevices.getUserMedia(videoC(pick.id)).then(function (stream) {
+      if (gen !== C.gen || !want().fps) { stopAll(stream); if (gen === C.gen) C.opening = false; return; }
+      if (pick.id || n) return opened(stream, pick);
+      // Opened before the labels were known (the first time): now they are -- the right camera, if this is not it.
+      devices().then(function (devs) {
+        if (gen !== C.gen) { stopAll(stream); return; }
+        var p2 = Logic.pickCamera(devs, cfg.camera, { avoid: C.failed }), cur = idOf(stream);
+        if (p2.id && cur && p2.id !== cur) { stopAll(stream); tryOpen(gen, p2, n + 1); return; }
+        var here = devs.filter(function (d) { return d.kind === "videoinput" && d.deviceId === cur; })[0];
+        opened(stream, here ? { id: cur, label: here.label, how: p2.id === cur ? p2.how : "default", note: p2.note } : p2);
+      });
     }, function (e) {
-      C.opening = false;
-      var n = e && e.name;
+      if (gen !== C.gen) return;
+      var nm = e && e.name;
+      if (nm === "NotAllowedError" || nm === "SecurityError") { C.opening = false; C.denied = true; C.why = diag.why = "denied"; diag.errors++; setPub(null, null, false); return; }
+      if (pick.id && n < 6) { // this camera would not open (gone, busy, refused the size): the next best one
+        C.failed.push(pick.id); diag.errors++;
+        devices().then(function (devs) {
+          var p2 = Logic.pickCamera(devs, cfg.camera, { avoid: C.failed });
+          if (!p2.note && pick.how !== "auto" && pick.how !== "default") p2.note = (Logic.shortCam(pick.label, 40) || "The camera you chose") + " could not be opened — using Automatic";
+          else if (!p2.note && pick.how === "auto") p2.note = (Logic.shortCam(pick.label, 40) || "A camera") + " could not be opened";
+          tryOpen(gen, p2, n + 1);
+        });
+        return;
+      }
       // A refusal (the browser's prompt, or the app's policy) is final until the switch is turned on again.
-      if (n === "NotAllowedError" || n === "SecurityError") { C.denied = true; C.why = diag.why = "denied"; }
-      else { C.lostAt = Date.now(); C.why = diag.why = "no camera"; }
+      C.opening = false;
+      C.lostAt = Date.now(); C.why = diag.why = "no camera";
       diag.errors++;
       setPub(null, null, false);
     });
   }
+  function opened(stream, pick) {
+    C.opening = false;
+    C.stream = stream; diag.opened++;
+    C.dev = { id: idOf(stream) || pick.id || "", label: pick.label || "", how: pick.how };
+    C.note = pick.note || "";
+    used();
+    stream.getVideoTracks().forEach(function (t) { t.onended = function () { C.lostAt = Date.now(); release("camera lost"); }; });
+    var v = document.createElement("video"); // never in the page: nobody sees it, nothing draws it
+    v.muted = true; v.playsInline = true; v.autoplay = true;
+    v.srcObject = stream;
+    var p = v.play(); if (p && p.catch) p.catch(function () { /* plays once it can */ });
+    C.video = v;
+    indicator(true);
+    setPub(pub.state, pub.gaze, true);
+    startWorker();
+    loop();
+  }
+  /** Another camera now (the choice changed, or one was plugged in / out): let go and open the right one. */
+  function reopen(why) {
+    C.failed = []; C.lostAt = 0;
+    if (C.stream || C.opening) release(why);
+    apply();
+  }
+  if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) navigator.mediaDevices.addEventListener("devicechange", function () {
+    if (!cfg.prefs.cam) return;
+    if (!C.stream) { if (C.lostAt && !C.opening) { C.lostAt = 0; apply(); } return; }
+    devices().then(function (devs) {
+      if (!C.stream || !C.dev) return;
+      var p = Logic.pickCamera(devs, cfg.camera, {}), here = devs.some(function (d) { return d.kind === "videoinput" && d.deviceId === C.dev.id; });
+      if (!here || (p.id && p.id !== C.dev.id)) reopen("camera changed");
+    });
+  });
   function startWorker() {
     if (C.worker) return;
     try { C.worker = new Worker(WORKER); } catch (e) { diag.errors++; return; }
@@ -152,6 +231,7 @@
   }
   function release(why) {
     clearTimeout(C.timer);
+    C.gen++; C.opening = false; C.dev = null;
     if (C.stream) { C.stream.getTracks().forEach(function (t) { t.onended = null; t.stop(); }); diag.released++; }
     C.stream = null;
     if (C.video) { C.video.srcObject = null; C.video = null; }
@@ -167,9 +247,9 @@
 
   /* ---------------------------------------------------------------- look and speak: the level meter */
   function speakMic(s) {
-    if (!cfg.prefs.speak || !C.stream) { micOff(); return; }
+    if ((!cfg.prefs.speak && !cfg.show) || !C.stream || (!voiceReady() && !cfg.show)) { micOff(); return; }
     var busy = !!call(H_.busy);
-    if (s.atBot && s.speak && !s.others && !busy) { mic.offAt = 0; micOn(); }
+    if (((s.atBot && s.speak) || (cfg.show && s.face && s.state === "looking")) && !s.others && !busy) { mic.offAt = 0; micOn(); }
     else if (mic.stream) { if (!mic.offAt) mic.offAt = performance.now(); else if (performance.now() - mic.offAt > 2000) micOff(); }
   }
   function micOn() {
@@ -179,7 +259,7 @@
     mic.opening = true;
     navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false }).then(function (st) {
       mic.opening = false;
-      if (!C.stream || !cfg.prefs.speak) { st.getTracks().forEach(function (t) { t.stop(); }); return; }
+      if (!C.stream || (!cfg.prefs.speak && !cfg.show)) { st.getTracks().forEach(function (t) { t.stop(); }); return; }
       mic.stream = st;
       mic.ctx = new AC();
       var src = mic.ctx.createMediaStreamSource(st);
@@ -196,8 +276,12 @@
     for (var i = 0; i < mic.buf.length; i++) s += mic.buf[i] * mic.buf[i];
     var lvl = Math.sqrt(s / mic.buf.length);
     if (gate.audio(lvl, performance.now(), !!call(H_.busy)) === "start") {
+      turns.tried++;
+      if (cfg.show && !cfg.prefs.speak) { turns.last = { t: Date.now(), ok: null }; return; } // Settings' readout: shown, not started
       micOff(); // the voice turn opens its own microphone
-      call(H_.speak);
+      var r = voiceReady() ? call(H_.speak) : false;
+      if (r === false) turns.refused++; else turns.opened++;
+      turns.last = { t: Date.now(), ok: r !== false };
     }
   }
   function micOff() {
@@ -226,12 +310,23 @@
         cfg.prefs = p;
       }
       if (o.host) cfg.host = Object.assign({}, cfg.host, o.host);
+      if ("show" in o) cfg.show = !!o.show; // Settings' "Show what it sees": the level meter runs while a face looks
       if (o.bot) { cfg.bot = o.bot; tracker.setBot(o.bot); }
+      if ("camera" in o) {
+        var c = Logic.normCamChoice(o.camera);
+        if (JSON.stringify(c) !== JSON.stringify(cfg.camera)) { cfg.camera = c; reopen("camera changed"); return; }
+      }
       apply();
+      if (C.stream) indicator(true); // the pill's words follow the switches
     },
     on: function (fn) { if (typeof fn === "function") subs.push(fn); },
-    snapshot: function () { return { state: pub.state, gaze: pub.gaze, camera: pub.camera, why: C.why }; },
-    hooks: function (h) { Object.keys(H_).forEach(function (k) { if (h && typeof h[k] === "function") H_[k] = h[k]; }); },
+    snapshot: function () { return { state: pub.state, gaze: pub.gaze, camera: pub.camera, why: [C.why, C.stream ? C.note : ""].filter(Boolean).join("; ") }; },
+    device: function () { return C.stream && C.dev ? { label: Logic.camLabel(C.dev.label), name: Logic.shortCam(C.dev.label), how: C.dev.how, note: C.note } : null; },
+    hooks: function (h) { Object.keys(H_).forEach(function (k) { if (h && typeof h[k] === "function") H_[k] = h[k]; }); indicator(!!C.stream); },
+    look: function () {
+      var g = gate.status(performance.now());
+      return Object.assign(g, { camera: !!C.stream, why: C.why, mic: !!mic.stream, speakOn: !!cfg.prefs.speak, voice: voiceReady(), busy: !!call(H_.busy), turns: Object.assign({}, turns, { last: turns.last && Object.assign({}, turns.last) }) });
+    },
     release: function (why) { release(why || "released"); },
     /** Look and speak finished a turn (the voice went quiet): the gate waits its cool-down from now. */
     turnEnded: function () { gate.ended(performance.now()); },

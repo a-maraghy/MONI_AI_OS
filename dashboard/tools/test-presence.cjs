@@ -19,6 +19,13 @@
  *    side driven by a stand-in camera module: the bot's eyes and doze, the glance cards, held toasts / sounds /
  *    Windows toasts and the one summary, the catch-up, look and speak, a reply's pause. Zero CSP violations.
  *    --shots DIR writes the Settings screen.
+ * 4. Which camera (2026-10-21): Automatic's ranking and the fallbacks on realistic Windows camera lists (pure);
+ *    then Chromium with three fake cameras renamed like a laptop's (a phone through Phone Link, the integrated
+ *    webcam, its IR camera): Automatic opens the webcam (deviceId exact), the pill names it, the Settings
+ *    selector lists them and switches the open Command Center at once, a stale id with the same name, a removed
+ *    camera (devicechange) and a camera that is gone fall back to Automatic and say so; the names only after
+ *    "Allow the camera once" (released at once); in the app's render mode too; no request carries a camera's
+ *    name or id. --shots DIR also writes the selector (browser + app, dark + light).
  */
 const scratch = require("./scratch-server.cjs"); // first: sets MONI_DATA_DIR
 const path = require("path");
@@ -48,13 +55,14 @@ function face(o) {
   for (let i = 0; i < 478; i++) { const a = (i * 2.399) % (2 * Math.PI), r = Math.sqrt((i + 0.5) / 478); pts.push({ x: o.cx + Math.cos(a) * r * w / 2, y: o.cy + Math.sin(a) * r * h / 2, z: 0 }); }
   // the extremes, so the box is exactly the one asked for
   pts.push({ x: o.cx - w / 2, y: o.cy, z: 0 }, { x: o.cx + w / 2, y: o.cy, z: 0 }, { x: o.cx, y: o.cy - h / 2, z: 0 }, { x: o.cx, y: o.cy + h / 2, z: 0 });
-  return { pts, m: L.matrixOf(o.yaw || 0, o.pitch || 0), jaw: o.jaw == null ? 0.02 : o.jaw };
+  return { pts, m: L.matrixOf(o.yaw || 0, o.pitch || 0), jaw: o.jaw == null ? 0.02 : o.jaw, eyeDown: o.eyeDown, eyeUp: o.eyeUp };
 }
 function result(faces) {
   return {
     faceLandmarks: faces.map((f) => f.pts),
     facialTransformationMatrixes: faces.map((f) => ({ rows: 4, columns: 4, data: f.m })),
-    faceBlendshapes: faces.map((f) => ({ categories: [{ categoryName: "eyeBlinkLeft", score: 0.1 }, { categoryName: "jawOpen", score: f.jaw }] })),
+    faceBlendshapes: faces.map((f) => ({ categories: [{ categoryName: "eyeBlinkLeft", score: 0.1 }, { categoryName: "jawOpen", score: f.jaw }].concat(
+      f.eyeDown != null || f.eyeUp != null ? ["Left", "Right"].flatMap((k) => [{ categoryName: "eyeLookDown" + k, score: f.eyeDown || 0 }, { categoryName: "eyeLookUp" + k, score: f.eyeUp || 0 }]) : []) })),
   };
 }
 /** A stream: [{ ms, faces: [face opts] }...] at fps -> the tracker's snapshots. */
@@ -83,7 +91,9 @@ const SIDEWAYS = { cx: 0.5, cy: 0.5, w: 0.24, yaw: 55, pitch: -5 };
     const r = result([face({ cx: 0.4, cy: 0.55, w: 0.2, yaw: 20, pitch: -10, jaw: 0.3 })]);
     const s = L.summarize(r);
     check("one face -> one record: box centre / width, yaw / pitch, jawOpen", s.length === 1 && Math.abs(s[0].cx - 0.4) < 1e-6 && Math.abs(s[0].cy - 0.55) < 1e-6 && Math.abs(s[0].w - 0.2) < 1e-6 && Math.abs(s[0].yaw - 20) < 1e-6 && Math.abs(s[0].pitch + 10) < 1e-6 && s[0].jaw === 0.3, JSON.stringify(s));
-    check("  the landmarks stop there: only those six numbers", JSON.stringify(Object.keys(s[0]).sort()) === JSON.stringify(["cx", "cy", "jaw", "pitch", "w", "yaw"]));
+    check("  the landmarks stop there: only those seven numbers (ey: the eyes' up/down, null without eye blendshapes)", JSON.stringify(Object.keys(s[0]).sort()) === JSON.stringify(["cx", "cy", "ey", "jaw", "pitch", "w", "yaw"]) && s[0].ey === null);
+    const se = L.summarize(result([face({ cx: 0.5, cy: 0.5, w: 0.24, eyeDown: 0.4 })]))[0];
+    check("  the eyes looking down 0.4 -> about 10 degrees down (eyeLookDown, no left/right ambiguity)", Math.abs(se.ey + 10) < 1e-9, se.ey);
     check("  nothing seen -> []; a face with no pose matrix is skipped", L.summarize({ faceLandmarks: [] }).length === 0 && L.summarize({ faceLandmarks: [r.faceLandmarks[0]], facialTransformationMatrixes: [] }).length === 0);
     let worst = 0;
     for (let y = -60; y <= 60; y += 15) for (let p = -40; p <= 40; p += 10) { const q = L.poseOf(L.matrixOf(y, p)); worst = Math.max(worst, Math.abs(q.yaw - y), Math.abs(q.pitch - p)); }
@@ -191,6 +201,48 @@ const SIDEWAYS = { cx: 0.5, cy: 0.5, w: 0.24, yaw: 55, pitch: -5 };
     check("  one turn, then 3 s cool-down: 2 starts in 4.3 s of on-and-off talk", n === 2, n);
   }
 
+  section("look and speak with a real face's numbers (2026-10-21: it never started on a laptop)");
+  {
+    // A real person 55 cm from a laptop camera looks at a bot 12 deg right / 18 deg down mostly with their eyes: the head
+    // turns ~4 deg, tips ~8 deg, the eyes look down; MediaPipe's head pose jitters +-3 deg frame to frame.
+    const REAL = { cx: 0.5, cy: 0.5, w: 0.24, yaw: 4, pitch: -8, eyeDown: 0.4 };
+    const jit = (f, t) => ({ ...f, yaw: f.yaw + [0, 3, -3, 2, -2, 3.5][Math.floor(t / 200) % 6], pitch: f.pitch + [0, -2, 2, -3, 3, 1][Math.floor(t / 200) % 6] });
+    function scene2(o) {
+      const tr = L.createTracker({ bot: BOTPOS }), gate = L.createSpeakGate(), old = o.old;
+      let start = null, armedAt = null;
+      for (let t = 0; t < 5000; t += 50) {
+        if (t % 200 === 0) {
+          const jaw = o.mouth === false ? 0.03 : 0.03 + (t > 2400 ? 0.25 * (Math.floor(t / 200) % 2) : 0);
+          const me = { ...(o.look ? o.look(t) : jit(REAL, t)), jaw };
+          const faces = [me].concat(o.extra ? [o.extra] : []);
+          gate.vision(tr.push(L.summarize(result(faces.map(face))), t), t);
+          if (gate.armed() && armedAt === null) armedAt = t;
+        }
+        const loud = o.level ? o.level(t) : t >= 2600 && t < 3600 ? 0.08 : 0.003;
+        if (gate.audio(loud, t, false) === "start" && start === null) start = t;
+      }
+      return { start, armedAt, st: gate.status() };
+    }
+    const r = scene2({});
+    check("a real look at the bot (head 4 deg, eyes down, +-3 deg jitter) arms within a second and a sentence starts listening", r.armedAt !== null && r.armedAt <= 1200 && r.start !== null && r.start >= 2600 && r.start <= 2900, JSON.stringify(r));
+    const head = L.classify({ ...REAL, ey: null }, BOTPOS);
+    check("  (the cause: 0.1.12 judged the head alone, within 7 deg sideways / 10 up -- this look is " + Math.abs(head.dy).toFixed(1) + " deg sideways and " + head.dp.toFixed(1) + " up off the bot)", Math.abs(head.dy) > 7 && head.dp > 10, JSON.stringify(head));
+    const screenMid = scene2({ look: (t) => jit({ cx: 0.5, cy: 0.5, w: 0.24, yaw: 0, pitch: -6, eyeDown: 0.1 }, t) });
+    check("  reading the middle of the screen, then talking (on the phone) -> no", screenMid.start === null, JSON.stringify(screenMid));
+    const glance = scene2({ look: (t) => (t >= 2000 && t < 2400 ? REAL : { ...SIDEWAYS, eyeDown: 0 }) , level: (t) => (t >= 2200 && t < 3200 ? 0.08 : 0.003) });
+    check("  a side glance at the bot (0.4 s) while someone talks -> no", glance.start === null, JSON.stringify(glance));
+    check("  someone else talking off camera (their mouth still) -> no", scene2({ mouth: false }).start === null);
+    const tv = scene2({ mouth: false, extra: { cx: 0.8, cy: 0.3, w: 0.08, yaw: 0, pitch: 0, jaw: 0.4 } });
+    check("  a TV behind them (a small face talking, theirs still) -> no", tv.start === null, JSON.stringify(tv));
+    check("  someone as close beside them -> no", scene2({ extra: { cx: 0.15, cy: 0.5, w: 0.22, yaw: -30 } }).start === null);
+    const st = r.st;
+    check("the checklist ('Show what it sees'): numbers only -- face, facing (degrees off, held), mouth, level vs needed, busy, cool-down", ["face", "facing", "dy", "dp", "held", "mouth", "level", "need", "busy", "coolLeft"].every((k) => k in st) && Object.values(st).every((v) => v === null || ["number", "boolean"].includes(typeof v)), JSON.stringify(st));
+    const tr = L.createTracker({ bot: BOTPOS });
+    let flips = 0, prev = null;
+    for (let t = 0; t < 3000; t += 200) { const sn = tr.push(L.summarize(result([face(jit(REAL, t))])), t); if (prev !== null && sn.atBot !== prev) flips++; prev = sn.atBot; }
+    check("  jitter does not flap 'at the bot' (median of three frames)", flips <= 1, flips);
+  }
+
   section("a reply pauses while you look away");
   {
     const rp = L.createReplyPause();
@@ -242,6 +294,41 @@ const SIDEWAYS = { cx: 0.5, cy: 0.5, w: 0.24, yaw: 55, pitch: -5 };
     check("  never while working, offline, or the pointer near", !dz({ presence: "away", state: "thinking" }) && !dz({ presence: "away", offline: true }) && !dz({ presence: "away", near: true }));
   }
 
+  section("which camera: Automatic and the fallbacks (realistic Windows lists)");
+  {
+    const v = (id, label) => ({ kind: "videoinput", deviceId: id, label, groupId: "g" + id });
+    const mic = { kind: "audioinput", deviceId: "m1", label: "Microphone Array (Realtek(R) Audio)" };
+    const phone = [mic, v("p", "Connected Camera (Phone Link)"), v("w", "Integrated Webcam (0c45:6a1d)")];
+    check("Phone Link first in the list + the Integrated Webcam -> the webcam", L.pickCamera(phone, null).id === "w" && L.pickCamera(phone, null).how === "auto");
+    const ltw = [v("l", "Link to Windows Camera"), v("h", "HD User Facing (04f2:b6dd)")];
+    check("  'Link to Windows' + 'HD User Facing' -> HD User Facing", L.pickCamera(ltw, null).id === "h");
+    const ir = [v("i", "Integrated IR Camera"), v("r", "Integrated Camera (04f2:b71a)")];
+    check("an IR camera listed first + the RGB one -> the RGB one", L.pickCamera(ir, null).id === "r");
+    check("  only an IR camera -> it (nothing else)", L.pickCamera([v("i", "Integrated IR Camera")], null).id === "i");
+    check("  IR and a phone -> the IR camera before the phone", L.pickCamera([v("p", "Phone Link"), v("i", "Integrated IR Camera")], null).id === "i");
+    const virt = [v("o", "OBS Virtual Camera")];
+    check("only a virtual camera -> it (better than nothing)", L.pickCamera(virt, null).id === "o" && L.pickCamera(virt, null).how === "auto");
+    const many = [v("o", "OBS Virtual Camera"), v("n", "NVIDIA Broadcast"), v("d", "DroidCam Source 3"), v("c", "Camo"), v("e", "EpocCam"), v("u", "Iriun Webcam"), v("s", "Snap Camera"), v("x", "Windows Virtual Camera"), v("k", "Continuity Camera"), v("g", "Logitech BRIO")];
+    check("  every phone / virtual name avoided: OBS, NVIDIA Broadcast, DroidCam, Camo, EpocCam, Iriun, Snap, Windows Virtual, Continuity -> the Logitech", L.pickCamera(many, null).id === "g" && many.slice(0, 9).every((d) => L.cameraKind(d.label) === "virtual"), many.map((d) => d.label + ":" + L.cameraKind(d.label)).join(", "));
+    check("  'Iriun' is not an IR camera, 'firmware' words are not IR", L.cameraKind("Iriun Webcam") === "virtual" && L.cameraKind("USB Camera Firmware IRIS") !== "ir" && L.cameraKind("Integrated IR Camera") === "ir");
+    check("a built-in camera first, another real one next (a USB webcam plugged in keeps the built-in)", L.pickCamera([v("g", "Logitech C920"), v("w", "Integrated Webcam")], null).id === "w" && L.pickCamera([v("p", "Phone Link"), v("g", "Logitech C920")], null).id === "g");
+    check("a stored choice wins, even a phone", L.pickCamera(phone, { id: "p", label: "Connected Camera (Phone Link)" }).id === "p" && L.pickCamera(phone, { id: "p", label: "x" }).how === "chosen");
+    const re = [v("new-id", "Integrated Webcam (0c45:6a1d)"), v("p", "Connected Camera (Phone Link)")];
+    const cl = L.pickCamera(re, { id: "old-id", label: "Integrated Webcam (0c45:6a1d)" });
+    check("  the same camera under a new deviceId: found by its name", cl.id === "new-id" && cl.how === "chosen-label" && !cl.note, JSON.stringify(cl));
+    check("  ... the name without Windows' USB ids matches too", L.pickCamera(re, { id: "old", label: "Integrated Webcam" }).id === "new-id");
+    const gone = L.pickCamera(phone, { id: "c920", label: "Logitech C920" });
+    check("a removed camera: Automatic (the webcam), and the note says so", gone.id === "w" && gone.how === "auto" && gone.note === "Logitech C920 is not connected — using Automatic", JSON.stringify(gone));
+    const fail = L.pickCamera(phone, { id: "w", label: "Integrated Webcam (0c45:6a1d)" }, { avoid: ["w"] });
+    check("  the chosen camera failed to open: the next best, and the note says it could not be opened", fail.id === "p" && /could not be opened — using Automatic/.test(fail.note), JSON.stringify(fail));
+    const nolab = [v("", ""), { kind: "audioinput", deviceId: "", label: "" }];
+    const nl = L.pickCamera(nolab, null);
+    check("before the camera was ever allowed (no names, no ids): no deviceId -- the browser's default, decided again once the names show", nl.id === null && nl.how === "default");
+    check("no camera at all: the default (the camera module then says 'no camera')", L.pickCamera([mic], null).id === null);
+    check("the pill's short name: no USB ids, at most 26 characters", L.shortCam("Integrated Webcam (0c45:6a1d)") === "Integrated Webcam" && L.shortCam("Microsoft® LifeCam HD-3000 Very Long Model Name").length <= 26);
+    check("the stored choice is checked: {id,label} only, junk -> Automatic", JSON.stringify(L.normCamChoice('{"id":"a","label":"b","x":1}')) === '{"id":"a","label":"b"}' && L.normCamChoice("nope") === null && L.normCamChoice({}) === null && L.normCamChoice(null) === null);
+  }
+
   section("the wiring");
   {
     const views = fs.readFileSync(path.join(ROOT, "lib", "views-moniai.js"), "utf8");
@@ -281,13 +368,13 @@ const SIDEWAYS = { cx: 0.5, cy: 0.5, w: 0.24, yaw: 55, pitch: -5 };
         const pcsp = String((pg.headers && pg.headers["content-security-policy"]) || "");
         check("the worker has its own policy: WebAssembly yes, eval of JavaScript no, this site only", /script-src 'self' 'wasm-unsafe-eval'/.test(wcsp) && /connect-src 'self'/.test(wcsp) && !/unsafe-eval'(?!.*wasm)/.test(wcsp.replace("'wasm-unsafe-eval'", "")), wcsp);
         check("  the pages keep theirs (no wasm, no eval)", /script-src 'self'/.test(pcsp) && !/unsafe-eval/.test(pcsp), pcsp);
-        browser = await chromium.launch({ args: ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream", "--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"] });
+        browser = await chromium.launch({ args: ["--use-fake-device-for-media-stream=device-count=3", "--use-fake-ui-for-media-stream", "--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"] });
         async function open(o) {
           o = o || {};
-          const ctx = await browser.newContext({ viewport: { width: o.W || 1280, height: o.H || 800 }, userAgent: o.ua, extraHTTPHeaders: { "X-Forwarded-Proto": "https" }, permissions: ["camera", "microphone"] });
-          await ctx.addCookies(String(cookie).split("; ").filter(Boolean).map((kv) => ({ name: kv.split("=")[0], value: kv.slice(kv.indexOf("=") + 1), url: ORIGIN })));
+          const ctx = o.ctx || await browser.newContext({ viewport: { width: o.W || 1280, height: o.H || 800 }, colorScheme: o.scheme || "light", userAgent: o.ua, extraHTTPHeaders: { "X-Forwarded-Proto": "https" }, permissions: ["camera", "microphone"] });
+          if (!o.ctx) await ctx.addCookies(String(cookie).split("; ").filter(Boolean).map((kv) => ({ name: kv.split("=")[0], value: kv.slice(kv.indexOf("=") + 1), url: ORIGIN })));
           const reqs = [];
-          ctx.on("request", (r) => { const b = r.postDataBuffer(); reqs.push({ url: r.url(), method: r.method(), type: r.resourceType(), body: b ? b.length : 0, img: b ? /data:image|\x89PNG|\xff\xd8\xff|JFIF|RIFF....WEBP/.test(b.toString("latin1")) : false }); });
+          ctx.on("request", (r) => { const b = r.postDataBuffer(); reqs.push({ url: r.url(), method: r.method(), type: r.resourceType(), body: b ? b.length : 0, txt: b ? b.toString("latin1") : "", hdr: JSON.stringify(r.headers()), img: b ? /data:image|\x89PNG|\xff\xd8\xff|JFIF|RIFF....WEBP/.test(b.toString("latin1")) : false }); });
           const page = await ctx.newPage();
           const errs = [];
           page.on("pageerror", (e) => errs.push(e.message));
@@ -299,7 +386,19 @@ const SIDEWAYS = { cx: 0.5, cy: 0.5, w: 0.24, yaw: 55, pitch: -5 };
             // The camera asks and what became of each track (stopped = let go).
             window.__gum = [];
             const md = navigator.mediaDevices, orig = md.getUserMedia.bind(md);
-            md.getUserMedia = (c) => orig(c).then((st) => { const rec = { video: !!c.video, audio: !!c.audio, tracks: st.getTracks().map((t) => ({ kind: t.kind, on: true })) }; st.getTracks().forEach((t, i) => { const stop = t.stop.bind(t); t.stop = () => { rec.tracks[i].on = false; stop(); }; }); window.__gum.push(rec); return st; });
+            if (a.cams) {
+              // The fake cameras renamed like a laptop's (a.cams[i] for fake_device_i); a.hide: ids not listed (unplugged);
+              // a.noLabels: names and ids hidden until the camera has been allowed once in this page (as before a first permission).
+              const en = md.enumerateDevices.bind(md);
+              window.__hide = a.hide || [];
+              md.enumerateDevices = () => en().then((l) => l.map((d) => {
+                if (d.kind !== "videoinput") return d;
+                const m = /fake_device_(\d+)/.exec(d.label), lab = m && a.cams[+m[1]] != null ? a.cams[+m[1]] : d.label;
+                const blind = a.noLabels && !window.__gum.some((g) => g.video);
+                return { kind: d.kind, deviceId: blind ? "" : d.deviceId, groupId: d.groupId, label: blind ? "" : lab, toJSON() { return this; } };
+              }).filter((d) => !window.__hide.includes(d.deviceId)));
+            }
+            md.getUserMedia = (c) => orig(c).then((st) => { const vt = st.getVideoTracks()[0]; const rec = { c: JSON.parse(JSON.stringify(c)), dev: vt && vt.getSettings ? vt.getSettings().deviceId : "", video: !!c.video, audio: !!c.audio, tracks: st.getTracks().map((t) => ({ kind: t.kind, on: true })) }; st.getTracks().forEach((t, i) => { const stop = t.stop.bind(t); t.stop = () => { rec.tracks[i].on = false; stop(); }; }); window.__gum.push(rec); return st; });
             window.__camOpen = () => window.__gum.filter((g) => g.video && g.tracks.some((t) => t.on)).length;
             if (a.prefs) try { localStorage.setItem("mint-presence", JSON.stringify(a.prefs)); } catch (e) { /* no storage */ }
             if (a.fake) {
@@ -316,6 +415,7 @@ const SIDEWAYS = { cx: 0.5, cy: 0.5, w: 0.24, yaw: 55, pitch: -5 };
               window.__emit = (n, p) => (Lz[n] || []).forEach((f) => f({ payload: p }));
             }
           }, o);
+          if (o.camChoice !== undefined) await page.addInitScript((v) => { try { if (v) localStorage.setItem("mint-presence-camera", JSON.stringify(v)); else localStorage.removeItem("mint-presence-camera"); } catch (e) { /* no storage */ } }, o.camChoice);
           await page.goto(ORIGIN + (o.path || "/mint-ai"), { waitUntil: "load" });
           await page.waitForTimeout(o.wait || 1500);
           return { ctx, page, errs, reqs };
@@ -440,6 +540,129 @@ const SIDEWAYS = { cx: 0.5, cy: 0.5, w: 0.24, yaw: 55, pitch: -5 };
         check("  no page errors on Settings", so.errs.length === 0, JSON.stringify(so.errs));
         await so.ctx.close();
 
+        // 3b. Which camera: three fake cameras named like a laptop's (Phone Link first, as Windows lists it).
+        const CAMS = ["Connected Camera (Phone Link)", "Integrated Webcam (0c45:6a1d)", "Integrated IR Camera"];
+        const cc = await open({ prefs: { cam: true }, cams: CAMS, wait: 2500 });
+        const ids = await cc.page.evaluate(() => navigator.mediaDevices.enumerateDevices().then((l) => l.filter((d) => d.kind === "videoinput").map((d) => d.deviceId)));
+        const camNow = (pg) => pg.page.evaluate(() => { const live = window.__gum.filter((g) => g.video && g.tracks.some((t) => t.on)); return { open: live.length, dev: live.length ? live[live.length - 1].dev : null, exact: live.length ? JSON.stringify(live[live.length - 1].c.video.deviceId || null) : null, pill: (document.querySelector("#mp-cam .mp-t") || {}).textContent || null, device: window.MintPresence.device(), why: window.MintPresence.snapshot().why }; });
+        const c0 = await camNow(cc);
+        check("which camera: three cameras, Phone Link listed first -> Automatic opens the Integrated Webcam, by deviceId exact", ids.length === 3 && c0.open === 1 && c0.dev === ids[1] && /"exact"/.test(c0.exact) && c0.device && c0.device.how === "auto", JSON.stringify({ ids, c0 }));
+        check("  the pill names it: 'Camera on · Integrated Webcam'", c0.pill === "Camera on · Integrated Webcam", c0.pill);
+        const st = (await open({ ctx: cc.ctx, path: "/mint-ai/settings/appearance", cams: CAMS, wait: 700 })).page;
+        const sl = await st.evaluate(() => { const s = document.querySelector("[data-mp-camsel]"); return { opts: [...s.options].map((o) => o.textContent), val: s.value, hint: document.querySelector("[data-mp-camhint]").hidden, used: document.querySelector("[data-mp-camused]").textContent, gum: window.__gum ? window.__gum.length : 0, named: !!s.closest("form"), name: s.getAttribute("name") }; });
+        check("the selector in Settings > Appearance > Eye contact: Automatic (naming its pick) + each camera by name, phone / IR marked; no hint (names known)", sl.opts[0] === "Automatic — Integrated Webcam" && sl.opts.slice(1).join("|") === "Connected Camera (Phone Link) (phone / virtual)|Integrated Webcam|Integrated IR Camera (infrared)" && sl.val === "" && sl.hint, JSON.stringify(sl));
+        check("  it shows the camera in use; it is in no form and has no name (nothing to submit)", /Last used: Integrated Webcam \(automatic\)/.test(sl.used) && !sl.named && !sl.name, JSON.stringify(sl));
+        // (Headless Chromium gives every page its own device ids -- the name fallback is what carries the choice over here.)
+        await st.selectOption("[data-mp-camsel]", { label: "Connected Camera (Phone Link) (phone / virtual)" });
+        await cc.page.waitForTimeout(2000);
+        const c1 = await camNow(cc);
+        const ls1 = await st.evaluate(() => JSON.parse(localStorage.getItem("mint-presence-camera")));
+        check("choosing the phone: stored here (id + name), the open Command Center switches at once, the old camera let go", ls1.id && ls1.label === CAMS[0] && c1.open === 1 && c1.dev === ids[0] && /^chosen/.test(c1.device.how) && /^Camera on · Connected Camera/.test(c1.pill), JSON.stringify({ ls1, c1 }));
+        await st.selectOption("[data-mp-camsel]", "");
+        await cc.page.waitForTimeout(2000);
+        const c2 = await camNow(cc);
+        check("  back to Automatic: the choice forgotten, the webcam again", c2.open === 1 && c2.dev === ids[1] && (await st.evaluate(() => localStorage.getItem("mint-presence-camera"))) === null, JSON.stringify(c2));
+        // unplugged: the webcam leaves the list (devicechange) -> the next best
+        await cc.page.evaluate((id) => { window.__hide.push(id); navigator.mediaDevices.dispatchEvent(new Event("devicechange")); }, ids[1]);
+        await cc.page.waitForTimeout(2000);
+        const c3 = await camNow(cc);
+        check("the camera in use unplugged (devicechange): the next best at once (the IR camera before the phone)", c3.open === 1 && c3.dev === ids[2], JSON.stringify(c3));
+        await cc.page.evaluate(() => { window.__hide.length = 0; navigator.mediaDevices.dispatchEvent(new Event("devicechange")); });
+        await cc.page.waitForTimeout(2000);
+        check("  plugged back in: the webcam again", (await camNow(cc)).dev === ids[1]);
+        const leak = cc.reqs.concat([]).filter((r) => ids.some((id) => (r.url + r.txt + r.hdr).includes(id)) || /Integrated|Phone Link|Connected Camera|mint-presence-camera|cam-used/.test(r.url + r.txt + r.hdr));
+        check("no request carries a camera's name or id (URLs, bodies, headers of every request of both tabs)", leak.length === 0 && cc.reqs.length > 5, JSON.stringify(leak.map((r) => r.method + " " + r.url)));
+        await cc.ctx.close();
+
+        // a stale id with the same name; a camera that is gone; the names before the camera was ever allowed
+        const sa = await open({ prefs: { cam: true }, cams: CAMS, camChoice: { id: "stale-id-from-last-week", label: "Integrated IR Camera" }, wait: 2500 });
+        const ids2 = await sa.page.evaluate(() => navigator.mediaDevices.enumerateDevices().then((l) => l.filter((d) => d.kind === "videoinput").map((d) => d.deviceId)));
+        const s1 = await camNow(sa);
+        check("a stored choice whose id changed: found by its name (the IR camera, as chosen)", s1.dev === ids2[2] && s1.device.how === "chosen-label" && !s1.why, JSON.stringify(s1));
+        await sa.ctx.close();
+        const gn = await open({ prefs: { cam: true }, cams: CAMS, camChoice: { id: "c920-id", label: "Logitech C920 (046d:082d)" }, wait: 2500 });
+        const g1 = await camNow(gn);
+        check("the chosen camera is gone: Automatic (the webcam); the state's why says so", g1.open === 1 && /Integrated Webcam/.test(g1.pill) && g1.why === "Logitech C920 is not connected — using Automatic", JSON.stringify(g1));
+        const gs = (await open({ ctx: gn.ctx, path: "/mint-ai/settings/appearance", cams: CAMS, wait: 700 })).page;
+        const gsv = await gs.evaluate(() => { const s = document.querySelector("[data-mp-camsel]"); const u = document.querySelector("[data-mp-camused]"); return { sel: s.options[s.selectedIndex].textContent, used: u.textContent, warn: u.classList.contains("warn") }; });
+        check("  ... and Settings says so: 'Logitech C920 — not connected' selected, the note under it", gsv.sel === "Logitech C920 — not connected" && /Logitech C920 is not connected — using Automatic\. Last used: Integrated Webcam/.test(gsv.used) && gsv.warn, JSON.stringify(gsv));
+        await gn.ctx.close();
+        const nl = await open({ path: "/mint-ai/settings/appearance", cams: CAMS, noLabels: true, wait: 800 });
+        const n0 = await nl.page.evaluate(() => ({ hint: !document.querySelector("[data-mp-camhint]").hidden, opts: document.querySelector("[data-mp-camsel]").options.length, gum: window.__gum.length }));
+        check("names not known yet (never allowed), eye contact off: 'Allow the camera once to see the camera names', and the camera is NOT asked for", n0.hint && n0.opts === 1 && n0.gum === 0, JSON.stringify(n0));
+        await nl.page.click("[data-mp-allow]");
+        await nl.page.waitForTimeout(800);
+        const n1 = await nl.page.evaluate(() => ({ hint: !document.querySelector("[data-mp-camhint]").hidden, opts: [...document.querySelector("[data-mp-camsel]").options].map((o) => o.textContent), gum: window.__gum.length, open: window.__camOpen() }));
+        check("  the button: the camera asked for once and let go at once; the names listed", n1.gum === 1 && n1.open === 0 && !n1.hint && n1.opts.length === 4 && n1.opts[0] === "Automatic — Integrated Webcam", JSON.stringify(n1));
+        await nl.ctx.close();
+        const nl2 = await open({ path: "/mint-ai/settings/appearance", prefs: { cam: true }, cams: CAMS, noLabels: true, wait: 1200 });
+        const n2 = await nl2.page.evaluate(() => ({ opts: document.querySelector("[data-mp-camsel]").options.length, gum: window.__gum.length, open: window.__camOpen() }));
+        check("  eye contact on: asked by itself, released at once, names listed", n2.gum === 1 && n2.open === 0 && n2.opts === 4, JSON.stringify(n2));
+        if (SHOTS) {
+          fs.mkdirSync(SHOTS, { recursive: true });
+          for (const scheme of ["dark", "light"]) {
+            const sh = await open({ path: "/mint-ai/settings/appearance", prefs: { cam: true }, cams: CAMS, scheme, W: 1100, H: 900, wait: 900 });
+            await sh.page.evaluate(() => { localStorage.setItem("mint-presence-cam-used", JSON.stringify({ label: "Integrated Webcam", how: "auto", note: "", t: Date.now() })); document.getElementById("mp-camera-row").scrollIntoView({ block: "center" }); });
+            await sh.page.waitForTimeout(3200);
+            await (await sh.page.$("#mp-set")).screenshot({ path: path.join(SHOTS, "camera-selector-browser-" + scheme + ".png") });
+            await sh.ctx.close();
+          }
+        }
+
+        // look and speak with voice off (this scratch server has no voice key): said plainly, the mic never opened for it
+        const vo = await open({ prefs: { cam: true, speak: true }, cams: CAMS, wait: 2500 });
+        const v0 = await vo.page.evaluate(() => ({ pill: (document.querySelector("#mp-cam .mp-t") || {}).textContent, look: window.MintPresence.look(), mics: window.__gum.filter((g) => g.audio).length, ok: window.__mintLive.ok() }));
+        check("voice off: the pill says 'look and speak: voice is off' (it used to do nothing, silently); no microphone opened for it", v0.ok === false && /Camera on · Integrated Webcam · look and speak: voice is off/.test(v0.pill) && v0.look.voice === false && v0.mics === 0, JSON.stringify(v0));
+        const vs = (await open({ ctx: vo.ctx, path: "/mint-ai/settings/appearance", cams: CAMS, wait: 800 })).page;
+        const vs0 = await vs.evaluate(() => ({ off: (document.querySelector("[data-mp-voiceoff]") || {}).textContent || "", link: (document.querySelector("[data-mp-voiceoff] a") || {}).href || "", gum: window.__gum.length }));
+        check("  ... and Settings says so under Look and speak, with the way to switch voice on", /Look and speak needs voice, and voice is off/.test(vs0.off) && /\/mint-ai\/settings\/voice$/.test(vs0.link) && vs0.gum === 0, JSON.stringify(vs0));
+        await vs.click("[data-mp-show] summary");
+        await vs.waitForTimeout(3500);
+        const sw0 = await vs.evaluate(() => ({ rows: [...document.querySelectorAll("[data-mp-checks] li")].map((l) => l.className + ":" + l.querySelector("b").textContent + "=" + l.querySelector(".v").textContent), open: window.__camOpen(), note: document.querySelector("[data-mp-show-note]").textContent }));
+        check("'Show what it sees': opened, the camera runs on that page and the checklist reads -- no face (the fake camera), voice ready ✗", sw0.open === 1 && sw0.rows.length === 7 && /^no:Face found=no face/.test(sw0.rows[0]) && sw0.rows.some((r) => /^no:Voice ready=voice is off/.test(r)) && sw0.rows.some((r) => /^ok:Cool-down=ready/.test(r)), JSON.stringify(sw0));
+        if (SHOTS) {
+          await vs.evaluate(() => document.getElementById("mp-show-row").scrollIntoView({ block: "center" }));
+          await vs.waitForTimeout(300);
+          await (await vs.$("#mp-speak-row")).screenshot({ path: path.join(SHOTS, "look-and-speak-voice-off.png") });
+          await (await vs.$("#mp-show-row")).screenshot({ path: path.join(SHOTS, "show-what-it-sees.png") });
+        }
+        await vs.click("[data-mp-show] summary");
+        await vs.waitForTimeout(500);
+        check("  closed: the camera let go at once", (await vs.evaluate(() => window.__camOpen())) === 0);
+        const vleak = vo.reqs.filter((r) => r.method !== "GET" && /presence|camera|look|level|face/i.test(r.url + r.txt));
+        check("  nothing of it is sent: no request names the camera, a level or a face", vleak.length === 0, JSON.stringify(vleak.map((r) => r.method + " " + r.url)));
+        await vo.ctx.close();
+
+        // the app's render mode, the real module: the choice made in the page's Settings is followed there too
+        const AP2 = { mode: "floating", peekOpen: true, presence: { camera: true, speak: false, releaseOnSaver: true, onBattery: false, energySaver: false, locked: false, meeting: false, inUse: false } };
+        const dsk = await open({ path: "/mint-ai?shell=desktop", ua: APP_UA, tauri: AP2, cams: CAMS, W: 480, H: 860, wait: 3000 });
+        const d0 = await camNow(dsk);
+        check("in the app (?shell=desktop): Automatic opens the webcam, the pill says so", d0.open === 1 && /Integrated Webcam/.test(d0.pill) && d0.device.how === "auto", JSON.stringify(d0));
+        const dset = await open({ ctx: dsk.ctx, path: "/mint-ai/settings/appearance?shell=desktop", ua: APP_UA, tauri: AP2, cams: CAMS, wait: 1000 });
+        const ds = await dset.page.evaluate(() => { const s = document.querySelector("[data-mp-camsel]"); return { app: document.getElementById("mp-set").classList.contains("mp-app"), dis: s.disabled, opts: s.options.length, scope: document.querySelector("#mp-camera-row .scope") ? document.querySelector("#mp-camera-row .scope").textContent : "" }; });
+        check("  the app's Settings page: the selector works there too (not read-only like the switches), 'this computer'", ds.app && !ds.dis && ds.opts === 4 && /this computer/.test(ds.scope), JSON.stringify(ds));
+        const pid = await dsk.page.evaluate(() => navigator.mediaDevices.enumerateDevices().then((l) => l.filter((d) => d.kind === "videoinput")[0].deviceId));
+        await dset.page.selectOption("[data-mp-camsel]", { label: "Connected Camera (Phone Link) (phone / virtual)" });
+        await dsk.page.waitForTimeout(2000);
+        const d1 = await camNow(dsk);
+        check("  chosen there: the app's Command Center switches at once", d1.open === 1 && d1.dev === pid && /^chosen/.test(d1.device.how) && /Connected Camera/.test(d1.pill), JSON.stringify(d1));
+        if (SHOTS) {
+          await dset.page.selectOption("[data-mp-camsel]", "");
+          await dset.page.close();
+          for (const scheme of ["dark", "light"]) {
+            const sh = await open({ path: "/mint-ai/settings/appearance?shell=desktop", ua: APP_UA, tauri: AP2, cams: CAMS, scheme, W: 760, H: 900, wait: 900 });
+            await sh.page.evaluate(() => { localStorage.setItem("mint-presence-cam-used", JSON.stringify({ label: "Integrated Webcam", how: "auto", note: "", t: Date.now() })); document.getElementById("mp-camera-row").scrollIntoView({ block: "center" }); });
+            await sh.page.waitForTimeout(3200);
+            await sh.page.screenshot({ path: path.join(SHOTS, "camera-selector-app-" + scheme + ".png") });
+            await sh.ctx.close();
+            const pc = await open({ path: "/mint-ai?shell=desktop", ua: APP_UA, tauri: AP2, cams: CAMS, scheme, W: 480, H: 300, wait: 3000 });
+            await pc.page.screenshot({ path: path.join(SHOTS, "camera-pill-app-" + scheme + ".png"), clip: { x: 0, y: 0, width: 300, height: 40 } });
+            await pc.ctx.close();
+          }
+        }
+        check("  no page errors (the app's pages)", dsk.errs.length === 0 && dset.errs.length === 0, JSON.stringify(dsk.errs.concat(dset.errs)));
+        await dsk.ctx.close();
+
         // 4. The desktop app's render mode with a stand-in camera module: what the page does with the state.
         const HOST = { mode: "floating", peekOpen: true, glance: true, presence: { camera: true, speak: true, releaseOnSaver: true, onBattery: false, energySaver: false, locked: false, meeting: false, inUse: false } };
         const dk = await open({ path: "/mint-ai?shell=desktop", ua: APP_UA, fake: true, tauri: HOST, W: 480, H: 860, wait: 1500 });
@@ -514,7 +737,7 @@ const SIDEWAYS = { cx: 0.5, cy: 0.5, w: 0.24, yaw: 55, pitch: -5 };
           r.vl = typeof window.VoiceLive.pause === "function";
           return r;
         });
-        check("look and speak and a reply's pause are wired to the voice: lookTalk on the hold-to-talk path, VoiceLive.pause, the read-aloud pause", hk.hooks === "busy,off,pause,speak,speaking" && hk.speak === 1 && JSON.stringify(hk.paused) === "[true,false]" && hk.lookTalk && hk.vl && hk.busy === false, JSON.stringify(hk));
+        check("look and speak and a reply's pause are wired to the voice: lookTalk on the hold-to-talk path, VoiceLive.pause, the read-aloud pause", hk.hooks === "busy,off,pause,ready,speak,speaking" && hk.speak === 1 && JSON.stringify(hk.paused) === "[true,false]" && hk.lookTalk && hk.vl && hk.busy === false, JSON.stringify(hk));
         const offc = await dk.page.evaluate(() => { window.__calls.length = 0; window.__mp.hooks().off(); return window.__calls.map((c) => c[0]); });
         check("  in the app the page's Off asks the app (presence_off); camera use is reported (presence_status)", offc.includes("presence_off") && away.status >= 1, JSON.stringify(offc));
         const csp2 = await dk.page.evaluate(() => window.__csp);
