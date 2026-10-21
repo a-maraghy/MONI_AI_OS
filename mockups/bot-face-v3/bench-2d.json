@@ -1,0 +1,132 @@
+{
+ "at": "2026-10-21T22:02:04.431Z",
+ "force2d": true,
+ "runs": [
+  {
+   "label": "shipped",
+   "out": {
+    "idle": {
+     "med": 4.8,
+     "p95": 5.2,
+     "fps": 0
+    },
+    "thinking": {
+     "med": 3.6,
+     "p95": 4.9,
+     "fps": 0
+    },
+    "speaking": {
+     "med": 4.8,
+     "p95": 5.3,
+     "fps": 0
+    }
+   },
+   "errs": []
+  },
+  {
+   "label": "proto cur",
+   "out": {
+    "idle": {
+     "med": 4.2,
+     "p95": 5.1,
+     "fps": 0
+    },
+    "thinking": {
+     "med": 4.1,
+     "p95": 4.9,
+     "fps": 0
+    },
+    "speaking": {
+     "med": 4.4,
+     "p95": 5.4,
+     "fps": 0
+    }
+   },
+   "errs": []
+  },
+  {
+   "label": "proto a",
+   "out": {
+    "idle": {
+     "med": 3.4,
+     "p95": 4.2,
+     "fps": 0
+    },
+    "thinking": {
+     "med": 2.9,
+     "p95": 3.4,
+     "fps": 0
+    },
+    "speaking": {
+     "med": 3.1,
+     "p95": 3.8,
+     "fps": 0
+    }
+   },
+   "errs": []
+  },
+  {
+   "label": "proto b",
+   "out": {
+    "idle": {
+     "med": 3.3,
+     "p95": 4,
+     "fps": 0
+    },
+    "thinking": {
+     "med": 3,
+     "p95": 3.5,
+     "fps": 0
+    },
+    "speaking": {
+     "med": 3.6,
+     "p95": 4.6,
+     "fps": 0
+    }
+   },
+   "errs": []
+  },
+  {
+   "label": "proto c",
+   "out": {
+    "idle": {
+     "med": 3.6,
+     "p95": 4.5,
+     "fps": 0
+    },
+    "thinking": {
+     "med": 3.5,
+     "p95": 4.3,
+     "fps": 0
+    },
+    "speaking": {
+     "med": 3.3,
+     "p95": 4.2,
+     "fps": 0
+    }
+   },
+   "errs": []
+  },
+  {
+   "label": "shipped again",
+   "out": {
+    "idle": {
+     "med": 3.6,
+     "p95": 4.5,
+     "fps": 0
+    },
+    "thinking": {
+     "med": 3.4,
+     "p95": 4.2,
+     "fps": 0
+    },
+    "speaking": {
+     "med": 4,
+     "p95": 5.5,
+     "fps": 0
+    }
+   },
+   "errs": []
+  }
+ ]
+}
