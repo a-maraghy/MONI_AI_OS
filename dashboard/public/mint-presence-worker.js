@@ -5,8 +5,8 @@
  * mint-presence.js hands it one small frame at a time (an ImageBitmap, transferred: the page keeps no copy);
  * the MediaPipe Face Landmarker (vendor/mediapipe, pinned, Apache-2.0; the model and its WebAssembly are
  * this site's own static files -- nothing is fetched from anywhere else) finds the faces, and
- * MintPresenceLogic.summarize() reduces each to a few numbers (box centre and width, head yaw / pitch, how
- * open the jaw is). Those numbers go back; the frame is closed at once and the landmarks are dropped here.
+ * MintPresenceLogic.summarize() reduces each to a few numbers (box centre and width, head yaw / pitch, the eyes, how
+ * open the jaw and the lips are, a smile). Those numbers go back; the frame is closed at once and the landmarks are dropped here.
  * Nothing is stored and nothing is sent: this worker makes no request of its own besides loading its files
  * (and its Content-Security-Policy, set by server.js for this file, allows nothing else).
  *

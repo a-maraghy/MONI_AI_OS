@@ -97,7 +97,7 @@ const SIDEWAYS = { cx: 0.5, cy: 0.5, w: 0.24, yaw: 55, pitch: -5 };
     const r = result([face({ cx: 0.4, cy: 0.55, w: 0.2, yaw: 20, pitch: -10, jaw: 0.3 })]);
     const s = L.summarize(r);
     check("one face -> one record: box centre / width, yaw / pitch, jawOpen", s.length === 1 && Math.abs(s[0].cx - 0.4) < 1e-6 && Math.abs(s[0].cy - 0.55) < 1e-6 && Math.abs(s[0].w - 0.2) < 1e-6 && Math.abs(s[0].yaw - 20) < 1e-6 && Math.abs(s[0].pitch + 10) < 1e-6 && s[0].jaw === 0.3, JSON.stringify(s));
-    check("  the landmarks stop there: only those seven numbers (ey: the eyes' up/down, null without eye blendshapes)", JSON.stringify(Object.keys(s[0]).sort()) === JSON.stringify(["cx", "cy", "ey", "jaw", "pitch", "w", "yaw"]) && s[0].ey === null);
+    check("  the landmarks stop there: only those numbers (ey: the eyes' up/down, null without eye blendshapes; mouth: the lips' numbers, null without mouth blendshapes)", JSON.stringify(Object.keys(s[0]).sort()) === JSON.stringify(["cx", "cy", "ey", "jaw", "mouth", "pitch", "w", "yaw"]) && s[0].ey === null && s[0].mouth === null);
     const se = L.summarize(result([face({ cx: 0.5, cy: 0.5, w: 0.24, eyeDown: 0.4 })]))[0];
     check("  the eyes looking down 0.4 -> about 10 degrees down (eyeLookDown, no left/right ambiguity)", Math.abs(se.ey + 10) < 1e-9, se.ey);
     check("  nothing seen -> []; a face with no pose matrix is skipped", L.summarize({ faceLandmarks: [] }).length === 0 && L.summarize({ faceLandmarks: [r.faceLandmarks[0]], facialTransformationMatrixes: [] }).length === 0);
@@ -314,8 +314,82 @@ const SIDEWAYS = { cx: 0.5, cy: 0.5, w: 0.24, yaw: 55, pitch: -5 };
     check("  hidden / locked / another app's meeting -> 0", R({ hidden: true }).fps === 0 && R({ locked: true }).why === "locked" && R({ meeting: true }).why === "meeting");
     check("  energy saver: 0 when 'release in energy saver' (the default), else 2", R({ saver: true, releaseOnSaver: true }).fps === 0 && R({ saver: true, releaseOnSaver: false }).fps === 2);
     check("  on battery 2, nobody there 2, else 5", R({ battery: true }).fps === 2 && R({ state: "away" }).fps === 2 && R({ state: "looking" }).fps === 5 && R({}).fps === 5);
+    check("  facing the bot with look and speak on (2026-10-22): 12 fps so the lips are seen moving, 8 on battery; still 0 when hidden / locked", R({ facing: true }).fps === 12 && R({ facing: true, battery: true }).fps === 8 && R({ facing: true, hidden: true }).fps === 0 && R({ facing: true, saver: true, releaseOnSaver: true }).fps === 0);
     const d = L.normPrefs(null);
     check("the switches: all off by default; 'release in energy saver' on; look and speak needs the camera", !d.cam && !d.speak && d.saver && !L.normPrefs({ speak: true }).speak && L.normPrefs('{"cam":true,"speak":true}').speak && L.normPrefs("garbage").cam === false);
+  }
+
+  section("is it the person speaking? lips and voice (2026-10-22: 'it does not always catch it right')");
+  {
+    const S = require("./look-speak-scenes.cjs");
+    // a voice, frame by frame
+    const F = (x, sr) => { const out = []; const n = Math.round(sr * 0.0427); for (let e = n; e <= x.length; e += n) out.push(L.vadFrame(x.subarray(e - n, e), sr)); return out; };
+    const med = (a) => { const b = a.slice().sort((p, q) => p - q); return b[b.length >> 1]; };
+    const CL = S.clips(2), voice = (CL.en[0] && CL.en[0].pcm) || S.synthVoice(3, 3);
+    const vf = F(S.scaleTo(voice, 0.05), 24000).filter((f) => f.level > 0.02), tf = F(S.typing(1, 6), 24000).filter((f) => f.level > 0.01), nf = F(S.roomNoise(2, 3, 0.03), 24000);
+    check("vadFrame: a voice is periodic at its pitch and harmonic (voiced ~0.9, flatness ~0); typing's clicks and a fan are not", med(vf.map((f) => f.voiced)) > 0.7 && med(vf.map((f) => f.flat)) < 0.05 && med(tf.map((f) => f.voiced)) < 0.45 && med(nf.map((f) => f.flat)) > 0.3,
+      JSON.stringify({ v: med(vf.map((f) => f.voiced)), vf: med(vf.map((f) => f.flat)), t: med(tf.map((f) => f.voiced)), n: med(nf.map((f) => f.flat)) }));
+    check("  speechiness: voice frames mostly speech-like, typing and fan frames not", med(vf.map(L.speechiness)) >= 0.6 && med(tf.map(L.speechiness)) <= 0.1 && med(nf.map(L.speechiness)) === 0, JSON.stringify([med(vf.map(L.speechiness)), med(tf.map(L.speechiness))]));
+    const up = new Float32Array(voice.length * 2); for (let i = 0; i < up.length; i++) up[i] = voice[i >> 1] * 0.05 / (S.rms(voice, 0, voice.length) || 1);
+    const t48 = Date.now(), v48 = F(up, 48000).filter((f) => f.level > 0.02), ms48 = (Date.now() - t48) / Math.max(1, F(up, 48000).length);
+    check("  the same at 48 kHz (a 2048-sample analyser), well under a millisecond a frame", med(v48.map((f) => f.voiced)) > 0.7 && ms48 < 2, ms48.toFixed(3) + " ms");
+    check("  silence -> nothing", L.vadFrame(new Float32Array(1024), 24000).voiced === 0 && L.vadFrame(null, 24000).level === 0);
+    // the mouth, as the model reports it
+    const one = (o) => L.summarize(S.faceResult([{ ...S.LOOK, m: L.matrixOf(4, -8), jaw: 0.1, mc: 0.05, sm: 0.1, pk: 0.2, ...o }]))[0];
+    const m0 = one({ lip: 0.3 });
+    check("summarize: the mouth's numbers -- the inner lips' gap in nose lengths, mouthClose, smile, pucker -- and nothing more", m0.mouth && Math.abs(m0.mouth.lip - 0.3) < 0.02 && m0.mouth.mc === 0.05 && m0.mouth.sm === 0.1 && m0.mouth.pk === 0.2 && JSON.stringify(Object.keys(m0.mouth).sort()) === '["lip","mc","pk","sm"]', JSON.stringify(m0.mouth));
+    check("  the gap is the same nearer / farther from the camera (a face twice as wide)", Math.abs(one({ lip: 0.3, w: 0.48 }).mouth.lip - 0.3) < 0.02);
+    // the lips moving: talking, or not
+    function lips(mouth, fps, ms) {
+      const lm = L.createLipMotion(), r = S.rng(5); const out = [];
+      for (let t = 0; t < (ms || 3000); t += 1000 / fps) {
+        const m = mouth(t), g = () => (r() - 0.5) * 0.02;
+        lm.push({ jaw: m.jaw + g(), mouth: { lip: Math.max(0, m.lip + g()), mc: m.mc || 0.05, sm: m.sm || 0.04, pk: m.pk || 0.06 } }, t);
+        const sc = lm.score(t); if (t > 1000 && sc) out.push(sc.score);
+      }
+      return out;
+    }
+    const talk = (amp) => (t) => { const v = Math.abs(Math.sin((2 * Math.PI * 4 * t) / 1000 + Math.sin(t / 300))); return { lip: 0.01 + amp * v, jaw: 0.04 + amp * 0.7 * v }; };
+    const mn = (a) => Math.min.apply(null, a), mx = (a) => Math.max.apply(null, a);
+    check("lipMotion: talking (4 Hz) scores 'moving' with a small mouth and 'clearly' with a normal one, at 12 fps and at 5 fps", med(lips(talk(0.09), 12)) >= L.LIP.WEAK && med(lips(talk(0.09), 5)) >= L.LIP.WEAK && med(lips(talk(0.2), 12)) >= L.LIP.STRONG && med(lips(talk(0.2), 5)) >= L.LIP.STRONG,
+      JSON.stringify([med(lips(talk(0.09), 12)), med(lips(talk(0.09), 5)), med(lips(talk(0.2), 12)), med(lips(talk(0.2), 5))]));
+    check("  a still open mouth -> 0; a still closed one -> 0", mx(lips(() => ({ lip: 0.2, jaw: 0.3 }), 12)) < 0.25 && mx(lips(() => ({ lip: 0.01, jaw: 0.04 }), 12)) < 0.25);
+    check("  chewing with the lips together (the jaw moves, mouthClose with it) -> under 'moving'", mx(lips((t) => { const c = 0.5 + 0.5 * Math.sin((2 * Math.PI * 1.5 * t) / 1000); return { lip: 0.012, jaw: 0.04 + 0.22 * c, mc: 0.05 + 0.35 * c }; }, 12)) < 0.25);
+    const smile = lips((t) => { const s = Math.min(1, Math.max(0, (t - 1500) / 300)); return { lip: 0.012 + 0.06 * s, jaw: 0.04 + 0.05 * s, sm: 0.04 + 0.65 * s }; }, 12);
+    check("  a smile (the lips part, the corners rise) -> under 'moving'", mx(smile) < 0.25, JSON.stringify(smile));
+    const tr = L.createTracker({ bot: BOTPOS });
+    let sn = null; for (let t = 0; t < 1500; t += 83) sn = tr.push(L.summarize(S.faceResult([{ ...S.LOOK, m: L.matrixOf(4, -8), ...talk(0.2)(t), mc: 0.05, sm: 0.04, pk: 0.06 }])), t);
+    check("  the tracker's snapshot: lip (0..1), mouth (moving?), the learnt rest jitter", sn.lip >= 0.55 && sn.mouth === true && sn.lipRest > 0 && sn.lipRest < 0.05, JSON.stringify({ lip: sn.lip, mouth: sn.mouth, rest: sn.lipRest }));
+    // the gate, fused, on whole scenes (the module's way: frames at its fps, the meter every 50 ms)
+    const impl = (battery) => ({ L, fps: (s) => L.rate({ on: true, battery, state: s ? s.state : null, facing: !!(s && (s.facingNow || s.atBot)) }).fps, meter: (x, sr) => L.vadFrame(x, sr), procMs: 25 });
+    const go = (kind, o, battery) => { const sc = S.scene(kind, Object.assign({ clip: voice, sec: 8, seed: 7 }, o), L); const r = S.simulate(sc, Object.assign(impl(battery), { seed: (o && o.seed) || 7 })); return { sc, r, on: sc.speech[0] && sc.speech[0].onMs, first: r.starts[0] }; };
+    const sp = go("speak", { artic: "small" });
+    check("they look and speak (a small mouth): a turn starts within ~0.4 s of their voice, at ~12 fps", sp.first != null && sp.first - sp.on <= 400 && sp.first - sp.on >= -150 && sp.r.fps > 10, JSON.stringify({ lat: sp.first - sp.on, fps: sp.r.fps }));
+    const soft = go("speak", { level: 0.012 });
+    check("  softly (a voice just over the room): it starts -- the lips clearly move", soft.first != null && soft.first - soft.on <= 600, soft.first - soft.on);
+    const bat = go("speak", { artic: "small" }, true);
+    check("  on battery (8 fps while facing): it starts", bat.first != null && bat.first - bat.on <= 600, bat.first - bat.on);
+    const ot = go("speak-over-typing", {});
+    check("  over their own typing: it starts at their voice, not at the keys", ot.first != null && ot.first >= ot.on - 150 && ot.first - ot.on <= 600, JSON.stringify(ot.r.starts) + " on " + ot.on);
+    const tv = go("speak-over-tv", { otherLevel: 0.025, other: S.synthVoice(77, 8) });
+    check("  over a TV that was already talking: it starts at THEIR voice (the lips and the sound move together), not before", tv.first != null && tv.first >= tv.on - 150 && tv.first - tv.on <= 900, JSON.stringify(tv.r.starts) + " on " + tv.on);
+    ["typing", "typing-fast", "music", "tv", "tv-open", "tv-chew", "tv-smile", "tv-nod", "cough", "fan", "chew-open-typing"].forEach((k) => {
+      const runs = [1, 2, 3].map((seed) => S.simulate(S.scene(k, { seed, sec: 10, other: S.synthVoice(40 + seed, 10) }, L), Object.assign(impl(false), { seed })).starts.length);
+      check("  not speaking -- " + k + " -> no turn", runs.every((n) => n === 0), JSON.stringify(runs));
+    });
+    // no mouth in view (a face model without blendshapes): a clear voice alone, as before
+    const g = L.createSpeakGate(), lk = { state: "looking", atBot: true, speak: true, others: 0, mouth: null };
+    let st = null; g.vision(lk, 0); g.vision(lk, 700);
+    const x = S.scaleTo(voice, 0.05);
+    for (let t = 700, i = 0; t < 3000; t += 50) { g.vision(lk, t); const e = Math.round(((t - 700) / 1000) * 24000); if (e >= 1024 && e <= x.length && g.audio(L.vadFrame(x.subarray(e - 1024, e), 24000), t, false) === "start" && st === null) st = t; }
+    check("  no mouth in view (no blendshapes): a clear voice alone starts it, as before", st !== null, st);
+    const g2 = L.createSpeakGate(), still = { state: "looking", atBot: true, speak: true, others: 0, mouth: false, lip: 0 };
+    let st2 = null; g2.vision(still, 0); g2.vision(still, 700);
+    for (let t = 700; t < 3000; t += 50) { g2.vision(still, t); const e = Math.round(((t - 700) / 1000) * 24000); if (e >= 1024 && e <= x.length && g2.audio(L.vadFrame(x.subarray(e - 1024, e), 24000), t, false) === "start") st2 = t; }
+    check("  their mouth in view and still: a voice alone never starts it (a TV, someone off camera)", st2 === null, st2);
+    const s3 = g.status();
+    check("'Show what it sees' gets the new numbers: lip score, voice (VAD), voiced, the two in step, the fused decision -- numbers and booleans only",
+      ["lip", "lipNeed", "vad", "voiced", "speechy", "sync", "syncNeed", "fused", "level", "need"].every((k) => k in s3) && Object.values(s3).every((v) => v === null || ["number", "boolean"].includes(typeof v)), JSON.stringify(s3));
   }
 
   section("core E: dozing follows presence while the camera is on");
@@ -375,8 +449,8 @@ const SIDEWAYS = { cx: 0.5, cy: 0.5, w: 0.24, yaw: 55, pitch: -5 };
     const crypto = require("crypto");
     const sums = need.slice(0, 4).map((f) => crypto.createHash("sha256").update(fs.readFileSync(path.join(vend, f))).digest("hex"));
     check("  README's sha256 match the files", sums.every((h) => readme.includes(h)));
-    const pres = fs.readFileSync(path.join(ROOT, "public", "mint-presence.js"), "utf8"), wk = fs.readFileSync(path.join(ROOT, "public", "mint-presence-worker.js"), "utf8");
-    check("  the camera module and its worker make no request of their own (no fetch / XHR / WebSocket / beacon)", ![pres, wk].some((s) => /\bfetch\(|XMLHttpRequest|WebSocket|sendBeacon|EventSource/.test(s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, ""))));
+    const pres = fs.readFileSync(path.join(ROOT, "public", "mint-presence.js"), "utf8"), wk = fs.readFileSync(path.join(ROOT, "public", "mint-presence-worker.js"), "utf8"), lg = fs.readFileSync(path.join(ROOT, "public", "mint-presence-logic.js"), "utf8");
+    check("  the camera module, its worker and its logic (the lips, the voice) make no request of their own (no fetch / XHR / WebSocket / beacon)", ![pres, wk, lg].some((s) => /\bfetch\(|XMLHttpRequest|WebSocket|sendBeacon|EventSource/.test(s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, ""))));
     const sett = fs.readFileSync(path.join(D, "src-tauri", "src", "settings.rs"), "utf8"), lib = fs.readFileSync(path.join(D, "src-tauri", "src", "lib.rs"), "utf8");
     const remote = JSON.parse(fs.readFileSync(path.join(D, "src-tauri", "capabilities", "remote.json"), "utf8"));
     check("the app: a presence setting (off by default, presence.rs); the site may say it holds the camera and switch it off -- no command switches it on", /pub presence: crate::presence::Presence/.test(sett) && remote.permissions.includes("allow-presence-off") && remote.permissions.includes("allow-presence-status") && !remote.permissions.some((p) => /presence-on|settings-set/.test(p)));
@@ -457,7 +531,8 @@ const SIDEWAYS = { cx: 0.5, cy: 0.5, w: 0.24, yaw: 55, pitch: -5 };
                 return w;
               };
               window.__level = 0;
-              AnalyserNode.prototype.getFloatTimeDomainData = function (buf) { for (let i = 0; i < buf.length; i++) buf[i] = (i % 2 ? 1 : -1) * window.__level; };
+              // a voice at window.__level: a 140 Hz tone with its harmonics (the meter checks it is voiced, not just loud)
+              AnalyserNode.prototype.getFloatTimeDomainData = function (buf) { const sr = this.context.sampleRate; for (let i = 0; i < buf.length; i++) { let v = 0; for (let h = 1; h <= 5; h++) v += Math.sin((2 * Math.PI * 140 * h * i) / sr) / h; buf[i] = v * 0.8 * window.__level; } };
             }
             if (a.tauri) {
               window.__calls = [];
@@ -671,7 +746,7 @@ const SIDEWAYS = { cx: 0.5, cy: 0.5, w: 0.24, yaw: 55, pitch: -5 };
         await vs.click("[data-mp-show] summary");
         await vs.waitForTimeout(3500);
         const sw0 = await vs.evaluate(() => ({ rows: [...document.querySelectorAll("[data-mp-checks] li")].map((l) => l.className + ":" + l.querySelector("b").textContent + "=" + l.querySelector(".v").textContent), open: window.__camOpen(), note: document.querySelector("[data-mp-show-note]").textContent }));
-        check("'Show what it sees': opened, the camera runs on that page and the checklist reads -- no face (the fake camera), voice ready ✗", sw0.open === 1 && sw0.rows.length === 7 && /^no:Face found=no face/.test(sw0.rows[0]) && sw0.rows.some((r) => /^no:Voice ready=voice is off/.test(r)) && sw0.rows.some((r) => /^ok:Cool-down=ready/.test(r)), JSON.stringify(sw0));
+        check("'Show what it sees': opened, the camera runs on that page and the checklist reads -- no face (the fake camera), voice ready ✗", sw0.open === 1 && sw0.rows.length === 8 && sw0.rows.some((r) => /^na:Lips moving=not seen yet/.test(r)) && sw0.rows.some((r) => /^na:Lips and voice together/.test(r)) && /^no:Face found=no face/.test(sw0.rows[0]) && sw0.rows.some((r) => /^no:Voice ready=voice is off/.test(r)) && sw0.rows.some((r) => /^ok:Cool-down=ready/.test(r)), JSON.stringify(sw0));
         if (SHOTS) {
           await vs.evaluate(() => document.getElementById("mp-show-row").scrollIntoView({ block: "center" }));
           await vs.waitForTimeout(300);
@@ -681,7 +756,7 @@ const SIDEWAYS = { cx: 0.5, cy: 0.5, w: 0.24, yaw: 55, pitch: -5 };
         await vs.click("[data-mp-show] summary");
         await vs.waitForTimeout(500);
         check("  closed: the camera let go at once", (await vs.evaluate(() => window.__camOpen())) === 0);
-        const vleak = vo.reqs.filter((r) => r.method !== "GET" && /presence|camera|look|level|face/i.test(r.url + r.txt));
+        const vleak = vo.reqs.filter((r) => r.method !== "GET" && /presence|camera|look|level|face|lip|mouth|vad|voiced|sync/i.test(r.url + r.txt));
         check("  nothing of it is sent: no request names the camera, a level or a face", vleak.length === 0, JSON.stringify(vleak.map((r) => r.method + " " + r.url)));
         await vo.ctx.close();
 
@@ -807,7 +882,7 @@ const SIDEWAYS = { cx: 0.5, cy: 0.5, w: 0.24, yaw: 55, pitch: -5 };
             const Lg = window.MintPresenceLogic;
             window.__look = (where) => {
               window.__faces = () => {
-                const b = window.MintPresenceBind.botAt(), f = { cx: 0.5, cy: 0.5, w: 0.24, jaw: (Math.floor(Date.now() / 180) % 2) ? 0.36 : 0.04, ey: null };
+                const b = window.MintPresenceBind.botAt(), f = { cx: 0.5, cy: 0.5, w: 0.24, jaw: window.__level > 0.01 && (Math.floor(Date.now() / 180) % 2) ? 0.36 : 0.04, ey: null };
                 const tgt = where === "bot" || where === "two" ? b : { x: b.x < 0.5 ? 0.92 : 0.08, y: 0.45 };
                 const a = Lg.aim(f, tgt);
                 f.yaw = where === "aside" ? 55 : a.bot.yaw; f.pitch = where === "aside" ? -5 : a.bot.pitch;

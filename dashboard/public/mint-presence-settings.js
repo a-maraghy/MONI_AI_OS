@@ -125,8 +125,12 @@
     } else {
       rows.push(li(g.face && !g.others, "Face found", !g.face ? "no face" : g.others ? g.others + " other face(s) as close — it stands down" : "you"));
       rows.push(li(g.face ? g.facing : null, "Facing the bot", g.face ? "sideways " + deg(g.dy) + " (within ±" + T.speakYaw + "°), up/down " + deg(g.dp) + " (within +" + T.botUp + "° / −" + T.botDown + "°)" + (g.facing ? ", held " + (Math.min(g.held, g.armMs) / 1000).toFixed(1) + " of " + (g.armMs / 1000).toFixed(1) + " s" : "") : ""));
-      rows.push(li(g.mouth == null ? null : g.mouth, "Mouth moving", g.mouth == null ? "not seen yet" : g.mouth ? "yes" : "still"));
-      rows.push(li(g.mic ? g.loud : null, "Speech heard", g.mic ? "level " + g.level.toFixed(3) + " vs " + g.need.toFixed(3) + " needed" : "the microphone listens while you look at the screen"));
+      // 2026-10-22: the numbers behind "is it you speaking?" -- the lips' movement, the voice, the two together
+      rows.push(li(g.mouth == null ? null : g.mouth, "Lips moving", g.lip == null ? "not seen yet" : "score " + g.lip.toFixed(2) + " (needs " + g.lipNeed.toFixed(2) + ")" +
+        (g.lipRest != null ? ", your still mouth's jitter " + g.lipRest.toFixed(3) : "") + (g.fps ? " · camera " + g.fps + " fps, " + g.ms + " ms a frame" : "")));
+      rows.push(li(g.mic ? g.loud : null, "Voice heard", !g.mic ? "the microphone listens while you look at the screen" : g.voiced == null ? "level " + g.level.toFixed(3) + " vs " + g.need.toFixed(3) + " needed" :
+        "voice " + g.vad.toFixed(2) + " (voiced " + g.voiced.toFixed(2) + ", speech-like " + g.speechy.toFixed(2) + ") · level " + g.level.toFixed(3) + " vs " + g.need.toFixed(3) + " needed"));
+      rows.push(li(g.mic && g.mouth != null ? g.fused : null, "Lips and voice together", !g.mic ? "" : g.fused ? "yes — a turn starts" : g.sync != null ? "in step " + g.sync.toFixed(2) + " (needs " + g.syncNeed.toFixed(2) + ")" : g.loud && g.mouth === false ? "a voice, but your lips are still" : g.mouth && !g.loud ? "lips move, no voice" : "waiting"));
       rows.push(li(VOICE, "Voice ready", VOICE ? "on" : "voice is off — Settings ▸ Voice"));
       rows.push(li(!g.busy, "Not busy", g.busy ? "a call or a reply is going on" : "nothing else going on"));
       rows.push(li(g.coolLeft <= 0, "Cool-down", g.coolLeft > 0 ? (g.coolLeft / 1000).toFixed(1) + " s left" : "ready"));

@@ -6,7 +6,8 @@
  *
  * What it does with the camera, all of it here and in mint-presence-worker.js:
  *   - opens it small (320 x 240) and reads it slowly: 5 frames a second, 2 on battery / in energy saver /
- *     while nobody is there; it lets go of it at once when switched off, the screen locked, another app holds a
+ *     while nobody is there (12, 8 on battery, while you face the bot with look and speak on: the lips move faster
+ *     than 5 frames a second can see -- 2026-10-22); it lets go of it at once when switched off, the screen locked, another app holds a
  *     meeting, or (by default) in energy saver -- and when the page has been hidden for 10 s (never opened hidden);
  *   - hands each frame to the worker (transferred -- no copy is kept) which runs the face model on this
  *     computer and answers with a few numbers per face; MintPresenceLogic turns them into the state.
@@ -153,9 +154,13 @@
   function voiceReady() { if (!H_.ready) return true; return !!call(H_.ready); }
 
   /* ---------------------------------------------------------------- the camera */
+  // Facing the bot with look and speak on (or "Show what it sees" open): the camera reads 12 frames a second (8 on
+  // battery) so the lips are seen moving, and keeps that FACING_HOLD_MS after the look ends (no flapping).
+  var facingUntil = 0, FACING_HOLD_MS = 1500;
   function want() {
     var h = cfg.host || {};
-    return Logic.rate({ on: cfg.prefs.cam && !C.denied, hidden: hiddenLong() || h.hidden, locked: h.locked, meeting: h.meeting, saver: h.saver, releaseOnSaver: cfg.prefs.saver, battery: h.battery, state: pub.state });
+    return Logic.rate({ on: cfg.prefs.cam && !C.denied, hidden: hiddenLong() || h.hidden, locked: h.locked, meeting: h.meeting, saver: h.saver, releaseOnSaver: cfg.prefs.saver, battery: h.battery, state: pub.state,
+      facing: performance.now() < facingUntil });
   }
   function apply() {
     var r = want();
@@ -165,7 +170,7 @@
     if (!C.stream && !C.opening) open();
   }
   function videoC(id) {
-    var v = { width: { ideal: W }, height: { ideal: H }, frameRate: { ideal: 10, max: 15 } };
+    var v = { width: { ideal: W }, height: { ideal: H }, frameRate: { ideal: 15, max: 30 } };
     if (id) v.deviceId = { exact: id }; else v.facingMode = "user";
     return { audio: false, video: v };
   }
@@ -287,9 +292,10 @@
     var r = rp.feed(s.turnedAwayMs, s.state === "looking", !!call(H_.speaking));
     if (r) call(H_.pause, r === "pause");
     speakMic(s);
-    var was = pub.state;
+    if ((s.facingNow || s.atBot) && !s.others && (cfg.prefs.speak || cfg.show)) facingUntil = performance.now() + FACING_HOLD_MS;
     setPub(s.state, s.gaze, true);
-    if (was !== s.state) { var f = want().fps; if (f && f !== C.fps) C.fps = f; }
+    var f = want().fps;
+    if (f && f !== C.fps) { var up = f > C.fps; C.fps = f; if (up) loop(); } // faster at once; slower from the next frame
     refreshInd();
   }
   function release(why) {
@@ -380,11 +386,10 @@
   function meter() {
     if (!mic.an || mic.bridge) return;
     mic.an.getFloatTimeDomainData(mic.buf);
-    var s = 0;
-    for (var i = 0; i < mic.buf.length; i++) s += mic.buf[i] * mic.buf[i];
-    var lvl = Math.sqrt(s / mic.buf.length);
     var now = performance.now();
-    if (gate.audio(lvl, now, !!call(H_.busy)) === "start") {
+    // is it a voice (periodic at a voice's pitch, harmonic, in speech's band)? -- numbers in memory, nothing kept
+    var feat = Logic.vadFrame(mic.buf, mic.ctx ? mic.ctx.sampleRate : 48000);
+    if (gate.audio(feat, now, !!call(H_.busy)) === "start") {
       turns.tried++;
       if (cfg.show && !cfg.prefs.speak) { turns.last = { t: Date.now(), ok: null }; return; } // Settings' readout: shown, not started
       // the pre-roll: from PRE_BEFORE_MS before the speech began (at least PREROLL_MS back), what the ring holds
@@ -441,7 +446,7 @@
     indication: function () { return curInd ? JSON.parse(JSON.stringify(curInd)) : null; },
     look: function () {
       var g = gate.status(performance.now());
-      return Object.assign(g, { camera: !!C.stream, why: C.why, mic: !!mic.stream, speakOn: !!cfg.prefs.speak, voice: voiceReady(), busy: !!call(H_.busy), turns: Object.assign({}, turns, { last: turns.last && Object.assign({}, turns.last) }) });
+      return Object.assign(g, { camera: !!C.stream, why: C.why, mic: !!mic.stream, fps: C.stream ? C.fps : 0, ms: diag.ms, speakOn: !!cfg.prefs.speak, voice: voiceReady(), busy: !!call(H_.busy), turns: Object.assign({}, turns, { last: turns.last && Object.assign({}, turns.last) }) });
     },
     /** A short note in the pill's words for ms (default 2.6 s), then its own word again. */
     note: function (text, ms) {

@@ -262,6 +262,8 @@ function turnAudio(s) {
         const nb = R.ctx.createBuffer(1, 48000 * 2, 48000), d = nb.getChannelData(0);
         for (let i = 0; i < d.length; i++) d[i] = (Math.random() - 0.5) * 0.004;
         const ns = R.ctx.createBufferSource(); ns.buffer = nb; ns.loop = true; ns.connect(R.bus); ns.start();
+        // the speaker's own mouth follows what they say (2026-10-22: the gate checks the lips move with the voice)
+        R.an = R.ctx.createAnalyser(); R.an.fftSize = 1024; R.bus.connect(R.an); R.buf = new Float32Array(1024);
         return R;
       }
       md.getUserMedia = (c) => {
@@ -301,10 +303,12 @@ function turnAudio(s) {
       if (window.__mintCC.orbit && window.__mintCC.orbit.setConcept) window.__mintCC.orbit.setConcept("E"); // core E: the bot
       setInterval(() => { const S = window.__mintCC && window.__mintCC.S; if (S) S.online = true; const o = document.getElementById("cc-offline"); if (o) o.hidden = true; }, 200);
       const Lg = window.MintPresenceLogic;
+      // the jaw opens with the room's loudness (the clip being said; the room's noise leaves it at rest)
+      const mouthNow = () => { const R = window.__room; if (!R || !R.an) return 0.04; R.an.getFloatTimeDomainData(R.buf); let e = 0; for (let i = 0; i < R.buf.length; i++) e += R.buf[i] * R.buf[i]; return 0.04 + Math.min(0.4, Math.sqrt(e / R.buf.length) * 5); };
       window.__look = (where) => {
         window.__faces = () => {
           if (where === "none") return [];
-          const b = window.MintPresenceBind.botAt(), f = { cx: 0.5, cy: 0.5, w: 0.24, jaw: (Math.floor(Date.now() / 180) % 2) ? 0.36 : 0.04, ey: null };
+          const b = window.MintPresenceBind.botAt(), f = { cx: 0.5, cy: 0.5, w: 0.24, jaw: mouthNow(), ey: null };
           const a = Lg.aim(f, b); f.yaw = a.bot.yaw; f.pitch = a.bot.pitch;
           return [f];
         };
@@ -412,7 +416,7 @@ function turnAudio(s) {
       check("  a look that arms look and speak opens the call ahead (warm), so the turn does not wait for it", ok.filter((r) => r.sayAfter >= 1500).every((r) => r.warm), JSON.stringify(ok.map((r) => [r.id, r.warm])));
       check("  English and Arabic clips both (when the recorded clips are on this machine)", langs.has("en") && (langs.has("ar") || !fs.existsSync(FIXDIR)), [...langs].join(","));
       const out = await page.evaluate(() => window.__wsOut.filter((x) => x.m).map((x) => x.m));
-      const faceWords = /"(?:yaw|pitch|jaw|cx|cy|faces?|landmarks?|gaze|ey)"\s*:/;
+      const faceWords = /"(?:yaw|pitch|jaw|cx|cy|faces?|landmarks?|gaze|ey|lip|lips|mouth|mc|sm|pk|open|vad|voiced|speechy|sync|fused)"\s*:/;
       check("no face data leaves the page: no WebSocket message and no request carries a face record", !out.some((m) => faceWords.test(m)) && !reqs.some((q) => faceWords.test(q.body)) && reqs.every((q) => new URL(q.url).origin === SITE), out.filter((m) => faceWords.test(m)).concat(reqs.filter((q) => new URL(q.url).origin !== SITE).map((q) => q.url)).join(" | ").slice(0, 600));
       check("zero page errors and CSP violations", errs.length === 0, errs.join("\n"));
     }
