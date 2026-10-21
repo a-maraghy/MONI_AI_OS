@@ -26,6 +26,12 @@
  *    camera (devicechange) and a camera that is gone fall back to Automatic and say so; the names only after
  *    "Allow the camera once" (released at once); in the app's render mode too; no request carries a camera's
  *    name or id. --shots DIR also writes the selector (browser + app, dark + light).
+ * 5. The indications (2026-10-21): the pure indication(); then the real module on a synthetic face stream (a stand-in
+ *    face model in place of the worker, the microphone meter fed a level): Watching / You're here / Looking at me,
+ *    the ring filling over the 0.6 s hold, the "Listening — you looked and spoke" caption, "Paused — look back to
+ *    continue", the reasons look and speak waits (hover / tap), in Floating S / M / L, Desktop layer, Peek, Companion
+ *    and the browser; hit regions, reduced motion, nothing sent. --shots DIR also writes
+ *    mockups/eye-contact/indicators (and its GIF, with ffmpeg). MP_IND_ONLY=1 runs only the pure parts and this.
  */
 const scratch = require("./scratch-server.cjs"); // first: sets MONI_DATA_DIR
 const path = require("path");
@@ -255,6 +261,17 @@ const SIDEWAYS = { cx: 0.5, cy: 0.5, w: 0.24, yaw: 55, pitch: -5 };
     check("  the camera let go meanwhile -> resumed", rp.reset() === "resume");
   }
 
+  section("what the page shows (the indications, pure)");
+  {
+    const I = (o) => L.indication(Object.assign({ camera: true, state: "looking", atBot: true, speakOn: true, voice: true, busy: false, others: 0, coolLeft: 0, held: 0, armMs: 600, armed: false, paused: false, listening: false }, o));
+    check("camera off -> nothing; nobody / away -> 'Watching'; at the screen -> 'You're here'; at the bot -> 'Looking at me' + the noticed ring", L.indication({ camera: false }) === null && I({ state: null }).word === "Watching" && I({ state: "away" }).look === "watching" && I({ atBot: false }).word === "You're here" && I({ state: "present", atBot: false }).look === "here" && I({}).word === "Looking at me" && I({}).ring === "noticed");
+    const h = I({ held: 300 });
+    check("  the hold: arming, half full, 300 ms to go; held -> ready (full)", h.ring === "arming" && h.arm === 0.5 && h.armLeft === 300 && I({ held: 650, armed: true }).ring === "ready" && I({ armed: true, held: 650 }).arm === 1);
+    check("  blocked (voice off / someone else / busy / cool-down): never arming, the reason named; look and speak off: no reason at all", ["voice", "others", "busy", "cool"].every((k, i) => { const x = I([{ voice: false }, { others: 1 }, { busy: true }, { coolLeft: 900 }][i]); return x.blocked === k && x.ring === "noticed" && x.armLeft === 0; }) && I({ speakOn: false, voice: false, held: 300 }).blocked === null && I({ speakOn: false, held: 300 }).ring === "noticed");
+    check("  listening (a turn it started): the caption, no ring, not blocked by its own busy; paused: the caption", I({ listening: true, busy: true, held: 700 }).caption === "listening" && I({ listening: true, busy: true }).ring === null && I({ listening: true, busy: true }).blocked === null && I({ paused: true, state: "present", atBot: false }).caption === "paused" && I({ paused: true }).word === "Paused");
+    check("  the hint's words", L.speakHint(I({ voice: false }), true) === "Look and speak waits: voice is off" && L.speakHint(I({}), false) === "Look and speak is off" && L.CAPTION_TEXT.listening === "Listening — you looked and spoke" && L.CAPTION_TEXT.paused === "Paused — look back to continue");
+  }
+
   section("held while away, one summary when back");
   {
     const h = L.createHolder();
@@ -371,7 +388,7 @@ const SIDEWAYS = { cx: 0.5, cy: 0.5, w: 0.24, yaw: 55, pitch: -5 };
         browser = await chromium.launch({ args: ["--use-fake-device-for-media-stream=device-count=3", "--use-fake-ui-for-media-stream", "--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"] });
         async function open(o) {
           o = o || {};
-          const ctx = o.ctx || await browser.newContext({ viewport: { width: o.W || 1280, height: o.H || 800 }, colorScheme: o.scheme || "light", userAgent: o.ua, extraHTTPHeaders: { "X-Forwarded-Proto": "https" }, permissions: ["camera", "microphone"] });
+          const ctx = o.ctx || await browser.newContext({ viewport: { width: o.W || 1280, height: o.H || 800 }, screen: o.screen, reducedMotion: o.reduce ? "reduce" : "no-preference", colorScheme: o.scheme || "light", userAgent: o.ua, extraHTTPHeaders: { "X-Forwarded-Proto": "https" }, permissions: ["camera", "microphone"] });
           if (!o.ctx) await ctx.addCookies(String(cookie).split("; ").filter(Boolean).map((kv) => ({ name: kv.split("=")[0], value: kv.slice(kv.indexOf("=") + 1), url: ORIGIN })));
           const reqs = [];
           ctx.on("request", (r) => { const b = r.postDataBuffer(); reqs.push({ url: r.url(), method: r.method(), type: r.resourceType(), body: b ? b.length : 0, txt: b ? b.toString("latin1") : "", hdr: JSON.stringify(r.headers()), img: b ? /data:image|\x89PNG|\xff\xd8\xff|JFIF|RIFF....WEBP/.test(b.toString("latin1")) : false }); });
@@ -408,6 +425,23 @@ const SIDEWAYS = { cx: 0.5, cy: 0.5, w: 0.24, yaw: 55, pitch: -5 };
               window.MintPresence = { configure: (c) => { window.__mpCfg = c; }, on: (f) => subs.push(f), snapshot: () => ({}), hooks: (h) => { hooks = h; }, release: () => {}, turnEnded: () => {}, diag: () => ({}) };
               window.__mp = { emit: (s) => subs.forEach((f) => f(s)), hooks: () => hooks };
             }
+            if (a.fakeWorker) {
+              // The real camera module on the fake camera, with a stand-in face model: each frame answers what the test
+              // puts in window.__faces (the worker's own summary records), and the microphone meter reads window.__level.
+              const RW = window.Worker;
+              window.__faces = [];
+              window.Worker = function (url, opts) {
+                if (!/mint-presence-worker/.test(String(url))) return new RW(url, opts);
+                const w = { onmessage: null, onerror: null, dead: false, terminate() { w.dead = true; }, postMessage(m) {
+                  if (w.dead || !m) return;
+                  if (m.type === "init") setTimeout(() => { if (!w.dead && w.onmessage) w.onmessage({ data: { type: "ready" } }); }, 10);
+                  else if (m.type === "frame") { if (m.bmp && m.bmp.close) m.bmp.close(); const f = typeof window.__faces === "function" ? window.__faces() : window.__faces; setTimeout(() => { if (!w.dead && w.onmessage) w.onmessage({ data: { type: "faces", faces: f, ms: 3 } }); }, 5); }
+                } };
+                return w;
+              };
+              window.__level = 0;
+              AnalyserNode.prototype.getFloatTimeDomainData = function (buf) { for (let i = 0; i < buf.length; i++) buf[i] = (i % 2 ? 1 : -1) * window.__level; };
+            }
             if (a.tauri) {
               window.__calls = [];
               const Lz = (window.__listeners = {});
@@ -422,6 +456,7 @@ const SIDEWAYS = { cx: 0.5, cy: 0.5, w: 0.24, yaw: 55, pitch: -5 };
         }
         const isStaticOk = (u) => { const x = new URL(u); return x.origin === ORIGIN; };
 
+        before: { if (process.env.MP_IND_ONLY) break before; // (MP_IND_ONLY=1: only the indications, while working on them)
         // 1. Off by default: the camera is never asked for.
         const a = await open({ wait: 3000 });
         const off = await a.page.evaluate(() => ({ gum: window.__gum.length, pill: !!document.getElementById("mp-cam"), snap: window.MintPresence && window.MintPresence.snapshot(), worker: window.MintPresence.diag().worker }));
@@ -611,8 +646,8 @@ const SIDEWAYS = { cx: 0.5, cy: 0.5, w: 0.24, yaw: 55, pitch: -5 };
 
         // look and speak with voice off (this scratch server has no voice key): said plainly, the mic never opened for it
         const vo = await open({ prefs: { cam: true, speak: true }, cams: CAMS, wait: 2500 });
-        const v0 = await vo.page.evaluate(() => ({ pill: (document.querySelector("#mp-cam .mp-t") || {}).textContent, look: window.MintPresence.look(), mics: window.__gum.filter((g) => g.audio).length, ok: window.__mintLive.ok() }));
-        check("voice off: the pill says 'look and speak: voice is off' (it used to do nothing, silently); no microphone opened for it", v0.ok === false && /Camera on · Integrated Webcam · look and speak: voice is off/.test(v0.pill) && v0.look.voice === false && v0.mics === 0, JSON.stringify(v0));
+        const v0 = await vo.page.evaluate(() => ({ pill: (document.querySelector("#mp-cam .mp-t") || {}).textContent, why: (document.querySelector("#mp-cam .mp-why") || {}).textContent, blocked: document.getElementById("mp-cam").classList.contains("mp-blocked"), look: window.MintPresence.look(), mics: window.__gum.filter((g) => g.audio).length, ok: window.__mintLive.ok() }));
+        check("voice off: the pill's hint says 'Look and speak waits: voice is off' (a quiet i on the pill, no nag); no microphone opened for it", v0.ok === false && v0.pill === "Camera on · Integrated Webcam" && /Look and speak waits: voice is off/.test(v0.why) && v0.blocked && v0.look.voice === false && v0.mics === 0, JSON.stringify(v0));
         const vs = (await open({ ctx: vo.ctx, path: "/mint-ai/settings/appearance", cams: CAMS, wait: 800 })).page;
         const vs0 = await vs.evaluate(() => ({ off: (document.querySelector("[data-mp-voiceoff]") || {}).textContent || "", link: (document.querySelector("[data-mp-voiceoff] a") || {}).href || "", gum: window.__gum.length }));
         check("  ... and Settings says so under Look and speak, with the way to switch voice on", /Look and speak needs voice, and voice is off/.test(vs0.off) && /\/mint-ai\/settings\/voice$/.test(vs0.link) && vs0.gum === 0, JSON.stringify(vs0));
@@ -737,12 +772,224 @@ const SIDEWAYS = { cx: 0.5, cy: 0.5, w: 0.24, yaw: 55, pitch: -5 };
           r.vl = typeof window.VoiceLive.pause === "function";
           return r;
         });
-        check("look and speak and a reply's pause are wired to the voice: lookTalk on the hold-to-talk path, VoiceLive.pause, the read-aloud pause", hk.hooks === "busy,off,pause,ready,speak,speaking" && hk.speak === 1 && JSON.stringify(hk.paused) === "[true,false]" && hk.lookTalk && hk.vl && hk.busy === false, JSON.stringify(hk));
+        check("look and speak and a reply's pause are wired to the voice: lookTalk on the hold-to-talk path, VoiceLive.pause, the read-aloud pause", hk.hooks === "busy,ind,listening,off,pause,ready,speak,speaking" && hk.speak === 1 && JSON.stringify(hk.paused) === "[true,false]" && hk.lookTalk && hk.vl && hk.busy === false, JSON.stringify(hk));
         const offc = await dk.page.evaluate(() => { window.__calls.length = 0; window.__mp.hooks().off(); return window.__calls.map((c) => c[0]); });
         check("  in the app the page's Off asks the app (presence_off); camera use is reported (presence_status)", offc.includes("presence_off") && away.status >= 1, JSON.stringify(offc));
         const csp2 = await dk.page.evaluate(() => window.__csp);
         check("  no page errors, no CSP violations", dk.errs.length === 0 && csp2.length === 0, JSON.stringify(dk.errs.concat(csp2)));
         await dk.ctx.close();
+
+        } // before
+        // 4b. The indications (2026-10-21): the real module on a synthetic face stream, in the app's every layout and in a browser.
+        {
+          const LAYM = require(path.join(ROOT, "public", "mint-desktop-layout.js"));
+          const SCREEN = { width: 1920, height: 1080 };
+          const IH = { mode: "floating", size: "M", peekOpen: true, glance: false, presence: { camera: true, speak: true, releaseOnSaver: true, onBattery: false, energySaver: false, locked: false, meeting: false, inUse: false } };
+          // In the page: faces that look at the bot / at the screen away from it / aside; two people; the voice stand-ins.
+          const SETUP = () => {
+            const Lg = window.MintPresenceLogic;
+            window.__look = (where) => {
+              window.__faces = () => {
+                const b = window.MintPresenceBind.botAt(), f = { cx: 0.5, cy: 0.5, w: 0.24, jaw: (Math.floor(Date.now() / 180) % 2) ? 0.36 : 0.04, ey: null };
+                const tgt = where === "bot" || where === "two" ? b : { x: b.x < 0.5 ? 0.92 : 0.08, y: 0.45 };
+                const a = Lg.aim(f, tgt);
+                f.yaw = where === "aside" ? 55 : a.bot.yaw; f.pitch = where === "aside" ? -5 : a.bot.pitch;
+                if (where === "none") return [];
+                return where === "two" ? [f, { cx: 0.15, cy: 0.5, w: 0.16, yaw: 20, pitch: -5, jaw: 0.04, ey: null }] : [f];
+              };
+            };
+            window.__look("none");
+            const lv = window.__mintLive;
+            window.__latched = false; window.__busy = false; window.__speaking = false; window.__voice = true; window.__talks = 0;
+            lv.ok = () => window.__voice; lv.busy = () => !!(window.__busy || window.__latched || window.__speaking);
+            lv.lookTalk = () => { window.__talks++; window.__latched = true; return true; }; lv.latched = () => window.__latched;
+            const cc = window.__mintCC; cc.speaking = () => window.__speaking; cc.pauseSpeaking = () => true;
+            if (window.VoiceLive) window.VoiceLive.speaking = () => false;
+            window.__seq = [];
+            window.__trace = setInterval(() => { const i = window.MintPresence.indication(); const k = i ? [i.look, i.ring, i.caption, i.blocked].join("/") : "null"; if (window.__seq[window.__seq.length - 1] !== k) window.__seq.push(k); }, 40);
+          };
+          const IND = () => {
+            const ring = document.getElementById("mp-ring"), cap = document.getElementById("mp-caption"), pill = document.getElementById("mp-cam");
+            const vis = (el) => { if (!el || el.hidden) return false; const r = el.getBoundingClientRect(), cs = getComputedStyle(el); return r.width > 0 && r.height > 0 && cs.visibility !== "hidden" && cs.display !== "none" && Number(cs.opacity) > 0.05 && r.left >= -1 && r.top >= -1 && r.right <= innerWidth + 1 && r.bottom <= innerHeight + 1; };
+            const rr = ring && ring.getBoundingClientRect(), cr = cap && cap.getBoundingClientRect();
+            const k = document.documentElement.classList.contains("dk-comp-out") ? window.MintDesktop.companion().debug.core() : window.__mintCC.core;
+            const cv = document.documentElement.classList.contains("dk-comp-out") ? document.getElementById("dk-comp-cv") : k.canvas, cb = cv.getBoundingClientRect(), S = k.S, dpr = S.dpr || 1;
+            const hx = cb.left + S.c[0] / dpr, hy = cb.top + S.cssH - S.c[1] / dpr + S.R / dpr * 0.12;
+            const regs = window.MintDesktop && window.MintDesktop.regions ? window.MintDesktop.regions() : [];
+            const sameBox = (r) => r && regs.some((g) => Math.abs(g.x - r.left) < 2 && Math.abs(g.y - r.top) < 2 && Math.abs(g.w - r.width) < 2);
+            return {
+              ind: window.MintPresence.indication(), seq: window.__seq.slice(),
+              ring: vis(ring), ringCls: ring ? ring.className : "", ringPE: ring ? getComputedStyle(ring).pointerEvents : "", ringOnHead: rr ? Math.hypot(rr.left + rr.width / 2 - hx, rr.top + rr.height / 2 - hy) < 3 : false,
+              arc: ring && ring.querySelector(".mp-ra") ? { off: getComputedStyle(ring.querySelector(".mp-ra")).strokeDashoffset, tr: ring.querySelector(".mp-ra").style.transition, dash: getComputedStyle(ring.querySelector(".mp-ra")).strokeDasharray } : { html: ring ? ring.outerHTML.slice(0, 300) : null },
+              anims: ring ? ring.getAnimations({ subtree: true }).length : -1, animNames: ring ? ring.getAnimations({ subtree: true }).map((a) => (a.animationName || a.transitionProperty || "?") + "@" + (a.effect && a.effect.target ? a.effect.target.getAttribute("class") : "")).join(",") : "",
+              cap: vis(cap) ? cap.textContent : "", capLive: cap ? cap.getAttribute("aria-live") : "", capPE: cap ? getComputedStyle(cap).pointerEvents : "",
+              word: pill ? pill.querySelector(".mp-s").textContent : null, blocked: pill ? pill.classList.contains("mp-blocked") : null, why: pill ? pill.querySelector(".mp-why").textContent : "",
+              whyShown: pill ? getComputedStyle(pill.querySelector(".mp-why")).display !== "none" : false,
+              pillHit: pill ? (() => { const q = pill.getBoundingClientRect(); return regs.some((g) => q.left + q.width / 2 >= g.x && q.left + q.width / 2 <= g.x + g.w && q.top + q.height / 2 >= g.y && q.top + q.height / 2 <= g.y + g.h); })() : false,
+              ringHit: sameBox(rr), capHit: sameBox(cr), regsN: regs.length,
+            };
+          };
+          const waitFor = async (pg, fn, arg, ms) => { const t0 = Date.now(); let v; while (Date.now() - t0 < (ms || 4000)) { v = await pg.evaluate(IND); if (fn(v, arg)) return v; await pg.waitForTimeout(60); } return v; };
+          const shot = async (pg, name, clip) => { if (!SHOTS) return; const dir = path.join(ROOT, "..", "mockups", "eye-contact", "indicators"); fs.mkdirSync(dir, { recursive: true }); await pg.screenshot({ path: path.join(dir, name), clip }); };
+
+          const ia = await open({ path: "/mint-ai?shell=desktop", ua: APP_UA, tauri: IH, fakeWorker: true, screen: SCREEN, W: 480, H: 860, scheme: "dark", wait: 2500 });
+          const pgI = ia.page;
+          await pgI.evaluate(() => { window.__mintCC.orbit.setConcept("E"); document.documentElement.setAttribute("data-theme", "dark"); });
+          await pgI.evaluate(SETUP);
+          const t0 = ia.reqs.length;
+          let v = await waitFor(pgI, (x) => x.ind && x.word === "Watching");
+          check("indications: the camera on, nobody there -> the pill says 'Watching'; no ring, no caption", v.ind && v.ind.look === "watching" && v.word === "Watching" && !v.ring && !v.cap, JSON.stringify(v));
+          await pgI.evaluate(() => window.__look("screen"));
+          v = await waitFor(pgI, (x) => x.word === "You're here", null, 3000);
+          check("  you look at the screen (not the bot) -> 'You're here'; still no ring", v.word === "You're here" && !v.ring, JSON.stringify(v));
+          // voice off: blocked, said quietly; looking at the bot -> only the noticed glow (no arming)
+          await pgI.evaluate(() => { window.__voice = false; window.__look("bot"); });
+          v = await waitFor(pgI, (x) => x.word === "Looking at me" && x.ring, null, 3000);
+          check("you look at the bot -> 'Looking at me' and a soft ring round its head (noticed), on the head, drawn only (pointer-events none)", v.word === "Looking at me" && v.ring && /mp-r-noticed/.test(v.ringCls) && v.ringOnHead && v.ringPE === "none", JSON.stringify(v));
+          check("  voice off: look and speak cannot start -> no arming, a quiet 'i' on the pill, the reason only in its hint (hidden until hover / tap)", v.blocked && /Look and speak waits: voice is off/.test(v.why) && !v.whyShown && v.ind.ring === "noticed", JSON.stringify(v));
+          await pgI.hover("#mp-cam .mp-s");
+          await pgI.waitForTimeout(150);
+          const hv = await pgI.evaluate(IND);
+          await shot(pgI, "blocked-hint.png", { x: 0, y: 0, width: 320, height: 110 });
+          await pgI.mouse.move(240, 600);
+          await pgI.waitForTimeout(150);
+          const hv2 = await pgI.evaluate(IND);
+          check("  hover the pill: the hint shows ('voice is off'); off it: gone", hv.whyShown && !hv2.whyShown, JSON.stringify([hv.whyShown, hv2.whyShown]));
+          await pgI.click("#mp-cam .mp-s");
+          const tp = await pgI.evaluate(() => getComputedStyle(document.querySelector("#mp-cam .mp-why")).display !== "none");
+          await pgI.click("#mp-cam .mp-s");
+          const tp2 = await pgI.evaluate(() => getComputedStyle(document.querySelector("#mp-cam .mp-why")).display !== "none" && document.getElementById("mp-cam").classList.contains("mp-open"));
+          await pgI.mouse.move(240, 600);
+          check("  a tap opens it, another closes it (the pill is a hit region: it reaches the page in the app)", tp && !tp2 && v.pillHit, JSON.stringify({ tp, tp2, hit: v.pillHit }));
+          // voice on: the hold fills, then ready
+          await pgI.evaluate(() => { window.__look("aside"); });
+          await waitFor(pgI, (x) => x.ind && x.ind.look !== "me", null, 4000);
+          await pgI.evaluate(() => { window.__voice = true; window.__seq.length = 0; window.__look("bot"); });
+          const arming = await waitFor(pgI, (x) => x.ind && x.ind.ring === "arming", null, 3000);
+          const tArm = Date.now();
+          await shot(pgI, "arming.png", { x: 40, y: 40, width: 400, height: 520 });
+          const ready = await waitFor(pgI, (x) => x.ind && x.ind.ring === "ready", null, 3000);
+          const tReady = Date.now() - tArm;
+          await pgI.waitForTimeout(150);
+          ready.seq = await pgI.evaluate(() => window.__seq.slice());
+          check("look and speak on, you hold your look: a ring fills round the bot over the 0.6 s hold (arming, an animated arc), then full (ready)", /mp-r-arming/.test(arming.ringCls) && /mp-r-arming/.test(arming.ringCls) && /stroke-dashoffset \d+ms linear/.test(arming.arc.tr) && ready.ring && /mp-r-ready/.test(ready.ringCls) && Number(ready.arc.off.replace("px", "")) === 0 && tReady < 1200, JSON.stringify({ a: arming.ringCls, tr: arming.arc.tr, r: ready.ringCls, off: ready.arc.off, tReady }));
+          check("  in order: arming -> ready (never ready first)", (() => { const q = ready.seq.map((k) => k.split("/")[1]); const i = q.indexOf("arming"), j = q.indexOf("ready"); return i >= 0 && j > i; })(), JSON.stringify(ready.seq));
+          // speech starts: a turn, the caption
+          await pgI.evaluate(() => { window.__level = 0.25; });
+          const lis = await waitFor(pgI, (x) => x.cap, null, 3000);
+          await pgI.evaluate(() => { window.__level = 0; });
+          await shot(pgI, "listening.png", { x: 40, y: 40, width: 400, height: 560 });
+          check("you speak while looking: a turn opens (lookTalk) and the caption says 'Listening — you looked and spoke' (aria-live polite), the pill 'Listening', the ring gives way", lis.cap === "Listening — you looked and spoke" && lis.capLive === "polite" && lis.capPE === "none" && lis.word === "Listening" && !lis.ring && (await pgI.evaluate(() => window.__talks)) === 1, JSON.stringify(lis));
+          await pgI.evaluate(() => { window.__latched = false; });
+          const lis2 = await waitFor(pgI, (x) => !x.cap, null, 2000);
+          check("  the turn is sent (no longer listening): the caption clears", !lis2.cap && lis2.word !== "Listening", JSON.stringify(lis2));
+          check("  then the cool-down: look and speak waits a moment, said only in the hint", lis2.ind.blocked === "cool" && /it just answered/.test(lis2.why), JSON.stringify(lis2.ind));
+          const cool = await waitFor(pgI, (x) => x.ind && !x.ind.blocked, null, 4500);
+          check("  ...and after it, nothing in the way again", cool.ind && !cool.ind.blocked && !cool.blocked, JSON.stringify(cool.ind));
+          await pgI.evaluate(() => { window.__busy = true; });
+          const busy = await waitFor(pgI, (x) => x.ind && x.ind.blocked === "busy", null, 1500);
+          await pgI.evaluate(() => { window.__busy = false; window.__look("two"); });
+          const two = await waitFor(pgI, (x) => x.ind && x.ind.blocked === "others", null, 2500);
+          check("  busy (a call or a reply on) / someone else in view: no arming, the reason in the hint", busy.ind.blocked === "busy" && /a turn or a reply is on/.test(busy.why) && busy.ind.ring !== "arming" && two.ind.blocked === "others" && /someone else is in view/.test(two.why) && two.ind.ring !== "arming", JSON.stringify([busy.ind, two.ind]));
+          // a reply playing; you look away -> paused; back -> resumes
+          await pgI.evaluate(() => { window.__look("bot"); window.__speaking = true; });
+          await pgI.waitForTimeout(600);
+          await pgI.evaluate(() => { window.__look("aside"); });
+          const pz = await waitFor(pgI, (x) => x.cap, null, 4500);
+          await shot(pgI, "paused.png", { x: 0, y: 0, width: 480, height: 600 });
+          check("a reply playing, you look away: 'Paused — look back to continue' under the bot and 'Paused' on the pill", pz.cap === "Paused — look back to continue" && pz.word === "Paused", JSON.stringify(pz));
+          await pgI.evaluate(() => { window.__look("bot"); });
+          const rs = await waitFor(pgI, (x) => !x.cap, null, 3000);
+          check("  you look back: it resumes and the caption clears", !rs.cap && rs.word !== "Paused", JSON.stringify(rs));
+          await pgI.evaluate(() => { window.__speaking = false; });
+          check("  the ring and the caption are never hit regions (clicks go through them)", [v, ready, lis, pz].every((x) => !x.ringHit && !x.capHit), JSON.stringify([v, ready, lis, pz].map((x) => [x.ringHit, x.capHit])));
+          const src = fs.readFileSync(path.join(ROOT, "public", "mint-desktop.js"), "utf8");
+          const glassSrc = src.slice(src.indexOf("var GLASS = ["), src.indexOf("];", src.indexOf("var GLASS = [")));
+          const hitSrc = src.slice(src.indexOf("var HIT = ["), src.indexOf("];", src.indexOf("var HIT = [")));
+          check("  not glass either: no blur behind the moving ring or the caption (GLASS / HIT name neither)", !/mp-ring|mp-caption|mp-ind/.test(glassSrc + hitSrc), "");
+
+          // every layout: the ring on the bot, the caption on screen
+          const LAYOUTS = [
+            ["Floating S", { mode: "floating", size: "S", peekOpen: true }, LAYM.windowSize({ mode: "floating", size: "S" })],
+            ["Floating M", { mode: "floating", size: "M", peekOpen: true }, LAYM.windowSize({ mode: "floating", size: "M" })],
+            ["Floating L", { mode: "floating", size: "L", peekOpen: true }, LAYM.windowSize({ mode: "floating", size: "L" })],
+            ["Desktop layer", { mode: "desktop", peekOpen: true, pos: "right" }, { w: 1440, h: 900 }],
+            ["Peek", { mode: "peek", peekOpen: true }, { w: 1440, h: 900 }],
+            ["Companion", { mode: "companion", peekOpen: false, companion: { perch: "both", sessionBots: false, stance: "stand", lean: 0, openSide: "left", ducked: false } }, { w: 264, h: 140 }],
+          ];
+          const lay = {};
+          for (const [name, stt, sz] of LAYOUTS) {
+            await pgI.setViewportSize({ width: sz.w, height: sz.h });
+            await pgI.evaluate((x) => window.__emit("mint://state", x), Object.assign({ presence: IH.presence }, stt));
+            await pgI.waitForTimeout(700);
+            await pgI.evaluate(() => { window.__look("aside"); });
+            await pgI.waitForTimeout(400);
+            await pgI.evaluate(() => { window.__look("bot"); });
+            const n = await waitFor(pgI, (x) => x.ring && x.ind && x.ind.ring === "ready", null, 4000);
+            if (name === "Companion") { await pgI.waitForTimeout(350); await shot(pgI, "companion-ready.png"); }
+            await pgI.evaluate(() => { window.__level = 0.25; });
+            const c = await waitFor(pgI, (x) => x.cap, null, 3000);
+            await pgI.evaluate(() => { window.__level = 0; });
+            if (name === "Companion") await shot(pgI, "companion-listening.png");
+            await pgI.evaluate(() => { window.__latched = false; });
+            await waitFor(pgI, (x) => !x.cap, null, 2000);
+            await pgI.waitForTimeout(3100); // the cool-down, before the next layout
+            lay[name] = { ring: n.ring && n.ringOnHead, cap: c.cap, pill: n.pillHit, ringHit: n.ringHit || c.ringHit, capHit: c.capHit };
+          }
+          check("every layout (Floating S / M / L, Desktop layer, Peek, Companion): the ring round the bot's head, the caption fully on screen, the pill a hit region", Object.values(lay).every((x) => x.ring && x.cap === "Listening — you looked and spoke" && x.pill && !x.ringHit && !x.capHit), JSON.stringify(lay));
+          check("  in Companion they are on the companion bot (out on the desk), not hidden with the Command Center's pieces", lay.Companion && lay.Companion.ring && !!lay.Companion.cap, JSON.stringify(lay.Companion));
+          // the GIF: arming -> listening, Floating M
+          if (SHOTS) {
+            await pgI.setViewportSize({ width: 480, height: 860 });
+            await pgI.evaluate((x) => window.__emit("mint://state", x), Object.assign({ presence: IH.presence }, { mode: "floating", size: "M", peekOpen: true }));
+            await pgI.evaluate(() => { window.__look("aside"); });
+            await pgI.waitForTimeout(1600);
+            const dir = path.join(SHOTS, "indicator-frames");
+            fs.rmSync(dir, { recursive: true, force: true }); fs.mkdirSync(dir, { recursive: true });
+            await pgI.evaluate(() => { window.__look("bot"); });
+            for (let i = 0; i < 34; i++) {
+              if (i === 20) await pgI.evaluate(() => { window.__level = 0.25; });
+              if (i === 24) await pgI.evaluate(() => { window.__level = 0; });
+              await pgI.screenshot({ path: path.join(dir, String(i).padStart(3, "0") + ".png"), clip: { x: 40, y: 40, width: 400, height: 560 } });
+              await pgI.waitForTimeout(70);
+            }
+            // the GIF (ffmpeg, if this machine has it): arming -> ready -> listening
+            const gif = path.join(ROOT, "..", "mockups", "eye-contact", "indicators", "look-and-speak.gif");
+            const ff = require("child_process").spawnSync("ffmpeg", ["-y", "-loglevel", "error", "-framerate", "8", "-i", path.join(dir, "%03d.png"), "-vf", "split[a][b];[a]palettegen=max_colors=96[p];[b][p]paletteuse", "-loop", "0", gif]);
+            if (ff.status !== 0) console.log("  (no GIF: ffmpeg " + (ff.error ? "missing" : "failed") + ")");
+          }
+          const during = ia.reqs.slice(t0);
+          const words = /Watching|You're here|Looking at me|Listening|Paused|look back|voice is off|in view|arming|noticed|mp-ring|mp-caption|indication/i;
+          check("no network leakage: during all of it only the page's usual GETs (no POST, no body), and no request names an indication", during.every((r) => r.method === "GET" && r.body === 0 && new URL(r.url).origin === ORIGIN && !words.test(decodeURIComponent(r.url))), JSON.stringify(during.filter((r) => r.method !== "GET" || r.body || words.test(r.url)).map((r) => r.method + " " + r.url)));
+          check("  no page errors, no CSP violations", ia.errs.length === 0 && (await pgI.evaluate(() => window.__csp)).length === 0, JSON.stringify(ia.errs));
+          await ia.ctx.close();
+
+          // reduced motion: a still ring, nothing animated
+          const rm = await open({ path: "/mint-ai?shell=desktop", ua: APP_UA, tauri: IH, fakeWorker: true, screen: SCREEN, reduce: true, W: 480, H: 860, wait: 2500 });
+          await rm.page.evaluate(() => { window.__mintCC.orbit.setConcept("E"); });
+          await rm.page.evaluate(SETUP);
+          await rm.page.evaluate(() => { window.__look("bot"); });
+          const rma = await waitFor(rm.page, (x) => x.ind && x.ind.ring === "arming", null, 3000);
+          const rmr = await waitFor(rm.page, (x) => x.ind && x.ind.ring === "ready", null, 3000);
+          check("reduced motion: arming is a still, full dashed ring (no transition, no animation); ready a solid one", /mp-r-still/.test(rma.ringCls) && /mp-r-arming/.test(rma.ringCls) && rma.arc.tr === "none" && rma.anims === 0 && /\d/.test(rma.arc.dash) && rma.arc.dash !== "100px" && rmr.anims === 0 && /mp-r-ready/.test(rmr.ringCls), JSON.stringify([rma.ringCls, rma.arc, rma.anims, rma.animNames, rmr.ringCls, rmr.anims, rmr.animNames]));
+          await rm.ctx.close();
+
+          // the browser Command Center
+          const br = await open({ prefs: { cam: true, speak: true }, fakeWorker: true, screen: SCREEN, W: 1280, H: 800, wait: 2500 });
+          await br.page.evaluate(() => { if (window.__mintCC.orbit && window.__mintCC.orbit.setConcept) window.__mintCC.orbit.setConcept("E"); });
+          await br.page.evaluate(SETUP);
+          await br.page.evaluate(() => { window.__look("bot"); });
+          const bn = await waitFor(br.page, (x) => x.ring && x.ind && x.ind.ring === "ready", null, 4000);
+          await br.page.evaluate(() => { window.__level = 0.25; });
+          const bc = await waitFor(br.page, (x) => x.cap, null, 3000);
+          await br.page.evaluate(() => { window.__level = 0; window.__latched = false; window.__voice = false; });
+          await br.page.hover("#mp-cam .mp-s");
+          const bh = await waitFor(br.page, (x) => x.whyShown && /voice is off/.test(x.why), null, 2000);
+          check("in the browser Command Center too: the ring on the core, the caption, the pill's hint (above it)", bn.ring && bn.ringOnHead && bc.cap === "Listening — you looked and spoke" && bh.whyShown, JSON.stringify({ r: bn.ring, h: bn.ringOnHead, c: bc.cap, w: bh.whyShown }));
+          const bw = /Watching|You're here|Looking at me|Listening|Paused|look back|voice is off|in view|arming|noticed|mp-ring|mp-caption|indication/i;
+          check("  nothing of it sent from the browser either (no request names an indication), no page errors", br.reqs.every((r) => !bw.test(decodeURIComponent(r.url) + r.txt)) && br.errs.length === 0, JSON.stringify(br.errs.concat(br.reqs.filter((r) => bw.test(r.url + r.txt)).map((r) => r.url))));
+          await br.ctx.close();
+        }
 
         // 5. The read-aloud pause really stops the speaker's clock.
         const ra = await open({ wait: 800 });

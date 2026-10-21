@@ -22,6 +22,8 @@
  *   rate(o)                    frames per second (0 = release the camera)
  *   normPrefs(p)               the switches (all off by default, but "release in energy saver")
  *   pickCamera(devs, choice)   which camera: the stored choice, else Automatic (built-in first, phone / virtual last)
+ *   indication(o)              what the page shows (2026-10-21): the pill's word, the ring on the bot, the caption, why
+ *                              look and speak waits -- drawn from the module's own state only, never sent
  */
 (function (root, factory) {
   var api = factory();
@@ -470,11 +472,63 @@
     return { id: null, label: "", how: "default", note: note };
   }
 
+  /* ------------------------------------------------------------ what the page shows (2026-10-21) */
+  // The words, in one place (the pill, the caption under the bot, the hint on the pill).
+  var LOOK_TEXT = { watching: "Watching", here: "You're here", me: "Looking at me" };
+  var CAPTION_TEXT = { listening: "Listening — you looked and spoke", paused: "Paused — look back to continue" };
+  var BLOCK_TEXT = { voice: "voice is off", others: "someone else is in view", busy: "a turn or a reply is on", cool: "a moment — it just answered" };
+  /**
+   * indication({ camera, state, atBot, speakOn, voice, busy, others, coolLeft, held, armMs, armed, paused, listening })
+   *   -> null (camera off) | { look, ring, arm, armLeft, caption, blocked, word }
+   *   look     "watching" (nobody, or away) | "here" (present / at the screen) | "me" (looking at the bot itself)
+   *   ring     the ring on the bot: "noticed" (you look at it) | "arming" (look and speak: the 0.6 s hold filling,
+   *            arm 0..1, armLeft ms to go) | "ready" (held: it listens for your voice) | null
+   *   caption  "listening" (a turn look and speak started) | "paused" (a reply paused: you looked away) | null
+   *   blocked  look and speak is on but cannot start now: "voice" | "others" | "busy" | "cool" | null
+   *   word     the pill's state word
+   * Pure: the module calls it with its own numbers; nothing of it leaves the page.
+   */
+  function indication(o) {
+    if (!o || !o.camera) return null;
+    var st = o.state;
+    var look = st === "looking" && o.atBot ? "me" : st === "present" || st === "looking" ? "here" : "watching";
+    var listening = !!o.listening, paused = !!o.paused && !listening;
+    var blocked = null;
+    if (o.speakOn && !listening) {
+      if (o.voice === false) blocked = "voice";
+      else if (o.others) blocked = "others";
+      else if (o.busy) blocked = "busy";
+      else if (o.coolLeft > 0) blocked = "cool";
+    }
+    var armMs = o.armMs > 0 ? o.armMs : 600, held = Math.max(0, +o.held || 0);
+    var ring = null, arm = 0, armLeft = 0;
+    if (!listening && !paused) {
+      if (o.speakOn && !blocked && look === "me" && (held > 0 || o.armed)) {
+        arm = o.armed ? 1 : clamp(held / armMs, 0, 1);
+        armLeft = o.armed ? 0 : Math.max(0, Math.round(armMs - held));
+        ring = o.armed ? "ready" : "arming";
+      } else if (look === "me") ring = "noticed";
+    }
+    var caption = listening ? "listening" : paused ? "paused" : null;
+    var word = listening ? "Listening" : paused ? "Paused" : LOOK_TEXT[look];
+    return { look: look, ring: ring, arm: Math.round(arm * 100) / 100, armLeft: armLeft, caption: caption, blocked: blocked, word: word };
+  }
+  /** The hint on the pill (hover / tap): what look and speak is doing, or why it waits. Never more than a line. */
+  function speakHint(ind, speakOn) {
+    if (!speakOn) return "Look and speak is off";
+    if (!ind) return "";
+    if (ind.caption === "listening") return "Look and speak: listening";
+    if (ind.blocked) return "Look and speak waits: " + BLOCK_TEXT[ind.blocked];
+    if (ind.ring === "arming" || ind.ring === "ready") return "Look and speak: keep looking and talk";
+    return "Look and speak: look at me and talk";
+  }
+
   return {
     T: T, GEO: GEO, TOL: TOL, SOUND_RANK: SOUND_RANK,
     poseOf: poseOf, matrixOf: matrixOf, summarize: summarize, where: where, aim: aim, classify: classify, gazeFor: gazeFor, pickPrimary: pickPrimary,
     createTracker: createTracker, createSpeakGate: createSpeakGate, createReplyPause: createReplyPause, createHolder: createHolder,
     rate: rate, normPrefs: normPrefs,
     camLabel: camLabel, cameraKind: cameraKind, shortCam: shortCam, normCamChoice: normCamChoice, rankCameras: rankCameras, pickCamera: pickCamera,
+    indication: indication, speakHint: speakHint, LOOK_TEXT: LOOK_TEXT, CAPTION_TEXT: CAPTION_TEXT, BLOCK_TEXT: BLOCK_TEXT,
   };
 });

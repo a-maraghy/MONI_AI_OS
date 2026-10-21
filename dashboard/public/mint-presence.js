@@ -38,6 +38,13 @@
  *   MintPresence.look()          look and speak's checklist, numbers only ("Show what it sees" in Settings)
  *   MintPresence.release(why)    let go of the camera now
  *   MintPresence.diag()          counts only (frames, fps, ms per frame, opened, released, why)
+ *   MintPresence.indication()    what the page shows now (MintPresenceLogic.indication; null while closed)
+ *
+ * Indications (2026-10-21, mockups/eye-contact/indicators): the pill says what it sees ("Watching" / "You're
+ * here" / "Looking at me", "Listening", "Paused") and, on hover or a tap, why look and speak waits (voice off,
+ * busy, cool-down, someone else in view); hooks.ind(indication) hands the same record to mint-presence-bind.js,
+ * which draws the ring on the bot (noticed / the 0.6 s hold filling / ready) and the caption under it. All of it
+ * is drawn from this module's own state; none of it is sent anywhere.
  */
 (function () {
   var Logic = window.MintPresenceLogic;
@@ -49,7 +56,7 @@
 
   var cfg = { prefs: Logic.normPrefs(null), host: {}, bot: null, camera: null, show: false };
   var USED = "mint-presence-cam-used";
-  var H_ = { speak: null, busy: null, speaking: null, pause: null, off: null, ready: null };
+  var H_ = { speak: null, busy: null, speaking: null, pause: null, off: null, ready: null, listening: null, ind: null };
   var turns = { tried: 0, opened: 0, refused: 0, last: null }; // look and speak's starts (for "Show what it sees")
   var subs = [];
   var C = { stream: null, video: null, worker: null, ready: false, inflight: false, timer: 0, fps: 0, opening: false, denied: false, lostAt: 0, why: "off", dev: null, note: "", failed: [], gen: 0 };
@@ -70,24 +77,66 @@
   }
 
   /* ---------------------------------------------------------------- the indicator */
-  var pill = null;
+  var pill = null, openT = 0;
   function indicator(on) {
     if (on && !pill) {
       pill = document.createElement("div");
       pill.className = "mp-cam";
       pill.id = "mp-cam";
       pill.setAttribute("role", "status");
-      pill.innerHTML = '<span class="mp-dot" aria-hidden="true"></span><span class="mp-t">Camera on · eye contact</span><button type="button" class="mp-off" aria-label="Switch camera presence off">Off</button>';
+      pill.setAttribute("aria-describedby", "mp-why");
+      // the state word, the camera, a quiet "i" while look and speak waits, Off; the hint under it (hover / focus / a tap)
+      pill.innerHTML = '<span class="mp-dot" aria-hidden="true"></span><span class="mp-s"></span><span class="mp-t">Camera on · eye contact</span>' +
+        '<span class="mp-i" aria-hidden="true">i</span><button type="button" class="mp-off" aria-label="Switch camera presence off">Off</button>' +
+        '<span class="mp-why" id="mp-why" role="tooltip"><span class="mp-why-s"></span><span class="mp-why-c"></span></span>';
       pill.querySelector(".mp-off").addEventListener("click", function () { release("switched off"); call(H_.off); });
+      // A tap (touch, or a click in the app) opens the hint for a few seconds; another closes it.
+      pill.addEventListener("click", function (e) {
+        if (e.target.closest && e.target.closest(".mp-off")) return;
+        clearTimeout(openT);
+        var o = !pill.classList.contains("mp-open");
+        pill.classList.toggle("mp-open", o);
+        if (o) openT = setTimeout(function () { if (pill) pill.classList.remove("mp-open"); }, 6000);
+      });
       (document.body || document.documentElement).appendChild(pill);
-    } else if (!on && pill) { pill.remove(); pill = null; }
+    } else if (!on && pill) { pill.remove(); pill = null; clearTimeout(openT); }
     if (pill) {
       var name = C.dev && Logic.shortCam(C.dev.label);
-      pill.querySelector(".mp-t").textContent = (name ? "Camera on · " + name : "Camera on · eye contact") + (cfg.prefs.speak && !voiceReady() ? " · look and speak: voice is off" : "");
-      pill.title = (C.dev && C.dev.label ? "Camera: " + Logic.camLabel(C.dev.label) + (C.note ? " (" + C.note + ")" : "") + ". " : "") +
-        "The camera only tells MINT AI whether you are here and looking. Nothing leaves this computer.";
+      var ind = curInd;
+      pill.querySelector(".mp-t").textContent = name ? "Camera on · " + name : "Camera on · eye contact";
+      pill.querySelector(".mp-s").textContent = ind ? ind.word : "Watching";
+      pill.setAttribute("data-look", ind ? ind.look : "watching");
+      pill.setAttribute("data-cap", (ind && ind.caption) || "");
+      pill.classList.toggle("mp-blocked", !!(ind && ind.blocked));
+      pill.querySelector(".mp-why-s").textContent = Logic.speakHint(ind, !!cfg.prefs.speak);
+      pill.querySelector(".mp-why-c").textContent = (C.dev && C.dev.label ? "Camera: " + Logic.camLabel(C.dev.label) + (C.note ? " (" + C.note + ")" : "") + ". " : "") +
+        "Nothing leaves this computer.";
     }
     document.documentElement.classList.toggle("mp-cam-on", !!on);
+  }
+
+  /* ---------------------------------------------------------------- the indications (2026-10-21) */
+  var curInd = null, indSig = "null", lastS = null, heardAt = 0, indT = 0;
+  function listeningNow() {
+    if (!heardAt) return false;
+    var l = H_.listening ? !!call(H_.listening) : performance.now() - heardAt < 8000;
+    if (!l || performance.now() - heardAt > 60000) heardAt = 0;
+    return !!heardAt;
+  }
+  function refreshInd() {
+    var ind = null;
+    if (C.stream) {
+      var g = gate.status(performance.now()), s = lastS || {};
+      ind = Logic.indication({
+        camera: true, state: pub.state, atBot: !!s.atBot, speakOn: !!cfg.prefs.speak, voice: voiceReady(), busy: !!call(H_.busy),
+        others: s.others || 0, coolLeft: g.coolLeft, held: g.held, armMs: g.armMs, armed: g.armed, paused: rp.paused(), listening: listeningNow(),
+      });
+    }
+    var sig = JSON.stringify(ind);
+    if (sig === indSig) return;
+    indSig = sig; curInd = ind;
+    if (pill) indicator(true);
+    call(H_.ind, ind);
   }
 
   /** Can look and speak start a voice turn here? (No hook: assume it can.) Voice off -> it says so instead of nothing. */
@@ -175,6 +224,8 @@
     C.video = v;
     indicator(true);
     setPub(pub.state, pub.gaze, true);
+    clearInterval(indT); indT = setInterval(refreshInd, 200); // busy / listening / cool-down move between frames
+    refreshInd();
     startWorker();
     loop();
   }
@@ -221,6 +272,7 @@
   function frame(faces, ms) {
     diag.frames++; diag.ms = ms; if (faces.length) diag.faces++;
     var s = tracker.push(faces, performance.now());
+    lastS = s;
     gate.vision(s, performance.now());
     var r = rp.feed(s.turnedAwayMs, s.state === "looking", !!call(H_.speaking));
     if (r) call(H_.pause, r === "pause");
@@ -228,6 +280,7 @@
     var was = pub.state;
     setPub(s.state, s.gaze, true);
     if (was !== s.state) { var f = want().fps; if (f && f !== C.fps) C.fps = f; }
+    refreshInd();
   }
   function release(why) {
     clearTimeout(C.timer);
@@ -241,8 +294,10 @@
     micOff();
     var r = rp.reset(); if (r) call(H_.pause, false);
     tracker.reset();
+    lastS = null; heardAt = 0; clearInterval(indT); indT = 0;
     indicator(false);
     setPub(null, null, false);
+    refreshInd();
   }
 
   /* ---------------------------------------------------------------- look and speak: the level meter */
@@ -280,7 +335,7 @@
       if (cfg.show && !cfg.prefs.speak) { turns.last = { t: Date.now(), ok: null }; return; } // Settings' readout: shown, not started
       micOff(); // the voice turn opens its own microphone
       var r = voiceReady() ? call(H_.speak) : false;
-      if (r === false) turns.refused++; else turns.opened++;
+      if (r === false) turns.refused++; else { turns.opened++; heardAt = performance.now(); refreshInd(); }
       turns.last = { t: Date.now(), ok: r !== false };
     }
   }
@@ -317,12 +372,13 @@
         if (JSON.stringify(c) !== JSON.stringify(cfg.camera)) { cfg.camera = c; reopen("camera changed"); return; }
       }
       apply();
-      if (C.stream) indicator(true); // the pill's words follow the switches
+      if (C.stream) { indicator(true); refreshInd(); } // the pill's words follow the switches
     },
     on: function (fn) { if (typeof fn === "function") subs.push(fn); },
     snapshot: function () { return { state: pub.state, gaze: pub.gaze, camera: pub.camera, why: [C.why, C.stream ? C.note : ""].filter(Boolean).join("; ") }; },
     device: function () { return C.stream && C.dev ? { label: Logic.camLabel(C.dev.label), name: Logic.shortCam(C.dev.label), how: C.dev.how, note: C.note } : null; },
-    hooks: function (h) { Object.keys(H_).forEach(function (k) { if (h && typeof h[k] === "function") H_[k] = h[k]; }); indicator(!!C.stream); },
+    hooks: function (h) { Object.keys(H_).forEach(function (k) { if (h && typeof h[k] === "function") H_[k] = h[k]; }); indicator(!!C.stream); indSig = ""; refreshInd(); },
+    indication: function () { return curInd ? JSON.parse(JSON.stringify(curInd)) : null; },
     look: function () {
       var g = gate.status(performance.now());
       return Object.assign(g, { camera: !!C.stream, why: C.why, mic: !!mic.stream, speakOn: !!cfg.prefs.speak, voice: voiceReady(), busy: !!call(H_.busy), turns: Object.assign({}, turns, { last: turns.last && Object.assign({}, turns.last) }) });
