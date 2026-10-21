@@ -68,7 +68,7 @@ const B = require(path.join(ROOT, "public", "mint-core-bot.js"));
   check("the z's rise on the head's left (clear of the cap's antenna and brim)", Array.from({ length: 30 }, (_, i) => B.zDot(i, 1.7, [0, 0, 0, 0])[0]).every((x) => x < -0.8));
 
   section("reactions");
-  check("four reactions with their lengths: surprise 0.9 s, grin 1.6 s, nod 0.9 s, wake 0.6 s", JSON.stringify(B.REACT) === JSON.stringify({ surprise: 0.9, grin: 1.6, nod: 0.9, wake: 0.6 }));
+  check("five reactions with their lengths: surprise 0.9 s, grin 1.6 s, nod 0.9 s, wake 0.6 s, shake 0.8 s (a voice not recognised)", JSON.stringify(B.REACT) === JSON.stringify({ surprise: 0.9, grin: 1.6, nod: 0.9, wake: 0.6, shake: 0.8 }));
   check("surprise shows wide eyes over any state (going offline: then the x x)", B.pickFace("idle", true, "surprise", 0).face === "listen" && B.pickFace("idle", true, "surprise", 0).state === "error" && B.pickFace("idle", true, "", 0).face === "err");
   check("grin: the grin in the ready colour while idle or speaking; not over thinking or needs-you", B.pickFace("idle", false, "grin", 0).face === "grin" && B.pickFace("idle", false, "grin", 0).state === "ready" && B.pickFace("speaking", false, "grin", 0).face === "grin" && B.pickFace("thinking", false, "grin", 0).face === "focus" && B.pickFace("needs", false, "grin", 0).face === "pupils");
   check("nod: motion only (the face stays)", B.pickFace("idle", false, "nod", 0).face === "base");
@@ -271,6 +271,36 @@ const B = require(path.join(ROOT, "public", "mint-core-bot.js"));
           return out;
         });
         check(theme + ": grin (a job done) then back; a nod (approved) keeps the face; going offline: surprise, then the x x; unknown reactions refused", re.grin === "grin:grin" && re.after === "base:" && re.nod === "nod:base" && re.nodAfter === "" && re.surprise === "listen:surprise" && re.offline === "err" && re.bad === false, JSON.stringify(re));
+        // look and speak on the head itself (2026-10-21, core.indicate): the edge fills, wide eyes + a nod, listening, paused;
+        // a headshake for a voice not recognised; the session heads never show it
+        const li = await page.evaluate(async () => {
+          const k = window.__mintCC.core, w = (ms) => new Promise((r) => setTimeout(r, ms)), out = {};
+          k.setState("idle"); k.poke();
+          k.indicate({ phase: "arming", arm: 0.2, armMs: 480 }); await w(60); out.a1 = k.S.ind.arm; await w(250); out.a2 = k.S.ind.arm;
+          k.indicate({ phase: "arming", arm: 0.25, armMs: 400 }); out.same = k.S.ind.arm >= out.a2 - 0.05; // the same hold keeps filling
+          await w(400); out.a3 = k.S.ind.arm;
+          k.indicate({ phase: "ready" }); await w(120); out.ready = k._anim().face + ":" + k.S.rk; out.k = k.S.ind.k;
+          await w(900);
+          k.setState("listening"); k.indicate({ phase: "listening" }); await w(300); out.lis = k.S.ind.phase + ":" + k._anim().face;
+          k.setState("speaking"); k.indicate({ phase: "paused" }); await w(400); out.pz = k._anim().face + ":" + k.S.amp.toFixed(2);
+          k.indicate(null); k.setState("idle"); await w(300); out.off = k.S.ind === null && k._anim().face;
+          k.shake(); await w(100); out.shake = k.S.rk; await w(900); out.shook = k.S.rk;
+          k.indicate({ phase: "bogus" }); out.bogus = k.S.ind;
+          k.draw(); out.drew = true;
+          return out;
+        });
+        check(theme + ": look and speak on the head: arming fills by itself over the hold (and a re-sent hold keeps filling), ready = all of it, wide eyes and a nod", li.a1 < li.a2 && li.a2 < li.a3 && li.a3 === 1 && li.same && li.ready === "listen:nod" && li.k > 0.5, JSON.stringify(li));
+        check(theme + ": listening shows the listening face; paused: eyes on you (pupils) with no voice level; null clears it; a headshake; bad phases ignored; it draws", li.lis === "listening:listen" && /^pupils:0\.0/.test(li.pz) && li.off === "base" && li.shake === "shake" && li.shook === "" && li.bogus === null && li.drew, JSON.stringify(li));
+        const lst = await page.evaluate(async () => {
+          const k = window.__mintCC.core, w = (ms) => new Promise((r) => setTimeout(r, ms)), out = {};
+          k.S.still = true; k.stop(); k.resetStats(); k.setState("idle");
+          k.indicate({ phase: "arming", arm: 0.4, armMs: 400 }); await w(300); out.arm = k.S.ind.arm;
+          k.indicate({ phase: "ready" }); out.nod = k.S.rk; out.face = k._anim().face; out.shake = k.shake();
+          out.frames = k.S.frames.length; out.running = k.S.running;
+          k.indicate(null); k.S.still = false;
+          return out;
+        });
+        check(theme + ": still frames: arming is drawn where the hold is (no fill running), ready shows wide eyes with no nod, no loop", lst.arm === 0.4 && lst.nod === "" && lst.face === "listen" && lst.shake === false && !lst.running, JSON.stringify(lst));
         // the sessions: a session that starts waiting gets a glance; one that finishes, a glance and a grin
         const gz = await page.evaluate(async () => {
           const k = window.__mintCC.core, O = window.__mintCC.orbit, w = (ms) => new Promise((r) => setTimeout(r, ms)), out = {};

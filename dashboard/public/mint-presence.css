@@ -21,6 +21,10 @@ html.dk-comp-out .mp-cam .mp-t, html.dk-comp-out .mp-cam .mp-s { display: none; 
 
 /* The pill's state word (2026-10-21): Watching / You're here / Looking at me / Listening / Paused; the camera after it, quieter. */
 .mp-cam .mp-s { white-space: nowrap; font-weight: 700; }
+/* a short note (a voice not recognised): shown in every layout, Companion's narrow pill too, in the warning tone */
+html.dk-comp-out .mp-cam.mp-noted .mp-s { display: inline; }
+.mp-cam.mp-noted .mp-s { color: #e9a23b; }
+html[data-theme="light"] .mp-cam.mp-noted .mp-s { color: #a35f00; }
 .mp-cam .mp-t { font-weight: 500; opacity: .78; }
 html.cc-desk .mp-cam .mp-t { max-width: 130px; }
 .mp-cam[data-look="me"] .mp-dot { box-shadow: 0 0 0 3px rgba(61, 220, 151, .35), 0 0 8px 2px rgba(61, 220, 151, .55); }
@@ -40,45 +44,7 @@ html.cc-desk .mp-cam .mp-why { bottom: auto; top: calc(100% + 5px); font-size: 1
 html.cc-desk[data-theme="light"] .mp-cam .mp-why { background: rgba(250, 251, 253, .98); color: #141824; border-color: rgba(20, 24, 36, .14); }
 html.dk-comp-out .mp-cam .mp-why { max-width: 230px; }
 
-/* The ring on the bot and the caption under it (mint-presence-bind.js): drawn only -- no clicks, no blur behind them.
-   Each colour sits on a backplate of its own (core E's idea: dark under light ink, light under dark), so it reads on any wallpaper. */
-.mp-ind { position: fixed; z-index: 5; pointer-events: none; --mp-acc: #3ddc97; --mp-plate: rgba(8, 11, 18, .55); --mp-cap-bg: rgba(8, 11, 18, .84); --mp-cap-tx: #eef1ff; }
-html[data-theme="light"] .mp-ind { --mp-acc: #0e9a68; --mp-plate: rgba(250, 251, 253, .62); --mp-cap-bg: rgba(250, 251, 253, .92); --mp-cap-tx: #141824; }
-@media (prefers-color-scheme: light) { html:not([data-theme]) .mp-ind { --mp-acc: #0e9a68; --mp-plate: rgba(250, 251, 253, .62); --mp-cap-bg: rgba(250, 251, 253, .92); --mp-cap-tx: #141824; } }
-/* Just over the core (1) and under everything that opens over it (buttons 9, panel 11, sheets, dialogs); the caption over
-   the core's own caption line (6). Out on the desk: over the companion bot's window (40). */
-.mp-caption { z-index: 7; }
-html.dk-comp-out .mp-ind { z-index: 45; }
-.mp-ring[hidden] { display: none; }
-.mp-ring svg { display: block; width: 100%; height: 100%; overflow: visible; }
-.mp-ring circle { fill: none; }
-.mp-ring .mp-rb { stroke: var(--mp-plate); stroke-width: 9; }
-.mp-ring .mp-rt { stroke: var(--mp-acc); stroke-width: 2.5; opacity: .3; }
-.mp-ring .mp-ra { stroke: var(--mp-acc); stroke-width: 4; stroke-linecap: round; stroke-dasharray: 100; stroke-dashoffset: 100; }
-/* noticed: you look at it -- a soft glow round the head */
-.mp-ring.mp-r-noticed .mp-rt { opacity: .62; stroke-width: 3; }
-.mp-ring.mp-r-noticed svg { filter: drop-shadow(0 0 5px rgba(61, 220, 151, .45)); }
-.mp-ring.mp-r-noticed, .mp-ring.mp-r-arming { animation: mp-in .3s ease-out; }
-/* arming: the arc fills over the 0.6 s hold; ready: full -- it listens for your voice */
-.mp-ring.mp-r-ready .mp-rt { opacity: .5; }
-.mp-ring.mp-r-ready svg { filter: drop-shadow(0 0 6px rgba(61, 220, 151, .6)); }
-/* reduced motion / hold still: nothing moves -- arming is a still dashed ring, ready a solid one */
-.mp-ring.mp-r-still { animation: none; }
-.mp-ring.mp-r-still.mp-r-arming .mp-ra { stroke-dasharray: 5 4; stroke-linecap: butt; }
-@keyframes mp-in { from { opacity: 0; } to { opacity: 1; } }
-.mp-caption { left: 0; top: 0; max-width: calc(100vw - 8px); padding: 4px 10px; border-radius: 11px; background: var(--mp-cap-bg); color: var(--mp-cap-tx);
-  font: 600 12px/1.3 var(--brand-font, system-ui, sans-serif); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; box-shadow: 0 3px 12px rgba(0, 0, 0, .22);
-  opacity: 0; transition: opacity .25s ease; } /* (never visibility: hidden -- the live region stays in the accessibility tree) */
-.mp-caption:not(.on) { padding: 0; box-shadow: none; }
-.mp-caption.on { opacity: 1; }
-.mp-caption.mp-c-listening::before, .mp-caption.mp-c-paused::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 50%; background: var(--mp-acc); vertical-align: 0; }
-.mp-caption.mp-c-paused::before { background: #e9a23b; border-radius: 1px; width: 6px; }
-html.cc-desk .mp-caption { font-size: 11.5px; }
-html.dk-comp-out .mp-caption { font-size: 11px; padding: 3px 8px; }
-html.mp-capt-on .dk-comp-hint { opacity: 0 !important; }
-@media (prefers-reduced-motion: reduce) { .mp-ring { animation: none !important; } .mp-caption, .mp-caption.on { transition: none; } }
-html.dk-still .mp-ring { animation: none !important; }
-html.dk-still .mp-caption, html.dk-still .mp-caption.on { transition: none; }
+/* (2026-10-21: the ring and the caption on the bot are gone -- core E shows look and speak on its own head, core.indicate) */
 
 /* Back at the desk: one summary of what was held. */
 .mp-sum { position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%); z-index: 91; max-width: min(520px, calc(100vw - 32px)); box-sizing: border-box;
@@ -121,6 +87,3 @@ html.cc-desk.mp-cam-on.mp-away .dk-glance:not(:hover):not(:focus-within) { opaci
 .mp-set .mp-checks li.na .mk { color: var(--muted, #888); }
 .mp-set .mp-checks .v { color: var(--muted, #888); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 @media (max-width: 560px) { .mp-set .mp-checks li { grid-template-columns: 18px 1fr; } .mp-set .mp-checks .v { grid-column: 2; } }
-/* only the arc's fill moves (its transition is set by mint-presence-bind.js); nothing else of the ring transitions, and with reduced motion / hold still not even that */
-.mp-ring svg, .mp-ring .mp-rb, .mp-ring .mp-rt { transition: none !important; }
-.mp-ring.mp-r-still .mp-ra { transition: none !important; }

@@ -548,6 +548,13 @@
     vpShown = { badge: b, state: S.online ? c.state : "offline", at: Date.now(), until: Date.now() + ML.VP_SHOW_MS };
     var live = $("cc-vp-live");
     if (live) live.textContent = b.label + ".";
+    // a voice turn dropped because the voice was not recognised: the bot shakes its head, and the camera's pill says
+    // it too (it is what shows in Companion mode) -- the check itself stays
+    if (m.kind === "other" && m.gated) {
+      [Orb.core, window.MintDesktop && window.MintDesktop.companion ? (function () { try { var c = window.MintDesktop.companion(); return c && c.debug && c.debug.core ? c.debug.core() : null; } catch (e) { return null; } })() : null]
+        .forEach(function (k) { if (k && k.shake) try { k.shake(); } catch (e) { /* never stops the page */ } });
+      if (window.MintPresence && window.MintPresence.note) window.MintPresence.note(b.label, ML.VP_SHOW_MS);
+    }
     clearTimeout(vpTimer);
     vpTimer = setTimeout(function () { vpShown = null; paintState(); }, ML.VP_SHOW_MS + 20);
     setTimeout(function () { if (vpShown) paintState(); }, ML.VP_MIN_MS + 20); // a state change meanwhile ends it then

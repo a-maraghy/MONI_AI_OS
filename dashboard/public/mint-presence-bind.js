@@ -17,12 +17,10 @@
  *     summary is shown (and one sound played), and the "while you were away" catch-up is asked for;
  *   - look and speak (its own switch): a voice turn on the hold-to-talk path (window.__mintLive.lookTalk);
  *     a reply playing pauses after ~1.5 s looking away, and goes on when you look back;
- *   - the indications on the bot (2026-10-21, mockups/eye-contact/indicators): a soft ring round the bot's head
- *     when you look at it, the ring filling over look and speak's 0.6 s hold (then full: it listens for your
- *     voice), and a caption under it -- "Listening — you looked and spoke" / "Paused — look back to continue"
- *     (aria-live polite). On the core, or on the companion bot when it is out on the desk. Both are drawn only:
- *     pointer-events none, never a hit region, never a glass surface (no blur behind them); reduced motion /
- *     hold still: a still ring, nothing animated. From the camera module's own state (hooks.ind); nothing sent.
+ *   - the indications on the bot (2026-10-21, option A of mockups/eye-contact/indicators-v2): no ring, no caption --
+ *     core E's own head shows look and speak (core.indicate): its front edge's nodes fill over the 0.6 s hold, wide
+ *     eyes and a nod when ready, the edge pulsing with your voice while listening, a slow blink while a reply is
+ *     paused; on the core and the companion bot. From the camera module's own state (hooks.ind); nothing sent.
  */
 (function () {
   var MP = window.MintPresence, Logic = window.MintPresenceLogic;
@@ -143,103 +141,35 @@
     if (sum.sound && window.MintSound && window.MintSound.play) window.MintSound.play(sum.sound, { role: "core" });
   }
 
-  /* ---------------------------------------------------------------- the ring and the caption on the bot */
-  var NS = "http://www.w3.org/2000/svg";
-  var ringEl = null, capEl = null, capTx = null, cur = null, raf = 0, armSig = "";
-  function build() {
-    if (ringEl) return;
-    ringEl = document.createElement("div");
-    ringEl.id = "mp-ring"; ringEl.className = "mp-ind mp-ring"; ringEl.setAttribute("aria-hidden", "true"); ringEl.hidden = true;
-    var svg = document.createElementNS(NS, "svg");
-    svg.setAttribute("viewBox", "0 0 100 100");
-    // the backplate (a soft band of the plate's colour, so the ring reads on any wallpaper), the track, the arc
-    [["mp-rb", null], ["mp-rt", null], ["mp-ra", "100"]].forEach(function (a) {
-      var c = document.createElementNS(NS, "circle");
-      c.setAttribute("class", a[0]); c.setAttribute("cx", "50"); c.setAttribute("cy", "50"); c.setAttribute("r", "45");
-      if (a[1]) { c.setAttribute("pathLength", a[1]); c.setAttribute("transform", "rotate(-90 50 50)"); }
-      svg.appendChild(c);
-    });
-    ringEl.appendChild(svg);
-    capEl = document.createElement("div");
-    capEl.id = "mp-caption"; capEl.className = "mp-ind mp-caption";
-    capEl.setAttribute("role", "status"); capEl.setAttribute("aria-live", "polite"); capEl.setAttribute("aria-atomic", "true");
-    capTx = document.createElement("span");
-    capEl.appendChild(capTx);
-    document.body.appendChild(ringEl); document.body.appendChild(capEl);
+  /* ---------------------------------------------------------------- the indications, on the bot itself */
+  /*
+   * 2026-10-21 (the user: "no need for a ring"): no shape is added and no caption. Core E shows it on its own head
+   * (core.indicate): the front face's edge nodes fill clockwise as you hold your look, its eyes go wide and it nods
+   * when it is ready, the edge pulses with your voice while it listens, and blinks slowly while a reply is paused.
+   * On the core and on the companion bot; still frames in reduced motion / hold still (the renderer's own rule).
+   * Other cores (A-D) show nothing here: the pill says it.
+   */
+  var cur = null;
+  function phaseOf(ind) {
+    if (!ind) return null;
+    if (ind.caption === "listening" || ind.caption === "paused") return ind.caption;
+    if (ind.ring === "arming" || ind.ring === "ready") return ind.ring;
+    return null; // "noticed": the eyes already meet yours
   }
-  function still() {
-    return html.classList.contains("dk-still") || !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
-  }
-  /** The bot's head on this page (CSS px): the core, or the companion bot while it is out. null: not on screen. */
-  function head() {
-    var k = null, cv = null;
-    if (html.classList.contains("dk-comp-out")) {
-      var cp = companion(); k = cp && cp.debug && cp.debug.core ? cp.debug.core() : null; cv = document.getElementById("dk-comp-cv");
-    } else {
-      var c = window.__mintCC && window.__mintCC.core; k = c; cv = c && c.canvas;
-    }
-    if (!k || !k.S || !cv || !cv.getBoundingClientRect) return null;
-    var r = cv.getBoundingClientRect();
-    if (!(r.width > 0 && r.height > 0)) return null;
-    for (var e = cv; e && e !== html; e = e.parentElement) { var cs = getComputedStyle(e); if (cs.display === "none" || cs.visibility === "hidden" || Number(cs.opacity) < 0.05) return null; }
-    var S = k.S, dpr = S.dpr || window.devicePixelRatio || 1, x, y, R;
-    if (S.concept === "E" && S.c && S.cssH) { x = r.left + S.c[0] / dpr; y = r.top + S.cssH - S.c[1] / dpr + S.R / dpr * 0.12; R = S.R / dpr * 0.57; }
-    else { x = r.left + r.width / 2; y = r.top + r.height / 2; R = Math.min(r.width, r.height) * 0.22; }
-    if (!(R > 4) || x < -R || y < -R || x > window.innerWidth + R || y > window.innerHeight + R) return null;
-    return { x: x, y: y, R: R };
-  }
-  function place() {
-    raf = 0;
-    if (!cur) return;
-    var h = head(), want = !!(cur.ring && h);
-    ringEl.hidden = !want;
-    if (want) {
-      var rr = Math.round(h.R * 1.26), d = 2 * rr;
-      ringEl.style.left = Math.round(h.x - rr) + "px"; ringEl.style.top = Math.round(h.y - rr) + "px";
-      ringEl.style.width = d + "px"; ringEl.style.height = d + "px";
-    }
-    if (cur.caption) {
-      var W = window.innerWidth, H = window.innerHeight, cw = capEl.offsetWidth || 220, ch = capEl.offsetHeight || 24, x, y;
-      if (h) {
-        var below = h.y + h.R * 1.4 + 6;
-        y = below + ch <= H - 4 ? below : Math.max(4, h.y - h.R * 1.4 - 6 - ch); // under the bot, else over it (the companion's small window)
-        x = h.x - cw / 2;
-      } else { // no bot on screen: next to the pill
-        var p = document.getElementById("mp-cam"), pr = p && p.getBoundingClientRect();
-        x = pr ? pr.left : 8; y = pr ? (pr.top > H / 2 ? pr.top - ch - 6 : pr.bottom + 6) : 8;
-      }
-      capEl.style.left = Math.round(Math.max(4, Math.min(W - cw - 4, x))) + "px";
-      capEl.style.top = Math.round(Math.max(4, Math.min(H - ch - 4, y))) + "px";
-    }
-    raf = requestAnimationFrame(place); // the bot moves (the companion walks, the core breathes, Peek slides): follow it
+  function cores() {
+    var out = [], c = window.__mintCC && window.__mintCC.core, cp = companion();
+    if (c) out.push(c);
+    try { var k = cp && cp.debug && cp.debug.core ? cp.debug.core() : null; if (k && k !== c) out.push(k); } catch (e) { /* no companion */ }
+    return out;
   }
   function draw(ind) {
-    build();
-    cur = ind && (ind.ring || ind.caption) ? ind : null;
-    var ring = cur && cur.ring, cap = cur && cur.caption;
-    ringEl.className = "mp-ind mp-ring" + (ring ? " mp-r-" + ring : "") + (still() ? " mp-r-still" : "");
-    // the hold filling: from where it is to full, linear over what is left of the 0.6 s (restarted only when it starts over)
-    var arc = ringEl.querySelector(".mp-ra");
-    if (ring === "arming" && !still()) {
-      if (armSig !== "arming" || ind.arm + 0.1 < (arc.__arm || 0)) {
-        arc.style.transition = "none"; arc.style.strokeDashoffset = String(100 * (1 - ind.arm));
-        void arc.getBoundingClientRect();
-        arc.style.transition = "stroke-dashoffset " + Math.max(60, ind.armLeft) + "ms linear";
-        arc.style.strokeDashoffset = "0";
-      }
-    } else {
-      arc.style.transition = "none";
-      // ready: full; reduced motion / hold still: a still, full (dashed) ring while it arms; otherwise empty
-      arc.style.strokeDashoffset = ring === "ready" || ring === "arming" ? "0" : "100";
-    }
-    arc.__arm = ring === "arming" ? ind.arm : 0; armSig = ring || "";
-    var txt = cap ? Logic.CAPTION_TEXT[cap] : "";
-    if (capTx.textContent !== txt) capTx.textContent = txt;
-    capEl.className = "mp-ind mp-caption" + (cap ? " on mp-c-" + cap : "");
-    html.classList.toggle("mp-capt-on", !!cap);
-    if (!cur) { ringEl.hidden = true; if (raf) cancelAnimationFrame(raf); raf = 0; return; }
-    if (!raf) place();
+    var ph = phaseOf(ind);
+    cur = ph ? { phase: ph, arm: ind.ring === "arming" ? ind.arm || 0 : 1, armMs: ind.ring === "arming" ? ind.armLeft || 0 : 0 } : null;
+    cores().forEach(function (k) { if (k && k.indicate) try { k.indicate(cur); } catch (e) { /* never stops the page */ } });
+    html.setAttribute("data-mp-ind", ph || "");
   }
+  // a core switched (or the companion came out) while a phase shows: it gets it too
+  setInterval(function () { if (cur) cores().forEach(function (k) { if (k && k.indicate && !(k.S && k.S.ind && k.S.ind.phase === cur.phase)) try { k.indicate(cur); } catch (e) { /* no */ } }); }, 500);
 
   /* ---------------------------------------------------------------- look and speak, a reply's pause */
   function live() { return window.__mintLive || null; }

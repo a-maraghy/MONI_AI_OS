@@ -343,7 +343,8 @@
       if (!n) return { label: "Recognised", tone: "ok", icon: "you" };
       return talkOnly ? { label: n + " — talk only", tone: "mid", icon: "you" } : { label: "Recognised: " + n, tone: "ok", icon: "you" };
     }
-    if (kind === "other") return { label: "Unknown voice — " + (gated ? "ignored" : "would be ignored"), tone: "bad", icon: "no" };
+    // gate on: said so as an invitation to try again (2026-10-21: the turn was dropped silently, "it did not understand")
+    if (kind === "other") return gated ? { label: "Didn't recognise your voice, try again", tone: "bad", icon: "no" } : { label: "Unknown voice — would be ignored", tone: "bad", icon: "no" };
     if (kind === "echo") return { label: "MINT AI's own voice — " + (gated ? "ignored" : "would be ignored"), tone: "bad", icon: "no" };
     if (kind === "unsure") return { label: "Not sure who's speaking" + (gated ? " — not answered" : ""), tone: "mid", icon: "q" };
     if (kind === "short") return { label: "Not sure who's speaking", tone: "mid", icon: "q" };

@@ -314,3 +314,22 @@ scenarios: speaking 0.9 s after looking (as you look), and 1.8 s after (armed fi
 | end of speech → turn sent (avg) | 1,399 ms | 875 ms | 1,387 ms | 899 ms |
 | English WER (the clip itself: 0.00–0.03) | 0.346 | 0.030 | 0.136 | 0.022 |
 | Arabic CER (the clip itself: 0.05–0.10) | 0.319 | 0.063 | 0.159 | 0.075 |
+
+## Indications on the bot itself (2026-10-21, the user's pick: option A, "no need for a ring")
+
+The thick ring round the head and the caption under it are gone (`#mp-ring`, `#mp-caption` and their CSS removed).
+Core E shows look and speak on its own head, through `core.indicate({ phase, arm, armMs })` in mint-core-bot.js
+(driven by mint-presence-bind.js from the camera module's indication, on the core and the companion bot):
+- **arming:** the front face's outer rows of grid nodes light up clockwise from the top over the 0.6 s hold (the
+  renderer fills them itself to the end of the hold), the face a little brighter;
+- **ready:** all of them, breathing softly; the eyes go wide; one nod as it arrives;
+- **listening:** the listening face; the edge pulses with your voice;
+- **paused:** the eyes on you (pupils), the edge blinking slowly; no voice level.
+Reduced motion / hold still: still frames per change (arming drawn where the hold is, no nod). Session heads and
+cores A-D never show it; the pill keeps its words (Watching / You're here / Looking at me / Listening / Paused) and
+the "i" hint. The options studied: `indicators-v2/`. Screens: `indicators/shipped/` (the old ring:
+`indicators/before-ring/`).
+
+**A voice not recognised is said on screen.** When the voiceprint gate rejects a turn as an unknown voice, the
+state pill says "Didn't recognise your voice, try again" (the polite live region reads it), the camera's pill too
+(it is what shows in Companion), and the bot shakes its head (`core.shake()`). The check itself is unchanged.

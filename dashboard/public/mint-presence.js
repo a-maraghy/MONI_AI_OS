@@ -42,6 +42,7 @@
  *   MintPresence.release(why)    let go of the camera now
  *   MintPresence.diag()          counts only (frames, fps, ms per frame, opened, released, why)
  *   MintPresence.indication()    what the page shows now (MintPresenceLogic.indication; null while closed)
+ *   MintPresence.note(text, ms)  a short note in the pill's words for a moment (a voice not recognised)
  *
  * Indications (2026-10-21, mockups/eye-contact/indicators): the pill says what it sees ("Watching" / "You're
  * here" / "Looking at me", "Listening", "Paused") and, on hover or a tap, why look and speak waits (voice off,
@@ -107,7 +108,8 @@
       var name = C.dev && Logic.shortCam(C.dev.label);
       var ind = curInd;
       pill.querySelector(".mp-t").textContent = name ? "Camera on · " + name : "Camera on · eye contact";
-      pill.querySelector(".mp-s").textContent = ind ? ind.word : "Watching";
+      pill.querySelector(".mp-s").textContent = noteNow() || (ind ? ind.word : "Watching");
+      pill.classList.toggle("mp-noted", !!noteNow());
       pill.setAttribute("data-look", ind ? ind.look : "watching");
       pill.setAttribute("data-cap", (ind && ind.caption) || "");
       pill.classList.toggle("mp-blocked", !!(ind && ind.blocked));
@@ -117,6 +119,11 @@
     }
     document.documentElement.classList.toggle("mp-cam-on", !!on);
   }
+
+  // a short note on the pill for a moment (MintPresence.note: "Didn't recognise your voice, try again"); the pill is a
+  // status region (polite), so it is read out once
+  var note = { text: "", until: 0, t: 0 };
+  function noteNow() { return note.text && performance.now() < note.until ? note.text : ""; }
 
   /* ---------------------------------------------------------------- the indications (2026-10-21) */
   var curInd = null, indSig = "null", lastS = null, heardAt = 0, indT = 0;
@@ -435,6 +442,13 @@
     look: function () {
       var g = gate.status(performance.now());
       return Object.assign(g, { camera: !!C.stream, why: C.why, mic: !!mic.stream, speakOn: !!cfg.prefs.speak, voice: voiceReady(), busy: !!call(H_.busy), turns: Object.assign({}, turns, { last: turns.last && Object.assign({}, turns.last) }) });
+    },
+    /** A short note in the pill's words for ms (default 2.6 s), then its own word again. */
+    note: function (text, ms) {
+      clearTimeout(note.t);
+      note.text = String(text || "").slice(0, 80); note.until = performance.now() + (ms || 2600);
+      if (pill) indicator(true);
+      note.t = setTimeout(function () { note.text = ""; if (pill) indicator(true); }, (ms || 2600) + 20);
     },
     release: function (why) { release(why || "released"); },
     /** Look and speak finished a turn (the voice went quiet): the gate waits its cool-down from now. */

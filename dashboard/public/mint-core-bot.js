@@ -149,7 +149,7 @@
     return q >= DOZE_QUIET_MS || (isNight(o.hour) && q >= NIGHT_QUIET_MS);
   }
   // reactions: how long each plays (s); surprise (an error / going offline), grin (a job done), nod (approved), wake
-  var REACT = { surprise: 0.9, grin: 1.6, nod: 0.9, wake: 0.6 };
+  var REACT = { surprise: 0.9, grin: 1.6, nod: 0.9, wake: 0.6, shake: 0.8 }; // shake (2026-10-21): "didn't recognise your voice"
   /**
    * The core's face and colour item: the state's (FACE_OF), unless a reaction or dozing shows over it.
    * surprise: wide eyes; grin: the grin (in the ready colour, while idle or speaking); dozing (doze > 0.65,
@@ -455,7 +455,7 @@
     "precision highp float;",
     "layout(location=0) in vec3 a_p; layout(location=1) in vec4 a_i;",
     "uniform vec2 u_res,u_c,u_home; uniform vec3 u_wire,u_st; uniform sampler2D u_wt;",
-    "uniform float u_r,u_fs,u_sc,u_yaw,u_tilt,u_form,u_dis,u_row,u_wa,u_lit,u_alpha,u_mode,u_psz,u_jsz,u_lsz,u_gsz,u_shimX,u_shimA,u_maxPt,u_snap,u_segK;",
+    "uniform float u_r,u_fs,u_sc,u_yaw,u_tilt,u_form,u_dis,u_row,u_wa,u_lit,u_alpha,u_mode,u_psz,u_jsz,u_lsz,u_gsz,u_shimX,u_shimA,u_maxPt,u_snap,u_segK,u_ind,u_arm,u_indA;",
     "out vec4 v_c; out float v_j;",
     "float wt(float f){ if(f<0.0) return 0.0; return texelFetch(u_wt,ivec2(int(f+0.5),int(u_row+0.5)),0).r; }",
     "float h1(float n){ return fract(sin(n*91.7+7.3)*43758.5453); }",
@@ -486,6 +486,15 @@
     " } else if(u_mode<2.5){ float w=wt(a_i.y); a=w*u_lit; size=u_lsz; col=u_st; }",          // the lit face
     " else if(u_mode<3.5){ float w=min(wt(a_i.y),wt(a_i.w)); a=w*u_lit*0.95; size=u_lsz*u_segK; col=u_st; }", // its lit strokes
     " else { float w=wt(a_i.y); a=w*u_lit; size=u_gsz; col=u_st; }",                         // its glow (quarter resolution)
+    // look and speak (2026-10-21): the front face's outer rows of nodes light clockwise from the top (head space, so
+    // the order holds as the head turns) as the look is held (u_arm), all of them when ready; u_indA their strength
+    " if(u_ind>0.5&&u_mode>0.5&&u_mode<1.5&&kind==0){",
+    "  float e=max(abs(p.x),abs(p.y)/0.98); float rim=smoothstep(0.7,0.86,e)*step(0.25,p.z);",
+    "  float f=fract(atan(p.x,p.y)/6.2831853+1.0);",
+    "  float on=clamp((u_arm-f)*40.0,0.0,1.0); float lead=u_arm<0.999?exp(-pow((u_arm-f)*16.0,2.0)):0.0;",
+    "  float k=rim*(on*u_indA+lead*0.9);",
+    "  a=max(a,k); col=mix(col,u_st,clamp(k*1.5,0.0,1.0)); size*=1.0+1.2*k; if(lead*rim>0.45) v_j=1.0;",
+    " }",
     " a*=vis*u_alpha;",
     " if(u_form<1.0) a*=0.4+0.6*u_form;",
     " if(u_dis>0.0) a*=1.0-u_dis*0.85;",
@@ -664,6 +673,14 @@
       }
       var a = (0.08 + 0.35 * dd * dd) * o.wa * 1.2 * (1 - w) * fade;
       if (kk === 2) { g.fillStyle = rgba(o.st, 0.6 * o.lit * fade); a = 1; }
+      if (kk === 0 && o.ind) { // look and speak: the front face's edge nodes (the shader's twin)
+        var vx = V[vi * 7], vy = V[vi * 7 + 1], ee = Math.max(Math.abs(vx), Math.abs(vy) / 0.98);
+        var rim = V[vi * 7 + 2] >= 0.25 ? sst(0.7, 0.86, ee) : 0;
+        if (rim > 0.01) {
+          var ff = ((Math.atan2(vx, vy) / 6.2831853) % 1 + 1) % 1, on = Math.max(0, Math.min(1, (o.ind.arm - ff) * 40)), ik = rim * on * o.ind.k;
+          if (ik > 0.02) { g.globalAlpha = Math.min(1, ik); g.fillStyle = rgba(o.st, 1); var isz = (0.6 + 1.7 * dd) * ps * (1 + 1.2 * ik) * 1.4; g.fillRect(P2[vi * 3] - isz / 2, P2[vi * 3 + 1] - isz / 2, isz, isz); g.fillStyle = rgba(o.wire, 1); continue; }
+        }
+      }
       if (a < 0.01) continue;
       var sh = o.shimA > 0 ? o.shimA * Math.exp(-Math.pow((V[vi * 7] - o.shimX) / 0.22, 2)) : 0;
       g.globalAlpha = Math.min(1, a + sh * 0.6);
@@ -728,6 +745,8 @@
       gzUntil: 0, gzAt: null, doze: 0, dozeT: 0, dozeChk: 0, actAt: 0, rk: "", rt: 0, rd: 0,
       // eye contact (2026-10-20, mint-presence-bind.js): the camera's presence state and where the person is
       presence: null, contact: null, lookUpUntil: 0,
+      // look and speak (2026-10-21, core.indicate): { phase, arm0, armT, armS, k } or null
+      ind: null,
     };
     var now = opts.now || function () { return Date.now(); };
     var hourOf = opts.hour || function () { return new Date().getHours(); };
@@ -854,6 +873,20 @@
       var dz = S.doze, awake = 1 - dz;
       // the core: its state's face, unless a reaction or dozing shows over it
       var fo = pickFace(S.state, S.offline, S.rk, dz);
+      // look and speak (core.indicate): the edge's strength, and the face -- wide eyes when it is ready to listen,
+      // looking at you while a reply waits for you to look back
+      var IND = S.ind;
+      if (IND) {
+        var ph = IND.phase;
+        IND.arm = ph !== "arming" ? 1 : S.still || !IND.armS ? IND.arm0 : Math.min(1, IND.arm0 + (1 - IND.arm0) * (S.t - IND.armT) / IND.armS);
+        IND.k = S.still ? { arming: 0.9, ready: 0.8, listening: 0.7, paused: 0.45 }[ph] :
+          ph === "arming" ? 0.9 : ph === "ready" ? 0.62 + 0.3 * (0.5 + 0.5 * Math.sin(S.t * 2.4)) :
+          ph === "listening" ? 0.45 + 0.55 * Math.min(1, S.amp * 1.7) : 0.22 + 0.3 * Math.max(0, Math.sin(S.t * 2.2));
+        if (!S.offline && S.rk !== "grin" && S.rk !== "surprise" && dz < 0.3) {
+          if (ph === "ready" && S.state === "idle") fo = { face: "listen", state: "ready" };
+          else if (ph === "paused") fo = { face: "pupils", state: fo.state };
+        }
+      }
       var an = coreAnim;
       an.set(fo.face, fo.state);
       an.lid = S.rk === "surprise" ? 1 : 1 - 0.8 * sstep(0, 0.6, dz); // drowsy: the lids come down before the sleep face
@@ -887,23 +920,24 @@
       var tt = S.t;
       h.head = S.head; h.detail = detailFor(rc); h.cssR = rc;
       // a reaction's motion: a hop (grin: two, waking: one), a start (surprise), a nod; never in a still frame
-      var rp = S.rk && !S.still ? Math.min(1, S.rt / S.rd) : 0, bob = 0, nod = 0, pop = 0;
+      var rp = S.rk && !S.still ? Math.min(1, S.rt / S.rd) : 0, bob = 0, nod = 0, pop = 0, shake = 0;
       if (rp) {
         if (S.rk === "grin") bob = Math.abs(Math.sin(rp * 2 * PI)) * (1 - rp) * 0.09;
         else if (S.rk === "wake") bob = Math.sin(rp * PI) * 0.06;
         else if (S.rk === "surprise") { bob = Math.sin(Math.min(1, rp * 2.5) * PI) * 0.05; pop = 0.04 * Math.sin(Math.min(1, rp * 2) * PI); }
         else if (S.rk === "nod") nod = 0.22 * Math.sin(rp * 4 * PI) * (1 - rp);
+        else if (S.rk === "shake") shake = 0.3 * Math.sin(rp * 6 * PI) * (1 - rp);
       }
       h.cx = cc[0]; h.cy = cc[1] - bob * rc; h.r = rc;
       var lk = S.lookK * (1 - W.deleg);
-      h.yaw = cfg.yaw * (1 - 0.5 * W.deleg) + M * awake * (0.15 * Math.sin(tt * 0.37 + 0.6) + 0.05 * gl_ * (an.glx || 0) / 1.6) + W.deleg * ddx * 0.7 + lk * 0.14 * an.gx;
+      h.yaw = cfg.yaw * (1 - 0.5 * W.deleg) + M * awake * (0.15 * Math.sin(tt * 0.37 + 0.6) + 0.05 * gl_ * (an.glx || 0) / 1.6) + W.deleg * ddx * 0.7 + lk * 0.14 * an.gx + shake;
       h.tilt = (cfg.tilt || 0.1) + M * 0.03 * awake * Math.sin(tt * 0.29) + W.deleg * ddy * 0.35 + lk * 0.1 * an.gy + 0.12 * dz + nod;
       h.sc = 1 + M * (0.014 * awake * Math.sin(tt * 1.25) + 0.03 * dz * Math.sin(tt * 0.55)) + pop; // dozing: slow, deeper breaths
       var c = an.color(pal);
       h.st[0] = c[0]; h.st[1] = c[1]; h.st[2] = c[2];
       var bt = beat(tt);
       h.wa = pal.wireK * (S.light > 0.5 ? 1.1 : 1) * (DESK ? 1.6 : 1); h.alpha = 1;
-      h.lit = (1 + 0.3 * W.listen * S.amp) * (1 + W.need * (0.3 * bt - 0.12)) * (1 - 0.15 * W.err) * (1 - 0.3 * dz);
+      h.lit = (IND && IND.phase === "arming" ? 1 + 0.3 * IND.arm : 1) * (1 + 0.3 * W.listen * S.amp) * (1 + W.need * (0.3 * bt - 0.12)) * (1 - 0.15 * W.err) * (1 - 0.3 * dz);
       h.glowK = (1 + 0.8 * W.listen * S.amp + 0.25 * W.speak * S.amp) * (1 + W.need * (0.5 * bt - 0.1)) * (1 - 0.4 * dz);
       // the desktop: the backglow is for a dark page; over a wallpaper it would wash out the dark backplate (and the lines)
       h.rimK = GLOW ? ((1 - S.light) * 0.32 + S.light * 0.1) * (DESK ? 0.2 : 1) : 0;
@@ -1002,7 +1036,7 @@
         }
         gl.useProgram(progW.p); u = progW.u;
         gl.uniform2f(u.u_res, fboW, fboH); gl.uniform1i(u.u_wt, 0); gl.uniform1f(u.u_maxPt, maxPt);
-        gl.uniform1f(u.u_pt, 1); gl.uniform1f(u.u_soft, 1); gl.uniform1f(u.u_mode, 4);
+        gl.uniform1f(u.u_pt, 1); gl.uniform1f(u.u_soft, 1); gl.uniform1f(u.u_mode, 4); if (u.u_ind) gl.uniform1f(u.u_ind, 0);
         for (i = 0; i < nHeads; i++) {
           h = POOL[i]; o = geoFor(h.head, h.detail);
           if (h.cssR < SMALL) continue; // small heads: no blurred face glow (it would swallow the pixels)
@@ -1058,6 +1092,8 @@
       for (i = nHeads - 1; i >= 0; i--) { // the sessions first, the core on top
         h = POOL[i]; o = geoFor(h.head, h.detail);
         setHeadU(u, h, 1, dpr, home);
+        var hInd = i === 0 ? S.ind : null; // look and speak: the core (and the companion bot, which is a core) only, never a session's head
+        if (u.u_ind) { gl.uniform1f(u.u_ind, hInd ? 1 : 0); gl.uniform1f(u.u_arm, hInd ? hInd.arm : 0); gl.uniform1f(u.u_indA, hInd ? hInd.k : 0); }
         gl.bindVertexArray(o.vao);
         gl.uniform1f(u.u_pt, 0); gl.uniform1f(u.u_mode, 0); gl.uniform1f(u.u_wa, h.wa * lineGain);
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, o.ibL); gl.drawElements(gl.LINES, o.geo.lines.length, gl.UNSIGNED_SHORT, 0);
@@ -1100,6 +1136,7 @@
         o2.wire = pal.wire; o2.st = h.st; o2.wa = h.wa; o2.lit = h.lit; o2.alpha = h.alpha; o2.w = W8; o2.off = h.row * NF; o2.light = S.light > 0.5;
         o2.rimA = pal.rim[0]; o2.rimB = pal.rim[1]; o2.rimL = pal.rimL; o2.rimK = h.rimK * 0.8; o2.stK = h.stK * 1.2; o2.form = h.form; o2.dis = h.dis;
         o2.homeX = home[0]; o2.homeY = home[1]; o2.shimX = h.shimX; o2.shimA = h.shimA; o2.dpr = dpr;
+        o2.ind = i === 0 ? S.ind : null;
         if (DESK) plate2d(ctx, h, i ? PLATE.kid : PLATE.core);
         draw2dHead(ctx, o2);
       }
@@ -1137,7 +1174,7 @@
       KEYS.forEach(function (key) { W[key] += ((tg[key] || 0) - W[key]) * k; });
       S.light += (S.lightT - S.light) * (1 - Math.exp(-dt * 4));
       var talking = S.state === "listening" || S.state === "speaking";
-      var real = talking && ampFn ? ampFn(S.state) : null;
+      var real = S.ind && S.ind.phase === "paused" ? 0 : talking && ampFn ? ampFn(S.state) : null;
       var target = !talking ? 0 : real == null || real < 0 ? (S.state === "listening" ? synthListen(S.t) : synthAmp(S.t)) : Math.max(0, Math.min(1, real));
       S.amp += (target - S.amp) * (1 - Math.exp(-dt * (target > S.amp ? 24 : 8)));
       S.ampSlow += (S.amp - S.ampSlow) * (1 - Math.exp(-dt * 3));
@@ -1325,6 +1362,23 @@
       _doze: function () { evalDoze(); return S.dozeT; },
       setLight: function (on, instant) { S.lightT = on ? 1 : 0; if (instant) S.light = S.lightT; if (S.still || !S.running) { S.light = S.lightT; redrawIfIdle(); } },
       /** The head style (one of MintBot.HEADS); the sessions follow. */
+      /**
+       * Look and speak (2026-10-21, mint-presence-bind.js): indicate({ phase, arm, armMs }) or null. phase "arming"
+       * (arm 0..1 now, filling to 1 over armMs), "ready" (with one nod as it arrives), "listening", "paused".
+       * Drawn on the head itself: its front edge's nodes, its eyes. A still frame per change in reduced motion.
+       */
+      indicate: function (o) {
+        var was = S.ind, ph = o && o.phase;
+        if (!ph || ["arming", "ready", "listening", "paused"].indexOf(ph) < 0) { if (was) { S.ind = null; redrawIfIdle(); } return; }
+        var arm = Math.max(0, Math.min(1, +o.arm || 0));
+        if (was && was.phase === ph && ph !== "arming") return;
+        if (was && ph === "arming" && was.phase === "arming" && arm + 0.1 >= was.arm0 && was.armS) return; // the same hold: keep filling
+        S.ind = { phase: ph, arm0: arm, armT: S.t, armS: ph === "arming" && o.armMs > 0 ? o.armMs / 1000 : 0, arm: ph === "arming" ? arm : 1, k: 0 };
+        if (ph === "ready" && (!was || was.phase === "arming") && !S.still) react("nod");
+        redrawIfIdle();
+      },
+      /** Didn't recognise the voice (2026-10-21): a small headshake (a still frame shows nothing). */
+      shake: function () { return react("shake"); },
       setHead: function (id) { if (!HEADS[id] || id === S.head) return; S.head = id; redrawIfIdle(); },
       /** The colours ({p, c} as MintLogic.normBotColors gives); every head takes them at once. */
       setColors: function (c) { colors = c; PAL = palettes(colors); redrawIfIdle(); },

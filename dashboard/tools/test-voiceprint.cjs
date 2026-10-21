@@ -879,7 +879,7 @@ function pure() {
   const b = (k, g, n, t) => ML.vpBadge(k, g, n, t);
   check("recognised: “Recognised: AbdElMoniem”, mint, a check", b("known", true, "AbdElMoniem").label === "Recognised: AbdElMoniem" && b("known", false, "AbdElMoniem").tone === "ok" && b("known", true, "AbdElMoniem").icon === "you");
   check("a stored person who may not give commands: “Zaghloul — talk only”, neutral", b("known", true, "Zaghloul", true).label === "Zaghloul — talk only" && b("known", true, "Zaghloul", true).tone === "mid");
-  check("unknown voice: red; gate on '— ignored', shadow '— would be ignored'", b("other", true).label === "Unknown voice — ignored" && b("other", false).label === "Unknown voice — would be ignored" && b("other", true).tone === "bad");
+  check("unknown voice: red; gate on 'Didn't recognise your voice, try again' (2026-10-21: no longer dropped silently), shadow '— would be ignored'", b("other", true).label === "Didn't recognise your voice, try again" && b("other", false).label === "Unknown voice — would be ignored" && b("other", true).tone === "bad");
   check("unsure: “Not sure who's speaking”, neutral; gate on '— not answered'; too short: the same words", b("unsure", false).label === "Not sure who's speaking" && b("unsure", true).label === "Not sure who's speaking — not answered" && b("short", true).label === "Not sure who's speaking" && b("unsure", true).tone === "mid");
   check("MINT AI's own voice: red, ignored / would be", /own voice — ignored$/.test(b("echo", true).label) && /would be ignored$/.test(b("echo", false).label));
   check("a name is one line, cut at 40", b("known", true, "A\nB").label === "Recognised: A B" && b("known", true, "x".repeat(60)).label.length <= 12 + 40);
@@ -906,7 +906,7 @@ async function pill(s, ad, chromium) {
   const verdicts = [
     ["known", true, "Recognised: AbdElMoniem", "ok", "AbdElMoniem", false],
     ["known", false, "Zaghloul — talk only", "mid", "Zaghloul", true],
-    ["other", true, "Unknown voice — ignored", "bad"],
+    ["other", true, "Didn't recognise your voice, try again", "bad"],
     ["other", false, "Unknown voice — would be ignored", "bad"],
     ["unsure", true, "Not sure who's speaking — not answered", "mid"],
     ["short", false, "Not sure who's speaking", "mid"],

@@ -826,24 +826,18 @@ const SIDEWAYS = { cx: 0.5, cy: 0.5, w: 0.24, yaw: 55, pitch: -5 };
             window.__trace = setInterval(() => { const i = window.MintPresence.indication(); const k = i ? [i.look, i.ring, i.caption, i.blocked].join("/") : "null"; if (window.__seq[window.__seq.length - 1] !== k) window.__seq.push(k); }, 40);
           };
           const IND = () => {
-            const ring = document.getElementById("mp-ring"), cap = document.getElementById("mp-caption"), pill = document.getElementById("mp-cam");
-            const vis = (el) => { if (!el || el.hidden) return false; const r = el.getBoundingClientRect(), cs = getComputedStyle(el); return r.width > 0 && r.height > 0 && cs.visibility !== "hidden" && cs.display !== "none" && Number(cs.opacity) > 0.05 && r.left >= -1 && r.top >= -1 && r.right <= innerWidth + 1 && r.bottom <= innerHeight + 1; };
-            const rr = ring && ring.getBoundingClientRect(), cr = cap && cap.getBoundingClientRect();
-            const k = document.documentElement.classList.contains("dk-comp-out") ? window.MintDesktop.companion().debug.core() : window.__mintCC.core;
-            const cv = document.documentElement.classList.contains("dk-comp-out") ? document.getElementById("dk-comp-cv") : k.canvas, cb = cv.getBoundingClientRect(), S = k.S, dpr = S.dpr || 1;
-            const hx = cb.left + S.c[0] / dpr, hy = cb.top + S.cssH - S.c[1] / dpr + S.R / dpr * 0.12;
+            const pill = document.getElementById("mp-cam");
+            const comp = document.documentElement.classList.contains("dk-comp-out");
+            const k = comp ? window.MintDesktop.companion().debug.core() : window.__mintCC.core, I = k && k.S ? k.S.ind : null;
             const regs = window.MintDesktop && window.MintDesktop.regions ? window.MintDesktop.regions() : [];
-            const sameBox = (r) => r && regs.some((g) => Math.abs(g.x - r.left) < 2 && Math.abs(g.y - r.top) < 2 && Math.abs(g.w - r.width) < 2);
             return {
               ind: window.MintPresence.indication(), seq: window.__seq.slice(),
-              ring: vis(ring), ringCls: ring ? ring.className : "", ringPE: ring ? getComputedStyle(ring).pointerEvents : "", ringOnHead: rr ? Math.hypot(rr.left + rr.width / 2 - hx, rr.top + rr.height / 2 - hy) < 3 : false,
-              arc: ring && ring.querySelector(".mp-ra") ? { off: getComputedStyle(ring.querySelector(".mp-ra")).strokeDashoffset, tr: ring.querySelector(".mp-ra").style.transition, dash: getComputedStyle(ring.querySelector(".mp-ra")).strokeDasharray } : { html: ring ? ring.outerHTML.slice(0, 300) : null },
-              anims: ring ? ring.getAnimations({ subtree: true }).length : -1, animNames: ring ? ring.getAnimations({ subtree: true }).map((a) => (a.animationName || a.transitionProperty || "?") + "@" + (a.effect && a.effect.target ? a.effect.target.getAttribute("class") : "")).join(",") : "",
-              cap: vis(cap) ? cap.textContent : "", capLive: cap ? cap.getAttribute("aria-live") : "", capPE: cap ? getComputedStyle(cap).pointerEvents : "",
+              // on the bot itself (core.indicate): the visible core's phase / fill, a nod; no added element at all
+              ph: I ? I.phase : null, arm: I ? Math.round(I.arm * 100) / 100 : 0, rk: k && k.S ? k.S.rk : "", still: !!(k && k.S && k.S.still), comp,
+              added: !!(document.getElementById("mp-ring") || document.getElementById("mp-caption") || document.querySelector(".mp-ind")),
               word: pill ? pill.querySelector(".mp-s").textContent : null, blocked: pill ? pill.classList.contains("mp-blocked") : null, why: pill ? pill.querySelector(".mp-why").textContent : "",
               whyShown: pill ? getComputedStyle(pill.querySelector(".mp-why")).display !== "none" : false,
               pillHit: pill ? (() => { const q = pill.getBoundingClientRect(); return regs.some((g) => q.left + q.width / 2 >= g.x && q.left + q.width / 2 <= g.x + g.w && q.top + q.height / 2 >= g.y && q.top + q.height / 2 <= g.y + g.h); })() : false,
-              ringHit: sameBox(rr), capHit: sameBox(cr), regsN: regs.length,
             };
           };
           const waitFor = async (pg, fn, arg, ms) => { const t0 = Date.now(); let v; while (Date.now() - t0 < (ms || 4000)) { v = await pg.evaluate(IND); if (fn(v, arg)) return v; await pg.waitForTimeout(60); } return v; };
@@ -852,17 +846,19 @@ const SIDEWAYS = { cx: 0.5, cy: 0.5, w: 0.24, yaw: 55, pitch: -5 };
           const ia = await open({ path: "/mint-ai?shell=desktop", ua: APP_UA, tauri: IH, fakeWorker: true, screen: SCREEN, W: 480, H: 860, scheme: "dark", wait: 2500 });
           const pgI = ia.page;
           await pgI.evaluate(() => { window.__mintCC.orbit.setConcept("E"); document.documentElement.setAttribute("data-theme", "dark"); });
+          await pgI.waitForTimeout(300);
+          await pgI.evaluate(() => { const k = window.__mintCC.core; if (k && k.setHead) k.setHead("headphones"); }); // (the screenshots: the user's head)
           await pgI.evaluate(SETUP);
           const t0 = ia.reqs.length;
           let v = await waitFor(pgI, (x) => x.ind && x.word === "Watching");
-          check("indications: the camera on, nobody there -> the pill says 'Watching'; no ring, no caption", v.ind && v.ind.look === "watching" && v.word === "Watching" && !v.ring && !v.cap, JSON.stringify(v));
+          check("indications: the camera on, nobody there -> the pill says 'Watching'; nothing on the bot, no ring, no caption (no element added at all)", v.ind && v.ind.look === "watching" && v.word === "Watching" && !v.ph && !v.added, JSON.stringify(v));
           await pgI.evaluate(() => window.__look("screen"));
           v = await waitFor(pgI, (x) => x.word === "You're here", null, 3000);
-          check("  you look at the screen (not the bot) -> 'You're here'; still no ring", v.word === "You're here" && !v.ring, JSON.stringify(v));
-          // voice off: blocked, said quietly; looking at the bot -> only the noticed glow (no arming)
+          check("  you look at the screen (not the bot) -> 'You're here'; still nothing on the bot", v.word === "You're here" && !v.ph, JSON.stringify(v));
+          // voice off: blocked, said quietly; looking at the bot -> its eyes meet yours, nothing more
           await pgI.evaluate(() => { window.__voice = false; window.__look("bot"); });
-          v = await waitFor(pgI, (x) => x.word === "Looking at me" && x.ring, null, 3000);
-          check("you look at the bot -> 'Looking at me' and a soft ring round its head (noticed), on the head, drawn only (pointer-events none)", v.word === "Looking at me" && v.ring && /mp-r-noticed/.test(v.ringCls) && v.ringOnHead && v.ringPE === "none", JSON.stringify(v));
+          v = await waitFor(pgI, (x) => x.word === "Looking at me", null, 3000);
+          check("you look at the bot -> 'Looking at me'; nothing is drawn on it (its eyes meet yours), no ring", v.word === "Looking at me" && !v.ph && !v.added, JSON.stringify(v));
           check("  voice off: look and speak cannot start -> no arming, a quiet 'i' on the pill, the reason only in its hint (hidden until hover / tap)", v.blocked && /Look and speak waits: voice is off/.test(v.why) && !v.whyShown && v.ind.ring === "noticed", JSON.stringify(v));
           await pgI.hover("#mp-cam .mp-s");
           await pgI.waitForTimeout(150);
@@ -882,24 +878,28 @@ const SIDEWAYS = { cx: 0.5, cy: 0.5, w: 0.24, yaw: 55, pitch: -5 };
           await pgI.evaluate(() => { window.__look("aside"); });
           await waitFor(pgI, (x) => x.ind && x.ind.look !== "me", null, 4000);
           await pgI.evaluate(() => { window.__voice = true; window.__seq.length = 0; window.__look("bot"); });
-          const arming = await waitFor(pgI, (x) => x.ind && x.ind.ring === "arming", null, 3000);
+          const arming = await waitFor(pgI, (x) => x.ph === "arming", null, 3000);
           const tArm = Date.now();
+          await pgI.waitForTimeout(120);
+          const arming2 = await pgI.evaluate(IND);
           await shot(pgI, "arming.png", { x: 40, y: 40, width: 400, height: 520 });
-          const ready = await waitFor(pgI, (x) => x.ind && x.ind.ring === "ready", null, 3000);
+          const ready = await waitFor(pgI, (x) => x.ph === "ready", null, 3000);
           const tReady = Date.now() - tArm;
+          await shot(pgI, "ready.png", { x: 40, y: 40, width: 400, height: 520 });
+          const nodded = ready.rk === "nod" || (await waitFor(pgI, (x) => x.rk === "nod", null, 400)).rk === "nod";
           await pgI.waitForTimeout(150);
           ready.seq = await pgI.evaluate(() => window.__seq.slice());
-          check("look and speak on, you hold your look: a ring fills round the bot over the 0.6 s hold (arming, an animated arc), then full (ready)", /mp-r-arming/.test(arming.ringCls) && /mp-r-arming/.test(arming.ringCls) && /stroke-dashoffset \d+ms linear/.test(arming.arc.tr) && ready.ring && /mp-r-ready/.test(ready.ringCls) && Number(ready.arc.off.replace("px", "")) === 0 && tReady < 1200, JSON.stringify({ a: arming.ringCls, tr: arming.arc.tr, r: ready.ringCls, off: ready.arc.off, tReady }));
+          check("look and speak on, you hold your look: the bot's own edge nodes fill over the 0.6 s hold (arming, the fill growing), then all of them (ready), with a nod", arming.ph === "arming" && arming2.arm > arming.arm && ready.ph === "ready" && ready.arm === 1 && nodded && tReady < 1200 && !ready.added, JSON.stringify({ a: arming.arm, a2: arming2.arm, r: ready.ph, nodded, tReady }));
           check("  in order: arming -> ready (never ready first)", (() => { const q = ready.seq.map((k) => k.split("/")[1]); const i = q.indexOf("arming"), j = q.indexOf("ready"); return i >= 0 && j > i; })(), JSON.stringify(ready.seq));
-          // speech starts: a turn, the caption
+          // speech starts: a turn, the bot listens (no caption)
           await pgI.evaluate(() => { window.__level = 0.25; });
-          const lis = await waitFor(pgI, (x) => x.cap, null, 3000);
+          const lis = await waitFor(pgI, (x) => x.ph === "listening", null, 3000);
           await pgI.evaluate(() => { window.__level = 0; });
           await shot(pgI, "listening.png", { x: 40, y: 40, width: 400, height: 560 });
-          check("you speak while looking: a turn opens (lookTalk) and the caption says 'Listening — you looked and spoke' (aria-live polite), the pill 'Listening', the ring gives way", lis.cap === "Listening — you looked and spoke" && lis.capLive === "polite" && lis.capPE === "none" && lis.word === "Listening" && !lis.ring && (await pgI.evaluate(() => window.__talks)) === 1, JSON.stringify(lis));
+          check("you speak while looking: a turn opens (lookTalk), the bot shows it listens (its edge pulses with your voice), the pill 'Listening'; no caption", lis.ph === "listening" && lis.word === "Listening" && !lis.added && (await pgI.evaluate(() => window.__talks)) === 1, JSON.stringify(lis));
           await pgI.evaluate(() => { window.__latched = false; });
-          const lis2 = await waitFor(pgI, (x) => !x.cap, null, 2000);
-          check("  the turn is sent (no longer listening): the caption clears", !lis2.cap && lis2.word !== "Listening", JSON.stringify(lis2));
+          const lis2 = await waitFor(pgI, (x) => x.ph !== "listening", null, 2000);
+          check("  the turn is sent (no longer listening): the bot lets go of it", lis2.ph !== "listening" && lis2.word !== "Listening", JSON.stringify(lis2));
           check("  then the cool-down: look and speak waits a moment, said only in the hint", lis2.ind.blocked === "cool" && /it just answered/.test(lis2.why), JSON.stringify(lis2.ind));
           const cool = await waitFor(pgI, (x) => x.ind && !x.ind.blocked, null, 4500);
           check("  ...and after it, nothing in the way again", cool.ind && !cool.ind.blocked && !cool.blocked, JSON.stringify(cool.ind));
@@ -907,25 +907,28 @@ const SIDEWAYS = { cx: 0.5, cy: 0.5, w: 0.24, yaw: 55, pitch: -5 };
           const busy = await waitFor(pgI, (x) => x.ind && x.ind.blocked === "busy", null, 1500);
           await pgI.evaluate(() => { window.__busy = false; window.__look("two"); });
           const two = await waitFor(pgI, (x) => x.ind && x.ind.blocked === "others", null, 2500);
-          check("  busy (a call or a reply on) / someone else in view: no arming, the reason in the hint", busy.ind.blocked === "busy" && /a turn or a reply is on/.test(busy.why) && busy.ind.ring !== "arming" && two.ind.blocked === "others" && /someone else is in view/.test(two.why) && two.ind.ring !== "arming", JSON.stringify([busy.ind, two.ind]));
+          check("  busy (a call or a reply on) / someone else in view: no arming, the reason in the hint", busy.ind.blocked === "busy" && /a turn or a reply is on/.test(busy.why) && busy.ph !== "arming" && two.ind.blocked === "others" && /someone else is in view/.test(two.why) && two.ph !== "arming", JSON.stringify([busy.ind, two.ind]));
           // a reply playing; you look away -> paused; back -> resumes
           await pgI.evaluate(() => { window.__look("bot"); window.__speaking = true; });
           await pgI.waitForTimeout(600);
           await pgI.evaluate(() => { window.__look("aside"); });
-          const pz = await waitFor(pgI, (x) => x.cap, null, 4500);
+          const pz = await waitFor(pgI, (x) => x.ph === "paused", null, 4500);
           await shot(pgI, "paused.png", { x: 0, y: 0, width: 480, height: 600 });
-          check("a reply playing, you look away: 'Paused — look back to continue' under the bot and 'Paused' on the pill", pz.cap === "Paused — look back to continue" && pz.word === "Paused", JSON.stringify(pz));
+          check("a reply playing, you look away: the bot shows it paused (looks at you, its edge blinking slowly) and the pill says 'Paused'; no caption", pz.ph === "paused" && pz.word === "Paused" && !pz.added, JSON.stringify(pz));
           await pgI.evaluate(() => { window.__look("bot"); });
-          const rs = await waitFor(pgI, (x) => !x.cap, null, 3000);
-          check("  you look back: it resumes and the caption clears", !rs.cap && rs.word !== "Paused", JSON.stringify(rs));
+          const rs = await waitFor(pgI, (x) => x.ph !== "paused", null, 3000);
+          check("  you look back: it resumes, the bot lets go of it", rs.ph !== "paused" && rs.word !== "Paused", JSON.stringify(rs));
           await pgI.evaluate(() => { window.__speaking = false; });
-          check("  the ring and the caption are never hit regions (clicks go through them)", [v, ready, lis, pz].every((x) => !x.ringHit && !x.capHit), JSON.stringify([v, ready, lis, pz].map((x) => [x.ringHit, x.capHit])));
-          const src = fs.readFileSync(path.join(ROOT, "public", "mint-desktop.js"), "utf8");
-          const glassSrc = src.slice(src.indexOf("var GLASS = ["), src.indexOf("];", src.indexOf("var GLASS = [")));
-          const hitSrc = src.slice(src.indexOf("var HIT = ["), src.indexOf("];", src.indexOf("var HIT = [")));
-          check("  not glass either: no blur behind the moving ring or the caption (GLASS / HIT name neither)", !/mp-ring|mp-caption|mp-ind/.test(glassSrc + hitSrc), "");
+          // the voice not recognised: a short note in the pill, a headshake
+          await pgI.evaluate(() => { window.MintPresence.note("Didn't recognise your voice, try again", 1500); window.__mintCC.core.shake(); });
+          const nr = await pgI.evaluate(() => ({ IND: 0, word: document.querySelector("#mp-cam .mp-s").textContent, noted: document.getElementById("mp-cam").classList.contains("mp-noted"), role: document.getElementById("mp-cam").getAttribute("role"), rk: window.__mintCC.core.S.rk }));
+          await pgI.waitForTimeout(250);
+          await shot(pgI, "not-recognised.png", { x: 0, y: 0, width: 480, height: 600 });
+          await pgI.waitForTimeout(1450);
+          const nr2 = await pgI.evaluate(() => document.querySelector("#mp-cam .mp-s").textContent);
+          check("a voice not recognised: the pill says 'Didn't recognise your voice, try again' (a status: read politely), the bot shakes its head; then its own word again", nr.word === "Didn't recognise your voice, try again" && nr.noted && nr.role === "status" && nr.rk === "shake" && nr2 !== nr.word, JSON.stringify([nr, nr2]));
 
-          // every layout: the ring on the bot, the caption on screen
+          // every layout: on the bot that shows (the companion bot when it is out)
           const LAYOUTS = [
             ["Floating S", { mode: "floating", size: "S", peekOpen: true }, LAYM.windowSize({ mode: "floating", size: "S" })],
             ["Floating M", { mode: "floating", size: "M", peekOpen: true }, LAYM.windowSize({ mode: "floating", size: "M" })],
@@ -942,53 +945,39 @@ const SIDEWAYS = { cx: 0.5, cy: 0.5, w: 0.24, yaw: 55, pitch: -5 };
             await pgI.evaluate(() => { window.__look("aside"); });
             await pgI.waitForTimeout(400);
             await pgI.evaluate(() => { window.__look("bot"); });
-            const n = await waitFor(pgI, (x) => x.ring && x.ind && x.ind.ring === "ready", null, 4000);
+            const n = await waitFor(pgI, (x) => x.ph === "ready", null, 4000);
             if (name === "Companion") { await pgI.waitForTimeout(350); await shot(pgI, "companion-ready.png"); }
             await pgI.evaluate(() => { window.__level = 0.25; });
-            const c = await waitFor(pgI, (x) => x.cap, null, 3000);
+            const c = await waitFor(pgI, (x) => x.ph === "listening", null, 3000);
             await pgI.evaluate(() => { window.__level = 0; });
             if (name === "Companion") await shot(pgI, "companion-listening.png");
             await pgI.evaluate(() => { window.__latched = false; });
-            await waitFor(pgI, (x) => !x.cap, null, 2000);
+            await waitFor(pgI, (x) => x.ph !== "listening", null, 2000);
             await pgI.waitForTimeout(3100); // the cool-down, before the next layout
-            lay[name] = { ring: n.ring && n.ringOnHead, cap: c.cap, pill: n.pillHit, ringHit: n.ringHit || c.ringHit, capHit: c.capHit };
+            lay[name] = { ready: n.ph === "ready", listening: c.ph === "listening", comp: n.comp, pill: n.pillHit, added: n.added || c.added };
           }
-          check("every layout (Floating S / M / L, Desktop layer, Peek, Companion): the ring round the bot's head, the caption fully on screen, the pill a hit region", Object.values(lay).every((x) => x.ring && x.cap === "Listening — you looked and spoke" && x.pill && !x.ringHit && !x.capHit), JSON.stringify(lay));
-          check("  in Companion they are on the companion bot (out on the desk), not hidden with the Command Center's pieces", lay.Companion && lay.Companion.ring && !!lay.Companion.cap, JSON.stringify(lay.Companion));
-          // the GIF: arming -> listening, Floating M
-          if (SHOTS) {
-            await pgI.setViewportSize({ width: 480, height: 860 });
-            await pgI.evaluate((x) => window.__emit("mint://state", x), Object.assign({ presence: IH.presence }, { mode: "floating", size: "M", peekOpen: true }));
-            await pgI.evaluate(() => { window.__look("aside"); });
-            await pgI.waitForTimeout(1600);
-            const dir = path.join(SHOTS, "indicator-frames");
-            fs.rmSync(dir, { recursive: true, force: true }); fs.mkdirSync(dir, { recursive: true });
-            await pgI.evaluate(() => { window.__look("bot"); });
-            for (let i = 0; i < 34; i++) {
-              if (i === 20) await pgI.evaluate(() => { window.__level = 0.25; });
-              if (i === 24) await pgI.evaluate(() => { window.__level = 0; });
-              await pgI.screenshot({ path: path.join(dir, String(i).padStart(3, "0") + ".png"), clip: { x: 40, y: 40, width: 400, height: 560 } });
-              await pgI.waitForTimeout(70);
-            }
-            // the GIF (ffmpeg, if this machine has it): arming -> ready -> listening
-            const gif = path.join(ROOT, "..", "mockups", "eye-contact", "indicators", "look-and-speak.gif");
-            const ff = require("child_process").spawnSync("ffmpeg", ["-y", "-loglevel", "error", "-framerate", "8", "-i", path.join(dir, "%03d.png"), "-vf", "split[a][b];[a]palettegen=max_colors=96[p];[b][p]paletteuse", "-loop", "0", gif]);
-            if (ff.status !== 0) console.log("  (no GIF: ffmpeg " + (ff.error ? "missing" : "failed") + ")");
-          }
+          check("every layout (Floating S / M / L, Desktop layer, Peek, Companion): ready and listening shown on the bot itself, nothing added, the pill a hit region", Object.values(lay).every((x) => x.ready && x.listening && x.pill && !x.added), JSON.stringify(lay));
+          check("  in Companion it is the companion bot (out on the desk) that shows it", lay.Companion && lay.Companion.comp && lay.Companion.ready && lay.Companion.listening, JSON.stringify(lay.Companion));
+          const src = fs.readFileSync(path.join(ROOT, "public", "mint-desktop.js"), "utf8");
+          check("  the old ring and caption are gone from the hit regions and glass lists too", !/mp-ring|mp-caption|mp-ind/.test(src), "");
           const during = ia.reqs.slice(t0);
-          const words = /Watching|You're here|Looking at me|Listening|Paused|look back|voice is off|in view|arming|noticed|mp-ring|mp-caption|indication/i;
+          const words = /Watching|You're here|Looking at me|Listening|Paused|look back|voice is off|in view|arming|noticed|recognise|indication/i;
           check("no network leakage: during all of it only the page's usual GETs (no POST, no body), and no request names an indication", during.every((r) => r.method === "GET" && r.body === 0 && new URL(r.url).origin === ORIGIN && !words.test(decodeURIComponent(r.url))), JSON.stringify(during.filter((r) => r.method !== "GET" || r.body || words.test(r.url)).map((r) => r.method + " " + r.url)));
           check("  no page errors, no CSP violations", ia.errs.length === 0 && (await pgI.evaluate(() => window.__csp)).length === 0, JSON.stringify(ia.errs));
           await ia.ctx.close();
 
-          // reduced motion: a still ring, nothing animated
+          // reduced motion: still states, no nod
           const rm = await open({ path: "/mint-ai?shell=desktop", ua: APP_UA, tauri: IH, fakeWorker: true, screen: SCREEN, reduce: true, W: 480, H: 860, wait: 2500 });
           await rm.page.evaluate(() => { window.__mintCC.orbit.setConcept("E"); });
           await rm.page.evaluate(SETUP);
           await rm.page.evaluate(() => { window.__look("bot"); });
-          const rma = await waitFor(rm.page, (x) => x.ind && x.ind.ring === "arming", null, 3000);
-          const rmr = await waitFor(rm.page, (x) => x.ind && x.ind.ring === "ready", null, 3000);
-          check("reduced motion: arming is a still, full dashed ring (no transition, no animation); ready a solid one", /mp-r-still/.test(rma.ringCls) && /mp-r-arming/.test(rma.ringCls) && rma.arc.tr === "none" && rma.anims === 0 && /\d/.test(rma.arc.dash) && rma.arc.dash !== "100px" && rmr.anims === 0 && /mp-r-ready/.test(rmr.ringCls), JSON.stringify([rma.ringCls, rma.arc, rma.anims, rma.animNames, rmr.ringCls, rmr.anims, rmr.animNames]));
+          const rma = await waitFor(rm.page, (x) => x.ph === "arming", null, 3000);
+          await rm.page.waitForTimeout(100);
+          const rma2 = await rm.page.evaluate(IND);
+          const rmr = await waitFor(rm.page, (x) => x.ph === "ready", null, 3000);
+          await rm.page.waitForTimeout(200);
+          const rmr2 = await rm.page.evaluate(IND);
+          check("reduced motion: still states -- arming is drawn where the hold is (it does not run ahead by itself), ready is all of it, no nod", rma.still && rma.ph === "arming" && rma2.arm <= Math.max(rma.arm, 0.6) + 0.35 && rmr.ph === "ready" && rmr2.rk !== "nod", JSON.stringify([rma, rma2.arm, rmr.ph, rmr2.rk]));
           await rm.ctx.close();
 
           // the browser Command Center
@@ -996,14 +985,14 @@ const SIDEWAYS = { cx: 0.5, cy: 0.5, w: 0.24, yaw: 55, pitch: -5 };
           await br.page.evaluate(() => { if (window.__mintCC.orbit && window.__mintCC.orbit.setConcept) window.__mintCC.orbit.setConcept("E"); });
           await br.page.evaluate(SETUP);
           await br.page.evaluate(() => { window.__look("bot"); });
-          const bn = await waitFor(br.page, (x) => x.ring && x.ind && x.ind.ring === "ready", null, 4000);
+          const bn = await waitFor(br.page, (x) => x.ph === "ready", null, 4000);
           await br.page.evaluate(() => { window.__level = 0.25; });
-          const bc = await waitFor(br.page, (x) => x.cap, null, 3000);
+          const bc = await waitFor(br.page, (x) => x.ph === "listening", null, 3000);
           await br.page.evaluate(() => { window.__level = 0; window.__latched = false; window.__voice = false; });
           await br.page.hover("#mp-cam .mp-s");
           const bh = await waitFor(br.page, (x) => x.whyShown && /voice is off/.test(x.why), null, 2000);
-          check("in the browser Command Center too: the ring on the core, the caption, the pill's hint (above it)", bn.ring && bn.ringOnHead && bc.cap === "Listening — you looked and spoke" && bh.whyShown, JSON.stringify({ r: bn.ring, h: bn.ringOnHead, c: bc.cap, w: bh.whyShown }));
-          const bw = /Watching|You're here|Looking at me|Listening|Paused|look back|voice is off|in view|arming|noticed|mp-ring|mp-caption|indication/i;
+          check("in the browser Command Center too: ready and listening on the core itself, the pill's hint (above it)", bn.ph === "ready" && bc.ph === "listening" && !bn.added && bh.whyShown, JSON.stringify({ r: bn.ph, l: bc.ph, w: bh.whyShown }));
+          const bw = /Watching|You're here|Looking at me|Listening|Paused|look back|voice is off|in view|arming|noticed|recognise|indication/i;
           check("  nothing of it sent from the browser either (no request names an indication), no page errors", br.reqs.every((r) => !bw.test(decodeURIComponent(r.url) + r.txt)) && br.errs.length === 0, JSON.stringify(br.errs.concat(br.reqs.filter((r) => bw.test(r.url + r.txt)).map((r) => r.url))));
           await br.ctx.close();
         }

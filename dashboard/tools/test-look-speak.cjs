@@ -281,6 +281,11 @@ function turnAudio(s) {
         const src = R.ctx.createBufferSource(); src.buffer = buf; src.connect(R.bus);
         src.start(R.ctx.currentTime + Math.max(0, (at - Date.now()) / 1000));
       };
+      // the page's WebSockets (a test can hand one a server message)
+      window.__sockets = [];
+      const WSo = window.WebSocket;
+      window.WebSocket = function (u, p) { const w = new WSo(u, p); window.__sockets.push(w); return w; };
+      window.WebSocket.prototype = WSo.prototype; window.WebSocket.OPEN = 1; window.WebSocket.CONNECTING = 0; window.WebSocket.CLOSING = 2; window.WebSocket.CLOSED = 3;
       // What the page sends on its WebSockets (JSON only; binary counted), with the time.
       window.__wsOut = [];
       const send = WebSocket.prototype.send;
@@ -293,6 +298,7 @@ function turnAudio(s) {
     await page.waitForTimeout(1500);
     // Online (the scratch copy has no supervisor), the bot's place, a face looking at it (or none), the marks.
     await page.evaluate(() => {
+      if (window.__mintCC.orbit && window.__mintCC.orbit.setConcept) window.__mintCC.orbit.setConcept("E"); // core E: the bot
       setInterval(() => { const S = window.__mintCC && window.__mintCC.S; if (S) S.online = true; const o = document.getElementById("cc-offline"); if (o) o.hidden = true; }, 200);
       const Lg = window.MintPresenceLogic;
       window.__look = (where) => {
@@ -354,6 +360,21 @@ function turnAudio(s) {
       await page.evaluate(() => { try { window.__mintLive.end("esc"); } catch (e) { /* none */ } });
       await until(() => mock.sessions.every((x) => x.closed), 4000);
       await sleep(3600);
+    }
+
+    if (!REPORT) {
+      section("the voice check said on screen (2026-10-21)");
+      // a call (warm), then the server's verdict on a turn: an unknown voice, the gate on
+      await page.evaluate(() => window.__mintLive.lookWarm());
+      await until(() => page.evaluate(() => window.VoiceLive.state() !== "connecting" && window.VoiceLive.active()), 6000);
+      await page.evaluate(() => { const w = window.__sockets.filter((x) => /\/api\/live/.test(x.url)).pop(); w.onmessage({ data: JSON.stringify({ type: "voiceprint", verdict: "reject", kind: "other", gated: true, name: null, turn: 1 }) }); });
+      await sleep(120);
+      const vp = await page.evaluate(() => ({ label: (document.getElementById("cc-cap-label") || {}).textContent, live: (document.getElementById("cc-vp-live") || {}).textContent, liveAttr: (document.getElementById("cc-vp-live") || { getAttribute() { return null; } }).getAttribute("aria-live"),
+        pill: (document.querySelector("#mp-cam .mp-s") || {}).textContent, rk: window.__mintCC.core.S ? window.__mintCC.core.S.rk : null, concept: window.__mintCC.core.S ? window.__mintCC.core.S.concept : null }));
+      check("an unknown voice with the gate on: the state pill says 'Didn't recognise your voice, try again' (aria-live polite), and so does the camera's pill", vp.label === "Didn't recognise your voice, try again" && /^Didn't recognise your voice, try again\.?$/.test(vp.live) && vp.liveAttr === "polite" && vp.pill === "Didn't recognise your voice, try again", JSON.stringify(vp));
+      check("  core E shakes its head", vp.concept === "E" && vp.rk === "shake", JSON.stringify(vp));
+      await page.evaluate(() => window.__mintLive.end("esc"));
+      await sleep(400);
     }
 
     if (TRANSCRIBE) {
