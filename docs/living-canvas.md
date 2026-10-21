@@ -200,6 +200,14 @@ Unpinning is tidying the board, so it is not counted as a dismissal.
   the decision card would be, and step back while that card or focus mode is up.
 - **No quiet tiles while the glance cards are on.** The glance cards already show sessions, tokens and
   approvals.
+- **No brief mode in the app.** The morning brief stays the first glance card (`mint-desktop.js`), so
+  the board never takes it to the centre or shows it twice: `mint-canvas.js` passes no brief to the
+  policy when `DESK`. When the brief and the day's cards are taller than the column, the column scrolls.
+  A card cut at the column's edge catches the mouse only where it shows, and it gets no blur
+  (fixed 2026-10-21).
+- **Tests are hour-proof.** A scratch server writes no scheduled brief (`tools/scratch-server.cjs`,
+  `scheduledBriefs` / `MONI_SCRATCH_BRIEFS`: `off` by default, or `due` or `real`). Before this, every
+  suite run between 08:00 and 14:00 Cairo got a real brief on the server's first look.
 - **`mint-desktop.js` has two additive lines.**
   - `HIT` gains `#cv-board:not(.cv-under) .cv-w`, so each card catches the mouse and the gaps let clicks
     through.

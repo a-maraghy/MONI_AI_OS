@@ -117,6 +117,31 @@ function makeCopy(o) {
   fs.writeFileSync(p, s);
   // Belt and braces: the copy must not be able to name the real helper at all.
   if (!/scratch copy: the helper is not called/.test(fs.readFileSync(p, "utf8"))) throw new Error("scratch: guard not applied");
+  patchBriefClock(o);
+}
+
+/**
+ * The scheduled morning brief (lib/routes-proactive.js briefDue): by default 08:00 in the person's zone
+ * (Africa/Cairo) and written up to 6 h late, so a scratch server started between 08:00 and 14:00 Cairo
+ * wrote a real brief for every test user on its first look -- an extra glance card, an extra token-caps
+ * read, and a brief whose window starts then (trap, 2026-10-21: test-desktop-glance and test-proactive
+ * failed every morning on unchanged code). A test is deterministic at any hour only if the copy's clock
+ * does not decide: scheduledBriefs "off" (the default; also env MONI_SCRATCH_BRIEFS) never writes one;
+ * "due" writes it on the first look whatever the hour (the morning, on demand); "real" keeps the clock.
+ * Tests that want a brief write it themselves ("brief now", or the store); briefDue's own rule is
+ * tested in-process with a fixed clock (test-proactive.cjs).
+ */
+function patchBriefClock(o) {
+  const mode = o.scheduledBriefs || process.env.MONI_SCRATCH_BRIEFS || "off";
+  if (mode === "real") return;
+  if (mode !== "off" && mode !== "due") throw new Error("scratch: scheduledBriefs is off, due or real");
+  const p = path.join(APP, "lib", "routes-proactive.js");
+  let s = fs.readFileSync(p, "utf8");
+  const head = "  function briefDue(pr, t) {\n    if (!pr.brief_on) return false;\n";
+  if (!s.includes(head)) throw new Error("scratch: routes-proactive.js briefDue not found");
+  const rule = mode === "off" ? "    return false; // scratch copy: no scheduled brief\n" : "    if (pr.last_brief_day === P.localNow(t, pr.tz).date) return false;\n    return true; // scratch copy: the brief is due now, whatever the hour\n";
+  s = s.replace(head, head + rule);
+  fs.writeFileSync(p, s);
 }
 
 async function startScratch(opts) {

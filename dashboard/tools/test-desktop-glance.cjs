@@ -512,6 +512,37 @@ function paintWallpaper(kind, w, h) {
       check(`Desktop layer at ${nm}: all four cards on screen, clear of the core, each a hit region`, i.on && i.cards.length >= 5 && last.bottom <= h && i.cards.every((c) => c.r.left >= 0 && c.r.right <= w) && coreClear && i.cards.every((c) => i.regions.some((r) => inside(r, c.r.x + c.r.width / 2, c.r.y + c.r.height / 2))), JSON.stringify({ rect: i.rect, last }));
       await v.close();
     }
+    section("the morning: the brief joins the column first; a column it overflows scrolls, and catches the mouse only where it shows");
+    {
+      // The scratch server writes no scheduled brief (scratch-server.cjs patchBriefClock): this one is written
+      // here, so the morning is tested at any hour. 2026-10-21: a cut card's region ran past the column's end.
+      const store = require(path.join(ROOT, "lib", "proactive-store.js")).create(db);
+      const brief = store.addInbox(aliceId, "brief", "Morning brief", {
+        lines: [{ k: "Needs you", text: "Customs docs is waiting on you 25 min", tone: "warn" }, { k: "Planning engine", text: "working 1 h 35 min", tone: "info", sid: W.sessions[1].session_id }, { k: "Spend", text: "≈ $14.20 today", tone: "ok" }, { k: "Check", text: "Invoice audit idle 3 h", tone: "info" }, { k: "Finished", text: "Freight quotes sent three quotes", tone: "ok" }],
+        speech: "Good morning.", source: "template",
+      });
+      for (const [w, h, dpr, nm] of [[1536, 824, 1.25, "125 %"], [1280, 688, 1.5, "150 %"]]) {
+        const v = await open(w, h, "mode=desktop&glance=1", { dpr });
+        await v.page.waitForFunction(() => document.querySelector("#dk-gl-cards .dk-gl-pa"), null, { timeout: 6000 }).catch(() => {});
+        await sleep(300);
+        const i = await info(v.page);
+        const col = i.rect;
+        const scrolls = await v.page.evaluate(() => { const g = document.getElementById("dk-glance"); return g.scrollHeight > g.clientHeight + 1; });
+        const first = await v.page.evaluate(() => { const c = document.querySelector("#dk-gl-cards > *"); return !!c && c.classList.contains("dk-gl-pa"); });
+        const coreClear = i.cards.every((c) => c.r.right <= i.L.cx - i.L.R + 1 || c.r.left >= i.L.cx + i.L.R - 1);
+        // The regions at the column's x: none may reach above or below the column (nothing is drawn there).
+        const colRegs = i.regions.filter((r) => r.x < col.right && r.x + r.w > col.left && !(r.x >= i.L.cx - i.L.R - 1 && r.x + r.w <= i.L.cx + i.L.R + 1));
+        const outside = colRegs.filter((r) => r.y < Math.floor(col.top) || r.y + r.h > Math.ceil(col.bottom));
+        const shownCards = i.cards.filter((c) => c.r.bottom > col.top + 1 && c.r.top < col.bottom - 1);
+        check(`${nm}: the brief is the first card; the column (taller than the window allows) scrolls; clear of the core`, i.on && first && scrolls && coreClear, JSON.stringify({ first, scrolls, col }));
+        check(`  ${nm}: every card that shows catches the mouse where it shows; no region outside the column`, shownCards.every((c) => i.regions.some((r) => inside(r, c.r.x + c.r.width / 2, Math.min(c.r.bottom, col.bottom) - 3))) && outside.length === 0, JSON.stringify({ col, outside }));
+        await v.close();
+      }
+      db.prepare("UPDATE proactive_inbox SET dismissed_at = ? WHERE id = ?").run(new Date().toISOString(), brief.id);
+      const v = await open(1280, 688, "mode=desktop&glance=1", { dpr: 1.5 });
+      check("  dismissed: the column is back to the day's cards", !(await v.page.evaluate(() => !!document.querySelector("#dk-gl-cards .dk-gl-pa"))));
+      await v.close();
+    }
     {
       const v = await open(1122 / 1.5, 1290 / 1.5, "mode=floating&glance=1", { dpr: 1.5 });
       const i = await info(v.page);
@@ -580,13 +611,15 @@ function paintWallpaper(kind, w, h) {
             pool = next.map((at) => { const k = left.findIndex((w) => w && same(w.at, at)); if (k >= 0) { const w = left[k]; left[k] = null; return w; } return { at, drawn: at }; });
           }
         }
-        return { moved, drawn: pool.map((w) => w.drawn) };
+        // off: a window drawing somewhere other than the card it now belongs to (its own card, not "any card":
+        // the step-back and return of the approval cards can put another card where a stale window draws).
+        return { moved, drawn: pool.map((w) => w.drawn), off: pool.filter((w) => !same(w.at, w.drawn)).map((w) => w.drawn) };
       }
       const stray = (drawn) => drawn.filter((d) => !last.rects.some((g) => same(g, d)));
       const old = replay(false), now = replay(true);
-      console.log("  replayed " + reps.length + " reports: 0.1.9 moved shown windows " + old.moved + " times; blur left off its card: " + JSON.stringify(stray(old.drawn)));
-      check("reproduced with 0.1.9's rule: shown blur windows were moved while the cards changed, and blur is left where no card is", old.moved > 0 && stray(old.drawn).length > 0, JSON.stringify({ moved: old.moved, stray: stray(old.drawn) }));
-      check("  with 0.1.10's rule: no shown window is ever moved; every blur drawn is exactly under a card", stray(now.drawn).length === 0 && now.drawn.length === last.rects.length, JSON.stringify(stray(now.drawn)));
+      console.log("  replayed " + reps.length + " reports: 0.1.9 moved shown windows " + old.moved + " times; windows drawing off their card: " + old.off.length + "; blur where no card is: " + JSON.stringify(stray(old.drawn)));
+      check("reproduced with 0.1.9's rule: shown blur windows were moved while the cards changed, and blur is left off the card it belongs to", old.moved > 0 && old.off.length > 0, JSON.stringify({ moved: old.moved, off: old.off, stray: stray(old.drawn) }));
+      check("  with 0.1.10's rule: no shown window is ever moved; every blur drawn is exactly under a card", stray(now.drawn).length === 0 && now.off.length === 0 && now.drawn.length === last.rects.length, JSON.stringify(stray(now.drawn)));
       if (SHOTS) {
         const dir = path.join(SHOTS, "blur-fix");
         fs.mkdirSync(dir, { recursive: true });

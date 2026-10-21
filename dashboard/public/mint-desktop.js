@@ -737,13 +737,18 @@
     if (glDrag) full = true;
     if (full) return LAY.regions(L, [], { all: true });
     var els = [];
+    // The glance column scrolls when its cards are taller than it (a morning brief over two approvals at
+    // 125 / 150 %): a card it cuts catches the mouse only where it shows, never in the strip below the column.
+    var col = glEl && !glEl.hidden ? glEl.getBoundingClientRect() : null;
     for (var i = 0; i < HIT.length; i++) {
       var list = document.querySelectorAll(HIT[i]);
       for (var k = 0; k < list.length; k++) {
         if (!shown(list[k])) continue;
         var r = list[k].getBoundingClientRect();
         var rad = parseFloat(getComputedStyle(list[k]).borderTopLeftRadius) || 0;
-        els.push({ left: r.left, top: r.top, width: r.width, height: r.height, r: Math.min(rad, r.height / 2, r.width / 2) });
+        var top = r.top, bottom = r.bottom;
+        if (col && glEl.contains(list[k])) { top = Math.max(top, col.top); bottom = Math.min(bottom, col.bottom); if (bottom - top < 1) continue; }
+        els.push({ left: r.left, top: top, width: r.width, height: bottom - top, r: Math.min(rad, (bottom - top) / 2, r.width / 2) });
       }
     }
     // The session spheres the core draws (no DOM of their own): a circle each.
