@@ -187,7 +187,7 @@
    * createTracker({ bot, geo }) -> { push(faces, t), setBot(pos), snapshot(), reset() }.
    * push() takes the summaries of one frame (summarize) and the time (ms); it returns the snapshot:
    *   { state, gaze, changed,            -- the public part
-   *     atBot, speak, others, mouth, turnedAwayMs, face }  -- the module's own (look and speak, a reply's pause)
+   *     atBot, speak, others, mouth, turnedAwayMs, face, facingNow }  -- the module's own (look and speak, a reply's pause)
    */
   function createTracker(o) {
     o = o || {};
@@ -208,7 +208,7 @@
     function snap(changed) {
       var t = S.t || 0;
       return { state: S.state, gaze: S.gaze, changed: !!changed, atBot: S.atBot, speak: S.speak && S.atBot, others: S.others, mouth: mouthActive(t),
-        turnedAwayMs: S.state ? Math.max(0, t - S.lastLook) : 0, face: !!S.face, dy: S.dy, dp: S.dp };
+        turnedAwayMs: S.state ? Math.max(0, t - S.lastLook) : 0, face: !!S.face, dy: S.dy, dp: S.dp, facingNow: !!S.facingNow };
     }
     function mouthActive(t) {
       var j = S.jaw.filter(function (e) { return t - e[0] <= T.MOUTH_MS; });
@@ -240,6 +240,9 @@
       if (!S.atBot && S.botSince != null && t - S.botSince >= T.BOT_ON_MS) S.atBot = true;
       else if (S.atBot && S.notBotSince != null && t - S.notBotSince >= T.BOT_OFF_MS) S.atBot = false;
       S.speak = cl.speak;
+      // turned to the bot, frontal, this frame (before atBot's BOT_ON_MS): look and speak opens its microphone
+      // already, so speech that starts with the look is in the pre-roll
+      S.facingNow = !!(cl.bot && cl.speak);
       if (!S.looking && S.screenSince != null && t - S.screenSince >= T.LOOK_ON_MS) S.looking = true;
       else if (S.looking && S.notScreenSince != null && t - S.notScreenSince >= T.LOOK_OFF_MS) S.looking = false;
       // here at all
@@ -265,7 +268,7 @@
 
   /* ------------------------------------------------------------ look and speak */
   /**
-   * createSpeakGate() -> { vision(snapshot, t), audio(level, t, busy) -> "start" | null, ended(t), armed() }.
+   * createSpeakGate() -> { vision(snapshot, t), audio(level, t, busy) -> "start" | null, ended(t), armed(), onset() }.
    * Conservative: it starts listening only when ALL hold --
    *   the person has faced the bot (frontal, within TOL.speakYaw) for ARM_MS, nobody else is in view,
    *   speech starts (the level over the room's floor for ONSET_MS), the person's own mouth moved lately
@@ -275,8 +278,13 @@
   function createSpeakGate(o) {
     o = o || {};
     // GRACE_MS (2026-10-21): one or two frames off (a blink, the model's jitter) no longer restart the 0.6 s.
-    var ARM_MS = o.armMs || 600, ONSET_MS = o.onsetMs || 160, COOL_MS = o.coolMs || 3000, MIN = o.min || 0.02, GRACE_MS = o.graceMs == null ? 450 : o.graceMs;
-    var G = { since: null, badSince: null, ok: false, mouth: null, floor: 0.004, loudSince: null, last: -1e12, level: 0, t: 0, v: null, busy: false };
+    // DIP_MS (2026-10-21, "slow, inaccurate"): speech dips between sounds for a few tens of ms; a dip that short no
+    // longer restarts the 160 ms onset (it did, so a real sentence often started listening only words later, or never).
+    var ARM_MS = o.armMs || 600, ONSET_MS = o.onsetMs || 160, COOL_MS = o.coolMs || 3000, MIN = o.min || 0.02, GRACE_MS = o.graceMs == null ? 450 : o.graceMs, DIP_MS = o.dipMs == null ? 120 : o.dipMs;
+    // SPELL_GAP_MS: sounds less than this apart are one spell of talking; onset() is where the spell began (a person
+    // who talks as they look arms the gate mid-sentence: the pre-roll reaches back to the sentence's start).
+    var SPELL_GAP_MS = 700;
+    var G = { since: null, badSince: null, ok: false, mouth: null, floor: 0.004, loudSince: null, loudAt: -1e12, spell: null, onsetAt: null, last: -1e12, level: 0, t: 0, v: null, busy: false };
     function vision(s, t) {
       var good = !!(s && s.state === "looking" && s.atBot && s.speak && !s.others);
       if (good) { G.badSince = null; if (G.since == null) G.since = t; }
@@ -293,15 +301,20 @@
       if (level < G.floor) G.floor = Math.max(0.001, G.floor * 0.9 + level * 0.1);
       else G.floor = G.floor + (level - G.floor) * 0.01;
       var loud = level > Math.max(MIN, G.floor * 4);
-      if (loud) { if (G.loudSince == null) G.loudSince = t; } else G.loudSince = null;
+      if (loud) { if (G.loudSince == null) { G.loudSince = t; G.nOn = 0; G.nAll = 0; } if (G.spell == null || t - G.loudAt > SPELL_GAP_MS) G.spell = t; G.loudAt = t; }
+      else if (G.loudSince != null && t - G.loudAt > DIP_MS) G.loudSince = null;
+      // ...but mostly sound: at least 65 % of the readings since the onset (typing's clicks are half silence)
+      if (G.loudSince != null) { G.nAll++; if (loud) G.nOn++; }
       if (busy || !G.ok || G.mouth === false || t - G.last < COOL_MS) return null;
-      if (G.loudSince != null && t - G.loudSince >= ONSET_MS) { G.last = t; G.loudSince = null; return "start"; }
+      if (loud && G.loudSince != null && t - G.loudSince >= ONSET_MS && G.nOn >= 0.65 * G.nAll) { G.last = t; G.onsetAt = G.spell; G.loudSince = null; return "start"; }
       return null;
     }
     return {
       vision: vision, audio: audio,
       ended: function (t) { G.last = t; },
       armed: function () { return G.ok; },
+      /** When the spell of talking that started the last turn began (the pre-roll reaches back to it). */
+      onset: function () { return G.onsetAt; },
       /** "Show what it sees": each condition, numbers only. */
       status: function (t) {
         t = t == null ? G.t : t;

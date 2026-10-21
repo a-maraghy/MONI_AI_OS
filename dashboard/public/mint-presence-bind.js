@@ -243,12 +243,18 @@
 
   /* ---------------------------------------------------------------- look and speak, a reply's pause */
   function live() { return window.__mintLive || null; }
+  function speakingNow() { var V = window.VoiceLive, c = window.__mintCC; return !!((V && V.speaking && V.speaking()) || (c && c.speaking && c.speaking())); }
   MP.hooks({
-    speak: function () { var lv = live(); return !!(lv && lv.lookTalk && lv.lookTalk()); },
+    // o.preroll: the audio from just before the speech began (mint-presence.js), so the turn has its first words
+    speak: function (o) { var lv = live(); return !!(lv && lv.lookTalk && lv.lookTalk(o)); },
+    // until the voice's own microphone flows, the camera module's feeds the turn (false: enough, close yours)
+    feed: function (f) { var V = window.VoiceLive; return !!(V && V.feed && V.feed(f.pcm, f.level)); },
+    // the look armed look and speak: the voice call opens now, so the turn does not wait for it
+    warm: function () { var lv = live(); return !!(lv && lv.lookWarm && !speakingNow() && lv.lookWarm()); },
     // Voice off (Settings > Voice) or not usable here: look and speak cannot start a turn -- the pill says so.
     ready: function () { var lv = live(); return !!(lv && lv.ok && lv.ok()); },
     busy: function () { var lv = live(); return !!(lv && lv.busy && lv.busy()); },
-    speaking: function () { var V = window.VoiceLive, c = window.__mintCC; return !!((V && V.speaking && V.speaking()) || (c && c.speaking && c.speaking())); },
+    speaking: speakingNow,
     pause: function (on) {
       var V = window.VoiceLive, c = window.__mintCC;
       if (V && V.pause && V.active && V.active()) V.pause(on);

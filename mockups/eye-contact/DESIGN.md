@@ -147,11 +147,13 @@ Frames are 320 × 240. In headless Chromium a frame takes 16 ms in the worker.
       at start and on every change.
   - A grant can never outlive the setting, and nothing is ever auto-granted otherwise.
 - **Look and speak and the microphone.**
-  - While you face the bot with look and speak on, a level meter runs locally: an AnalyserNode, never connected to
-    the speakers and never recorded.
-  - It closes 2 s after you stop facing the bot, and as soon as a turn starts (the turn uses the voice path's own
-    microphone).
-  - Nothing is sent until the turn starts, which is the same path as the talk key.
+  - While you face the bot with look and speak on, the microphone is open locally: a level meter (an AnalyserNode,
+    never connected to the speakers) and, since 2026-10-21, the last 2.5 s of audio in memory, overwritten as it
+    goes. It is never stored, and nothing is sent unless a turn starts.
+  - When a turn starts, the audio from just before the speech began goes with it (the pre-roll), and this
+    microphone feeds the turn until the voice path's own microphone flows, then closes.
+  - It closes 2 s after you stop facing the bot.
+  - The turn is the same path as the talk key.
 
 ## Files
 
@@ -217,8 +219,7 @@ Frames are 320 × 240. In headless Chromium a frame takes 16 ms in the worker.
   - the speak tolerance (7°);
   - the mouth-movement rule;
   - away after 8 s.
-- **Look and speak may clip the first syllable.** The turn starts at the detected onset (about 160 ms in), and
-  there is no pre-roll. A pre-roll would need voice-live.js to keep a short ring buffer of the microphone.
+- ~~Look and speak may clip the first syllable.~~ Fixed 2026-10-21 with a pre-roll (below).
 - **External monitors and webcams.** The geometry assumes the camera sits on top of the screen showing MINT AI. A
   webcam on another monitor would make "looking at the bot" wrong. A calibration step ("look at the bot") could fix
   it.
@@ -271,3 +272,45 @@ Now:
 
 The negative cases still hold (reading the screen's middle and talking, a side glance, someone else talking, a TV,
 someone as close beside you): dashboard/tools/test-presence.cjs.
+
+## Look and speak: slow and inaccurate (2026-10-21)
+
+The user: "the face is identified but it does not handle identifying the speech well, slow, inaccurate". Read end
+to end, then measured with real recorded speech (dashboard/tools/test-look-speak.cjs: the real page, camera module
+and voice path to a mock realtime server, a "room" every microphone hears, TTS narration clips in English and
+Egyptian Arabic with their text, transcribed with gpt-4o-mini-transcribe, the server's model).
+
+Causes:
+- **The start of the speech was lost**, 0.5 s to 3 s of it. The turn began only at the 160 ms onset; then the
+  camera module's microphone closed and the voice path opened its own, built its audio graph and started relaying.
+  Everything said in between never reached the turn.
+- **The onset itself was unreliable.** A 10 ms level read every 50 ms, and one quiet reading between two sounds
+  restarted the 160 ms. A real sentence often started listening only words later, sometimes never.
+- **The end waited 1.2 s of quiet** (a tapped key's latch) plus the 140 ms tail.
+- **The call opened only once speech started** (1.2–2.4 s to "ready" on the live server).
+- **The microphone opened late:** only once "at the bot" held for 0.5 s.
+
+Now:
+- **Pre-roll.** The camera module's microphone keeps the last 2.5 s in memory (the voice's own capture worklet,
+  24 kHz PCM16). A turn gets the audio from 0.4 s before the spell of talking began (at least 1.2 s back). The
+  module keeps feeding the turn until the voice's own microphone flows (VoiceLive.press({ preroll }), .feed).
+- **Onset:** a 43 ms level. Dips up to 120 ms between sounds no longer restart it. At least 65 % of the readings
+  must be sound, so typing's clicks still do not count.
+- **The microphone opens on the first frame turned to the bot** (facingNow), not 0.5 s later.
+- **The end:** 700 ms of quiet for a look-and-speak turn (LOOK_QUIET_MS). A tapped key keeps 1.2 s.
+- **Warm start.** The look that arms look and speak opens the call ahead (lookWarm: hold-to-talk, warm, never
+  over a reply being read, never the morning brief). Unused, it hangs up after 20 s, quietly. At most once per look
+  and once per 8 s.
+- **Once listening, only the audio ends the turn.** The face never does (unchanged, now tested).
+
+Measured: 13 clips (6 EN, 6 AR, 1 synthetic), session ready 1.0 s, a microphone opening in 150 ms. Two
+scenarios: speaking 0.9 s after looking (as you look), and 1.8 s after (armed first). Before → after:
+
+| | as you look: before | as you look: after | armed first: before | armed first: after |
+|---|---|---|---|---|
+| turns opened | 12/13 | 13/13 | 12/13 | 13/13 |
+| start of speech clipped (avg / max) | 1,302 / 3,020 ms | 0 / 0 ms | 493 / 1,060 ms | 0 / 0 ms |
+| start of speech → listening (avg) | 1,144 ms | 653 ms | 337 ms | 270 ms |
+| end of speech → turn sent (avg) | 1,399 ms | 875 ms | 1,387 ms | 899 ms |
+| English WER (the clip itself: 0.00–0.03) | 0.346 | 0.030 | 0.136 | 0.022 |
+| Arabic CER (the clip itself: 0.05–0.10) | 0.319 | 0.063 | 0.159 | 0.075 |

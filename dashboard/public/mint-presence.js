@@ -18,9 +18,11 @@
  * not stored anywhere.
  *
  * Look and speak (its own switch, off by default): while the person faces the bot (frontal, nobody else in
- * view) a microphone level meter runs here -- the level only, nothing recorded or sent -- and speech starting
- * then (with their own mouth moving) calls hooks.speak(), which starts a voice turn the way the talk key
- * does. A reply that is playing pauses after ~1.5 s looking away (hooks.pause(true)) and resumes on looking
+ * view) the microphone is open here -- a level meter, and the last 2.5 s of audio in memory, overwritten as it
+ * goes (nothing is kept or sent unless a turn starts) -- and speech starting then (with their own mouth moving)
+ * calls hooks.speak({ preroll }), which starts a voice turn the way the talk key does, with the audio from just
+ * before the speech began (so its first words are in the turn); this microphone feeds the turn (hooks.feed)
+ * until the voice's own is flowing. Holding the look warms the voice up first (hooks.warm). A reply that is playing pauses after ~1.5 s looking away (hooks.pause(true)) and resumes on looking
  * back. A small "Camera on" pill shows while the camera is open; its button switches it off (hooks.off).
  *
  * Which camera (2026-10-21): the one chosen in Settings > Appearance > Eye contact (localStorage
@@ -34,7 +36,8 @@
  *   MintPresence.on(fn)          fn({ state, gaze, camera }) on every change
  *   MintPresence.snapshot()      { state, gaze, camera, why }
  *   MintPresence.device()        the camera in use: { label, name, how, note } (null while closed)
- *   MintPresence.hooks({ speak, busy, speaking, pause, off, ready })   ready(): can a voice turn start at all (voice on)?
+ *   MintPresence.hooks({ speak, busy, speaking, pause, off, ready, feed, warm })   ready(): can a voice turn start at all (voice on)?
+ *                                speak({ preroll }) -> a turn opened?; feed({ pcm, level }) -> keep feeding it?; warm(): open the call ahead
  *   MintPresence.look()          look and speak's checklist, numbers only ("Show what it sees" in Settings)
  *   MintPresence.release(why)    let go of the camera now
  *   MintPresence.diag()          counts only (frames, fps, ms per frame, opened, released, why)
@@ -56,7 +59,7 @@
 
   var cfg = { prefs: Logic.normPrefs(null), host: {}, bot: null, camera: null, show: false };
   var USED = "mint-presence-cam-used";
-  var H_ = { speak: null, busy: null, speaking: null, pause: null, off: null, ready: null, listening: null, ind: null };
+  var H_ = { speak: null, busy: null, speaking: null, pause: null, off: null, ready: null, listening: null, ind: null, feed: null, warm: null };
   var turns = { tried: 0, opened: 0, refused: 0, last: null }; // look and speak's starts (for "Show what it sees")
   var subs = [];
   var C = { stream: null, video: null, worker: null, ready: false, inflight: false, timer: 0, fps: 0, opening: false, denied: false, lostAt: 0, why: "off", dev: null, note: "", failed: [], gen: 0 };
@@ -65,7 +68,7 @@
   var rp = Logic.createReplyPause();
   var pub = { state: null, gaze: null, camera: false };
   var diag = { frames: 0, faces: 0, ms: 0, opened: 0, released: 0, why: "off", errors: 0 };
-  var mic = { stream: null, ctx: null, an: null, buf: null, t: 0, offAt: 0 };
+  var mic = { stream: null, ctx: null, an: null, buf: null, t: 0, offAt: 0, cap: null, src: null, ring: [], bridge: 0, warmLook: false, warmAt: -1e12 };
 
   function call(fn, a) { try { return fn ? fn(a) : undefined; } catch (e) { return undefined; } }
   function emit() { subs.slice().forEach(function (fn) { call(fn, { state: pub.state, gaze: pub.gaze, camera: pub.camera }); }); }
@@ -300,50 +303,100 @@
     refreshInd();
   }
 
-  /* ---------------------------------------------------------------- look and speak: the level meter */
+  /* ---------------------------------------------------------------- look and speak: the microphone */
+  /*
+   * While a face looks at the bot the microphone is open here: a level meter (the gate's onset) and, since
+   * 2026-10-21 ("slow, inaccurate": a turn lost its first ~0.6-1 s -- the 160 ms onset, then this microphone
+   * closed and the voice's own opened, set up and started relaying), a ring of the last RING_MS (2.5 s) of audio in
+   * memory (24 kHz PCM16 frames from the voice's own capture worklet, overwritten as it goes; nothing is kept
+   * or sent while nobody speaks). When a turn starts, the ring from just before the speech began goes with it
+   * (the pre-roll, hooks.speak({ preroll })), and this microphone keeps feeding the turn (hooks.feed) until the
+   * voice's own is flowing, then closes. A look that arms look and speak warms the voice up (hooks.warm: the
+   * call opens before anyone speaks), at most once per look and once per WARM_GAP_MS.
+   */
+  var RING_MS = 2500, PREROLL_MS = 1200, PRE_BEFORE_MS = 400, BRIDGE_MAX_MS = 5000, WARM_GAP_MS = 8000;
+  var WORKLET = (function () { var el = document.querySelector("[data-live-worklet]"); return (el && el.getAttribute("data-live-worklet")) || "/static/voice-live-worklet.js"; })();
   function speakMic(s) {
     if ((!cfg.prefs.speak && !cfg.show) || !C.stream || (!voiceReady() && !cfg.show)) { micOff(); return; }
+    if (mic.bridge) { if (performance.now() - mic.bridge > BRIDGE_MAX_MS) micOff(); return; } // feeding a turn that just started: closed when the voice's own microphone flows
     var busy = !!call(H_.busy);
-    if (((s.atBot && s.speak) || (cfg.show && s.face && s.state === "looking")) && !s.others && !busy) { mic.offAt = 0; micOn(); }
+    var facing = !!(s.atBot && s.speak);
+    if ((facing || (s.facingNow && cfg.prefs.speak) || (cfg.show && s.face && s.state === "looking")) && !s.others && !busy) { mic.offAt = 0; micOn(); }
     else if (mic.stream) { if (!mic.offAt) mic.offAt = performance.now(); else if (performance.now() - mic.offAt > 2000) micOff(); }
+    // warm the voice up: armed (the 0.6 s look held), look and speak on, nothing going on
+    if (!facing) mic.warmLook = false;
+    else if (gate.armed() && !mic.warmLook && !busy && cfg.prefs.speak && voiceReady() && !s.others && performance.now() - mic.warmAt > WARM_GAP_MS) {
+      mic.warmLook = true;
+      if (call(H_.warm)) mic.warmAt = performance.now();
+    }
   }
   function micOn() {
     if (mic.stream || mic.opening) return;
     var AC = window.AudioContext || window.webkitAudioContext;
     if (!AC) return;
     mic.opening = true;
-    navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false }).then(function (st) {
+    navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 }, video: false }).then(function (st) {
       mic.opening = false;
       if (!C.stream || (!cfg.prefs.speak && !cfg.show)) { st.getTracks().forEach(function (t) { t.stop(); }); return; }
       mic.stream = st;
-      mic.ctx = new AC();
-      var src = mic.ctx.createMediaStreamSource(st);
-      mic.an = mic.ctx.createAnalyser(); mic.an.fftSize = 512;
-      src.connect(mic.an); // to the meter only: never to the speakers, never recorded
+      mic.ctx = new AC({ latencyHint: "interactive" });
+      if (mic.ctx.state === "suspended" && mic.ctx.resume) mic.ctx.resume().catch(function () {});
+      var src = (mic.src = mic.ctx.createMediaStreamSource(st));
+      // 2048 samples (~43 ms): a level that does not flicker between the sounds of a word
+      mic.an = mic.ctx.createAnalyser(); mic.an.fftSize = 2048;
+      src.connect(mic.an); // to the meter: never to the speakers
       mic.buf = new Float32Array(mic.an.fftSize);
       mic.t = setInterval(meter, 50);
+      mic.ring = [];
+      var ctx = mic.ctx;
+      if (ctx.audioWorklet && window.AudioWorkletNode) {
+        ctx.audioWorklet.addModule(WORKLET).then(function () {
+          if (mic.ctx !== ctx) return;
+          var cap = (mic.cap = new AudioWorkletNode(ctx, "mint-live-capture", { numberOfInputs: 1, numberOfOutputs: 0 }));
+          cap.port.onmessage = function (e) { ringFrame(e.data || {}); };
+          src.connect(cap);
+        }).catch(function () { /* no pre-roll: the turn starts as before */ });
+      }
     }, function () { mic.opening = false; });
   }
+  /** A 20 ms frame from the capture worklet: into the ring; while a turn is being fed, to the turn. */
+  function ringFrame(m) {
+    if (m.type !== "frame" || !m.pcm) return;
+    var t = performance.now(), f = { t: t, pcm: m.pcm, level: m.level || 0 };
+    if (mic.bridge) {
+      if (t - mic.bridge > BRIDGE_MAX_MS || !call(H_.feed, f)) { mic.bridge = 0; micOff(); }
+      return;
+    }
+    mic.ring.push(f);
+    while (mic.ring.length && t - mic.ring[0].t > RING_MS) mic.ring.shift();
+  }
   function meter() {
-    if (!mic.an) return;
+    if (!mic.an || mic.bridge) return;
     mic.an.getFloatTimeDomainData(mic.buf);
     var s = 0;
     for (var i = 0; i < mic.buf.length; i++) s += mic.buf[i] * mic.buf[i];
     var lvl = Math.sqrt(s / mic.buf.length);
-    if (gate.audio(lvl, performance.now(), !!call(H_.busy)) === "start") {
+    var now = performance.now();
+    if (gate.audio(lvl, now, !!call(H_.busy)) === "start") {
       turns.tried++;
       if (cfg.show && !cfg.prefs.speak) { turns.last = { t: Date.now(), ok: null }; return; } // Settings' readout: shown, not started
-      micOff(); // the voice turn opens its own microphone
-      var r = voiceReady() ? call(H_.speak) : false;
-      if (r === false) turns.refused++; else { turns.opened++; heardAt = performance.now(); refreshInd(); }
-      turns.last = { t: Date.now(), ok: r !== false };
+      // the pre-roll: from PRE_BEFORE_MS before the speech began (at least PREROLL_MS back), what the ring holds
+      var on = gate.onset(), from = Math.min(now - PREROLL_MS, (on == null ? now : on) - PRE_BEFORE_MS);
+      var pre = (mic.ring || []).filter(function (f) { return f.t >= from; });
+      mic.ring = [];
+      var r = voiceReady() ? call(H_.speak, { preroll: pre.map(function (f) { return f.pcm; }) }) : false;
+      if (r === false || r === undefined || !mic.cap) micOff(); // no turn, or nothing to feed it with
+      else mic.bridge = now; // keep feeding the turn until the voice's own microphone flows (hooks.feed says)
+      if (r === false) turns.refused++; else { turns.opened++; heardAt = now; refreshInd(); }
+      turns.last = { t: Date.now(), ok: r !== false, preMs: pre.length * 20 };
     }
   }
   function micOff() {
     clearInterval(mic.t); mic.t = 0;
+    if (mic.cap) { try { mic.cap.port.onmessage = null; mic.cap.disconnect(); } catch (e) { /* gone */ } }
     if (mic.stream) mic.stream.getTracks().forEach(function (t) { t.stop(); });
     if (mic.ctx && mic.ctx.close) mic.ctx.close().catch(function () {});
-    mic.stream = null; mic.ctx = null; mic.an = null; mic.offAt = 0;
+    mic.stream = null; mic.ctx = null; mic.an = null; mic.cap = null; mic.src = null; mic.ring = []; mic.bridge = 0; mic.offAt = 0;
   }
 
   // Hidden (another tab, minimised, a covered app window): let go once it has stayed hidden for HIDDEN_MS -- a quick

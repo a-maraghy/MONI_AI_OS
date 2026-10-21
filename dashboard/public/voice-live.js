@@ -11,6 +11,8 @@
  *   VoiceLive.mute(on) / .muted()    a hard mute: the microphone sends nothing
  *   VoiceLive.interrupt()            stop the voice now (a tap, Space or Esc)
  *   VoiceLive.pause(on) / .paused()  hold the reply where it is / go on (eye contact: looking away)
+ *   VoiceLive.press(o) / .release()  hold-to-talk's key down / up; o.preroll: audio from just before (look and speak)
+ *   VoiceLive.feed(pcm, level)       look and speak: another microphone feeds the turn until this one flows
  *   VoiceLive.duplex(mode?)          "speakers" (half-duplex: the microphone is
  *                                    not heard while the voice speaks) | "full"
  *                                    (headphones: talk over it)
@@ -345,6 +347,7 @@
 
   function onFrame(me, m) {
     if (m.type !== "frame") return;
+    if (me.bridging && me.held) { me.bridging = false; note({ k: "own-mic" }); } // its own microphone flows: the feed ends
     me.framesIn++;
     me.lastFrameAt = performance.now();
     me.mic = m.level || 0;
@@ -577,9 +580,9 @@
    * the worklet still holds is in the turn, then tells the server to commit.
    */
   var PTT_TAIL_MS = 140;
-  // At most this much of what is said before the call is ready is kept (4 s of PCM16 at 24 kHz; the
-  // server takes no more than twice real time).
-  var EARLY_MAX = 4 * 48000;
+  // At most this much of what is said before the call is ready is kept (5 s of PCM16 at 24 kHz, look and speak's
+  // pre-roll included: sent at once when ready, it stays within the server's 10 s of audio per 5 s).
+  var EARLY_MAX = 5 * 48000;
   /*
    * A press may come before the call is ready -- the first press of the key is
    * what opens it, and that takes a second or two. Then the microphone's
@@ -597,7 +600,13 @@
     me.early = null;
     if (me.released) { me.released = false; send({ type: "ptt", on: false }); }
   }
-  function press() {
+  /*
+   * press(o): o.preroll (look and speak, 2026-10-21) -- PCM16 frames from just before the speech began, held
+   * by the camera module's microphone; they go first in the turn. Until this call's own microphone flows (a
+   * call just opening, or one whose microphone rests), that microphone keeps feeding the turn: feed(pcm,
+   * level), true while it is wanted. So a turn look and speak starts has its first words.
+   */
+  function press(o) {
     if (!S || !S.ptt) return false;
     clearTimeout(S.relT);
     if (S.held) return true;
@@ -606,8 +615,38 @@
     S.released = false;
     clearTimeout(S.restT);
     if (S.resting) micWake(S);
-    if (!S.live) { S.pressed = true; return true; } // sent when ready (pttFlush)
-    try { if (S.ws && S.ws.readyState === 1) S.ws.send(JSON.stringify({ type: "ptt", on: true })); } catch (e) { /* closed */ }
+    var pre = o && o.preroll && o.preroll.length ? o.preroll.filter(function (b) { return b && b.byteLength; }) : null;
+    // is this call's own microphone flowing now? (not opening, not resting, a frame within the last 200 ms)
+    S.bridging = !!(o && o.preroll) && !(S.stream && !S.resting && S.lastFrameAt && performance.now() - S.lastFrameAt < 200);
+    if (pre) { diag.preroll = pre.length * 20; note({ k: "preroll" }); }
+    if (!S.live) {
+      S.pressed = true; // sent when ready (pttFlush)
+      if (pre) { S.early = pre.concat(S.early || []); S.earlyBytes += pre.reduce(function (a, b) { return a + b.byteLength; }, 0); }
+      return true;
+    }
+    try {
+      if (S.ws && S.ws.readyState === 1) {
+        S.ws.send(JSON.stringify({ type: "ptt", on: true }));
+        (pre || []).forEach(function (b) { S.ws.send(b); S.framesSent++; diag.frames++; diag.bytesIn += b.byteLength; });
+      }
+    } catch (e) { /* closed */ }
+    return true;
+  }
+  /** The camera module's microphone feeding a look-and-speak turn until this call's own flows (press). */
+  function feed(pcm, level) {
+    var me = S;
+    if (!me || !me.ptt || !me.held || !me.bridging || me.muted || !pcm || !pcm.byteLength) return false;
+    me.mic = level || 0;
+    emit(me.o.onLevel, { mic: me.mic, out: me.out });
+    if (!me.live) {
+      if (me.earlyBytes < EARLY_MAX) { (me.early = me.early || []).push(pcm); me.earlyBytes += pcm.byteLength; }
+      return true;
+    }
+    if (!me.ws || me.ws.readyState !== 1) return true;
+    me.ws.send(pcm);
+    me.framesSent++;
+    diag.frames++;
+    diag.bytesIn += pcm.byteLength;
     return true;
   }
   function release() {
@@ -641,6 +680,7 @@
     interrupt: interrupt,
     duplex: duplex,
     press: press,
+    feed: feed,
     release: release,
     ptt: function () { return !!(S && S.ptt); },
     micState: micState,

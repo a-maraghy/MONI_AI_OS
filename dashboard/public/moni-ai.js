@@ -2878,8 +2878,10 @@
     if (!LiveUI.active) return;
     vpShown = null; // a verdict belongs to its call
     m = m || {};
-    var resuming = LiveUI.resuming;
+    var resuming = LiveUI.resuming, warmOnly = LiveUI.warmOnly;
     LiveUI.active = false;
+    LiveUI.warmOnly = false;
+    LiveUI.lookTurn = false;
     LiveUI.caption = "";
     LiveUI.ptt = false;
     LiveUI.held = false;
@@ -2893,6 +2895,8 @@
     paintLiveMode();
     var why = m.why || (m.type === "error" ? "error" : "ended");
     if (why === "hung-up") return;
+    // a call eye contact opened ahead (nobody has talked yet) goes quietly; a turn would say what went wrong
+    if (warmOnly) return;
     if (why === "restarting" || resuming) return liveRetry(); // (a failed try while coming back: the next one)
     if (m.type === "error" && m.code === "busy") return toast(m.error, true);
     var text = LIVE_ENDED[why] || (m.type === "error" ? "The live conversation could not start" + (m.error ? ": " + m.error : ".") : "The live conversation ended.");
@@ -3082,14 +3086,26 @@
     mode: function () { return LiveUI.active ? (LiveUI.ptt ? "ptt" : "live") : ""; },
     // Eye contact's "look and speak" (mint-presence.js): you faced MINT AI and started talking -- a turn opens as a
     // tap of the talk key does (latched: it is sent after a pause, or by the key), on the same hold-to-talk path.
-    lookTalk: function () {
+    // o.preroll (2026-10-21): the audio from just before the speech began, so the turn has its first words; the
+    // turn ends after LOOK_QUIET_MS of quiet (a tap's latch waits LATCH_QUIET_MS).
+    lookTalk: function (o) {
       if (!LIVE_OK || LiveUI.held || LiveUI.latched || (LiveUI.active && !LiveUI.ptt) || liveSpeaking()) return false;
-      if (!pttPress(false)) return false;
+      if (!pttPress(false, undefined, o && o.preroll ? { preroll: o.preroll } : null)) return false;
+      LiveUI.lookTurn = true;
       LiveUI.latched = true;
       LiveUI.lv = null;
       LiveUI.latchT = setTimeout(pttSend, PTT_LATCH_MS);
       if (LiveUI.state) paintLive(LiveUI.state);
       paintState();
+      return true;
+    },
+    // Eye contact: the look armed look and speak -- the call opens now (hold-to-talk, warm), so a turn that follows
+    // does not wait for it; unused, it hangs up after LOOK_WARM_MS. Never over a reply being read, never the brief.
+    lookWarm: function () {
+      if (!LIVE_OK || LiveUI.active || !window.VoiceLive || (typeof Voice !== "undefined" && Voice.speaking)) return false;
+      LiveUI.warmOnly = true;
+      liveStart({ ptt: true, afterBrief: true });
+      if (!LiveUI.active) { LiveUI.warmOnly = false; return false; }
       return true;
     },
     busy: function () { return !!(LiveUI.held || LiveUI.latched || liveSpeaking() || LiveUI.state === "thinking" || LiveUI.state === "waiting" || (LiveUI.active && !LiveUI.ptt)); },
@@ -3104,6 +3120,8 @@
    * it. A hands-free call (the mic tapped) is never turned into one.
    */
   var PTT_WARM_MS = 60 * 1000;
+  // A call eye contact opened ahead of a turn (lookWarm) that nobody talked into hangs up after this.
+  var LOOK_WARM_MS = 20 * 1000;
   // The desktop app's mic: held for PTT_HOLD_MS it is hold-to-talk; a tap is a hands-free call, as on the web.
   var PTT_HOLD_MS = 280;
   var pttMic = { t: 0, on: false, swallow: false };
@@ -3131,6 +3149,9 @@
   var PTT_LATCH_MS = 30 * 1000;
   // A latched turn is sent by itself after this much quiet, once something was said (latchVad).
   var LATCH_QUIET_MS = 1200, LATCH_SPOKEN_MS = 300;
+  // A look-and-speak turn ends sooner (2026-10-21, "slow"): 700 ms of quiet after speech -- longer than the pause
+  // between words or a breath mid-sentence, short enough not to wait on the person.
+  var LOOK_QUIET_MS = 700;
   var keySeq = 0;
   /*
    * The app's key events, in its own order and with its own clock: a tap is
@@ -3149,7 +3170,7 @@
     if (window.VoiceLive.note) window.VoiceLive.note({ k: down ? "down" : "up", at: t, seq: seq });
     return r;
   }
-  function pttPress(key, at) {
+  function pttPress(key, at, o) {
     if (!LIVE_OK) return false;
     if (LiveUI.latched) { LiveUI.skipUp = true; pttSend(); return true; } // the press that sends a latched turn
     if (LiveUI.held) {
@@ -3158,13 +3179,16 @@
       return true;
     }
     LiveUI.held = true;
+    LiveUI.warmOnly = false;
+    LiveUI.lookTurn = false;
     LiveUI.pressAt = at || Date.now();
     LiveUI.byKey = !!key;
     clearTimeout(LiveUI.warmT);
     if (!LiveUI.active) liveStart({ ptt: true });
     else if (!LiveUI.ptt) { if (liveSpeaking()) window.VoiceLive.interrupt(); LiveUI.held = false; return false; }
     // Pressed at once, even while the call is still opening: voice-live.js keeps what is said until it is ready.
-    if (LiveUI.active && window.VoiceLive.press) window.VoiceLive.press();
+    // (o.preroll: look and speak's audio from just before the speech began; sent first)
+    if (LiveUI.active && window.VoiceLive.press) window.VoiceLive.press(o || undefined);
     // While the key is held the pill follows the microphone (Listening, or Mic not ready and why).
     clearInterval(LiveUI.paintT);
     LiveUI.paintT = setInterval(paintState, 250);
@@ -3200,13 +3224,14 @@
     if (level < v.floor * 3) v.floor = Math.max(0.001, v.floor * 0.97 + level * 0.03);
     if (level > Math.max(0.012, v.floor * 4)) { v.spoken += dt; v.quietAt = 0; }
     else if (!v.quietAt) v.quietAt = now;
-    if (v.spoken >= LATCH_SPOKEN_MS && v.quietAt && now - v.quietAt >= LATCH_QUIET_MS) pttSend();
+    if (v.spoken >= LATCH_SPOKEN_MS && v.quietAt && now - v.quietAt >= (LiveUI.lookTurn ? LOOK_QUIET_MS : LATCH_QUIET_MS)) pttSend();
   }
   /** The turn is over: the server commits it (voice-live.js release). */
   function pttSend() {
     clearTimeout(LiveUI.latchT);
     clearInterval(LiveUI.paintT);
     LiveUI.latched = false;
+    LiveUI.lookTurn = false;
     LiveUI.lv = null;
     if (!LiveUI.held) return;
     LiveUI.held = false;
@@ -3221,11 +3246,13 @@
   function pttWarm() {
     clearTimeout(LiveUI.warmT);
     LiveUI.warmT = setTimeout(function warm() {
+      // opened ahead by eye contact and never talked into: it goes after LOOK_WARM_MS
+      if (LiveUI.warmOnly && LiveUI.active && !LiveUI.held) { LiveUI.warmOnly = false; liveStop("ptt-idle"); return; }
       if (!LiveUI.active || !LiveUI.ptt) return;
       // Still answering, or the voice still speaking: wait for it to finish, then the full spell.
       if (LiveUI.held || liveSpeaking() || LiveUI.state === "thinking" || LiveUI.state === "waiting") { LiveUI.warmT = setTimeout(warm, 5000); return; }
       liveStop("ptt-idle");
-    }, PTT_WARM_MS);
+    }, LiveUI.warmOnly ? LOOK_WARM_MS : PTT_WARM_MS);
   }
   /* ---------------------------------------------------------- screen actions
      What MINT AI's voice may change on this screen (UI control Phase 1): the

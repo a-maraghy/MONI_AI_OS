@@ -205,6 +205,23 @@ const SIDEWAYS = { cx: 0.5, cy: 0.5, w: 0.24, yaw: 55, pitch: -5 };
     let n = 0;
     for (let t = 700; t < 5000; t += 50) { g.vision(lk, t); if (g.audio(t % 1000 < 600 ? 0.1 : 0.002, t, false) === "start") n++; }
     check("  one turn, then 3 s cool-down: 2 starts in 4.3 s of on-and-off talk", n === 2, n);
+    // 2026-10-21 ("slow, inaccurate"): speech dips between sounds; a dip under 120 ms no longer restarts the onset
+    const dippy = (t) => (t >= 2200 && t < 3600 ? ((t - 2200) % 150 < 100 ? 0.08 : 0.003) : 0.003); // 100 ms sound, 50 ms dip
+    const dS = scene({ level: dippy });
+    check("  real speech dips between its sounds (100 ms on, 50 ms off): it still starts at the onset (0.1.12 restarted the 160 ms at every dip, so it started words later or never)", dS !== null && dS <= 2450, dS);
+    const old = (() => { const tr = L.createTracker({ bot: BOTPOS }), gate = L.createSpeakGate({ dipMs: 0 }); let start = null; for (let t = 0; t < 4000; t += 50) { if (t % 200 === 0) gate.vision(tr.push(L.summarize(result([face({ ...AT_BOT, jaw: 0.03 + (t > 2000 ? 0.25 * (Math.floor(t / 200) % 2) : 0) })])), t), t); if (gate.audio(dippy(t), t, false) === "start" && start === null) start = t; } return start; })();
+    check("  (the same speech with no dip allowance never starts: the cause)", old === null, old);
+    check("  typing (a click every 100 ms) while looking at the bot -> no (sound only half the time; speech needs 65 %)", scene({ level: (t) => (t >= 2200 && t < 3600 && t % 100 === 0 ? 0.2 : 0.003) }) === null);
+    check("  two clicks 150 ms apart (each 50 ms) -> still no", scene({ level: (t) => ((t >= 2500 && t < 2550) || (t >= 2700 && t < 2750) ? 0.2 : 0.003) }) === null);
+    // the pre-roll reaches back to where the spell of talking began, not the last word
+    const g2 = L.createSpeakGate();
+    g2.vision(lk, 0); g2.vision(lk, 700);
+    let st2 = null;
+    for (let t = 700; t < 3000; t += 50) { g2.vision(lk, t); const talk = t >= 300 + 700 && (t % 500 < 350); if (g2.audio(talk ? 0.1 : 0.002, t, false) === "start" && st2 === null) st2 = t; }
+    check("  onset(): where the spell of talking began (words 150 ms apart are one spell), for the pre-roll", st2 !== null && g2.onset() === 1000, JSON.stringify({ st2, onset: g2.onset() }));
+    const tr2 = L.createTracker({ bot: BOTPOS });
+    const f0 = tr2.push(L.summarize(result([face(AT_BOT)])), 0);
+    check("  facingNow: turned to the bot this frame (the microphone opens then, before atBot's 0.5 s), atBot not yet", f0.facingNow === true && f0.atBot === false, JSON.stringify(f0));
   }
 
   section("look and speak with a real face's numbers (2026-10-21: it never started on a laptop)");
@@ -772,7 +789,7 @@ const SIDEWAYS = { cx: 0.5, cy: 0.5, w: 0.24, yaw: 55, pitch: -5 };
           r.vl = typeof window.VoiceLive.pause === "function";
           return r;
         });
-        check("look and speak and a reply's pause are wired to the voice: lookTalk on the hold-to-talk path, VoiceLive.pause, the read-aloud pause", hk.hooks === "busy,ind,listening,off,pause,ready,speak,speaking" && hk.speak === 1 && JSON.stringify(hk.paused) === "[true,false]" && hk.lookTalk && hk.vl && hk.busy === false, JSON.stringify(hk));
+        check("look and speak and a reply's pause are wired to the voice: lookTalk on the hold-to-talk path (+ feed, warm), VoiceLive.pause, the read-aloud pause", hk.hooks === "busy,feed,ind,listening,off,pause,ready,speak,speaking,warm" && hk.speak === 1 && JSON.stringify(hk.paused) === "[true,false]" && hk.lookTalk && hk.vl && hk.busy === false, JSON.stringify(hk));
         const offc = await dk.page.evaluate(() => { window.__calls.length = 0; window.__mp.hooks().off(); return window.__calls.map((c) => c[0]); });
         check("  in the app the page's Off asks the app (presence_off); camera use is reported (presence_status)", offc.includes("presence_off") && away.status >= 1, JSON.stringify(offc));
         const csp2 = await dk.page.evaluate(() => window.__csp);
