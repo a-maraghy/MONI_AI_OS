@@ -153,7 +153,7 @@ pub type Rect = (i32, i32, i32, i32);
 /// The foreground window, as far as the full-screen check needs it.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct FrontWin {
-    /// The window itself (HWND as a number; 0 unknown): the companion's perch remembers which window it sits on.
+    /// The window itself (HWND as a number; 0 unknown): when it changes, the companion puts itself on top again.
     pub hwnd: isize,
     /// Its root owner's window class.
     pub class: String,
@@ -250,7 +250,7 @@ mod tests {
         assert!(should_toast(&Seen { focus: true, ..seen(Mode::Floating) }, false));
         assert!(should_toast(&Seen { fullscreen: true, ..seen(Mode::Floating) }, false));
         assert!(should_toast(&Seen { locked: true, ..seen(Mode::Floating) }, false));
-        // Companion: seen while it is out; a toast when it ducked out (hidden) for a full-screen app or a meeting.
+        // Companion: seen while it is out; a toast when it ducked out (hidden) for a full-screen app.
         assert!(!should_toast(&seen(Mode::Companion), false));
         assert!(should_toast(&Seen { hidden: true, ..seen(Mode::Companion) }, false));
         assert!(should_toast(&Seen { fullscreen: true, ..seen(Mode::Companion) }, false));

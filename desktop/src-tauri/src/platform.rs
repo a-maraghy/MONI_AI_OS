@@ -361,8 +361,8 @@ mod imp {
     }
 
     /* ---------------------------------------------------------- Companion mode (companion.rs)
-       Window geometry only: the monitors and their DPI, where the taskbars are and whether they auto-hide,
-       moving our own small window, and Windows' record of which apps have the camera or microphone open.
+       Window geometry only: the monitors and their DPI, keeping our own small window on top, and Windows'
+       record of which apps have the camera or microphone open (eye contact).
        Nothing here looks at what any window shows. */
 
     /// Every monitor: its rectangle, work area and scale (its effective DPI / 96). From any thread.
@@ -391,68 +391,14 @@ mod imp {
             .collect()
     }
 
-    /// The taskbars as they are now: the main one (its edge from SHAppBarMessage) and the ones on other
-    /// monitors (Shell_SecondaryTrayWnd; their edge from their rectangle). Auto-hide is one setting for all.
-    pub fn taskbars() -> Vec<crate::companion::Taskbar> {
-        use windows::Win32::UI::Shell::{SHAppBarMessage, ABE_BOTTOM, ABE_LEFT, ABE_RIGHT, ABE_TOP, ABM_GETSTATE, ABM_GETTASKBARPOS, ABS_AUTOHIDE, APPBARDATA};
-        use crate::companion::{edge_of, Edge, Taskbar};
-        let mut ab = APPBARDATA { cbSize: core::mem::size_of::<APPBARDATA>() as u32, ..Default::default() };
-        let state = unsafe { SHAppBarMessage(ABM_GETSTATE, &mut ab) } as u32;
-        let autohide = state & ABS_AUTOHIDE != 0;
-        let rect_of = |h: HWND| -> Option<crate::layout::Rect> {
-            let mut rc = RECT::default();
-            unsafe { GetWindowRect(h, &mut rc) }.ok()?;
-            Some(crate::layout::Rect { x: rc.left, y: rc.top, w: (rc.right - rc.left).max(0) as u32, h: (rc.bottom - rc.top).max(0) as u32 })
-        };
-        let mon_of = |h: HWND| -> (isize, crate::layout::Rect) {
-            let m = unsafe { MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST) };
-            let r = monitor_rect(m).map(|(l, t, r, b)| crate::layout::Rect { x: l, y: t, w: (r - l).max(0) as u32, h: (b - t).max(0) as u32 }).unwrap_or_default();
-            (m.0 as isize, r)
-        };
-        let mut out = Vec::new();
-        if let Ok(main) = unsafe { FindWindowW(windows::core::w!("Shell_TrayWnd"), PCWSTR::null()) } {
-            if !main.0.is_null() {
-                if let Some(rect) = rect_of(main) {
-                    let (monitor, mr) = mon_of(main);
-                    let mut pos = APPBARDATA { cbSize: core::mem::size_of::<APPBARDATA>() as u32, ..Default::default() };
-                    let edge = if unsafe { SHAppBarMessage(ABM_GETTASKBARPOS, &mut pos) } != 0 {
-                        match pos.uEdge {
-                            ABE_TOP => Edge::Top,
-                            ABE_LEFT => Edge::Left,
-                            ABE_RIGHT => Edge::Right,
-                            ABE_BOTTOM => Edge::Bottom,
-                            _ => edge_of(rect, mr),
-                        }
-                    } else {
-                        edge_of(rect, mr)
-                    };
-                    out.push(Taskbar { monitor, edge, rect, autohide });
-                }
-            }
-        }
-        let mut after: Option<HWND> = None;
-        for _ in 0..8 {
-            let Ok(h) = (unsafe { FindWindowExW(None, after, windows::core::w!("Shell_SecondaryTrayWnd"), PCWSTR::null()) }) else { break };
-            if h.0.is_null() {
-                break;
-            }
-            after = Some(h);
-            if let Some(rect) = rect_of(h) {
-                let (monitor, mr) = mon_of(h);
-                out.push(Taskbar { monitor, edge: edge_of(rect, mr), rect, autohide });
-            }
-        }
-        out
-    }
-
-    /// Move our window (no size, no z-order, no activation change), from any thread: posted to the window's
-    /// own thread (SWP_ASYNCWINDOWPOS), never waited on.
-    pub fn move_window(ours: isize, x: i32, y: i32) {
-        use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER};
+    /// Put our window on top of every other always-on-top window again (no move, no size, no activation),
+    /// from any thread: posted to the window's own thread (SWP_ASYNCWINDOWPOS), never waited on.
+    pub fn to_top(ours: isize) {
+        use windows::Win32::UI::WindowsAndMessaging::{SetWindowPos, HWND_TOPMOST, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE};
         if ours == 0 {
             return;
         }
-        let _ = unsafe { SetWindowPos(hwnd_of(ours), None, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_ASYNCWINDOWPOS) };
+        let _ = unsafe { SetWindowPos(hwnd_of(ours), Some(HWND_TOPMOST), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_ASYNCWINDOWPOS) };
     }
 
     /// Which apps Windows' privacy settings record as using the camera ("webcam") or the microphone now
@@ -587,10 +533,7 @@ mod imp {
     pub fn monitors() -> Vec<crate::companion::Monitor> {
         Vec::new()
     }
-    pub fn taskbars() -> Vec<crate::companion::Taskbar> {
-        Vec::new()
-    }
-    pub fn move_window(_ours: isize, _x: i32, _y: i32) {}
+    pub fn to_top(_ours: isize) {}
     pub fn cap_use(_kind: &str) -> Vec<crate::companion::CapUse> {
         Vec::new()
     }

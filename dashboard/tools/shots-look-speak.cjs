@@ -35,7 +35,7 @@ const LABEL = { arming: "Ready", ready: "Ready to talk", listening: "Listening",
     const L = LAYM.windowSize({ mode: "floating", size: "L" });
     const LAYOUTS = {
       floating: { state: { mode: "floating", size: "L", peekOpen: true }, size: L },
-      companion: { state: { mode: "companion", peekOpen: false, companion: { perch: "both", sessionBots: false, stance: "stand", lean: 0, openSide: "left", ducked: false } }, size: { w: 264, h: 140 } },
+      companion: { state: { mode: "companion", peekOpen: false, companion: { stayOnMonitor: false, ducked: false } }, size: { w: 176, h: 160 } },
     };
     for (const scheme of ["dark", "light"]) {
       for (const lay of ["floating", "companion"]) {

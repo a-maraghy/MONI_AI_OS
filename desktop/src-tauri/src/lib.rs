@@ -8,7 +8,7 @@
 //!   - the modes: Floating (a box in a corner, on top), Peek (hidden until
 //!     called, then on top), Desktop layer (at the bottom of the window stack,
 //!     above the icons; behind the icons only as an Experimental switch), and
-//!     Companion (the bot out of its box, on the taskbar or the window in front:
+//!     Companion (the bot alone, at the top centre of the monitor you are working on, on top of every app:
 //!     companion.rs, companion_host.rs);
 //!   - per-pixel click-through (hit.rs), from the regions the page reports;
 //!   - global hotkeys, remappable: hold Ctrl+Space to talk, Ctrl+Alt+M show /
@@ -351,7 +351,7 @@ fn apply(app: &AppHandle, shared: &Shared, focus_composer: bool) {
             Mode::Floating => !a.hidden,
             Mode::Peek => a.peek_open,
             Mode::Desktop => true,
-            // Hidden only while it ducked out (a full-screen app, a meeting, the lock screen).
+            // Hidden only while it ducked out (a full-screen video or game on its monitor, the lock screen).
             Mode::Companion => a.peek_open || a.comp.ducked.is_none(),
         };
         // A Windows Hello sign-in in progress keeps it on top whatever the mode (webauthn_ceremony).
@@ -735,7 +735,7 @@ fn build_menu(app: &AppHandle, shared: &Shared) -> tauri::Result<Menu<tauri::Wry
     let m_float = CheckMenuItem::with_id(app, "mode:floating", "Floating, always on top", true, a.settings.mode == Mode::Floating, None::<&str>)?;
     let m_peek = CheckMenuItem::with_id(app, "mode:peek", "Hidden until called (peek)", true, a.settings.mode == Mode::Peek, None::<&str>)?;
     // Companion: on and off from here (off goes back to the mode it came from).
-    let m_comp = CheckMenuItem::with_id(app, "mode:companion", "Companion: MINT AI out on your desk", true, a.settings.mode == Mode::Companion, None::<&str>)?;
+    let m_comp = CheckMenuItem::with_id(app, "mode:companion", "Companion: MINT AI at the top of the screen", true, a.settings.mode == Mode::Companion, None::<&str>)?;
     let focus_i = CheckMenuItem::with_id(app, "focus", format!("Focus mode: just the core\t{}", a.settings.hotkeys.focus), true, a.settings.focus, None::<&str>)?;
     let glance_i = CheckMenuItem::with_id(app, "glance", "Glance cards beside MINT AI", true, a.settings.glance, None::<&str>)?;
     // Eye contact: the camera's one switch -- off at once; on directly only once it was switched on in Settings.
@@ -1172,8 +1172,8 @@ fn set_glance(app: AppHandle, show: Option<bool>, pin: Option<Pin>, unpin: Optio
     let _ = app.emit_to(MAIN, "mint://state", payload);
 }
 
-/// Companion mode, from the page: "open" (a click on the bot: its Command Center, Peek), "doze" / "wake"
-/// (it goes back to the taskbar to sleep). Nothing else (companion_host::page_says).
+/// Companion mode, from the page: "open" (a click on the bot: its Command Center, Peek). Nothing else
+/// (companion_host::page_says).
 #[tauri::command]
 fn companion(app: AppHandle, kind: String, shared: State<'_, Shared>) {
     companion_host::page_says(&app, &shared, &kind);
@@ -1391,7 +1391,7 @@ static BLUR_APP: std::sync::OnceLock<AppHandle> = std::sync::OnceLock::new();
 fn blur_glass(a: &App, opacity: u8) -> bool {
     // Behind the icons, or about to be (apply asks for the state before it moves the window there).
     let behind = a.behind_icons || (a.settings.mode == Mode::Desktop && a.settings.experimental_behind_icons && !a.peek_open);
-    // Companion: never -- the bot has its own backplate, and its window moves (a shown blur window never may).
+    // Companion: never -- the bot has its own backplate, and its window moves between monitors (a shown blur window never may).
     let glass = a.settings.mode != Mode::Companion && acrylic::live() && blur::page_glass(a.settings.real_blur, &acrylic::system(), opacity, behind);
     acrylic::set_glass(glass, a.ink == Ink::Light);
     glass

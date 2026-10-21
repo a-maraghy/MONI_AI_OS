@@ -1,3 +1,5 @@
+> **Retired in 0.1.13 (2026-10-21).** The user: "Companion mode is overdone. I just want the core showing at the centre top of the screen, on top of all apps, always." Companion mode is now just the core at the top centre of the active monitor (see `mockups/companion-simple/` and desktop/README.md). This design is kept as history.
+
 # Desk companion mode — design note
 
 Approved by the user 2026-10-20 ("the bot steps out of its box and lives on the desktop, like EMO on a real

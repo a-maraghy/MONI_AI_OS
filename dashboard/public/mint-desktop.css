@@ -345,16 +345,20 @@ html.cc-desk.dk-focus .dk-glance, html.cc-desk.dk-focus .dk-glbtn { display: non
   html.cc-desk .dk-gl-bar i { transition: none; }
 }
 
-/* Companion mode (mint-desktop-companion.js): the bot out of its box, in a small window the app moves along the
-   taskbar and the window in front. Only the bot (one canvas: its head, its own backplate, the session bots by it)
-   shows; the Command Center's pieces rest until a click on the bot opens them (the app's Peek). No glass here. */
+/* Companion mode (mint-desktop-companion.js): the bot alone, in a small topmost window the app keeps at the top
+   centre of the monitor you are working on. Only the bot (one canvas: its head and its own backplate) shows; the
+   Command Center's pieces rest until a click on the bot opens them (the app's Peek). No glass here. A quick fade
+   when it moves to another monitor or ducks out of full screen (dk-comp-faded). */
 #dk-comp { display: none; }
-html.cc-desk.dk-comp-out body > *:not(#dk-comp):not(#mp-cam) { visibility: hidden !important; } /* (eye contact's "Camera on" pill, its ring and caption stay: the camera is open) */
-html.cc-desk.dk-comp-out #dk-comp:not([hidden]) { display: block; position: fixed; inset: 0; z-index: 40; pointer-events: none; visibility: visible; }
-#dk-comp-cv, #dk-comp-fx { position: absolute; left: 0; top: 0; width: 100%; height: 100%; }
-.dk-comp-hit, .dk-comp-kid { position: absolute; box-sizing: border-box; margin: 0; padding: 0; border: 0; border-radius: 50%; background: transparent; cursor: pointer; pointer-events: auto; }
-.dk-comp-hit:focus-visible, .dk-comp-kid:focus-visible { outline: 2px solid var(--dk-accent); outline-offset: 2px; }
-.dk-comp-kids { position: absolute; inset: 0; pointer-events: none; }
+html.cc-desk.dk-comp-out body > *:not(#dk-comp):not(#mp-cam) { visibility: hidden !important; } /* (eye contact's "Camera on" pill stays: the camera is open) */
+html.cc-desk.dk-comp-out #dk-comp:not([hidden]) { display: block; position: fixed; inset: 0; z-index: 40; pointer-events: none; visibility: visible; transition: opacity .16s ease; }
+html.cc-desk.dk-comp-out #mp-cam { transition: opacity .16s ease; }
+html.cc-desk.dk-comp-out.dk-comp-faded #dk-comp, html.cc-desk.dk-comp-out.dk-comp-faded #mp-cam { opacity: 0; }
+html.cc-desk.dk-comp-out.dk-comp-faded #dk-comp .dk-comp-hit, html.cc-desk.dk-comp-out.dk-comp-faded #mp-cam { pointer-events: none; }
+html.dk-still #dk-comp, html.dk-still #mp-cam { transition: none !important; }
+#dk-comp-cv { position: absolute; left: 0; top: 0; width: 100%; height: 100%; }
+.dk-comp-hit { position: absolute; box-sizing: border-box; margin: 0; padding: 0; border: 0; border-radius: 50%; background: transparent; cursor: pointer; pointer-events: auto; }
+.dk-comp-hit:focus-visible { outline: 2px solid var(--dk-accent); outline-offset: 2px; }
 .dk-comp-hint { position: absolute; transform: translateX(-50%); padding: 4px 9px; border-radius: 10px; font: 600 11px/1.1 system-ui, sans-serif; white-space: nowrap;
   background: var(--dk-pill); color: var(--dk-tx); border: 1px solid var(--dk-pill-b); opacity: 0; transition: opacity .18s; pointer-events: none; }
 html.dk-comp-attn .dk-comp-hint { opacity: 1; }

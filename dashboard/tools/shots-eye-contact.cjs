@@ -240,7 +240,7 @@ function harness() {
       const c2 = await browser.newContext({ viewport: { width: 560, height: 760 }, colorScheme: "light" });
       const p2 = await c2.newPage();
       await p2.addInitScript(() => {
-        const S = { mode: "floating", focus: false, hotkeys: { talk: "Ctrl+Space", show: "Ctrl+Alt+M", focus: "Ctrl+Alt+F", live: "Ctrl+Alt+L", stop: "Ctrl+Alt+Esc" }, glance: true, companion: { perch: "both", session_bots: true, stay_on_monitor: false, side: 0.8 }, per_monitor: {}, presence: { camera: false, look_and_speak: false, release_on_saver: true, consented: false }, battery_saver: true, real_blur: true, autostart: true, check_updates: true };
+        const S = { mode: "floating", focus: false, hotkeys: { talk: "Ctrl+Space", show: "Ctrl+Alt+M", focus: "Ctrl+Alt+F", live: "Ctrl+Alt+L", stop: "Ctrl+Alt+Esc" }, glance: true, companion: { stay_on_monitor: false }, per_monitor: {}, presence: { camera: false, look_and_speak: false, release_on_saver: true, consented: false }, battery_saver: true, real_blur: true, autostart: true, check_updates: true };
         window.__TAURI__ = { core: { invoke: (c) => Promise.resolve(c === "settings_get" ? { settings: S, version: "0.1.12", talkKey: "Ctrl+Space", liveKey: "Ctrl+Alt+L", monitors: [], monitorKey: "default" } : c === "machine_status" ? { linked: false } : null) }, event: { listen: () => Promise.resolve(() => {}) } };
       });
       await p2.goto("file://" + path.join(__dirname, "..", "..", "desktop", "dist", "settings.html") + "#eye-contact");

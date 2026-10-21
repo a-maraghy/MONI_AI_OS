@@ -270,44 +270,23 @@ Sounds
 - [ ] Short quiet chirps per role (MINT AI, builders, hired sessions…) when a session needs you or a brief arrives; nothing plays during a live call or while the voice speaks; nothing before the first click / key in the window.
 - [ ] Settings ▸ Sounds ▸ off: silence everywhere; on again: back.
 
-## 0.1.12 — Companion mode (design: mockups/desk-companion/DESIGN.md)
+## 0.1.13 — Companion mode, simple (replaces 0.1.12's desk companion)
 
-The laptop at 150 % with the Samsung LF27T35 at 100 % to its right, as every day. Tray ▸ **Companion: MINT AI out on your desk** (or Settings ▸ Mode ▸ Companion). Keep the app log open (`%LOCALAPPDATA%\MINT AI\logs\mint-desktop.log`, lines "companion: …").
+The laptop at 150 % with the Samsung LF27T35 at 100 % to its right, as every day. Tray ▸ **Companion: MINT AI at the top of the screen** (or Settings ▸ Mode ▸ Companion). Keep the app log open (`%LOCALAPPDATA%\MINT AI\logs\mint-desktop.log`, lines "companion: …").
 
-Where it sits
-- [ ] Switched on from Floating: the box goes; the bot appears standing on the **taskbar's top edge**, on its right part, feet on the edge, nothing of it over the taskbar's icons or the tray. Log: "companion: placed on Taskbar(Bottom) …".
-- [ ] Click a window (not maximized, with some room above it): after about half a second the bot **walks** along the taskbar toward it and **hops** up onto its top edge, a quarter in from its left. Click another window: it walks / hops over. A maximized window: it goes back to (or stays on) the taskbar.
-- [ ] Alt+Tab quickly through several windows: it does not chase each one; it moves once you settle (and not again within about 2.5 s of arriving, unless its window closes or moves).
-- [ ] Drag the window it sits on: it waits until you let go, then hops to the new top edge. Minimize or close that window: it leaves it.
-- [ ] Settings ▸ Where it sits ▸ **Taskbar**: it stays on the taskbar whatever is in front; **Windows**: on windows (taskbar only when a window cannot hold it); **Both** (default).
-- [ ] Taskbar on the **top** (if your Windows build allows it) / on the **left** or **right** (Windows 10, or a tool like ExplorerPatcher): it hangs under a top taskbar; it stands in the bottom corner against a side one.
-- [ ] Taskbar **auto-hide** on: the bot stands on the screen's bottom edge with the reveal strip free (move the mouse to the very bottom: the taskbar slides up as usual); when the taskbar is up the bot hops onto it, and back down when it hides.
-
-The second monitor and DPI
-- [ ] Click a window on the Samsung: the bot walks to the laptop's right edge, steps out, steps in at the Samsung's left edge **at the Samsung's size** (no giant or tiny bot, no blur), walks to the window and hops up. Back again the other way.
-- [ ] The bot's size looks the same on both screens (it is the same logical size at 150 % and 100 %); its hit circle matches what you see (hover the edge of the head on each screen).
-- [ ] Settings ▸ **Stay on this monitor** on: windows on the other monitor no longer pull it over; it stays on the monitor it is on. Tray ▸ Monitor ▸ the other one: it moves there and stays.
-- [ ] Unplug the Samsung while the bot is on it: it reappears on the laptop's taskbar; plug it back: nothing breaks.
-
-Never in the way
-- [ ] Click anywhere around the bot, right next to it, in the gaps between it and the session bots: every click goes to what is under it (title bars, the taskbar, the desktop). Only the bot and the session bots themselves catch the mouse.
-- [ ] Move the mouse towards the bot and stop just beside it: it **steps aside** (a short walk away from the cursor). Move fast across it: nothing happens. Rest the mouse **on** it: it looks up, "Click to open" shows; if you do not click within about 1.5 s it steps aside after all.
-- [ ] **Click** the bot: the usual Command Center opens as Peek on the bot's monitor, the composer focused; Esc or a click on empty space closes it and the bot is back where it was. Ctrl+Alt+M opens / closes the same Peek.
-- [ ] A **full-screen video** (YouTube in full screen, F11 in Chrome) on the bot's monitor: the bot ducks down and is gone; leave full screen: it pops up again. Full screen on the **other** monitor: the bot stays out (and does not follow the video there). A full-screen game: the same. Log "companion: ducks out: …" / "pops up again".
-- [ ] A **Teams / Zoom / Meet call with the camera on**: it ducks out within about 3 s and comes back after the call (camera off). With the camera off but the microphone on in the call: it ducks out too. A MINT AI live call of its own (Ctrl+Alt+L): it does **not** duck out. Note the app names the log shows if a meeting is not noticed — Windows records some apps under different names (Settings ▸ Privacy ▸ Camera / Microphone ▸ "Recent activity" lists them).
-- [ ] Lock the screen (Win+L) and unlock: it was hidden, it comes back.
-
-Alive
-- [ ] Now and then (every half minute or so, when nothing happens) it stretches or looks around; its eyes follow the mouse when the mouse is near.
-- [ ] A session finishes: it grins and hops; an approval goes through: a nod.
-- [ ] After 23:00 and a quiet minute (or ten quiet minutes in the day) it dozes — "z z z" — and, if it was on a window, it walks back to the taskbar first. Moving the mouse to it or a message wakes it.
-- [ ] Session bots: a session waiting on you (an approval, a question) walks in and stands beside the bot, its own head (by role); at most three (the longest waiting first); click one: the Command Center opens on that session. When it is back at work it wanders off. Settings ▸ Session bots off: none come.
-
-Performance and power
-- [ ] Task Manager while it walks back and forth: MINT AI's process and its WebView2 stay low (the window is 264 × 140 logical px, moved, never a full-screen overlay); idle: near zero.
-- [ ] On battery with Battery saver on (or Windows' Energy saver): it no longer walks — it jumps straight to its new place; its face is a still picture. Plugged in again: it walks.
-- [ ] **No blur** anywhere in Companion mode (no frosted patches, no grey squares), also after switching from Floating with glance cards shown. Its own backplate keeps it readable on a light and a dark wallpaper.
-- [ ] Switch back with the tray item: the mode it came from (Floating, Desktop layer or Peek) returns where it was.
+- [ ] Switched on from Floating: the box goes; only the core shows, at the **top centre** of the monitor you are working on, a little under the screen's top edge, about 1 cm across on the laptop (about 104 px, sharp at 150 %, not blurry or cut). Log: "companion: placed: top centre of monitor …".
+- [ ] It stays **on top of every app**: click into Chrome, Outlook, Excel, a maximized window, Task Manager set to "Always on top", a picture-in-picture video — the core is still over them within ~3 s at most.
+- [ ] Click-through: clicks on a browser tab or a title bar next to the core land on them; only the core itself catches the mouse (hover shows "Click to open").
+- [ ] Click the core: the Command Center opens as Peek on that monitor, focused; Esc or a click on empty space closes it and the core is back at the top.
+- [ ] Click a window on the Samsung: after a moment the core fades out on the laptop and fades in at the top centre of the Samsung (100 %: the same size to the eye, not twice as big or small). Back to a laptop window: it comes back. A quick Alt+Tab there and back does not move it.
+- [ ] The desktop in front (Win+D): it follows the cursor's monitor.
+- [ ] Settings ▸ Companion ▸ **Stay on this monitor** on: it stays where it is whatever you use; off: it follows again.
+- [ ] Its states: talk to it (Ctrl+Space) — listening, thinking, speaking show on the core; an approval waiting — needs you. Offline (Wi-Fi off) shows too.
+- [ ] Eye contact on: the look-and-speak indications show on the core's face; the "Camera on" pill sits under the core and its Off button works.
+- [ ] A **full-screen video** (YouTube full screen, F11) or a game on the core's monitor: it fades away; leave full screen: it comes back. Full screen on the **other** monitor: it stays (and does not follow there). A Teams / Zoom call in a window: it stays.
+- [ ] Win+L and back: it is there again. Battery saver / energy saver: it holds still (one frame, no fades).
+- [ ] Taskbar at the top (or a side), and changing the scale in Settings ▸ Display while it is out: it moves to the new top centre within a second.
+- [ ] **No blur** in Companion mode; Settings shows no "Where it sits" or "Session bots" any more. An upgrade from 0.1.12 with Companion on keeps Companion on.
 
 ## 0.1.12 — Eye contact, camera presence (design: mockups/eye-contact/DESIGN.md)
 
@@ -317,7 +296,7 @@ Off by default, opt-in, and only the app can switch it on
 - [ ] Fresh install / existing settings: tray ▸ **Camera presence** is unchecked; the webcam light never comes on; the log has "the profile's camera permission for https://os.mint-stack.com set to deny (ok)" at start.
 - [ ] Tray ▸ Camera presence (never switched on before): it does **not** switch on — Settings opens at **Eye contact** with the explanation. Tick Camera presence there, Save: the webcam light comes on within about 2 s, a small "Camera on · eye contact" pill shows top-left in the box, the tray tooltip ends "· camera on", the tray item reads "Camera presence (camera on now)". Log: "camera requested by the site: allowed (camera presence is on)".
 - [ ] Tray ▸ Camera presence again: **off at once** — the webcam light goes out within a second, the pill goes. Tray ▸ Camera presence once more: on directly now (it was switched on in Settings before).
-- [ ] The pill's own **Off** button (top-left in the box, and as a small dot + Off beside the bot in Companion mode): one click switches the camera off — the light goes out within a second, the pill goes, the tray item is unchecked. The click lands on the button (it does not fall through to the window behind).
+- [ ] The pill's own **Off** button (top-left in the box, and as a small dot + Off under the core in Companion mode): one click switches the camera off — the light goes out within a second, the pill goes, the tray item is unchecked. The click lands on the button (it does not fall through to the window behind).
 - [ ] No Windows / WebView2 camera prompt ever appears (the app answers for its own site only). Settings ▸ Privacy & security ▸ Camera ▸ "Recent activity" lists MINT AI (msedgewebview2) only while it is on.
 - [ ] In MINT AI ▸ Settings ▸ Appearance ▸ Eye contact (inside the app): the switches show the app's state, say "switch it on in the app's Settings or tray"; **Switch off** works; there is no way to switch it on from that page.
 - [ ] Off, then (devtools in the app, if available, or a test page) a `navigator.mediaDevices.getUserMedia({video:true})` from the site: refused (NotAllowedError), no light. Log: "camera requested … refused".
@@ -328,7 +307,7 @@ It looks at you
 - [ ] Look away at the second monitor for a few seconds and back: it keeps looking where you are; the glance cards **step back** (dim, slightly smaller) after about a second and come **forward** when you look at the laptop screen again. Hovering a card brings it forward too.
 - [ ] Walk away (out of the camera's view) with nothing waiting on you: after about 8 s it dozes ("z z z") — not after 10 minutes. Come back and sit down: it wakes and looks **up** at you, then meets your eyes.
 - [ ] Sitting there, not looking at it, in the daytime: it does not doze. After 23:00: it dozes after a quiet minute unless you look at it; looking at it wakes it.
-- [ ] Companion mode: the companion bot on the taskbar does the same (eyes, doze, wake); dozing on a window it walks back to the taskbar first.
+- [ ] Companion mode: the core at the top of the screen does the same (eyes, doze, wake).
 - [ ] Two people in view (a colleague behind you): it keeps looking at the nearer face (you), does not jump between you.
 
 Held while you are away
@@ -343,7 +322,7 @@ Look and speak (Settings ▸ Eye contact ▸ Look and speak, separately)
 
 Released when it should be
 - [ ] Win+L: the light goes out at once; unlock: back within ~2 s. Floating put away (tool ▸ hide): light out at once. Peek closed (the window hidden) or the Desktop layer fully covered: out after ~10 s (a quick switch does not flash it); note whether WebView2 reports a covered Desktop layer as hidden at all.
-- [ ] Join a Teams / Zoom call with its camera: MINT AI lets go within ~3 s (the meeting app gets the camera; the companion ducks out as before); after the call it comes back.
+- [ ] Join a Teams / Zoom call with its camera: MINT AI lets go within ~3 s (the meeting app gets the camera; the companion stays at the top); after the call it comes back.
 - [ ] Energy saver on (Settings ▸ System ▸ Power): light out (default "let go in energy saver"). Untick that in Settings: kept, 2 looks a second. On battery (saver off): kept, 2 looks a second.
 - [ ] Quit MINT AI from the tray: light out.
 
@@ -358,4 +337,4 @@ Performance
 - [ ] Reload the app: the widget is still with its reply in the conversation history; a pinned widget is still on the board.
 - [ ] An approval widget: Approve asks for Windows Hello every time; Deny works.
 - [ ] Lock the layout (the board's control): nothing rearranges until unlocked. Settings shows the pin / dismiss counts and Reset.
-- [ ] Companion mode: while the bot is out on the desk no widget card shows anywhere and nothing catches the mouse but the bot; open the Command Center from the bot: the board is there, up to date.
+- [ ] Companion mode: while the core is at the top of the screen no widget card shows anywhere and nothing catches the mouse but the bot; open the Command Center from the bot: the board is there, up to date.

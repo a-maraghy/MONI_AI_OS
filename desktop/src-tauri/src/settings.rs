@@ -3,7 +3,6 @@
 //! No secrets live here -- the sign-in is the webview's own cookie (its profile,
 //! which Windows keeps per user).
 
-use crate::companion::PerchPref;
 use crate::layout::{Corner, Mode, Size};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -77,22 +76,13 @@ impl Default for PerMonitor {
     }
 }
 
-/// Companion mode (companion.rs): where the bot perches, whether the session bots gather by it, whether it
-/// stays on one monitor (`Settings::monitor`, the one it is on when this is switched on) instead of following
-/// the active one, and where along the taskbar it sits (0 left .. 1 right; where it last stepped to).
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// Companion mode (companion.rs): the bot at the top centre of the monitor you are working on, or -- with
+/// `stay_on_monitor` -- of the one it is on when this is switched on. (0.1.12's "perch", "session_bots" and
+/// "side" are gone: an old settings file still loads, and they are dropped the next time it is saved.)
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Companion {
-    pub perch: PerchPref,
-    pub session_bots: bool,
     pub stay_on_monitor: bool,
-    pub side: f64,
-}
-
-impl Default for Companion {
-    fn default() -> Self {
-        Companion { perch: PerchPref::Both, session_bots: true, stay_on_monitor: false, side: crate::companion::DEFAULT_SIDE }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -192,10 +182,6 @@ impl Settings {
             }
         }
         self.claude_path = self.claude_path.trim().trim_matches('"').chars().filter(|c| !c.is_control()).take(400).collect();
-        if !self.companion.side.is_finite() {
-            self.companion.side = crate::companion::DEFAULT_SIDE;
-        }
-        self.companion.side = self.companion.side.clamp(0.0, 1.0);
         if self.before_companion == Mode::Companion {
             self.before_companion = Mode::Floating;
         }
@@ -385,17 +371,25 @@ mod tests {
 
     #[test]
     fn companion_settings() {
-        // A 0.1.11 settings file (no "companion"): the defaults -- both perches, the session bots on, following
-        // the active monitor, on the right part of the taskbar.
+        // A 0.1.11 settings file (no "companion"): follow the active monitor.
         let s = Settings::from_json(r#"{"mode":"floating"}"#);
         assert_eq!(s.companion, Companion::default());
-        assert_eq!((s.companion.perch, s.companion.session_bots, s.companion.stay_on_monitor), (PerchPref::Both, true, false));
+        assert!(!s.companion.stay_on_monitor);
         assert_eq!(s.before_companion, Mode::Floating);
-        let s = Settings::from_json(r#"{"mode":"companion","companion":{"perch":"taskbar","session_bots":false,"stay_on_monitor":true,"side":7},"before_companion":"desktop"}"#);
+        // A 0.1.12 file: its perch, session bots and side are dropped; companion mode and "stay" are kept.
+        let old = r#"{"mode":"companion","companion":{"perch":"taskbar","session_bots":false,"stay_on_monitor":true,"side":7},"before_companion":"desktop"}"#;
+        let s = Settings::from_json(old);
         assert_eq!(s.mode, Mode::Companion);
-        assert_eq!((s.companion.perch, s.companion.session_bots, s.companion.stay_on_monitor, s.companion.side), (PerchPref::Taskbar, false, true, 1.0));
+        assert!(s.companion.stay_on_monitor);
         assert_eq!(s.before_companion, Mode::Desktop);
-        assert_eq!(Settings::from_json(&s.to_json()), s);
+        let saved = s.to_json();
+        assert!(!saved.contains("perch") && !saved.contains("session_bots") && !saved.contains("\"side\""), "{}", saved);
+        assert_eq!(Settings::from_json(&saved), s);
+        // Its other values do not matter to it: a 0.1.12 default file follows the active monitor.
+        let s = Settings::from_json(r#"{"companion":{"perch":"both","session_bots":true,"stay_on_monitor":false,"side":0.8}}"#);
+        assert_eq!(s.companion, Companion::default());
+        // Garbage in the block: the default.
+        assert_eq!(Settings::from_json(r#"{"companion":{"stay_on_monitor":"yes"}}"#).companion, Companion::default());
         assert_eq!(Settings::from_json(r#"{"before_companion":"companion"}"#).before_companion, Mode::Floating, "the switch never goes back to Companion");
     }
 

@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "remote-site",
-  "description": "What the site (os.mint-stack.com, the Command Center's desktop render mode and its sign-in pages) may ask of the app: report its hit regions, its glass surfaces (for the real blur behind them) and status, ask for a toast, hide Peek, drag the box, use the box's tools, show / hide or pin the glance cards (a clamped position, remembered per monitor), say what the companion bot does (open its Command Center, doze, wake), say whether it holds the camera and switch camera presence off (never on), open the full Command Center, start the browser sign-in, say a Windows Hello sign-in starts or ends. Nothing that runs a program, reads a file or changes the app's other settings.",
+  "description": "What the site (os.mint-stack.com, the Command Center's desktop render mode and its sign-in pages) may ask of the app: report its hit regions, its glass surfaces (for the real blur behind them) and status, ask for a toast, hide Peek, drag the box, use the box's tools, show / hide or pin the glance cards (a clamped position, remembered per monitor), open the Command Center from the companion bot (a click on it), say whether it holds the camera and switch camera presence off (never on), open the full Command Center, start the browser sign-in, say a Windows Hello sign-in starts or ends. Nothing that runs a program, reads a file or changes the app's other settings.",
   "windows": [
     "mint"
   ],

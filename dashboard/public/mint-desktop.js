@@ -22,8 +22,8 @@
  *     denies, never approves);
  *   - on the sign-in pages, makes the card float on the desktop and offers
  *     "sign in in your browser" (the app's one-time-code hand-off);
- *   - Companion mode (2026-10-20): the bot out of its box, in a small window the app moves along the taskbar
- *     and the window in front -- public/mint-desktop-companion.js draws it; a click on it opens the app's
+ *   - Companion mode (simplified 2026-10-21): the bot alone, in a small topmost window the app keeps at the top
+ *     centre of the monitor you are working on -- public/mint-desktop-companion.js draws it; a click on it opens the app's
  *     Peek (st.peekOpen), laid out as Peek.
  *
  * The bridge to the app is Tauri's (window.__TAURI__, injected by the app
@@ -112,7 +112,7 @@
     if (comp) comp.setOn(compOut() && !!$("cc"), st.companion || null);
     if (compOut() && $("cc")) {
       // The bot out on the desk: the Command Center's own pieces stay hidden (mint-desktop.css); the core's spot is the bot's.
-      var cl = CMP.layout(window.innerWidth, window.innerHeight, st.companion && st.companion.stance, st.companion && st.companion.openSide, st.companion && st.companion.lean);
+      var cl = CMP.layout(window.innerWidth, window.innerHeight);
       L = { mode: "companion", W: cl.W, H: cl.H, cx: cl.cx, cy: cl.cy, R: cl.R, box: { x: 0, y: 0, w: cl.W, h: cl.H }, glance: null, panel: null, card: null, tools: null };
       if (chatOpen()) closeChat();
       return report(true);
@@ -720,7 +720,7 @@
   // Eye contact's "Camera on" pill out on the desk (companion mode): added to the bot's own regions, so its Off button works there too.
   function withCam(regs) {
     var cam = document.getElementById("mp-cam");
-    if (!cam || !shown(cam)) return regs;
+    if (!cam || !shown(cam) || document.documentElement.classList.contains("dk-comp-faded")) return regs;
     var pr = cam.getBoundingClientRect();
     if (!(pr.width > 0 && pr.height > 0)) return regs;
     var rad = parseFloat(getComputedStyle(cam).borderTopLeftRadius) || 0;
@@ -728,7 +728,7 @@
   }
   function measure() {
     if (!L) return [];
-    // Companion out: the bot and the session bots by it, nothing else.
+    // Companion out: the bot (and the "Camera on" pill), nothing else.
     if (compOut() && comp) return withCam(comp.regions().map(function (r) { return { x: r.x, y: r.y, w: r.w, h: r.h, r: r.r }; }));
     var full = peekish() && st.peekOpen;
     // (Open counts from the first frame: an overlay fading in is already there to be clicked.)

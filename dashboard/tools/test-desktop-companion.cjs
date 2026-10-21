@@ -1,18 +1,19 @@
 #!/usr/bin/env node
 "use strict";
 /**
- * Companion mode in the MINT AI desktop app (2026-10-20; mockups/desk-companion/DESIGN.md): the page side,
- * public/mint-desktop-companion.js, and its seams with mint-desktop.js and the app.
+ * Companion mode in the MINT AI desktop app, simplified (2026-10-21; the user: "I just want the core showing at
+ * the centre top of the screen, on top of all apps, always"): the page side, public/mint-desktop-companion.js,
+ * and its seams with mint-desktop.js and the app.
  *
  *     NODE_PATH=/opt/moni-dashboard/node_modules PLAYWRIGHT=/path/to/node_modules/playwright \
  *       node dashboard/tools/test-desktop-companion.cjs
  *
- * Pure parts first (the numbers against companion.rs, the layout, the motion, the legs, the session bots
- * gathering, the idle moments, the hit regions); then the app's sources (the command, the tray switch, no blur
- * in this mode, the loop); then headless Chromium on a scratch copy of the server with a stand-in for the app's
- * bridge: the bot out in its small window, the Command Center's pieces resting, only the bot catching the mouse,
- * a click opening its Peek, the session bots walking in and off, holding still -- with no page errors or CSP
- * violations.
+ * Pure parts first (the numbers against companion.rs, the layout, the hit region); then the app's sources (the
+ * command, the tray switch, no blur, the loop: top centre, fade across monitors, on top, full-screen duck, and
+ * none of 0.1.12's perching / walking / session bots left); Settings; then headless Chromium on a scratch copy of
+ * the server with a stand-in for the app's bridge: the bot alone at the top of its small window, only it catching
+ * the mouse, the "Camera on" pill under it, its states, the fades, a click opening its Peek, holding still --
+ * with no page errors or CSP violations.
  */
 const scratch = require("./scratch-server.cjs"); // first: sets MONI_DATA_DIR
 const path = require("path");
@@ -21,7 +22,7 @@ const fs = require("fs");
 const ROOT = path.join(__dirname, "..");
 const D = path.join(ROOT, "..", "desktop");
 const C = require(path.join(ROOT, "public", "mint-desktop-companion.js"));
-const APP_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36 Edg/129.0.0.0 MintDesktop/0.1.12";
+const APP_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36 Edg/129.0.0.0 MintDesktop/0.1.13";
 
 let passed = 0;
 let failed = 0;
@@ -35,128 +36,56 @@ function check(name, cond, detail) {
   }
 }
 const section = (t) => console.log("\n" + t);
-const near = (a, b, e) => Math.abs(a - b) <= (e || 0.5);
-const S = (st, name, extra) => Object.assign({ session_id: name, name, status: st, cwd: "/root/moni" }, extra || {});
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 (async () => {
   section("the numbers: the page and the app (companion.rs) agree");
+  const rs = fs.readFileSync(path.join(D, "src-tauri", "src", "companion.rs"), "utf8");
   {
-    const rs = fs.readFileSync(path.join(D, "src-tauri", "src", "companion.rs"), "utf8");
-    const num = (k) => { const m = new RegExp("pub const " + k + ": f64 = ([0-9.]+);").exec(rs); return m ? Number(m[1]) : NaN; };
-    for (const k of ["WIN_W", "WIN_H", "FOOT", "BODY_R", "BODY_CY", "HANG_CY", "LEAN_DX"]) check("  " + k + " = " + C[k] + " on both sides", num(k) === C[k], num(k));
-    check("  the bot's head fits inside its hit circle, and the circle ends above the feet (never over what it stands on)", C.HEAD_R < C.BODY_R && C.BODY_CY - C.BODY_R >= 0 && C.BODY_CY - C.BODY_R <= 4);
-    check("  a small window: 264 x 140 logical px (not a full-screen overlay)", C.WIN_W * C.WIN_H < 40000);
+    const num = (k) => { const m = new RegExp("pub const " + k + ": (?:f64|u64) = ([0-9.]+);").exec(rs); return m ? Number(m[1]) : NaN; };
+    for (const k of ["WIN_W", "WIN_H", "BODY_R", "BODY_CY", "FADE_MS"]) check("  " + k + " = " + C[k] + " on both sides", num(k) === C[k], num(k));
+    check("  a small window (176 x 160 logical px), the bot about 104 px across (96-128)", C.WIN_W * C.WIN_H < 30000 && 2 * C.BODY_R >= 96 && 2 * C.BODY_R <= 128);
+    check("  the hit circle matches the drawn core (head + backplate show about 0.75 of its radius) and sits inside the window, a little under its top", Math.abs(0.75 * C.HEAD_R - C.BODY_R) <= 4 && C.BODY_CY - C.BODY_R >= 6 && C.BODY_CY + C.BODY_R < C.WIN_H && C.BODY_R <= C.WIN_W / 2);
   }
 
-  section("layout: standing on a shelf, hanging under a top taskbar; the session bots' slots");
+  section("layout and hit region");
   {
-    const L = C.layout(264, 140, "stand", "left");
-    check("standing: the head centred, BODY_CY above the feet (FOOT above the window's bottom)", L.cx === 132 && L.cy === 140 - C.FOOT - C.BODY_CY && !L.hang);
-    check("  three slots on the ground, the open side first (left), all inside the window", L.slots.length === C.MAX_HEADS && L.slots[0].x < L.cx && L.slots[1].x > L.cx && L.slots.every((s) => s.x - C.KID_R >= 0 && s.x + C.KID_R <= 264 && s.y + C.KID_R <= 140 - C.FOOT));
-    check("  the slots clear of the bot", L.slots.every((s) => Math.abs(s.x - L.cx) >= C.BODY_R + C.KID_R));
-    const R = C.layout(264, 140, "stand", "right");
-    check("  open side right: the first slot on the right", R.slots[0].x > R.cx);
-    const H = C.layout(264, 140, "hang", "left");
-    check("hanging: the head HANG_CY under the window's top", H.hang && H.cy === C.HANG_CY);
-    const Lf = C.layout(264, 140, "stand", "left", -1), Rt = C.layout(264, 140, "stand", "left", 1);
-    check("leaning on a left taskbar: the bot LEAN_DX toward it, every slot on the other side, inside the window", Lf.cx === 132 - C.LEAN_DX && Lf.body.x - C.BODY_R >= 0 && Lf.slots.every((s) => s.x > Lf.cx && s.x + C.KID_R <= 264));
-    check("  on a right one: mirrored", Rt.cx === 132 + C.LEAN_DX && Rt.body.x + C.BODY_R <= 264 && Rt.slots.every((s) => s.x < Rt.cx && s.x - C.KID_R >= 0));
-  }
-
-  section("motion: the poses the app sends");
-  {
-    const L = C.layout(264, 140, "stand", "left");
-    const w0 = C.motion("walk", 0, 1, L, 0), wm = C.motion("walk", 0.5, 1, L, 90), w1 = C.motion("walk", 1, 1, L, 2000);
-    check("walk: a small bob (a step every 180 ms), level at both ends", w0.dy === 0 && wm.dy < 0 && wm.dy >= -3 && Math.abs(w1.dy) < 1e-9 && wm.a === 1);
-    const o1 = C.motion("out", 1, 1, L), i0 = C.motion("in", 0, 1, L), i1 = C.motion("in", 1, 1, L);
-    check("out: it walks off the window's edge in its direction and is gone; in: from the other side, and there", o1.dx > L.W / 2 && o1.a === 0 && i0.dx < -L.W / 2 && i0.a === 0 && i1.dx === 0 && i1.a === 1);
-    check("  out to the left goes left", C.motion("out", 1, -1, L).dx < -L.W / 2);
-    check("duck: down and out of sight; pop: back up", C.motion("duck", 1, 1, L).a === 0 && C.motion("duck", 1, 1, L).dy > 0 && C.motion("pop", 1, 1, L).dy === 0 && C.motion("pop", 1, 1, L).a === 1);
-    const h = [0.1, 0.5, 0.95].map((k) => C.motion("hop", k, 1, L).sc);
-    check("hop: a crouch before, a squash on landing (the window carries the arc)", h[0] < 1 && h[2] < 1 && near(C.motion("hop", 1, 1, L).sc, 1, 1e-9));
-    check("stretch: up tall and back; no pose: still", C.motion("stretch", 0.5, 1, L).sc > 1 && near(C.motion("stretch", 1, 1, L).sc, 1, 1e-9) && JSON.stringify(C.motion("", 0.5, 1, L)) === JSON.stringify({ dx: 0, dy: 0, sc: 1, a: 1 }));
-  }
-
-  section("legs and arms");
-  {
-    const L = C.layout(264, 140, "stand", "left");
-    const st = C.limbs(L, null, "", 0, false), feet = 140 - C.FOOT;
-    check("standing: two legs from under the head to the feet; a contact shadow at the feet", st.legs.length === 2 && st.legs.every((l) => near(l.y1, feet, 0.01) && l.y0 > L.cy && l.y0 < feet) && st.shadow && near(st.shadow.y, feet + 1));
-    const hop = C.limbs(L, null, "hop", 0, false);
-    check("  mid-hop: tucked up", hop.legs.every((l) => l.y1 < feet - 2));
-    const dz = C.limbs(L, null, "", 0, true);
-    check("  dozing: folded (it sits)", dz.legs.every((l) => l.y1 < feet - 2));
-    const wk = [0, 90, 180, 270].map((t) => C.limbs(L, null, "walk", t, false).legs.map((l) => l.y1));
-    check("  walking: the feet take turns", wk.some((y) => y[0] < feet - 1 && y[1] === feet) && wk.some((y) => y[1] < feet - 1 && y[0] === feet));
-    const H = C.layout(264, 140, "hang", "left"), hg = C.limbs(H, null, "", 0, false);
-    check("hanging: two arms up to the taskbar's edge, no shadow", hg.legs.length === 2 && hg.legs.every((l) => l.y1 < 3 && l.y0 < H.cy) && hg.shadow === null);
-  }
-
-  section("the session bots: they gather when a session needs you, and wander off");
-  {
-    let h = C.gather([], [S("waiting", "Invoice audit"), S("busy", "Odoo dev"), S("idle", "Customs")], [], 0, true);
-    check("only the one waiting on you walks in, into the first slot", h.length === 1 && h[0].key === "Invoice audit" && h[0].phase === "in" && h[0].slot === 0);
-    h = C.gather(h, [S("waiting", "Invoice audit"), S("busy", "Odoo dev")], [{ id: 3, status: "pending", origin: "session:Odoo dev" }], 300, true);
-    check("  a session that asked for an approval needs you too (it walks in, next slot)", h.length === 2 && h[1].key === "Odoo dev" && h[1].slot === 1);
-    h = C.gather(h, [S("waiting", "Invoice audit"), S("busy", "Odoo dev")], [{ id: 3, status: "pending", origin: "session:Odoo dev" }], 1000, true);
-    check("  after GATHER_MS the first is there", h[0].phase === "here" && h[1].phase === "in");
-    const many = ["a", "b", "c", "d", "e"].map((n) => S("waiting", n));
-    let g = C.gather([], many.slice(0, 2), [], 0, true);
-    g = C.gather(g, many, [], 500, true);
-    check("at most MAX_HEADS (3), the longest waiting first", g.filter((x) => x.phase !== "out").length === 3 && g.slice(0, 2).map((x) => x.key).join() === "a,b");
-    let off = C.gather(h, [S("busy", "Invoice audit"), S("busy", "Odoo dev")], [], 2000, true);
-    check("no longer waiting: they walk off (phase out) ...", off.length === 2 && off.every((x) => x.phase === "out"));
-    off = C.gather(off, [S("busy", "Invoice audit")], [], 2000 + C.GATHER_MS + 1, true);
-    check("  ... and are gone after GATHER_MS", off.length === 0);
-    const kept = C.gather(C.gather([], [S("waiting", "a"), S("waiting", "b")], [], 0, true), [S("waiting", "b")], [], 100, true);
-    check("  one leaving does not move the one that stays (it keeps its slot)", kept.find((x) => x.key === "b").slot === 1);
-    check("the setting off: none gather", C.gather([], many, [], 0, false).length === 0);
-    check("  MINT AI's own session never comes", C.gather([], [Object.assign(S("waiting", "MINT AI"), { self: true })], [], 0, true).length === 0);
-    const L = C.layout(264, 140, "stand", "left");
-    const ki = C.kidsAt([{ key: "x", slot: 0, phase: "in", t0: 0 }], 0, L, false)[0];
-    const kh = C.kidsAt([{ key: "x", slot: 0, phase: "here", t0: 0 }], 5000, L, false)[0];
-    const ko = C.kidsAt([{ key: "x", slot: 0, phase: "out", t0: 0 }], C.GATHER_MS, L, false)[0];
-    check("kids for core E: walking in from the open side's edge, at the slot, walking off; the waiting face", ki.x < 0 && ki.alpha === 0 && kh.x === L.slots[0].x && kh.st === "waiting" && ko.x < 0 && ko.alpha === 0 && ko.st === "idle");
-    check("  holding still: at their slots at once, the ones leaving not drawn", C.kidsAt([{ key: "x", slot: 0, phase: "in", t0: 0 }], 0, L, true)[0].x === L.slots[0].x && C.kidsAt([{ key: "x", slot: 0, phase: "out", t0: 0 }], 0, L, true).length === 0);
-  }
-
-  section("idle moments");
-  {
-    const base = { now: 100000, next: 0, state: "idle" };
-    check("now and then: stretch or look around, and when to ask again (25-50 s)", (() => { const p = C.idlePick(Object.assign({ rnd: 0.2 }, base)); return p && p.act === "stretch" && p.next >= 100000 + C.IDLE_MIN_MS && p.next <= 100000 + C.IDLE_MAX_MS; })());
-    check("  after a stretch, mostly a look around", C.idlePick(Object.assign({ rnd: 0.3, last: "stretch" }, base)).act === "look");
-    check("  never while busy, dozing, holding still, not ready, or before its time", [{ busy: true }, { dozing: true }, { still: true }, { state: "thinking" }, { next: 200000 }].every((x) => C.idlePick(Object.assign({}, base, x)) === null));
-  }
-
-  section("hit regions: the bot and the session bots that are there");
-  {
-    const L = C.layout(264, 140, "stand", "left");
-    const r = C.regions(L, [], null);
-    check("the bot alone: its circle", r.length === 1 && r[0].w === 2 * C.BODY_R && r[0].r === C.BODY_R && near(r[0].x + r[0].w / 2, L.cx, 1));
-    const kids = C.kidsAt([{ key: "a", slot: 0, phase: "here", t0: 0 }, { key: "b", slot: 1, phase: "out", t0: 0 }], 99999, L, false);
-    check("  plus a session bot that is there (not one walking off)", C.regions(L, kids, null).length === 2);
-    check("  ducked out (faded): nothing", C.regions(L, [], { dx: 0, dy: 80, sc: 1, a: 0 }).length === 0);
-    check("  moved with the bot (a step out of the edge) and clipped to the window", C.regions(L, [], { dx: 150, dy: 0, sc: 1, a: 1 }).every((q) => q.x + q.w <= 264));
+    const L = C.layout(176, 160);
+    check("the bot centred at the top; the hint under it", L.cx === 88 && L.cy === C.BODY_CY && L.R === C.HEAD_R && L.hintY > L.cy + C.BODY_R);
+    const r = C.regions(L, false);
+    check("  one hit region: the bot's circle", r.length === 1 && r[0].w === 2 * C.BODY_R && r[0].h === 2 * C.BODY_R && r[0].r === C.BODY_R && r[0].x + r[0].w / 2 === 88 && r[0].y === C.BODY_CY - C.BODY_R, JSON.stringify(r));
+    check("  faded out (moving to another monitor, ducking out): none -- clicks pass through", C.regions(L, true).length === 0);
+    const old = C.layout(264, 140), ro = C.regions(old, false);
+    check("  in 0.1.12's 264 x 140 window (the page reaches an app not yet updated): still centred at the top, inside the window", old.cx === 132 && ro.length === 1 && ro[0].y >= 0 && ro[0].y + ro[0].h <= 140, JSON.stringify(ro));
+    check("  a tiny window: clipped, never outside", C.regions(C.layout(60, 60), false).every((q) => q.x >= 0 && q.y >= 0 && q.x + q.w <= 60 && q.y + q.h <= 60));
+    check("  only the pure parts and mount are exported (no 0.1.12 gather / motion / limbs / idlePick)", ["gather", "motion", "limbs", "kidsAt", "idlePick"].every((k) => !(k in C)) && typeof C.mount === "function");
   }
 
   section("the app's side (sources)");
   {
     const lib = fs.readFileSync(path.join(D, "src-tauri", "src", "lib.rs"), "utf8");
     const host = fs.readFileSync(path.join(D, "src-tauri", "src", "companion_host.rs"), "utf8");
+    const plat = fs.readFileSync(path.join(D, "src-tauri", "src", "platform.rs"), "utf8");
     const remote = fs.readFileSync(path.join(D, "src-tauri", "capabilities", "remote.json"), "utf8");
     const build = fs.readFileSync(path.join(D, "src-tauri", "build.rs"), "utf8");
-    check("the page may say three things (companion: open / doze / wake), granted to the site; nothing else is taken", /"allow-companion"/.test(remote) && /"companion"/.test(build) && /fn companion\(app: AppHandle, kind: String/.test(lib) && /"open" =>/.test(host) && /"doze" \| "wake" =>/.test(host) && /_ => \{\}/.test(host));
-    check("no blur in Companion mode (its window moves; a shown blur window never may)", /a\.settings\.mode != Mode::Companion && acrylic::live\(\)/.test(lib));
-    check("the tray switch: Companion on, and off back to the mode it came from", /"mode:companion"/.test(lib) && /before_companion/.test(lib));
-    check("the loop runs on its own thread and moves the window asynchronously (never waits on the main thread)", /std::thread::spawn\(move \|\| companion_host::run\(/.test(lib) && /SWP_ASYNCWINDOWPOS/.test(fs.readFileSync(path.join(D, "src-tauri", "src", "platform.rs"), "utf8")));
-    check("  it reads window geometry only: no screen capture, no input injection", !/BitBlt|PrintWindow|GetDIBits|SendInput|keybd_event|mouse_event|Graphics\.Capture/.test(host + fs.readFileSync(path.join(D, "src-tauri", "src", "companion.rs"), "utf8")));
-    check("  full screen and meetings duck it out (policy::fullscreen_hold, the camera / microphone in use)", /policy::fullscreen_hold\(/.test(host) && /cap_use\("webcam"\)/.test(host) && /cap_use\("microphone"\)/.test(host));
+    check("the page may say one thing (companion: open), granted to the site; anything else is ignored", /"allow-companion"/.test(remote) && /"companion"/.test(build) && /fn companion\(app: AppHandle, kind: String/.test(lib) && /if kind != "open" \{\s*return;/.test(host));
+    check("no blur in Companion mode", /a\.settings\.mode != Mode::Companion && acrylic::live\(\)/.test(lib));
+    check("the tray switch: Companion on, and off back to the mode it came from", /"mode:companion"/.test(lib) && /before_companion/.test(lib) && /MINT AI at the top of the screen/.test(lib));
+    check("the loop runs on its own thread", /std::thread::spawn\(move \|\| companion_host::run\(/.test(lib));
+    check("  top centre of the active monitor (pick_monitor, window_rect); a fade across (Switch: fade-out, then fade-in)", /cp::pick_monitor\(/.test(host) && /cp::window_rect\(/.test(host) && /SwitchOut::FadeOut\(_\) => emit\(&app, "fade-out"\)/.test(host) && /emit\(&app, "fade-in"\)/.test(host));
+    check("  on top of every app: always-on-top, and put on top again (HWND_TOPMOST, no activation, asynchronous) when the window in front changes and every few seconds", /set_always_on_top\(true\)/.test(host) && /platform::to_top\(raw\)/.test(host) && /HWND_TOPMOST/.test(plat) && /SWP_NOACTIVATE/.test(plat) && /SWP_ASYNCWINDOWPOS/.test(plat) && /Mode::Floating \| Mode::Peek \| Mode::Companion => true/.test(lib));
+    check("  full screen on its monitor ducks it out (policy::fullscreen_hold), and it comes back (pop); a meeting no longer hides it", /policy::fullscreen_hold\(/.test(host) && /emit\(app, "duck"\)/.test(host) && /emit\(app, "pop"\)/.test(host) && !/cap_use/.test(host));
+    check("  it reads window geometry only: no screen capture, no input injection", !/BitBlt|PrintWindow|GetDIBits|SendInput|keybd_event|mouse_event|Graphics\.Capture/.test(host + rs));
+    check("0.1.12's perching, walking, stepping aside and session bots are gone (companion.rs, companion_host.rs, platform.rs)", !/Taskbar|Perch|Dodge|LegKind|walk_fps|taskbar_perch|fn plan\(|look_at|session_bots/.test(rs + host) && !/fn taskbars|fn move_window/.test(plat));
+    check("  and its scripted preview is retired", !fs.existsSync(path.join(D, "core-tests", "examples", "companion_sim.rs")) && !fs.existsSync(path.join(__dirname, "shots-desk-companion.cjs")));
+    const set = fs.readFileSync(path.join(D, "src-tauri", "src", "settings.rs"), "utf8");
+    check("settings: companion keeps only stay_on_monitor (0.1.12's perch, session bots and side are dropped on the next save)", /pub struct Companion \{\s*pub stay_on_monitor: bool,\s*\}/.test(set) && !/PerchPref|session_bots: bool|pub side: f64/.test(set));
     const sh = fs.readFileSync(path.join(D, "dist", "settings.html"), "utf8"), sj = fs.readFileSync(path.join(D, "dist", "settings.js"), "utf8");
-    check("Settings: Mode ▸ Companion; where it sits (taskbar / windows / both), session bots, stay on this monitor", /data-v="companion">Companion</.test(sh) && /data-k="perch"><button data-v="taskbar">Taskbar<\/button><button data-v="windows">Windows<\/button><button data-v="both">Both<\/button>/.test(sh) && /id="comp-bots"/.test(sh) && /id="comp-stay"/.test(sh) && /comp\(\)\.session_bots = \$\("comp-bots"\)\.checked; comp\(\)\.stay_on_monitor = \$\("comp-stay"\)\.checked/.test(sj) && /k === "perch" \? comp\(\)\.perch/.test(sj));
+    check("Settings window: Mode ▸ Companion; only \"Stay on this monitor\" (off by default); no perch, no session bots", /data-v="companion">Companion</.test(sh) && /id="comp-stay"/.test(sh) && !/data-k="perch"|id="comp-bots"/.test(sh) && /S\.companion = \{ stay_on_monitor: \$\("comp-stay"\)\.checked \}/.test(sj) && !/perch|session_bots/.test(sj));
     const views = fs.readFileSync(path.join(ROOT, "lib", "views-moniai.js"), "utf8");
     check("the page loads the companion before mint-desktop.js (the desktop render mode only)", /"mint-desktop-companion\.js", "moni-ai\.js"[^\]]*"mint-desktop\.js"\]/.test(views));
     const md = fs.readFileSync(path.join(ROOT, "public", "mint-desktop.js"), "utf8");
-    check("mint-desktop.js: the bot's regions only while it is out; Esc / empty space close its Peek; the Command Center's core rests", /if \(compOut\(\) && comp\) return withCam\(comp\.regions\(\)/.test(md) && /if \(peekish\(\)\) invoke\("hide_peek"\)/.test(md) && /st\.hidden \|\| compOut\(\)/.test(md));
+    check("mint-desktop.js: the bot's region (+ the pill, not while faded) only while it is out; Esc / empty space close its Peek; the Command Center's core rests", /if \(compOut\(\) && comp\) return withCam\(comp\.regions\(\)/.test(md) && /dk-comp-faded/.test(md) && /if \(peekish\(\)\) invoke\("hide_peek"\)/.test(md) && /st\.hidden \|\| compOut\(\)/.test(md));
   }
 
   section("in the browser (a scratch server, a stand-in for the app's bridge)");
@@ -172,7 +101,7 @@ const S = (st, name, extra) => Object.assign({ session_id: name, name, status: s
         const { cookie } = await s.signIn("comp");
         browser = await chromium.launch({ args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"] });
         async function open(host, W, H) {
-          const ctx = await browser.newContext({ viewport: { width: W || 264, height: H || 140 }, userAgent: APP_UA, extraHTTPHeaders: { "X-Forwarded-Proto": "https" } });
+          const ctx = await browser.newContext({ viewport: { width: W || 176, height: H || 160 }, userAgent: APP_UA, extraHTTPHeaders: { "X-Forwarded-Proto": "https" } });
           await ctx.addCookies(String(cookie).split("; ").filter(Boolean).map((kv) => ({ name: kv.split("=")[0], value: kv.slice(kv.indexOf("=") + 1), url: "http://127.0.0.1:" + s.port })));
           const page = await ctx.newPage();
           const errs = [];
@@ -194,16 +123,32 @@ const S = (st, name, extra) => Object.assign({ session_id: name, name, status: s
           await page.waitForTimeout(900);
           return { ctx, page, errs };
         }
-        const HOST = { mode: "companion", peekOpen: false, still: false, companion: { perch: "both", sessionBots: true, stance: "stand", lean: 0, openSide: "left", ducked: false } };
+        const HOST = { mode: "companion", peekOpen: false, still: false, companion: { stayOnMonitor: false, ducked: false } };
         const { ctx, page, errs } = await open(HOST);
+        const lastRegs = () => page.evaluate(() => { const regs = window.__calls.filter((c) => c[0] === "set_hit_regions").map((c) => c[1].regions); return regs[regs.length - 1] || null; });
         const st = await page.evaluate(() => {
-          const regs = window.__calls.filter((c) => c[0] === "set_hit_regions").map((c) => c[1].regions);
-          const cc = document.getElementById("cc");
-          return { mode: document.documentElement.getAttribute("data-dk-mode"), out: document.documentElement.classList.contains("dk-comp-out"), comp: !document.getElementById("dk-comp").hidden, ccVis: getComputedStyle(cc).visibility, last: regs[regs.length - 1], core: window.MintDesktop.companion().debug.core() ? window.MintDesktop.companion().debug.core().S.concept : null, ccStill: !!(window.__mintCC.core && window.__mintCC.core.S && window.__mintCC.core.S.still) };
+          const cc = document.getElementById("cc"), k = window.MintDesktop.companion().debug.core();
+          return { mode: document.documentElement.getAttribute("data-dk-mode"), out: document.documentElement.classList.contains("dk-comp-out"), comp: !document.getElementById("dk-comp").hidden, ccVis: getComputedStyle(cc).visibility,
+            core: k ? k.S.concept : null, cx: k ? k.S.c[0] / k.S.dpr : null, cy: k ? k.S.cssH - k.S.c[1] / k.S.dpr : null, R: k ? k.S.R / k.S.dpr : null,
+            ccStill: !!(window.__mintCC.core && window.__mintCC.core.S && window.__mintCC.core.S.still), kids: document.querySelectorAll(".dk-comp-kid").length };
         });
-        check("the bot is out: its own core E in the small window, the Command Center's pieces resting (hidden, its core still)", st.mode === "companion" && st.out && st.comp && st.ccVis === "hidden" && st.core === "E" && st.ccStill, JSON.stringify(st));
-        check("  only the bot catches the mouse: one circle", st.last && st.last.length === 1 && st.last[0].w === 2 * C.BODY_R && st.last[0].r === C.BODY_R, JSON.stringify(st.last));
-        // the living canvas rests while the bot is out (nothing drawn); the "Camera on" pill stays and catches the mouse
+        check("the bot alone: its own core E at the top centre of the small window, the Command Center's pieces resting", st.mode === "companion" && st.out && st.comp && st.ccVis === "hidden" && st.core === "E" && Math.abs(st.cx - 88) < 1 && Math.abs(st.cy - C.BODY_CY) < 1 && Math.abs(st.R - C.HEAD_R) < 1 && st.ccStill && st.kids === 0, JSON.stringify(st));
+        let regs = await lastRegs();
+        check("  only the bot catches the mouse: one circle", regs && regs.length === 1 && regs[0].w === 2 * C.BODY_R && regs[0].r === C.BODY_R, JSON.stringify(regs));
+        // its states, as the Command Center's
+        const states = await page.evaluate(() => {
+          const cc = document.getElementById("cc"), cp = window.MintDesktop.companion(), out = {};
+          for (const s of ["listening", "thinking", "speaking", "needs", "idle"]) { cc.setAttribute("data-state", s); cp.debug.tick(); out[s] = cp.debug.core().S.state; }
+          return out;
+        });
+        check("  its states follow the Command Center's: listening, thinking, speaking, needs you, ready", states.listening === "listening" && states.thinking === "thinking" && states.speaking === "speaking" && states.needs === "needs" && states.idle === "idle", JSON.stringify(states));
+        // hovering: the hint
+        await page.hover("#dk-comp-hit");
+        await sleep(300);
+        const hint = await page.evaluate(() => { const h = document.getElementById("dk-comp-hint"), b = h.getBoundingClientRect(); return { op: getComputedStyle(h).opacity, top: b.top, inside: b.left >= 0 && b.right <= window.innerWidth && b.bottom <= window.innerHeight }; });
+        check("  hovering it: \"Click to open\" under the bot, inside the window", hint.op === "1" && hint.top >= C.BODY_CY + C.BODY_R && hint.inside, JSON.stringify(hint));
+        await page.mouse.move(2, 158);
+        // the living canvas rests; the "Camera on" pill sits under the bot and catches the mouse
         const cv = await page.evaluate(async () => {
           const cc = document.getElementById("cc");
           const r = { has: !!window.MintCanvas, loaded: !!(window.MintCanvas && window.MintCanvas.state.loaded) };
@@ -218,48 +163,46 @@ const S = (st, name, extra) => Object.assign({ session_id: name, name, status: s
           await new Promise((res) => setTimeout(res, 300));
           const regs = window.__calls.filter((c) => c[0] === "set_hit_regions").map((c) => c[1].regions);
           const last = regs[regs.length - 1] || [];
-          const b = pill.querySelector(".mp-off").getBoundingClientRect(), x = b.left + b.width / 2, y = b.top + b.height / 2;
+          const pb = pill.getBoundingClientRect(), b = pill.querySelector(".mp-off").getBoundingClientRect(), x = b.left + b.width / 2, y = b.top + b.height / 2;
           r.pillVis = getComputedStyle(pill).visibility; r.offShown = b.width > 0;
+          r.under = pb.top > 62 + 40 && Math.abs((pb.left + pb.right) / 2 - window.innerWidth / 2) < 2 && pb.bottom <= window.innerHeight && pb.left >= 0 && pb.right <= window.innerWidth;
           r.offHit = last.some((q) => x >= q.x && x <= q.x + q.w && y >= q.y && y <= q.y + q.h);
           r.n = last.length;
-          pill.remove();
-          await new Promise((res) => setTimeout(res, 300));
-          const regs2 = window.__calls.filter((c) => c[0] === "set_hit_regions").map((c) => c[1].regions);
-          r.n2 = (regs2[regs2.length - 1] || []).length;
           return r;
         });
         check("  the living canvas rests while the bot is out: nothing is drawn", cv.has && cv.loaded && !cv.drew, JSON.stringify(cv));
-        check("  eye contact's \"Camera on\" pill stays visible out on the desk; its Off button is a hit region (gone with the pill)", cv.pillVis === "visible" && cv.offShown && cv.offHit && cv.n === 2 && cv.n2 === 1, JSON.stringify(cv));
-        // the app's poses
-        const pz = await page.evaluate(async () => {
-          window.__emit("mint://companion", { kind: "walk", ms: 1200, dir: 1 });
-          await new Promise((r) => setTimeout(r, 300));
-          const k = window.MintDesktop.companion().debug.core();
-          const mid = k.S.c[1];
-          window.__emit("mint://companion", { kind: "arrive", view: { stance: "hang", openSide: "right", sessionBots: true } });
-          await new Promise((r) => setTimeout(r, 100));
-          const L = window.MintDesktop.companion().debug.layout();
-          return { hang: L.hang, open: L.open, mid };
-        });
-        check("  a pose from the app plays; arriving under a top taskbar it hangs, the open side follows", pz.hang === true && pz.open === 1, JSON.stringify(pz));
-        await page.evaluate(() => window.__emit("mint://companion", { kind: "arrive", view: { stance: "stand", openSide: "left" } }));
-        // the session bots
-        const g = await page.evaluate(async () => {
-          const cc = window.__mintCC;
-          cc.S.sessions = ["Invoice audit", "Planning engine", "Freight quotes", "Label check", "Odoo dev"].map((n, i) => ({ session_id: "s" + i, name: n, status: i < 4 ? "waiting" : "busy", cwd: "/root/moni" }));
-          await new Promise((r) => setTimeout(r, 1500));
-          const n1 = window.MintDesktop.companion().regions().length, b1 = document.querySelectorAll(".dk-comp-kid").length;
-          cc.S.sessions = cc.S.sessions.map((s) => Object.assign({}, s, { status: "busy" }));
-          await new Promise((r) => setTimeout(r, 1500));
-          return { n1, b1, n2: window.MintDesktop.companion().regions().length, b2: document.querySelectorAll(".dk-comp-kid").length };
-        });
-        check("  four sessions waiting: three session bots gather (each catches the mouse, a button with its name); back to work: they wander off", g.n1 === 4 && g.b1 === 3 && g.n2 === 1 && g.b2 === 0, JSON.stringify(g));
+        check("  eye contact's \"Camera on\" pill: visible, centred under the bot inside the window, its Off button a hit region", cv.pillVis === "visible" && cv.offShown && cv.under && cv.offHit && cv.n === 2, JSON.stringify(cv));
+        // moving to another monitor: a quick fade out, then in
+        await page.evaluate(() => window.__emit("mint://companion", { kind: "fade-out" }));
+        await sleep(400);
+        const fo = await page.evaluate(() => ({ faded: document.documentElement.classList.contains("dk-comp-faded"), op: getComputedStyle(document.getElementById("dk-comp")).opacity, pill: getComputedStyle(document.getElementById("mp-cam")).opacity }));
+        regs = await lastRegs();
+        check("fade-out (it moves to the other monitor): the bot and the pill fade away, nothing catches the mouse", fo.faded && fo.op === "0" && fo.pill === "0" && regs && regs.length === 0, JSON.stringify([fo, regs]));
+        await page.evaluate(() => window.__emit("mint://companion", { kind: "fade-in" }));
+        await sleep(400);
+        const fi = await page.evaluate(() => ({ faded: document.documentElement.classList.contains("dk-comp-faded"), op: getComputedStyle(document.getElementById("dk-comp")).opacity }));
+        regs = await lastRegs();
+        check("  fade-in (placed on the new monitor): back, the bot and the pill catch the mouse again", !fi.faded && fi.op === "1" && regs && regs.length === 2, JSON.stringify([fi, regs]));
+        // full screen: duck, then pop
+        await page.evaluate(() => window.__emit("mint://companion", { kind: "duck" }));
+        await sleep(300);
+        const dk = await page.evaluate(() => getComputedStyle(document.getElementById("dk-comp")).opacity);
+        await page.evaluate(() => window.__emit("mint://companion", { kind: "pop" }));
+        await sleep(300);
+        const pp = await page.evaluate(() => getComputedStyle(document.getElementById("dk-comp")).opacity);
+        check("full screen: it fades out (duck) and comes back after (pop)", dk === "0" && pp === "1", JSON.stringify([dk, pp]));
+        await page.evaluate(() => document.getElementById("mp-cam").remove());
+        // 0.1.12's events (an app not yet updated): ignored, nothing breaks
+        await page.evaluate(() => { for (const k of ["walk", "hop", "out", "in", "jump", "arrive", "attention"]) window.__emit("mint://companion", { kind: k, ms: 500, dir: 1, view: { stance: "hang" } }); });
+        await sleep(200);
+        const lay = await page.evaluate(() => window.MintDesktop.companion().debug.layout());
+        check("  0.1.12's walk / hop / arrive events are ignored: the bot stays put", lay.cx === 88 && lay.cy === C.BODY_CY, JSON.stringify(lay));
         // a click on the bot: its Peek
         await page.click("#dk-comp-hit");
         const clicked = await page.evaluate(() => window.__calls.some((c) => c[0] === "companion" && c[1].kind === "open"));
         check("a click on the bot asks the app to open its Command Center (companion: open)", clicked);
         await page.setViewportSize({ width: 1440, height: 860 });
-        await page.evaluate(() => window.__emit("mint://state", { mode: "companion", peekOpen: true, companion: { stance: "stand", openSide: "left" } }));
+        await page.evaluate(() => window.__emit("mint://state", { mode: "companion", peekOpen: true, companion: { stayOnMonitor: false, ducked: false } }));
         await page.waitForTimeout(400);
         const pk = await page.evaluate(() => { const regs = window.__calls.filter((c) => c[0] === "set_hit_regions").map((c) => c[1].regions); const r = regs[regs.length - 1]; return { mode: document.documentElement.getAttribute("data-dk-mode"), open: document.documentElement.classList.contains("dk-peek-open"), comp: document.getElementById("dk-comp").hidden, ccVis: getComputedStyle(document.getElementById("cc")).visibility, all: r && r.length === 1 && r[0].w === 1440 }; });
         check("  its Peek: laid out as Peek, the whole window catches the mouse, the bot's canvas away", pk.mode === "peek" && pk.open && pk.comp && pk.ccVis === "visible" && pk.all, JSON.stringify(pk));
@@ -268,19 +211,30 @@ const S = (st, name, extra) => Object.assign({ session_id: name, name, status: s
         await page.keyboard.press("Escape");
         await page.waitForTimeout(150);
         check("  Esc asks the app to close it (hide_peek)", await page.evaluate(() => window.__calls.some((c) => c[0] === "hide_peek")));
+        await page.setViewportSize({ width: 176, height: 160 });
+        await page.evaluate(() => window.__emit("mint://state", { mode: "companion", peekOpen: false, companion: { stayOnMonitor: false, ducked: false } }));
+        await page.waitForTimeout(400);
+        const back = await page.evaluate(() => ({ out: document.documentElement.classList.contains("dk-comp-out"), faded: document.documentElement.classList.contains("dk-comp-faded"), L: window.MintDesktop.companion().debug.layout() }));
+        regs = await lastRegs();
+        check("  closed: back out at the top, one circle", back.out && !back.faded && back.L.cx === 88 && regs && regs.length === 1, JSON.stringify([back, regs]));
         const csp = await page.evaluate(() => window.__csp);
         check("no page errors, no CSP violations", errs.length === 0 && csp.length === 0, JSON.stringify(errs.concat(csp)));
         await ctx.close();
-        // holding still (battery saver, energy saver, full screen): one still frame, no loop
+        // holding still (battery saver, energy saver, full screen): one still frame, no loop, no fade transition
         const b = await open(Object.assign({}, HOST, { still: true }));
-        const still = await b.page.evaluate(async () => { await new Promise((r) => setTimeout(r, 600)); const k = window.MintDesktop.companion().debug.core(); return { still: k.S.still, running: k.S.running }; });
-        check("holding still: the bot draws one still frame and does not run its loop", still.still === true && still.running === false, JSON.stringify(still));
+        const still = await b.page.evaluate(async () => { await new Promise((r) => setTimeout(r, 600)); const k = window.MintDesktop.companion().debug.core(); return { still: k.S.still, running: k.S.running, tr: getComputedStyle(document.getElementById("dk-comp")).transitionDuration }; });
+        check("holding still: the bot draws one still frame, does not run its loop, and does not animate the fade", still.still === true && still.running === false && /^0s/.test(still.tr), JSON.stringify(still));
         check("  no page errors", b.errs.length === 0, JSON.stringify(b.errs));
         await b.ctx.close();
+        // the page in 0.1.12's window (the dashboard deploys before the app updates)
+        const o = await open({ mode: "companion", peekOpen: false, still: false, companion: { perch: "both", sessionBots: true, stance: "stand", lean: 0, openSide: "left", ducked: false } }, 264, 140);
+        const ol = await o.page.evaluate(() => { const regs = window.__calls.filter((c) => c[0] === "set_hit_regions").map((c) => c[1].regions); return { L: window.MintDesktop.companion().debug.layout(), r: regs[regs.length - 1] }; });
+        check("an app still on 0.1.12 (its 264 x 140 window and view): the bot at the top centre, one circle inside the window, no errors", ol.L.cx === 132 && ol.r && ol.r.length === 1 && ol.r[0].y + ol.r[0].h <= 140 && o.errs.length === 0, JSON.stringify(ol));
+        await o.ctx.close();
         // another mode: the companion stays away
         const f = await open({ mode: "floating", peekOpen: false }, 480, 860);
         const fl = await f.page.evaluate(() => ({ comp: document.getElementById("dk-comp").hidden, out: document.documentElement.classList.contains("dk-comp-out") }));
-        check("Floating: no companion bot (its canvas hidden, nothing of it in the regions)", fl.comp && !fl.out, JSON.stringify(fl));
+        check("Floating: no companion bot", fl.comp && !fl.out, JSON.stringify(fl));
         await f.ctx.close();
       } finally {
         if (browser) await browser.close();

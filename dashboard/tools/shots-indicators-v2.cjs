@@ -38,7 +38,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const L = LAYM.windowSize({ mode: "floating", size: "L" });
     const LAYOUTS = {
       floating: { state: { mode: "floating", size: "L", peekOpen: true }, size: L },
-      companion: { state: { mode: "companion", peekOpen: false, companion: { perch: "both", sessionBots: false, stance: "stand", lean: 0, openSide: "left", ducked: false } }, size: { w: 264, h: 140 } },
+      companion: { state: { mode: "companion", peekOpen: false, companion: { stayOnMonitor: false, ducked: false } }, size: { w: 176, h: 160 } },
     };
     async function open(scheme, lay) {
       const ctx = await browser.newContext({ viewport: { width: lay.size.w, height: lay.size.h }, deviceScaleFactor: 2, colorScheme: scheme, userAgent: APP_UA, extraHTTPHeaders: { "X-Forwarded-Proto": "https" }, screen: { width: 1920, height: 1080 } });

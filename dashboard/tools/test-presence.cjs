@@ -935,7 +935,7 @@ const SIDEWAYS = { cx: 0.5, cy: 0.5, w: 0.24, yaw: 55, pitch: -5 };
             ["Floating L", { mode: "floating", size: "L", peekOpen: true }, LAYM.windowSize({ mode: "floating", size: "L" })],
             ["Desktop layer", { mode: "desktop", peekOpen: true, pos: "right" }, { w: 1440, h: 900 }],
             ["Peek", { mode: "peek", peekOpen: true }, { w: 1440, h: 900 }],
-            ["Companion", { mode: "companion", peekOpen: false, companion: { perch: "both", sessionBots: false, stance: "stand", lean: 0, openSide: "left", ducked: false } }, { w: 264, h: 140 }],
+            ["Companion", { mode: "companion", peekOpen: false, companion: { stayOnMonitor: false, ducked: false } }, { w: 176, h: 160 }],
           ];
           const lay = {};
           for (const [name, stt, sz] of LAYOUTS) {

@@ -15,9 +15,9 @@ Command Center reaches the app without a new release. Sign-in is the site's: pas
 |---|---|
 | `lib.rs` | The window, the three modes, tray and menu, hotkeys, toasts, the click-through and environment loops, updates, the commands the page may call |
 | `layout.rs` | Window geometry per mode, size (S/M/L), corner, monitor and DPI; corner snapping after a drag |
-| `companion.rs` | Companion mode (pure): where the bot perches (taskbar edges, auto-hide, the window in front, per-monitor DPI), the monitor it lives on, settle and dwell, its path (walk, hop, step out / cross / step in), stepping aside from the cursor, ducking out (full screen on its monitor, a meeting), its pace |
+| `companion.rs` | Companion mode (pure; simplified in 0.1.13): the monitor it lives on (the window in front's, else the cursor's, or one with "stay on this monitor"), its window at the top centre of that monitor's work area (per-monitor DPI), the settle-and-fade move to another monitor, ducking out (full screen on its monitor, the lock screen) |
 | `presence.rs` | Eye contact (pure; mockups/eye-contact/DESIGN.md): camera presence's setting (off by default), the WebView2 permission policy (the camera only for the site, only while on), the profile's stored camera permission, what the page may change (only off), the tray switch, the reload guard |
-| `companion_host.rs` | Companion mode in the app: its loop (own thread) reads window geometry, moves the small window (asynchronous SetWindowPos), tells the page what the bot does |
+| `companion_host.rs` | Companion mode in the app: its loop (own thread) reads the monitors and the window in front, places the small window, keeps it on top of every app (HWND_TOPMOST again when the window in front changes and every 3 s; asynchronous, no activation), tells the page to fade (fade-out / fade-in, duck / pop) |
 | `hit.rs` | Per-pixel click-through: is the cursor on a region the page reported (rounded rectangles / circles)? |
 | `blur.rs` | Real blur behind the cards (pure): when it is drawn (setting, Windows build, transparency effects, high contrast, opacity, dragging, scale), where each acrylic window goes, the pool's next state |
 | `acrylic.rs` | Real blur, Windows only: a pool of small borderless acrylic windows (the accent of SetWindowCompositionAttribute) right under the main window, one per glass surface the page reports, rounded like the CSS, following the main window through its own messages; never focused or clicked |
@@ -27,7 +27,7 @@ Command Center reaches the app without a new release. Sign-in is the site's: pas
 | `platform.rs` | Windows only: what is in front, full-screen apps, power, lock screen, wallpaper brightness (ink), the WorkerW layer |
 | `trayicon.rs` | The tray icon's status dot |
 | `site.rs` | The user agent (`… MintDesktop/<version>`) and the "stay on the site" rule |
-| `capabilities/remote.json` | The **only** commands the site may call: hit regions, glass surfaces (real blur), status, needs-you toast, hide Peek, drag, the box's tools, the glance cards (show / hide, pin), the companion's word (open its Command Center, doze, wake), open the full Command Center, start the browser sign-in, events. Nothing that runs a program, reads a file or changes settings |
+| `capabilities/remote.json` | The **only** commands the site may call: hit regions, glass surfaces (real blur), status, needs-you toast, hide Peek, drag, the box's tools, the glance cards (show / hide, pin), the companion bot's click (open its Command Center), open the full Command Center, start the browser sign-in, events. Nothing that runs a program, reads a file or changes settings |
 | `capabilities/local.json` | The app's own pages (`dist/`): the connecting/offline card and the Settings window |
 
 `dist/index.html` is the first thing the window shows: "Connecting…" / "Offline — retrying in N s"; it
@@ -47,13 +47,18 @@ goes to the site as soon as the site answers (nothing typed is queued while offl
   click on the wallpaper) it comes up on top so it can be used, and goes back down when another window is
   focused. Ctrl+Alt+M raises it on top for a moment. **Experimental (off):** behind the icons (WorkerW) —
   no clicks reach it there.
-- **Companion** (opt-in; tray ▸ "Companion: MINT AI out on your desk", Settings ▸ Mode): the bot out of its box,
-  in a small 264 × 140 window that moves with it -- on the taskbar or the top edge of the window in front,
-  walking / hopping over when you switch windows or monitors, stepping aside from the cursor, ducking out of
-  full screen and meetings, the session bots gathering when they need you. A click opens the Command Center as
-  Peek. No real blur in this mode (its window moves). Settings ▸ Companion: where it sits (taskbar / windows /
-  both), session bots, stay on this monitor. Design: `mockups/desk-companion/DESIGN.md`; the page side
-  `dashboard/public/mint-desktop-companion.js`.
+- **Companion** (opt-in; tray ▸ "Companion: MINT AI at the top of the screen", Settings ▸ Mode; simplified in 0.1.13 --
+  the user: "I just want the core showing at the centre top of the screen, on top of all apps, always"): just the
+  core (core E with your head and colours) in a small 176 × 160 logical-px window at the **top centre** of the monitor
+  you are working on (the window in front's, else the cursor's), **always on top** of every app, click-through except
+  the bot itself. Its states, eye contact's look-and-speak indications on its face and the "Camera on" pill (under it)
+  as in the box. Switching monitors it fades out and back in on the other one (after 250 ms, so a quick Alt+Tab does
+  not move it); it ducks out of a full-screen video, game or presentation on its monitor and comes back after. A
+  click opens the Command Center as Peek. No real blur in this mode. Settings ▸ Companion: stay on this monitor
+  (default off). 0.1.12's perching on the taskbar / windows, walking, stepping aside and session bots are gone (an
+  old settings file loads; its perch / session bots / side are dropped on the next save). The page side
+  `dashboard/public/mint-desktop-companion.js`; tests `dashboard/tools/test-desktop-companion.cjs`; screenshots
+  `mockups/companion-simple/`.
 - **Focus mode** (Ctrl+Alt+F): only the core.
 - **Glance cards** (0.1.9; on by default): beside the core, the approvals waiting (Approve asks for Windows Hello
   first, as every approval does -- the server enforces it; Deny; Open = the decision card), the sessions (working /
