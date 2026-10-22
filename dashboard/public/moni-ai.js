@@ -3158,7 +3158,10 @@
   var LATCH_QUIET_MS = 1200, LATCH_SPOKEN_MS = 300;
   // A look-and-speak turn ends sooner (2026-10-21, "slow"): 700 ms of quiet after speech -- longer than the pause
   // between words or a breath mid-sentence, short enough not to wait on the person.
-  var LOOK_QUIET_MS = 700;
+  // But not after only a word or two (2026-10-22: a look-and-speak turn of ~1.6 s reached MINT AI as one word,
+  // and the request itself came in the next turn): an Egyptian "يعني..." or "Claude, ..." pause after the first
+  // words is longer than 700 ms, so until LOOK_SHORT_SPOKEN_MS has been said the turn waits LOOK_QUIET_SHORT_MS.
+  var LOOK_QUIET_MS = 700, LOOK_QUIET_SHORT_MS = 1100, LOOK_SHORT_SPOKEN_MS = 1500;
   var keySeq = 0;
   /*
    * The app's key events, in its own order and with its own clock: a tap is
@@ -3231,7 +3234,8 @@
     if (level < v.floor * 3) v.floor = Math.max(0.001, v.floor * 0.97 + level * 0.03);
     if (level > Math.max(0.012, v.floor * 4)) { v.spoken += dt; v.quietAt = 0; }
     else if (!v.quietAt) v.quietAt = now;
-    if (v.spoken >= LATCH_SPOKEN_MS && v.quietAt && now - v.quietAt >= (LiveUI.lookTurn ? LOOK_QUIET_MS : LATCH_QUIET_MS)) pttSend();
+    var quietMs = LiveUI.lookTurn ? (v.spoken < LOOK_SHORT_SPOKEN_MS ? LOOK_QUIET_SHORT_MS : LOOK_QUIET_MS) : LATCH_QUIET_MS;
+    if (v.spoken >= LATCH_SPOKEN_MS && v.quietAt && now - v.quietAt >= quietMs) pttSend();
   }
   /** The turn is over: the server commits it (voice-live.js release). */
   function pttSend() {

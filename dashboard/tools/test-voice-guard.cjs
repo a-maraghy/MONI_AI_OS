@@ -134,6 +134,11 @@ const REAL_SPEECH = [
   check("  23 words from 5.5 s (a real turn of 23 words) is fine", !guard.tooManyWords("a b c d e f g h i j k l m n o p q r s t u v w", 5.5));
   check("audio seconds from the transcription's usage (10 tokens a second)", guard.audioSecondsFromUsage({ input_token_details: { audio_tokens: 17 } }) === 1.7);
   check("a bracketed noise label is dropped", guard.checkTranscript("[music]", {}).rule === "noise-label");
+  // 2026-10-22, request 381: the prompt's wrapper alone reached MINT AI as a turn.
+  for (const w of ["context:", "Context:", " context: ", "prompt:", "Instructions:", "context", "context: ###"]) {
+    check(`the wrapper alone («${w.trim()}») is an echo`, guard.checkTranscript(w, { audioSeconds: 3 }).rule === "echo" && !!guard.refuseAtDoor(w));
+  }
+  check("  but a sentence that uses the word passes", guard.checkTranscript("give me the context of the last run", { audioSeconds: 3 }).ok && !guard.refuseAtDoor("context: the run failed overnight"));
 
   section("the intake: silence is never transcribed");
   const PROMPT_ECHO = { text: TURN_92, usage: { type: "tokens", input_tokens: 59, input_token_details: { audio_tokens: 17, text_tokens: 42 }, output_tokens: 43 }, model: "gpt-4o-mini-transcribe", tokens: {} };

@@ -133,7 +133,9 @@ const RUN_ALONE = 8; // this many consecutive words from a prompt: an echo, what
 const RUN_WITH_OVERLAP = 5; // or this many, when most of what was said comes from it too
 const OVERLAP = 0.6; // ...share of the content words that come from the prompt
 const RUN_HALF = 5; // a run this long that is half the text or more
-const WRAPPER_RE = /^\s*(context|prompt|instructions?)\s*:\s*#{2,}|#{3}/i;
+// The wrapper alone is an echo too: "context:" reached MINT AI as a whole turn on 2026-10-22 (request 381),
+// and replaying the administrator's voiceprint-trial clips, a short "No." came back as "context:" as well.
+const WRAPPER_RE = /^\s*(context|prompt|instructions?)\s*:\s*#{2,}|#{3}|^\s*(context|prompt|instructions?)\s*:?\s*[.#]*\s*$/i;
 
 /**
  * Is `text` an echo of instructions rather than something said?

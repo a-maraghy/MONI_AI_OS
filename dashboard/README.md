@@ -800,7 +800,18 @@ leaves the server.
   and sends that -- through the transcript guard -- never the model's `text`;
   the session's own transcription is the fallback. Measured on the mixed clip:
   the session transcript heard «ريكستور» / «ريكارك» for "restart", the full-turn
-  one "restart" (twice out of two). At most one hand-off per utterance. Spoken,
+  one "restart" (twice out of two). Since 2026-10-22 both transcripts are
+  candidates (`lib/voice-heard.js`): the full-turn one first, unless it does
+  not read as Egyptian Arabic or English (another script, a Latin text that is
+  not English -- «La parte más vital es difícil» reached MINT AI that way) or is
+  far too short for the speech in the turn («أريد أن أعود.» for 4.4 s), and the
+  session's reads better or is clearly longer. When neither reads right, the
+  audio is transcribed once more with the language pinned (the language the live
+  voice understood the turn in, else Arabic). When the words may be misheard,
+  a marked `[Voice: ...]` note follows the request: the other transcript and,
+  only when no transcript reads right, what the live voice understood ("its own
+  wording, not theirs"). The request itself is always a transcript, and one log
+  line per hand-off names the sources and why (never the words). At most one hand-off per utterance. Spoken,
   it is first person ("Give me a moment, I'm checking."), true only while the
   call is really in flight; «تم تمرير الطلب لـ MINT AI» and the like are cut
   (`third-person`, see *One identity*).

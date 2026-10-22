@@ -404,7 +404,10 @@ let WS_BASE;
     check("  the safe line, in the sentence's language, read by the verbatim reader", spoke.length === 1 && spoke[0] === L.safe, JSON.stringify(spoke));
     const sends = sup.calls.filter((x) => x[0] === "send");
     check("  and made true: MINT AI got the administrator's words, once", sends.length === 1 && sends[0][1].text === heardText && sends[0][1].via === "voice-desk", JSON.stringify(sends));
-    check("  the conversation keeps what was heard and the safe line", s.of("conversation.item.create").some((e) => e.item.role === "assistant" && e.item.content[0].text.endsWith(L.safe)));
+    // (the item is sent just before the line is read; the mock may see it a moment after the reader does)
+    const kept = () => s.of("conversation.item.create").some((e) => e.item.role === "assistant" && e.item.content[0].text.endsWith(L.safe));
+    await until(kept, 500);
+    check("  the conversation keeps what was heard and the safe line", kept());
     c.close("test");
   }
 
@@ -517,6 +520,105 @@ let WS_BASE;
     await sleep(100);
     check("a transcript that is the prompt echoed is dropped, and nothing reaches MINT AI", sup.calls.filter((x) => x[0] === "send").length === 0);
     c.close("test");
+  }
+
+  section("the hand-off text: the transcript that reads as the administrator's Arabic or English (2026-10-22, requests 377-381)");
+  {
+    // A fake transcriber: the full-turn transcript as given, or another answer when the language is pinned.
+    const fakeHear = (byLang, calls) => async (audio, cfg) => {
+      calls.push(cfg.transcribe_language || "auto");
+      const text = cfg.transcribe_language && cfg.transcribe_language !== "auto" ? byLang[cfg.transcribe_language] || "" : byLang.auto || "";
+      return { text, model: "gpt-4o-mini-transcribe", tokens: { audio_in: 50, text_in: 22, text_out: 8 } };
+    };
+    const sendsOf = (sup) => sup.calls.filter((x) => x[0] === "send").map((x) => x[1].text);
+
+    // Request 380: the full-turn transcript came back in Spanish; the session's was the administrator's Arabic.
+    {
+      const calls = [];
+      const said = "عايزك تراجع الجزء ده تاني وتقولي إيه أهم حاجة فيه";
+      const { c, sup } = makeCall({ transcribe: fakeHear({ auto: "La parte más vital es difícil" }, calls) });
+      await c.open();
+      const s = lastSession();
+      await userTurn(s, c, said, { ms: 4000 });
+      await respond(s, null, { calls: [{ name: "look_into", args: { text: "Review this part again and tell me the most important thing." } }] });
+      await until(() => sup.calls.some((x) => x[0] === "send"), 3000, "the hand-off");
+      const sends = sendsOf(sup);
+      check("a full-turn transcript in another language (Spanish) is passed over for the session's Arabic one", sends.length === 1 && sends[0] === said, JSON.stringify(sends));
+      check("  no second transcription was needed (one candidate read right)", calls.length === 1, JSON.stringify(calls));
+      check("  the voice's own wording is not sent (a transcript read right)", !/live voice understood/.test(sends[0] || ""));
+      c.close("test");
+    }
+    // Request 377: a full-turn transcript far too short for the speech; the session's had the words.
+    {
+      const calls = [];
+      const said = "طب ارجع للموضوع اللي كنا بنتكلم فيه الصبح عن خطة الشرا";
+      const { c, sup } = makeCall({ transcribe: fakeHear({ auto: "أريد أن أعود." }, calls) });
+      await c.open();
+      const s = lastSession();
+      await userTurn(s, c, said, { ms: 7000 });
+      await respond(s, null, { calls: [{ name: "look_into", args: { text: "Go back to what we discussed this morning about the purchase plan." } }] });
+      await until(() => sup.calls.some((x) => x[0] === "send"), 3000, "the hand-off");
+      const sends = sendsOf(sup);
+      check("a transcript cut far short of the turn's speech is passed over for the complete one", sends.length === 1 && sends[0].startsWith(said), JSON.stringify(sends));
+      check("  and MINT AI is told the other transcription, marked as such", /\n\n\[Voice: the two transcriptions of this turn disagree.*Another transcription of the same audio: «أريد أن أعود\.»/s.test(sends[0] || ""), JSON.stringify(sends));
+      c.close("test");
+    }
+    // Neither reads right (Greek, and an Arabic word in Latin letters): transcribed again, Arabic pinned
+    // because the live voice understood the turn in Arabic.
+    {
+      const calls = [];
+      const { c, sup } = makeCall({ transcribe: fakeHear({ auto: "Έλα φίλε μου, κάλμα.", ar: "اقفل المكالمة دلوقتي" }, calls) });
+      await c.open();
+      const s = lastSession();
+      await userTurn(s, c, "Naam.", { ms: 1800 });
+      await respond(s, null, { calls: [{ name: "look_into", args: { text: "اقفل المكالمة" } }] });
+      await until(() => sup.calls.some((x) => x[0] === "send"), 3000, "the hand-off");
+      const sends = sendsOf(sup);
+      check("no transcript reads right: the audio is transcribed again with Arabic pinned (the voice understood Arabic)", calls.join() === "auto,ar", JSON.stringify(calls));
+      check("  and that transcript is what MINT AI gets", sends.length === 1 && sends[0] === "اقفل المكالمة دلوقتي", JSON.stringify(sends));
+      check("  the second transcription is recorded (and its usage billed)", c.diag.transcripts.some((x) => x.kind === "retry-ar"));
+      c.close("test");
+    }
+    // Still nothing reads right: the transcript goes, with what the live voice understood beside it, marked.
+    {
+      const calls = [];
+      const { c, sup } = makeCall({ transcribe: fakeHear({ auto: "Didskemelian ad", ar: "" }, calls) });
+      await c.open();
+      const s = lastSession();
+      await userTurn(s, c, "Qiddiska kameleenaaddi.", { ms: 2000 });
+      await respond(s, null, { calls: [{ name: "look_into", args: { text: "How full is the disk?" } }] });
+      await until(() => sup.calls.some((x) => x[0] === "send"), 3000, "the hand-off");
+      const sends = sendsOf(sup);
+      check("nothing reads right even pinned: a transcript is still the request (grounding kept)", sends.length === 1 && /^(Didskemelian ad|Qiddiska kameleenaaddi\.)\n\n\[Voice: speech-to-text may have misheard this turn/.test(sends[0]), JSON.stringify(sends));
+      check("  what the live voice understood follows, marked as its own wording", /The live voice understood it as: «How full is the disk\?» \(its own wording, not theirs\)\./.test(sends[0] || ""), JSON.stringify(sends));
+      c.close("test");
+    }
+    // A turn that read right in both transcripts: exactly the transcript, no note, no second transcription.
+    {
+      const calls = [];
+      const said = "please check the disk and tell me if anything failed";
+      const { c, sup } = makeCall({ transcribe: fakeHear({ auto: said }, calls) });
+      await c.open();
+      const s = lastSession();
+      await userTurn(s, c, "Please check the disk, and tell me if anything failed.", { ms: 3000 });
+      await respond(s, null, { calls: [{ name: "look_into", args: { text: "Check the disk for failures." } }] });
+      await until(() => sup.calls.some((x) => x[0] === "send"), 3000, "the hand-off");
+      check("both transcripts agree: MINT AI gets the full-turn transcript alone", JSON.stringify(sendsOf(sup)) === JSON.stringify([said]) && calls.length === 1, JSON.stringify([sendsOf(sup), calls]));
+      c.close("test");
+    }
+    // Request 381: "context:" alone is the transcription prompt's wrapper, not something said.
+    {
+      const calls = [];
+      const { c, sup } = makeCall({ transcribe: fakeHear({ auto: "context:" }, calls) });
+      await c.open();
+      const s = lastSession();
+      await userTurn(s, c, "Claude, check what is happening with the voice", { ms: 3000 });
+      await respond(s, null, { calls: [{ name: "look_into", args: { text: "Check what is happening with the voice." } }] });
+      await until(() => sup.calls.some((x) => x[0] === "send"), 3000, "the hand-off");
+      const sends = sendsOf(sup);
+      check("a full-turn transcript that is only «context:» is dropped; the session's words go", sends.length === 1 && sends[0] === "Claude, check what is happening with the voice", JSON.stringify(sends));
+      c.close("test");
+    }
   }
 
   section("MINT AI's answers: the guarded summary and the verbatim reader, never the speech model");

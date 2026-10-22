@@ -186,7 +186,11 @@ async function runClip({ pcm, phrase, model, voice, deps }) {
   out.trips = c.diag.trips.map((t) => t.rule);
   out.handoff = asks.length > 0;
   out.handoff_expected = phrase.kind === "action";
-  out.handoff_text_is_transcript = asks.length ? asks.every((a) => a === texts.turn || a === texts.session) : null;
+  // The request is a transcript; a "[Voice: ...]" note may follow it (lib/voice-heard.js), and a "[speaker: ...]" label precede it.
+  const requestOf = (a) => String(a).replace(/^\[speaker: [^\]]*\] /, "").split("\n\n[Voice: ")[0];
+  const lastTurn = c.turns ? [...c.turns.values()].pop() : null;
+  const retried = !!(lastTurn && /^retry-/.test(String(lastTurn.heardFrom || ""))); // transcribed again, language pinned
+  out.handoff_text_is_transcript = asks.length ? asks.every((a) => retried || requestOf(a) === texts.turn || requestOf(a) === texts.session) : null;
   out.stopped = stopped;
   out.stop_expected = phrase.kind === "stop";
   const dn = dialectNote(phrase.lang, out.reply);

@@ -43,10 +43,13 @@
  * (SUMMARY_INSTRUCTIONS -> judge()) and the verbatim reader, and is played into
  * the same stream; the realtime conversation is then told what was said.
  *
- * Hand-offs carry this server's own transcript of the turn -- a full-turn
- * gpt-4o-mini-transcribe of the audio this server relayed (or, failing that,
- * the session's own input transcription) that passed the transcript guard --
- * never the model's `text`. At most one per utterance.
+ * Hand-offs carry this server's own transcript of the turn -- the full-turn
+ * transcript of the audio this server relayed or the session's own input
+ * transcription, whichever reads as the administrator's Egyptian Arabic or
+ * English (lib/voice-heard.js; once more with the language pinned when neither
+ * does), that passed the transcript guard -- never the model's `text`. When the
+ * words may be misheard, a marked note follows them (groundedText). At most one
+ * per utterance.
  *
  * Barge-in: when the administrator really talks over the voice, the page is
  * told to flush what it has buffered (it answers with the millisecond it had
@@ -85,6 +88,7 @@ const voiceGuard = require("./voice-guard");
 const personaLib = require("./voice-persona");
 const usageLib = require("./voice-usage");
 const arabic = require("./voice-arabic");
+const heardLib = require("./voice-heard");
 const UiActions = require("../public/ui-actions");
 const UI_ACK_MS = 3000; // a page action the tab has not confirmed by then did not happen
 const UI_END_MAX_MS = 8000; // call.end: the goodbye may be said, then the call ends regardless
@@ -96,6 +100,7 @@ const SILENCE_MS = 700;
 const MAX_CALL_MS = 20 * 60 * 1000;
 const KEEP_INPUT_MS = 90 * 1000; // the relayed audio kept for full-turn transcripts
 const HEARD_WAIT_MS = 6000; // how long a hand-off waits for the turn's transcript
+const SECOND_WAIT_MS = 1500; // once one transcript of the turn is in, how much longer the other one is waited for
 // How often a hand-off's reply is looked for (a local socket call to the supervisor): 0.5 s, so a reply
 // is picked up 0.25 s after it is written on average (was 2 s: 1 s on average).
 const REPLY_POLL_MS = 500;
@@ -1312,24 +1317,29 @@ class LiveCall {
     return Buffer.concat(parts);
   }
 
-  /** A full-turn transcript of what this server relayed, through the transcript guard. */
-  async transcribeTurn(t) {
+  /**
+   * A full-turn transcript of what this server relayed, through the transcript guard. `language`: pinned
+   * for this one transcription ("ar" / "en": groundedText's second try when no transcript read right).
+   */
+  async transcribeTurn(t, language) {
     const pcm = this.turnAudio(t);
     const t0 = this.now();
     if (pcm.length < BYTES_PER_MS * 250) return null;
     try {
-      const heard = await this.d.transcribe(wav(pcm), this.cfg, "audio/wav");
+      const cfg = language ? { ...this.cfg, transcribe_language: language } : this.cfg;
+      const heard = await this.d.transcribe(wav(pcm), cfg, "audio/wav");
       if (heard && heard.tokens) this.record({ vt: t.vt, part: "transcription", model: heard.model, tokens: heard.tokens });
       const text = String((heard && heard.text) || "").trim();
       const audioSeconds = pcm.length / BYTES_PER_MS / 1000;
       const g = voiceGuard.checkTranscript(text, { audioSeconds, sources: liveSources() });
-      this.diag.transcripts.push({ turn: t.n, kind: "turn", ms: this.now() - t0, ok: g.ok });
+      this.diag.transcripts.push({ turn: t.n, kind: language ? "retry-" + language : "turn", ms: this.now() - t0, ok: g.ok });
+      if (language) return g.ok ? text : null;
       t.turnText = g.ok ? text : "";
       if (!g.ok) t.turnDropped = g.rule;
       return t.turnText;
     } catch (e) {
       this.log("live: full-turn transcription failed: " + scrub(e.message));
-      t.turnText = null;
+      if (!language) t.turnText = null;
       return null;
     }
   }
@@ -1812,16 +1822,53 @@ class LiveCall {
     this.say([{ text: line, safe: true }], "safe", t);
   }
 
-  /** The turn's words as this server heard them (the hand-off's text), or "". */
+  /**
+   * The turn's words as this server heard them (the hand-off's text), or "".
+   *
+   * Both of this server's transcripts of the turn are candidates -- the full-turn one and the live
+   * session's own -- and lib/voice-heard.js picks the one that reads as this administrator's Egyptian
+   * Arabic or English (2026-10-22: the full-turn transcript alone sent MINT AI «La parte más vital es
+   * difícil», «أريد أن أعود.» and «context:» while the session's transcript of the same audio was two to
+   * three times longer). When neither reads right, the audio is transcribed once more with its language
+   * pinned (the language the live voice understood it in, else Arabic). t.heardNote, set here, tells MINT
+   * AI when the words may be misheard: the other transcript, and -- only when no transcript reads right --
+   * what the live voice understood, marked as its wording. The request itself is always a transcript.
+   */
   async groundedText(t) {
+    if (t.heardDone) return t.heardDone;
     // A transcriber on this server takes longer (cfg.heard_wait_ms: its timeout and a fallback's round trip).
     const waitMs = Math.max(HEARD_WAIT_MS, Number(this.cfg.heard_wait_ms) || 0);
-    const wait = (p) => Promise.race([p, new Promise((res) => this.timer(() => res(null), waitMs))]);
-    let text = null;
-    if (this.opts.handoff === "turn" && t.turnP) text = await wait(t.turnP);
-    if (!text) text = await wait(t.sessionP);
+    const wait = (p, ms) => Promise.race([p, new Promise((res) => this.timer(() => res(null), ms || waitMs))]);
+    const cands = [];
+    if (this.opts.handoff === "turn" && t.turnP) {
+      const turnText = await wait(t.turnP);
+      cands.push({ source: "turn", text: turnText });
+      // The session's transcript is usually in before the full-turn one; it is not waited for long.
+      cands.push({ source: "session", text: await wait(t.sessionP, turnText ? this.opts.secondWaitMs || SECOND_WAIT_MS : waitMs) });
+    } else cands.push({ source: "session", text: await wait(t.sessionP) });
     if (t.dropped) return "";
-    return String(text || "").trim().slice(0, 20000);
+    const speechMs = t.vp && Number(t.vp.speech_ms) > 0 ? Number(t.vp.speech_ms) : t.endMs != null && t.startMs != null ? 0.6 * (t.endMs - t.startMs) : 0;
+    let ch = heardLib.choose(cands, { speechMs });
+    if (!ch) return "";
+    const lang = this.opts.retryHeard === false ? null : heardLib.retryLanguage(ch, t.voiceText);
+    let retried = "";
+    if (lang && this.d.transcribe && t.endMs != null) {
+      const again = await wait(this.transcribeTurn(t, lang));
+      if (t.dropped) return "";
+      if (again) ch = heardLib.choose([...cands, { source: "retry-" + lang, text: again }], { speechMs });
+      retried = `, again with the language pinned to ${lang}: ${again ? "heard" : "nothing"}`;
+    }
+    // Nothing that reads as a prompt goes into the note either.
+    if (ch.also && voiceGuard.refuseAtDoor(ch.also.text)) ch.also = null;
+    const voiceText = t.voiceText && !voiceGuard.refuseAtDoor(t.voiceText) ? t.voiceText : "";
+    t.heardNote = heardLib.noteFor(ch, voiceText);
+    t.heardFrom = ch.pick.source;
+    if (ch.all.length > 1 || ch.pick.a.quality !== "good" || t.heardNote) {
+      const desc = ch.all.map((c) => `${c.source} ${c.a.quality}${c.a.why ? " (" + c.a.why + ")" : ""}`).join(", ");
+      this.log(`live: call ${this.id} turn ${t.n} hand-off text: ${desc} -> ${ch.pick.source}${retried}${t.heardNote ? "; MINT AI is told the words may be misheard" : ""}`);
+    }
+    t.heardDone = ch.pick.text.slice(0, 20000);
+    return t.heardDone;
   }
 
   async passOn(t, request) {
@@ -1829,7 +1876,11 @@ class LiveCall {
       this.log(`live: call ${this.id} turn ${t.n} not passed to MINT AI: ${t.talkOnlyName || "the speaker"} may not give commands`);
       return null;
     }
+    // When the words may be misheard, MINT AI is told so, after them (groundedText: the other transcript, and
+    // what the live voice understood when no transcript reads right -- each marked, never as the request).
+    if (t && t.heardNote) request = request + "\n\n" + t.heardNote;
     // Who asked, when the voice recognised them (Settings ▸ Voice ▸ Voiceprint): MINT AI and its record see it.
+    // The name is the stored voiceprint's display name, as Settings has it (never a model's guess).
     if (t && t.speaker && t.speaker.name) request = `[speaker: ${t.speaker.name}] ` + request;
     // Listen for MINT AI's text before asking: the turn may start (and stream) before the ask returns.
     const stream = this.openStream(request);
@@ -1929,6 +1980,9 @@ class LiveCall {
     if (!text || text.length > MAX_ASK_CHARS || extra.length) return JSON.stringify({ error: "look_into takes one field, text, of 1 to " + MAX_ASK_CHARS + " characters" });
     if (!t) return JSON.stringify({ error: "refused: nothing was said in this turn" });
     if (t.asked) return JSON.stringify({ error: "you are already working on this request; do not call look_into again" });
+    // What the voice understood: only a hint for groundedText (the language to try again in) and, when no
+    // transcript reads right, a marked note beside the transcript -- never the request.
+    if (!t.voiceText) t.voiceText = text;
     const request = await this.groundedText(t);
     const why = !request ? "ungrounded" : voiceGuard.refuseAtDoor(text) || voiceGuard.refuseAtDoor(request) ? "echo" : null;
     if (why) {
