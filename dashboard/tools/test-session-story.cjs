@@ -29,7 +29,7 @@ const MONI = path.join(ROOT, "..", "moni-ai");
 const S = require(path.join(MONI, "lib", "story.js"));
 const L = require(path.join(ROOT, "public", "cc-story.js"));
 const api = require(path.join(ROOT, "lib", "story-api.js"));
-const { buildWorld, transcript, IDS } = require("./story-fixture.cjs");
+const { buildWorld, transcript, IDS, pinClock } = require("./story-fixture.cjs");
 const names = require(path.join(MONI, "lib", "names.js"));
 
 const SHOTS = (() => { const i = process.argv.indexOf("--shots"); return i > 0 ? path.resolve(process.argv[i + 1]) : null; })();
@@ -42,8 +42,9 @@ function check(name, cond, detail) {
 const section = (t) => console.log("\n" + t);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// "now" for the fixture: 13:50 Cairo today (11:50 UTC in winter, 10:50 in summer) -- or the real now when
-// the browser part runs (the page compares with its own clock).
+// "now" for the fixture: the latest 13:50 in Cairo, at any hour (pinClock: this process's Date; each page gets the
+// same through page.clock.setSystemTime, so the page, the parser and the fixture agree).
+const SHIFT = pinClock();
 const NOW = Date.now();
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "story-test-"));
 
@@ -283,13 +284,20 @@ async function browserPart(pw, W) {
     await s.makeUser("alice", "administrator");
     const db = require(path.join(__dirname, "..", "lib", "db.js"));
     db.setUserMintCore(db.getUserByName("alice").id, "E");
-    const { cookie } = await s.signIn("alice");
+    // sign-in (its time-based code) on the real clock: the server's clock is real, only this process is pinned
+    const Pinned = globalThis.Date;
+    let cookie;
+    globalThis.Date = globalThis.__RealDate || Date;
+    try { cookie = (await s.signIn("alice")).cookie; } finally { globalThis.Date = Pinned; }
     browser = await pw.chromium.launch({ args: ["--host-resolver-rules=MAP *.localhost 127.0.0.1", "--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--ignore-gpu-blocklist"] });
     async function open(w, h, q, o) {
       o = o || {};
       const ctx = await browser.newContext({ viewport: { width: w, height: h }, deviceScaleFactor: o.dpr || 1, colorScheme: o.theme || "dark", reducedMotion: o.reduced ? "reduce" : "no-preference", userAgent: o.desk ? APP_UA : undefined, extraHTTPHeaders: { "X-Forwarded-Proto": "https" } });
       await ctx.addCookies(String(cookie).split("; ").filter(Boolean).map((kv) => ({ name: kv.split("=")[0], value: kv.slice(kv.indexOf("=") + 1), url: ORIGIN })));
       const page = await ctx.newPage();
+      // the pinned clock (pinClock), moving on at the real pace; Playwright's client reads this process's Date,
+      // so it is called with the real one in place (or it would see no shift at all)
+      { const t = Date.now(), Pinned = globalThis.Date; globalThis.Date = globalThis.__RealDate || Date; try { await page.clock.setSystemTime(t); } finally { globalThis.Date = Pinned; } }
       await page.addInitScript((theme) => {
         window.__csp = [];
         document.addEventListener("securitypolicyviolation", (e) => window.__csp.push(e.violatedDirective + " " + e.blockedURI));
@@ -375,7 +383,7 @@ async function browserPart(pw, W) {
       await sleep(800);
       const note = await v.page.evaluate(() => document.querySelector('#cc-daytl [data-dt="note"]').textContent);
       check("the day timeline opens with the day's summary", /4 sessions worked · 4 delegations · 1 message between sessions · 7 approvals/.test(note), note);
-      check("  it starts live", await v.page.evaluate(() => !window.MintStory.replaying() && document.querySelector('#cc-daytl [data-dt="live"]').classList.contains("on")));
+      { const lv = await v.page.evaluate(() => ({ rep: window.MintStory.replaying(), on: document.querySelector('#cc-daytl [data-dt="live"]').classList.contains("on"), now: new Date().toISOString(), url: location.search })); check("  it starts live", !lv.rep && lv.on, JSON.stringify(lv)); }
       await shot(v.page, "day-live-browser-dark");
       // replay at the moment the customs session was filing: Planning idle?, Customs working
       const t1 = tAt(210).getTime();

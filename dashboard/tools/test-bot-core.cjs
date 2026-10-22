@@ -7,16 +7,18 @@
  *     NODE_PATH=/opt/moni-dashboard/node_modules PLAYWRIGHT=/path/to/node_modules/playwright \
  *       node dashboard/tools/test-bot-core.cjs
  *
- * Pure parts first (cc-logic.js: heads, presets, the derived theme shades and
- * their 3:1 contrast, the hex-only check, the too-close warning, the state
- * mapping; mint-core-bot.js: faces, blink, gaze, the speaking mouth, the head
- * buffers), then a scratch copy of the server over HTTP (POST
- * /mint-ai/api/prefs/bot: CSRF, permission, validation, audit, storage; the
- * page and the dock carry the choice), then headless Chromium: the Command
+ * Pure parts first (cc-logic.js: heads, face styles, presets, the derived theme
+ * shades and their 3:1 contrast, the hex-only check, the too-close warning, the
+ * state mapping; mint-core-bot.js: the face in each style -- every expression at
+ * the four sizes, symmetric and centred, blink, gaze, the morph, the visemes,
+ * the dot grid, the head buffers), then a scratch copy of the server over HTTP
+ * (POST /mint-ai/api/prefs/bot: CSRF, permission, validation, audit, storage;
+ * the page and the dock carry the choice), then headless Chromium: the Command
  * Center with core E in dark and light (no console or CSP error, a non-blank
- * canvas, states, offline, the sessions as heads, the 2D fallback), and
- * Settings ▸ Appearance (thumbnails, choosing a head, a preset, custom colours
- * with the warning, reset). Without PLAYWRIGHT the browser part is skipped.
+ * canvas, states, offline, the sessions as heads, the 2D fallback, each face
+ * style drawn and a live switch), and Settings ▸ Appearance (thumbnails, choosing
+ * a face, a head, a preset, custom colours with the warning, reset). Without
+ * PLAYWRIGHT the browser part is skipped.
  */
 const scratch = require("./scratch-server.cjs"); // first: sets MONI_DATA_DIR
 const path = require("path");
@@ -38,6 +40,8 @@ const B = require(path.join(ROOT, "public", "mint-core-bot.js"));
   check("ten heads, the approved mockup's, in its order; the renderer has the same ten", JSON.stringify(Object.keys(L.BOT_HEADS)) === JSON.stringify(HEADS) && JSON.stringify(B.HEAD_IDS) === JSON.stringify(HEADS));
   check("a head reads as itself in any case; empty or unknown is cap", L.normBotHead("Goggles") === "goggles" && L.normBotHead("") === "cap" && L.normBotHead(null) === "cap" && L.normBotHead("x") === "cap");
   check("the API accepts exactly the ten names", HEADS.every((h) => L.isBotHead(h)) && !L.isBotHead("Cap") && !L.isBotHead("") && !L.isBotHead(null) && !L.isBotHead(["cap"]));
+  check("three face styles, the same in the setting and the renderer: smooth (the default), dots, minimal", JSON.stringify(Object.keys(L.BOT_FACES)) === '["smooth","dots","minimal"]' && JSON.stringify(B.FACE_STYLES) === JSON.stringify(Object.keys(L.BOT_FACES)) && L.BOT_FACE_DEFAULT === "smooth");
+  check("a face reads as itself in any case; empty or unknown is smooth; the API accepts exactly the three", L.normBotFace("Dots") === "dots" && L.normBotFace("") === "smooth" && L.normBotFace("pixel") === "smooth" && ["smooth", "dots", "minimal"].every((f) => L.isBotFace(f)) && !L.isBotFace("Dots") && !L.isBotFace("") && !L.isBotFace(null) && B.normFace("MINIMAL") === "minimal" && B.normFace(null) === "smooth");
   const D = L.BOT_PRESETS.default;
   check("Default is the approved set, dark and light", JSON.stringify(D.dark) === JSON.stringify({ ready: "#00E6A5", listening: "#38D6FF", thinking: "#966EFF", speaking: "#FF5AC8", needs: "#FFBE3C", error: "#FF5050", wire: "#E1E8F8" }) && JSON.stringify(D.light) === JSON.stringify({ ready: "#00785A", listening: "#006EAA", thinking: "#6D2BC8", speaking: "#BE1E8C", needs: "#B46900", error: "#C81E1E", wire: "#262E40" }));
   check("presets: Default, Mint only, Mono, Ocean, Sunset", JSON.stringify(Object.keys(L.BOT_PRESETS).map((k) => L.BOT_PRESETS[k].name)) === JSON.stringify(["Default", "Mint only", "Mono", "Ocean", "Sunset"]));
@@ -85,55 +89,78 @@ const B = require(path.join(ROOT, "public", "mint-core-bot.js"));
   const SS = [[{ st: "waiting" }, "needs", "pupils"], [{ st: "working" }, "thinking", "focus"], [{ st: "idle" }, "ready", "base"], [{ st: "idle", catchK: 0.6 }, "listening", "listen"], [{ st: "idle", glow: 0.8 }, "speaking", "speak"], [{ st: "idle", bloom: 0.9 }, "ready", "grin"], [{ st: "waiting", catchK: 1 }, "needs", "pupils"]];
   check("a session: waiting -> needs you, working -> thinking, idle -> ready, a delegation landing -> listening, a reply -> speaking, done -> a grin; needs you wins", SS.every(([k, s, f]) => L.botSessState(k).state === s && L.botSessState(k).face === f));
 
-  section("the renderer's pure parts (mint-core-bot.js)");
-  const lit = (an, amp) => { const w = new Uint8Array(B.NF); B.weights(an, w, 0, amp || 0); let n = 0; for (const v of w) if (v > 127) n++; return { n, w }; };
+  section("the renderer's pure parts (mint-core-bot.js): the face, in each style");
   const mk = (face) => { const a = new B.Anim(3); a.set(face, "ready"); a.settle(); return a; };
-  const faceN = {};
-  Object.keys(B.FMAP).forEach((f) => { faceN[f] = lit(mk(f)).n; });
-  check("every face lights nodes of the 19 x 19 front grid", Object.values(faceN).every((n) => n > 10), JSON.stringify(faceN));
-  check("the faces are the mockup's maps (base / listen / focus / speak / pupils / err / grin)", ["base", "listen", "focus", "speak", "pupils", "err", "grin"].every((f) => B.FMAP[f]) && B.FMAP.err[1] === "..c...c....c...c..");
-  const bl = mk("listen"); bl.blinkP = 0.5; const open = lit(mk("listen")).n, shut = lit(bl).n;
-  check("a blink collapses the eyes to a line", shut < open * 0.6 && shut > 0, open + " -> " + shut);
-  const g0 = lit(mk("base")).w, ga = mk("base"); ga.gx = 2; const g2 = lit(ga).w;
-  let moved = 0; for (let i = 0; i < B.NF; i++) if ((g0[i] > 127) !== (g2[i] > 127)) moved++;
-  check("a glance / gaze moves the eyes on the grid (not the mouth)", moved > 10, moved);
-  const sp = mk("speak"); const q = lit(sp, 0).n, loud = lit(sp, 1).n;
-  check("speaking: a flat mouth when silent, a waveform with the voice level", loud > q + 4, q + " -> " + loud);
-  const fx = mk("base"); fx.set("pupils", "needs"); fx.fk = 0.5; const mid = lit(fx).w; let half = 0; for (const v of mid) if (v > 40 && v < 215) half++;
-  check("a face change cross-fades (half-lit nodes mid-way), never a pop", half > 10, half);
-  {
-    // small heads (sessions, the dock): the face on every other node, each lit by its 2 x 2 block
-    const a = mk("listen"), full = new Uint8Array(B.NF), coarse = new Uint8Array(B.NF);
-    B.weights(a, full, 0, 0); B.weights(a, coarse, 0, 0, true);
-    let offGrid = 0, onLit = 0, missed = 0;
-    for (let r = 0; r < B.GN; r++) for (let c = 0; c < B.GN; c++) {
-      const v = coarse[r * B.GN + c];
-      if ((r & 1 || c & 1) && v) offGrid++;
-      if (!(r & 1) && !(c & 1) && v > 127) onLit++;
-      if (!(r & 1) && !(c & 1)) { const blk = [full[r * B.GN + c], full[(r + 1) * B.GN + c] || 0, full[r * B.GN + c + 1] || 0, full[(r + 1) * B.GN + c + 1] || 0]; if ((Math.max(...blk) > 127) !== (v > 127)) missed++; }
-    }
-    check("small heads: a coarse face (every other node, each the brightest of its 2 x 2 block), nothing off the coarse grid", offGrid === 0 && onLit > 8 && missed === 0, offGrid + " " + onLit + " " + missed);
-    check("small heads: crisp pixel-snapped square face pixels, thicker strokes, no blurred face glow", /SMALL = 40/.test(read("public/mint-core-bot.js")) && /u_snap>0\.5/.test(read("public/mint-core-bot.js")) && /if \(h\.cssR < SMALL\) continue;/.test(read("public/mint-core-bot.js")) && B.build("cap", "lo").seg.length > 0);
-  }
-  const sizes = HEADS.map((h) => { const hi = B.build(h, "hi"), lo = B.build(h, "lo"); return [h, hi.n, lo.n, hi.front.length, lo.front.length, hi.lines.length % 2, hi.seg.length > 0, lo.seg.length]; });
-  check("each head builds (hi for the core, lo for sessions and the dock): < 65,536 vertices, 361 face nodes, line pairs", sizes.every((x) => x[1] < 65536 && x[3] === 361 && x[4] === 361 && x[5] === 0 && x[6] && x[7] > 0 && x[2] < x[1]), JSON.stringify(sizes));
+  const FACES = ["base", "listen", "focus", "speak", "pupils", "err", "sleep", "grin"];
+  const SIZES = [[150, 1, "core ~300 px"], [39.9, 1.5, "companion"], [25, 2, "session head"], [14, 1.5, "dock"]];
+  const vecOf = (st, an, r, dpr, amp, vm) => { const v = new Float32Array(B.FACE.N), w = new Uint8Array(B.NF); B.faceVec(st, an, r || 60, dpr || 1, amp || 0, vm || null, v, w, 0); return { v, w }; };
+  // the face rastered in face space (a across, b up, -1..1), n x n samples, as the renderer covers it
+  const raster = (v, n) => { const o = new Uint8Array(n * n); for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) o[y * n + x] = B.faceCov(v, -1 + (x + 0.5) * 2 / n, 1 - (y + 0.5) * 2 / n, 2 / n) > 0.5 ? 1 : 0; return o; };
+  const count = (r) => r.reduce((s, x) => s + x, 0);
+  const mirrorBad = (r, n) => { let bad = 0; for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) if (r[y * n + x] !== r[y * n + n - 1 - x]) bad++; return bad; };
+  const N = 96;
+  B.FACE_STYLES.forEach((st) => {
+    const empty = [], asym = [], same = [];
+    SIZES.forEach(([r, dpr, nm]) => {
+      const seen = {};
+      FACES.forEach((f) => {
+        const ras = raster(vecOf(st, mk(f), r, dpr).v, N), n = count(ras);
+        if (n < 4) empty.push(nm + ":" + f + "=" + n);
+        // looking aside while thinking, and the smooth catchlight (always top-right), are asymmetric on purpose
+        if (f !== "focus" && !(f === "pupils" && st === "smooth") && mirrorBad(ras, N) > N * 0.02) asym.push(nm + ":" + f + "=" + mirrorBad(ras, N));
+        const key = ras.join("");
+        if (f === "speak") return; // speaking, silent, rests on the closed mouth: its shapes are checked below
+        if (seen[key]) same.push(nm + ":" + f + "=" + seen[key]);
+        seen[key] = f;
+      });
+    });
+    check(st + ": every expression draws at every size (core, companion, session head, dock)", !empty.length, empty.join(" "));
+    check(st + ": symmetric left to right at every size (but the sideways look of thinking)", !asym.length, asym.join(" "));
+    check(st + ": every expression differs from the others at every size (speaking at rest aside)", !same.length, same.join(" "));
+    const base = raster(vecOf(st, mk("base"), 39.9, 1.5).v, N); let sx = 0, n0 = 0;
+    for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) if (base[y * N + x]) { sx += x; n0++; }
+    check(st + ": the face is centred on the head (its middle within a sample of the centre line)", Math.abs(sx / n0 - (N - 1) / 2) < 1.01, (sx / n0).toFixed(2));
+    const bl = mk("listen"); bl.blinkP = 0.5;
+    check(st + ": a blink closes the eyes to a line", count(raster(vecOf(st, bl).v, N)) < count(raster(vecOf(st, mk("listen")).v, N)) * 0.75);
+    const ga = mk("base"); ga.gx = 2;
+    check(st + ": a glance / gaze moves the eyes", raster(vecOf(st, ga).v, N).join("") !== raster(vecOf(st, mk("base")).v, N).join(""));
+    const shapes = B.VIS.map((k) => raster(vecOf(st, mk("speak"), 60, 1, 0.6, Object.assign({ closed: 0, open: 0, wide: 0, round: 0 }, { [k]: 1 })).v, N).join(""));
+    check(st + ": speaking: four mouth shapes (closed / open / ee / oo)", new Set(shapes).size === 4);
+    check(st + ": a session's mouth (no visemes) opens with the level", count(raster(vecOf(st, mk("speak"), 30, 2, 0.9).v, N)) > count(raster(vecOf(st, mk("speak"), 30, 2, 0).v, N)));
+    const fx = mk("base"); fx.set("pupils", "needs"); fx.fk = 0.5;
+    const a0 = vecOf(st, mk("base")).v, a1 = vecOf(st, mk("pupils")).v, am = vecOf(st, fx).v;
+    check(st + ": a face change morphs (mid-way the eyes sit between the two faces' sizes), never a pop", st === "dots" ? am[3] >= Math.min(a0[3], a1[3]) - 1e-6 && am[3] <= Math.max(a0[3], a1[3]) + 1e-6 : am[3] > Math.min(a0[3], a1[3]) && am[3] < Math.max(a0[3], a1[3]), [a0[3], am[3], a1[3]].map((x) => x.toFixed(3)).join(" "));
+    const hid = vecOf(st, mk("listen"), 60, 1).w; let under = 0; for (const x of hid) if (x > 127) under++;
+    check(st + ": the grid nodes under the features are hidden (their weight row)", under >= 4, under);
+  });
+  check("dots: the grid is coarser the smaller the head (purpose-drawn per size), never under ~5 device px a dot", B.FACE.pitchFor(150, 1) < B.FACE.pitchFor(39.9, 1.5) && B.FACE.pitchFor(39.9, 1.5) < B.FACE.pitchFor(14, 1.5) && SIZES.slice(0, 3).every(([r, d]) => B.FACE.pitchFor(r, d) * r * d >= 5.2));
+  const dv = vecOf("dots", mk("base"), 25, 2).v, dp = dv[20];
+  check("dots: the shapes snap to whole dots (eye centres on the grid or half-grid, the mouth on a row)", [dv[0], dv[1]].every((x) => Math.abs(x / dp * 2 - Math.round(x / dp * 2)) < 1e-6) && Math.abs(dv[13] / dp - Math.round(dv[13] / dp)) < 1e-6);
+  const tiny = vecOf("minimal", mk("base"), 14, 1.5).v;
+  check("minimal at dock size: no stroke thinner than ~1.6 device px", tiny[16] * 14 * 1.5 >= 0.79 && tiny[11] * 14 * 1.5 >= 0.79, (tiny[16] * 21).toFixed(2));
+  const sizes = HEADS.map((h) => { const hi = B.build(h, "hi"), lo = B.build(h, "lo"); return [h, hi.n, lo.n, hi.front.length, lo.front.length, hi.lines.length % 2, hi.seg === undefined]; });
+  check("each head builds (hi for the core, lo for sessions and the dock): < 65,536 vertices, 361 face nodes, line pairs, no lit strokes any more", sizes.every((x) => x[1] < 65536 && x[3] === 361 && x[4] === 361 && x[5] === 0 && x[6] && x[2] < x[1]), JSON.stringify(sizes));
   check("lit accessories: the twin antennas' joints and the mortarboard's tassel take the state colour; the cap's antenna joints stay neutral", (() => { const k = (h) => { const g = B.build(h, "hi"); const c = {}; for (let i = 0; i < g.n; i++) c[g.v[i * 7 + 3]] = (c[g.v[i * 7 + 3]] || 0) + 1; return c; }; return k("antennas")[4] === 4 && k("mortar")[4] === 2 && !k("cap")[4] && k("cap")[3] === 3 && k("headset")[2] > 50; })());
+  check("the old grid-node faces are gone (no maps, no coarse grid, no lit strokes)", !B.FMAP && !B.weights && !B.faceAt && !/FMAP|u_snap|u_segK|u_lsz/.test(read("public/mint-core-bot.js")));
   const src = read("public/mint-core-bot.js");
   check("no eval, no inline style, no CDN; WebGL2 with a 2D fallback; stops when hidden; reduced motion; a resolution guard", !/\beval\(|new Function|\.style\.|setAttribute\("style"|https?:\/\//.test(src.replace(/\/\*[\s\S]*?\*\//g, "")) && /getContext\("webgl2"/.test(src) && /getContext\("2d"\)/.test(src) && /visibilitychange/.test(src) && /prefers-reduced-motion: reduce/.test(src) && /S\.lowRes = true/.test(src));
   check("the same instance API as core D (cc-map, the shell's flight, the dock, the desktop app drive both)", ["setState", "setLight", "resize", "start", "stop", "still", "stats", "draw", "destroy", "setConcept", "place", "tick", "adopt", "setHead", "setColors", "setOffline"].every((m) => new RegExp("\\b" + m + ": ").test(src)) && /concept: "E"/.test(src));
-  check("no per-frame allocation in the hot path: weights into one Uint8Array, a fixed pool of heads", /var W8 = new Uint8Array\(NF \* ROWS\)/.test(src) && /var POOL = \[\];/.test(src) && /texSubImage2D\(gl\.TEXTURE_2D, 0, 0, 0, NF, ROWS, gl\.RED, gl\.UNSIGNED_BYTE, W8\)/.test(src));
+  check("no per-frame allocation in the hot path: node weights into one Uint8Array, a fixed pool of heads and of face vectors, module-level 2D scratch", /var W8 = new Uint8Array\(NF \* ROWS\)/.test(src) && /var POOL = \[\];/.test(src) && /texSubImage2D\(gl\.TEXTURE_2D, 0, 0, 0, NF, ROWS, gl\.RED, gl\.UNSIGNED_BYTE, W8\)/.test(src) && /var FVEC = \[\];/.test(src) && /var TA = new Float32Array\(N\), TB = new Float32Array\(N\);/.test(src) && /RECTS = new Float64Array\(12\), PART = new Float64Array/.test(src));
+  check("the instance API has setFace; the module has setFace / face for the page", /\bsetFace: function \(f\)/.test(src) && typeof B.setFace === "function" && typeof B.face === "function");
 
   section("the views");
   const views = require(path.join(ROOT, "lib", "views-moniai.js"));
   const rbac = require(path.join(ROOT, "lib", "rbac.js"));
   const admin = rbac.actor({ permissions: ["*"] });
   const pageFor = (o) => views.page(Object.assign({ csrf: "t", user: { name: "a", perm: admin }, voice: { configured: true, voice: "marin", manage: true } }, o));
-  const pg = pageFor({ core: "E", botHead: "goggles", botColors: '{"p":"mono"}' });
-  check("the page carries core E, its head and colours on #cc before first paint", /data-core="E"/.test(pg) && /data-bot-head="goggles"/.test(pg) && /data-bot-colors="\{&quot;p&quot;:&quot;mono&quot;\}"/.test(pg));
+  const pg = pageFor({ core: "E", botHead: "goggles", botColors: '{"p":"mono"}', botFace: "dots" });
+  check("the page carries core E, its head, face and colours on #cc before first paint", /data-core="E"/.test(pg) && /data-bot-head="goggles"/.test(pg) && /id="cc"[^>]*data-bot-face="dots"/.test(pg) && /data-bot-colors="\{&quot;p&quot;:&quot;mono&quot;\}"/.test(pg));
+  check("a stored face that is not one of the three reads as smooth", /id="cc"[^>]*data-bot-face="smooth"/.test(pageFor({ core: "E", botFace: '"><b>' })) && !/data-bot-face="&quot;|data-bot-face=""/.test(pageFor({ core: "E", botFace: '"><b>' })));
   const evil = pageFor({ core: "E", botHead: '"><script>', botColors: '{"p":"custom","c":{"ready":"\\"><img src=x onerror=1>"}}' });
   check("a hostile stored value cannot reach the markup", !/"><script>/.test(evil) && !/<img src=x/.test(evil) && /data-bot-head="cap"/.test(evil));
-  check("the page loads the bot renderer, and the dock gets the same core", /mint-core-bot\.js\?v=/.test(pg) && /id="mint-dock-root" data-core="E" data-bot-head="goggles"/.test(pg));
-  const ap = views.appearance({ csrf: "x", core: "E", botHead: "halo", botColors: JSON.stringify(cust) });
+  check("the page loads the bot renderer, and the dock gets the same core and face", /mint-core-bot\.js\?v=/.test(pg) && /id="mint-dock-root" data-core="E" data-bot-head="goggles" data-bot-face="dots"/.test(pg));
+  const ap = views.appearance({ csrf: "x", core: "E", botHead: "halo", botColors: JSON.stringify(cust), botFace: "minimal" });
+  check("Appearance: three face options (Smooth, Dot matrix, Minimal) with a live thumbnail each, the saved one checked", (ap.html.match(/name="bot_face" value="/g) || []).length === 3 && /name="bot_face" value="minimal" checked/.test(ap.html) && (ap.html.match(/data-bot-face-thumb="/g) || []).length === 3 && /<b>Dot matrix<\/b>/.test(ap.html) && /id="mint-bot"[^>]*data-bot-face="minimal"/.test(ap.html));
   check("Appearance: ten head options with a thumbnail canvas each, the saved one checked", (ap.html.match(/name="bot_head" value="/g) || []).length === 10 && /value="halo" checked/.test(ap.html) && (ap.html.match(/data-bot-thumb="/g) || []).length === 10);
   check("Appearance: five presets + Custom (checked), seven colour pickers with their dark / light shade, reset, the warning, the six states in both themes", (ap.html.match(/name="bot_preset" value="/g) || []).length === 6 && /value="custom" checked/.test(ap.html) && (ap.html.match(/type="color"/g) || []).length === 7 && (ap.html.match(/data-shade="/g) || []).length === 14 && /id="mint-bot-reset"/.test(ap.html) && /id="mint-bot-warn"/.test(ap.html) && (ap.html.match(/data-bot-state="/g) || []).length === 12);
   check("Appearance: no inline style or handler (swatches are painted through the CSSOM)", !/\sstyle\s*=|\son[a-z]+\s*=/i.test(ap.html) && /data-swatch="#00E6A5"/.test(ap.html));
@@ -150,7 +177,7 @@ const B = require(path.join(ROOT, "public", "mint-core-bot.js"));
     const V = await s.signIn("botviewer");
     let r = await s.req("GET", "/mint-ai", { cookie: A.cookie });
     const tok = s.csrfOf(r.body);
-    check("never chosen: the page says cap and Default", /data-bot-head="cap"/.test(r.body) && /data-bot-colors="\{&quot;p&quot;:&quot;default&quot;\}"/.test(r.body));
+    check("never chosen: the page says cap, smooth and Default", /data-bot-head="cap"/.test(r.body) && /id="cc"[^>]*data-bot-face="smooth"/.test(r.body) && /data-bot-colors="\{&quot;p&quot;:&quot;default&quot;\}"/.test(r.body));
     const post = (who, body, token) => s.req("POST", "/mint-ai/api/prefs/bot", { cookie: who.cookie, headers: Object.assign({ Accept: "application/json" }, token ? { "X-CSRF-Token": token } : {}), body });
     r = await post(A, { head: "halo" });
     check("without the CSRF token: refused (403)", r.status === 403, r.status);
@@ -162,29 +189,38 @@ const B = require(path.join(ROOT, "public", "mint-core-bot.js"));
     check("nothing to set: refused (400)", r.status === 400, r.status);
     r = await post(A, { head: "halo" }, tok);
     check("a head: saved", r.status === 200 && JSON.parse(r.body).head === "halo" && db.getUserByName("botadmin").mint_bot_head === "halo", r.body);
+    r = await post(A, { face: "pixel" }, tok);
+    check("an unknown face: refused (400), nothing saved", r.status === 400 && /The face must be one of smooth, dots, minimal/.test(r.body) && db.getUserByName("botadmin").mint_bot_face === "", r.status + " " + r.body);
+    r = await post(A, { face: "dots" }, tok);
+    check("a face: saved, and the answer names it", r.status === 200 && JSON.parse(r.body).face === "dots" && JSON.parse(r.body).faceName === "Dot matrix" && db.getUserByName("botadmin").mint_bot_face === "dots", r.body);
     r = await post(A, { colors: { preset: "ocean" } }, tok);
     check("a preset: saved (compact)", r.status === 200 && db.getUserByName("botadmin").mint_bot_colors === '{"p":"ocean"}' && JSON.parse(r.body).colorsName === "Ocean", r.body);
     r = await post(A, { colors: { preset: "custom", custom: cust.c } }, tok);
     const j = JSON.parse(r.body);
     check("custom colours: saved, and the answer names the close pair", r.status === 200 && JSON.parse(db.getUserByName("botadmin").mint_bot_colors).c.listening === "#10D8A8" && JSON.stringify(j.close) === '[["ready","listening"]]', r.body);
     const rows = db.recentLogins(50).filter((x) => x.outcome === "account" && /MINT AI bot/.test(x.detail || ""));
-    check("audited: head and colours, who and what", rows.some((x) => x.username === "botadmin" && /MINT AI bot head cap -> halo \(Halo\)/.test(x.detail)) && rows.some((x) => /MINT AI bot colours Default -> Ocean/.test(x.detail)) && rows.some((x) => /MINT AI bot colours Ocean -> Custom \(ready #00E6A5/.test(x.detail)), JSON.stringify(rows.map((x) => x.detail)));
+    check("audited: head, face and colours, who and what", rows.some((x) => x.username === "botadmin" && /MINT AI bot head cap -> halo \(Halo\)/.test(x.detail)) && rows.some((x) => x.username === "botadmin" && /MINT AI bot face smooth -> dots \(Dot matrix\)/.test(x.detail)) && rows.some((x) => /MINT AI bot colours Default -> Ocean/.test(x.detail)) && rows.some((x) => /MINT AI bot colours Ocean -> Custom \(ready #00E6A5/.test(x.detail)), JSON.stringify(rows.map((x) => x.detail)));
     const vt = s.csrfOf((await s.req("GET", "/account", { cookie: V.cookie })).body);
     r = await post(V, { head: "halo" }, vt);
     check("a viewer cannot set it (403)", r.status === 403 && db.getUserByName("botviewer").mint_bot_head === "", r.status);
+    r = await post(V, { face: "minimal" }, vt);
+    check("…nor the face (403)", r.status === 403 && db.getUserByName("botviewer").mint_bot_face === "", r.status);
     r = await s.req("POST", "/mint-ai/api/prefs/bot", { headers: { Accept: "application/json" }, body: { head: "halo" } });
     check("signed out: 401", r.status === 401, r.status);
     await s.req("POST", "/mint-ai/api/prefs/core", { cookie: A.cookie, headers: { Accept: "application/json", "X-CSRF-Token": tok }, body: { core: "E" } });
     r = await s.req("GET", "/mint-ai", { cookie: A.cookie });
-    check("the Command Center then draws E with the saved head and colours", /id="cc"\s+data-core="E"/.test(r.body) && /data-bot-head="halo"/.test(r.body) && /&quot;listening&quot;:&quot;#10D8A8&quot;/.test(r.body));
+    check("the Command Center then draws E with the saved head, face and colours", /id="cc"\s+data-core="E"/.test(r.body) && /data-bot-head="halo"/.test(r.body) && /id="cc"[^>]*data-bot-face="dots"/.test(r.body) && /&quot;listening&quot;:&quot;#10D8A8&quot;/.test(r.body));
     r = await s.req("GET", "/account", { cookie: A.cookie });
     const at = (f) => r.body.indexOf("/static/" + f + "?v=");
-    check("on other pages the dock is the bot too (cc-logic + mint-core-bot loaded before mint-dock)", /id="mint-dock-root" data-core="E" data-bot-head="halo"/.test(r.body) && at("cc-logic.js") > 0 && at("cc-logic.js") < at("mint-core-bot.js") && at("mint-core-bot.js") < at("mint-dock.js"), (r.body.match(/<script src="[^"]+"/g) || []).join(" "));
+    check("on other pages the dock is the bot too, with the face (cc-logic + mint-core-bot loaded before mint-dock)", /id="mint-dock-root" data-core="E" data-bot-head="halo" data-bot-face="dots"/.test(r.body) && at("cc-logic.js") > 0 && at("cc-logic.js") < at("mint-core-bot.js") && at("mint-core-bot.js") < at("mint-dock.js"), (r.body.match(/<script src="[^"]+"/g) || []).join(" "));
     r = await s.req("GET", "/mint-ai/settings/appearance", { cookie: A.cookie });
     const st = s.csrfOf(r.body);
     check("Settings ▸ Appearance: the bot row, its scripts", /id="a-bot"/.test(r.body) && /mint-core-bot\.js\?v=/.test(r.body) && /cc-logic\.js\?v=/.test(r.body) && /value="halo" checked/.test(r.body));
-    r = await s.req("POST", "/account/appearance", { cookie: A.cookie, body: new URLSearchParams({ _csrf: st, core: "E", bot_head: "beanie", bot_preset: "sunset" }).toString() });
-    check("without JavaScript the form saves the head and the preset", r.status === 302 && db.getUserByName("botadmin").mint_bot_head === "beanie" && db.getUserByName("botadmin").mint_bot_colors === '{"p":"sunset"}', r.status + " " + r.headers.location);
+    r = await s.req("POST", "/account/appearance", { cookie: A.cookie, body: new URLSearchParams({ _csrf: st, core: "E", bot_head: "beanie", bot_face: "minimal", bot_preset: "sunset" }).toString() });
+    check("without JavaScript the form saves the head, the face and the preset", r.status === 302 && db.getUserByName("botadmin").mint_bot_head === "beanie" && db.getUserByName("botadmin").mint_bot_face === "minimal" && db.getUserByName("botadmin").mint_bot_colors === '{"p":"sunset"}', r.status + " " + r.headers.location);
+    r = await s.req("POST", "/account/appearance", { cookie: A.cookie, body: new URLSearchParams({ _csrf: st, core: "E", bot_face: "pixel" }).toString() });
+    check("…and refuses an unknown face", r.status === 302 && /err=/.test(r.headers.location) && db.getUserByName("botadmin").mint_bot_face === "minimal", r.headers.location);
+    db.setUserBotFace(db.getUserByName("botadmin").id, "");
     r = await s.req("POST", "/account/appearance", { cookie: A.cookie, body: new URLSearchParams({ _csrf: st, core: "E", bot_head: "zeppelin" }).toString() });
     check("…and refuses an unknown head", r.status === 302 && /err=/.test(r.headers.location) && db.getUserByName("botadmin").mint_bot_head === "beanie", r.headers.location);
 
@@ -264,12 +300,30 @@ const B = require(path.join(ROOT, "public", "mint-core-bot.js"));
           const k = window.__mintCC.core, a = k._anim();
           k.setState("idle"); a.glanceUntil = a.t + 60; a.glx = 1.6; a.gly = 0; a.gx = 0.7; a.blinkP = 0.5;
           k.still();
-          const W8 = new Uint8Array(window.MintBot.NF); window.MintBot.weights(a, W8, 0, 0, false);
-          const ref = new Uint8Array(window.MintBot.NF), b = new window.MintBot.Anim(3); b.set("base", "ready"); b.settle(); window.MintBot.weights(b, ref, 0, 0, false);
-          let half = 0, diff = 0; for (let i = 0; i < W8.length; i++) { if (W8[i] > 20 && W8[i] < 235) half++; if (W8[i] !== ref[i]) diff++; }
-          return { gx: a.gx, blink: a.blinkP, half, diff };
+          const M = window.MintBot, v = new Float32Array(M.FACE.N), ref = new Float32Array(M.FACE.N), b = new M.Anim(3); b.set("base", "ready"); b.settle();
+          M.faceVec("smooth", a, 60, 1, 0, null, v, null, 0); M.faceVec("smooth", b, 60, 1, 0, null, ref, null, 0);
+          let diff = 0; for (let i = 0; i < v.length; i++) if (Math.abs(v[i] - ref[i]) > 1e-6) diff++;
+          return { gx: a.gx, blink: a.blinkP, diff };
         });
-        check(theme + ": hold still mid-glance / mid-blink: the eyes back home on whole nodes, open, the face exactly the ready face", held.gx === 0 && held.blink < 0 && held.half === 0 && held.diff === 0, JSON.stringify(held));
+        check(theme + ": hold still mid-glance / mid-blink: the eyes back home, open, the face exactly the ready face", held.gx === 0 && held.blink < 0 && held.diff === 0, JSON.stringify(held));
+        // the face styles: each draws, on WebGL2 and in 2D; MintBot.setFace switches the open page at once (the core, #cc)
+        const fs3 = await page.evaluate(() => {
+          const M = window.MintBot, k = window.__mintCC.core, out = { gl: {}, d2: {} };
+          const lit = (cv) => { const c = document.createElement("canvas"); c.width = cv.width; c.height = cv.height; const g = c.getContext("2d"); g.drawImage(cv, 0, 0); const d = g.getImageData(0, 0, c.width, c.height).data; let n = 0, h = 0; for (let i = 0; i < d.length; i += 4) if (d[i + 3] > 10) { n++; h = (h * 31 + d[i] * 3 + d[i + 1] * 7 + d[i + 3]) % 1e9; } return n + ":" + h; };
+          const cv2 = document.createElement("canvas"); cv2.style.width = "300px"; document.body.appendChild(cv2);
+          const k2 = M.create(cv2, { force2d: true, head: "goggles", noGuard: true }); k2.resize(150, 150, 100, 300, 300);
+          k.setOffline(false); k.setState("listening"); k2.setState("listening");
+          ["smooth", "dots", "minimal"].forEach((f) => { M.setFace(f); k.S.t = 5; k.tick(0.0001); k2.still(); out.gl[f] = k.S.face + " " + lit(k.canvas); out.d2[f] = k2.S.face + " " + lit(cv2); });
+          out.attr = document.getElementById("cc").getAttribute("data-bot-face");
+          k2.destroy(); cv2.remove();
+          window.dispatchEvent(new StorageEvent("storage", { key: "mint-bot", newValue: JSON.stringify({ face: "dots" }) }));
+          out.storage = k.S.face + " " + document.getElementById("cc").getAttribute("data-bot-face");
+          M.setFace("smooth"); k.setState("idle");
+          return out;
+        });
+        const g3 = ["smooth", "dots", "minimal"].map((f) => fs3.gl[f]), d3 = ["smooth", "dots", "minimal"].map((f) => fs3.d2[f]);
+        check(theme + ": each face style draws on WebGL2 and in 2D, each differently; the page switches live (MintBot.setFace -> the core and #cc)", g3.every((x, i) => x.startsWith(["smooth", "dots", "minimal"][i] + " ") && +x.split(" ")[1].split(":")[0] > 1000) && new Set(g3.map((x) => x.split(" ")[1])).size === 3 && d3.every((x, i) => x.startsWith(["smooth", "dots", "minimal"][i] + " ")) && new Set(d3.map((x) => x.split(" ")[1])).size === 3 && fs3.attr === "minimal", JSON.stringify(fs3));
+        check(theme + ": a face saved in Settings elsewhere reaches the open page (storage event)", fs3.storage === "dots dots", fs3.storage);
         check(theme + ": the browser Command Center: no desktop backplate", (await page.evaluate(() => window.__mintCC.core.S.desk)) === false);
         // the desktop app's backplate (2D twin of the GL one): a soft disc behind the head, dark under light lines, light under dark ones
         const plate = await page.evaluate(() => {
@@ -315,6 +369,12 @@ const B = require(path.join(ROOT, "public", "mint-core-bot.js"));
         check("Settings: the bot section shows while E is chosen", vis.e && vis.shown, JSON.stringify(vis));
         const thumbs = await page.evaluate(() => Array.from(document.querySelectorAll("canvas[data-bot-thumb]")).map((c) => { const d = c.getContext("2d").getImageData(0, 0, c.width, c.height).data; let n = 0; for (let i = 3; i < d.length; i += 4) if (d[i] > 10) n++; return n; }));
         check("Settings: ten head thumbnails drawn", thumbs.length === 10 && thumbs.every((n) => n > 200), thumbs.join(","));
+        const fthumbs = await page.evaluate(() => Array.from(document.querySelectorAll("canvas[data-bot-face-thumb]")).map((c) => { const d = c.getContext("2d").getImageData(0, 0, c.width, c.height).data; let n = 0; for (let i = 3; i < d.length; i += 4) if (d[i] > 10) n++; return c.getAttribute("data-bot-face-thumb") + ":" + n; }));
+        check("Settings: three face thumbnails (smooth, dots, minimal) drawn", fthumbs.length === 3 && fthumbs.every((x) => +x.split(":")[1] > 200) && fthumbs.map((x) => x.split(":")[0]).join() === "smooth,dots,minimal", fthumbs.join(","));
+        await page.click('[data-bot-face-opt="dots"]');
+        await page.waitForTimeout(500);
+        const fl = await page.evaluate(() => { let note = null; try { note = JSON.parse(window.localStorage.getItem("mint-bot") || "null"); } catch (e) { note = null; } return { page: window.MintBot.face(), note: note && note.face, el: document.getElementById("mint-bot").getAttribute("data-bot-face") }; });
+        check("Settings: choosing a face saves it, switches the previews at once and tells an open Command Center (storage note)", db.getUserByName("botadmin").mint_bot_face === "dots" && fl.page === "dots" && fl.note === "dots" && fl.el === "dots", JSON.stringify(fl) + " " + db.getUserByName("botadmin").mint_bot_face);
         await page.click('[data-bot-head-opt="goggles"]');
         await page.waitForTimeout(400);
         check("Settings: choosing a head saves it at once", db.getUserByName("botadmin").mint_bot_head === "goggles");

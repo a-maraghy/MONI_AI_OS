@@ -3,25 +3,27 @@
  * MINT AI core E, "Bot" (approved 2026-10-19, mockups/emo-core-states): a faint
  * wireframe head -- a cube grid projected onto a rounded box (superellipsoid
  * |x|^p + |y|^p + |z|^p = 1, even grid on the front so the face keeps its
- * pixels), grid nodes as small dots, one of ten accessories -- whose FACE is
- * lit on the front grid's nodes in ONE state colour, with a soft glow of that
- * colour (and in the dark theme a faint cyan -> violet glow behind the head).
- * The geometry is the mockup generator's (mockups/emo-core-states/src/page.html:
- * head(), cap, headphones, beanie, antenna, ears, goggles, mic, halo, mortar,
- * bow; the face maps F.*), rebuilt here as 3D buffers and animated.
+ * face), grid nodes as small dots, one of ten accessories -- with a FACE in ONE
+ * state colour and a soft glow of that colour (and in the dark theme a faint
+ * cyan -> violet glow behind the head). The geometry is the mockup generator's
+ * (mockups/emo-core-states/src/page.html: head(), cap, headphones, beanie,
+ * antenna, ears, goggles, mic, halo, mortar, bow), rebuilt as 3D buffers.
  *
- *   ready (idle)  base smile; slow breathing, a slow yaw sway, a blink every 3-6 s, a glance now and then
- *   listening     wide eyes; the glow and the lit nodes pulse with the microphone level
- *   thinking      calm, lidded eyes; a shimmer sweeps across the head's nodes
- *   speaking      a waveform mouth driven by the voice's real output level
+ * The face (2026-10-22, mockups/bot-face-v3; it replaced the lit grid-node maps): a vector layer on the head's
+ * front surface in one of three styles, the viewer's choice (users.mint_bot_face; FACE below): smooth (rounded
+ * glyphs, the default), dots (a refined LED dot matrix, snapped per size) or minimal (two pills and a line).
+ *   ready (idle)  a smile; slow breathing, a slow yaw sway, a blink every 3-6 s, a glance now and then
+ *   listening     taller, wider eyes; the glow pulses with the microphone level
+ *   thinking      calm, lidded eyes looking aside; a shimmer sweeps across the head's nodes
+ *   speaking      a mouth that opens with the voice (visemes)
  *   delegating    thinking's colour; the eyes and the head turn toward the session, a stream of dots flies there
- *   needs you     wide eyes with pupils, amber, a soft double pulse
- *   error/offline red x x, still
- * A face change cross-fades the lit nodes over ~250 ms (colours over ~300 ms): nothing pops.
+ *   needs you     big round eyes (a catchlight in smooth), a small "o", amber, a soft double pulse
+ *   error/offline red x x and a frown, still
+ * A face change morphs the shapes over ~250 ms (colours over ~300 ms): nothing pops.
  *
  * Expressive (2026-10-20, mockups/bot-design-upgrades):
- *   the mouth     speaking: four viseme-like shapes (closed / open / wide / round, MOUTH) mixed per node from the
- *                 voice's spectrum (opts.spec: an AnalyserNode's bytes, viseme()); level only without one
+ *   the mouth     speaking: four viseme-like shapes (closed / open / wide / round) mixed into the mouth's shape from
+ *                 the voice's spectrum (opts.spec: an AnalyserNode's bytes, viseme()); level only without one
  *   the eyes      follow the pointer (opts.pointer: the window's pointer moves; core.look by hand) and drift back
  *                 when it leaves; glance at a session that needs you or replied (core.glance, cc-map.js)
  *   dozing        idle and 10 quiet minutes, or at night (23:00-06:00 local) after one: lids down, the sleep face,
@@ -37,20 +39,21 @@
  *
  * Same instance contract as mint-core-d.js (cc-map.js, mint-shell.js, mint-dock.js and
  * mint-desktop.js drive both the same way):
- *   var core = window.MintCoreBot(canvas, { amp, dest, onFrame, backdrop, kids, beforeDraw, head, colors, force2d, noGuard, desk, spec, pointer, now, hour })
+ *   var core = window.MintCoreBot(canvas, { amp, dest, onFrame, backdrop, kids, beforeDraw, head, colors, face, force2d, noGuard, desk, spec, pointer, now, hour })
  * opts.desk: the desktop app's render mode (?shell=desktop): the page is transparent over the wallpaper, so
  * every head gets a soft contrast backplate (dark under light lines, light under dark ones) and a stronger
  * wireframe; the browser Command Center look is unchanged without it.
  *   core.S.concept === "E" · setState · setLight · resize(cx, cy, R, w, h) · start · stop · still · stats · draw
  *   · place · tick · adopt · destroy · setConcept (no-op) · setHead(id) · setColors({p, c}) · setOffline(bool)
  *   · poke() · react(kind) · glance(point | fn, ms) · look(x, y | null) · presence(state | null) · contact({x, y} | null)
+ *   · setFace(style | null) (this core only); MintBot.setFace(style) switches the page's default, every live core with it
  * opts.kids(): the Command Center's session spheres (cc-family.js meshKids) -- drawn here as
  * small bot heads in the same style, with their own state in the same colour + face language
  * (MintLogic.botSessState): waiting -> needs you, working -> thinking, a delegation landing ->
  * listening, a reply going back -> speaking, just finished -> a grin, idle -> ready; born out of
  * the core's dots, dissolving back into them. The sessions wear their role's head (k.head), else the core's.
  *
- * WebGL2 (lines + point sprites; the glows drawn at quarter resolution and blended up), else a
+ * WebGL2 (lines + point sprites, the face a small SDF program; the glows drawn at quarter resolution and blended up), else a
  * Canvas-2D renderer of the same geometry (also used for the Settings thumbnails: MintBot.thumb).
  * DPR <= 2; no allocation per frame (typed arrays reused); the loop stops while the tab is
  * hidden; prefers-reduced-motion and the desktop app's "hold still" (S.still) draw one still
@@ -69,40 +72,14 @@
   var G = 18, GN = G + 1, NF = GN * GN; // the front grid: 19 x 19 nodes, the face maps' pixels
   var MAXK = 12, ROWS = MAXK + 2;        // weight rows: 0 the core, 1.. the sessions
   var STREAM = 420;
-  var SMALL = 40; // CSS px head radius below which a head is "small" (sessions, the dock): coarse, crisp face, no face glow
+  var SMALL = 40; // CSS px head radius below which a head is "small" (sessions, the dock, the companion): a fainter face glow
 
-  /* ------------------------------------------------------------ faces (the mockup's maps) */
-  var FMAP = {
-    base: ["..................", "..................", "...cccc....cccc...", "..c.cc.c..c.cc.c..", "..cccccc..cccccc..", "..c.cc.c..c.cc.c..", "...cccc....cccc...", "..................", "..................", "..m............m..", "...m..........m...", "....mmmmmmmmmm....", ".................."],
-    grin: ["..................", "...ccc......ccc...", "..c...c....c...c..", ".c.....c..c.....c.", "..................", "..................", "..mmmmmmmmmmmmmm..", "..m.w.w.w.w.w.wm..", "...m..........m...", "....mmmmmmmmmm....", ".................."],
-    pupils: ["..................", "..vvvvv....vvvvv..", ".v.....v..v.....v.", ".v..ww.v..v..ww.v.", ".v..ww.v..v..ww.v.", "..vvvvv....vvvvv..", "..................", "..................", ".......mmmm.......", "......m....m......", ".................."],
-    // working (2026-10-20): calm, lidded eyes -- the old slanted brows read as horns on a small head
-    focus: ["..................", "..................", ".cccccc....cccccc.", ".vvvvvv....vvvvvv.", "..vvvv......vvvv..", "..................", "..................", ".......mmmm.......", "..................", ".................."],
-    listen: ["..................", "..cccccc..cccccc..", "..cccccc..cccccc..", "..cccccc..cccccc..", "..cccccc..cccccc..", "..cccccc..cccccc..", "..................", "..................", ".......mmmm.......", ".......mmmm.......", ".................."],
-    speak: ["..................", "...cccc....cccc...", "...cccc....cccc...", "...cccc....cccc...", "..................", "..................", "...m.m.m.m.m.m....", "..mmmmmmmmmmmmmm..", "...m.m.m.m.m.m....", ".................."],
-    err: ["..................", "..c...c....c...c..", "...c.c......c.c...", "....c........c....", "...c.c......c.c...", "..c...c....c...c..", "..................", "..................", ".....cccccccc.....", ".................."],
-    // dozing (2026-10-20): the eyes shut as two downward arcs, a small slack mouth
-    sleep: ["..................", "..................", "..................", "..c....c..c....c..", "...cccc....cccc...", "..................", "..................", "..................", ".......mmmm.......", ".................."],
-  };
   /*
-   * Speaking mouths (2026-10-20): four viseme-like shapes, drawn on the speak face's mouth rows (map rows
-   * 5..9) and mixed by the voice's spectrum (viseme() below): closed (silence, m b p), open (a), wide
-   * (ee, s -- energy high up), round (o u -- energy low down). Mixed per node, so a change of shape fades.
+   * Speaking mouths: four viseme-like shapes mixed by the voice's spectrum (viseme() below): closed (silence,
+   * m b p), open (a), wide (ee, s -- energy high up), round (o u -- energy low down). Each face style turns the
+   * mix into its mouth's width, opening and curve (FACE.STY[style].vis), so a change of shape morphs.
    */
-  var MOUTH = {
-    closed: ["..................", "..................", "...mmmmmmmmmmmm...", "..................", ".................."],
-    open: [".....mmmmmmmm.....", "....m........m....", "....m........m....", "....m........m....", ".....mmmmmmmm....."],
-    wide: ["..................", "..mmmmmmmmmmmmmm..", "..m............m..", "...mmmmmmmmmmmm...", ".................."],
-    round: [".......mmmm.......", "......m....m......", "......m....m......", ".......mmmm.......", ".................."],
-  };
   var VIS = ["closed", "open", "wide", "round"];
-  var MOUTHB = {};
-  VIS.forEach(function (k) { var m = MOUTH[k], b = new Uint8Array(5 * 18); for (var r = 0; r < 5; r++) for (var c = 0; c < 18; c++) b[r * 18 + c] = m[r].charAt(c) !== "." ? 1 : 0; MOUTHB[k] = b; });
-  function mouthAt(vm, ri, ci) {
-    if (ci < 0 || ci > 17) return 0;
-    var o = (ri - 5) * 18 + ci;
-    return Math.min(1, vm.closed * MOUTHB.closed[o] + vm.open * MOUTHB.open[o] + vm.wide * MOUTHB.wide[o] + vm.round * MOUTHB.round[o]);
-  }
   function sstep(a, b, x) { x = (x - a) / (b - a); x = x < 0 ? 0 : x > 1 ? 1 : x; return x * x * (3 - 2 * x); }
   /** Mean of a byte spectrum's bins between f0 and f1 Hz, above a noise floor, 0..1. */
   function bandOf(bins, hz, f0, f1) {
@@ -177,44 +154,6 @@
     out[3] = Math.sin(PI * p);
     return out;
   }
-  // eye band (map rows that blink and glance) and, for speak, the mouth band drawn from the voice level
-  var FBAND = { base: [2, 6], grin: [1, 3], pupils: [1, 5], focus: [2, 4], listen: [1, 5], speak: [1, 3], err: null, sleep: null };
-  var FACES = {};
-  Object.keys(FMAP).forEach(function (k) {
-    var m = FMAP[k], fr = m.length, fc = m[0].length, bits = new Uint8Array(fr * fc);
-    for (var r = 0; r < fr; r++) for (var c = 0; c < fc; c++) bits[r * fc + c] = m[r].charAt(c) !== "." ? 1 : 0;
-    var band = FBAND[k], col = null;
-    if (band) { col = new Uint8Array(fc); for (var c2 = 0; c2 < fc; c2++) for (var r2 = band[0]; r2 <= band[1]; r2++) if (bits[r2 * fc + c2]) col[c2] = 1; }
-    // the same centring as the mockup's head(): ci = i - round((G - fc + 1) / 2), ri = j - round((G - fr + 1) / 2)
-    FACES[k] = { fr: fr, fc: fc, bits: bits, band: band, col: col, oR: Math.round((G - fr + 1) / 2), oC: Math.round((G - fc + 1) / 2), wave: k === "speak" };
-  });
-  function px(F, r, c) { return r >= 0 && r < F.fr && c >= 0 && c < F.fc ? F.bits[r * F.fc + c] : 0; }
-  /**
-   * One face's lit value (0..1) at front node (row r, col c), with the eyes shifted (gx, gy), blinking (s: 1 open
-   * .. 0 shut) and the voice: vm (the viseme mix, the core) shapes the mouth, else amp / t draw the waveform (sessions).
-   */
-  function faceAt(F, r, c, gxi, gy, s, amp, t, vm) {
-    var ri = r - F.oR, ci = c - F.oC, B = F.band;
-    if (B) {
-      var rs = ri - gy, cs = ci - gxi;
-      if (rs >= B[0] && rs <= B[1]) {
-        if (s > 0.97) return px(F, rs, cs);
-        var ec = (B[0] + B[1]) / 2;
-        if (s < 0.3) return rs === Math.round(ec) && cs >= 0 && cs < F.fc ? F.col[cs] : 0;
-        var src = Math.round(ec + (rs - ec) / s);
-        return src >= B[0] && src <= B[1] ? px(F, src, cs) : 0;
-      }
-      if (ri >= B[0] && ri <= B[1]) return 0; // the eyes moved away from here
-    }
-    if (F.wave && ri >= 5 && ri <= 9) {
-      if (vm) return mouthAt(vm, ri, ci);
-      if (ci < 2 || ci > 15) return 0;
-      var h = amp * 2.4 * (0.55 + 0.45 * Math.sin(ci * 1.7 + t * 11) * Math.sin(ci * 0.6 - t * 5.3));
-      return Math.abs(ri - 7) <= h + 0.25 ? 1 : 0;
-    }
-    return px(F, ri, ci);
-  }
-
   /* ------------------------------------------------------------ heads (the mockup's HEADS) */
   var HEADS = {
     cap: { p: 4, yaw: 0.32, acc: ["cap", "headphones", "ant1"] },
@@ -231,12 +170,12 @@
   var HEAD_IDS = Object.keys(HEADS);
 
   /*
-   * Vertex: x, y, z (head units: half-width 1), kind, face node (-1 none), rnd, size (or, on a lit-stroke
-   * point, its second face node). Kinds: 0 head surface (hidden on the back), 1 accessory, 2 lit accessory
-   * (state colour), 3 joint, 4 lit joint, 5 a front node drawn only when lit, 6 antenna rod, 8 lit-stroke point.
+   * Vertex: x, y, z (head units: half-width 1), kind, face node (-1 none; the front grid's node index, whose weight
+   * hides it under a feature of the face), rnd, size. Kinds: 0 head surface (hidden on the back), 1 accessory,
+   * 2 lit accessory (state colour), 3 joint, 4 lit joint, 5 a front node off the drawn grid, 6 antenna rod.
    */
   function Builder(lod, stride) {
-    this.v = []; this.lines = []; this.pts = []; this.front = []; this.segs = []; this.n = 0; this.lod = lod; this.s = stride; this.seed = 7;
+    this.v = []; this.lines = []; this.pts = []; this.front = []; this.n = 0; this.lod = lod; this.s = stride; this.seed = 7;
   }
   Builder.prototype.rnd = function () { this.seed = (this.seed * 16807) % 2147483647; return this.seed / 2147483647; };
   Builder.prototype.add = function (x, y, z, kind, face, size) { this.v.push(x, y, z, kind, face, this.rnd(), size == null ? 1 : size); return this.n++; };
@@ -283,11 +222,6 @@
         if (i + st <= GG) this.lines.push(idx[i][j], idx[i + st][j]);
         if (j + st <= GG) this.lines.push(idx[i][j], idx[i][j + st]);
       }
-      // the lit strokes run along the face grid's edges: every edge on a large head, the coarse (every other node) grid on a small one
-      if (fi === 0) for (i = 0; i <= GG; i += st) for (j = 0; j <= GG; j += st) {
-        if (i + st <= GG) this.segs.push(idx[i][j], idx[i + st][j]);
-        if (j + st <= GG) this.segs.push(idx[i][j], idx[i][j + st]);
-      }
     }
   };
   /* accessories (the mockup's, verbatim in shape) */
@@ -332,7 +266,7 @@
     bow: function (g, ax, ay) { [-1, 1].forEach(function (s) { g.mesh(function (u, v) { var a = -1 + 2 * u; return [s * (0.08 + 0.38 * v), -ay * 1.08 + a * (0.08 + 0.22 * v), 1.0 - 0.1 * v]; }, 6, 6); }); },
   };
   var geoCache = {};
-  /** The head's buffers. detail "hi": every grid line, the lit strokes; "lo" (sessions, the dock): every other line, half the accessory rings. */
+  /** The head's buffers. detail "hi": every grid line; "lo" (sessions, the dock): every other line, half the accessory rings. */
   function build(head, detail) {
     head = HEADS[head] ? head : "cap";
     var key = head + ":" + detail;
@@ -340,16 +274,7 @@
     var hi = detail === "hi", cfg = HEADS[head], g = new Builder(hi ? 1 : 0.5, hi ? 1 : 2), ax = 1, ay = 0.98;
     g.head(cfg.p, ax, ay);
     cfg.acc.forEach(function (a) { ACC[a](g, ax, ay); });
-    // the lit strokes: points along each front grid edge, lit where both its ends are (the mockup's 3 px lit lines)
-    var sp = [], K = hi ? 4 : 3, V = g.v;
-    for (var i = 0; i < g.segs.length; i += 2) {
-      var A = g.segs[i] * 7, Bv = g.segs[i + 1] * 7;
-      for (var k = 1; k <= K; k++) {
-        var t = k / (K + 1);
-        sp.push(V[A] + (V[Bv] - V[A]) * t, V[A + 1] + (V[Bv + 1] - V[A + 1]) * t, V[A + 2] + (V[Bv + 2] - V[A + 2]) * t, 8, V[A + 4], (i * 0.618 + k * 0.31) % 1, V[Bv + 4]);
-      }
-    }
-    var out = { head: head, cfg: cfg, v: new Float32Array(g.v), lines: new Uint16Array(g.lines), pts: new Uint16Array(g.pts), front: new Uint16Array(g.front), seg: new Float32Array(sp), n: g.n };
+    var out = { head: head, cfg: cfg, v: new Float32Array(g.v), lines: new Uint16Array(g.lines), pts: new Uint16Array(g.pts), front: new Uint16Array(g.front), n: g.n };
     geoCache[key] = out;
     return out;
   }
@@ -412,50 +337,13 @@
     this.rgb[0] = this.pcol[0] + (c[0] - this.pcol[0]) * k; this.rgb[1] = this.pcol[1] + (c[1] - this.pcol[1]) * k; this.rgb[2] = this.pcol[2] + (c[2] - this.pcol[2]) * k;
     return this.rgb;
   };
-  /** Fill one row of face weights (0..255, 361 nodes) from the anim's faces, cross-faded. */
-  var FW = new Float32Array(NF); // one head's full-resolution weights, before a small head's coarse grid (reused)
-  /**
-   * coarse (a small head: a session, the dock): the face is drawn on every other node only, each node lit
-   * by the brightest of the 2 x 2 face pixels it stands for -- eyes and mouth become a few clear pixels
-   * instead of a blur of 2-px dots.
-   */
-  function weights(an, out, off, amp, coarse, vm) {
-    if (coarse) {
-      weights(an, FW, -1, amp, false, vm);
-      for (var rr = 0; rr < GN; rr++) for (var cc = 0; cc < GN; cc++) {
-        var v = 0;
-        if (!(rr & 1) && !(cc & 1)) {
-          v = FW[rr * GN + cc];
-          if (rr + 1 < GN) v = Math.max(v, FW[(rr + 1) * GN + cc]);
-          if (cc + 1 < GN) v = Math.max(v, FW[rr * GN + cc + 1]);
-          if (rr + 1 < GN && cc + 1 < GN) v = Math.max(v, FW[(rr + 1) * GN + cc + 1]);
-        }
-        out[off + rr * GN + cc] = (v * 255 + 0.5) | 0;
-      }
-      return;
-    }
-    var A = FACES[an.face] || FACES.base, P = FACES[an.prev] || FACES.base, k = an.fk * an.fk * (3 - 2 * an.fk), s = an.blink();
-    var gx = an.gx, g0 = Math.floor(gx), gf = gx - g0, gy = Math.round(an.gy), t = an.t;
-    for (var r = 0; r < GN; r++) for (var c = 0; c < GN; c++) {
-      var a = faceAt(A, r, c, g0, gy, s, amp, t, vm);
-      if (gf > 0.01) a = a * (1 - gf) + faceAt(A, r, c, g0 + 1, gy, s, amp, t, vm) * gf;
-      var w = a;
-      if (k < 1) {
-        var b = faceAt(P, r, c, g0, gy, s, amp, t, vm);
-        if (gf > 0.01) b = b * (1 - gf) + faceAt(P, r, c, g0 + 1, gy, s, amp, t, vm) * gf;
-        w = b + (a - b) * k;
-      }
-      if (off < 0) out[r * GN + c] = w; else out[off + r * GN + c] = (w * 255 + 0.5) | 0;
-    }
-  }
-
   /* ------------------------------------------------------------ shaders */
   var WIRE_VS = [
     "#version 300 es",
     "precision highp float;",
     "layout(location=0) in vec3 a_p; layout(location=1) in vec4 a_i;",
     "uniform vec2 u_res,u_c,u_home; uniform vec3 u_wire,u_st; uniform sampler2D u_wt;",
-    "uniform float u_r,u_fs,u_sc,u_yaw,u_tilt,u_form,u_dis,u_row,u_wa,u_lit,u_alpha,u_mode,u_psz,u_jsz,u_lsz,u_gsz,u_shimX,u_shimA,u_maxPt,u_snap,u_segK,u_ind,u_arm,u_indA;",
+    "uniform float u_r,u_fs,u_sc,u_yaw,u_tilt,u_form,u_dis,u_row,u_wa,u_lit,u_alpha,u_mode,u_psz,u_jsz,u_shimX,u_shimA,u_maxPt,u_ind,u_arm,u_indA;",
     "out vec4 v_c; out float v_j;",
     "float wt(float f){ if(f<0.0) return 0.0; return texelFetch(u_wt,ivec2(int(f+0.5),int(u_row+0.5)),0).r; }",
     "float h1(float n){ return fract(sin(n*91.7+7.3)*43758.5453); }",
@@ -467,7 +355,7 @@
     " if(u_form<1.0){ float pp=clamp((u_form-rnd*0.45)/0.55,0.0,1.0); pp=pp*pp*(3.0-2.0*pp); vec2 m=(u_home+px)*0.5+vec2(rnd-0.5,h1(rnd)-0.5)*u_r*3.0; float u=1.0-pp; px=u*u*u_home+2.0*u*pp*m+pp*pp*px; }",
     " if(u_dis>0.0){ float q=clamp((u_dis-rnd*0.4)/0.6,0.0,1.0); q=q*q*(3.0-2.0*q); vec2 m=(u_home+px)*0.5+vec2(h1(rnd)-0.5,rnd-0.5)*u_r*4.0*sin(q*3.14159); float u=1.0-q; px=u*u*px+2.0*u*q*m+q*q*u_home; }",
     " float d=clamp((z2+1.0)*0.5,0.0,1.0);",
-    " float vis=(kind==0||kind==5||kind==8)?smoothstep(-0.03,0.07,z2):1.0;",
+    " float vis=(kind==0||kind==5)?smoothstep(-0.03,0.07,z2):1.0;",
     " float sh=u_shimA*exp(-pow((p.x-u_shimX)/0.22,2.0))*(0.6+0.4*rnd);",
     " vec3 col=u_wire; float a=0.0, size=1.0; v_j=0.0;",
     " if(u_mode<0.5){",                                             // the wireframe
@@ -475,7 +363,7 @@
     "  if(kind==2||kind==4){ col=u_st; a=0.9*u_lit; }",
     "  a+=sh*0.3; col=mix(col,u_st,clamp(sh,0.0,1.0)*0.6);",
     "  a*=smoothstep(0.95,1.0,u_form)*(1.0-smoothstep(0.0,0.1,u_dis));",
-    " } else if(u_mode<1.5){",                                      // the grid nodes (and joints)
+    " } else {",                                                    // the grid nodes (and joints); hidden under the face's features
     "  float w=wt(a_i.y);",
     "  a=(0.08+0.35*d*d)*u_wa*1.2*(1.0-w); size=(0.6+1.7*d)*u_psz;",
     "  if(kind==5) a=0.0;",
@@ -483,9 +371,7 @@
     "  if(kind==4){ col=u_st; a=u_lit; size=u_jsz*0.85; }",
     "  if(kind==2){ col=u_st; a=0.6*u_lit; }",
     "  a+=sh*0.6*(1.0-w); col=mix(col,u_st,clamp(sh,0.0,1.0)*0.7); size*=1.0+sh*0.7;",
-    " } else if(u_mode<2.5){ float w=wt(a_i.y); a=w*u_lit; size=u_lsz; col=u_st; }",          // the lit face
-    " else if(u_mode<3.5){ float w=min(wt(a_i.y),wt(a_i.w)); a=w*u_lit*0.95; size=u_lsz*u_segK; col=u_st; }", // its lit strokes
-    " else { float w=wt(a_i.y); a=w*u_lit; size=u_gsz; col=u_st; }",                         // its glow (quarter resolution)
+    " }",
     // look and speak (2026-10-21): the front face's outer rows of nodes light clockwise from the top (head space, so
     // the order holds as the head turns) as the look is held (u_arm), all of them when ready; u_indA their strength
     " if(u_ind>0.5&&u_mode>0.5&&u_mode<1.5&&kind==0){",
@@ -502,8 +388,6 @@
     " px*=u_fs;",
     " gl_Position=(u_mode>0.5&&a<=0.003)?vec4(2.0,2.0,0.0,1.0):vec4(px/u_res*2.0-1.0,0.0,1.0);",
     " size=clamp(size*u_fs,1.0,u_maxPt);",
-    // a small head's face: whole device pixels, on the pixel grid (odd sizes on pixel centres, even on corners)
-    " if(u_snap>0.5&&(u_mode>1.5&&u_mode<3.5)){ size=max(2.0,floor(size+0.5)); vec2 q=floor(px); px=mod(size,2.0)>0.5?q+0.5:floor(px+0.5); gl_Position=a<=0.003?vec4(2.0,2.0,0.0,1.0):vec4(px/u_res*2.0-1.0,0.0,1.0); }",
     " gl_PointSize=size;",
     "}",
   ].join("\n");
@@ -578,24 +462,380 @@
     " vec2 px=u_c+q*u_r; gl_Position=a<0.003?vec4(2.0,2.0,0.0,1.0):vec4(px/u_res*2.0-1.0,0.0,1.0); gl_PointSize=max(2.0,floor(u_psz*(0.55+0.6*p)+0.5)); }",
   ].join("\n");
 
+  /* ------------------------------------------------------------ the face (2026-10-22, mockups/bot-face-v3)
+   * The eyes and mouth are a vector face layer, not lit grid nodes. One parametric face (two mirrored eyes and a
+   * mouth, each a signed distance field in face space: a = across, b = up, the front grid's own coordinates,
+   * -1..1) is drawn on a patch that sits on the head's front surface, so it turns, tilts, nods and shakes with the
+   * head. Expressions are parameter sets and morph into one another; blink, glance / gaze and the voice's visemes
+   * act on the parameters. Three looks, the viewer's choice (users.mint_bot_face):
+   *   smooth   rounded-rect eyes, a smooth arc mouth, anti-aliased (fwidth), a soft glow (the default)
+   *   dots     the same shapes sampled on a symmetric LED grid whose pitch is picked per device size
+   *            (12 / 16 / 22 / 30 / 40 dots across the face), every shape snapped to whole dots
+   *   minimal  two soft pills and a thin line, a wider calmer glow
+   * The grid nodes under a feature are hidden (their weight row holds the feature's coverage). The 2D renderer (the
+   * fallback, the Settings thumbnails) draws the same shapes as vector paths through the head's exact projection.
+   */
+  var FACE = (function () {
+    var N = 28;
+    var EX = 0, EY = 1, EW = 2, EH = 3, ER = 4, LT = 5, LB = 6, CA = 7, AW = 8, AC = 9, XW = 10, ET = 11, MW = 12, MY = 13, MH = 14, MC = 15, MT = 16, MV = 17, OX = 18, OY = 19, PI_ = 20, GW = 21, DOTS = 22, GK = 23, AO = 24;
+    var KEYS_ = { ex: EX, ey: EY, ew: EW, eh: EH, er: ER, lt: LT, lb: LB, ca: CA, aw: AW, ac: AC, xw: XW, et: ET, mw: MW, my: MY, mh: MH, mc: MC, mt: MT, mv: MV, ox: OX, oy: OY };
+    var ZERO = { ex: 0.4, ey: 0.13, ew: 0.14, eh: 0.18, er: 0.6, lt: 0, lb: 0, ca: 0, aw: 0, ac: 0, xw: 0, et: 0.035, mw: 0.2, my: -0.37, mh: 0, mc: 0.06, mt: 0.034, mv: 1, ox: 0, oy: 0 };
+    function vec(o, base) { var v = new Float32Array(N), k; for (k in KEYS_) v[KEYS_[k]] = o[k] != null ? o[k] : base && base[k] != null ? base[k] : ZERO[k]; return v; }
+    function set(base, faces) { var out = {}; Object.keys(faces).forEach(function (f) { var o = {}, k; for (k in base) o[k] = base[k]; for (k in faces[f]) o[k] = faces[f][k]; out[f] = vec(o); }); return out; }
+
+    /* ---- the three looks: per face name (the renderer's: base, listen, focus, speak, pupils, err, sleep, grin) */
+    var A0 = { ex: 0.4, ey: 0.13, ew: 0.14, eh: 0.18, er: 0.62, mw: 0.2, my: -0.37, mc: 0.06, mt: 0.034 };
+    var STY = {
+      smooth: {
+        faces: set(A0, {
+          base: {},
+          listen: { ew: 0.152, eh: 0.215, ey: 0.15, er: 0.66, mw: 0.095, mc: 0.012 },
+          focus: { ew: 0.15, eh: 0.17, lt: 0.44, ey: 0.11, ox: -0.035, oy: 0.025, mw: 0.11, mc: 0, my: -0.38 },
+          speak: {},
+          pupils: { ew: 0.165, eh: 0.205, er: 0.85, ca: 0.05, ey: 0.14, mw: 0.05, mh: 0.045, mt: 0.03, mc: 0, my: -0.4 },
+          err: { xw: 1, ew: 0.11, eh: 0.11, et: 0.036, ey: 0.13, mw: 0.16, mc: -0.05, my: -0.41 },
+          sleep: { aw: 1, ac: -1, ew: 0.135, eh: 0.075, et: 0.032, ey: 0.06, mw: 0.05, mc: 0, mt: 0.03, my: -0.37 },
+          grin: { aw: 1, ac: 1, ew: 0.14, eh: 0.1, et: 0.04, ey: 0.15, mw: 0.24, mh: 0.085, mc: 0.085, my: -0.31 },
+        }),
+        vis: { closed: [0.19, 0, 0.03], open: [0.15, 0.1, 0], wide: [0.25, 0.05, 0.03], round: [0.075, 0.085, 0] },
+        gw: 0.2, gk: 1, smallK: 0.3, small: 1,
+      },
+      dots: {
+        faces: set({ ex: 0.4, ey: 0.14, ew: 0.15, eh: 0.2, er: 0.55, mw: 0.22, my: -0.38, mc: 0.07, mt: 0.04 }, {
+          base: {},
+          listen: { ew: 0.16, eh: 0.24, er: 0.6, mw: 0.09, mc: 0 },
+          focus: { ew: 0.16, eh: 0.2, lt: 0.5, ey: 0.12, ox: -0.05, mw: 0.12, mc: 0 },
+          speak: {},
+          pupils: { ew: 0.22, eh: 0.22, er: 0.75, mw: 0.06, mh: 0.1, mc: 0, my: -0.43 }, // round, wider than listening, an open o
+          err: { xw: 1, ew: 0.14, eh: 0.14, et: 0.04, mw: 0.18, mc: -0.06 },
+          sleep: { aw: 1, ac: -1, ew: 0.15, eh: 0.08, ey: 0.06, mw: 0.05, mc: 0 },
+          grin: { aw: 1, ac: 1, ew: 0.15, eh: 0.1, ey: 0.16, mw: 0.25, mh: 0.1, mc: 0.1, my: -0.32 },
+        }),
+        vis: { closed: [0.2, 0, 0.03], open: [0.16, 0.11, 0], wide: [0.27, 0.06, 0.03], round: [0.08, 0.1, 0] },
+        gw: 0.16, gk: 0.8, smallK: 0, small: 0.7, dots: true,
+      },
+      minimal: {
+        faces: set({ ex: 0.31, ey: 0.11, ew: 0.078, eh: 0.165, er: 1, mw: 0.12, my: -0.36, mc: 0.016, mt: 0.021, et: 0.022 }, {
+          base: {},
+          listen: { ew: 0.086, eh: 0.205, ey: 0.13, mw: 0.075, mc: 0 },
+          focus: { ew: 0.09, eh: 0.072, ey: 0.09, ox: -0.035, mw: 0.09, mc: 0 },
+          speak: {},
+          pupils: { ew: 0.095, eh: 0.18, ey: 0.12, mw: 0.022, mt: 0.026, mc: 0 },
+          err: { xw: 1, ew: 0.072, eh: 0.072, et: 0.021, mw: 0.1, mc: -0.035 },
+          sleep: { aw: 1, ac: -1, ew: 0.09, eh: 0.04, ey: 0.05, mv: 0 },
+          grin: { aw: 1, ac: 1, ew: 0.09, eh: 0.06, et: 0.024, ey: 0.12, mw: 0.16, mc: 0.055, mt: 0.022 },
+        }),
+        vis: { closed: [0.12, 0, 0.014], open: [0.1, 0.06, 0], wide: [0.15, 0.03, 0.012], round: [0.05, 0.05, 0] },
+        gw: 0.3, gk: 1.2, smallK: 0.45, small: 1,
+      },
+    };
+    var NAMES = { smooth: "Smooth", dots: "Dot matrix", minimal: "Minimal" };
+    /** A face style as itself (any case), else the default, smooth. */
+    function norm(s) { s = typeof s === "string" ? s.toLowerCase() : ""; return Object.prototype.hasOwnProperty.call(STY, s) ? s : "smooth"; }
+
+    /* ---- the B grid: dots across the face (2 units), picked so a dot is >= ~5 device px; then the shapes snap */
+    var DOTN = [40, 30, 22, 16, 12];
+    function pitchFor(cssR, dpr) {
+      var unit = cssR * dpr; // device px per face unit
+      for (var i = 0; i < DOTN.length; i++) if (2 * unit / DOTN[i] >= 5.2) return 2 / DOTN[i];
+      return 2 / DOTN[DOTN.length - 1];
+    }
+    function snapCount(hw, p, min) { return Math.max(min || 1, Math.round(2 * hw / p)); }
+    function snapPos(x, p, n) { return n % 2 ? Math.round(x / p) * p : (Math.floor(x / p) + 0.5) * p; }
+    function snapDots(v, p) {
+      var nW = snapCount(v[EW], p), nH = snapCount(v[EH], p);
+      if (v[XW] > 0.5) { nW = nH = Math.max(3, nW | 1); } // an x: odd and square, so its arms meet on a dot
+      v[EX] = snapPos(v[EX], p, nW); v[EY] = snapPos(v[EY], p, nH);
+      v[EW] = (nW / 2 - 0.5) * p + 0.32 * p; v[EH] = (nH / 2 - 0.5) * p + 0.32 * p;
+      v[ET] = 0.52 * p; v[CA] = 0;
+      // arcs: whole dots wide, the peak on a row and the ends exactly one (or more) rows lower -- no half-lit rows
+      if (v[AW] > 0.5) { v[EW] = Math.max(1, Math.round(v[EW] / p)) * p; v[EH] = Math.max(1, Math.round(v[EH] / p)) * p; v[AO] = 1; v[ET] = 0.45 * p; v[EX] = Math.round(v[EX] / p) * p; v[EY] = Math.round(v[EY] / p) * p; }
+      var nM = 2 * Math.max(1, Math.round(v[MW] / p)) + 1;
+      v[MW] = (nM / 2 - 0.5) * p + 0.32 * p; v[MY] = Math.round(v[MY] / p) * p; v[MT] = 0.5 * p;
+      v[MH] = Math.round(v[MH] / p) * p;
+      // a curve shallower than a dot reads as noise on a coarse grid: flat, or a whole row
+      v[MC] = p > 0.1 ? (Math.abs(v[MC]) < 0.5 * p ? 0 : (v[MC] < 0 ? -1 : 1) * p) : Math.round(v[MC] / p * 2) * p / 2;
+      v[OX] = Math.round(v[OX] / p) * p; v[OY] = Math.round(v[OY] / p) * p;
+    }
+
+    /* ---- one face vector: the anim's face morphing from its previous one, the voice, blink, gaze, size */
+    var TA = new Float32Array(N), TB = new Float32Array(N);
+    function faceOf(T, name, vm, amp, out) {
+      var src = T.faces[name] || T.faces.base;
+      for (var i = 0; i < 20; i++) out[i] = src[i];
+      if (name === "speak") {
+        var V = T.vis, c, o, w, r;
+        if (vm) { c = vm.closed; o = vm.open; w = vm.wide; r = vm.round; } else { o = Math.max(0, Math.min(1, amp * 1.6)); c = 1 - o; w = r = 0; }
+        var s = c + o + w + r || 1;
+        out[MW] = (c * V.closed[0] + o * V.open[0] + w * V.wide[0] + r * V.round[0]) / s;
+        out[MH] = (c * V.closed[1] + o * V.open[1] + w * V.wide[1] + r * V.round[1]) / s;
+        out[MC] = (c * V.closed[2] + o * V.open[2] + w * V.wide[2] + r * V.round[2]) / s;
+      }
+      return out;
+    }
+    function sm(x) { x = x < 0 ? 0 : x > 1 ? 1 : x; return x * x * (3 - 2 * x); }
+    /**
+     * vecFor(style, an, cssR, dpr, amp, vm, out, W8, off): out <- the face vector; W8[off ..] <- the front nodes'
+     * coverage (hides the grid under the features).
+     */
+    function vecFor(st, an, cssR, dpr, amp, vm, out, W8, off) {
+      var T = STY[st] || STY.smooth;
+      var A = faceOf(T, an.face, vm, amp, TA), P = faceOf(T, an.prev, vm, amp, TB), k = sm(an.fk);
+      for (var i = 0; i < 20; i++) out[i] = P[i] + (A[i] - P[i]) * k;
+      var bl = an.blink();
+      if (out[AW] < 0.5) out[EH] = Math.max(out[EH] * bl, 0.018); // shut: a short line (arcs and sleep do not blink)
+      out[OX] += clamp(an.gx, -2.2, 2.2) * 0.075; out[OY] += -an.gy * 0.07;
+      var smallness = clamp((44 - cssR) / 28, 0, 1), sc = 1 + T.smallK * smallness;
+      out[EW] *= sc; out[EH] *= sc; out[MW] *= sc; out[MH] *= sc; out[MT] *= sc; out[ET] *= sc; out[CA] *= sc;
+      if (smallness > 0.5) out[CA] = 0; // a catchlight under ~30 px is noise
+      var mp = 1 / Math.max(1, cssR * dpr); // face units per device px
+      out[AO] = 0.5;
+      if (T.dots) { out[PI_] = pitchFor(cssR, dpr); out[DOTS] = 1; snapDots(out, out[PI_]); }
+      else {
+        out[PI_] = 0; out[DOTS] = 0;
+        out[EW] = Math.max(out[EW], 1.3 * mp); out[EH] = Math.max(out[EH], 0.85 * mp);
+        out[MT] = Math.max(out[MT], 0.8 * mp); out[ET] = Math.max(out[ET], 0.8 * mp);
+      }
+      out[GW] = T.gw; out[GK] = T.gk * (cssR < 40 ? T.small : 1);
+      if (W8) for (var r = 0; r < GN; r++) for (var c = 0; c < GN; c++) {
+        var a = 2 * c / G - 1, b = 1 - 2 * r / G;
+        var cv = cov(out, a, b, 0.09);
+        W8[off + r * GN + c] = Math.min(255, (cv * 1.7 * 255 + 0.5) | 0);
+      }
+      return out;
+    }
+
+    /* ---- the shapes (the GLSL below is their twin) */
+    function sdRB(px, py, bx, by, r) {
+      var qx = Math.abs(px) - bx + r, qy = Math.abs(py) - by + r;
+      return Math.sqrt(Math.max(qx, 0) * Math.max(qx, 0) + Math.max(qy, 0) * Math.max(qy, 0)) + Math.min(Math.max(qx, qy), 0) - r;
+    }
+    function sdSeg(px, py, ax, ay, bx, by) {
+      var pax = px - ax, pay = py - ay, bax = bx - ax, bay = by - ay, h = clamp((pax * bax + pay * bay) / (bax * bax + bay * bay), 0, 1);
+      return Math.sqrt((pax - bax * h) * (pax - bax * h) + (pay - bay * h) * (pay - bay * h));
+    }
+    function eyeFill(v, px, py, ux) {
+      var hw = v[EW], hh = v[EH], r = Math.min(v[ER], 1) * Math.min(hw, hh);
+      var d = sdRB(px, py, hw, hh, r);
+      d = Math.max(d, py - hh * (1 - 2 * v[LT]));
+      d = Math.max(d, -py - hh * (1 - 2 * v[LB]));
+      if (v[CA] > 0) d = Math.max(d, -(Math.sqrt((ux - hw * 0.4) * (ux - hw * 0.4) + (py - hh * 0.45) * (py - hh * 0.45)) - v[CA]));
+      return d;
+    }
+    function eyeArc(v, px, py) {
+      var w = v[EW], h = v[EH] * v[AC], ao = v[AO], u = clamp(px, -w, w), y = h * (1 - u * u / (w * w)) - h * ao;
+      if (Math.abs(px) > w) return Math.sqrt((Math.abs(px) - w) * (Math.abs(px) - w) + (py + h * ao) * (py + h * ao)) - v[ET];
+      var s = v[DOTS] > 0.5 ? 0 : -2 * h * u / (w * w);
+      return Math.abs(py - y) / Math.sqrt(1 + s * s) - v[ET];
+    }
+    function eyeX(v, px, py) { var w = v[EW] * 0.9, h = v[EH] * 0.9; return Math.min(sdSeg(px, py, -w, -h, w, h), sdSeg(px, py, -w, h, w, -h)) - v[ET]; }
+    function mouthD(v, px, py) {
+      // an open mouth: a superellipse (n 3) under the lip line -- a rounded D, not a drop
+      var w = Math.max(v[MW], 1e-4), s = clamp(px / w, -1, 1), as = Math.abs(s), q = Math.pow(Math.max(0, 1 - as * as * as), 1 / 3);
+      if (Math.abs(px) > w) return Math.sqrt((Math.abs(px) - w) * (Math.abs(px) - w) + py * py) - v[MT];
+      var base = -v[MC] * (1 - s * s), sl = 2 * v[MC] * s / w, sg = s < 0 ? -1 : 1, dq = q > 1e-3 ? -sg * s * s / (w * q * q) : -sg * 1e3;
+      var up = base + 0.55 * v[MH] * q + v[MT], lo = base - v[MH] * q - v[MT], mid = (up + lo) / 2, g;
+      var gk = v[DOTS] > 0.5 ? 0 : 1;
+      if (py >= mid) { g = gk * clamp(sl + 0.55 * v[MH] * dq, -20, 20); return (py - up) / Math.sqrt(1 + g * g); }
+      g = gk * clamp(sl - v[MH] * dq, -20, 20); return (lo - py) / Math.sqrt(1 + g * g);
+    }
+    function cv(d, aa) { var x = 0.5 - d / aa; return x < 0 ? 0 : x > 1 ? 1 : x; }
+    /** Coverage 0..1 of the face at (a, b) with an edge aa wide (face units). */
+    function cov(v, a, b, aa) {
+      var ex = a - v[OX], ey = b - v[EY] - v[OY], sx = ex < 0 ? -1 : 1, px = Math.abs(ex) - v[EX], ux = ex - sx * v[EX];
+      var aw = v[AW], xw = v[XW], fw = Math.max(0, 1 - aw - xw), ce = 0;
+      if (fw > 0.001) ce += fw * cv(eyeFill(v, px, ey, ux), aa);
+      if (aw > 0.001) ce += aw * cv(eyeArc(v, px, ey), aa);
+      if (xw > 0.001) ce += xw * cv(eyeX(v, px, ey), aa);
+      var cm = v[MV] > 0.001 ? v[MV] * cv(mouthD(v, a - v[OX] * 0.35, b - v[MY] - v[OY] * 0.3), aa) : 0;
+      return Math.min(1, Math.max(ce, cm));
+    }
+    function covAt(v, a, b, aa) {
+      if (v[DOTS] < 0.5) return cov(v, a, b, aa);
+      var p = v[PI_], cx = Math.floor(a / p + 0.5) * p, cy = Math.floor(b / p + 0.5) * p;
+      var lit = cov(v, cx, cy, p * 0.2), dd = Math.sqrt((a - cx) * (a - cx) + (b - cy) * (b - cy)) - p * (p > 0.12 ? 0.46 : 0.4);
+      return lit * cv(dd, aa);
+    }
+
+    /*
+     * ---- GL: per head, two tight boxes of the front surface -- the eyes' band and the mouth -- drawn from one unit
+     * grid that the vertex shader places (u_box, in face coords) and lifts onto the superellipsoid (u_p), so only the
+     * pixels near a feature run the face's shader (one patch over the whole face cost a frame step on a CPU rasteriser)
+     */
+    var GRID = null;
+    function patch() {
+      if (GRID) return GRID;
+      var NU = 16, NV = 8, vs = [], ix = [];
+      for (var j = 0; j <= NV; j++) for (var i = 0; i <= NU; i++) vs.push(i / NU, j / NV);
+      for (j = 0; j < NV; j++) for (i = 0; i < NU; i++) { var q = j * (NU + 1) + i; ix.push(q, q + 1, q + NU + 1, q + 1, q + NU + 2, q + NU + 1); }
+      return (GRID = { v: new Float32Array(vs), i: new Uint16Array(ix) });
+    }
+    var VS = [
+      "#version 300 es",
+      "precision highp float;",
+      "layout(location=0) in vec2 a_g;",
+      "uniform vec2 u_res,u_c; uniform vec4 u_box; uniform float u_r,u_fs,u_sc,u_yaw,u_tilt,u_p;",
+      "out vec2 v_uv;",
+      "void main(){ vec2 ab=mix(u_box.xy,u_box.zw,a_g); float k=pow(pow(abs(ab.x),u_p)+pow(abs(ab.y),u_p)+1.0,-1.0/u_p);",
+      " vec3 p=vec3(ab.x*k,ab.y*k*0.98,k*1.003); float cy=cos(u_yaw),sy=sin(u_yaw),ct=cos(u_tilt),st=sin(u_tilt);",
+      " float x1=p.x*cy+p.z*sy, z1=-p.x*sy+p.z*cy; float y2=p.y*ct-z1*st;",
+      " vec2 px=(u_c+vec2(x1,y2)*u_r*u_sc)*u_fs; v_uv=ab; gl_Position=vec4(px/u_res*2.0-1.0,0.0,1.0); }",
+    ].join("\n");
+    var FS = [
+      "#version 300 es",
+      "precision highp float;",
+      "in vec2 v_uv; uniform vec4 u_f[7]; uniform vec3 u_st; uniform float u_lit,u_alpha,u_gl; out vec4 o;",
+      "#define EX u_f[0].x", "#define EY u_f[0].y", "#define EW u_f[0].z", "#define EH u_f[0].w",
+      "#define ER u_f[1].x", "#define LT u_f[1].y", "#define LB u_f[1].z", "#define CA u_f[1].w",
+      "#define AW u_f[2].x", "#define AC u_f[2].y", "#define XW u_f[2].z", "#define ET u_f[2].w",
+      "#define MW u_f[3].x", "#define MY u_f[3].y", "#define MH u_f[3].z", "#define MC u_f[3].w",
+      "#define MT u_f[4].x", "#define MV u_f[4].y", "#define OX u_f[4].z", "#define OY u_f[4].w",
+      "#define PIT u_f[5].x", "#define GWD u_f[5].y", "#define DOTS u_f[5].z", "#define AO u_f[6].x",
+      "float sdRB(vec2 p,vec2 b,float r){ vec2 q=abs(p)-b+r; return length(max(q,0.0))+min(max(q.x,q.y),0.0)-r; }",
+      "float sdSeg(vec2 p,vec2 a,vec2 b){ vec2 pa=p-a,ba=b-a; float h=clamp(dot(pa,ba)/dot(ba,ba),0.0,1.0); return length(pa-ba*h); }",
+      "float eyeFill(vec2 p,float ux){ float r=min(ER,1.0)*min(EW,EH); float d=sdRB(p,vec2(EW,EH),r);",
+      " d=max(d,p.y-EH*(1.0-2.0*LT)); d=max(d,-p.y-EH*(1.0-2.0*LB));",
+      " if(CA>0.0) d=max(d,-(length(vec2(ux-EW*0.4,p.y-EH*0.45))-CA)); return d; }",
+      "float eyeArc(vec2 p){ float w=EW,h=EH*AC; float u=clamp(p.x,-w,w); float y=h*(1.0-u*u/(w*w))-h*AO;",
+      " if(abs(p.x)>w) return length(vec2(abs(p.x)-w,p.y+h*AO))-ET; float s=DOTS>0.5?0.0:-2.0*h*u/(w*w); return abs(p.y-y)/sqrt(1.0+s*s)-ET; }",
+      "float eyeX(vec2 p){ float w=EW*0.9,h=EH*0.9; return min(sdSeg(p,vec2(-w,-h),vec2(w,h)),sdSeg(p,vec2(-w,h),vec2(w,-h)))-ET; }",
+      "float mouthD(vec2 p){ float w=max(MW,1e-4); float s=clamp(p.x/w,-1.0,1.0); float as_=abs(s); float q=pow(max(0.0,1.0-as_*as_*as_),1.0/3.0);",
+      " if(abs(p.x)>w) return length(vec2(abs(p.x)-w,p.y))-MT;",
+      " float base=-MC*(1.0-s*s); float sl=2.0*MC*s/w; float sg=s<0.0?-1.0:1.0; float dq=q>1e-3?-sg*s*s/(w*q*q):-sg*1e3;",
+      " float up=base+0.55*MH*q+MT, lo=base-MH*q-MT, mid=(up+lo)*0.5;",
+      " float gk=DOTS>0.5?0.0:1.0;",
+      " if(p.y>=mid){ float g=gk*clamp(sl+0.55*MH*dq,-20.0,20.0); return (p.y-up)/sqrt(1.0+g*g); }",
+      " float g=gk*clamp(sl-MH*dq,-20.0,20.0); return (lo-p.y)/sqrt(1.0+g*g); }",
+      "float cvv(float d,float aa){ return clamp(0.5-d/aa,0.0,1.0); }",
+      "float cov(vec2 q,float aa){ vec2 e=vec2(q.x-OX,q.y-EY-OY); float sx=e.x<0.0?-1.0:1.0; vec2 p=vec2(abs(e.x)-EX,e.y); float ux=e.x-sx*EX;",
+      " float fw=max(0.0,1.0-AW-XW); float ce=0.0;",
+      " if(fw>0.001) ce+=fw*cvv(eyeFill(p,ux),aa); if(AW>0.001) ce+=AW*cvv(eyeArc(p),aa); if(XW>0.001) ce+=XW*cvv(eyeX(p),aa);",
+      " float cm=MV>0.001?MV*cvv(mouthD(vec2(q.x-OX*0.35,q.y-MY-OY*0.3)),aa):0.0; return min(1.0,max(ce,cm)); }",
+      "void main(){ vec2 q=v_uv; float fw=max(fwidth(q.x),fwidth(q.y)); float c;",
+      " if(u_gl>0.5) c=cov(q,GWD)*0.9;",
+      " else if(DOTS>0.5){ vec2 ce=floor(q/PIT+0.5)*PIT; float lit=cov(ce,PIT*0.2); float dd=length(q-ce)-PIT*(PIT>0.12?0.46:0.4); c=lit*cvv(dd,fw*1.1); }",
+      " else c=cov(q,fw*1.15);",
+      " float a=clamp(c*u_lit,0.0,1.0)*u_alpha; if(a<0.003) discard; o=vec4(u_st*a,a); }",
+    ].join("\n");
+    /**
+     * One head's face on GL (P: the program, g: the grid {vao, n}, h: the pool head, v: its vector, p: the head's
+     * superellipsoid power): the eyes' box, then the mouth's, abutting (never overlapping: nothing is drawn twice).
+     */
+    function drawGL(gl, P, g, h, v, resW, resH, fs, dpr, cssH, glowPass, light, p) {
+      var u = P.u, fa = h.alpha * (h.form < 1 ? h.form * h.form : 1) * (1 - h.dis);
+      if (fa < 0.01) return;
+      var m = (glowPass ? v[GW] * 1.3 : 0.03 + 3 / Math.max(1, h.r * dpr)) + (v[DOTS] > 0.5 ? v[PI_] : 0);
+      var eT = Math.min(0.95, v[EY] + v[OY] + v[EH] + v[ET] + m), eB = Math.max(-0.95, v[EY] + v[OY] - v[EH] - v[ET] - m);
+      var eW = Math.min(0.95, v[EX] + v[EW] + v[ET] + m), mx = v[OX] * 0.35, my = v[MY] + v[OY] * 0.3, ac = Math.abs(v[MC]);
+      var mT = Math.min(eB, my + ac + 0.55 * v[MH] + v[MT] + m), mB = Math.max(-0.95, my - ac - v[MH] - v[MT] - m), mW = v[MW] + v[MT] + m;
+      gl.uniform2f(u.u_res, resW, resH); gl.uniform2f(u.u_c, h.cx * dpr, (cssH - h.cy) * dpr);
+      gl.uniform1f(u.u_r, h.r * dpr); gl.uniform1f(u.u_fs, fs); gl.uniform1f(u.u_sc, h.sc); gl.uniform1f(u.u_yaw, h.yaw); gl.uniform1f(u.u_tilt, h.tilt);
+      gl.uniform4fv(u["u_f[0]"], v);
+      gl.uniform3f(u.u_st, h.st[0] / 255, h.st[1] / 255, h.st[2] / 255);
+      gl.uniform1f(u.u_lit, glowPass ? h.lit * h.glowK * v[GK] * (light ? 0.28 : 0.55) : h.lit);
+      gl.uniform1f(u.u_alpha, fa); gl.uniform1f(u.u_gl, glowPass ? 1 : 0); gl.uniform1f(u.u_p, p);
+      gl.bindVertexArray(g.vao);
+      gl.uniform4f(u.u_box, Math.max(-0.95, v[OX] - eW), eB, Math.min(0.95, v[OX] + eW), eT); gl.drawElements(gl.TRIANGLES, g.n, gl.UNSIGNED_SHORT, 0);
+      if (v[MV] > 0.001 && mT > mB) { gl.uniform4f(u.u_box, Math.max(-0.95, mx - mW), mB, Math.min(0.95, mx + mW), mT); gl.drawElements(gl.TRIANGLES, g.n, gl.UNSIGNED_SHORT, 0); }
+    }
+
+    /*
+     * ---- 2D (the fallback and the Settings thumbnails): the same shapes as vector paths, every vertex through the
+     * head's exact projection, so canvas anti-aliases them; the dots are circles at the lit grid centres; the glow is
+     * the fill's shadow. No allocation per call: the projection's state and the scratch buffers are module-level.
+     * (A per-pixel twin was tried first: correct, but its putImageData uploads stalled the compositor once six
+     * session heads were on screen.)
+     */
+    var PT = new Float64Array(2), PJ = { p: 4, cx: 0, cy: 0, R: 1, cyw: 1, syw: 0, ct: 1, stt: 0 }, G2 = null;
+    var CORNER = [1, 1, 0, -1, 1, PI / 2, -1, -1, PI, 1, -1, 1.5 * PI], RECTS = new Float64Array(12), PART = new Float64Array(3 * 256);
+    function proj(a, b) {
+      var p = PJ.p, k = Math.pow(Math.pow(Math.abs(a), p) + Math.pow(Math.abs(b), p) + 1, -1 / p), x = a * k, y = b * k * 0.98, z = k;
+      var x1 = x * PJ.cyw + z * PJ.syw, z1 = -x * PJ.syw + z * PJ.cyw, y2 = y * PJ.ct - z1 * PJ.stt;
+      PT[0] = PJ.cx + x1 * PJ.R; PT[1] = PJ.cy - y2 * PJ.R;
+    }
+    function to(a, b, first) { proj(a, b); if (first) G2.moveTo(PT[0], PT[1]); else G2.lineTo(PT[0], PT[1]); }
+    function draw2d(g, o, cyw, syw, ct, stt, R, fade) {
+      var v = o.fv, dpr = o.dpr || 1, i, n;
+      var lit = Math.min(1, o.lit) * fade, gk = v[GK] * (o.light ? 0.45 : 0.9);
+      if (lit < 0.01) return;
+      PJ.p = o.geo.cfg.p; PJ.cx = o.cx; PJ.cy = o.cy; PJ.R = R; PJ.cyw = cyw; PJ.syw = syw; PJ.ct = ct; PJ.stt = stt; G2 = g;
+      var col = rgba(o.st, 1);
+      g.save();
+      g.fillStyle = col; g.strokeStyle = col; g.lineCap = "round"; g.lineJoin = "round";
+      if (gk > 0.01) { g.shadowColor = rgba(o.st, Math.min(1, gk)); g.shadowBlur = Math.max(2, R * v[GW] * 0.5) * dpr; }
+      var oy = v[EY] + v[OY], fw = Math.max(0, 1 - v[AW] - v[XW]);
+      if (v[DOTS] > 0.5) {
+        // the dot grid: every lit centre inside the features' rectangles, full dots in one path, partial ones alone
+        var pp = v[PI_], rad = pp * (pp > 0.12 ? 0.46 : 0.4) * R * 0.97, m = pp, ac = Math.abs(v[MC]), np = 0, nr = 2;
+        var ew = v[EW] + v[ET] + m, eh = v[EH] + v[ET] + m, mw = v[MW] + v[MT] + m, mx = v[OX] * 0.35, my = v[MY] + v[OY] * 0.3;
+        RECTS[0] = v[OX] + v[EX] - ew; RECTS[1] = v[OX] + v[EX] + ew; RECTS[2] = oy - eh; RECTS[3] = oy + eh;
+        RECTS[4] = v[OX] - v[EX] - ew; RECTS[5] = v[OX] - v[EX] + ew; RECTS[6] = oy - eh; RECTS[7] = oy + eh;
+        if (v[MV] > 0.001) { nr = 3; RECTS[8] = mx - mw; RECTS[9] = mx + mw; RECTS[10] = my - ac - v[MH] - v[MT] - m; RECTS[11] = my + ac + 0.55 * v[MH] + v[MT] + m; }
+        g.globalAlpha = lit; g.beginPath();
+        for (var ri = 0; ri < nr; ri++) {
+          var r0 = ri * 4;
+          for (var gy = Math.ceil(RECTS[r0 + 2] / pp); gy * pp <= RECTS[r0 + 3]; gy++) for (var gx = Math.ceil(RECTS[r0] / pp); gx * pp <= RECTS[r0 + 1]; gx++) {
+            // a dot two rectangles share is drawn by the first only
+            var dup = false;
+            for (var rj = 0; rj < ri; rj++) { var q0 = rj * 4; if (gx * pp >= RECTS[q0] && gx * pp <= RECTS[q0 + 1] && gy * pp >= RECTS[q0 + 2] && gy * pp <= RECTS[q0 + 3]) dup = true; }
+            if (dup) continue;
+            var lv = cov(v, gx * pp, gy * pp, pp * 0.2);
+            if (lv < 0.02) continue;
+            proj(gx * pp, gy * pp);
+            if (lv > 0.98) { g.moveTo(PT[0] + rad, PT[1]); g.arc(PT[0], PT[1], rad, 0, 2 * PI); }
+            else if (np < 256) { PART[np * 3] = PT[0]; PART[np * 3 + 1] = PT[1]; PART[np * 3 + 2] = lv; np++; }
+          }
+        }
+        g.fill();
+        for (i = 0; i < np; i++) { g.globalAlpha = lit * PART[i * 3 + 2]; g.beginPath(); g.arc(PART[i * 3], PART[i * 3 + 1], rad, 0, 2 * PI); g.fill(); }
+        g.restore();
+        return;
+      }
+      for (var side = -1; side <= 1; side += 2) {
+        var cx = v[OX] + side * v[EX], hw = v[EW], hh = v[EH];
+        if (fw > 0.001) { // a rounded rectangle, cut by the lids; a catchlight as an even-odd hole
+          var r = Math.min(v[ER], 1) * Math.min(hw, hh), yT = hh * (1 - 2 * v[LT]), yB = -hh * (1 - 2 * v[LB]), first = true;
+          g.globalAlpha = lit * fw; g.beginPath();
+          for (var qc = 0; qc < 4; qc++) for (i = 0; i <= 8; i++) {
+            var an = CORNER[qc * 3 + 2] + i / 8 * PI / 2, px = CORNER[qc * 3] * (hw - r) + Math.cos(an) * r, py = CORNER[qc * 3 + 1] * (hh - r) + Math.sin(an) * r;
+            to(cx + px, oy + Math.max(yB, Math.min(yT, py)), first); first = false;
+          }
+          g.closePath();
+          if (v[CA] > 0) { for (i = 0; i <= 16; i++) { var ca = i / 16 * 2 * PI; to(cx + hw * 0.4 + Math.cos(ca) * v[CA], oy + hh * 0.45 + Math.sin(ca) * v[CA], i === 0); } g.closePath(); }
+          g.fill("evenodd");
+        }
+        g.lineWidth = 2 * v[ET] * R;
+        if (v[AW] > 0.001) { // an arc
+          var h = hh * v[AC]; g.globalAlpha = lit * v[AW]; g.beginPath(); n = 14;
+          for (i = 0; i <= n; i++) { var u = -hw + 2 * hw * i / n; to(cx + u, oy + h * (1 - u * u / (hw * hw)) - h * v[AO], i === 0); }
+          g.stroke();
+        }
+        if (v[XW] > 0.001) { // an x
+          var xw = hw * 0.9, xh = hh * 0.9; g.globalAlpha = lit * v[XW]; g.beginPath();
+          to(cx - xw, oy - xh, true); to(cx + xw, oy + xh, false); to(cx - xw, oy + xh, true); to(cx + xw, oy - xh, false); g.stroke();
+        }
+      }
+      if (v[MV] > 0.001) { // the mouth: the open shape's outline, filled and stroked MT wide (its rounded ends)
+        var mw2 = Math.max(v[MW], 1e-4), mx2 = v[OX] * 0.35, my2 = v[MY] + v[OY] * 0.3; n = 24;
+        g.globalAlpha = lit * v[MV]; g.lineWidth = 2 * v[MT] * R; g.beginPath();
+        for (i = 0; i <= n; i++) { var s = -1 + 2 * i / n, qq = Math.pow(Math.max(0, 1 - Math.abs(s * s * s)), 1 / 3); to(mx2 + s * mw2, my2 - v[MC] * (1 - s * s) + 0.55 * v[MH] * qq, i === 0); }
+        for (i = n; i >= 0; i--) { var s2 = -1 + 2 * i / n, q2 = Math.pow(Math.max(0, 1 - Math.abs(s2 * s2 * s2)), 1 / 3); to(mx2 + s2 * mw2, my2 - v[MC] * (1 - s2 * s2) - v[MH] * q2, false); }
+        g.closePath(); if (v[MH] > 0.002) g.fill(); g.stroke();
+      }
+      g.restore();
+      G2 = null;
+    }
+
+    return { N: N, STY: STY, NAMES: NAMES, norm: norm, vec: vecFor, cov: cov, covAt: covAt, patch: patch, VS: VS, FS: FS, drawGL: drawGL, draw2d: draw2d, pitchFor: pitchFor };
+  })();
+
+
   /* ------------------------------------------------------------ Canvas 2D (the fallback, and the thumbnails) */
-  var spriteCache = {};
-  function glowSprite(rgb) {
-    var key = (rgb[0] | 0) + "," + (rgb[1] | 0) + "," + (rgb[2] | 0);
-    if (spriteCache[key]) return spriteCache[key];
-    var c = document.createElement("canvas"); c.width = c.height = 64;
-    var g = c.getContext("2d"), gr = g.createRadialGradient(32, 32, 0, 32, 32, 32);
-    gr.addColorStop(0, "rgba(" + key + ",1)"); gr.addColorStop(0.35, "rgba(" + key + ",0.45)"); gr.addColorStop(1, "rgba(" + key + ",0)");
-    g.fillStyle = gr; g.fillRect(0, 0, 64, 64);
-    var keys = Object.keys(spriteCache); if (keys.length > 24) delete spriteCache[keys[0]];
-    spriteCache[key] = c;
-    return c;
-  }
   function rgba(c, a) { return "rgba(" + (c[0] | 0) + "," + (c[1] | 0) + "," + (c[2] | 0) + "," + Math.max(0, Math.min(1, a)).toFixed(3) + ")"; }
   var P2 = null; // projected positions, reused
   /**
    * One head on a 2D context (CSS px, y down): o = { geo, cx, cy, r, yaw, tilt, sc, wire, st, wa, lit, alpha, w (Uint8Array),
-   * off, light, rimA, rimB, rimL, rimK, stK, form, dis, homeX, homeY, shimX, shimA, dpr }.
+   * off, light, rimA, rimB, rimL, rimK, stK, form, dis, homeX, homeY, shimX, shimA, dpr, fv (the face vector, FACE.vec) }.
    */
   function draw2dHead(g, o) {
     var geo = o.geo, V = geo.v, n = geo.n;
@@ -689,34 +929,8 @@
       if (kk === 2) g.fillStyle = rgba(o.wire, 1);
     }
     g.globalAlpha = 1;
-    // the lit face: glow, strokes, dots
-    var F = geo.front, lsz = Math.max(o.r < 40 ? 2.4 : 1.5, 0.062 * o.r), spr = glowSprite(o.st), gsz = o.r * (o.r < 40 ? 0.42 : 0.3);
-    g.globalAlpha = 1;
-    for (i = 0; i < F.length; i++) {
-      var fv = F[i], fw = wAt(V[fv * 7 + 4]);
-      if (fw < 0.02 || P2[fv * 3 + 2] < -0.03) continue;
-      g.globalAlpha = Math.min(1, fw * o.lit * (o.light ? 0.3 : 0.6) * fade);
-      g.drawImage(spr, P2[fv * 3] - gsz / 2, P2[fv * 3 + 1] - gsz / 2, gsz, gsz);
-    }
-    g.globalAlpha = 1;
-    var S = geo.seg;
-    if (S.length) {
-      for (i = 0; i < S.length; i += 7) {
-        var sw = Math.min(wAt(S[i + 4]), wAt(S[i + 6]));
-        if (sw < 0.02) continue;
-        var sx = S[i], syy = S[i + 1], sz2 = S[i + 2];
-        var x1s = sx * cyw + sz2 * syw, z1s = -sx * syw + sz2 * cyw, y2s = syy * ct - z1s * stt;
-        g.fillStyle = rgba(o.st, sw * o.lit * 0.95 * fade);
-        var q = lsz * 0.45;
-        g.fillRect(o.cx + x1s * R - q / 2, o.cy - y2s * R - q / 2, q, q);
-      }
-    }
-    for (i = 0; i < F.length; i++) {
-      var fv2 = F[i], fw2 = wAt(V[fv2 * 7 + 4]);
-      if (fw2 < 0.02 || P2[fv2 * 3 + 2] < -0.03) continue;
-      g.fillStyle = rgba(o.st, fw2 * o.lit * fade);
-      g.beginPath(); g.arc(P2[fv2 * 3], P2[fv2 * 3 + 1], lsz / 2, 0, 7); g.fill();
-    }
+    // the face: its vector layer through the same projection (FACE.draw2d)
+    if (o.fv) FACE.draw2d(g, o, cyw, syw, ct, stt, R, fade);
   }
 
   /* ------------------------------------------------------------ the core */
@@ -730,6 +944,37 @@
   }
   function beat(t) { var b = (t / 1.8) % 1; return Math.exp(-Math.pow((b - 0.05) / 0.05, 2)) + 0.7 * Math.exp(-Math.pow((b - 0.25) / 0.055, 2)); }
   function clamp(x, a, b) { return x < a ? a : x > b ? b : x; }
+
+  /*
+   * The face style (2026-10-22): the viewer's choice (users.mint_bot_face), written by the server as data-bot-face on
+   * #cc, the dock and Settings; read here once, then MintBot.setFace(style) switches every live core on the page (the
+   * Command Center, the dock, the companion, the page flight, the previews). A change saved in Settings in another tab
+   * (or the page in the desktop app's frame) arrives as a storage event ("mint-bot", { face }) and is taken the same
+   * way. A core created with opts.face keeps its own (core.setFace).
+   */
+  var pageFace = null, LIVE = [];
+  function faceNow() {
+    if (pageFace) return pageFace;
+    var el = typeof document !== "undefined" && document.querySelector ? document.querySelector("[data-bot-face]") : null;
+    return FACE.norm(el ? el.getAttribute("data-bot-face") : "");
+  }
+  function setPageFace(f) {
+    pageFace = FACE.norm(f);
+    if (typeof document !== "undefined" && document.querySelectorAll) {
+      var els = document.querySelectorAll("[data-bot-face]");
+      for (var i = 0; i < els.length; i++) els[i].setAttribute("data-bot-face", pageFace);
+    }
+    for (var j = 0; j < LIVE.length; j++) LIVE[j]();
+    return pageFace;
+  }
+  if (typeof window !== "undefined" && window.addEventListener) {
+    window.addEventListener("storage", function (e) {
+      if (e.key !== "mint-bot" || !e.newValue) return;
+      var b = null;
+      try { b = JSON.parse(e.newValue); } catch (x) { b = null; }
+      if (b && typeof b.face === "string") setPageFace(b.face);
+    });
+  }
 
   function create(canvas, opts) {
     opts = opts || {};
@@ -747,7 +992,10 @@
       presence: null, contact: null, lookUpUntil: 0,
       // look and speak (2026-10-21, core.indicate): { phase, arm0, armT, armS, k } or null
       ind: null,
+      // the face style: its own (opts.face) or the page's (faceNow), kept current by setPageFace
+      faceOwn: opts.face ? FACE.norm(opts.face) : null, face: "smooth",
     };
+    S.face = S.faceOwn || faceNow();
     var now = opts.now || function () { return Date.now(); };
     var hourOf = opts.hour || function () { return new Date().getHours(); };
     var specFn = opts.spec || null; // () -> { bins: Uint8Array (getByteFrequencyData), hz: Hz per bin } | null
@@ -759,10 +1007,10 @@
     var colors = opts.colors || null, PAL = palettes(colors), pal = { wire: [0, 0, 0], rim: [[0, 0, 0], [0, 0, 0]], rimL: [0, 0, 0] };
     var ampFn = opts.amp || null, destFn = opts.dest || null, onFrame = opts.onFrame || null, lastSize = null;
     var gl = null, ctx = null, raf = 0, last = 0;
-    var progW = null, progQ = null, progC = null, progS = null, progP = null, progZ = null, emptyVao = null, wtTex = null, fbo = null, fboTex = null, fboW = 0, fboH = 0, maxPt = 64;
+    var progF = null, fvGrid = null, progW = null, progQ = null, progC = null, progS = null, progP = null, progZ = null, emptyVao = null, wtTex = null, fbo = null, fboTex = null, fboW = 0, fboH = 0, maxPt = 64;
     var W8 = new Uint8Array(NF * ROWS);
     var coreAnim = new Anim(11), kidAnims = {}, kidSeen = 0;
-    var geos = {}; // detail -> { geo, vao, vbo, ibL, ibP, ibF, segVao, segN }
+    var geos = {}; // detail -> { geo, vao, vbo, ibL, ibP }
 
     /* ---------------- GL setup */
     function sh(type, src) {
@@ -784,7 +1032,7 @@
       try {
         gl = canvas.getContext("webgl2", { alpha: true, premultipliedAlpha: true, antialias: true, preserveDrawingBuffer: !!opts.preserve });
         if (!gl) return false;
-        progW = prog(WIRE_VS, WIRE_FS); progQ = prog(QUAD_VS, QUAD_FS); progC = prog(COMP_VS, COMP_FS); progS = prog(STREAM_VS, WIRE_FS); progP = prog(QUAD_VS, PLATE_FS); progZ = prog(ZZZ_VS, WIRE_FS);
+        progW = prog(WIRE_VS, WIRE_FS); progQ = prog(QUAD_VS, QUAD_FS); progC = prog(COMP_VS, COMP_FS); progS = prog(STREAM_VS, WIRE_FS); progP = prog(QUAD_VS, PLATE_FS); progZ = prog(ZZZ_VS, WIRE_FS); progF = prog(FACE.VS, FACE.FS);
         emptyVao = gl.createVertexArray();
         var range = gl.getParameter(gl.ALIASED_POINT_SIZE_RANGE);
         maxPt = range && range[1] ? range[1] : 64;
@@ -812,27 +1060,32 @@
         gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 4, gl.FLOAT, false, 28, 12);
         o.ibL = gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, o.ibL); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, geo.lines, gl.STATIC_DRAW);
         o.ibP = gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, o.ibP); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, geo.pts, gl.STATIC_DRAW);
-        o.ibF = gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, o.ibF); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, geo.front, gl.STATIC_DRAW);
         gl.bindVertexArray(null);
-        o.segN = geo.seg.length / 7;
-        if (o.segN) {
-          o.segVao = gl.createVertexArray(); gl.bindVertexArray(o.segVao);
-          o.segVbo = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, o.segVbo); gl.bufferData(gl.ARRAY_BUFFER, geo.seg, gl.STATIC_DRAW);
-          gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 28, 0);
-          gl.enableVertexAttribArray(1); gl.vertexAttribPointer(1, 4, gl.FLOAT, false, 28, 12);
-          gl.bindVertexArray(null);
-        }
       }
       geos[key] = o;
       return o;
     }
+    /** The face's unit grid (FACE.patch), placed per box by its vertex shader. */
+    function fvGeo() {
+      if (fvGrid) return fvGrid;
+      var P = FACE.patch(), o = { vao: gl.createVertexArray(), n: P.i.length };
+      gl.bindVertexArray(o.vao);
+      o.vbo = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, o.vbo); gl.bufferData(gl.ARRAY_BUFFER, P.v, gl.STATIC_DRAW);
+      gl.enableVertexAttribArray(0); gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 8, 0);
+      o.ib = gl.createBuffer(); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, o.ib); gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, P.i, gl.STATIC_DRAW);
+      gl.bindVertexArray(null);
+      return (fvGrid = o);
+    }
     function freeGeos() {
-      if (gl) Object.keys(geos).forEach(function (k) {
-        var o = geos[k];
-        [o.vbo, o.ibL, o.ibP, o.ibF, o.segVbo].forEach(function (b) { if (b) gl.deleteBuffer(b); });
-        if (o.vao) gl.deleteVertexArray(o.vao); if (o.segVao) gl.deleteVertexArray(o.segVao);
-      });
-      geos = {};
+      if (gl) {
+        Object.keys(geos).forEach(function (k) {
+          var o = geos[k];
+          [o.vbo, o.ibL, o.ibP].forEach(function (b) { if (b) gl.deleteBuffer(b); });
+          if (o.vao) gl.deleteVertexArray(o.vao);
+        });
+        if (fvGrid) { gl.deleteBuffer(fvGrid.vbo); gl.deleteBuffer(fvGrid.ib); gl.deleteVertexArray(fvGrid.vao); }
+      }
+      geos = {}; fvGrid = null;
     }
     function ensureFbo() {
       var w = Math.max(1, Math.ceil(canvas.width / 4)), h = Math.max(1, Math.ceil(canvas.height / 4));
@@ -852,6 +1105,9 @@
     var POOL = [];
     for (var pi = 0; pi < MAXK + 1; pi++) POOL.push({ cx: 0, cy: 0, r: 0, yaw: 0, tilt: 0, sc: 1, st: [0, 0, 0], wa: 1, lit: 1, alpha: 1, row: 0, form: 1, dis: 0, rimK: 0, stK: 0, shimX: 0, shimA: 0, detail: "hi", head: "cap", glowK: 1, cssR: 0 });
     var nHeads = 0;
+    var FVEC = []; // one face vector per head row (FACE.vec), reused
+    for (var fvi = 0; fvi < MAXK + 1; fvi++) FVEC.push(new Float32Array(FACE.N));
+    var HOME = [0, 0];
     function mixPal() {
       var a = PAL.dark, b = PAL.light, k = S.light;
       ["ready", "listening", "thinking", "speaking", "needs", "error", "wire"].forEach(function (key) {
@@ -915,7 +1171,7 @@
       an.gx += (an.gxT - an.gx) * ek; an.gy += (an.gyT - an.gy) * ek;
       if (S.still) an.gx = Math.round(an.gx); // a still frame: the eyes on whole nodes (a frozen in-between shift reads as a garbled face)
       S.lookK += ((gzOn || follow ? 1 : 0) - S.lookK) * (S.still ? 1 : 1 - Math.exp(-dt * 4));
-      weights(an, W8, 0, W.speak > 0.05 ? S.amp : 0, rc < SMALL, S.vis);
+      FACE.vec(S.face, an, rc, S.dpr, W.speak > 0.05 ? S.amp : 0, W.speak > 0.05 ? S.vis : null, FVEC[0], W8, 0);
       var h = POOL[nHeads++];
       var tt = S.t;
       h.head = S.head; h.detail = detailFor(rc); h.cssR = rc;
@@ -964,7 +1220,7 @@
           ka.gxT = kp ? clamp(pdx / (kr * 2.2), -1, 1) * 1.6 : !S.still && ka.glanceUntil > ka.t ? ka.glx : dx * 1.2; ka.gyT = 0;
           ka.gx += (ka.gxT - ka.gx) * ek; ka.gy = 0;
           if (S.still) ka.gx = Math.round(ka.gx);
-          weights(ka, W8, (i + 1) * NF, sf.state === "speaking" ? 0.35 + 0.55 * synthAmp(ka.t + ka.ph) : 0, kr < SMALL, null);
+          FACE.vec(S.face, ka, kr, S.dpr, sf.state === "speaking" ? 0.35 + 0.55 * synthAmp(ka.t + ka.ph) : 0, null, FVEC[i + 1], W8, (i + 1) * NF);
           var q = POOL[nHeads++];
           q.head = k.head && HEADS[k.head] ? k.head : S.head; // its role's accessory (cc-logic botHeadFor), else the core's
           q.detail = "lo"; q.cssR = kr; q.row = i + 1;
@@ -997,11 +1253,6 @@
       gl.uniform1f(u.u_shimX, h.shimX); gl.uniform1f(u.u_shimA, h.shimA);
       var ps = dpr * clamp(h.cssR / 120, 0.55, 1.5);
       gl.uniform1f(u.u_psz, ps); gl.uniform1f(u.u_jsz, 7.2 * ps);
-      var small = h.cssR < SMALL;
-      // small: a face pixel ~60 % of the coarse grid's spacing (2 x 2 face cells), strokes ~45 % so lit runs join into bars
-      gl.uniform1f(u.u_lsz, small ? Math.max(2, 0.118 * h.cssR * dpr) : Math.max(1.5, 0.062 * h.cssR) * dpr * (DESK ? 1.2 : 1)); // the desktop: a slightly bolder face over the wallpaper
-      gl.uniform1f(u.u_segK, small ? 0.75 : 0.45); gl.uniform1f(u.u_snap, small ? 1 : 0); gl.uniform1f(u.u_sq, small ? 1 : 0);
-      gl.uniform1f(u.u_gsz, h.cssR * (h.cssR < 40 ? 0.4 : 0.24) * dpr * h.glowK);
     }
     function drawGL() {
       var cw = canvas.width, ch = canvas.height, dpr = S.dpr, i, h, o, u;
@@ -1010,7 +1261,7 @@
       gl.bindTexture(gl.TEXTURE_2D, wtTex);
       gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
       gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, NF, ROWS, gl.RED, gl.UNSIGNED_BYTE, W8);
-      var home = [S.c[0], S.c[1]];
+      var home = HOME; HOME[0] = S.c[0]; HOME[1] = S.c[1];
       gl.enable(gl.BLEND); gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
       // 1. the glows, at quarter resolution
       if (GLOW) {
@@ -1034,17 +1285,9 @@
           gl.uniform3f(u.u_st, h.st[0] / 255, h.st[1] / 255, h.st[2] / 255);
           gl.drawArrays(gl.TRIANGLES, 0, 6);
         }
-        gl.useProgram(progW.p); u = progW.u;
-        gl.uniform2f(u.u_res, fboW, fboH); gl.uniform1i(u.u_wt, 0); gl.uniform1f(u.u_maxPt, maxPt);
-        gl.uniform1f(u.u_pt, 1); gl.uniform1f(u.u_soft, 1); gl.uniform1f(u.u_mode, 4); if (u.u_ind) gl.uniform1f(u.u_ind, 0);
-        for (i = 0; i < nHeads; i++) {
-          h = POOL[i]; o = geoFor(h.head, h.detail);
-          if (h.cssR < SMALL) continue; // small heads: no blurred face glow (it would swallow the pixels)
-          setHeadU(u, h, fs, dpr, home);
-          gl.uniform1f(u.u_lit, h.lit * (S.light > 0.5 ? 0.26 : 0.55));
-          gl.bindVertexArray(o.vao); gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, o.ibF);
-          gl.drawElements(gl.POINTS, o.geo.front.length, gl.UNSIGNED_SHORT, 0);
-        }
+        // the faces' glow: the face layer again, soft-edged (FACE.drawGL, glow pass)
+        gl.useProgram(progF.p);
+        for (i = 0; i < nHeads; i++) { h = POOL[i]; FACE.drawGL(gl, progF, fvGeo(), h, FVEC[h.row], fboW, fboH, fs, dpr, S.cssH, true, S.light > 0.5, HEADS[h.head].p); }
         gl.bindFramebuffer(gl.FRAMEBUFFER, null);
       }
       gl.viewport(0, 0, cw, ch);
@@ -1100,13 +1343,10 @@
         gl.uniform1f(u.u_wa, h.wa);
         gl.uniform1f(u.u_pt, 1); gl.uniform1f(u.u_soft, 0); gl.uniform1f(u.u_mode, 1);
         gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, o.ibP); gl.drawElements(gl.POINTS, o.geo.pts.length, gl.UNSIGNED_SHORT, 0);
-        if (o.segN) {
-          gl.bindVertexArray(o.segVao); gl.uniform1f(u.u_mode, 3);
-          gl.drawArrays(gl.POINTS, 0, o.segN);
-          gl.bindVertexArray(o.vao);
-        }
-        gl.uniform1f(u.u_mode, 2);
-        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, o.ibF); gl.drawElements(gl.POINTS, o.geo.front.length, gl.UNSIGNED_SHORT, 0);
+        // the face: its own small program on a patch over the front surface
+        gl.useProgram(progF.p);
+        FACE.drawGL(gl, progF, fvGeo(), h, FVEC[h.row], cw, ch, 1, dpr, S.cssH, false, S.light > 0.5, HEADS[h.head].p);
+        gl.useProgram(progW.p);
       }
       // 4. dozing: the z z z
       var zk = zzzK();
@@ -1137,6 +1377,7 @@
         o2.rimA = pal.rim[0]; o2.rimB = pal.rim[1]; o2.rimL = pal.rimL; o2.rimK = h.rimK * 0.8; o2.stK = h.stK * 1.2; o2.form = h.form; o2.dis = h.dis;
         o2.homeX = home[0]; o2.homeY = home[1]; o2.shimX = h.shimX; o2.shimA = h.shimA; o2.dpr = dpr;
         o2.ind = i === 0 ? S.ind : null;
+        o2.fv = FVEC[h.row];
         if (DESK) plate2d(ctx, h, i ? PLATE.kid : PLATE.core);
         draw2dHead(ctx, o2);
       }
@@ -1325,6 +1566,9 @@
       return { cpuMed: med(cost), cpuP95: p95(cost), interval: med(iv), intervalP95: p95(iv), fps: 1000 / med(iv), n: f.length, gl: !!gl };
     }
     function redrawIfIdle() { if (S.still) stillFrame(); else if (!S.running) { prepare(0); draw(); } }
+    // the page's face style changed (MintBot.setFace, or Settings in another tab): follow it unless this core has its own
+    function onPageFace() { if (S.faceOwn) return; var f = faceNow(); if (f !== S.face) { S.face = f; redrawIfIdle(); } }
+    LIVE.push(onPageFace);
 
     if (initGL()) S.gl = true; else ctx = canvas.getContext("2d");
     mixPal(); coreAnim.color(pal); coreAnim.pcol = coreAnim.rgb.slice();
@@ -1380,6 +1624,8 @@
       /** Didn't recognise the voice (2026-10-21): a small headshake (a still frame shows nothing). */
       shake: function () { return react("shake"); },
       setHead: function (id) { if (!HEADS[id] || id === S.head) return; S.head = id; redrawIfIdle(); },
+      /** The face style, "smooth" | "dots" | "minimal", for this core only (null: follow the page's, MintBot.setFace). */
+      setFace: function (f) { S.faceOwn = f ? FACE.norm(f) : null; var n = S.faceOwn || faceNow(); if (n !== S.face) { S.face = n; redrawIfIdle(); } return S.face; },
       /** The colours ({p, c} as MintLogic.normBotColors gives); every head takes them at once. */
       setColors: function (c) { colors = c; PAL = palettes(colors); redrawIfIdle(); },
       resize: resize, start: start, stop: function () { stop(false); }, still: stillFrame, stats: stats,
@@ -1409,6 +1655,7 @@
       /** Stop and give the GPU context back (cc-map.js calls it before swapping to another core). */
       destroy: function () {
         stop(false);
+        var li = LIVE.indexOf(onPageFace); if (li >= 0) LIVE.splice(li, 1);
         document.removeEventListener("visibilitychange", onVis);
         window.removeEventListener("pointermove", onPtr); document.removeEventListener("pointerout", onPtrOut); window.removeEventListener("blur", onBlur);
         clearInterval(stillTimer); clearTimeout(rkTimer);
@@ -1431,19 +1678,20 @@
     g.setTransform(1, 0, 0, 1, 0, 0); g.clearRect(0, 0, canvas.width, canvas.height); g.setTransform(dpr, 0, 0, dpr, 0, 0);
     var P = palettes(o.colors || null)[o.light ? "light" : "dark"], fo = FACE_OF[o.state] || FACE_OF.idle, an = new Anim(5);
     an.set(fo.face, fo.state); an.settle();
-    var w8 = new Uint8Array(NF);
-    weights(an, w8, 0, fo.face === "speak" ? 0.6 : 0);
-    var r = Math.min(w, h) * 0.3, cfg = HEADS[head] || HEADS.cap;
+    var w8 = new Uint8Array(NF), fv = new Float32Array(FACE.N), r = Math.min(w, h) * 0.3, cfg = HEADS[head] || HEADS.cap;
+    FACE.vec(o.face ? FACE.norm(o.face) : faceNow(), an, r, dpr, fo.face === "speak" ? 0.6 : 0, null, fv, w8, 0);
     draw2dHead(g, {
       geo: build(HEADS[head] ? head : "cap", r >= 60 ? "hi" : "lo"), cx: w / 2, cy: h / 2 + r * 0.3, r: r, yaw: cfg.yaw, tilt: cfg.tilt || 0.1, sc: 1,
       wire: P.wire, st: P[fo.state], wa: P.wireK * 1.3, lit: 1, alpha: 1, w: w8, off: 0, light: !!o.light, rimA: P.rim[0], rimB: P.rim[1], rimL: P.rimL,
-      rimK: o.light ? 0.035 : 0.26, stK: o.light ? 0.1 : 0.22, form: 1, dis: 0, homeX: 0, homeY: 0, shimX: 0, shimA: 0, dpr: dpr,
+      rimK: o.light ? 0.035 : 0.26, stK: o.light ? 0.1 : 0.22, form: 1, dis: 0, homeX: 0, homeY: 0, shimX: 0, shimA: 0, dpr: dpr, fv: fv,
     });
   }
 
   return {
-    create: create, thumb: thumb, build: build, HEADS: HEADS, HEAD_IDS: HEAD_IDS, FACES: FACES, FMAP: FMAP, faceAt: faceAt, weights: weights, Anim: Anim,
-    FACE_OF: FACE_OF, coreFace: coreFace, sessState: sessState, NF: NF, GN: GN,
-    viseme: viseme, MOUTH: MOUTH, VIS: VIS, dozeWanted: dozeWanted, isNight: isNight, DOZE_QUIET_MS: DOZE_QUIET_MS, NIGHT_QUIET_MS: NIGHT_QUIET_MS, pickFace: pickFace, REACT: REACT, zDot: zDot, ZN: ZN,
+    create: create, thumb: thumb, build: build, HEADS: HEADS, HEAD_IDS: HEAD_IDS, Anim: Anim,
+    FACE_OF: FACE_OF, coreFace: coreFace, sessState: sessState, NF: NF, GN: GN, G: G,
+    // the face (2026-10-22): its styles and their names, the page's style (read, set live), the vector and its coverage
+    FACE: FACE, FACE_STYLES: Object.keys(FACE.STY), FACE_NAMES: FACE.NAMES, normFace: FACE.norm, face: faceNow, setFace: setPageFace, faceVec: FACE.vec, faceCov: FACE.covAt,
+    viseme: viseme, VIS: VIS, dozeWanted: dozeWanted, isNight: isNight, DOZE_QUIET_MS: DOZE_QUIET_MS, NIGHT_QUIET_MS: NIGHT_QUIET_MS, pickFace: pickFace, REACT: REACT, zDot: zDot, ZN: ZN,
   };
 });

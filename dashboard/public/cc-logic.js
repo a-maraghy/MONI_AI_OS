@@ -53,6 +53,18 @@
   }
   function isBotHead(h) { return typeof h === "string" && Object.prototype.hasOwnProperty.call(BOT_HEADS, h); }
 
+  /**
+   * The bot's face style (users.mint_bot_face, 2026-10-22, mockups/bot-face-v3): how its eyes and mouth are drawn
+   * (public/mint-core-bot.js FACE). Empty or unknown reads as "smooth".
+   */
+  var BOT_FACES = { smooth: "Smooth", dots: "Dot matrix", minimal: "Minimal" };
+  var BOT_FACE_DEFAULT = "smooth";
+  function normBotFace(f) {
+    f = String(f == null ? "" : f).trim().toLowerCase();
+    return Object.prototype.hasOwnProperty.call(BOT_FACES, f) ? f : BOT_FACE_DEFAULT;
+  }
+  function isBotFace(f) { return typeof f === "string" && Object.prototype.hasOwnProperty.call(BOT_FACES, f); }
+
   /*
    * The bot's colours (users.mint_bot_colors, JSON {p: preset, c: {item: "#RRGGBB"}}): one colour per
    * state and one for the wireframe. A preset carries its own dark- and light-theme shades (Default is
@@ -754,6 +766,7 @@
   return {
     CORES: CORES, CORE_DEFAULT: CORE_DEFAULT, normCore: normCore, isCore: isCore,
     BOT_HEADS: BOT_HEADS, BOT_HEAD_DEFAULT: BOT_HEAD_DEFAULT, normBotHead: normBotHead, isBotHead: isBotHead,
+    BOT_FACES: BOT_FACES, BOT_FACE_DEFAULT: BOT_FACE_DEFAULT, normBotFace: normBotFace, isBotFace: isBotFace,
     BOT_ITEMS: BOT_ITEMS, BOT_STATE_ITEMS: BOT_STATE_ITEMS, BOT_ITEM_LABEL: BOT_ITEM_LABEL, BOT_BG: BOT_BG, BOT_PRESETS: BOT_PRESETS, BOT_PRESET_DEFAULT: BOT_PRESET_DEFAULT,
     botPresetBase: botPresetBase, normBotColors: normBotColors, checkBotColors: checkBotColors, botColorsJson: botColorsJson, botColorsLine: botColorsLine,
     botShade: botShade, botPalette: botPalette, botClosePairs: botClosePairs, contrast: contrast, deltaE: deltaE, hexRgb: hexRgb, rgbHex: rgbHex,

@@ -5,6 +5,7 @@
  * structuredPatch / permissionDecision, custom titles, cross-session messages) and a ledger with the
  * supervisor's real schema (moni-ai/lib/ledger.js) holding delegations, approvals, a mission and a hire.
  *
+ *     const SHIFT = pinClock();             // optional: this process's clock at the latest 13:50 Cairo (see below)
  *     const W = buildWorld(dir, Date.now());
  *     // W.projectsDir, W.ledger (Ledger), W.sessions (the live list), W.selfIds, W.ids
  *
@@ -176,4 +177,21 @@ function buildWorld(dir, now) {
   return { dir, projectsDir: proj, ledger: led, sessions, selfIds: new Set([IDS.self]), ids: IDS };
 }
 
-module.exports = { buildWorld, transcript, IDS };
+/**
+ * Pins this process's clock to the most recent 13:50 in Cairo and returns the shift (ms) to give the browser
+ * (page.clock.setSystemTime(Date.now())). The story's day is "today" in Cairo and the fixture reaches about seven
+ * hours back: run on the real clock just after Cairo's midnight, most of it would land in yesterday and the day
+ * view would be nearly empty. Date.now() and new Date() move on from there at the real pace (timers unchanged).
+ */
+function pinClock(tz, hh, mm) {
+  tz = tz || "Africa/Cairo"; hh = hh == null ? 13 : hh; mm = mm == null ? 50 : mm;
+  const Real = globalThis.__RealDate || Date, real = Real.now();
+  const parts = new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).formatToParts(new Real(real));
+  const g = (t) => +parts.find((p) => p.type === t).value;
+  const off = Real.UTC(g("year"), g("month") - 1, g("day"), g("hour"), g("minute")) - Math.floor(real / 60000) * 60000; // the zone's offset (ms)
+  let target = Real.UTC(g("year"), g("month") - 1, g("day"), hh, mm) - off;
+  if (target > real) target -= 24 * 3600 * 1000;
+  return require("./story-clock.cjs").shiftDate(target - real);
+}
+
+module.exports = { buildWorld, transcript, IDS, pinClock };

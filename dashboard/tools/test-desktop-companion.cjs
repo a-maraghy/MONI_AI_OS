@@ -142,6 +142,15 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
           return out;
         });
         check("  its states follow the Command Center's: listening, thinking, speaking, needs you, ready", states.listening === "listening" && states.thinking === "thinking" && states.speaking === "speaking" && states.needs === "needs" && states.idle === "idle", JSON.stringify(states));
+        // the face style (2026-10-22): the viewer's (#cc data-bot-face), switched live -- in this page or from Settings elsewhere
+        const faces = await page.evaluate(() => {
+          const k = () => window.MintDesktop.companion().debug.core(), out = { first: k().S.face };
+          window.MintBot.setFace("dots"); out.set = k().S.face + "/" + document.getElementById("cc").getAttribute("data-bot-face");
+          window.dispatchEvent(new StorageEvent("storage", { key: "mint-bot", newValue: JSON.stringify({ face: "minimal" }) })); out.storage = k().S.face;
+          window.MintBot.setFace("smooth"); out.back = k().S.face;
+          return out;
+        });
+        check("  its face is the viewer's (smooth by default) and switches live: in the page (MintBot.setFace) and from Settings in the app (storage note)", faces.first === "smooth" && faces.set === "dots/dots" && faces.storage === "minimal" && faces.back === "smooth", JSON.stringify(faces));
         // hovering: the hint
         await page.hover("#dk-comp-hit");
         await sleep(300);

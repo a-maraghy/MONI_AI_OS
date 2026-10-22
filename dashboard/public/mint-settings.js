@@ -1,7 +1,9 @@
 "use strict";
 /*
  * Account > Appearance: the MINT AI core, chosen with a live preview of each;
- * with core E (the bot), its head (ten thumbnails) and colours (presets, or one
+ * with core E (the bot), its face style (smooth / dots / minimal: three live thumbnails walking through the
+ * states; a choice switches every bot on the page at once, MintBot.setFace, and an open Command Center or the
+ * desktop app through the "mint-bot" storage note), its head (ten thumbnails) and colours (presets, or one
  * picker per state and the wireframe, each with its derived dark / light shade,
  * a too-close warning, the six states in both themes), saved at once through
  * POST /mint-ai/api/prefs/bot.
@@ -19,6 +21,7 @@
   var CSRF = form.getAttribute("data-csrf") || "";
   var note = document.getElementById("mint-appearance-note");
   var CYCLE = ["idle", "listening", "thinking", "speaking", "needs", "idle"];
+  var FACE_CYCLE = ["idle", "listening", "thinking", "speaking", "needs"]; // the face thumbnails walk through these
   var previews = [];
   form.classList.add("js");
   var LG = window.MintLogic;
@@ -29,6 +32,7 @@
     live: null,
     cur: LG && botEl ? LG.normBotColors(botEl.getAttribute("data-bot-colors") || "") : null,
     head: function () { var r = form.querySelector('input[name="bot_head"]:checked'); return r ? r.value : botEl ? botEl.getAttribute("data-bot-head") : "cap"; },
+    face: function () { var r = form.querySelector('input[name="bot_face"]:checked'); return r ? r.value : botEl ? botEl.getAttribute("data-bot-face") || "smooth" : "smooth"; },
     colors: function () { return Bot.cur; },
   };
   /** Core E's section shows only while E is the chosen core. */
@@ -69,6 +73,7 @@
     if (document.hidden) return;
     step++;
     previews.forEach(function (p) { p.core.setState(CYCLE[(step + p.n) % CYCLE.length]); });
+    paintFaces();
   }, 2600);
   function visible(p, on) {
     if (on === p.on) return;
@@ -87,10 +92,18 @@
   paintBot();
   function repaint() { previews.forEach(function (p) { p.core.setLight(isLight()); }); paintBot(); }
 
+  /* ---- core E: the three faces, live: each thumbnail walks through the states in the chosen head and colours ---- */
+  function paintFaces() {
+    if (!botEl || !window.MintBot || !LG || !Bot.cur) return;
+    var th = botEl.querySelectorAll("canvas[data-bot-face-thumb]"), light = isLight();
+    for (var i = 0; i < th.length; i++) window.MintBot.thumb(th[i], Bot.head(), { state: FACE_CYCLE[(step + i) % FACE_CYCLE.length], light: light, colors: Bot.cur, w: 96, h: 96, face: th[i].getAttribute("data-bot-face-thumb") });
+  }
   /* ---- core E: thumbnails (MintBot.thumb, 2D), swatches and shades (CSSOM: no inline style), the warning ---- */
   function paintBot() {
     if (!botEl || !window.MintBot || !LG || !Bot.cur) return;
     var light = isLight(), c = Bot.cur, i;
+    if (window.MintBot.setFace && window.MintBot.face() !== Bot.face()) window.MintBot.setFace(Bot.face()); // the previews and every thumbnail below
+    paintFaces();
     var th = botEl.querySelectorAll("canvas[data-bot-thumb]");
     for (i = 0; i < th.length; i++) window.MintBot.thumb(th[i], th[i].getAttribute("data-bot-thumb"), { state: "idle", light: light, colors: c, w: 84, h: 84 });
     var st = botEl.querySelectorAll("canvas[data-bot-state]"), FACE = { ready: "idle", listening: "listening", thinking: "thinking", speaking: "speaking", needs: "needs", error: "error" };
@@ -124,14 +137,15 @@
     }).then(function (r) {
       return r.json().catch(function () { return {}; }).then(function (j) {
         if (!r.ok) throw new Error(j.error || "HTTP " + r.status);
-        say("Saved. The bot: " + (what === "head" ? j.headName : j.colorsName) + ".");
+        say("Saved. The bot: " + (what === "head" ? j.headName : what === "face" ? j.faceName + " face" : j.colorsName) + ".");
         // An open Command Center (another tab, or the shell round this page) takes it at once (a storage event).
-        var note = JSON.stringify({ head: j.head, colors: j.colors, at: Date.now() });
+        var note = JSON.stringify({ head: j.head, colors: j.colors, face: j.face, at: Date.now() });
         try { window.localStorage.setItem("mint-bot", note); } catch (x) { /* it reads the server's on its next load */ }
       });
     }).catch(function (x) { say("Not saved: " + x.message, true); });
   }
   function botHeadChosen(h) { paintBot(); saveBot({ head: h }, "head"); }
+  function botFaceChosen(f) { paintBot(); saveBot({ face: f }, "face"); }
   function botPresetChosen(p) {
     if (p === "custom") Bot.cur = { p: "custom", c: Bot.cur.c };
     else Bot.cur = LG.normBotColors({ p: p });
@@ -179,6 +193,7 @@
   form.addEventListener("change", function (e) {
     if (e.target.name === "sessions_view") return saveSessView(e.target.value);
     if (e.target.name === "bot_head") return botHeadChosen(e.target.value);
+    if (e.target.name === "bot_face") return botFaceChosen(e.target.value);
     if (e.target.name === "bot_preset") return botPresetChosen(e.target.value);
     if (e.target.getAttribute && e.target.getAttribute("data-bot-item")) return botPicked(true);
     if (e.target.name !== "core") return;

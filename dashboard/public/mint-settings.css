@@ -36,6 +36,10 @@
    Shown while E is the chosen core (mint-settings.js sets .core-e; without JavaScript always shown). */
 .mint-appearance.js:not(.core-e) .mint-bot, .mint-appearance.js:not(.core-e) #a-bot { display: none; }
 .mint-bot { margin: 4px 0 12px; }
+.mint-bot-faces { border: 0; margin: 10px 0 0; padding: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.mint-bot-face canvas { width: 96px; height: 96px; }
+.mint-bot-face span { line-height: 1.35; }
+.mint-bot-face b { color: var(--ink); font-weight: 600; }
 .mint-bot-heads { border: 0; margin: 10px 0 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px; }
 .mint-bot-head { position: relative; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 6px 4px 8px; border-radius: 12px; border: 1px solid var(--line); background: var(--panel); cursor: pointer; font-size: 12px; color: var(--muted); text-align: center; transition: border-color .2s, box-shadow .2s; }
 .mint-bot-head canvas { width: 84px; height: 84px; display: block; border-radius: 8px; }

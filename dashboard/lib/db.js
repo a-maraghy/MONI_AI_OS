@@ -215,6 +215,7 @@ addColumn("users", "sessions_view", "TEXT NOT NULL DEFAULT ''"); // '' = spheres
 // ('' = the Default preset; else JSON {p} or {p: "custom", c: {item: "#RRGGBB"}}, cc-logic.js normBotColors).
 addColumn("users", "mint_bot_head", "TEXT NOT NULL DEFAULT ''");
 addColumn("users", "mint_bot_colors", "TEXT NOT NULL DEFAULT ''");
+addColumn("users", "mint_bot_face", "TEXT NOT NULL DEFAULT ''"); // core E's face style ('' = "smooth", cc-logic.js normBotFace)
 addColumn("users", "mint_bot_team", "TEXT NOT NULL DEFAULT ''"); // core E: the heads pinned per session (cc-logic normBotTeam JSON)
 // MINT AI's sounds (2026-10-20): '' = the defaults (on, 30 %, quiet 23:00-07:00); else the JSON from
 // public/mint-sound.js soundPrefsJson. A plain browser stays silent until switched on there (localStorage).
@@ -488,6 +489,10 @@ module.exports = {
   /** Core E's head style this person chose (one of cc-logic BOT_HEADS). The caller validates it. */
   setUserBotHead: (id, head) =>
     db.prepare("UPDATE users SET mint_bot_head = ? WHERE id = ?").run(String(head), id),
+
+  /** Core E's face style this person chose (one of cc-logic BOT_FACES). The caller validates it. */
+  setUserBotFace: (id, face) =>
+    db.prepare("UPDATE users SET mint_bot_face = ? WHERE id = ?").run(String(face), id),
 
   /** Core E's colours (the JSON from cc-logic botColorsJson). The caller validates them. */
   setUserBotColors: (id, json) =>

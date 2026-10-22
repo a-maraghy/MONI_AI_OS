@@ -2,8 +2,8 @@
  * The Mint OS icon, "Bot" variant (2026-10-20; live since 0.1.9 with MINT_APP_ICON=bot -- unset, the icon is
  * "Mesh", tools/make-app-icon.cjs): MINT AI's core E head -- a faint wireframe rounded box with
  * its face lit in mint on the grid's nodes -- drawn as an icon from the renderer's own
- * geometry (public/mint-core-bot.js build() and faces), so the icon and the core are one
- * drawing. The same set of files as the Mesh icon, in public/brand/bot/:
+ * geometry (public/mint-core-bot.js build(); the icon keeps its node smile, ICON_FACE below,
+ * since the core's face became a vector layer on 2026-10-22). The same set of files as the Mesh icon, in public/brand/bot/:
  *
  *     brand/bot/favicon-16.svg       16 px, pixel-fitted: the head's outline, two 2 x 2 eyes, a smile, the accessory in 1 px
  *     brand/bot/favicon-32.svg       32 px: the outline, a hint of the grid, 3 x 3 eyes, the smile, the accessory
@@ -55,12 +55,16 @@ function projected(head, detail, box) {
   return { geo, X, Y, Z, s };
 }
 
-/** The face's lit nodes (the ready smile), as weights on the 19 x 19 front grid. */
-function faceWeights(face) {
-  const a = new B.Anim(5);
-  a.set(face || "base", "ready"); a.settle();
-  const w = new Uint8Array(B.NF);
-  B.weights(a, w, 0, 0, false);
+/*
+ * The icon's face: the ready smile lit on the 19 x 19 front grid's nodes. The core's own face became a vector layer
+ * (mint-core-bot.js FACE, 2026-10-22); the icon keeps this drawing -- its map is the renderer's old "base" map,
+ * placed the same way -- so the shipped icons (and the desktop app's, made from them) stay exactly as they are.
+ */
+const ICON_FACE = ["..................", "..................", "...cccc....cccc...", "..c.cc.c..c.cc.c..", "..cccccc..cccccc..", "..c.cc.c..c.cc.c..", "...cccc....cccc...", "..................", "..................", "..m............m..", "...m..........m...", "....mmmmmmmmmm....", ".................."];
+/** The face's lit nodes (the ready smile), as weights on the 19 x 19 front grid (0 / 255, indexed row * 19 + col). */
+function faceWeights() {
+  const w = new Uint8Array(B.NF), fr = ICON_FACE.length, fc = ICON_FACE[0].length, oR = Math.round((18 - fr + 1) / 2), oC = Math.round((18 - fc + 1) / 2);
+  for (let r = 0; r < 19; r++) for (let c = 0; c < 19; c++) { const ri = r - oR, ci = c - oC; if (ri >= 0 && ri < fr && ci >= 0 && ci < fc && ICON_FACE[ri].charAt(ci) !== ".") w[r * 19 + c] = 255; }
   return w;
 }
 
