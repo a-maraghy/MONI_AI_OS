@@ -424,6 +424,8 @@ def agent_ids():
 def chown_tree(path, uid, gid, dir_mode=0o770, file_mode=0o660):
     """Give the agent account ownership, and its group write access.
 
+    Executable files keep their execute bit (owner and group only).
+
     Group-writable is deliberate: a human in the moniagent group edits these
     vaults in Obsidian over RDP, and a memory the operator cannot correct is a
     memory that stays wrong. agent.env is tightened back to 0600 afterwards, so
@@ -438,8 +440,16 @@ def chown_tree(path, uid, gid, dir_mode=0o770, file_mode=0o660):
             os.chmod(p, dir_mode)
         for f in files:
             p = os.path.join(root, f)
+            if os.path.islink(p):
+                continue
+            # Keep a script runnable: an executable file stays executable for
+            # owner and group. Resetting every file to 0660 on each save broke
+            # MINT Pace's mail watcher and outlook tool (2026-10-25).
+            mode = file_mode
+            if os.stat(p).st_mode & 0o111:
+                mode |= 0o110
             os.chown(p, uid, gid)
-            os.chmod(p, file_mode)
+            os.chmod(p, mode)
 
 
 def unit_name(slug):

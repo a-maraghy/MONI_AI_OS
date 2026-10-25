@@ -39,5 +39,20 @@ check("a new agent asking for a taken port gets the first free one", "newbie", "
 check("a port held only by an agent with the API off is free", "newbie", "8082", "8082", False)
 check("a free port asked for is kept", "newbie", "9000", "9000", False)
 check("nothing changes when the API is off", "newbie", "8080", "8080", False, on="false")
+
+# chown_tree keeps scripts executable (MINT Pace's watcher, same day).
+tree = os.path.join(root, "mint-pace", "pace")
+os.makedirs(tree)
+script, data = os.path.join(tree, "outlook"), os.path.join(tree, "token.json")
+for path, mode in ((script, 0o755), (data, 0o644)):
+    open(path, "w").close(); os.chmod(path, mode)
+h.os.chown = lambda *a, **k: None   # not root in tests
+h.chown_tree(os.path.join(root, "mint-pace"), 0, 0)
+for name, path, want in (("a script stays executable", script, 0o770),
+                         ("a data file is not made executable", data, 0o660)):
+    got = os.stat(path).st_mode & 0o777
+    ok = got == want
+    passed += ok; failed += not ok
+    print(("ok   " if ok else "FAIL ") + name + f" -> {oct(got)}")
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)
