@@ -201,7 +201,7 @@ console.log("\nstyles: the logo rules reach the logo only");
   check("the logo rules are scoped .topbar > .brand", /\.topbar > \.brand \{/.test(style));
   const access = lib("views-access");
   const src = fs.readFileSync(path.join(ROOT, "lib", "views-access.js"), "utf8");
-  check("the administrator role badge is .pill.solid", /"solid" : "neutral"/.test(src) && /\.pill\.brand, \.pill\.solid \{/.test(style));
+  check("the administrator role badge is .pill.solid", /"solid" : "neutral"/.test(src) && /\.pill\.brand, \.pill\.solid(, \.pill\.ai)? \{/.test(style + fs.readFileSync(path.join(ROOT, "public", "mint-ds.css"), "utf8")));
   check("  Users and Roles tables are rows stack aligned", /class="rows stack aligned"/.test(src) && typeof access.users === "function");
 }
 

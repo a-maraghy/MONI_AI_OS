@@ -533,9 +533,10 @@ function paintWallpaper(kind, w, h) {
         // The regions at the column's x: none may reach above or below the column (nothing is drawn there).
         const colRegs = i.regions.filter((r) => r.x < col.right && r.x + r.w > col.left && !(r.x >= i.L.cx - i.L.R - 1 && r.x + r.w <= i.L.cx + i.L.R + 1));
         const outside = colRegs.filter((r) => r.y < Math.floor(col.top) || r.y + r.h > Math.ceil(col.bottom));
+        // Probed in the middle of the part that shows (2026-10-25: at 16 px a card can peek a few px over the column's end).
         const shownCards = i.cards.filter((c) => c.r.bottom > col.top + 1 && c.r.top < col.bottom - 1);
         check(`${nm}: the brief is the first card; the column (taller than the window allows) scrolls; clear of the core`, i.on && first && scrolls && coreClear, JSON.stringify({ first, scrolls, col }));
-        check(`  ${nm}: every card that shows catches the mouse where it shows; no region outside the column`, shownCards.every((c) => i.regions.some((r) => inside(r, c.r.x + c.r.width / 2, Math.min(c.r.bottom, col.bottom) - 3))) && outside.length === 0, JSON.stringify({ col, outside }));
+        check(`  ${nm}: every card that shows catches the mouse where it shows; no region outside the column`, shownCards.every((c) => i.regions.some((r) => inside(r, c.r.x + c.r.width / 2, (Math.max(c.r.top, col.top) + Math.min(c.r.bottom, col.bottom)) / 2))) && outside.length === 0, JSON.stringify({ col, outside }));
         await v.close();
       }
       db.prepare("UPDATE proactive_inbox SET dismissed_at = ? WHERE id = ?").run(new Date().toISOString(), brief.id);

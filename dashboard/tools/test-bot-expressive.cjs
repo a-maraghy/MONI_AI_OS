@@ -116,7 +116,8 @@ const B = require(path.join(ROOT, "public", "mint-core-bot.js"));
   process.env.MINT_APP_ICON = "nonsense";
   const odd = ui.appIconSet();
   if (was === undefined) delete process.env.MINT_APP_ICON; else process.env.MINT_APP_ICON = was;
-  check("the switch: unset -> Mesh (the live icon, unchanged); MINT_APP_ICON=bot -> every link the bot set; anything else -> Mesh", /\/static\/brand\/favicon-16\.svg\?v=/.test(meshLinks) && !/brand\/bot\//.test(meshLinks) && (botLinks.match(/\/static\/brand\/bot\//g) || []).length === 5 && botIco === "brand/bot/favicon.ico" && odd === "mesh");
+  // Since 2026-10-25 the tab icon is the M monogram whatever the set; the switch picks the app icon (apple-touch, manifest).
+  check("the switch: the tab is the M monogram either way; MINT_APP_ICON=bot -> the bot app icon; unset or anything else -> Mesh", /\/static\/brand\/m\/favicon-16\.svg\?v=/.test(meshLinks) && /\/static\/brand\/m\/favicon-16\.svg\?v=/.test(botLinks) && !/brand\/bot\//.test(meshLinks) && /apple-touch-icon" href="\/static\/brand\/bot\/app-icon-180\.png/.test(botLinks) && botIco === "brand/m/favicon.ico" && odd === "mesh");
   check("the root /favicon.ico follows the switch too", /ui\.appIcons\(\)\.ico/.test(read("server.js")));
 
   section("the agents' bot (tools/make-agent-bots.cjs -> docs/agent-bots/)");

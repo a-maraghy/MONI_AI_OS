@@ -393,7 +393,7 @@ function viewTests() {
     detail: new Map(catalog.OS_SERVICES.map((s) => [s.unit, s])) });
   const page = views.osDashboard({ csrf: "c", user, stats, status: { jails: {} }, statusError: null, services: svc, agents: [{ slug: "admin", state: { active: "active" } }], channels: [],
     graph: g, totals: { web_panel: 5 }, probe: null, logins: [], users: [], roles: [], devices: [], audit: [] });
-  check("the overview is still one screen (A)", /class="content pat-a"/.test(page));
+  check("the overview is a scrolling document (C) since the 16 px redesign", /class="content pat-c"/.test(page));
   check("the growth rings are gone", !/Growth rings|data-machine-core|growth ring/i.test(page));
   check("the hero is the mycelium", /<h2>Mycelium<\/h2>/.test(page) && /data-myc="/.test(page) && /id="mc-hero"/.test(page));
   check("no concept switcher, no MOCKUP tag, no sample labels", !/mc-switch|MOCKUP|[Ss]ample events|sample flow/.test(page));
