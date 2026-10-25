@@ -124,6 +124,14 @@ if [[ "${MONI_VOICEPRINT_SKIP:-0}" != "1" ]]; then
   bash "$REPO_DIR/deploy/install-voiceprint.sh" || echo "!! the voiceprint service did not install; the voice works without it (fail-open)" >&2
 fi
 
+# ChatGPT for every agent (chatgpt/README.md): the mint-chatgpt broker and the
+# ask_chatgpt MCP server the agents load. Skipped where the Codex CLI is absent;
+# never restarted while a task runs through it.
+if [[ "${MONI_CHATGPT_SKIP:-0}" != "1" ]] && command -v codex >/dev/null; then
+  say "The ChatGPT broker"
+  bash "$REPO_DIR/deploy/install-chatgpt.sh" || echo "!! the ChatGPT broker did not install; agents report ChatGPT as unavailable" >&2
+fi
+
 say "Restarting the dashboard"
 systemctl restart moni-dashboard
 sleep 2

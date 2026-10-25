@@ -49,6 +49,7 @@ const MintWidgets = require("./lib/mint-widgets");
 const planUsageLib = require("./lib/usage");
 const settingsLib = require("./lib/settings");
 const machinesLib = require("./lib/machines");
+const { chatgptServer } = require("./lib/chatgpt");
 
 /* ----------------------------------------------------------------- config --- */
 
@@ -451,11 +452,21 @@ function checkCli() {
  */
 const MCP_NAME = "mint-ai";
 function mcpArgs() {
-  if (!cfg.mcp) return [];
+  const servers = {};
+  const allow = [];
   const server = path.join(__dirname, "bin", "moni-ai-mcp");
-  if (!fs.existsSync(server)) return [];
-  const conf = { mcpServers: { [MCP_NAME]: { type: "stdio", command: process.execPath, args: [server], env: { MONI_AI_SOCKET: CONTROL_SOCKET } } } };
-  return ["--mcp-config", JSON.stringify(conf), "--allowedTools", "mcp__" + MCP_NAME];
+  if (cfg.mcp && fs.existsSync(server)) {
+    servers[MCP_NAME] = { type: "stdio", command: process.execPath, args: [server], env: { MONI_AI_SOCKET: CONTROL_SOCKET } };
+    allow.push("mcp__" + MCP_NAME);
+  }
+  // ask_chatgpt (lib/chatgpt.js): ChatGPT through the Mint OS broker, only when the administrator asks.
+  const gpt = chatgptServer(cfg, "mint-ai", path.join(cfg.cwd, "chatgpt"));
+  if (gpt) {
+    servers[gpt.name] = gpt.server;
+    allow.push(gpt.allow);
+  }
+  if (!allow.length) return [];
+  return ["--mcp-config", JSON.stringify({ mcpServers: servers }), "--allowedTools", ...allow];
 }
 
 function setState(state, extra = {}) {

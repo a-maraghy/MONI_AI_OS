@@ -42,7 +42,10 @@ for (const f of ["fake-claude.cjs", "fake-helper.cjs"]) fs.chmodSync(path.join(_
 const odooLog = path.join(tmp, "odoo.log");
 fs.writeFileSync(odooLog, "");
 const cfgFile = path.join(tmp, "config.json");
+const fakeGpt = path.join(tmp, "chatgpt_mcp.py");
+fs.writeFileSync(fakeGpt, "# fake ask_chatgpt server\n");
 const baseCfg = {
+  chatgpt_mcp: fakeGpt,
   cli: path.join(__dirname, "fake-claude.cjs"),
   cli_version: "2.1.283",
   cwd: tmp,
@@ -187,6 +190,8 @@ const ready = () => until(async () => (await call("status")).data.process.state 
     const argv0 = JSON.parse(fs.readFileSync(path.join(home, "fake-argv.log"), "utf8").trim().split("\n")[0]);
     const mcpAt = argv0.indexOf("--mcp-config");
     check("MINT AI is started with its own MCP server", mcpAt !== -1 && /moni-ai-mcp/.test(argv0[mcpAt + 1]) && argv0.includes("mcp__mint-ai") && !argv0.includes("mcp__moni-ai") && JSON.parse(argv0[mcpAt + 1]).mcpServers["mint-ai"] && !JSON.parse(argv0[mcpAt + 1]).mcpServers["moni-ai"], argv0.join(" "));
+    const gptConf = mcpAt !== -1 ? JSON.parse(argv0[mcpAt + 1]).mcpServers.chatgpt : null;
+    check("MINT AI also gets ask_chatgpt (the ChatGPT broker's server), allowed", gptConf && gptConf.args.includes(fakeGpt) && gptConf.env.MINT_CHATGPT_CALLER === "mint-ai" && argv0.includes("mcp__chatgpt") && argv0.includes("mcp__mint-ai"), argv0.join(" "));
     const sub = subscribe();
 
     /* ------------------------------------------------------ missions --- */

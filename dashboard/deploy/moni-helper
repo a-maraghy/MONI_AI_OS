@@ -5040,6 +5040,33 @@ def console_env(access):
     return env
 
 
+CHATGPT_MCP = "/usr/local/lib/mint-chatgpt/chatgpt_mcp.py"
+
+
+def console_chatgpt_args(access):
+    """ask_chatgpt for a console chat: the Mint OS ChatGPT broker's stdio server.
+
+    Only when the broker is installed (deploy/install-chatgpt.sh). Its tool is
+    used only when the administrator asks for ChatGPT (its description says
+    so); files ChatGPT makes land in the console account's ~/chatgpt. The
+    workspace profile may give it context files from the agents' tree only,
+    the same reach it has itself.
+    """
+    if not os.path.isfile(CHATGPT_MCP):
+        return []
+    profile = CONSOLE_ACCESS[access]
+    env = {
+        "MINT_CHATGPT_CALLER": "console:" + access,
+        "MINT_CHATGPT_OUT": os.path.join(profile["home"], "chatgpt"),
+    }
+    if access == "workspace":
+        env["MINT_CHATGPT_FILES_ROOT"] = AGENTS_DIR
+    conf = {"mcpServers": {"chatgpt": {
+        "type": "stdio", "command": "/usr/bin/python3", "args": ["-I", CHATGPT_MCP], "env": env,
+    }}}
+    return ["--mcp-config", json.dumps(conf), "--allowedTools", "mcp__chatgpt"]
+
+
 def cmd_console_open(args):
     """Open a long-lived console conversation and relay it.
 
@@ -5110,6 +5137,8 @@ def cmd_console_open(args):
         "--permission-mode", CONSOLE_PERMISSION_MODES[permission_mode],
         "--append-system-prompt", CONSOLE_PROMPT[prompt_key],
     ]
+
+    argv += console_chatgpt_args(access)
 
     resume = str(payload.get("resume") or "").strip()
     if resume:

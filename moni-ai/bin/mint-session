@@ -49,6 +49,7 @@ const path = require("path");
 const readline = require("readline");
 const { spawn } = require("child_process");
 const hire = require(path.join(__dirname, "..", "lib", "hire.js"));
+const { chatgptServer } = require(path.join(__dirname, "..", "lib", "chatgpt.js"));
 
 const CONFIG_FILE = process.env.MONI_AI_CONFIG || "/etc/moni-ai/config.json";
 const DEFAULTS = {
@@ -117,6 +118,14 @@ const settings = {
 };
 const extra = (Array.isArray(cfg.cli_extra_args) ? cfg.cli_extra_args.map(String) : []).filter((a) => !/dangerously|bypass/i.test(a));
 
+// ask_chatgpt (lib/chatgpt.js): ChatGPT through the Mint OS broker, only when the administrator asks.
+// Its files go under the state dir, not into the project this session works in.
+function chatgptArgs() {
+  const gpt = chatgptServer(cfg, "hired:" + slug, path.join(cfg.state_dir, "chatgpt", slug));
+  if (!gpt) return [];
+  return ["--mcp-config", JSON.stringify({ mcpServers: { [gpt.name]: gpt.server } }), "--allowedTools", gpt.allow];
+}
+
 function transcriptExists(id) {
   const dir = path.join(cfg.home, ".claude", "projects");
   try {
@@ -144,6 +153,7 @@ const argv = [
   "--permission-mode", mode,
   "--permission-prompt-tool", "stdio",
   "--settings", JSON.stringify(settings),
+  ...chatgptArgs(),
   ...extra,
   ...(resume ? ["--resume", rec.session_id] : ["--session-id", rec.session_id]),
 ];
