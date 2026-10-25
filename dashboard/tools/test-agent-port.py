@@ -54,5 +54,21 @@ for name, path, want in (("a script stays executable", script, 0o770),
     ok = got == want
     passed += ok; failed += not ok
     print(("ok   " if ok else "FAIL ") + name + f" -> {oct(got)}")
+
+# A save keeps settings added to agent.env by hand (MINT Pace's webhook
+# secret, same day); keys the panel writes and protected keys are not kept.
+env_path = os.path.join(root, "mint-pace", "agent.env")
+with open(env_path, "w") as fh:
+    fh.write("API_SERVER_PORT=8091\nWEBHOOK_API_SECRET=s3cret\nNOTIFICATION_CHAT_IDS=1\n"
+             "TELEGRAM_BOT_TOKEN=old\n# comment\n")
+extra = h.kept_env_lines(env_path, "API_SERVER_PORT=8080\nTELEGRAM_BOT_TOKEN=new\n")
+kept = h.read_env_text(extra)
+for name, ok in (("a hand-added secret is kept", kept.get("WEBHOOK_API_SECRET") == "s3cret"),
+                 ("a hand-added chat id is kept", kept.get("NOTIFICATION_CHAT_IDS") == "1"),
+                 ("a key the panel writes is not duplicated", "API_SERVER_PORT" not in kept),
+                 ("a protected key is never carried over", "TELEGRAM_BOT_TOKEN" not in kept),
+                 ("nothing to keep gives nothing", h.kept_env_lines(env_path, open(env_path).read()) == "")):
+    passed += ok; failed += not ok
+    print(("ok   " if ok else "FAIL ") + name)
 print(f"\n{passed} passed, {failed} failed")
 sys.exit(1 if failed else 0)

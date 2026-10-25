@@ -924,6 +924,43 @@ def scaffold_vault(cfg, uid, gid):
             os.symlink(cfg["project_dir"], link)
 
 
+KEPT_ENV_HEADER = "# Kept from the previous file: set outside the panel, carried over on every save."
+
+
+def kept_env_lines(env_path, rendered):
+    """Settings added to agent.env by hand that the panel does not manage.
+
+    A save used to rebuild agent.env from the panel's own settings only, so a
+    key added by hand vanished: MINT Pace lost WEBHOOK_API_SECRET and
+    NOTIFICATION_CHAT_IDS on 2026-10-25 and its mail watcher got HTTP 500.
+    Keys the panel writes win; protected keys are never carried over.
+    """
+    old = read_env_file(env_path)
+    if not old:
+        return ""
+    managed = set(read_env_text(rendered))
+    lines = []
+    for key, value in old.items():
+        if key in managed or key in PROTECTED_ENV_KEYS:
+            continue
+        if not ENV_KEY_RE.match(key) or not ENV_VALUE_RE.match(value):
+            continue
+        lines.append(key + "=" + value)
+    if not lines:
+        return ""
+    head = "" if rendered.endswith("\n") else "\n"
+    return head + "\n" + KEPT_ENV_HEADER + "\n" + "\n".join(lines) + "\n"
+
+
+def read_env_text(text):
+    out = {}
+    for line in text.splitlines():
+        if "=" in line and not line.lstrip().startswith("#"):
+            k, v = line.split("=", 1)
+            out[k.strip()] = v.strip()
+    return out
+
+
 def write_agent_files(cfg, uid, gid, channel=None):
     """Write the agent's environment, MCP config and (Topics on) projects file.
 
@@ -947,9 +984,11 @@ def write_agent_files(cfg, uid, gid, channel=None):
         write_projects_file(projects_path, plan["projects"], gid)
 
     env_path = os.path.join(d, "agent.env")
+    rendered = render_env(cfg, channel, plan)
+    rendered += kept_env_lines(env_path, rendered)
     fd, tmp = tempfile.mkstemp(dir=d)
     with os.fdopen(fd, "w") as fh:
-        fh.write(render_env(cfg, channel, plan))
+        fh.write(rendered)
     os.chown(tmp, uid, gid)
     os.chmod(tmp, 0o600)  # holds the bot token
     os.replace(tmp, env_path)
