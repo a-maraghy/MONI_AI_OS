@@ -329,9 +329,9 @@
     setInterval(refresh, 15000);
   })();
 
-  /* ------------------------------------------------------ vault seed ----- */
-  // The agent's memory as a seed head: one floret per note on the golden
-  // angle, the newest brightest. Drawn once as SVG from the count the server
+  /* ----------------------------------------------------- memory dial ----- */
+  // The agent's memory as a dial: one dot per note on the golden angle, the
+  // newest darkest (ink). Drawn once as SVG from the count the server
   // put on the element.
   (function () {
     var svg = document.querySelector("svg[data-vault]");
@@ -348,10 +348,10 @@
     el("circle", { r: 118, fill: "none", class: "v-ring dashed" });
     var s = 7;
     function rnd() { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; }
-    // Florets fill the ring between the hole and the rim whatever the count:
-    // five notes and five hundred both read as a seed head, not a speck.
+    // The dots fill the ring between the hole and the rim whatever the count:
+    // five notes and five hundred both read as a dial, not a speck.
     var big = n < 40 ? 2.2 : n < 150 ? 1.2 : 0.4;
-    // spokes from the leaf to the newest notes: what was written last
+    // spokes from the centre to the newest notes: what was written last
     for (var j = Math.max(1, n - 7); j <= n; j++) {
       var rj = 50 + 96 * Math.sqrt(j / n), tj = j * GOLDEN;
       el("line", { x1: (44 * Math.cos(tj)).toFixed(1), y1: (44 * Math.sin(tj)).toFixed(1), x2: (rj * Math.cos(tj)).toFixed(1), y2: (rj * Math.sin(tj)).toFixed(1), class: "v-spoke" });

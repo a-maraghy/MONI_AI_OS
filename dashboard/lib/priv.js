@@ -141,6 +141,9 @@ module.exports = {
     callHelper("agent-create", [], { stdin: JSON.stringify(config), timeout: 90000 }),
   agentUpdate: (config) =>
     callHelper("agent-update", [], { stdin: JSON.stringify(config), timeout: 90000 }),
+  // The agent's bot avatar alone: agent.json only, no restart (lib/agent-avatar.js).
+  agentAvatar: (slug, avatar) =>
+    callHelper("agent-avatar", [], { stdin: JSON.stringify({ slug, avatar }) }),
 
   agentAction: (slug, action) =>
     callHelper("agent-action", [slug, action], { timeout: 60000 }),

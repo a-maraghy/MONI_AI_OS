@@ -394,16 +394,20 @@ exports.guide = ({ csrf, user, publicHost, publicPort, sshHost }) => {
         <tr><td>Display name</td><td class="muted">What you call it. Cosmetic.</td></tr>
         <tr><td>Short name</td><td class="muted">Lowercase, becomes the folder and the
           systemd unit. Permanent — choose one you can live with.</td></tr>
-        <tr><td>Role</td><td class="muted">The standing brief, written into CLAUDE.md and
-          loaded on every request. This is the field that decides whether the agent is
-          useful. Be specific about what it owns, what it may do unattended, and what it
-          must ask about first.</td></tr>
+        <tr><td>What it does</td><td class="muted">Its role: the standing brief, written into
+          CLAUDE.md and loaded on every request. This is the field that decides whether the
+          agent is useful. Be specific about what it owns, what it may do unattended, and what
+          it must ask about first. It also picks the agent's bot avatar.</td></tr>
         <tr><td>Project directory</td><td class="muted">Optional. An existing folder under
           <code>/opt/projects</code>, <code>/srv</code> or
           <code>/opt/moni-agents/workspaces</code>. It appears inside the vault as
           <code>project/</code>.</td></tr>
         <tr><td>Add-ons</td><td class="muted">What the agent can do — git, scheduled jobs,
           webhooks. Memory is always on.</td></tr>
+        <tr><td>Avatar</td><td class="muted">Every agent gets a small bot head chosen from what it
+          does (an email agent a headset, a design agent a beret or a pencil, a coding agent
+          glasses), with its own colour and face. <b>Settings › Avatar</b> shuffles it and
+          offers the PNG to set as the Telegram bot's picture in @BotFather.</td></tr>
       </table>
       <p><b>Then the channel</b> — <a href="/channels/new">Channels › Add channel</a>:</p>
       <table class="kv">

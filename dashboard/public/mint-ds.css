@@ -571,3 +571,43 @@ html.cc-page .cc-card-h h2, html.cc-page .cc-sec-h h2, .cc-sec-t, .cc-inbox-h, .
 .gpt-code-row { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .gpt-login .acts { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
 .gpt-login .acts form { margin: 0; }
+
+/* ------------------------------------------------------------------------------------------
+   Agent avatars (2026-10-25, lib/agent-avatar.js): a small still bot head per Telegram agent,
+   of MINT AI's family but told apart from it -- a tile with a hairline frame, no glow. The
+   head's lines are the ink; its face and lit parts carry the agent's own colour (--av), a
+   dark shade on white and a light one on black. Decorative: the name is always beside it. */
+.av { --av: var(--av-l); display: inline-grid; place-items: center; flex: none; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+:root[data-theme="dark"] .av { --av: var(--av-d); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .av { --av: var(--av-d); } }
+.av-sm { width: 40px; height: 40px; }
+.av-md { width: 56px; height: 56px; }
+.av-lg { width: 136px; height: 136px; border-radius: var(--r); }
+.av-svg { width: 100%; height: 100%; display: block; }
+.av-svg .av-line { stroke: var(--ink); }
+.av-svg .av-fill { fill: var(--ink); }
+.av-svg .av-c.av-line { stroke: var(--av); }
+.av-svg .av-c.av-fill { fill: var(--av); }
+.av-svg .av-plate { fill: var(--panel); stroke: var(--ink); }
+.av-svg .av-hl { fill: var(--panel); }
+.av-h-teal { --av-l: #0F766E; --av-d: #5EEAD4; }
+.av-h-blue { --av-l: #1D4ED8; --av-d: #93C5FD; }
+.av-h-indigo { --av-l: #4338CA; --av-d: #A5B4FC; }
+.av-h-violet { --av-l: #7E22CE; --av-d: #D8B4FE; }
+.av-h-rose { --av-l: #BE123C; --av-d: #FDA4AF; }
+.av-h-orange { --av-l: #C2410C; --av-d: #FDBA74; }
+.av-h-amber { --av-l: #A16207; --av-d: #FCD34D; }
+.av-h-green { --av-l: #15803D; --av-d: #86EFAC; }
+/* a name with its avatar: tables (Telegram agents, Channels) and the page head */
+.who { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.who > .who-t { min-width: 0; }
+.ds-table .who > .who-t > a, .ds-table .who > .who-t > span { display: block; }
+.agent-h1 { display: inline-flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.agent-h1 .av { align-self: center; }
+/* Settings > Avatar */
+.av-pick { display: flex; gap: 20px; align-items: center; flex-wrap: wrap; }
+.av-pick .av-desc { margin: 0 0 12px; }
+.av-pick .btn-row { margin: 0; }
+@media (max-width: 760px) { .who { gap: 10px; } }
+.page-head .sub .dl-link { white-space: nowrap; }
+.page-head .sub .dl-link .ico { width: 14px; height: 14px; vertical-align: -2px; margin-right: 2px; }

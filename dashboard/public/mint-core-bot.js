@@ -168,6 +168,17 @@
     bowtie: { p: 6, yaw: 0.3, acc: ["headphones", "bow"] },
   };
   var HEAD_IDS = Object.keys(HEADS);
+  /*
+   * The Telegram agents' heads (2026-10-25, lib/agent-avatar.js): drawn only as their small still avatars, never by
+   * the core, the sessions or the Settings pickers (HEAD_IDS stays the ten); build() knows them.
+   */
+  var XHEADS = {
+    beret: { p: 4, yaw: -0.3, acc: ["beret"] },
+    glasses: { p: 4.5, yaw: 0.3, acc: ["glasses"] },
+    magnifier: { p: 4, yaw: -0.3, acc: ["magnifier"] },
+    pencil: { p: 4.5, yaw: -0.28, acc: ["pencil"] },
+    tie: { p: 5, yaw: 0.3, acc: ["headphones", "tie"] },
+  };
 
   /*
    * Vertex: x, y, z (head units: half-width 1), kind, face node (-1 none; the front grid's node index, whose weight
@@ -264,14 +275,39 @@
       g.poly([[0, ay * 1.2, 0], [ax * 0.95, ay * 1.18, 0.6], [ax * 1.05, ay * 0.55, 0.75]], true);
     },
     bow: function (g, ax, ay) { [-1, 1].forEach(function (s) { g.mesh(function (u, v) { var a = -1 + 2 * u; return [s * (0.08 + 0.38 * v), -ay * 1.08 + a * (0.08 + 0.22 * v), 1.0 - 0.1 * v]; }, 6, 6); }); },
+    /* the Telegram agents' own accessories (2026-10-25, lib/agent-avatar.js; XHEADS below) */
+    beret: function (g, ax, ay) {
+      var by = function (c) { return ay * 0.86 - 0.2 * c; }; // the brim's height: lower on the side it leans to
+      g.mesh(function (u, v) { var a = u * 2 * PI, b = v * PI / 2, rr = Math.cos(b), c = Math.cos(a); return [0.2 + c * ax * 1.3 * rr, by(c * rr) + Math.sin(b) * 0.4, Math.sin(a) * 1.18 * rr]; }, 40, 6);
+      g.mesh(function (u, v) { var a = u * 2 * PI, w = v * 2 * PI, t = 0.05, c = Math.cos(a); return [0.2 + c * (ax * 1.3 + Math.cos(w) * t), by(c) + Math.sin(w) * t, Math.sin(a) * (1.18 + Math.cos(w) * t)]; }, 40, 1, { kind: 2 });
+      g.poly([[0.2, ay * 0.86 + 0.4, 0], [0.26, ay * 0.86 + 0.58, -0.02]], true);
+    },
+    glasses: function (g, ax, ay) {
+      [-1, 1].forEach(function (s) { g.mesh(function (u, v) { var a = u * 2 * PI, w = v * 2 * PI, t = 0.035; return [s * 0.4 + Math.cos(a) * (0.25 + Math.cos(w) * t), 0.06 + Math.sin(a) * (0.21 + Math.cos(w) * t), 1.06 + Math.sin(w) * t]; }, 32, 4, { kind: 2 }); });
+      g.poly([[-0.15, 0.1, 1.07], [0, 0.14, 1.08], [0.15, 0.1, 1.07]], true);
+      [-1, 1].forEach(function (s) { g.poly([[s * 0.65, 0.08, 1.04], [s * 1.0, 0.1, 0.62], [s * 1.04, 0.06, 0.2]], false); });
+    },
+    magnifier: function (g, ax, ay) {
+      g.poly([[0.32, ay * 1.0, 0], [0.48, ay * 1.42, -0.05]], false);
+      g.mesh(function (u, v) { var a = u * 2 * PI, w = v * 2 * PI, t = 0.05; return [0.62 + Math.cos(a) * (0.3 + Math.cos(w) * t), ay * 1.78 + Math.sin(a) * (0.3 + Math.cos(w) * t), -0.08 + Math.sin(w) * t]; }, 36, 4, { kind: 2 });
+    },
+    pencil: function (g, ax, ay) {
+      var A = [0.15, ay * 0.98, -0.1], B = [1.05, ay * 1.56, -0.25], T = [1.3, ay * 1.72, -0.29];
+      g.mesh(function (u, v) { var w = v * 2 * PI, r = 0.08; return [A[0] + (B[0] - A[0]) * u - Math.sin(w) * r * 0.55, A[1] + (B[1] - A[1]) * u + Math.sin(w) * r * 0.85, A[2] + (B[2] - A[2]) * u + Math.cos(w) * r]; }, 10, 8);
+      g.mesh(function (u, v) { var w = v * 2 * PI, r = 0.08 * (1 - u); return [B[0] + (T[0] - B[0]) * u - Math.sin(w) * r * 0.55, B[1] + (T[1] - B[1]) * u + Math.sin(w) * r * 0.85, B[2] + (T[2] - B[2]) * u + Math.cos(w) * r]; }, 4, 8, { kind: 2 });
+    },
+    tie: function (g, ax, ay) {
+      g.mesh(function (u, v) { var a = -1 + 2 * u; return [a * 0.12, -ay * 1.04 - v * 0.14, 0.98]; }, 4, 3, { kind: 2 });
+      g.mesh(function (u, v) { var y = -ay * 1.18 - v * 0.6, w = v < 0.8 ? 0.1 + 0.12 * v / 0.8 : 0.22 * (1 - v) / 0.2; return [(-1 + 2 * u) * w, y, 0.96 - 0.08 * v]; }, 4, 8, { kind: 2 });
+    },
   };
   var geoCache = {};
   /** The head's buffers. detail "hi": every grid line; "lo" (sessions, the dock): every other line, half the accessory rings. */
   function build(head, detail) {
-    head = HEADS[head] ? head : "cap";
+    head = HEADS[head] || XHEADS[head] ? head : "cap";
     var key = head + ":" + detail;
     if (geoCache[key]) return geoCache[key];
-    var hi = detail === "hi", cfg = HEADS[head], g = new Builder(hi ? 1 : 0.5, hi ? 1 : 2), ax = 1, ay = 0.98;
+    var hi = detail === "hi", cfg = HEADS[head] || XHEADS[head], g = new Builder(hi ? 1 : 0.5, hi ? 1 : 2), ax = 1, ay = 0.98;
     g.head(cfg.p, ax, ay);
     cfg.acc.forEach(function (a) { ACC[a](g, ax, ay); });
     var out = { head: head, cfg: cfg, v: new Float32Array(g.v), lines: new Uint16Array(g.lines), pts: new Uint16Array(g.pts), front: new Uint16Array(g.front), n: g.n };
@@ -1688,7 +1724,7 @@
   }
 
   return {
-    create: create, thumb: thumb, build: build, HEADS: HEADS, HEAD_IDS: HEAD_IDS, Anim: Anim,
+    create: create, thumb: thumb, build: build, HEADS: HEADS, HEAD_IDS: HEAD_IDS, XHEADS: XHEADS, Anim: Anim,
     FACE_OF: FACE_OF, coreFace: coreFace, sessState: sessState, NF: NF, GN: GN, G: G,
     // the face (2026-10-22): its styles and their names, the page's style (read, set live), the vector and its coverage
     FACE: FACE, FACE_STYLES: Object.keys(FACE.STY), FACE_NAMES: FACE.NAMES, normFace: FACE.norm, face: faceNow, setFace: setPageFace, faceVec: FACE.vec, faceCov: FACE.covAt,

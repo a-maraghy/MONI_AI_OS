@@ -688,7 +688,65 @@ def validate_config(cfg, creating):
     out["addons"] = validate_addon_ids(cfg.get("addons"))
     out["addon_env"] = validate_env_map(cfg.get("addon_env"))
 
+    # The agent's bot avatar (lib/agent-avatar.js): optional, and when present
+    # checked key by key against fixed lists before it is written as root.
+    avatar = validate_avatar(cfg.get("avatar"))
+    if avatar is not None:
+        out["avatar"] = avatar
+
     return out
+
+
+# The agent avatar spec (dashboard lib/agent-avatar.js; tools/test-agent-avatar.cjs
+# checks that these lists match the dashboard's).
+AVATAR_THEMES = ("mail", "support", "design", "code", "finance", "research", "writing",
+                 "schedule", "teaching", "ops", "general")
+AVATAR_HEADS = ("headphones", "beanie", "goggles", "headset", "ears", "halo", "mortar",
+                "antennas", "bowtie", "beret", "glasses", "magnifier", "pencil", "tie")
+AVATAR_FACES = ("smooth", "dots", "minimal")
+AVATAR_HUES = ("teal", "blue", "indigo", "violet", "rose", "orange", "amber", "green")
+AVATAR_TURNS = ("l", "r")
+AVATAR_KEYS = ("v", "theme", "head", "face", "hue", "turn", "seed")
+
+
+def validate_avatar(raw):
+    """None for no avatar; else exactly the seven keys, each from its list."""
+    if raw in (None, ""):
+        return None
+    if not isinstance(raw, dict):
+        fail("avatar must be an object")
+    if set(raw.keys()) != set(AVATAR_KEYS):
+        fail("avatar must have exactly the keys: " + ", ".join(AVATAR_KEYS))
+    if type(raw["v"]) is not int or raw["v"] != 1:
+        fail("avatar version must be 1")
+    for key, allowed in (("theme", AVATAR_THEMES), ("head", AVATAR_HEADS), ("face", AVATAR_FACES),
+                         ("hue", AVATAR_HUES), ("turn", AVATAR_TURNS)):
+        if not isinstance(raw[key], str) or raw[key] not in allowed:
+            fail("avatar " + key + " must be one of: " + ", ".join(allowed))
+    seed = raw["seed"]
+    if type(seed) is not int or not 0 <= seed <= 0x7FFFFFFF:
+        fail("avatar seed must be a whole number from 0 to 2147483647")
+    return {"v": 1, "theme": raw["theme"], "head": raw["head"], "face": raw["face"],
+            "hue": raw["hue"], "turn": raw["turn"], "seed": seed}
+
+
+def cmd_agent_avatar(args):
+    """Store an agent's avatar in agent.json only: no environment rewrite, no restart."""
+    payload = read_stdin_json()
+    slug = check_slug(payload.get("slug", ""))
+    existing_agent(slug)
+    avatar = validate_avatar(payload.get("avatar"))
+    if avatar is None:
+        fail("avatar is required")
+    meta = read_agent_json(slug)
+    if meta.get("broken"):
+        fail("agent.json of " + slug + " cannot be read; not touching it")
+    meta["avatar"] = avatar
+    meta["updated_at"] = now_iso()
+    uid, gid = agent_ids()
+    write_agent_json(slug, meta, uid, gid)
+    audit("agent-avatar", {"slug": slug, "avatar": avatar})
+    ok({"slug": slug, "avatar": avatar})
 
 
 def validate_addon_ids(raw):
@@ -8531,6 +8589,7 @@ COMMANDS = {
     "agent-get": cmd_agent_get,
     "agent-create": cmd_agent_create,
     "agent-update": cmd_agent_update,
+    "agent-avatar": cmd_agent_avatar,
     "agent-action": cmd_agent_action,
     "agent-restart-idle": cmd_agent_restart_idle,
     "agent-logs": cmd_agent_logs,

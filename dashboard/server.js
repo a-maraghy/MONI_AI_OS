@@ -26,6 +26,7 @@ const catalog = require("./lib/catalog");
 const telegram = require("./lib/telegram");
 const views = require("./lib/views");
 const agentViews = require("./lib/views-agents");
+const agentAvatar = require("./lib/agent-avatar");
 const channelViews = require("./lib/views-channels");
 const topics = require("./lib/topics");
 const serviceViews = require("./lib/views-services");
@@ -1459,7 +1460,7 @@ async function probeQuietly() {
   }
 }
 
-/* Agents & sessions ▸ Overview: the sessions round MINT AI, the Telegram nursery, capabilities. */
+/* Agents & sessions ▸ Overview: the sessions round MINT AI, the Telegram agents, capabilities. */
 app.get("/agents/dashboard", requireAuth, async (req, res) => {
   const seesAgents = req.perm.can("agents.view");
   const seesTeam = req.perm.can("moniai.use");
@@ -1563,6 +1564,8 @@ app.post("/agents/new", requireAuth, requirePerm("agents.create"), requireCsrf, 
       slug: form.slug,
       name: form.name,
       role: form.role,
+      // its bot avatar, from what it does (lib/agent-avatar.js); Settings > Avatar changes it
+      avatar: agentAvatar.derive(form.slug, form.role + "\n" + form.name),
       model: form.model,
       effort: form.effort,
       verbose_level: Number(form.verbose_level),
@@ -1811,16 +1814,52 @@ app.get("/agents/:slug/logs", requireAuth, requirePerm("agents.logs"), requireAg
 app.get("/agents/:slug/settings", requireAuth, requirePerm("agents.view"), requireAgentScope, async (req, res) => {
   const agent = await loadAgent(req, res);
   if (!agent) return;
+  // Settings > Avatar > Shuffle: another avatar in the same theme, shown until "Use this" stores it.
+  const candidate =
+    req.query.avatar === "shuffle" && req.perm.canAgent("agents.edit", agent.slug)
+      ? agentAvatar.shuffle(agent.slug, agentAvatar.roleText(agent), agentAvatar.specFor(agent))
+      : null;
   res.send(
     agentViews.settings({
       csrf: res.locals.csrf,
       user: ctx(req),
       agent,
+      candidate,
       probe: await probeQuietly(),
       flash: req.query.msg || null,
       err: req.query.err || null,
     })
   );
+});
+
+/* Settings > Avatar > Use this: the avatar shown, checked against the lists, into agent.json (no restart). */
+app.post("/agents/:slug/avatar", requireAuth, requirePerm("agents.edit"), requireAgentScope, requireCsrf, async (req, res) => {
+  const agent = await loadAgent(req, res);
+  if (!agent) return;
+  const raw = {};
+  for (const k of agentAvatar.KEYS) raw[k] = field(req.body, "avatar_" + k);
+  raw.v = Number(raw.v);
+  raw.seed = Number(raw.seed);
+  const spec = agentAvatar.norm(raw);
+  if (!spec) return res.redirect(agentRedirect(agent.slug, "/settings", { err: "That avatar is not one this panel makes. Shuffle again." }));
+  try {
+    await priv.agentAvatar(agent.slug, spec);
+    res.redirect(agentRedirect(agent.slug, "/settings", { msg: "Avatar saved. The agent was not restarted." }));
+  } catch (e) {
+    res.redirect(agentRedirect(agent.slug, "/settings", { err: e.message }));
+  }
+});
+
+/* The agent's avatar as a file of its own: ?theme=light|dark, ?px=64..1024, ?download=1 to save it. */
+app.get("/agents/:slug/avatar.svg", requireAuth, requirePerm("agents.view"), requireAgentScope, async (req, res) => {
+  const agent = await loadAgent(req, res);
+  if (!agent) return;
+  const theme = req.query.theme === "dark" ? "dark" : "light";
+  const px = Math.max(64, Math.min(1024, parseInt(req.query.px, 10) || 640));
+  res.setHeader("Content-Type", "image/svg+xml; charset=utf-8");
+  res.setHeader("Cache-Control", "private, no-cache");
+  if (req.query.download === "1") res.setHeader("Content-Disposition", `attachment; filename="${agent.slug}-avatar.svg"`);
+  res.send(agentAvatar.svg(agentAvatar.specFor(agent), { standalone: theme, px }));
 });
 
 app.post("/agents/:slug/settings", requireAuth, requirePerm("agents.edit"), requireAgentScope, requireCsrf, async (req, res) => {

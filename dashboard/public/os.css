@@ -190,7 +190,7 @@ section.myc-hero.compact .hero-legend { display: flex; }
 .feed .det { color: var(--muted); font: 13px var(--mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
 .rows.tight td { padding: 5px 10px; }
 
-/* ------------------------------------------------- the nursery (A) ------ */
+/* ------------------------------------------------- agents overview (A) -- */
 
 .stats4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
 .stats4 .statbox { margin: 0; }
@@ -320,14 +320,14 @@ ul.toc-list { list-style: none; margin: 0; padding: 0; border-left: 1px solid va
   .sway, .side-id-mark::after, .pill.work::before { animation: none !important; }
 }
 
-/* The vault seed head (agent detail), drawn by os.js. */
+/* The memory dial (agent detail), drawn by os.js: one dot per note, ink only. */
 .v-ring { stroke: var(--line); }
 .v-ring.dashed { stroke-dasharray: 2 6; }
-.v-fl { fill: var(--orb-floret); }
-.v-fl.mid { fill: var(--orb-floret-mid); }
-.v-fl.hi { fill: var(--orb-floret-hi); }
+.v-fl { fill: var(--muted); }
+.v-fl.mid { fill: var(--body); }
+.v-fl.hi { fill: var(--ink); }
 .v-tick { stroke: var(--line-strong); }
-.v-arc { stroke: var(--accent-2); stroke-width: 3; stroke-linecap: round; opacity: .8; }
+.v-arc { stroke: var(--ink); stroke-width: 3; stroke-linecap: round; opacity: .8; }
 .v-hole { fill: var(--panel); opacity: .82; }
 @media (max-width: 1560px) {
   .hero-stats { gap: 12px; }
@@ -335,13 +335,7 @@ ul.toc-list { list-style: none; margin: 0; padding: 0; border-left: 1px solid va
   .core-hero.compact .hero-legend { display: none; }
 }
 
-/* A head with a picture beside it (an agent's seedling). */
-
 .page-actions .btn-row.flat { margin: 0; flex-wrap: nowrap; }
-
-/* Seedlings, grown from the OS leaf (lib/brand.js) and coloured by state
-   through classes, so the theme repaints them: an active agent in the two
-   leaf tones, a failed one drooping in red, a stopped one grey. */
 
 pre.logs .t { color: var(--muted); }
 .tbl.pad { padding: 0 0 10px; }
@@ -376,8 +370,8 @@ pre.logs .t { color: var(--muted); }
 .mc-lbl { border-radius: 5px; background: var(--panel-2); border-color: var(--line-strong); font-family: var(--brand-font); box-shadow: none; }
 .mc-lbl .dot { border-radius: 1px; width: 6px; height: 6px; background: var(--brand); box-shadow: none; }
 .mc-lbl small { font-family: var(--mono); }
-/* The vault: the OS leaf at the heart of the seed head, spokes to the newest notes. */
-.v-spoke { stroke: var(--hypha); stroke-width: 1.2; }
+/* The memory dial: spokes from the centre to the newest notes. */
+.v-spoke { stroke: var(--line-strong); stroke-width: 1.2; }
 .vault-art .v-center b { font: 700 24px/1 var(--brand-font); }
 .vault-art .v-center span { font: 700 13px var(--brand-font); }
 /* The voice picker: one card per voice, the chosen one outlined in mint. */

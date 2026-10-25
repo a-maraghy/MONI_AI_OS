@@ -120,6 +120,22 @@ feature the person chooses, not chrome.
 - **Motion**: 160 ms, `cubic-bezier(.2,0,0,1)`, state changes only; reduced motion turns
   transitions off. The core's own motion is the core's.
 
+## Agent avatars
+
+Every Telegram agent wears a small still bot head of MINT AI's family (2026-10-25, the user: "agents
+are no longer plants being planted; every agent gets a random bot avatar based on what it does").
+`lib/agent-avatar.js` draws it on the server as an inline SVG from the core E geometry
+(`public/mint-core-bot.js` `build()`, every other grid line, plus five agent-only accessories in
+`XHEADS`: beret, glasses, magnifier, pencil, tie). Told apart from MINT AI: a tile with a hairline
+frame (`.av`, 40 px in tables, 56 px in the page head, 136 px in Settings), no glow, never the cap.
+The head's lines are `--ink`; the face and lit parts are the agent's own hue (`.av-h-<hue>`: a 700
+shade on white, a 300 shade on black). Decorative (`aria-hidden`); the name is always beside it.
+Theme from the role's keywords → accessory + hue; face, hue, turn seeded by the slug. Stored in
+`agent.json` `avatar` (moni-helper `validate_avatar`, `agent-avatar` writes it without a restart);
+Settings ▸ Avatar shuffles within the theme and "Use this" keeps it; "Download avatar (PNG)" makes a
+640 px PNG in the browser to set by hand in @BotFather. Creating an agent is a plain form ("Create
+agent": name, what it does, model, then the channel) — no planting words or pictures anywhere.
+
 ## Command Center
 
 The core (A–E, the person's choice) and everything it draws stay as they are. Around it:

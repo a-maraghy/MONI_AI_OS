@@ -12,6 +12,7 @@ const { esc, shell, card, flashes, empty, icon, agentPill, stamp, can, steps } =
 const { byScope } = require("./catalog");
 const { renderAddons } = require("./views-addons");
 const topics = require("./topics");
+const avatar = require("./agent-avatar");
 
 /**
  * Telegram Topics: one forum topic per project, each mapped to a folder
@@ -365,7 +366,7 @@ exports.list = ({ csrf, user, channels, agents, flash, err }) => {
                     }</td>
                   <td>${
                     c.agent
-                      ? `<a href="/agents/${esc(c.agent)}">${esc(c.agent_name || c.agent)}</a>`
+                      ? `<span class="who">${avatar.agentTile(agents.find((a) => a.slug === c.agent) || { slug: c.agent, name: c.agent_name }, "sm")}<a href="/agents/${esc(c.agent)}">${esc(c.agent_name || c.agent)}</a></span>`
                       : `<span class="muted">not connected</span>`
                   }</td>
                   <td class="mono small">${esc(

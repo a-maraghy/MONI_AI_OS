@@ -19,6 +19,7 @@ const {
 const { byScope } = require("./catalog");
 const { renderAddons } = require("./views-addons");
 const { graphPanel, viewSwitch } = require("./views-memgraph");
+const avatar = require("./agent-avatar");
 
 const MODELS = [
   ["claude-opus-5-5", "Opus 5.5 — best all-round, the default"],
@@ -118,7 +119,7 @@ function controls(csrf, agent) {
 /**
  * Agents & sessions ▸ Overview: everything that acts on this machine -- the
  * sessions round MINT AI (with Keep / Retire / Stop / Resume, as on Sessions ▸
- * Live), the Telegram agents' nursery, and what an agent can be given.
+ * Live), the Telegram agents, and what an agent can be given.
  *
  * @param o { csrf, user, agents, channels, probe, flash, err,
  *            team (sessions round MINT AI, or null), limits (hire-limits, or null),
@@ -257,7 +258,7 @@ function agentTable(csrf, user, agents) {
         : `<a class="ch none" href="/channels/new">${icon("plus", 16)}<span>No channel — add one</span></a>`;
       const actions = can(user, "agents.control", a.slug) ? controls(csrf, a) : "";
       return `<tr>
-        <th scope="row" data-h="Agent"><a class="nm" href="/agents/${esc(a.slug)}">${esc(label)}</a><span class="sub mono">${esc(a.slug)}</span></th>
+        <th scope="row" data-h="Agent"><div class="who">${avatar.agentTile(a, "sm")}<div class="who-t"><a class="nm" href="/agents/${esc(a.slug)}">${esc(label)}</a><span class="sub mono">${esc(a.slug)}</span></div></div></th>
         <td data-h="State">${stateChip(st)}</td>
         <td data-h="Channel">${chCell}</td>
         <td data-h="Model"><span>${esc(modelWord(a.model))}</span><span class="sub">${esc(EFFORT_WORDS[a.effort || "medium"] || a.effort)} effort</span></td>
@@ -348,7 +349,7 @@ exports.create = ({ csrf, user, form = {}, errors = [], probe }) => {
         <label>Short name <span class="hint">lowercase; names the folder and the systemd unit, and cannot be changed later</span>
           <input name="slug" value="${v("slug")}" placeholder="odoo-dev"
                  pattern="[a-z][a-z0-9\\-]{1,30}" maxlength="31" required></label>
-        <label>Role <span class="hint">written into CLAUDE.md and loaded on every request — this is the field that decides whether the agent is useful</span>
+        <label>What it does <span class="hint">its role, written into CLAUDE.md and loaded on every request — this is the field that decides whether the agent is useful. It also picks the agent's bot avatar (change it later in Settings)</span>
           <textarea name="role" rows="7" placeholder="You maintain the Odoo 17 instance at /opt/projects/odoo. You handle module changes, migrations and deployment. You may edit code and run tests unattended. Ask before restarting the service during working hours.">${v("role")}</textarea></label>`,
         { icon: "agents" }
       )}
@@ -388,7 +389,7 @@ exports.create = ({ csrf, user, form = {}, errors = [], probe }) => {
         "",
         `<p class="muted small">On save the vault is scaffolded and the vector index is
           built. Takes a few seconds. You then go straight to connecting a channel.</p>
-        <button class="btn primary" type="submit">${icon("plus")} Create agent and continue</button>
+        <button class="btn primary" type="submit">${icon("plus")} Create agent</button>
         <a class="btn" href="/agents">Cancel</a>`
       )}
     </form>`,
@@ -397,8 +398,8 @@ exports.create = ({ csrf, user, form = {}, errors = [], probe }) => {
       csrf,
       active: "agents",
       pattern: "c",
-      heading: "Create an agent",
-      subtitle: "Step 1 of 2 — the mind. The channel it answers on comes next.",
+      heading: "Create agent",
+      subtitle: "Step 1 of 2: name, what it does and the model. The channel it answers on comes next.",
     }
   );
 };
@@ -429,15 +430,15 @@ function journalHtml(lines) {
 }
 exports.journalHtml = journalHtml;
 
-/** The agent's name, face and state: the head of every page under an agent. */
+/** The agent's avatar, name and state: the head of every page under an agent. */
 function agentHead(agent) {
   const st = (agent.state && agent.state.active) || "inactive";
-  return `${esc(agent.name || agent.slug)} ${agentPill(st)}`;
+  return `<span class="agent-h1">${avatar.agentTile(agent, "md")}<span>${esc(agent.name || agent.slug)}</span> ${agentPill(st)}</span>`;
 }
 
 /**
  * One agent, as a HUD (pattern A): its service, channel and configuration on
- * the left, its memory drawn as a seed head in the centre, and its journal
+ * the left, its memory drawn as a dial of notes in the centre, and its journal
  * tailing live on the right -- the same privileged read, the same permission
  * and the same redaction as the Logs tab.
  */
@@ -583,10 +584,11 @@ exports.detail = ({ csrf, user, agent, notes = [], journal = null, journalErr = 
       csrf,
       active: "agents",
       pattern: "a",
+      assets: ["agent-avatar.js"],
       crumbs: agentCrumbs(agent),
       heading: agent.name || agent.slug,
       headingHtml: agentHead(agent),
-      subtitle: `<span class="mono small">${esc(agent.slug)}</span> · ${esc(agent.dir || "")}`,
+      subtitle: `<span class="mono small">${esc(agent.slug)}</span> · ${esc(agent.dir || "")} · ${downloadLink(agent, "dl-link")}`,
       actions: `${canLogs ? `<a class="btn" href="/agents/${esc(agent.slug)}/logs">${icon("logs")} Logs</a>` : ""}${
         canControl ? controls(csrf, agent).replace('class="btn-row"', 'class="btn-row flat"').replace(/ small"/g, '"') : ""
       }`,
@@ -819,11 +821,58 @@ exports.logs = ({ csrf, user, agent, lines, err }) =>
 
 /* ------------------------------------------------------------- settings --- */
 
-exports.settings = ({ csrf, user, agent, probe, flash, err }) =>
+/**
+ * Settings ▸ Avatar: the agent's bot head, large, in words; Shuffle shows another one in the same theme
+ * (?avatar=shuffle -> candidate), "Use this" stores it (agent.json only, no restart), and the PNG to set
+ * as the Telegram bot's picture by hand in @BotFather.
+ */
+function avatarCard(csrf, user, agent, candidate) {
+  const cur = avatar.specFor(agent), shown = candidate || cur;
+  const canEdit = can(user, "agents.edit", agent.slug);
+  const base = "/agents/" + esc(agent.slug);
+  const fields = candidate
+    ? avatar.KEYS.map((k) => `<input type="hidden" name="avatar_${k}" value="${esc(String(candidate[k]))}">`).join("")
+    : "";
+  return card(
+    "Avatar",
+    `<div class="av-pick">
+      ${avatar.tile(shown, "lg")}
+      <div>
+        <p class="av-desc">${candidate ? "<strong>A new one, not saved yet:</strong> " : ""}${esc(avatar.describe(shown))}.
+          <span class="muted">Picked from what the agent does; it stays the same when you edit the role.</span></p>
+        <div class="btn-row">
+          ${
+            canEdit
+              ? `${candidate
+                  ? `<form method="post" action="${base}/avatar" class="inline">
+                      <input type="hidden" name="_csrf" value="${esc(csrf)}">${fields}
+                      <button class="btn primary" type="submit">${icon("check")} Use this</button>
+                    </form>
+                    <a class="btn" href="${base}/settings?avatar=shuffle#avatar">${icon("restart")} Shuffle again</a>
+                    <a class="btn" href="${base}/settings#avatar">Keep the current one</a>`
+                  : `<a class="btn" href="${base}/settings?avatar=shuffle#avatar">${icon("restart")} Shuffle avatar</a>`}`
+              : ""
+          }
+          ${candidate ? "" : downloadLink(agent)}
+        </div>
+        ${candidate ? "" : `<p class="muted small">To show it as the Telegram bot's picture, download the PNG and send it to @BotFather with /setuserpic.</p>`}
+      </div>
+    </div>`,
+    { icon: "agents", id: "avatar" }
+  );
+}
+
+/** The avatar as a 640 px PNG (public/agent-avatar.js; without script, the SVG) to set by hand in @BotFather. */
+const downloadLink = (agent, cls = "btn") =>
+  `<a class="${cls}" href="/agents/${esc(agent.slug)}/avatar.svg?download=1" download="${esc(agent.slug)}-avatar.svg"
+     data-avatar-png="/agents/${esc(agent.slug)}/avatar.svg" data-avatar-name="${esc(agent.slug)}-avatar.png">${icon("download")} Download avatar (PNG)</a>`;
+
+exports.settings = ({ csrf, user, agent, probe, flash, err, candidate }) =>
   shell(
     "Settings — " + (agent.name || agent.slug),
     `${tabs(agent.slug, "settings")}
     ${flashes({ msg: flash, err })}
+    ${avatarCard(csrf, user, agent, candidate || null)}
 
     <form method="post" action="/agents/${esc(agent.slug)}/settings" autocomplete="off">
       <input type="hidden" name="_csrf" value="${esc(csrf)}">
@@ -907,5 +956,6 @@ exports.settings = ({ csrf, user, agent, probe, flash, err }) =>
       heading: agent.name || agent.slug,
       headingHtml: agentHead(agent),
       subtitle: "Configuration.",
+      assets: ["agent-avatar.js"],
     }
   );
