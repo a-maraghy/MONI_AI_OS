@@ -76,7 +76,7 @@ check("with no facts yet the frame still renders", chrome.forActor(admin, null).
 console.log("frame: shell");
 const user = { name: "Ann <b>", roleLabel: "Administrator", perm: admin, chrome: ca };
 const page = ui.shell("T", "<p>x</p>", { user, csrf: "c", active: "services", pattern: "b" });
-check("pattern B is declared on the content column", /<main class="content pat-b">/.test(page));
+check("pattern B is declared on the content column", /<main class="content pat-b"[^>]*>/.test(page));
 check("pages default to the document pattern", /class="content pat-c"/.test(ui.shell("T", "", { user, csrf: "c", active: "keys" })));
 check("the frame marker is on <html> for framed pages", /<html lang="en" class="framed( [^"]*)?">/.test(page));
 check("sidebar badges render with their tone", /class="badge warn" data-badge="services" title="1 service down">1\/2</.test(page));

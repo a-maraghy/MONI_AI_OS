@@ -28,26 +28,20 @@ function aiMark(o = {}) {
 }
 
 /**
- * MINT [OS] or MINT [AI]: the mark, the bold wordmark and the pill.
- * `sub` adds the "Operating System" / "Artificial Intelligence" line under it
- * (the sign-in pages); the top bar leaves it off. `tag: false` drops the
- * bracket pill: the top bar of every page, MINT AI's included, is the OS leaf
- * and the bare MINT wordmark.
+ * The logo: the word MINT, set as text in the type system (2026-10-25: no
+ * leaf, no [OS] / [AI] tag). `kind` and `tag` are kept for the callers; the
+ * mark is the same for both. `sub` adds the plain line under it on the
+ * sign-in pages ("Operating System" / "Artificial Intelligence").
  */
 function lockup(kind, o = {}) {
   const ai = kind === "ai";
-  const pill = o.tag === false ? "" : ai
-    ? `<span class="pill-brand pill-ai">[<b>AI</b>]</span>`
-    : `<span class="pill-brand pill-os">[<b>OS</b>]</span>`;
-  const sub = o.sub ? `<span class="lk-sub">${ai ? "Artificial Intelligence" : "Operating System"}</span>` : "";
-  return `<span class="lockup ${ai ? "ai" : "os"}${o.sub ? " full" : ""}${o.cls ? " " + o.cls : ""}" aria-label="MINT${o.tag === false ? "" : ai ? " AI" : " OS"}"><span class="lk-mk" aria-hidden="true">${
-    ai ? aiMark() : osMark()
-  }</span><span class="lk-wm"><span class="lk-row"><span class="lk-mint">MINT</span>${pill}</span>${sub}</span></span>`;
+  const sub = o.sub ? `<span class="wm-sub">${ai ? "Artificial Intelligence" : "Operating System"}</span>` : "";
+  return `<span class="wordmark${o.sub ? " full" : ""}${o.cls ? " " + o.cls : ""}"><span class="wm-mint">MINT</span>${sub}</span>`;
 }
 
-/** The big faint leaf behind the sign-in card. Decoration only. */
-function watermark(kind) {
-  return `<div class="auth-leaf" aria-hidden="true">${kind === "ai" ? aiMark({ cls: "mark", glowSd: 8 }) : osMark({ cls: "mark" })}</div>`;
+/** The sign-in pages had a faint leaf behind the card; the leaf is gone, so nothing. */
+function watermark() {
+  return "";
 }
 
 /**

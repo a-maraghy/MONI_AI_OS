@@ -1,13 +1,23 @@
-/* Mint OS — the Mint brand ("Concept 1: The Bio-Digital Leaf"), site-wide.
-   Obsidian #0D1117, Mint #00E6A5, Deep Teal #0A3A35, AI Violet #8A2BE2 and the
-   off-white #F8FAFC. Mint is a fill and a dark-theme text colour only: on a
-   light ground it fails contrast, so light text uses the darker mint tokens
-   (--accent #00785A, 5.6:1 on white). Every colour below the palette blocks is
-   a token, so the three themes (System / Dark / Light) are three sets of
-   values. Three self-hosted OFL faces (public/fonts, latin subset):
-     Space Grotesk  brand, headings, labels        --brand-font
-     Inter          body, tables, forms, chat      --ui
-     JetBrains Mono ids, logs, the clock           --mono
+/* Mint OS — tokens and base (the 2026-10-25 redesign, "Plain label"; DESIGN.md).
+
+   One family for everything a person reads: Atkinson Hyperlegible Next (the
+   Braille Institute's face, drawn so similar letters cannot be confused --
+   I l 1, O 0, rn m -- which matters on a panel full of slugs, hostnames and
+   keys), and its Mono for code, ids and figures. Self-hosted (public/fonts,
+   OFL, latin subset); Arabic falls back to the system's Noto / Segoe.
+
+   Colour: tinted neutrals with one ink-green accent ("spearmint ink"), used
+   for primary actions, links, the current place and focus -- nothing else.
+   State colours carry meaning only, always with a word or a shape beside
+   them. No glows, no gradients, no glass. Every value below is a token, so
+   the three theme choices (System / Dark / Light) are three sets of values;
+   every pair used for text is at least 4.5:1 (WCAG 2.2 AA) and every control
+   edge at least 3:1. The old variable names are kept and pointed at the new
+   palette, so rules not yet converted follow it.
+
+   The component layer for the frame (top bar, sidebar, page head, cards,
+   buttons, forms, tables, badges, alerts, empty states, toasts) is
+   public/mint-ds.css, loaded last on every page.
 
    Three page patterns share one frame (the top bar and sidebar never move):
      A  one screen   -- nothing scrolls but small inner lists       (.content.pat-a)
@@ -15,253 +25,187 @@
      C  document     -- the content column scrolls under the frame   (.content.pat-c)
    os.css holds the page-level pieces built on top of these primitives. */
 
-@font-face { font-family: "Space Grotesk"; font-style: normal; font-weight: 400; font-display: swap; src: url("fonts/space-grotesk-latin-400-normal.woff2?v=5.3.0") format("woff2"); }
-@font-face { font-family: "Space Grotesk"; font-style: normal; font-weight: 500; font-display: swap; src: url("fonts/space-grotesk-latin-500-normal.woff2?v=5.3.0") format("woff2"); }
-@font-face { font-family: "Space Grotesk"; font-style: normal; font-weight: 600; font-display: swap; src: url("fonts/space-grotesk-latin-600-normal.woff2?v=5.3.0") format("woff2"); }
-@font-face { font-family: "Space Grotesk"; font-style: normal; font-weight: 700; font-display: swap; src: url("fonts/space-grotesk-latin-700-normal.woff2?v=5.3.0") format("woff2"); }
-@font-face { font-family: "Inter"; font-style: normal; font-weight: 400; font-display: swap; src: url("fonts/inter-latin-400-normal.woff2?v=5.3.0") format("woff2"); }
-@font-face { font-family: "Inter"; font-style: normal; font-weight: 500; font-display: swap; src: url("fonts/inter-latin-500-normal.woff2?v=5.3.0") format("woff2"); }
-@font-face { font-family: "Inter"; font-style: normal; font-weight: 600; font-display: swap; src: url("fonts/inter-latin-600-normal.woff2?v=5.3.0") format("woff2"); }
-@font-face { font-family: "Inter"; font-style: normal; font-weight: 700; font-display: swap; src: url("fonts/inter-latin-700-normal.woff2?v=5.3.0") format("woff2"); }
-@font-face { font-family: "JetBrains Mono"; font-style: normal; font-weight: 400; font-display: swap; src: url("fonts/jetbrains-mono-latin-400-normal.woff2?v=5.3.0") format("woff2"); }
-@font-face { font-family: "JetBrains Mono"; font-style: normal; font-weight: 500; font-display: swap; src: url("fonts/jetbrains-mono-latin-500-normal.woff2?v=5.3.0") format("woff2"); }
-@font-face { font-family: "JetBrains Mono"; font-style: normal; font-weight: 600; font-display: swap; src: url("fonts/jetbrains-mono-latin-600-normal.woff2?v=5.3.0") format("woff2"); }
+@font-face { font-family: "Atkinson Hyperlegible Next"; font-style: normal; font-weight: 400; font-display: swap; src: url("fonts/atkinson-hyperlegible-next-latin-400-normal.woff2?v=5.3.0") format("woff2"); }
+@font-face { font-family: "Atkinson Hyperlegible Next"; font-style: normal; font-weight: 500; font-display: swap; src: url("fonts/atkinson-hyperlegible-next-latin-500-normal.woff2?v=5.3.0") format("woff2"); }
+@font-face { font-family: "Atkinson Hyperlegible Next"; font-style: normal; font-weight: 600; font-display: swap; src: url("fonts/atkinson-hyperlegible-next-latin-600-normal.woff2?v=5.3.0") format("woff2"); }
+@font-face { font-family: "Atkinson Hyperlegible Next"; font-style: normal; font-weight: 700; font-display: swap; src: url("fonts/atkinson-hyperlegible-next-latin-700-normal.woff2?v=5.3.0") format("woff2"); }
+@font-face { font-family: "Atkinson Hyperlegible Next"; font-style: normal; font-weight: 800; font-display: swap; src: url("fonts/atkinson-hyperlegible-next-latin-800-normal.woff2?v=5.3.0") format("woff2"); }
+@font-face { font-family: "Atkinson Hyperlegible Mono"; font-style: normal; font-weight: 400; font-display: swap; src: url("fonts/atkinson-hyperlegible-mono-latin-400-normal.woff2?v=5.3.0") format("woff2"); }
+@font-face { font-family: "Atkinson Hyperlegible Mono"; font-style: normal; font-weight: 500; font-display: swap; src: url("fonts/atkinson-hyperlegible-mono-latin-500-normal.woff2?v=5.3.0") format("woff2"); }
+@font-face { font-family: "Atkinson Hyperlegible Mono"; font-style: normal; font-weight: 600; font-display: swap; src: url("fonts/atkinson-hyperlegible-mono-latin-600-normal.woff2?v=5.3.0") format("woff2"); }
 
 /* LIGHT is the base block; dark overrides it (explicitly, or from the system). */
 :root {
-  /* brand constants, the same in both themes */
-  --obsidian: #0D1117;
-  --mint: #00E6A5;
-  --deep-teal: #0A3A35;
-  --ai-violet: #8A2BE2;
-  --offwhite: #F8FAFC;
-  --grad-ai: linear-gradient(120deg, #00E6A5 0%, #3FC7C4 45%, #8A2BE2 100%);
-  --grad-ai-soft: linear-gradient(120deg, rgba(0, 230, 165, .18), rgba(138, 43, 226, .18));
-  --grad-ai-line: linear-gradient(120deg, rgba(0, 230, 165, .55), rgba(138, 43, 226, .55));
+  /* the accent: spearmint ink (light) and fresh mint (dark) */
+  --accent: #0B6B4C;         /* links, current place, focus: 6.5:1 on white */
+  --accent-hover: #08593F;
+  --accent-2: #0B6B4C;       /* old name for borders/focus: the same ink now */
+  --accent-soft: #E3EFE9;    /* selected / current-item ground */
+  --on-accent: #FFFFFF;
 
-  --brand: #00E6A5;          /* a fill: always with --on-brand (dark) text */
-  --brand-deep: #00785A;     /* mint as text */
-  --brand-dark: #0A3A35;
+  /* neutrals, tinted a touch toward the leaf */
+  --bg: #F5F7F6;             /* the page */
+  --panel: #FFFFFF;          /* cards, inputs, menus */
+  --panel-2: #ECF0EE;        /* the second layer: sidebar, table heads, hovers */
+  --panel-3: #E2E8E5;
+  --line: #DCE3DF;           /* hairlines between things */
+  --line-strong: #7D8A84;    /* edges that mark a control: 3.6:1 on white */
+  --ink: #141A17;            /* headings, values: 17:1 */
+  --body: #2A332F;           /* running text: 13:1 */
+  --muted: #525E58;          /* secondary text: 6.8:1 on white, 5.9:1 on the sidebar */
+  --dim: #5C6863;            /* tertiary text: 5.0:1 on the sidebar */
 
-  --bg: #F8FAFC;
-  --bg-glow: #EEF6F3;
-  --topbar-bg: rgba(255, 255, 255, .96);
-  --panel: #FFFFFF;
-  --panel-2: #F3F7F6;
-  --panel-3: #E9F0EE;
-  --card-a: rgba(255, 255, 255, .98);
-  --card-b: rgba(250, 252, 252, .98);
-  --rail-a: rgba(227, 248, 241, .55);
-  --rail-b: rgba(248, 250, 252, .4);
-  --hero-a: rgba(0, 230, 165, .12);
-  --hero-b: rgba(255, 255, 255, .7);
-  --label-bg: rgba(255, 255, 255, .92);
-  --line: #E1E8E6;
-  --line-strong: #C9D6D2;
+  /* state: always with a word or a shape, never colour alone */
+  --ok: #1C6B44;   --ok-tint: #E6F2EB;   --ok-line: #9CC9B0;
+  --warn: #8A5200; --warn-tint: #FDF3E1; --warn-line: #E2B871; --warn-ink: #6B4000;
+  --bad: #B3261E;  --bad-tint: #FCEBEA;  --bad-line: #EBA39D;  --bad-ink: #8E1B1B;
+  --info: #1F5799; --info-tint: #E8F0FB; --info-line: #A9C3E8;
+  --work: #7A5C00; --off: #68746E;
+  --violet-ink: #5B3FA8; --violet-tint: #EFEAFB;   /* MINT AI's own things (hires) */
 
-  --ink: #0D1117;
-  --body: #1F2A33;
-  --muted: #46535E;
-  --dim: #5F6B76;
-  --navy: #253858;
+  --focus: #0B6B4C;          /* the focus ring: 2px, 2px off, 6:1 on the page */
+  --focus-halo: #FFFFFF;     /* an inner halo so the ring reads on any fill */
+  --scrim: rgba(20, 26, 23, .45);
+  --shadow-sm: 0 1px 2px rgba(20, 26, 23, .06);
+  --shadow-md: 0 1px 3px rgba(20, 26, 23, .08), 0 1px 2px rgba(20, 26, 23, .04);
+  --shadow-pop: 0 8px 24px rgba(20, 26, 23, .14), 0 2px 6px rgba(20, 26, 23, .08);
 
-  --accent: #00785A;         /* mint ink: links, active labels, 5.6:1 on white */
-  --accent-2: #00A57A;       /* mint stroke: borders, focus, small fills */
-  --accent-soft: rgba(0, 165, 122, .10);
-  --glow: rgba(0, 230, 165, .18);   /* the softened light-mode glow */
-  --on-accent: #0D1117;
-  --btn-a: #00E6A5;
-  --btn-b: #00D69A;
+  /* Old names, pointed at the new palette (rules not yet converted use them). */
+  --obsidian: #141A17; --mint: #0B6B4C; --deep-teal: #0B6B4C; --ai-violet: #5B3FA8; --offwhite: #F5F7F6; --navy: #1F5799;
+  --grad-ai: #CDEBDD; --grad-ai-soft: #E3EFE9; --grad-ai-line: #9CC9B0;
+  --brand: #0B6B4C; --brand-deep: #0B6B4C; --brand-dark: #0B6B4C; --on-brand: #FFFFFF; --brand-hover: #08593F;
+  --bg-glow: #F5F7F6; --topbar-bg: #FFFFFF;
+  --card-a: #FFFFFF; --card-b: #FFFFFF; --rail-a: #ECF0EE; --rail-b: #ECF0EE; --hero-a: #E3EFE9; --hero-b: #FFFFFF; --label-bg: #FFFFFF;
+  --glow: transparent; --btn-a: #0B6B4C; --btn-b: #0B6B4C;
+  --teal-tint: #E3EFE9; --teal-line: #9CC9B0; --leaf-a: #3E9A72; --leaf-b: #0B6B4C; --wordmark: #141A17; --pill-os: #CDEBDD;
+  --code-bg: #ECF0EE; --input-bg: #FFFFFF; --row-hover: #F0F4F2;
+  --good-ink: #1C6B44; --on-bad: #FFFFFF; --warn-tint-2: #FDF3E1; --info-tint: #E8F0FB; --neutral-tint: rgba(20, 26, 23, .05); --code-ink: #141A17;
+  --glow-mint: 0 0 0 1px #0B6B4C; --glow-ai: 0 0 0 1px #5B3FA8;
+  --ground: var(--bg); --surface: var(--panel); --surface-2: var(--panel-2);
+  --brand-tint: var(--accent-soft); --brand-tint-2: var(--line-strong); --brand-ink: var(--accent);
+  --focus-ring: var(--accent-soft); --shadow: var(--shadow-md);
 
-  --violet-ink: #7420C4;
-  --violet-tint: #F1E8FC;
-  --teal-tint: #E1F1ED;
-  --teal-line: #9CCFC2;
-  --leaf-a: #3FDDA0;
-  --leaf-b: #0F7A64;
-  --wordmark: #008A63;
-  --pill-os: #00C98F;
-
-  --work: #7A5D00;
-  --warn: #9A5B00;
-  --bad: #C62828;
-  --off: #7F8C98;
-  --code-bg: rgba(10, 58, 53, .05);
-  --input-bg: #FFFFFF;
-  --row-hover: rgba(0, 165, 122, .06);
-
-  --orb-floret: #3FDDA0;
-  --orb-floret-mid: #0F7A64;
-  --orb-floret-hi: #0A3A35;
-  --orb-core: #0A3A35;
-  --orb-root: #9CCFC2;
-  --orb-root-hi: #00A57A;
-  --orb-sap: #00A57A;
-  /* the Machine core's mycelium (public/mycelium.js): flat and structural */
+  /* the MINT AI cores and the graphs keep their own palette (product features) */
+  --orb-floret: #3E9A72; --orb-floret-mid: #0B6B4C; --orb-floret-hi: #08593F; --orb-core: #08593F;
+  --orb-root: #9CC9B0; --orb-root-hi: #0B6B4C; --orb-sap: #0B6B4C; --orb-glow: rgba(11, 107, 76, .18);
+  --orb-hud: #0B6B4C; --orb-node-bg: #FFFFFF; --orb-wood-a: #E2E8E5; --orb-wood-b: #ECF0EE;
   --dry: #B9C4C1; --dry-crack: #7F8C98;
-  --sub-a: rgba(10, 58, 53, .06); --hypha: rgba(15, 122, 100, .55); --hypha-faint: rgba(15, 122, 100, .18);
-  --pulse: #00A57A; --pulse-glow: rgba(0, 230, 165, .30); --spore: #C62828;
-  --dark-thread: rgba(95, 107, 118, .28);
-  --orb-glow: rgba(0, 230, 165, .25);
-  --orb-hud: #00785A;
-  --orb-node-bg: #FFFFFF;
-  --orb-wood-a: #E9F0EE;
-  --orb-wood-b: #F3F7F6;
-  --grid-dot: rgba(10, 58, 53, .07);
+  --sub-a: rgba(11, 107, 76, .06); --hypha: rgba(11, 107, 76, .55); --hypha-faint: rgba(11, 107, 76, .18);
+  --pulse: #0B6B4C; --pulse-glow: rgba(11, 107, 76, .25); --spore: #B3261E;
+  --dark-thread: rgba(82, 94, 88, .28); --grid-dot: rgba(20, 26, 23, .07);
+  --g-people: #B4501A; --g-topic: #5B3FA8; --g-conv: #0E7C75; --g-doc: #8A5200; --g-decision: #2E7D32;
+  --g-figure: #2F5FC8; --g-trap: #B3261E; --g-pref: #B0368F; --g-issue: #B45A00; --g-fact: #6B7F00;
+  --g-session: #0B6BA8; --g-project: #0B6B4C; --g-file: #8A5AD6; --g-run: #0F766E;
+  --g-edge: rgba(82, 94, 88, .20); --g-edge-sem: rgba(138, 82, 0, .50);
 
-  /* The memory graph's categories, in the brand hues: mint, violet and their
-     neighbours, each re-set for dark so it keeps its contrast. */
-  --g-people: #B4501A;
-  --g-topic: #7420C4;
-  --g-conv: #0E7C75;
-  --g-doc: #9A5B00;
-  --g-decision: #2E7D32;
-  --g-figure: #2F5FC8;
-  --g-trap: #C62828;
-  --g-pref: #B0368F;
-  --g-issue: #B45A00;
-  --g-fact: #6B7F00;
-  --g-session: #0B6BA8;
-  --g-project: #00805C;
-  --g-file: #8A5AD6;
-  --g-run: #0F766E;
-  --g-edge: rgba(70, 83, 94, .20);
-  --g-edge-sem: rgba(154, 91, 0, .50);
-
-  --on-brand: #0D1117;
-  --on-bad: #FFFFFF;
-  --brand-hover: #00D69A;
-  --good-ink: #00604A;
-  --bad-tint: #FDECEC;
-  --bad-line: rgba(198, 40, 40, .32);
-  --bad-ink: #8E1B1B;
-  --warn-tint: #FFF3DC;
-  --warn-tint-2: rgba(154, 91, 0, .06);
-  --warn-line: rgba(154, 91, 0, .34);
-  --warn-ink: #6B4000;
-  --info-tint: #E3F8F1;
-  --info-line: rgba(0, 165, 122, .30);
-  --neutral-tint: rgba(13, 17, 23, .05);
-  --scrim: rgba(13, 17, 23, .40);
-  --code-ink: #0D1117;
-  --shadow-sm: 0 1px 2px rgba(13, 17, 23, .05);
-  --shadow-md: 0 6px 18px rgba(13, 17, 23, .06), 0 1px 2px rgba(13, 17, 23, .05);
-  --glow-mint: 0 0 0 1px #00A57A, 0 0 0 4px rgba(0, 230, 165, .18);
-  --glow-ai: 0 0 0 1px #9B5CE6, 0 0 0 4px rgba(138, 43, 226, .14);
-
-  /* Names the older rules still use, pointed at the new palette. */
-  --ground: var(--bg);
-  --surface: var(--panel);
-  --surface-2: var(--panel-2);
-  --brand-tint: var(--accent-soft);
-  --brand-tint-2: var(--line-strong);
-  --brand-ink: var(--accent);
-  --ok: var(--accent);
-  --focus-ring: var(--accent-soft);
-  --shadow: var(--shadow-md);
-
-  --radius: 8px;
-  --r: 14px;
-  --gap: 12px;
-  --side-w: 244px;
+  /* shape, space, type, motion */
+  --radius: 8px;             /* controls */
+  --r: 10px;                 /* cards, groups, menus */
+  --gap: 16px;
+  --side-w: 248px;
   --sidebar-w: var(--side-w);
   --topbar-h: 56px;
+  --target: 44px;            /* touch target */
+  --target-sm: 36px;         /* pointer-only dense controls, still above 24 */
 
-  --brand-font: "Space Grotesk", "Avenir Next", "Segoe UI", system-ui, sans-serif;
-  --ui: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial,
-        "Noto Sans", "Noto Sans Arabic", sans-serif;
-  --reading: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
-  --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --ui: "Atkinson Hyperlegible Next", system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", "Noto Sans Arabic", sans-serif;
+  --brand-font: var(--ui);
+  --reading: var(--ui);
+  --mono: "Atkinson Hyperlegible Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  --fs-xs: .8125rem;  /* 13 -- the floor, for tags and table heads only */
+  --fs-sm: .875rem;   /* 14 -- secondary lines */
+  --fs-md: 1rem;      /* 16 -- body */
+  --fs-lg: 1.125rem;  /* 18 -- card titles */
+  --fs-xl: 1.375rem;  /* 22 -- section titles */
+  --fs-2xl: 1.75rem;  /* 28 -- page titles */
 
-  --fast: 140ms;
-  --ease: cubic-bezier(0.2, 0, 0.2, 1);
+  --fast: 160ms;
+  --ease: cubic-bezier(0.2, 0, 0, 1);
   color-scheme: light;
 }
 
-/* Dark: Obsidian. Chosen with the theme switch in the top bar, or followed
-   from the system when that is left on System (the default). theme-init.js
-   sets data-theme before first paint. The same block twice, because a
-   custom property cannot be shared between a selector and a media query. */
+/* Dark. Chosen with the theme switch in the avatar menu, or followed from the
+   system when that is left on System (the default). theme-init.js sets
+   data-theme before first paint. The same block twice, because a custom
+   property cannot be shared between a selector and a media query. */
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --brand: #00E6A5; --brand-deep: #00E6A5; --brand-dark: #0A3A35;
-  --bg: #0D1117; --bg-glow: #0E1A1B; --topbar-bg: rgba(10, 14, 19, .94);
-  --panel: #121A22; --panel-2: #17212B; --panel-3: #1D2934;
-  --card-a: rgba(18, 26, 34, .96); --card-b: rgba(15, 22, 29, .96);
-  --rail-a: rgba(10, 58, 53, .30); --rail-b: rgba(13, 17, 23, .2);
-  --hero-a: rgba(0, 230, 165, .10); --hero-b: rgba(18, 26, 34, .6);
-  --label-bg: rgba(13, 17, 23, .82);
-  --line: #1F2B35; --line-strong: #2A3945;
-  --ink: #E6EDF3; --body: #C3CDD6; --muted: #9DAAB6; --dim: #7F8C98; --navy: #A9BFE3;
-  --accent: #00E6A5; --accent-2: #00C98F; --accent-soft: rgba(0, 230, 165, .10); --glow: rgba(0, 230, 165, .30);
-  --on-accent: #0D1117; --btn-a: #00E6A5; --btn-b: #00CC93;
-  --violet-ink: #B98CFF; --violet-tint: rgba(138, 43, 226, .16); --teal-tint: #0A3A35; --teal-line: #145A50;
-  --leaf-a: #6DEBA8; --leaf-b: #248273; --wordmark: #6DEBA8; --pill-os: #6DEBA8;
-  --work: #E8D86A; --warn: #F5B84A; --bad: #FF7A7A; --off: #6B7785;
-  --code-bg: rgba(0, 0, 0, .32); --input-bg: #0F161D; --row-hover: rgba(0, 230, 165, .05);
-  --orb-floret: #00E6A5; --orb-floret-mid: #6DEBA8; --orb-floret-hi: #C9FFEC; --orb-core: #E9FFF6;
-  --orb-root: #145A50; --orb-root-hi: #6DEBA8; --orb-sap: #C9FFEC; --orb-glow: rgba(0, 230, 165, .45);
-  --dry: #3A4652; --dry-crack: #5F6B76;
-  --sub-a: rgba(0, 230, 165, .06); --hypha: rgba(30, 140, 119, .75); --hypha-faint: rgba(30, 140, 119, .25);
-  --pulse: #00E6A5; --pulse-glow: rgba(0, 230, 165, .5); --spore: #FF7A7A;
-  --dark-thread: rgba(127, 140, 152, .18);
-  --orb-hud: #00E6A5; --orb-node-bg: #121A22; --orb-wood-a: #17212B; --orb-wood-b: #121A22;
-  --grid-dot: rgba(0, 230, 165, .06);
-  --g-people: #FF9E6B; --g-topic: #B98CFF; --g-conv: #3FD2C8; --g-doc: #F5B84A; --g-decision: #7CE38B;
-  --g-figure: #5C9DFF; --g-trap: #FF7A7A; --g-pref: #F28CD8; --g-issue: #FFB36B; --g-fact: #D6F36B;
-  --g-session: #6CC6FF; --g-project: #00E6A5; --g-file: #D7C2FF; --g-run: #7FE0D4;
-  --g-edge: rgba(185, 140, 255, .16); --g-edge-sem: rgba(245, 184, 74, .5);
-  --on-brand: #0D1117; --on-bad: #1A0D0D; --brand-hover: #00CC93; --good-ink: #9FF5D6;
-  --bad-tint: rgba(255, 122, 122, .12); --bad-line: rgba(255, 122, 122, .4); --bad-ink: #FFB9B9;
-  --warn-tint: rgba(245, 184, 74, .13); --warn-tint-2: rgba(245, 184, 74, .08); --warn-line: rgba(245, 184, 74, .45); --warn-ink: #F8D694;
-  --info-tint: rgba(0, 230, 165, .10); --info-line: rgba(0, 230, 165, .30);
-  --neutral-tint: rgba(255, 255, 255, .06);
-  --scrim: rgba(0, 0, 0, .55); --code-ink: #E6EDF3;
+  --accent: #6ED3A6; --accent-hover: #8BE0BA; --accent-2: #6ED3A6; --accent-soft: #1E3A2F; --on-accent: #0C2219;
+  --bg: #101513; --panel: #171D1A; --panel-2: #1C2421; --panel-3: #232C28;
+  --line: #2A3430; --line-strong: #6B7872;
+  --ink: #E9EEEB; --body: #D0D8D4; --muted: #A8B4AE; --dim: #97A39D;
+  --ok: #6ED3A6; --ok-tint: #17302A; --ok-line: #2F6B52;
+  --warn: #F0B45C; --warn-tint: #2E2414; --warn-line: #7A5A26; --warn-ink: #F8D694;
+  --bad: #FF8F85; --bad-tint: #33191A; --bad-line: #85403C; --bad-ink: #FFB9B3;
+  --info: #8DB9F2; --info-tint: #17243A; --info-line: #3A5A88;
+  --work: #E8CF6A; --off: #8C9892;
+  --violet-ink: #B9A6F2; --violet-tint: #26213A;
+  --focus: #6ED3A6; --focus-halo: #101513;
+  --scrim: rgba(0, 0, 0, .6);
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, .4);
-  --shadow-md: 0 1px 0 rgba(255, 255, 255, .02) inset, 0 8px 24px rgba(0, 0, 0, .28);
-  --glow-mint: 0 0 0 1px rgba(0, 230, 165, .35), 0 0 18px rgba(0, 230, 165, .25);
-  --glow-ai: 0 0 0 1px rgba(160, 120, 255, .35), 0 0 22px rgba(138, 43, 226, .28);
+  --shadow-md: 0 1px 3px rgba(0, 0, 0, .45);
+  --shadow-pop: 0 10px 28px rgba(0, 0, 0, .55), 0 2px 6px rgba(0, 0, 0, .4);
+  --obsidian: #0C2219; --mint: #6ED3A6; --deep-teal: #1E3A2F; --ai-violet: #B9A6F2; --offwhite: #E9EEEB; --navy: #8DB9F2;
+  --grad-ai: #6ED3A6; --grad-ai-soft: #1E3A2F; --grad-ai-line: #2F6B52;
+  --brand: #6ED3A6; --brand-deep: #6ED3A6; --brand-dark: #1E3A2F; --on-brand: #0C2219; --brand-hover: #8BE0BA;
+  --bg-glow: #101513; --topbar-bg: #171D1A;
+  --card-a: #171D1A; --card-b: #171D1A; --rail-a: #1C2421; --rail-b: #1C2421; --hero-a: #1E3A2F; --hero-b: #171D1A; --label-bg: #171D1A;
+  --btn-a: #6ED3A6; --btn-b: #6ED3A6;
+  --teal-tint: #1E3A2F; --teal-line: #2F6B52; --leaf-a: #6ED3A6; --leaf-b: #2F6B52; --wordmark: #E9EEEB; --pill-os: #1E3A2F;
+  --code-bg: #1C2421; --input-bg: #121815; --row-hover: #1A211E;
+  --good-ink: #9FE6C5; --on-bad: #1A0D0D; --warn-tint-2: #2E2414; --neutral-tint: rgba(255, 255, 255, .06); --code-ink: #E9EEEB;
+  --glow-mint: 0 0 0 1px #6ED3A6; --glow-ai: 0 0 0 1px #B9A6F2;
+  --orb-floret: #6ED3A6; --orb-floret-mid: #8BE0BA; --orb-floret-hi: #C9F3DF; --orb-core: #E9FFF6;
+  --orb-root: #2F6B52; --orb-root-hi: #8BE0BA; --orb-sap: #C9F3DF; --orb-glow: rgba(110, 211, 166, .35);
+  --orb-hud: #6ED3A6; --orb-node-bg: #171D1A; --orb-wood-a: #1C2421; --orb-wood-b: #171D1A;
+  --dry: #3A4652; --dry-crack: #5F6B76;
+  --sub-a: rgba(110, 211, 166, .06); --hypha: rgba(110, 211, 166, .6); --hypha-faint: rgba(110, 211, 166, .2);
+  --pulse: #6ED3A6; --pulse-glow: rgba(110, 211, 166, .4); --spore: #FF8F85;
+  --dark-thread: rgba(168, 180, 174, .18); --grid-dot: rgba(110, 211, 166, .06);
+  --g-people: #FF9E6B; --g-topic: #B9A6F2; --g-conv: #3FD2C8; --g-doc: #F0B45C; --g-decision: #7CE38B;
+  --g-figure: #5C9DFF; --g-trap: #FF8F85; --g-pref: #F28CD8; --g-issue: #FFB36B; --g-fact: #D6F36B;
+  --g-session: #6CC6FF; --g-project: #6ED3A6; --g-file: #D7C2FF; --g-run: #7FE0D4;
+  --g-edge: rgba(185, 166, 242, .16); --g-edge-sem: rgba(240, 180, 92, .5);
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     color-scheme: dark;
-    --brand: #00E6A5; --brand-deep: #00E6A5; --brand-dark: #0A3A35;
-    --bg: #0D1117; --bg-glow: #0E1A1B; --topbar-bg: rgba(10, 14, 19, .94);
-    --panel: #121A22; --panel-2: #17212B; --panel-3: #1D2934;
-    --card-a: rgba(18, 26, 34, .96); --card-b: rgba(15, 22, 29, .96);
-    --rail-a: rgba(10, 58, 53, .30); --rail-b: rgba(13, 17, 23, .2);
-    --hero-a: rgba(0, 230, 165, .10); --hero-b: rgba(18, 26, 34, .6);
-    --label-bg: rgba(13, 17, 23, .82);
-    --line: #1F2B35; --line-strong: #2A3945;
-    --ink: #E6EDF3; --body: #C3CDD6; --muted: #9DAAB6; --dim: #7F8C98; --navy: #A9BFE3;
-    --accent: #00E6A5; --accent-2: #00C98F; --accent-soft: rgba(0, 230, 165, .10); --glow: rgba(0, 230, 165, .30);
-    --on-accent: #0D1117; --btn-a: #00E6A5; --btn-b: #00CC93;
-    --violet-ink: #B98CFF; --violet-tint: rgba(138, 43, 226, .16); --teal-tint: #0A3A35; --teal-line: #145A50;
-    --leaf-a: #6DEBA8; --leaf-b: #248273; --wordmark: #6DEBA8; --pill-os: #6DEBA8;
-    --work: #E8D86A; --warn: #F5B84A; --bad: #FF7A7A; --off: #6B7785;
-    --code-bg: rgba(0, 0, 0, .32); --input-bg: #0F161D; --row-hover: rgba(0, 230, 165, .05);
-    --orb-floret: #00E6A5; --orb-floret-mid: #6DEBA8; --orb-floret-hi: #C9FFEC; --orb-core: #E9FFF6;
-    --orb-root: #145A50; --orb-root-hi: #6DEBA8; --orb-sap: #C9FFEC; --orb-glow: rgba(0, 230, 165, .45);
-    --dry: #3A4652; --dry-crack: #5F6B76;
-    --sub-a: rgba(0, 230, 165, .06); --hypha: rgba(30, 140, 119, .75); --hypha-faint: rgba(30, 140, 119, .25);
-    --pulse: #00E6A5; --pulse-glow: rgba(0, 230, 165, .5); --spore: #FF7A7A;
-    --dark-thread: rgba(127, 140, 152, .18);
-    --orb-hud: #00E6A5; --orb-node-bg: #121A22; --orb-wood-a: #17212B; --orb-wood-b: #121A22;
-    --grid-dot: rgba(0, 230, 165, .06);
-    --g-people: #FF9E6B; --g-topic: #B98CFF; --g-conv: #3FD2C8; --g-doc: #F5B84A; --g-decision: #7CE38B;
-    --g-figure: #5C9DFF; --g-trap: #FF7A7A; --g-pref: #F28CD8; --g-issue: #FFB36B; --g-fact: #D6F36B;
-    --g-session: #6CC6FF; --g-project: #00E6A5; --g-file: #D7C2FF; --g-run: #7FE0D4;
-    --g-edge: rgba(185, 140, 255, .16); --g-edge-sem: rgba(245, 184, 74, .5);
-    --on-brand: #0D1117; --on-bad: #1A0D0D; --brand-hover: #00CC93; --good-ink: #9FF5D6;
-    --bad-tint: rgba(255, 122, 122, .12); --bad-line: rgba(255, 122, 122, .4); --bad-ink: #FFB9B9;
-    --warn-tint: rgba(245, 184, 74, .13); --warn-tint-2: rgba(245, 184, 74, .08); --warn-line: rgba(245, 184, 74, .45); --warn-ink: #F8D694;
-    --info-tint: rgba(0, 230, 165, .10); --info-line: rgba(0, 230, 165, .30);
-    --neutral-tint: rgba(255, 255, 255, .06);
-    --scrim: rgba(0, 0, 0, .55); --code-ink: #E6EDF3;
+    --accent: #6ED3A6; --accent-hover: #8BE0BA; --accent-2: #6ED3A6; --accent-soft: #1E3A2F; --on-accent: #0C2219;
+    --bg: #101513; --panel: #171D1A; --panel-2: #1C2421; --panel-3: #232C28;
+    --line: #2A3430; --line-strong: #6B7872;
+    --ink: #E9EEEB; --body: #D0D8D4; --muted: #A8B4AE; --dim: #97A39D;
+    --ok: #6ED3A6; --ok-tint: #17302A; --ok-line: #2F6B52;
+    --warn: #F0B45C; --warn-tint: #2E2414; --warn-line: #7A5A26; --warn-ink: #F8D694;
+    --bad: #FF8F85; --bad-tint: #33191A; --bad-line: #85403C; --bad-ink: #FFB9B3;
+    --info: #8DB9F2; --info-tint: #17243A; --info-line: #3A5A88;
+    --work: #E8CF6A; --off: #8C9892;
+    --violet-ink: #B9A6F2; --violet-tint: #26213A;
+    --focus: #6ED3A6; --focus-halo: #101513;
+    --scrim: rgba(0, 0, 0, .6);
     --shadow-sm: 0 1px 2px rgba(0, 0, 0, .4);
-    --shadow-md: 0 1px 0 rgba(255, 255, 255, .02) inset, 0 8px 24px rgba(0, 0, 0, .28);
-    --glow-mint: 0 0 0 1px rgba(0, 230, 165, .35), 0 0 18px rgba(0, 230, 165, .25);
-    --glow-ai: 0 0 0 1px rgba(160, 120, 255, .35), 0 0 22px rgba(138, 43, 226, .28);
+    --shadow-md: 0 1px 3px rgba(0, 0, 0, .45);
+    --shadow-pop: 0 10px 28px rgba(0, 0, 0, .55), 0 2px 6px rgba(0, 0, 0, .4);
+    --obsidian: #0C2219; --mint: #6ED3A6; --deep-teal: #1E3A2F; --ai-violet: #B9A6F2; --offwhite: #E9EEEB; --navy: #8DB9F2;
+    --grad-ai: #6ED3A6; --grad-ai-soft: #1E3A2F; --grad-ai-line: #2F6B52;
+    --brand: #6ED3A6; --brand-deep: #6ED3A6; --brand-dark: #1E3A2F; --on-brand: #0C2219; --brand-hover: #8BE0BA;
+    --bg-glow: #101513; --topbar-bg: #171D1A;
+    --card-a: #171D1A; --card-b: #171D1A; --rail-a: #1C2421; --rail-b: #1C2421; --hero-a: #1E3A2F; --hero-b: #171D1A; --label-bg: #171D1A;
+    --btn-a: #6ED3A6; --btn-b: #6ED3A6;
+    --teal-tint: #1E3A2F; --teal-line: #2F6B52; --leaf-a: #6ED3A6; --leaf-b: #2F6B52; --wordmark: #E9EEEB; --pill-os: #1E3A2F;
+    --code-bg: #1C2421; --input-bg: #121815; --row-hover: #1A211E;
+    --good-ink: #9FE6C5; --on-bad: #1A0D0D; --warn-tint-2: #2E2414; --neutral-tint: rgba(255, 255, 255, .06); --code-ink: #E9EEEB;
+    --glow-mint: 0 0 0 1px #6ED3A6; --glow-ai: 0 0 0 1px #B9A6F2;
+    --orb-floret: #6ED3A6; --orb-floret-mid: #8BE0BA; --orb-floret-hi: #C9F3DF; --orb-core: #E9FFF6;
+    --orb-root: #2F6B52; --orb-root-hi: #8BE0BA; --orb-sap: #C9F3DF; --orb-glow: rgba(110, 211, 166, .35);
+    --orb-hud: #6ED3A6; --orb-node-bg: #171D1A; --orb-wood-a: #1C2421; --orb-wood-b: #171D1A;
+    --dry: #3A4652; --dry-crack: #5F6B76;
+    --sub-a: rgba(110, 211, 166, .06); --hypha: rgba(110, 211, 166, .6); --hypha-faint: rgba(110, 211, 166, .2);
+    --pulse: #6ED3A6; --pulse-glow: rgba(110, 211, 166, .4); --spore: #FF8F85;
+    --dark-thread: rgba(168, 180, 174, .18); --grid-dot: rgba(110, 211, 166, .06);
+    --g-people: #FF9E6B; --g-topic: #B9A6F2; --g-conv: #3FD2C8; --g-doc: #F0B45C; --g-decision: #7CE38B;
+    --g-figure: #5C9DFF; --g-trap: #FF8F85; --g-pref: #F28CD8; --g-issue: #FFB36B; --g-fact: #D6F36B;
+    --g-session: #6CC6FF; --g-project: #6ED3A6; --g-file: #D7C2FF; --g-run: #7FE0D4;
+    --g-edge: rgba(185, 166, 242, .16); --g-edge-sem: rgba(240, 180, 92, .5);
   }
 }
 

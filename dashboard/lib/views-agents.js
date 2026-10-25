@@ -303,33 +303,106 @@ exports.dashboard = ({ csrf, user, agents, channels, probe, flash, err, team, li
 
 /* ----------------------------------------------------------------- list --- */
 
-exports.list = ({ csrf, user, agents, flash, err }) =>
-  shell(
+/**
+ * An agent's state as a word and a shape, never colour alone: a filled dot
+ * running, a triangle failed, a hollow ring stopped, a half dot in between.
+ */
+const STATE_WORDS = {
+  active: ["Running", "ok", '<circle cx="8" cy="8" r="5"/>'],
+  failed: ["Failed", "bad", '<path d="M8 2.5 14 13H2Z"/>'],
+  activating: ["Starting", "warn", '<path d="M8 3a5 5 0 0 1 0 10Z"/><circle cx="8" cy="8" r="4.25" fill="none" stroke-width="1.5"/>'],
+  deactivating: ["Stopping", "warn", '<path d="M8 3a5 5 0 0 1 0 10Z"/><circle cx="8" cy="8" r="4.25" fill="none" stroke-width="1.5"/>'],
+  inactive: ["Stopped", "off", '<circle cx="8" cy="8" r="4.25" fill="none" stroke-width="1.5"/>'],
+};
+function stateChip(st) {
+  const [word, tone, shape] = STATE_WORDS[st] || [st || "Unknown", "off", '<circle cx="8" cy="8" r="4.25" fill="none" stroke-width="1.5"/>'];
+  return `<span class="state ${tone}" title="systemd: ${esc(st || "unknown")}"><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="currentColor" stroke="currentColor">${shape}</svg>${esc(word)}</span>`;
+}
+exports.stateChip = stateChip;
+
+const EFFORT_WORDS = { low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max" };
+const modelWord = (id) => {
+  const m = MODELS.find((x) => x[0] === id);
+  return m ? m[1].split(" — ")[0] : id || "—";
+};
+
+/** The Telegram agents as one table: who, state, how they are reached, the mind, memory, actions. */
+function agentTable(csrf, user, agents) {
+  const rows = agents
+    .map((a) => {
+      const st = (a.state && a.state.active) || "inactive";
+      const mem = a.memory || {};
+      const label = a.name || a.slug;
+      const ch = a.channel;
+      const chCell = ch
+        ? `<a class="ch" href="/channels/${esc(ch.slug)}">${icon(ch.type === "whatsapp" ? "whatsapp" : "telegram", 16)}<span>${esc(
+            ch.type === "whatsapp" ? "WhatsApp" : "Telegram"
+          )}${ch.telegram_bot_username ? ` <span class="sub mono">@${esc(ch.telegram_bot_username)}</span>` : ch.name && ch.type === "whatsapp" ? ` <span class="sub">${esc(ch.name)}</span>` : ""}</span></a>`
+        : `<a class="ch none" href="/channels/new">${icon("plus", 16)}<span>No channel — add one</span></a>`;
+      const actions = can(user, "agents.control", a.slug) ? controls(csrf, a) : "";
+      return `<tr>
+        <th scope="row" data-h="Agent"><a class="nm" href="/agents/${esc(a.slug)}">${esc(label)}</a><span class="sub mono">${esc(a.slug)}</span></th>
+        <td data-h="State">${stateChip(st)}</td>
+        <td data-h="Channel">${chCell}</td>
+        <td data-h="Model"><span>${esc(modelWord(a.model))}</span><span class="sub">${esc(EFFORT_WORDS[a.effort || "medium"] || a.effort)} effort</span></td>
+        <td data-h="Memory" class="num"><span>${(a.notes || 0).toLocaleString("en-US")} notes</span><span class="sub">indexed ${esc(ago(mem.last_indexed))}</span></td>
+        <td data-h="" class="acts"><div class="acts-in">${actions}
+          <details class="ds-menu"><summary aria-label="More for ${esc(label)}">More</summary><div class="ds-menu-pop" role="list">
+            <a role="listitem" href="/agents/${esc(a.slug)}/instructions">${icon("guide", 16)}Instructions</a>
+            <a role="listitem" href="/agents/${esc(a.slug)}/memory">${icon("memory", 16)}Memory</a>
+            <a role="listitem" href="/agents/${esc(a.slug)}/logs">${icon("logs", 16)}Logs</a>
+            <a role="listitem" href="/agents/${esc(a.slug)}/settings">${icon("settings", 16)}Settings</a>
+          </div></details></div></td>
+      </tr>`;
+    })
+    .join("");
+  return `<div class="ds-card flush"><table class="ds-table agents-table">
+    <caption class="sr">Telegram agents</caption>
+    <thead><tr><th scope="col">Agent</th><th scope="col">State</th><th scope="col">Channel</th><th scope="col">Model</th><th scope="col" class="num">Memory</th><th scope="col"><span class="sr">Actions</span></th></tr></thead>
+    <tbody>${rows}</tbody></table></div>`;
+}
+
+/** What an agent gets, as a plain definition list under the table. */
+function getsList() {
+  return `<section class="ds-card" aria-labelledby="gets-h"><h2 id="gets-h" class="ds-card-title">What every agent gets</h2>
+    <dl class="ds-dl">${GETS.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join("")}</dl></section>`;
+}
+
+exports.list = ({ csrf, user, agents, flash, err }) => {
+  const running = agents.filter((a) => a.state && a.state.active === "active").length;
+  const failed = agents.filter((a) => a.state && a.state.active === "failed").length;
+  const summary = agents.length
+    ? `<p class="ds-summary">${agents.length} agent${agents.length === 1 ? "" : "s"} · ${running} running${
+        failed ? ` · <strong class="bad-t">${failed} failed</strong>` : ""
+      }</p>`
+    : "";
+  return shell(
     "Agents",
     `${flashes({ msg: flash, err })}
+    ${summary}
     ${
-      agents.length || can(user, "agents.create")
-        ? fleetGrid(csrf, user, agents)
-        : card(
-            "",
-            empty(
-              "agents",
-              "No agents yet",
-              'An agent is one Claude session with its own workspace and memory. <a href="/agents/new">Create the first one</a>.'
-            )
-          )
+      agents.length
+        ? agentTable(csrf, user, agents)
+        : `<div class="ds-card">${empty(
+            "agents",
+            "No agents yet",
+            can(user, "agents.create")
+              ? 'An agent is one Claude session with its own workspace and memory, reached through a Telegram or WhatsApp channel. <a href="/agents/new">Create the first one</a>.'
+              : "An agent is one Claude session with its own workspace and memory. Your role cannot create one."
+          )}</div>`
     }
-    ${getsCard(true)}`,
+    ${getsList()}`,
     {
       user,
       csrf,
       active: "agents",
-      pattern: "a",
+      pattern: "c",
       heading: "Telegram agents",
       subtitle: "Each agent is one Claude session with its own memory. They cannot see each other.",
       actions: can(user, "agents.create") ? `<a class="btn primary" href="/agents/new">${icon("plus")} New agent</a>` : "",
     }
   );
+};
 
 /* ------------------------------------------------------------------ new --- */
 

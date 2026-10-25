@@ -114,7 +114,7 @@ console.log("\nbadges: counts are quiet, states are tinted");
   const html = render(admin, { user: { name: "Ann", perm: admin, chrome: { badges: b } } });
   check("the sidebar hides a plain zero", !/data-badge="keys"/.test(html) && !/data-badge="channels"/.test(html) && !/data-badge="addons"/.test(html));
   check("  shows a plain count without tint", /<span class="badge plain" data-badge="users">2<\/span>/.test(html));
-  check("  and tints a state, with its sentence as the title", /<span class="badge ok" data-badge="services" title="all 2 up">2\/2<\/span>/.test(html) && /<span class="badge ok" data-badge="claude-sessions" title="1 live">1<\/span>/.test(html));
+  check("  and tints a state, with its sentence as the title", /<span class="badge ok" data-badge="services" title="all 2 up">2\/2<span class="sr">: all 2 up<\/span><\/span>/.test(html) && /<span class="badge ok" data-badge="claude-sessions" title="1 live">1<span class="sr">: 1 live<\/span><\/span>/.test(html));
   check("badgeHtml: a tinted zero still shows (a state is never hidden)", /badge warn/.test(ui.badgeHtml("x", ["0", "warn"])) && ui.badgeHtml("x", ["0", "plain"]) === "" && ui.badgeHtml("x", ["", "plain"]) === "" && ui.badgeHtml("x", null) === "");
 
   const bad = chrome.forActor(admin, Object.assign({}, facts, {
@@ -178,7 +178,7 @@ console.log("\nthe Command Center's drawer");
   const cc = render(admin, { bare: true, active: "moni-ai", brand: "ai" });
   check("the CC renders the sidebar too (hidden until #cc-os-btn opens it)", /<aside class="sidebar" id="sidebar"/.test(cc) && /<div class="layout bare">/.test(cc) && /<a href="\/mint-ai" class="side-item on" aria-current="page"/.test(cc));
   check("  its ☰ toggles that drawer (data-os-toggle), over its own scrim (data-os-close)", /<button class="nav-toggle"[^>]*data-os-toggle>/.test(cc) && /<div class="os-scrim" id="os-scrim" data-os-close hidden><\/div>/.test(cc));
-  check("  no page head (the CC lays out its own screen), no frame marker", !/class="page-head/.test(cc) && /<html lang="en">/.test(cc) && /<main class="content flush">/.test(cc));
+  check("  no page head (the CC lays out its own screen), no frame marker", !/class="page-head/.test(cc) && /<html lang="en">/.test(cc) && /<main class="content flush"[^>]*>/.test(cc));
   check("an ordinary page's ☰ is the phone nav, with no OS scrim", /data-nav-toggle>/.test(render(admin)) && !/os-scrim/.test(render(admin)));
   const views = lib("views-moniai");
   const page = views.page({ csrf: "t", user: { name: "Ann", roleLabel: "Administrator", perm: admin }, voice: { configured: false } });

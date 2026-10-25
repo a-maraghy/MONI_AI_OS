@@ -238,7 +238,9 @@ function badgeHtml(key, b) {
   const text = String(b[0] == null ? "" : b[0]);
   const cls = b[1] || "plain";
   if (cls === "plain" && (text === "" || text === "0")) return "";
-  return `<span class="badge ${esc(cls)}" data-badge="${esc(key)}"${b[2] ? ` title="${esc(b[2])}"` : ""}>${esc(text)}</span>`;
+  // The title is the full sentence for a pointer; the hidden span says it to a screen reader,
+  // so a red "1" never carries its meaning by colour alone.
+  return `<span class="badge ${esc(cls)}" data-badge="${esc(key)}"${b[2] ? ` title="${esc(b[2])}"` : ""}>${esc(text)}${b[2] ? `<span class="sr">: ${esc(b[2])}</span>` : ""}</span>`;
 }
 
 function renderSidebar(active, perm, chrome) {
@@ -247,7 +249,7 @@ function renderSidebar(active, perm, chrome) {
   const link = (i) => {
     const on = !!(at && at.item === i);
     return `<a href="${i.href}" class="side-item${on ? " on" : ""}"${on ? ' aria-current="page"' : ""} title="${esc(i.label)}">${
-      i.ai ? brand.spark(18) : icon(i.icon)
+      icon(i.icon)
     }<span>${esc(i.label)}</span>${badgeHtml(i.key, badges[i.key])}</a>`;
   };
   const groups = NAV.map((g) => {
@@ -263,7 +265,7 @@ function renderSidebar(active, perm, chrome) {
   const id = chrome && chrome.ids && chrome.ids.os;
   const h = chrome && chrome.health;
   const idBlock = id
-    ? `<div class="side-id"><span class="side-id-mark">${brand.osMark()}${
+    ? `<div class="side-id"><span class="side-id-mark">${icon("cpu", 18)}${
         h ? `<span class="hd${h.cls === "ok" ? "" : " " + esc(h.cls)}" title="${esc(h.text)}"></span>` : ""
       }</span>
         <div><b>${esc(id.name)}</b><div class="facts">${(id.facts || [id.sub]).map((f) => `<span>${esc(f)}</span>`).join("")}</div></div></div>`
@@ -347,7 +349,7 @@ function shell(title, body, opts = {}) {
   if (!who || !who.name) {
     // Signed out: no chrome at all, just the card. Showing navigation you
     // cannot use is noise on the one screen that has to be unambiguous.
-    // The full lockup heads the card, and a large faint leaf sits behind it.
+    // The MINT wordmark heads the card (no leaf, 2026-10-25).
     const kind = opts.brand === "ai" ? "ai" : "os";
     const head = `<div class="auth-lockup">${brand.lockup(kind, { sub: true })}</div>`;
     const inner = /^\s*<div class="card">/.test(body) ? body.replace(/<div class="card">/, `<div class="card auth-card">${head}`) : head + body;
@@ -393,7 +395,8 @@ function shell(title, body, opts = {}) {
 
   return page(
     title,
-    `<header class="topbar">
+    `<a class="skip-link" href="#main">Skip to content</a>
+    <header class="topbar">
       <button class="nav-toggle" type="button" aria-label="Menu"
               aria-expanded="false" aria-controls="sidebar"
               ${bare ? "data-os-toggle" : "data-nav-toggle"}>${icon("menu", 20)}</button>
@@ -413,7 +416,7 @@ function shell(title, body, opts = {}) {
 
     <div class="layout${bare ? " bare" : ""}">
       <aside class="sidebar" id="sidebar" aria-label="Sidebar">${renderSidebar(opts.active, perm, chrome)}</aside>
-      <main class="content${opts.wide ? " wide" : ""}${bare ? " flush" : " pat-" + pattern}">
+      <main class="content${opts.wide ? " wide" : ""}${bare ? " flush" : " pat-" + pattern}" id="main" tabindex="-1">
         ${head}
         ${bare ? body : `<div class="frame-body${opts.fill ? " stretch" : ""}">${body}</div>`}
       </main>
@@ -564,7 +567,7 @@ function MANIFEST_VERSION() {
 function page(title, inner, opts = {}) {
   // Every page carries the Command Center's stylesheet too: its confirm
   // (.cc-sdlg), form dialog (.cc-modal), buttons and tags are the whole OS's.
-  const GLOBAL = ["style.css", "os.css", "moni-ai.css", "mint-os.css", "app.js", "voice-stop.js", "os.js", "step-up.js"];
+  const GLOBAL = ["style.css", "os.css", "moni-ai.css", "mint-os.css", "mint-ds.css", "app.js", "voice-stop.js", "os.js", "step-up.js"];
   const assets = (opts.assets || []).filter((f) => /^[a-z0-9-]+\.(css|js)$/.test(f) && !GLOBAL.includes(f));
   const css = assets.filter((f) => f.endsWith(".css")).map((f) => `<link rel="stylesheet" href="${asset(f)}">`).join("\n");
   const js = assets.filter((f) => f.endsWith(".js")).map((f) => `<script src="${asset(f)}" defer></script>`).join("\n");
@@ -581,13 +584,14 @@ function page(title, inner, opts = {}) {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${ai && title === "MINT AI" ? "MINT AI" : `${esc(title)} — ${ai ? "MINT AI" : "Mint OS"}`}</title>
 ${iconLinks()}
-<link rel="preload" href="/static/fonts/inter-latin-400-normal.woff2?v=5.3.0" as="font" type="font/woff2" crossorigin>
-<link rel="preload" href="/static/fonts/space-grotesk-latin-700-normal.woff2?v=5.3.0" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/static/fonts/atkinson-hyperlegible-next-latin-400-normal.woff2?v=5.3.0" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/static/fonts/atkinson-hyperlegible-next-latin-700-normal.woff2?v=5.3.0" as="font" type="font/woff2" crossorigin>
 ${theme}<link rel="stylesheet" href="${asset("style.css")}">
 <link rel="stylesheet" href="${asset("os.css")}">
 <link rel="stylesheet" href="${asset("moni-ai.css")}">
 ${css}
 <link rel="stylesheet" href="${asset("mint-os.css")}">
+<link rel="stylesheet" href="${asset("mint-ds.css")}">
 <script src="${asset("app.js")}" defer></script>
 <script src="${asset("voice-stop.js")}" defer></script>
 <script src="${asset("os.js")}" defer></script>
