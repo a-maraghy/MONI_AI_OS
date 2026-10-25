@@ -22,10 +22,13 @@ const { graphPanel, viewSwitch } = require("./views-memgraph");
 const brand = require("./brand");
 
 const MODELS = [
-  ["claude-opus-5", "Opus 5 — most capable"],
-  ["claude-sonnet-5", "Sonnet 5 — faster, cheaper"],
-  ["claude-fable-5-1", "Fable 5.1 — tuned for writing"],
-  ["claude-haiku-4-5-20251001", "Haiku 4.5 — fastest"],
+  ["claude-opus-5-5", "Opus 5.5 — best all-round, the default"],
+  ["claude-sonnet-5-5", "Sonnet 5.5 — faster, cheaper"],
+  ["claude-haiku-5-5", "Haiku 5.5 — fastest, cheapest"],
+  ["claude-fable-5-1", "Fable 5.1 — strongest reasoning, dearest"],
+  ["claude-opus-5", "Opus 5 — previous generation"],
+  ["claude-sonnet-5", "Sonnet 5 — previous generation"],
+  ["claude-haiku-4-5-20251001", "Haiku 4.5 — previous generation"],
 ];
 
 /** How hard the agent thinks before answering. */

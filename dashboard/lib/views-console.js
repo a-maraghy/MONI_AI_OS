@@ -16,10 +16,13 @@
 const { esc, shell, card, icon, stamp, ago, empty } = require("./ui");
 
 const MODELS = [
-  ["claude-opus-5", "Opus 5", "Most capable. The default."],
-  ["claude-sonnet-5", "Sonnet 5", "Faster and cheaper; strong for routine work."],
-  ["claude-fable-5-1", "Fable 5.1", "Tuned for writing."],
-  ["claude-haiku-4-5-20251001", "Haiku 4.5", "Quickest and cheapest."],
+  ["claude-opus-5-5", "Opus 5.5", "Best all-round. The default."],
+  ["claude-sonnet-5-5", "Sonnet 5.5", "Faster and cheaper; strong for routine work."],
+  ["claude-haiku-5-5", "Haiku 5.5", "Quickest and cheapest."],
+  ["claude-fable-5-1", "Fable 5.1", "Strongest reasoning; the dearest."],
+  ["claude-opus-5", "Opus 5", "Previous generation."],
+  ["claude-sonnet-5", "Sonnet 5", "Previous generation."],
+  ["claude-haiku-4-5-20251001", "Haiku 4.5", "Previous generation."],
 ];
 
 const EFFORTS = [
