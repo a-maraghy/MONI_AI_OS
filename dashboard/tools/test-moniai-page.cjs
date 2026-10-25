@@ -106,24 +106,19 @@ check("a page class with markup is refused", !ui.page("x", "", { pageClass: 'a" 
 /* ----------------------------------------------------------- the tab --- */
 
 check("moniai.use alone reveals the MINT AI tab", rbac.actor({ permissions: ["moniai.use"] }).canDash("console"));
-check("console.use alone still reveals it (it redirects to /console)", rbac.actor({ permissions: ["console.use"] }).canDash("console"));
+check("console.use is gone with the classic chat (2026-10-25): it reveals nothing", !rbac.actor({ permissions: ["console.use"] }).canDash("console") && !rbac.ALL_PERMISSIONS.includes("console.use") && !rbac.ALL_PERMISSIONS.includes("console.full") && rbac.RETIRED.join() === "console.use,console.full");
 check("a viewer without either does not see it", !rbac.actor({ permissions: ["os.view"] }).canDash("console"));
 check("the Command Center item's href is /mint-ai, first in the MINT AI group", ui.NAV[0].key === "mint-ai" && ui.NAV[0].items[0].key === "moni-ai" && ui.NAV[0].items[0].href === "/mint-ai" && ui.NAV[0].items[0].perm === "moniai.use");
 
 /* ------------------------------------------------- server wiring (source) --- */
 
 const server = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
-{
-  const m = /const PAYLOAD_ROUTES = (\/.*\/);/.exec(server);
-  const re = m && vm.runInNewContext(m[1]);
-  check("the Command Center's transcribe route is gone, and so is its large body parser", !!re && !re.test("/mint-ai/api/transcribe") && !/app\.post\("\/mint-ai\/api\/transcribe"/.test(server));
-  check("the console's payload routes are still covered", !!re && re.test("/console/12/upload") && re.test("/console/3/transcribe"));
-  check("nothing else gets the large parser", !!re && !re.test("/mint-ai/api/send") && !re.test("/mint-ai/api/transcribe/x"));
-}
+check("no route takes a large body any more: one 64 KB JSON parser for all (the console's upload went with it)", !/PAYLOAD_ROUTES/.test(server) && /app\.use\(express\.json\(\{ limit: "64kb" \}\)\);/.test(server) && !/app\.post\("\/mint-ai\/api\/transcribe"/.test(server));
 check("/mint-ai is behind requireAuth", /app\.get\("\/mint-ai", requireAuth,/.test(server));
 check("/mint-ai checks moniai.use", /app\.get\("\/mint-ai"[\s\S]{0,400}can\("moniai\.use"\)/.test(server));
 check("speak needs the permission (moniai.use and voice.use) and CSRF", /app\.post\("\/mint-ai\/api\/speak", \.\.\.moniAiWrite, requireApiPerm\("voice\.use"\),/.test(server));
-check("/console still has its route", /app\.get\("\/console", requireAuth, requirePerm\("console\.use"\)/.test(server));
+check("/console only redirects to the Command Center (its handlers were removed)", /app\.all\(\/\^\\\/console\(\?:\\\/\|\$\)\/, \(req, res\) => res\.redirect\(302, "\/mint-ai"\)\);/.test(server) && !/requirePerm\("console\.use"\)/.test(server) && !fs.existsSync(path.join(ROOT, "lib", "views-console.js")));
+check("/mint-ai no longer bounces a console.use-only role to /console", !/redirect\("\/console"\)/.test(server));
 
 /* ------------------------------------------------ client helpers (source) --- */
 

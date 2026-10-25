@@ -535,33 +535,37 @@ function mount(app, deps) {
       const body =
         V.head(
           "Briefs & watchers",
-          "MINT AI tells you things without being asked: a short brief each morning, the watchers you set, and what happened while you were away. Only here and in the desktop app — nothing goes out by Telegram or mail, and a watcher only notifies: it never acts."
+          "MINT AI tells you things without being asked: a brief each morning, the watchers you set, and what happened while you were away. Only here and in the desktop app; a watcher only notifies, it never acts."
         ) +
         V.group(
           "Morning brief",
           "clock",
-          V.row("Morning brief", "What each session did since the last brief, what finished, failed or waits on you, today's spend against the caps, and anything stuck. A card in the Command Center; a toast and a glance card in the desktop app.", V.form("/mint-ai/settings/proactive/brief", csrf, V.sw('name="on" value="1" aria-label="Morning brief"', pr.brief_on)), { scope: "you", id: "pa-brief" }) +
+          V.row("Morning brief", "What each session did, what finished, failed or waits on you, today's usage and anything stuck.", V.form("/mint-ai/settings/proactive/brief", csrf, V.sw('name="on" value="1" aria-label="Morning brief"', pr.brief_on)), { scope: "you", id: "pa-brief" }) +
             V.row("Time", null, V.form("/mint-ai/settings/proactive/time", csrf, `<input type="time" name="time" value="${esc(pr.brief_time)}" aria-label="Brief time" required>`), { scope: "you", id: "pa-time" }) +
             V.row("Days", null, V.form("/mint-ai/settings/proactive/days", csrf, `<div class="pa-days" role="group" aria-label="Brief days">${daysBox}</div>`), { scope: "you", id: "pa-days" }) +
-            V.row(
-              "Time zone",
-              `The brief's clock. Empty: MINT AI's (${esc(engine.defaultTz())}).`,
-              V.form("/mint-ai/settings/proactive/tz", csrf, `<input type="text" name="tz" list="pa-zones" value="${esc(pr.tz_set ? pr.tz : "")}" placeholder="${esc(engine.defaultTz())}" aria-label="Time zone" maxlength="64" spellcheck="false"><datalist id="pa-zones">${zones.map((z) => `<option value="${esc(z)}">`).join("")}</datalist>`),
-              { scope: "you", id: "pa-tz" }
-            ) +
-            V.row("Read it aloud", "The next time you start a live conversation, a brief you have not read yet is read to you first. Needs the voice.", V.form("/mint-ai/settings/proactive/read", csrf, V.sw('name="on" value="1" aria-label="Read the brief aloud"', pr.read_aloud)), { scope: "you", id: "pa-read" }) +
-            V.row("Brief me now", pr.last_brief_at ? "The last one: " + esc(new Intl.DateTimeFormat("en-GB", { timeZone: pr.tz, weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(pr.last_brief_at))) + "." : "None written yet.", V.form("/mint-ai/settings/proactive/brief-now", csrf, `<button type="submit" class="btn small">${icon("play", 14)} Write one now</button>`, { noSave: true }), { id: "pa-now" })
+            V.row("Read it aloud", "An unread brief is read to you when you next start a live call.", V.form("/mint-ai/settings/proactive/read", csrf, V.sw('name="on" value="1" aria-label="Read the brief aloud"', pr.read_aloud)), { scope: "you", id: "pa-read" }) +
+            V.row("Brief me now", pr.last_brief_at ? "The last one: " + esc(new Intl.DateTimeFormat("en-GB", { timeZone: pr.tz, weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(pr.last_brief_at))) + "." : "None written yet.", V.form("/mint-ai/settings/proactive/brief-now", csrf, `<button type="submit" class="btn small">${icon("play", 14)} Write one now</button>`, { noSave: true }), { id: "pa-now" }) +
+            V.more(
+              "More: time zone",
+              V.row(
+                "Time zone",
+                `The brief's clock. Empty: MINT AI's (${esc(engine.defaultTz())}).`,
+                V.form("/mint-ai/settings/proactive/tz", csrf, `<input type="text" name="tz" list="pa-zones" value="${esc(pr.tz_set ? pr.tz : "")}" placeholder="${esc(engine.defaultTz())}" aria-label="Time zone" maxlength="64" spellcheck="false"><datalist id="pa-zones">${zones.map((z) => `<option value="${esc(z)}">`).join("")}</datalist>`),
+                { scope: "you", id: "pa-tz" }
+              ),
+              { id: "pa-more", open: !!pr.tz_set }
+            )
         ) +
         V.group(
           "While you were away",
           "eye",
-          V.row("Catch-up", "When you come back after a while without using the Command Center or the desktop app, a short card says what happened meanwhile — once, and only if something did.", V.form("/mint-ai/settings/proactive/catchup", csrf, V.sw('name="on" value="1" aria-label="While you were away"', pr.catchup_on)), { scope: "you", id: "pa-catchup" }) +
+          V.row("Catch-up", "When you come back after a while away, one short card says what happened, if anything did.", V.form("/mint-ai/settings/proactive/catchup", csrf, V.sw('name="on" value="1" aria-label="While you were away"', pr.catchup_on)), { scope: "you", id: "pa-catchup" }) +
             V.row("Away after", null, V.form("/mint-ai/settings/proactive/away", csrf, `<input type="number" name="minutes" min="${Store.AWAY_MIN[0]}" max="${Store.AWAY_MIN[1]}" value="${esc(pr.away_min)}" aria-label="Minutes without activity"><span class="unit">minutes without activity</span>`), { scope: "you", id: "pa-away" })
         ) +
         V.group(
           "Your watchers",
           "activity",
-          `<div class="lr" id="pa-add"><div><span class="d">Say it in plain words: “tell me when the Planning engine session finishes”, “alert me if spend passes $50 today”, “watch for a session waiting on me more than 10 minutes”, “remind me at 17:30 to call the warehouse”. Or type it to MINT AI in the Command Center.</span>` +
+          `<div class="lr" id="pa-add"><div><span class="d">Say it in plain words: “tell me when the Planning engine session finishes”, “remind me at 17:30 to call the warehouse”. You can also ask MINT AI in the Command Center. System checks are under Approvals &amp; automations ▸ System alerts.</span>` +
             `<form method="post" action="/mint-ai/settings/proactive/watch" class="set-form pa-addf" data-live><input type="hidden" name="_csrf" value="${esc(csrf)}"><input type="text" name="text" maxlength="300" placeholder="Tell me when…" aria-label="A new watcher, in plain words" required${ws.length >= P.MAX_WATCHERS ? " disabled" : ""}><button type="submit" class="btn small primary"${ws.length >= P.MAX_WATCHERS ? " disabled" : ""}>${icon("plus", 14)} Watch</button></form></div></div>` +
             (ws.length ? ws.map(wRow).join("") : `<div class="lr"><div><span class="d">No watchers yet.</span></div></div>`),
           { id: "pa-watchers", aside: `${ws.length} of ${P.MAX_WATCHERS}` }

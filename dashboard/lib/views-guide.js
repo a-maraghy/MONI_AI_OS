@@ -1,6 +1,6 @@
 "use strict";
 /**
- * The operator's manual, served from the panel itself (Help ▸ Guide).
+ * The operator's manual, served from the panel itself (avatar menu ▸ Guide & help).
  *
  * It lives here rather than in a README because the moment you need it is the
  * moment you are looking at the panel wondering why something is silent.
@@ -22,8 +22,11 @@ const GUIDE_TOC = [
   ["voice", "Talking to MINT AI"],
   ["hire", "Hiring and retiring sessions"],
   ["screen", "Screen control"],
-  ["budget", "Budgets and token caps"],
-  ["approvals", "Approvals, watchers and standing orders"],
+  ["budget", "Usage and token caps"],
+  ["approvals", "Approvals, system alerts and schedules"],
+  ["briefs", "Briefs and watchers"],
+  ["chatgpt", "ChatGPT"],
+  ["computers", "Your computers"],
   ["agents", "Telegram agents"],
   ["memory", "Memory"],
   ["machine", "The machine"],
@@ -53,20 +56,20 @@ exports.guide = ({ csrf, user, publicHost, publicPort, sshHost }) => {
       <div class="gd-body">
       <p>Signing in lands on <b>MINT AI › Command Center</b> (a role without MINT AI lands on
         the first page it may open, or on its account). Everything else is in the
-        <b>sidebar</b>, in five groups:</p>
+        <b>sidebar</b>, in four groups:</p>
       <ul>
-        <li><b>MINT AI</b> — the Command Center and MINT AI's Settings.</li>
-        <li><b>Agents &amp; sessions</b> — the Overview, Sessions, Telegram agents, Channels,
-          Add-ons and Memory.</li>
-        <li><b>Machine</b> — the Overview, Services and the Audit log.</li>
-        <li><b>Access &amp; security</b> — Users, Roles, Devices, SSH keys, Firewall and
+        <li><b>MINT AI</b>: the Command Center, MINT AI's Settings and your Computers.</li>
+        <li><b>Agents &amp; sessions</b>: the Agents overview, Sessions, Telegram agents,
+          Channels, Add-ons and Memory.</li>
+        <li><b>Machine</b>: Machine health, Services and the Audit log.</li>
+        <li><b>Access &amp; security</b>: Users, Roles, Devices, SSH keys, Firewall and
           Credentials.</li>
-        <li><b>Help</b> — this guide.</li>
       </ul>
-      <p>The top bar shows where you are, how many Decisions wait for you (the amber
-        <b>“N needs you”</b>), whether the machine is healthy, and your avatar. The avatar
-        menu holds <b>Account &amp; sign-in</b>, your <b>Signed-in devices</b>, <b>MINT AI
-        appearance</b>, the theme (System / Dark / Light) and <b>Sign out</b>.
+      <p>The top bar shows where you are, how many Decisions wait for you (<b>“N needs
+        you”</b>), whether the machine is healthy, and your avatar. The avatar menu holds
+        <b>Account &amp; sign-in</b>, your <b>Signed-in devices</b>, <b>MINT AI appearance</b>,
+        <b>Guide &amp; help</b> (this page), the theme (System / Dark / Light) and <b>Sign
+        out</b>.
         <b>Collapse</b> at the foot of the sidebar shrinks it to icons; on a phone, the ☰
         button opens it as a drawer.</p>
       <p>In the Command Center, the sidebar is out of the way: its own icon bar sits on the
@@ -86,11 +89,14 @@ exports.guide = ({ csrf, user, publicHost, publicPort, sshHost }) => {
         <li><b>Conversation</b> — the whole chat and what MINT AI did step by step.</li>
         <li><b>Sessions</b> — every live session, as a list; the same sessions drift round
           MINT AI as spheres.</li>
-        <li><b>Missions</b> — multi-step jobs and where each stands.</li>
+        <li><b>Missions</b>: multi-step jobs and where each stands. Its button shows while
+          a mission is open or running; <b>New mission</b> is always in Search
+          (<kbd>Ctrl K</kbd>) and the Everything grid.</li>
         <li><b>Decisions</b> — anything that waits for you: an approval, a retire request, a
           cap reached. The amber “needs you” count in the top bar opens it.</li>
-        <li><b>Timeline</b>, <b>Rules &amp; watchers</b>, <b>Standing orders</b>,
-          <b>Usage</b> and <b>Machine</b>.</li>
+        <li><b>Timeline</b>; <b>Rules &amp; alerts</b>, with three tabs: approval rules,
+          system alerts and <b>Schedules</b> (the standing orders); <b>Usage</b> and
+          <b>Machine</b>.</li>
         <li><b>Search or run</b> (<kbd>Ctrl K</kbd>) finds any panel, session or command.</li>
       </ul>
       <p>Type <kbd>@</kbd> to address a session directly. Destructive steps always wait for
@@ -111,10 +117,10 @@ exports.guide = ({ csrf, user, publicHost, publicPort, sshHost }) => {
         Changing the voice settings is a separate permission.</p>
       <h3>Turning it on</h3>
       <ol>
-        <li>Open <b>Settings › Voice</b>. Switch <b>Voice</b> to <b>Enabled</b>.</li>
-        <li>Add the <b>Voice API token</b> (an OpenAI key). It is written to a root-only file
-          and never shown again; <b>Replace</b> and <b>Remove</b> are next to it, and
-          <b>Test</b> speaks one line and transcribes it back.</li>
+        <li>Open <b>Settings › Voice</b>. Switch <b>Voice</b> to <b>On</b>.</li>
+        <li>Add the <b>OpenAI key</b>. It is written to a root-only file and never shown
+          again; <b>Replace</b> and <b>Remove</b> are next to it. Under <b>More</b>,
+          <b>Test</b> speaks one line and writes it back.</li>
         <li>Check the <b>Voice model</b> and pick a <b>voice</b> — each card says whether it
           sounds female, male or neutral.</li>
       </ol>
@@ -130,24 +136,15 @@ exports.guide = ({ csrf, user, publicHost, publicPort, sshHost }) => {
         <b>transcription model</b>; MINT AI always acts on that transcript, never on the voice
         model's retelling of your words.</p>
       <h3>Transcription</h3>
-      <p>Choose it under <b>Settings › Voice › Transcription</b>. Each option shows its measured
-        speed, accuracy and cost:</p>
-      <ul>
-        <li><b>OpenAI</b> — <b>GPT-4o mini Transcribe</b> (the default: fast, the most accurate
-          here, and the cheapest of the three), <b>GPT Transcribe</b> (its successor; writes some English words
-          in Arabic script) or <b>GPT-4o Transcribe</b>.</li>
-        <li><b>On this server</b> (whisper.cpp) — <b>large-v3-turbo</b> (free, a little less
-          accurate, 6–13 seconds a turn) or <b>small</b> (1–2 seconds, noticeably weaker). Its
-          server runs only while one of them is selected, and takes about 1 GB of memory then.
-          If it is down, too slow or returns nonsense, that turn is sent to GPT-4o mini
-          Transcribe instead. They are installed once with
-          <code>deploy/install-voice-whisper.sh</code>; until then they show as not installed.</li>
-      </ul>
-      <p>Inside a live call OpenAI accepts only its own transcription models, so the call's
-        running transcript stays on an OpenAI model whatever you choose; the choice governs
-        the transcript MINT AI acts on. With a model on this server, MINT AI starts on a request
-        a few seconds later. <b>Transcription language</b>: leave it on <b>Detect</b> if you mix
-        Arabic and English. <b>Test</b> says which model transcribed and how long it took.</p>
+      <p>Choose it under <b>Settings › Voice › Transcription</b>: <b>GPT-4o mini
+        Transcribe</b> (the default: fast, the most accurate here and the cheapest),
+        <b>GPT Transcribe</b> (its successor; writes some English words in Arabic script) or
+        <b>GPT-4o Transcribe</b>. The line under the list gives each one's measured speed,
+        accuracy and cost. (The models on this server, whisper.cpp, were retired on
+        25 October 2026.)</p>
+      <p>Inside a live call the call's own running transcript stays on an OpenAI model; the
+        choice governs the transcript MINT AI acts on. <b>Transcription language</b> (under
+        <b>More</b>): leave it on <b>Detect</b> if you mix Arabic and English.</p>
       <h3>During a call</h3>
       <ul>
         <li>Say “stop listening”, press <kbd>Esc</kbd> or the red <b>End</b> to finish. A call
@@ -160,9 +157,13 @@ exports.guide = ({ csrf, user, publicHost, publicPort, sshHost }) => {
       </ul>
       <p><b>Read replies aloud</b> reads typed replies in the same voice.</p>
       <h3>Turning it off</h3>
-      <p>Switching <b>Voice</b> to <b>Disabled</b> turns off all voice for everyone — live
-        calls, read-aloud and every voice control. The token stays stored, so switching it
-        back on needs nothing else.</p>
+      <p>Switching <b>Voice</b> to <b>Off</b> turns off all voice for everyone: live calls,
+        read-aloud and every voice control. The key stays saved, so switching it back on needs
+        nothing else.</p>
+      <h3>Voiceprint</h3>
+      <p>MINT AI can recognise people by voice and greet them by name. <b>Add and enrol</b>
+        records about two minutes of reading; <b>Only respond to stored voices</b> ignores
+        voices it does not know. A voice identifies; it never approves anything.</p>
       </div>
     </section>
 
@@ -209,10 +210,10 @@ exports.guide = ({ csrf, user, publicHost, publicPort, sshHost }) => {
     </section>
 
     <section id="budget" class="card gd">
-      <h2>Budgets and token caps</h2>
-      ${where("MINT AI › Settings › Usage & budget")}
+      <h2>Usage and token caps</h2>
+      ${where("MINT AI › Settings › Usage & token caps")}
       <div class="gd-body">
-      <p>The budget is counted in tokens. Each session has a <b>daily token cap</b> — MINT
+      <p>Usage is counted in tokens. Each session can have a <b>daily token cap</b>: MINT
         AI, every hired or kept session, your own sessions, and a default that each new hire
         copies. The bar shows today's use against the cap, with the warning line (<b>Warn
         at</b>, 80 % by default).</p>
@@ -231,18 +232,70 @@ exports.guide = ({ csrf, user, publicHost, publicPort, sshHost }) => {
         figure the Usage panel shows. Caps are checked at the end of every MINT AI turn and
         after each cost scan, so a session other than MINT AI can run past its cap by up to
         one cost-scan interval before it is warned or paused.</p>
+      <p><b>Voice spend</b>, what OpenAI charges for voice, is on the same page.</p>
       </div>
     </section>
 
     <section id="approvals" class="card gd">
-      <h2>Approvals, watchers and standing orders</h2>
-      ${where("MINT AI › Settings › Approvals & automations")}
+      <h2>Approvals, system alerts and schedules</h2>
+      ${where("MINT AI › Settings › Approvals & automations · Command Center › Rules & alerts")}
       <div class="gd-body">
-      <p>MINT AI waits up to 300 seconds for an approval before refusing. <b>Rules</b>
-        pre-answer common requests (allow, ask or deny). <b>Watchers</b> tell MINT AI when a
-        service fails, bans burst, the disk fills, an agent keeps failing or Odoo errors pile
-        up. <b>Standing orders</b> run on a schedule — the <b>Morning briefing</b> at 07:30 is
-        one. Switch each on or off in Settings; edit them in the Command Center.</p>
+      <p>MINT AI waits up to 300 seconds for an approval before refusing. <b>Approval
+        rules</b> answer common requests in advance (allow, ask or deny). <b>System
+        alerts</b> are MINT AI's own checks on the server: a service failed, bans burst, the
+        disk fills, an agent keeps failing or Odoo errors pile up. Switch each on or off in
+        Settings. <b>Schedules</b> (standing orders) run a job on a schedule, as MINT AI or a
+        session; add, edit, pause or run them in the Command Center's Rules &amp; alerts.</p>
+      </div>
+    </section>
+
+    <section id="briefs" class="card gd">
+      <h2>Briefs and watchers</h2>
+      ${where("MINT AI › Settings › Briefs & watchers")}
+      <div class="gd-body">
+      <p>MINT AI tells you things without being asked, here and in the desktop app only:</p>
+      <ul>
+        <li>The <b>morning brief</b>: what each session did, what finished, failed or waits on
+          you, today's usage and anything stuck. Set its time and days; <b>Write one now</b>
+          makes one at once, and an unread brief can be read to you when you start a call.</li>
+        <li><b>Your watchers</b>: rules you write in plain words, such as “tell me when the
+          Planning engine session finishes” or “remind me at 17:30 to call the warehouse”.
+          A watcher only notifies; it never acts.</li>
+        <li><b>Catch-up</b>: after a while away, one short card says what happened.</li>
+      </ul>
+      <p>Your watchers are yours; the server checks MINT AI runs itself are the system
+        alerts above.</p>
+      </div>
+    </section>
+
+    <section id="chatgpt" class="card gd">
+      <h2>ChatGPT</h2>
+      ${where("MINT AI › Settings › ChatGPT")}
+      <div class="gd-body">
+      <p>Every agent can hand a task to ChatGPT when you ask it to (“ask ChatGPT…”). They all
+        share one ChatGPT sign-in on this server; this panel never sees it, and what they ask
+        and get back is not stored here, only who asked, when and how it went.</p>
+      <ul>
+        <li><b>Sign in again</b> asks for Windows Hello (or the code), then shows a link and a
+          one-time code to enter on OpenAI's page.</li>
+        <li>Each Telegram agent has its own switch. An agent reads it when it starts: if it is
+          running and not answering anyone, <b>Restart now</b> applies the change at once;
+          otherwise it applies at its next restart.</li>
+        <li>MINT AI and the sessions it hires always have it, and use it only when you ask.</li>
+      </ul>
+      </div>
+    </section>
+
+    <section id="computers" class="card gd">
+      <h2>Your computers</h2>
+      ${where("MINT AI › Computers")}
+      <div class="gd-body">
+      <p>Link a Windows laptop through the MINT AI desktop app and MINT AI can work on it when
+        you ask: files, Office documents and PDFs, and your Chrome. It never starts by itself.
+        You hand over control for a limited time, a glowing frame shows round the screen the
+        whole time, and the stop key or the pill's <b>Stop</b> ends it at once. The page lists
+        each linked computer, whether it is online, the folders MINT AI may use there and the
+        log of every take-over; <b>Revoke</b> unlinks one.</p>
       </div>
     </section>
 
@@ -556,9 +609,10 @@ exports.guide = ({ csrf, user, publicHost, publicPort, sshHost }) => {
 
     <section id="machine" class="card gd">
       <h2>The machine</h2>
-      ${where("Machine › Overview · Services · Audit log")}
+      ${where("Machine › Machine health · Services · Audit log")}
       <div class="gd-body">
-      <p>The <b>Overview</b> shows CPU, memory, disk, security and access at a glance.
+      <p><b>Machine health</b> shows CPU, memory, disk, security and access at a glance; the
+        Command Center's Machine panel shows the same in brief.
         <b>Services</b> lists every unit this panel tracks — restart one or read its logs;
         the <b>Agents</b> tab shows the Telegram agent and hired-session units. The <b>Audit
         log</b> records every sign-in and every change.</p>
@@ -580,8 +634,8 @@ exports.guide = ({ csrf, user, publicHost, publicPort, sshHost }) => {
         Windows Hello instead of the code. A passkey works only at the address where it was
         added (os.mint-stack.com is the one to use), the authenticator code stays one click
         away on every sign-in, and root unlock and approvals still ask for the code.</p>
-      <p><b>Credentials</b> holds the secrets the agents share; the OpenAI voice token lives in
-        <b>MINT AI › Settings › Voice</b>.</p>
+      <p><b>Credentials</b> holds the secrets the agents share; the OpenAI key for voice lives
+        in <b>MINT AI › Settings › Voice</b>.</p>
       </div>
     </section>
 
@@ -606,12 +660,12 @@ exports.guide = ({ csrf, user, publicHost, publicPort, sshHost }) => {
       <div class="gd-body">
       <table class="kv">
         <tr><td><b>No microphone</b></td><td class="muted">Voice is disabled, no token is
-          set (MINT AI › Settings › Voice), or your role may not talk by voice — only
+          set (MINT AI › Settings › Voice), or your role may not talk by voice; only
           administrators may.</td></tr>
         <tr><td><b>It hears itself</b></td><td class="muted">Use Speakers mode, or
           headphones.</td></tr>
         <tr><td><b>A session stopped working</b></td><td class="muted">It may be paused at its
-          token cap — MINT AI › Settings › Usage &amp; budget, or the Decision card.</td></tr>
+          token cap: MINT AI › Settings › Usage &amp; token caps, or the Decision card.</td></tr>
         <tr><td><b>MINT AI cannot open a page</b></td><td class="muted">Rescan pages, and check
           its allow switch — MINT AI › Settings › Screen control.</td></tr>
         <tr><td><b>Signed out unexpectedly</b></td><td class="muted">Another device signed you

@@ -1,30 +1,16 @@
 "use strict";
 /**
- * The voiceprint trial, Phase 1 (/mint-ai/voiceprint-trial, administrators
- * only): the administrator records a short trial set in their own voice --
- * about a minute of natural reading to enrol on, then 30 short test phrases
- * (very short words, commands, numbers, mixed English and Egyptian Arabic) --
- * once per microphone (laptop mic, headset). An offline harness on the VPS
- * (tools/voiceprint/evaluate.py) then scores local speaker-verification models
- * on it. Nothing here verifies anyone yet, and nothing is sent anywhere.
+ * The voiceprint's recording material: the enrolment paragraphs and the
+ * microphone slots the guided enrolment (/mint-ai/voiceprint/enrol,
+ * lib/voiceprint-routes.js) records with, and the WAV helpers it uses
+ * (parse, resample to 16 kHz, peak level).
  *
- * The page records with the live conversation's own capture worklet and
- * microphone settings (public/voice-live-worklet.js: 24 kHz PCM16, echo
- * cancellation, noise suppression and auto gain on, as public/voice-live.js),
- * so the trial hears what a production check would hear. This server
- * resamples each clip to 16 kHz (what the models take) and stores it:
- *
- *   DATA_DIR/voiceprint-trial/<username>/            0700
- *     manifest.json                                  0600  which clip is what
- *     <slot>/<phrase id>.wav   (16 kHz mono PCM16)   0600
- *
- * never in the repository or in memory. "Delete all my trial recordings"
- * removes the user's folder. The audit log (login_log, outcome "voiceprint")
- * gets counts only: a slot started, a slot complete, everything deleted.
+ * This file began as the voiceprint trial, Phase 1 (/mint-ai/voiceprint-trial):
+ * the administrator recorded a trial set once (7 Oct 2026) and the enrolment
+ * was made from it. The trial page, its routes and its store were removed on
+ * 2026-10-25 (the recordings were archived under /root/backups); the test
+ * phrases (TESTS) stay for the offline harness in tools/voiceprint/.
  */
-const fs = require("fs");
-const path = require("path");
-
 const SLOTS = Object.freeze([
   { id: "laptop", label: "Laptop microphone" },
   { id: "headset", label: "Headset" },
@@ -76,7 +62,6 @@ const TESTS = Object.freeze(
 );
 
 const PHRASES = Object.freeze([...ENROL, ...TESTS]);
-const BY_ID = new Map(PHRASES.map((p) => [p.id, p]));
 const LIMITS = Object.freeze({ enrol: { min: 3, max: 40 }, test: { min: 0.3, max: 12 } });
 const MAX_BYTES = 44 + 40 * 24000 * 2 + 1024; // 40 s at 24 kHz PCM16, with room for a header
 
@@ -168,176 +153,4 @@ function peakDb(samples) {
   return p ? 20 * Math.log10(p / 32768) : -Infinity;
 }
 
-function createStore(baseDir) {
-  const root = path.join(baseDir, "voiceprint-trial");
-  const mk = (d) => {
-    fs.mkdirSync(d, { recursive: true, mode: 0o700 });
-    try {
-      fs.chmodSync(d, 0o700);
-    } catch (_) {
-      /* best effort */
-    }
-    return d;
-  };
-  const dirOf = (user) => path.join(root, userDirName(user));
-  const manifestPath = (user) => path.join(dirOf(user), "manifest.json");
-  function readManifest(user) {
-    try {
-      const m = JSON.parse(fs.readFileSync(manifestPath(user), "utf8"));
-      if (m && Array.isArray(m.clips)) return m;
-    } catch (_) {
-      /* none yet */
-    }
-    return { version: 1, user: String(user.username || ""), sample_rate: 16000, capture: "live worklet, 24 kHz, echoCancellation/noiseSuppression/autoGainControl on; resampled to 16 kHz", slots: {}, clips: [] };
-  }
-  function writeManifest(user, m) {
-    const p = manifestPath(user);
-    const tmp = p + ".tmp";
-    fs.writeFileSync(tmp, JSON.stringify(m, null, 1), { mode: 0o600 });
-    fs.renameSync(tmp, p);
-  }
-  function status(user) {
-    const m = readManifest(user);
-    const slots = {};
-    for (const s of SLOTS) slots[s.id] = { device: (m.slots[s.id] && m.slots[s.id].device) || null, clips: {} };
-    for (const c of m.clips) if (slots[c.mic] && fs.existsSync(path.join(dirOf(user), c.mic, c.id + ".wav"))) slots[c.mic].clips[c.id] = c.seconds;
-    return { slots, total: PHRASES.length };
-  }
-  /** Save one clip -> {seconds, count, started, complete}; throws {status, message} on a bad one. */
-  function save(user, slot, id, buf, device) {
-    const bad = (status, message) => Object.assign(new Error(message), { status });
-    if (!SLOTS.some((s) => s.id === slot)) throw bad(400, "Which microphone?");
-    const p = BY_ID.get(id);
-    if (!p) throw bad(400, "Which phrase?");
-    if (!Buffer.isBuffer(buf) || !buf.length) throw bad(400, "No audio arrived.");
-    if (buf.length > MAX_BYTES) throw bad(413, "That recording is too long.");
-    let w;
-    try {
-      w = parseWav(buf);
-    } catch (e) {
-      throw bad(400, e.message);
-    }
-    const seconds = w.samples.length / w.rate;
-    const lim = LIMITS[p.part];
-    if (seconds < lim.min || seconds > lim.max) throw bad(400, `This recording must be between ${lim.min} and ${lim.max} seconds.`);
-    if (peakDb(w.samples) < -50) throw bad(400, "Nothing was heard. Check the microphone and record again.");
-    const pcm = to16k(w.samples, w.rate);
-    const m = readManifest(user);
-    const before = m.clips.filter((c) => c.mic === slot).length;
-    mk(path.join(mk(dirOf(user)), slot));
-    const file = path.join(dirOf(user), slot, id + ".wav");
-    fs.writeFileSync(file + ".tmp", wav16(pcm), { mode: 0o600 });
-    fs.renameSync(file + ".tmp", file);
-    const dev = String(device || "").replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 120);
-    m.slots[slot] = { device: dev || (m.slots[slot] && m.slots[slot].device) || null };
-    m.clips = m.clips.filter((c) => !(c.mic === slot && c.id === id));
-    m.clips.push({ mic: slot, id, part: p.part, lang: p.lang, kind: p.kind, text: p.text, seconds: Math.round(seconds * 100) / 100, device: dev || null, recorded_at: new Date().toISOString() });
-    writeManifest(user, m);
-    const count = m.clips.filter((c) => c.mic === slot).length;
-    return { seconds: Math.round(seconds * 10) / 10, count, started: before === 0, complete: before < PHRASES.length && count === PHRASES.length };
-  }
-  function clipPath(user, slot, id) {
-    if (!SLOTS.some((s) => s.id === slot) || !BY_ID.has(id)) return null;
-    const f = path.join(dirOf(user), slot, id + ".wav");
-    return fs.existsSync(f) ? f : null;
-  }
-  /** Delete everything of this user's -> the number of clips removed. */
-  function removeAll(user) {
-    const d = dirOf(user);
-    let n = 0;
-    for (const s of SLOTS) {
-      try {
-        n += fs.readdirSync(path.join(d, s.id)).filter((f) => f.endsWith(".wav")).length;
-      } catch (_) {
-        /* none */
-      }
-    }
-    fs.rmSync(d, { recursive: true, force: true });
-    return n;
-  }
-  return { root, dirOf, status, save, clipPath, removeAll, readManifest };
-}
-
-/**
- * The routes. deps: { requireAuth, requirePerm, requireApiPerm, requireApiCsrf,
- * rateLimit, express, db, ctx, views, asset, dataDir }.
- */
-function mount(app, deps) {
-  const { requireAuth, requirePerm, requireApiPerm, requireApiCsrf, rateLimit, express, db, ctx, views, asset, dataDir } = deps;
-  const store = createStore(dataDir);
-  const guard = [requireApiPerm("moniai.use"), requireApiPerm("voice.manage")];
-  const raw = express.raw({ type: ["audio/wav", "audio/x-wav"], limit: MAX_BYTES });
-  const uploads = rateLimit({
-    windowMs: 10 * 60 * 1000,
-    limit: 150,
-    standardHeaders: true,
-    legacyHeaders: false,
-    keyGenerator: (req) => "vp-" + (req.me ? req.me.id : "anon"),
-    validate: false,
-    handler: (req, res) => res.status(429).json({ error: "Too many recordings at once. Wait a few minutes and carry on." }),
-  });
-  const audit = (req, detail) => {
-    try {
-      db.logLogin(req.ip, req.me.username, "voiceprint", detail);
-    } catch (_) {
-      /* the recording stands either way */
-    }
-  };
-
-  app.get("/mint-ai/voiceprint-trial", requireAuth, requirePerm("moniai.use"), requirePerm("voice.manage"), (req, res) => {
-    res.set("Cache-Control", "no-store");
-    res.send(views.page({ csrf: res.locals.csrf, user: ctx(req, "console"), slots: SLOTS, enrol: ENROL, tests: TESTS, limits: LIMITS, worklet: asset("voice-live-worklet.js") }));
-  });
-
-  app.get("/mint-ai/api/voiceprint-trial/status", ...guard, (req, res) => {
-    res.set("Cache-Control", "no-store").json(store.status(req.me));
-  });
-
-  app.get("/mint-ai/api/voiceprint-trial/clip/:slot/:id", ...guard, (req, res) => {
-    const f = store.clipPath(req.me, String(req.params.slot), String(req.params.id));
-    if (!f) return res.status(404).json({ error: "No such recording." });
-    res.set({ "Content-Type": "audio/wav", "Cache-Control": "no-store" }).send(fs.readFileSync(f));
-  });
-
-  app.post(
-    "/mint-ai/api/voiceprint-trial/clip",
-    ...guard,
-    requireApiCsrf,
-    uploads,
-    (req, res, next) =>
-      raw(req, res, (err) => {
-        if (!err) return next();
-        if (err.type === "entity.too.large" || err.status === 413) return res.status(413).json({ error: "That recording is too long." });
-        return res.status(400).json({ error: "The recording did not arrive whole." });
-      }),
-    (req, res) => {
-      const slot = String(req.query.slot || "");
-      const id = String(req.query.id || "");
-      let device = "";
-      try {
-        device = decodeURIComponent(String(req.get("x-mic-label") || ""));
-      } catch (_) {
-        device = "";
-      }
-      try {
-        const r = store.save(req.me, slot, id, Buffer.isBuffer(req.body) ? req.body : null, device);
-        if (r.started) audit(req, `voiceprint trial: recording started on "${slot}"`);
-        if (r.complete) audit(req, `voiceprint trial: "${slot}" complete, ${r.count} of ${PHRASES.length} clips`);
-        res.json({ ok: true, id, slot, seconds: r.seconds, count: r.count, total: PHRASES.length });
-      } catch (e) {
-        res.status(e.status || 500).json({ error: e.status ? e.message : "The recording could not be saved." });
-        if (!e.status) console.error("voiceprint trial: save failed: " + e.message);
-      }
-    }
-  );
-
-  app.post("/mint-ai/api/voiceprint-trial/delete", ...guard, requireApiCsrf, (req, res) => {
-    const n = store.removeAll(req.me);
-    audit(req, `voiceprint trial: deleted all trial recordings (${n} clips)`);
-    res.json({ ok: true, deleted: n });
-  });
-
-  return store;
-}
-
-module.exports = { SLOTS, ENROL, TESTS, PHRASES, LIMITS, MAX_BYTES, userDirName, parseWav, to16k, wav16, peakDb, createStore, mount };
+module.exports = { SLOTS, ENROL, TESTS, PHRASES, LIMITS, MAX_BYTES, userDirName, parseWav, to16k, wav16, peakDb };

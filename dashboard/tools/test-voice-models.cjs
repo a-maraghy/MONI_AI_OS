@@ -122,8 +122,8 @@ mockHttp.on("upgrade", (req, sock, head) => {
     let set = await s.req("GET", SET, { cookie: A.cookie });
     const stok = s.csrfOf(set.body);
     let m = sel(set.body);
-    check("Settings: gpt-realtime-mini current; GPT-4o Mini Realtime disabled, 'not available on this OpenAI key'", /<option value="gpt-realtime-mini" data-hint="[^"]*" selected>GPT Realtime mini · 14\/18 word for word · retires 20 Jan 2027 · current</.test(m) && /<option value="gpt-4o-mini-realtime-preview" data-hint="Not available on this OpenAI key[^"]*" disabled>GPT-4o Mini Realtime · not available on this OpenAI key</.test(m), m);
-    check("  the help says replies are read by 2.1 mini when the model does not read word for word", /Replies are read aloud by the voice model when it reads word for word; otherwise by <code>gpt-realtime-2\.1-mini<\/code>/.test(set.body));
+    check("Settings: gpt-realtime-mini current; GPT-4o Mini Realtime disabled, 'not available on this OpenAI key'", /<option value="gpt-realtime-mini" data-hint="[^"]*" selected>GPT Realtime mini \(current\)</.test(m) && /<option value="gpt-4o-mini-realtime-preview" data-hint="This OpenAI key cannot use it[^"]*" disabled>GPT-4o Mini Realtime \(not on this key\)</.test(m), m);
+    check("  the hint under the list says replies are read by 2.1 mini when the model does not read word for word", /id="voice-model-hint">[^<]*read aloud by 2\.1 mini/.test(set.body));
 
     let c = await callModel(A);
     check("a live call on gpt-realtime-mini: connects with it", c.status === 101 && c.model === "gpt-realtime-mini" && /model=gpt-realtime-mini$/.test(c.url), JSON.stringify(c));
@@ -139,7 +139,7 @@ mockHttp.on("upgrade", (req, sock, head) => {
     check("  the message names the reader", /Replies%20are%20read%20aloud%20by%20gpt-realtime-2.1-mini/.test(r.headers.location || ""), r.headers.location);
     set = await s.req("GET", SET, { cookie: A.cookie });
     m = sel(set.body);
-    check("  Settings: GPT-4o Mini Realtime current, offered normally, nothing disabled", /<option value="gpt-4o-mini-realtime-preview" data-hint="A preview model[^"]*" selected>GPT-4o Mini Realtime · preview · replies read by 2\.1 mini · current</.test(m) && !/ disabled>/.test(m), m);
+    check("  Settings: GPT-4o Mini Realtime current, offered normally, nothing disabled", /<option value="gpt-4o-mini-realtime-preview" data-hint="A preview model[^"]*" selected>GPT-4o Mini Realtime \(current\)</.test(m) && !/ disabled>/.test(m), m);
     c = await callModel(A);
     check("  a live call connects with the listed snapshot id", c.status === 101 && c.model === SNAP && c.url.endsWith("model=" + SNAP), JSON.stringify(c));
 
@@ -149,7 +149,7 @@ mockHttp.on("upgrade", (req, sock, head) => {
     await until(() => gets > before, 3000);
     set = await s.req("GET", SET, { cookie: A.cookie });
     m = sel(set.body);
-    check("the key loses it: the stored choice is kept, but reads as 2.1 mini; the option is disabled again", db.getSetting("voice_model") === "gpt-4o-mini-realtime-preview" && /<option value="gpt-realtime-2\.1-mini" data-hint="[^"]*" selected>[^<]*· current</.test(m) && /<option value="gpt-4o-mini-realtime-preview" data-hint="Not available[^"]*" disabled>/.test(m), m);
+    check("the key loses it: the stored choice is kept, but reads as 2.1 mini; the option is disabled again", db.getSetting("voice_model") === "gpt-4o-mini-realtime-preview" && /<option value="gpt-realtime-2\.1-mini" data-hint="[^"]*" selected>[^<]*\(current\)</.test(m) && /<option value="gpt-4o-mini-realtime-preview" data-hint="This OpenAI key cannot use it[^"]*" disabled>/.test(m), m);
     c = await callModel(A);
     check("  a live call goes to 2.1 mini, never to the refused model", c.status === 101 && c.model === "gpt-realtime-2.1-mini" && /model=gpt-realtime-2\.1-mini$/.test(c.url), JSON.stringify(c));
 
@@ -159,7 +159,7 @@ mockHttp.on("upgrade", (req, sock, head) => {
     await until(() => gets > before, 3000);
     set = await s.req("GET", SET, { cookie: A.cookie });
     m = sel(set.body);
-    check("it comes back (the plain id): the option enables itself, the stored choice is current again", /<option value="gpt-4o-mini-realtime-preview" data-hint="A preview model[^"]*" selected>[^<]*· current</.test(m) && !/ disabled>/.test(m), m);
+    check("it comes back (the plain id): the option enables itself, the stored choice is current again", /<option value="gpt-4o-mini-realtime-preview" data-hint="A preview model[^"]*" selected>[^<]*\(current\)</.test(m) && !/ disabled>/.test(m), m);
     c = await callModel(A);
     check("  a live call connects with it", c.model === "gpt-4o-mini-realtime-preview" && c.url.endsWith("model=gpt-4o-mini-realtime-preview"), JSON.stringify(c));
 

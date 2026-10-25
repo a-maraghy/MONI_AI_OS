@@ -230,15 +230,14 @@ const REAL_SPEECH = [
       const i = server.indexOf(p);
       return i < 0 ? "" : server.slice(i, i + 4000);
     };
-    const tr = server.slice(server.indexOf("async function voiceTranscribeRoute("), server.indexOf("async function voiceTranscribeRoute(") + 2500);
-    check("the transcribe route goes through the intake (and remembers the transcript)", /voiceIntake\.transcribeTurn\(/.test(tr) && /grounds: voiceGrounds/.test(tr) && !/voice\.transcribeFull\(audio/.test(tr));
-    check("  a drop answers as for silence, with no text", /if \(got\.dropped\) return res\.json\(\{ text: "", dropped: got\.dropped \}\)/.test(tr));
-    check("  and logs the rule, never the words", /dropped: got\.dropped \|\| undefined/.test(tr) && !/text: text|said:/.test(tr.slice(tr.indexOf("voiceLog"), tr.indexOf("voiceLog") + 600)));
+    // The only caller of the server-side transcribe route was the classic chat's dictation,
+    // retired 2026-10-25 with the chat: the route went with it (voice-intake keeps its logic).
+    check("the classic chat's transcribe route is gone with the chat", !/async function voiceTranscribeRoute\(/.test(server) && !/\/console\/:id\/transcribe/.test(server));
     check("the desk route and the Command Center's transcribe route are gone", !route('app.post("/mint-ai/api/desk/turn"') && !route('app.post("/mint-ai/api/transcribe"'));
     const sd = route('app.post("/mint-ai/api/send"');
     check("the send route refuses an ungrounded or prompt-like voice turn before calling MONI AI", /voiceIntake\.sendRefusal\(/.test(sd) && sd.indexOf("sendRefusal") < sd.indexOf('moniai.call("send"') && /status\(422\)/.test(sd));
     check("  and logs the refusal (rule only)", /voiceLog\("send", "refused", \{ rule: refusal\.rule/.test(sd));
-    check("the console's dictation shares the transcribe route (and the guard)", /app\.post\("\/console\/:id\/transcribe"[\s\S]{0,400}return voiceTranscribeRoute\(req, res\)/.test(server));
+    check("no dictation route is left for the classic chat", !/app\.post\("\/console\//.test(server));
     const js = fs.readFileSync(path.join(ROOT, "public", "moni-ai.js"), "utf8");
     check("the page sends its voice-turn id with a voice send", /if \(opts\.voice && opts\.vt\) body\.vt = opts\.vt;/.test(js));
   }

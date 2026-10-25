@@ -697,7 +697,7 @@ async function routes(sock) {
     await post("/mint-ai/settings/voice/enabled", { enabled: "1" });
     pg = await page();
     check("Settings ▸ Voice has the Voiceprint group: On by default, “Only respond to stored voices” greyed (none stored), an empty list of stored voiceprints", pg.status === 200 && /id="v-vp"/.test(pg.body) && /id="vp-enabled"[^>]*checked/.test(pg.body) && /id="vp-gate"[^>]*disabled/.test(pg.body) && /Store a voiceprint first/.test(pg.body) && /Only respond to stored voices/.test(pg.body) && /id="v-vp-people"/.test(pg.body) && /id="vp-add"/.test(pg.body) && !/Your voiceprint/.test(pg.body), pg.status);
-    check("  the help says a voice identifies and never authorises", /never authorises/.test(pg.body));
+    check("  the help says a voice identifies and never approves anything", /A voice identifies; it never approves anything/.test(pg.body));
     check("  with the model's attribution", /WeSpeaker ResNet34-LM/.test(pg.body) && /CC-BY-4\.0/.test(pg.body));
     let r = await post("/mint-ai/settings/voice/voiceprint/gate", { gate: "1" });
     check("the gate needs a stored voiceprint", r.status === 400 && /Store a voiceprint first/.test(r.body), r.body);
@@ -748,9 +748,7 @@ async function routes(sock) {
       db.setSetting(TH, "{}", "test");
     }
 
-    // the trial's recordings, through the trial's own API
-    const tpg = await s.req("GET", "/mint-ai/voiceprint-trial", { cookie: ad.cookie });
-    const tcsrf = s.csrfOf(tpg.body);
+    // my own voiceprint, through the guided enrolment (the voiceprint trial was removed on 2026-10-25)
     const wav24 = (amp, sec) => {
       const pcm = tone(amp, sec * 1000);
       const h = Buffer.alloc(44);
@@ -778,18 +776,22 @@ async function routes(sock) {
         q.on("error", reject);
         q.end(body);
       });
-    for (const id of ["e1", "e2", "e3", "e4"]) await rawPost("/mint-ai/api/voiceprint-trial/clip?slot=laptop&id=" + id, wav24(1000, 12), { "X-CSRF-Token": tcsrf });
-    await rawPost("/mint-ai/api/voiceprint-trial/clip?slot=laptop&id=t01", wav24(1000, 1), { "X-CSRF-Token": tcsrf });
     pg = await page();
-    check("the trial's recordings are offered", /id="vp-from-trial-laptop"/.test(pg.body));
-    r = await post("/mint-ai/settings/voice/voiceprint/from-trial", { slot: "laptop" });
+    check("no trial recordings are offered any more", !/vp-from-trial|from-trial|voiceprint-trial/.test(pg.body));
+    check("  and the old route is gone", (await post("/mint-ai/settings/voice/voiceprint/from-trial", { slot: "laptop" })).status === 404);
+    r = await s.req("POST", "/mint-ai/settings/voice/voiceprint/people", { cookie: ad.cookie, body: new URLSearchParams({ _csrf: csrf, name: "vpadmin", me: "1" }).toString() });
     const vpFile = path.join(s.data, "voiceprint");
     const peopleJson = () => JSON.parse(fs.readFileSync(path.join(vpFile, "people.json"), "utf8"));
+    const meId0 = (peopleJson().people[0] || {}).id;
+    const mp = await s.req("GET", "/mint-ai/voiceprint/enrol?person=" + meId0, { cookie: ad.cookie });
+    const mcsrf = s.csrfOf(mp.body);
+    for (const id of ["e1", "e2", "e3", "e4"]) await rawPost("/mint-ai/api/voiceprint/enrol-clip?person=" + meId0 + "&mic=laptop&id=" + id, wav24(1000, 12), { "X-CSRF-Token": mcsrf });
+    r = await s.req("POST", "/mint-ai/api/voiceprint/enrol-save", { cookie: ad.cookie, body: { person: meId0, mic: "laptop" }, headers: { "X-CSRF-Token": mcsrf } });
     const pj = fs.existsSync(path.join(vpFile, "people.json")) ? peopleJson() : { people: [] };
-    check("enrol from the trial's recordings: a stored voiceprint for the signed-in user, sealed on disk, audited", r.status === 200 && pj.people.length === 1 && pj.people[0].user_id != null && pj.people[0].may_command === true && !/"sum"/.test(fs.readFileSync(path.join(vpFile, "people.json"), "utf8")) && db.recentLogins(20).some((x) => /voiceprint of vpadmin enrolled from the trial recordings \(laptop, 48 s/.test(x.detail || "")), r.body);
+    check("enrol my own voice (Add and enrol, then 4 paragraphs on the laptop): a stored voiceprint for the signed-in user, sealed on disk", r.status === 200 && pj.people.length === 1 && pj.people[0].user_id != null && pj.people[0].may_command === true && !/"sum"/.test(fs.readFileSync(path.join(vpFile, "people.json"), "utf8")), r.body);
     const meId = pj.people[0] && pj.people[0].id;
     pg = await page();
-    check("  the page lists it (name, linked user, microphone, may give commands on), and the gate can be switched on", new RegExp(`data-person="${meId}"`).test(pg.body) && /class="tag-s"[^>]*>vpadmin</.test(pg.body) && /class="vp-mics"/.test(pg.body) && /Laptop microphone/.test(pg.body) && !/id="vp-gate"[^>]*disabled/.test(pg.body) && !/id="vp-from-trial-laptop"/.test(pg.body), JSON.stringify([new RegExp(`data-person="${meId}"`).test(pg.body), /class="tag-s"[^>]*>vpadmin</.test(pg.body), /class="vp-mics"/.test(pg.body), /Laptop microphone/.test(pg.body), !/id="vp-gate"[^>]*disabled/.test(pg.body), !/id="vp-from-trial-laptop"/.test(pg.body)]));
+    check("  the page lists it (name, linked user, microphone, may give commands on), and the gate can be switched on", new RegExp(`data-person="${meId}"`).test(pg.body) && /class="tag-s"[^>]*>vpadmin</.test(pg.body) && /class="vp-mics"/.test(pg.body) && /Laptop microphone/.test(pg.body) && !/id="vp-gate"[^>]*disabled/.test(pg.body), JSON.stringify([new RegExp(`data-person="${meId}"`).test(pg.body), /class="tag-s"[^>]*>vpadmin</.test(pg.body), /class="vp-mics"/.test(pg.body), /Laptop microphone/.test(pg.body), !/id="vp-gate"[^>]*disabled/.test(pg.body)]));
     r = await post("/mint-ai/settings/voice/voiceprint/gate", { gate: "1" });
     check("  gate on: saved and audited", r.status === 200 && db.getSetting("voiceprint_gate") === "on" && db.recentLogins(20).some((x) => /only respond to stored voices on/.test(x.detail || "")));
 
@@ -862,9 +864,8 @@ async function routes(sock) {
     r = await post(`/mint-ai/settings/voice/voiceprint/people/${zid}/delete`, {});
     check("delete Zaghloul: only his; audited", r.status === 200 && peopleJson().people.map((x) => x.name).join() === "vpadmin" && db.recentLogins(10).some((x) => /deleted Zaghloul's voiceprint/.test(x.detail || "")), JSON.stringify(peopleJson().people.map((x) => x.name)));
     r = await post("/mint-ai/settings/voice/voiceprint/forget-all", {});
-    const trialDir = path.join(s.data, "voiceprint-trial", "vpadmin");
-    check("delete everything: voiceprint, trial recordings, ledger, the key; the gate off", r.status === 200 && (!fs.existsSync(path.join(vpFile, "people.json")) || peopleJson().people.length === 0) && !fs.existsSync(trialDir) && db.voiceprintChecksSince(0, "vpadmin").length === 0 && JSON.parse(fs.readFileSync(path.join(s.data, "fake-vp-forget.json"), "utf8")).keepKey === false && db.getSetting("voiceprint_gate") === "off", r.body);
-    check("  audited with counts only", db.recentLogins(30).some((x) => /deleted everything \(1 voiceprints, key deleted, 5 trial clips, 0 result folders, 1 check rows\)/.test(x.detail || "")), db.recentLogins(5).map((x) => x.detail).join("\n"));
+    check("delete everything: voiceprint, ledger, the key; the gate off", r.status === 200 && (!fs.existsSync(path.join(vpFile, "people.json")) || peopleJson().people.length === 0) && db.voiceprintChecksSince(0, "vpadmin").length === 0 && JSON.parse(fs.readFileSync(path.join(s.data, "fake-vp-forget.json"), "utf8")).keepKey === false && db.getSetting("voiceprint_gate") === "off", r.body);
+    check("  audited with counts only", db.recentLogins(30).some((x) => /deleted everything \(1 voiceprints, key deleted, 0 result folders, 1 check rows\)/.test(x.detail || "")), db.recentLogins(5).map((x) => x.detail).join("\n"));
     await browser(s, ad);
   } finally {
     s.stop();
@@ -1003,12 +1004,20 @@ async function browser(s, ad) {
         // switch it off through the page (os.js sends the form in place, after the confirm)
         await page.locator("#v-voiceprint label.sw").click();
         const yes = await page.waitForSelector('.cc-sdlg [data-a="yes"]', { timeout: 3000 }).catch(() => null);
+        // the switch's form reloads the page once it saved: wait for that reload before going on
+        const reloaded = page.waitForNavigation({ timeout: 5000 }).catch(() => null);
         if (yes) await yes.click();
         await until(async () => db.getSetting("voiceprint_enabled") === "off", 4000);
+        await reloaded;
         check(tag + ": the switch turns it off from the page (with a confirm)", !!yes && db.getSetting("voiceprint_enabled") === "off");
         db.setSetting("voiceprint_enabled", "on", "test");
         // Strictness from the page: a preset card, then Advanced (a bad order refused, a good one saved), then reset.
-        await page.reload();
+        // (The switch's form reloads the page itself after saving; a reload of ours raced it -- ERR_ABORTED -- so
+        // wait for that to settle and navigate afresh.)
+        await page.waitForTimeout(600);
+        await page.waitForLoadState("networkidle").catch(() => {});
+        const fresh = () => page.goto(`http://127.0.0.1:${s.port}/mint-ai/settings/voice?t=${Date.now()}#v-vp`); // a new URL: a hash-only goto would not reload
+        await fresh().catch(() => fresh());
         await page.waitForSelector("#v-vp-strict");
         const ov = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
         check(tag + ": Strictness: three presets, no horizontal scroll", (await page.$$("#v-vp-strict .vp-preset")).length === 3 && ov <= 0, ov);
@@ -1089,12 +1098,22 @@ async function real() {
   section("5. the real service and the administrator's real recordings");
   const PY = "/root/.local/mint-voiceprint/venv/bin/python";
   const MODEL = "/root/.local/mint-voiceprint/models/wespeaker-voxceleb-resnet34-LM/voxceleb_resnet34_LM.onnx";
-  const trialRoot = "/var/lib/moni-dashboard/voiceprint-trial";
-  let userDir = null;
+  // The administrator's trial recordings: in the panel's data dir until 2026-10-25, then archived under
+  // /root/backups/voiceprint-trial-recordings_<stamp>/ (the trial page was removed; the newest archive is used).
+  const roots = ["/var/lib/moni-dashboard/voiceprint-trial"];
   try {
-    userDir = fs.readdirSync(trialRoot).map((d) => path.join(trialRoot, d)).find((d) => fs.existsSync(path.join(d, "laptop", "e1.wav")));
+    for (const d of fs.readdirSync("/root/backups").filter((d) => /^voiceprint-trial-recordings_/.test(d)).sort().reverse()) roots.push(path.join("/root/backups", d));
   } catch (_) {
-    userDir = null;
+    /* no archive */
+  }
+  let userDir = null;
+  for (const trialRoot of roots) {
+    try {
+      userDir = fs.readdirSync(trialRoot).map((d) => path.join(trialRoot, d)).find((d) => fs.existsSync(path.join(d, "laptop", "e1.wav")));
+    } catch (_) {
+      userDir = null;
+    }
+    if (userDir) break;
   }
   if (!fs.existsSync(PY) || !fs.existsSync(MODEL) || !userDir) {
     console.log("  skip no model or no trial recordings on this machine");
@@ -1109,10 +1128,14 @@ async function real() {
   try {
     check("the real service starts on its socket", await until(() => fs.existsSync(sock), 15000), out);
     await sleep(300);
-    const vp = vpLib.createVoiceprint({ db, priv: fakePriv(dir), dataDir: dir, socketPath: sock, log: () => {}, parseWav: trialLib.parseWav, trialClips: () => ["e1", "e2", "e3", "e4"].map((id) => ({ mic: "laptop", id, part: "enrol", path: path.join(userDir, "laptop", id + ".wav") })) });
-    const me = { id: 99, username: "realuser", display_name: "AbdElMoniem" };
-    const en = await vp.enrolFromTrial(me, "laptop");
-    check("enrolled from the administrator's own trial paragraphs", en.speech_s > 30, JSON.stringify(en));
+    const vp = vpLib.createVoiceprint({ db, priv: fakePriv(dir), dataDir: dir, socketPath: sock, log: () => {}, parseWav: trialLib.parseWav });
+    const meP = vp.addPerson({ name: "AbdElMoniem", spoken: "", user_id: 99, may_command: true });
+    for (const id of ["e1", "e2", "e3", "e4"]) {
+      const w = trialLib.parseWav(fs.readFileSync(path.join(userDir, "laptop", id + ".wav")));
+      await vp.enrolClip(meP.id, "laptop", id, Buffer.from(w.samples.buffer, w.samples.byteOffset, w.samples.length * 2), w.rate);
+    }
+    const en = await vp.enrolSave(meP.id, "laptop");
+    check("enrolled from the administrator's own trial paragraphs (the guided enrolment's calls)", en.speech_s > 30, JSON.stringify(en));
     // "Zaghloul": a public speaker as the stand-in (LibriSpeech test-clean 1089, CC-BY-4.0), 16 kHz FLAC -> PCM
     const LS = "/root/.local/mint-voiceprint/data/LibriSpeech/test-clean/1089";
     let zFiles = [];

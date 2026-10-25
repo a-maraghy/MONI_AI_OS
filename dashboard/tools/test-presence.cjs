@@ -743,6 +743,7 @@ const SIDEWAYS = { cx: 0.5, cy: 0.5, w: 0.24, yaw: 55, pitch: -5 };
         const vs = (await open({ ctx: vo.ctx, path: "/mint-ai/settings/appearance", cams: CAMS, wait: 800 })).page;
         const vs0 = await vs.evaluate(() => ({ off: (document.querySelector("[data-mp-voiceoff]") || {}).textContent || "", link: (document.querySelector("[data-mp-voiceoff] a") || {}).href || "", gum: window.__gum.length }));
         check("  ... and Settings says so under Look and speak, with the way to switch voice on", /Look and speak needs voice, and voice is off/.test(vs0.off) && /\/mint-ai\/settings\/voice$/.test(vs0.link) && vs0.gum === 0, JSON.stringify(vs0));
+        await vs.click("#mp-more > summary"); // "Show what it sees" sits under More since 2026-10-25
         await vs.click("[data-mp-show] summary");
         await vs.waitForTimeout(3500);
         const sw0 = await vs.evaluate(() => ({ rows: [...document.querySelectorAll("[data-mp-checks] li")].map((l) => l.className + ":" + l.querySelector("b").textContent + "=" + l.querySelector(".v").textContent), open: window.__camOpen(), note: document.querySelector("[data-mp-show-note]").textContent }));

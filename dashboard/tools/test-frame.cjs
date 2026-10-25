@@ -2,7 +2,7 @@
 "use strict";
 /**
  * The Mint OS frame after the reorganisation (lib/ui.js shell, lib/chrome.js):
- * one sidebar in five groups, a top bar that says where you are with the
+ * one sidebar in four groups (the Guide sits in the avatar menu), a top bar that says where you are with the
  * avatar menu, quiet count badges and tinted state badges, the dock band, and
  * the Command Center's sidebar drawer. Pure rendering: no server, no helper.
  *
@@ -40,15 +40,15 @@ const sideHrefs = (html) => [...html.matchAll(/<a href="([^"]+)" class="side-ite
 
 /* ------------------------------------------------------------ navigation --- */
 
-console.log("the sidebar: five groups");
+console.log("the sidebar: four groups");
 {
-  check("NAV is five groups: MINT AI, Agents & sessions, Machine, Access & security, Help", ui.NAV.map((g) => g.label).join(" | ") === "MINT AI | Agents & sessions | Machine | Access & security | Help");
+  check("NAV is four groups: MINT AI, Agents & sessions, Machine, Access & security", ui.NAV.map((g) => g.label).join(" | ") === "MINT AI | Agents & sessions | Machine | Access & security");
   const items = (k) => ui.NAV.find((g) => g.key === k).items.map((i) => i.key).join(" ");
   check("  MINT AI: Command Center, Settings, Computers", items("mint-ai") === "moni-ai mint-settings machines");
   check("  Agents & sessions: Overview, Sessions, Telegram agents, Channels, Add-ons, Memory", items("agents") === "agents-dashboard claude-sessions agents channels addons claude-memory");
   check("  Machine: Overview, Services, Audit log", items("machine") === "os services audit");
   check("  Access & security: Users, Roles, Devices, SSH keys, Firewall, Credentials", items("access") === "users roles devices keys firewall credentials");
-  check("  Help: Guide (once)", items("help") === "guide" && ui.NAV.flatMap((g) => g.items).filter((i) => i.key === "guide").length === 1);
+  check("  no Help group: the Guide is not in the sidebar", !ui.NAV.some((g) => g.key === "help") && !ui.NAV.flatMap((g) => g.items).some((i) => i.key === "guide"));
   const all = ui.NAV.flatMap((g) => g.items);
   check("every item has key, href, label, icon; keys and hrefs are unique", all.every((i) => i.key && /^\//.test(i.href) && i.label && i.icon) && new Set(all.map((i) => i.key)).size === all.length && new Set(all.map((i) => i.href)).size === all.length);
   check("the classic chat is gone from the navigation", !all.some((i) => /console/.test(i.key + i.href)));
@@ -59,13 +59,13 @@ console.log("the sidebar: five groups");
   check("  a page passing an old key lights the new item", /<a href="\/claude\/sessions" class="side-item on" aria-current="page"/.test(r));
 
   const a = render(admin);
-  check("an administrator's sidebar shows all five groups", sideKeys(a).join() === "mint-ai,agents,machine,access,help", sideKeys(a).join());
-  check("  each group label is a button that collapses it", (a.match(/<button type="button" class="side-label" aria-expanded="true" data-side-group="/g) || []).length === 5);
+  check("an administrator's sidebar shows all four groups", sideKeys(a).join() === "mint-ai,agents,machine,access", sideKeys(a).join());
+  check("  each group label is a button that collapses it", (a.match(/<button type="button" class="side-label" aria-expanded="true" data-side-group="/g) || []).length === 4);
   const v = render(viewer);
-  check("a viewer sees no MINT AI group (a group with nothing visible collapses away)", !sideKeys(v).includes("mint-ai") && sideKeys(v).includes("machine") && sideKeys(v).includes("help"));
+  check("a viewer sees no MINT AI group (a group with nothing visible collapses away)", !sideKeys(v).includes("mint-ai") && sideKeys(v).includes("machine") && !sideKeys(v).includes("help"));
   check("  and no item it cannot open", !sideHrefs(v).includes("/users") && !sideHrefs(v).includes("/mint-ai") && !sideHrefs(v).includes("/credentials"));
   const nothing = render(A([]));
-  check("a role with nothing still has its own devices and the Guide", sideHrefs(nothing).join() === "/devices,/guide", sideHrefs(nothing).join());
+  check("a role with nothing still has its own devices; the Guide is in its avatar menu", sideHrefs(nothing).join() === "/devices" && /<a href="\/guide" role="menuitem">[\s\S]*Guide &amp; help<\/a>/.test(nothing), sideHrefs(nothing).join());
   check("Sessions shows for claude.running.view alone (the Live tab)", sideHrefs(render(A(["claude.running.view"]))).includes("/claude/sessions"));
   check("Services shows for agents.view alone (the Agents tab)", sideHrefs(render(A(["agents.view"]))).includes("/services"));
   check("the header card wraps the machine's facts", /<div class="side-id">/.test(render(admin, { user: { name: "Ann", perm: admin, chrome: chrome.forActor(admin, null) } })));

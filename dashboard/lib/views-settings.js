@@ -1,7 +1,7 @@
 "use strict";
 /**
  * MINT AI ▸ Settings (/mint-ai/settings/<section>): every setting of MINT AI
- * in one place, in ten sections. The left sub-nav becomes a chip row on a
+ * in one place, in nine sections (Advanced joined General on 2026-10-25). The left sub-nav becomes a chip row on a
  * narrow screen.
  *
  * Every setting is a row: label and help on the left, the control on the
@@ -31,8 +31,7 @@ const SETTINGS_SECTIONS = [
   ["screen", "Screen control", "monitor"],
   ["approvals", "Approvals & automations", "shield"],
   ["proactive", "Briefs & watchers", "clock"],
-  ["usage", "Usage & budget", "activity"],
-  ["advanced", "Advanced", "settings"],
+  ["usage", "Usage & token caps", "activity"],
 ];
 
 /** May this actor open that section? */
@@ -77,6 +76,15 @@ function group(title, ic, body, o = {}) {
   return `<div class="group${o.cls ? " " + esc(o.cls) : ""}"${o.id ? ` id="${esc(o.id)}"` : ""}><div class="gh">${icon(ic, 16)}${esc(title)}${
     o.aside ? `<span class="aside">${o.aside}</span>` : ""
   }</div>${body}</div>`;
+}
+
+/**
+ * "More": rows that are rarely needed (diagnostics, defaults nobody changes),
+ * closed by default and opened with one click. A plain <details>, so it works
+ * by keyboard and without script. `o.open` opens it (a result to show).
+ */
+function more(summary, body, o = {}) {
+  return `<details class="set-more"${o.id ? ` id="${esc(o.id)}"` : ""}${o.open ? " open" : ""}><summary>${esc(summary)}</summary><div class="set-more-body">${body}</div></details>`;
 }
 
 /** A read-only value from the supervisor's config. */
@@ -182,6 +190,7 @@ module.exports = {
   opt,
   form,
   linkRow,
+  more,
   head,
   page,
 };

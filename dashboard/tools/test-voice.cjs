@@ -36,7 +36,6 @@ const { WebSocketServer } = require("ws");
 const ROOT = path.join(__dirname, "..");
 const voice = require(path.join(ROOT, "lib", "voice.js"));
 const views = require(path.join(ROOT, "lib", "views-moniai.js"));
-const consoleViews = require(path.join(ROOT, "lib", "views-console.js"));
 const rbac = require(path.join(ROOT, "lib", "rbac.js"));
 
 let passed = 0;
@@ -763,47 +762,32 @@ function viewTests() {
     /id="cc-speak-toggle"/.test(on) && /click the mic to talk/.test(on));
   check("no Whisper or Piper left on the page", !/Whisper|Piper/i.test(on + off));
 
-  const session = { id: 7, access: "full", cwd: "/", model: "claude-opus-5", effort: "medium", mode: "auto", title: "t", root_on: 1 };
-  let cOff = "";
-  try {
-    cOff = consoleViews.console({ csrf: "c", user, sessions: [], session, messages: [], dirs: ["/"], voice: { configured: false, manage: true } });
-  } catch (e) {
-    cOff = "render failed: " + e.message;
-  }
-  check("console without a key: Live and dictation disabled, says where to add one",
-    /id="chat-live"[^>]*disabled/.test(cOff) && /id="chat-mic"[^>]*disabled/.test(cOff) && /Add an OpenAI key in Settings/.test(cOff), cOff.slice(0, 200));
-  let cOn = "";
-  try {
-    cOn = consoleViews.console({ csrf: "c", user, sessions: [], session, messages: [], dirs: ["/"], voice: { configured: true, voice: "marin" } });
-  } catch (e) {
-    cOn = "render failed: " + e.message;
-  }
-  check("console with a key: Live enabled, no Piper voice picker", /id="chat-live"/.test(cOn) && !/id="chat-live"[^>]*disabled/.test(cOn) && !/chat-voice"/.test(cOn));
+  check("the classic chat's view is gone (removed 2026-10-25)", !fs.existsSync(path.join(ROOT, "lib", "views-console.js")));
 
   const SV = require(path.join(ROOT, "lib", "views-settings-voice.js"));
   const sv = (o) => SV.body(Object.assign({ csrf: "c", on: true, status: { configured: true }, model: "gpt-realtime-2.1-mini", models: voice.VOICE_MODELS, voice: "marin", voices: voice.VOICES, meta: voice.VOICE_META, transcribe: voice.listenModelFor("gpt-realtime-2.1-mini"), persona: { mode: "learned" }, liveAudio: {}, usage: null }, o || {}));
   const page = sv();
-  check("Settings ▸ Voice: the key is masked (not even its last four), with Replace, Remove and Test", /class="kv-mask"/.test(page) && /pill ok">set</.test(page) && !/good/.test(page) && /data-modal-open="m-voice-token"/.test(page) && /id="voice-remove"/.test(page) && /id="voice-test"/.test(page));
+  check("Settings ▸ Voice: the key is masked (not even its last four), with Replace, Remove and Test", /class="kv-mask"/.test(page) && /class="state ok"[\s\S]{0,200}?Set</.test(page) && !/good/.test(page) && /data-modal-open="m-voice-token"/.test(page) && /id="voice-remove"/.test(page) && /id="voice-test"/.test(page));
   check("Settings ▸ Voice: the key field is a write-only password input, empty, in a dialog", /<section class="cc-modal os narrow" id="m-voice-token"[^>]* hidden>/.test(page) && /<input name="value" type="password"[^>]*required/.test(page) && !/value="sk-/.test(page));
   const modelSelect = (page.match(/<select name="model"[\s\S]*?<\/select>/) || [""])[0];
   check("Settings ▸ Voice: three voice models (2.1 mini selected), the transcription selector beside it (no old transcribe_model field), the voice cards, current one selected",
-    /<option value="gpt-realtime-2\.1-mini" data-hint="[^"]*" selected>GPT Realtime 2\.1 mini · default · 18\/18 word for word · Arabic OK · current</.test(modelSelect) && (modelSelect.match(/<option /g) || []).length === 3 && !/gpt-live-1/.test(page) && !/name="transcribe_model"/.test(page) && /<select name="transcriber"/.test(page) && /<code>gpt-4o-mini-transcribe<\/code>/.test(page) && /<input type="radio" name="voice" value="marin" checked>/.test(page) && (page.match(/name="voice" value=/g) || []).length === voice.VOICES.length);
+    /<option value="gpt-realtime-2\.1-mini" data-hint="[^"]*" selected>GPT Realtime 2\.1 mini \(current\)</.test(modelSelect) && (modelSelect.match(/<option /g) || []).length === 3 && !/gpt-live-1/.test(page) && !/name="transcribe_model"/.test(page) && /<select name="transcriber"/.test(page) && /<code>gpt-4o-mini-transcribe<\/code>/.test(page) && /<input type="radio" name="voice" value="marin" checked>/.test(page) && (page.match(/name="voice" value=/g) || []).length === voice.VOICES.length);
   check("the voice models: 2.1 mini, gpt-realtime-mini, GPT-4o Mini Realtime (gated); only 2.1 mini reads aloud, anything else reads with it; listening is its fixed pair",
     voice.VOICE_MODELS.map((m) => m.id).join() === "gpt-realtime-2.1-mini,gpt-realtime-mini,gpt-4o-mini-realtime-preview" && voice.VOICE_MODEL_DEFAULT === "gpt-realtime-2.1-mini" && voice.VOICE_MODELS.filter((m) => m.gated).map((m) => m.id).join() === "gpt-4o-mini-realtime-preview" && voice.READER_MODELS.join() === "gpt-realtime-2.1-mini" && voice.readerModelFor("gpt-realtime-2.1-mini") === "gpt-realtime-2.1-mini" && voice.readerModelFor("gpt-realtime-mini") === "gpt-realtime-2.1-mini" && voice.readerModelFor("gpt-4o-mini-realtime-preview") === "gpt-realtime-2.1-mini" && voice.readerModelFor("gpt-live-1") === "gpt-realtime-2.1-mini" && voice.listenModelFor("gpt-realtime-2.1-mini") === "gpt-4o-mini-transcribe" && voice.DEFAULTS.model === "gpt-realtime-2.1-mini" && voice.DEFAULTS.transcribe_model === "gpt-4o-mini-transcribe" && voice.TRANSCRIBE_MODELS === undefined);
   check("the options carry the facts: 18/18 + Arabic OK; 14/18, Arabic in English, retires 20 Jan 2027, read by 2.1 mini; 4o: read by 2.1 mini",
     /18\/18/.test(voice.VOICE_MODELS[0].hint) && /Arabic in Arabic/.test(voice.VOICE_MODELS[0].hint) && /14\/18/.test(voice.VOICE_MODELS[1].hint) && /Arabic in English/.test(voice.VOICE_MODELS[1].hint) && /20 Jan 2027/.test(voice.VOICE_MODELS[1].hint) && /read aloud by 2\.1 mini/.test(voice.VOICE_MODELS[1].hint) && /read aloud by 2\.1 mini/.test(voice.VOICE_MODELS[2].hint) &&
-    /<option value="gpt-realtime-mini" data-hint="[^"]*14\/18[^"]*">GPT Realtime mini · 14\/18 word for word · retires 20 Jan 2027</.test(modelSelect) && /id="voice-model-hint">The default\./.test(page));
+    /<option value="gpt-realtime-mini" data-hint="[^"]*14\/18[^"]*20 Jan 2027[^"]*">GPT Realtime mini</.test(modelSelect) && /id="voice-retire-note">GPT Realtime mini retires on 20 January 2027\./.test(page) && /id="voice-model-hint">The default\./.test(page));
   check("GPT-4o Mini Realtime, access not known: listed, disabled, 'not checked on this OpenAI key yet'",
-    /<option value="gpt-4o-mini-realtime-preview" data-hint="Not checked[^"]*" disabled>GPT-4o Mini Realtime · not checked on this OpenAI key yet</.test(modelSelect));
+    /<option value="gpt-4o-mini-realtime-preview" data-hint="Not checked[^"]*" disabled>GPT-4o Mini Realtime \(not checked yet\)</.test(modelSelect));
   const noAccess = sv({ access: voice.modelAccess(["gpt-realtime-mini", "gpt-realtime-2.1-mini"]) });
   const noSel = (noAccess.match(/<select name="model"[\s\S]*?<\/select>/) || [""])[0];
   check("GPT-4o Mini Realtime, not in the key's model list: disabled, 'not available on this OpenAI key'; the other two enabled",
-    /<option value="gpt-4o-mini-realtime-preview" data-hint="Not available on this OpenAI key[^"]*" disabled>GPT-4o Mini Realtime · not available on this OpenAI key</.test(noSel) && (noSel.match(/ disabled>/g) || []).length === 1);
+    /<option value="gpt-4o-mini-realtime-preview" data-hint="This OpenAI key cannot use it[^"]*" disabled>GPT-4o Mini Realtime \(not on this key\)</.test(noSel) && (noSel.match(/ disabled>/g) || []).length === 1);
   const withAccess = sv({ access: voice.modelAccess(["gpt-4o-mini-realtime-preview-2024-12-17"]) });
   const wSel = (withAccess.match(/<select name="model"[\s\S]*?<\/select>/) || [""])[0];
-  check("GPT-4o Mini Realtime, listed (a dated snapshot): offered normally", /<option value="gpt-4o-mini-realtime-preview" data-hint="A preview model[^"]*">GPT-4o Mini Realtime · preview · replies read by 2\.1 mini</.test(wSel) && !/ disabled>/.test(wSel));
+  check("GPT-4o Mini Realtime, listed (a dated snapshot): offered normally", /<option value="gpt-4o-mini-realtime-preview" data-hint="A preview model[^"]*">GPT-4o Mini Realtime</.test(wSel) && !/ disabled>/.test(wSel));
   const cur4o = sv({ model: "gpt-4o-mini-realtime-preview", access: voice.modelAccess(["gpt-4o-mini-realtime-preview"]) });
-  check("GPT-4o Mini Realtime current: selected, its hint under the selector", /<option value="gpt-4o-mini-realtime-preview" data-hint="[^"]*" selected>GPT-4o Mini Realtime · preview · replies read by 2\.1 mini · current</.test(cur4o) && /id="voice-model-hint">A preview model\./.test(cur4o));
+  check("GPT-4o Mini Realtime current: selected, its hint under the selector", /<option value="gpt-4o-mini-realtime-preview" data-hint="[^"]*" selected>GPT-4o Mini Realtime \(current\)</.test(cur4o) && /id="voice-model-hint">A preview model\./.test(cur4o));
   const acc = (ids) => JSON.stringify(voice.modelAccess(ids)["gpt-4o-mini-realtime-preview"]);
   check("modelAccess: unknown -> not available (not known); listed -> itself; only a dated snapshot -> the newest one; lookalikes ignored; ungated always",
     acc(null) === '{"available":false,"use":null,"known":false}' && acc([]) === '{"available":false,"use":null,"known":true}' && acc(["gpt-4o-mini-realtime-preview"]) === '{"available":true,"use":"gpt-4o-mini-realtime-preview","known":true}' &&
@@ -811,7 +795,7 @@ function viewTests() {
     voice.modelAccess(null)["gpt-realtime-mini"].available === true && voice.modelAccess([])["gpt-realtime-2.1-mini"].available === true);
   check("Settings ▸ Voice: each voice card names its gender", /Marin<\/b><span class="g"[^>]*><i aria-hidden="true">♀<\/i>Female/.test(page) && /Alloy<\/b><span class="g"[^>]*><i aria-hidden="true">◌<\/i>Neutral/.test(page) && /Cedar<\/b><span class="g"[^>]*><i aria-hidden="true">♂<\/i>Male/.test(page));
   const pageOff = sv({ status: { configured: false } });
-  check("Settings ▸ Voice without a key: Add token, no Remove, Test disabled", /Add token/.test(pageOff) && !/id="voice-remove"/.test(pageOff) && /id="voice-test" disabled/.test(pageOff));
+  check("Settings ▸ Voice without a key: Add key, no Remove, Test disabled", /Add key/.test(pageOff) && !/id="voice-remove"/.test(pageOff) && /id="voice-test" disabled/.test(pageOff));
   const failed = sv({ test: { ok: false, text: "OpenAI refused the key <x>" } });
   check("Settings ▸ Voice: a failed test is shown, escaped", /Test failed/.test(failed) && /&lt;x&gt;/.test(failed));
 

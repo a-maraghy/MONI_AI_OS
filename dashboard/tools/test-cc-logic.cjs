@@ -129,8 +129,8 @@ const FILL = {
   missions: [["cc-mis-tabs", "renderMissions"], ["cc-lanes", "renderMissions"], ["cc-mis-head", "renderMissions"]],
   dec: [["cc-dec-list", "renderDecisions"], ["cc-feed", "renderFeed"], ["cc-evlog", "Event log"]],
   tl: [["cc-timeline", "renderTimeline"], ["cc-tl-count", "renderTimeline"]],
-  rules: [["cc-rules-pane", "renderRules"]],
-  orders: [["cc-orders", "renderOrders"]],
+  // Standing orders became the Schedules tab of Rules & alerts (2026-10-25): its list lives in that sheet.
+  rules: [["cc-rules-pane", "renderRules"], ["cc-orders", "renderOrders"], ["cc-orders-wrap", "renderRules"]],
   cost: [["cc-cost-widget", "renderCostWidget"], ["cc-voice-usage", "renderVoiceUsage"]],
   machine: [["cc-mach-note", "renderMachine"], ["cc-core-grid", "renderCore"], ["cc-mach-badge", "renderMachine"]],
 };
@@ -140,6 +140,8 @@ for (const k of Object.keys(FILL)) {
   check(`sheet ${k}: holds ${FILL[k].map((x) => "#" + x[0]).join(", ")}, filled by the page`, p && !missing.length, missing.map((x) => x[0]).join(" "));
 }
 check("the Machine sheet's grid cells are what renderCore writes (data-cell)", /querySelector\('\[data-cell="' \+ key \+ '"\]'\)/.test(main) && (paneOf("machine").match(/data-cell="/g) || []).length === 8);
+check("the old #orders key still opens the Schedules tab of Rules & alerts", /if \(id === "orders"\) \{ if \(P\.setRulesSub\) P\.setRulesSub\("orders"\); id = "rules";/.test(main) && !html.includes('id="cc-pane-orders"'));
+check("the Missions rail button shows only while a mission is open or running", /railBtn\.hidden = !\(S\.pane === "missions" \|\| missionList\(\)\.some/.test(client));
 check("opening a sheet refreshes it (rules, decisions, missions, sessions, conversation)", /if \(id === "rules"\) P\.renderRules\(\);/.test(main) && /if \(id === "dec"\) P\.renderDecisions\(\);/.test(main) && /if \(id === "missions"\) P\.renderMissions\(\);/.test(main) && /if \(id === "sessions"\) renderSessions\(true\);/.test(main));
 check("the sessions sheet: MINT AI as CEO, each session with its sub-agents, Deep view and Message via MINT AI", /CEO · you talk to it/.test(main) && /cc-subagents/.test(main) && /data-deep-open=/.test(main) && /Message via MINT AI/.test(main) && /data-at=/.test(main));
 check("a session point on the orbit opens the Sessions sheet", /onClick: function \(key\) \{ openSheet\("sessions"\); highlightSess\(key\); \}/.test(main));

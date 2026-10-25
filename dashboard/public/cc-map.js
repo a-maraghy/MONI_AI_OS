@@ -1,16 +1,15 @@
 "use strict";
 /*
- * The Command Center's stage: the MINT AI core in the middle (mint-core.js)
- * and the live sessions as small points on a faint orbit round it.
+ * The Command Center's stage: the MINT AI core in the middle and the live
+ * sessions round it.
  *
- * The core's concept (A dotted sphere, B Siri fluid, C hybrid -- mint-core.js;
- * D mesh, the default -- mint-core-d.js; E bot -- mint-core-bot.js, with the
- * viewer's head style and colours from data-bot-head / data-bot-colors) is the viewer's saved choice, rendered
- * by the server as data-core on #cc before first paint and switchable at any
- * time without a reload (setConcept). A/B/C share one WebGL canvas; D draws
- * with WebGL2, which a canvas that once gave out a WebGL1 context can never
- * give, so crossing between D, E and A/B/C stops the running core, releases its
- * context and starts the other on a fresh copy of the canvas. Its state comes
+ * The core's concept (D mesh, the default -- mint-core-d.js; E bot --
+ * mint-core-bot.js, with the viewer's head style and colours from
+ * data-bot-head / data-bot-colors) is the viewer's saved choice, rendered by
+ * the server as data-core on #cc before first paint and switchable at any time
+ * without a reload (setConcept). The cores A, B and C (mint-core.js) were
+ * retired on 2026-10-25. Crossing between D and E stops the running core,
+ * releases its context and starts the other on a fresh copy of the canvas. Its state comes
  * from real events through moni-ai.js: thinking while a turn runs, delegating
  * when a SendMessage lands (a stream of dots flies to that session's point),
  * listening with the real microphone level, speaking with the real output
@@ -33,7 +32,7 @@
 (function () {
   window.MoniMap = function (els, opts) {
     opts = opts || {};
-    var root = els.root, stage = els.stage, orbit = els.orbit, ring = els.ring, halo = els.halo, spark = els.spark;
+    var root = els.root, stage = els.stage, orbit = els.orbit, ring = els.ring, halo = els.halo;
     var reduced = !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
     var L = { cx: 0, cy: 0, R: 200, rx: 300, ry: 80 };
     var nodes = [];          // {id, label, st, subs, el}
@@ -46,8 +45,8 @@
 
     var GHOST = "\u0000ghost";
     function normC(c) { return window.MintLogic ? window.MintLogic.normCore(c) : String(c == null ? "" : c).trim().toUpperCase(); }
-    /** Which renderer draws a concept: "D" (mint-core-d.js), "E" (mint-core-bot.js) or "dots" (mint-core.js, A/B/C). */
-    function rendererOf(c) { c = normC(c); return c === "D" && window.MintCoreD ? "D" : c === "E" && window.MintCoreBot ? "E" : "dots"; }
+    /** Which renderer draws a concept: "D" (mint-core-d.js) or "E" (mint-core-bot.js); a missing one stands in for the other. */
+    function rendererOf(c) { c = normC(c); return c === "E" ? (window.MintCoreBot ? "E" : "D") : window.MintCoreD ? "D" : "E"; }
     /** D and E draw the family's spheres themselves (as meshes / bot heads), on their own canvas. */
     function drawsKids() { return core.S.concept === "D" || core.S.concept === "E"; }
     function botHead() { return root.getAttribute("data-bot-head") || ""; }
@@ -82,14 +81,14 @@
     }
     function makeCore(c) {
       var r = rendererOf(c);
-      var k = r === "D" ? window.MintCoreD(els.canvas, coreOpts("D")) : r === "E" ? window.MintCoreBot(els.canvas, coreOpts("E")) : window.MintCore(els.canvas, coreOpts(c));
+      var k = r === "D" ? window.MintCoreD(els.canvas, coreOpts("D")) : window.MintCoreBot(els.canvas, coreOpts("E"));
       if (r === "E" && offline && k.setOffline) k.setOffline(true);
       els.canvas = k.canvas || els.canvas; // a core that fell back to 2D drew on a fresh copy of the canvas
       return k;
     }
     var core = makeCore(root.getAttribute("data-core"));
     var offline = false;
-    /** Hand the canvas to another renderer (D / E / A-B-C): stop, release the context, fresh canvas, same state. */
+    /** Hand the canvas to another renderer (D / E): stop, release the context, fresh canvas, same state. */
     function swapCore(c) {
       var wasOn = !!(core.S.running || core.S.wanted);
       core.stop();
@@ -202,8 +201,6 @@
       halo.style.left = L.cx + "px";
       halo.style.top = L.cy + "px";
       halo.style.width = halo.style.height = L.R * 4.2 + "px";
-      spark.style.left = L.cx + "px";
-      spark.style.top = L.cy + "px";
       var e = ring.firstElementChild;
       ring.setAttribute("width", String(window.innerWidth));
       ring.setAttribute("height", String(window.innerHeight));
@@ -270,12 +267,6 @@
     function onFrame(S, W) {
       if (!reduced) place(S.t);
       if (family && family.enabled() && !drawsKids()) family.frame(); // D / E moved it before drawing (beforeDraw)
-      if (core.S.concept === "C") {
-        var talk = W.wave + W.line;
-        var k = (1 + 0.35 * S.amp * talk + 0.08 * Math.sin(S.t * 1.1)) * (1 - 0.45 * talk);
-        var rot = ((W.gal + W.think) * S.t * 40) % 360;
-        spark.style.transform = "translate(-50%, -50%) rotate(" + rot.toFixed(1) + "deg) scale(" + Math.max(0.2, k).toFixed(3) + ")";
-      }
       if (opts.onFrame) opts.onFrame(S, W);
       if (sampler) { var f = sampler; sampler = null; f(core.canvas); }
     }
@@ -346,7 +337,7 @@
         root.setAttribute("data-state", name);
       },
       setConcept: function (c) {
-        var cur = core.S.concept === "D" ? "D" : core.S.concept === "E" ? "E" : "dots";
+        var cur = core.S.concept === "E" ? "E" : "D";
         if (rendererOf(c) !== cur) swapCore(c);
         else core.setConcept(c);
         root.setAttribute("data-core", core.S.concept);

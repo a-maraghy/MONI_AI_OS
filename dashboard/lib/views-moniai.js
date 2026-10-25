@@ -2,18 +2,17 @@
 /**
  * The MINT AI Command Center, simplified (Mint, 2026-09-29).
  *
- * One quiet screen: the MINT AI core in the middle (a WebGL canvas, four
- * concepts -- A dotted sphere, B Siri fluid, C hybrid, D mesh (the default) -- chosen per person in
- * Settings and switchable any time), the live sessions as points on a faint
- * orbit round it, a one-line caption under it saying what is happening, and
- * one pill composer with voice. Everything else is one tap away: the faint
- * icon bar on the left opens sheets from the right (Conversation, Sessions,
- * Missions, Decisions, Timeline, Rules & watchers, Standing orders, Cost &
- * voice usage, Machine); on a phone a grid button opens them all. Anything that
- * needs a decision appears as one card, top right.
+ * One quiet screen: the MINT AI core in the middle (a canvas, two concepts --
+ * D mesh, the default, and E bot -- chosen per person in Settings and
+ * switchable any time), the live sessions round it, a one-line caption under
+ * it saying what is happening, and one composer with voice. Everything else is
+ * one tap away: the icon bar on the left opens sheets from the right
+ * (Conversation, Sessions, Missions while one is open, Decisions, Timeline,
+ * Rules & alerts with its Schedules, Usage, Machine); on a phone a grid button
+ * opens them all. Anything that needs a decision appears as one card, top right.
  *
  * Everything that changes is filled in by public/moni-ai.js (with cc-logic.js,
- * mint-core.js, cc-map.js and cc-panels.js) from the JSON and SSE API under
+ * mint-core-d.js / mint-core-bot.js, cc-map.js and cc-panels.js) from the JSON and SSE API under
  * /mint-ai/api/ -- this renders the frame, the labels and the few facts the
  * server already knows (who is looking, whether a voice is installed, which
  * core they chose), all escaped here. No inline script, style or handler
@@ -23,8 +22,7 @@
  * Only this VPS is shown. The live Odoo server appears nowhere on this page.
  */
 
-const { esc, shell, card, asset, dockMarkup } = require("./ui");
-const marks = require("./marks");
+const { esc, shell, asset, dockMarkup } = require("./ui");
 const logic = require("../public/cc-logic");
 
 /* Icons for the page, as one sprite referenced by <use>. */
@@ -108,16 +106,6 @@ function sprite() {
   );
 }
 
-/** The brand spark at the heart of concept C (a DOM element the page places over the core). */
-function sparkSvg() {
-  return (
-    `<svg viewBox="-26 -26 52 52" aria-hidden="true" focusable="false"><defs>` +
-    `<radialGradient id="cc-spg" cx="0" cy="0" r="24" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#FFFFFF"/><stop offset=".4" stop-color="#C9FFEC"/><stop offset="1" stop-color="#5FE8BF"/></radialGradient>` +
-    `<linearGradient id="cc-spl" x1="-20" y1="20" x2="20" y2="-20" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#00B884"/><stop offset=".55" stop-color="#1FA3B0"/><stop offset="1" stop-color="#7A2BD6"/></linearGradient>` +
-    `</defs><path class="sp-d" d="${marks.spark(0, 0, 24, 24, 24)}" fill="url(#cc-spg)"/><path class="sp-l" d="${marks.spark(0, 0, 24, 24, 24)}" fill="url(#cc-spl)"/></svg>`
-  );
-}
-
 /** One cell of the Machine sheet's MINT AI core grid. Values arrive from the page script. */
 function coreCell(key, label) {
   return `<div data-cell="${key}"><span>${esc(label)}</span><b data-st>—</b></div>`;
@@ -131,14 +119,15 @@ function pane(key, title, sub, actions, body, foot) {
   </section>`;
 }
 
-/** The dock: the sheets, in the order MintLogic.SHEETS gives them, then search. */
+/** The dock: the sheets, in the order MintLogic.SHEETS gives them, then search. Missions starts hidden:
+    cc-panels.js shows it while a mission is open or running (2026-10-25 cleanup). */
 function dock() {
   const badge = { dec: `<span class="cc-badge-n warn" id="cc-dec-count" hidden>0</span>`, missions: `<span class="cc-badge-n" id="cc-mis-count" hidden>0</span>` };
   return (
     logic.SHEETS.map((s) =>
       s === "-"
         ? `<span class="sep" aria-hidden="true"></span>`
-        : `<button type="button" data-sheet="${s.key}" aria-expanded="false" aria-label="${esc(s.label)}">${ic(s.icon)}${badge[s.key] || ""}<span class="tip">${esc(s.label)}</span></button>`
+        : `<button type="button" data-sheet="${s.key}" aria-expanded="false" aria-label="${esc(s.label)}"${s.key === "missions" ? " hidden" : ""}>${ic(s.icon)}${badge[s.key] || ""}<span class="tip">${esc(s.label)}</span></button>`
     ).join("") +
     `<span class="sep" aria-hidden="true"></span>` +
     `<button type="button" id="cc-kbtn" aria-label="Search or run (Ctrl+K)" aria-keyshortcuts="Control+K">${ic("search")}<span class="tip">Search or run · Ctrl K</span></button>` +
@@ -148,13 +137,6 @@ function dock() {
     // Settings were only reachable through the menu drawer, which users did not find (2026-10-25).
     `<a class="cc-set-btn" href="/mint-ai/settings" aria-label="MINT AI settings">${ic("settings")}<span class="tip">Settings</span></a>`
   );
-}
-
-/** The core choice as four buttons (the voice menu and the Everything sheet use the same markup). */
-function coreSwitch(core, cls) {
-  return `<div class="cc-core-seg${cls ? " " + cls : ""}" role="radiogroup" aria-label="MINT AI core">${Object.keys(logic.CORES)
-    .map((k) => `<button type="button" role="radio" data-core-set="${k}" aria-checked="${k === core}"><b>${k}</b><span>${esc(logic.CORES[k])}</span></button>`)
-    .join("")}</div>`;
 }
 
 /* Top-bar additions, before the theme switch: the status chip, the amber
@@ -174,7 +156,7 @@ const TOP_CLOCK = `<div class="cc-clock" aria-hidden="true"><b id="cc-clock">--:
  * @param o  { csrf, user, core, voice: {configured, model, voice, manage, on, use, live, liveDuplex} }
  *   voice.live  voice works for this viewer (on in Settings, a key, voice.use):
  *         the only case with a mic, read-aloud and the live controls on the page
- *   core  the viewer's saved MINT AI core (A / B / C; anything else is C),
+ *   core  the viewer's saved MINT AI core (D or E; anything else is D),
  *         rendered here so the page paints the right one from the first frame
  */
 function page(o) {
@@ -219,7 +201,6 @@ function page(o) {
   <div class="cc-bg" aria-hidden="true"></div>
   <div class="cc-halo" id="cc-halo" aria-hidden="true"></div>
   <canvas class="cc-core" id="cc-core" aria-hidden="true"></canvas>
-  <div class="cc-spark" id="cc-spark" aria-hidden="true">${sparkSvg()}</div>
   <div class="cc-orbit" id="cc-orbit" role="group" aria-label="Live sessions"><svg class="cc-ring" id="cc-ring" aria-hidden="true" focusable="false"><ellipse/></svg></div>
   <canvas class="cc-family" id="cc-family" aria-hidden="true"></canvas>
   <div class="cc-kids" id="cc-kids" role="group" aria-label="Live sessions"></div>
@@ -310,13 +291,12 @@ ${desk ? deskParts() : ""}
       <details class="cc-evlog" id="cc-evlog" open><summary class="cc-inbox-h">${ic("bolt")}Event log<span class="cc-muted"><span id="cc-feed-count">0</span> events · this VPS</span></summary><ul class="cc-feed" id="cc-feed"></ul></details>`
   )}
   ${pane("tl", "Timeline", `<span id="cc-tl-count">0</span> delegations and approvals, newest first`, "", `<ul class="cc-timeline" id="cc-timeline"></ul>`)}
-  ${pane("rules", "Rules & watchers", "what needs your approval, what is watched", "", `<div id="cc-rules-pane"></div>`)}
   ${pane(
-    "orders",
-    "Standing orders",
-    "run on a schedule, as MINT AI or a session",
-    `<button type="button" class="cc-btn pri sm" data-open="order-new">${ic("plus")}New</button>`,
-    `<ul class="cc-orders" id="cc-orders"></ul>`
+    "rules",
+    "Rules & alerts",
+    "what needs your approval, what is checked, what runs on a schedule",
+    "",
+    `<div id="cc-rules-pane"></div><div class="cc-orders-wrap" id="cc-orders-wrap" hidden><div class="cc-orders-hd"><button type="button" class="cc-btn pri sm" data-open="order-new">${ic("plus")}New schedule</button></div><ul class="cc-orders" id="cc-orders"></ul></div>`
   )}
   ${pane(
     "cost",
@@ -345,8 +325,8 @@ ${desk ? deskParts() : ""}
         ${coreCell("core", "Core")}${coreCell("sessions", "Sessions")}${coreCell("agents", "Agents")}${coreCell("memory", "Memory")}
         ${coreCell("watchers", "Watchers")}${coreCell("rules", "Rules")}${coreCell("voice", "Voice")}${coreCell("guard", "Guardrails")}
       </div>
-      <div class="cc-sec-t">Other machines</div>
-      <div class="cc-card dashed cc-mach-add" aria-disabled="true" title="Watching another machine comes later">${ic("plus")}<b>Add a machine</b><span class="sp"></span><em class="cc-tag mute">coming later</em></div>`
+      <div class="cc-sec-t">Your computers</div>
+      <a class="cc-card cc-link-card" href="/machines">${ic("monitor")}<b>Computers</b><span class="sp"></span><span class="cc-muted">the laptops linked through the desktop app</span>${ic("chevr")}</a>`
   )}
   ${pane(
     "everything",
@@ -354,10 +334,9 @@ ${desk ? deskParts() : ""}
     "one tap away",
     "",
     `<div class="cc-everything">${logic.SHEETS.filter((s) => s !== "-")
-      .map((s) => `<button type="button" data-sheet="${s.key}">${ic(s.icon)}<span>${esc(s.label.replace(" & voice usage", "").replace(" & watchers", ""))}</span>${s.key === "dec" ? `<span class="cc-badge-n warn" data-dec-mirror hidden>0</span>` : ""}</button>`)
+      .map((s) => `<button type="button" data-sheet="${s.key}">${ic(s.icon)}<span>${esc(s.label)}</span>${s.key === "dec" ? `<span class="cc-badge-n warn" data-dec-mirror hidden>0</span>` : ""}</button>`)
       .join("")}<button type="button" data-open-palette>${ic("search")}<span>Search or run</span></button></div>
       ${dashLinks ? `<div class="cc-sec-t">Mint OS</div>${dashLinks}` : ""}
-      <div class="cc-sec-t">MINT AI core</div>${coreSwitch(core, "wide")}
       <div class="cc-sec-t">Theme</div>
       <div class="cc-theme-mini" role="group" aria-label="Theme"><button type="button" data-theme-to="system" aria-label="System theme">${ic("monitor")}</button><button type="button" data-theme-to="dark" aria-label="Dark theme">${ic("moon")}</button><button type="button" data-theme-to="light" aria-label="Light theme">${ic("sun")}</button></div>`
   )}
@@ -375,8 +354,8 @@ ${perm && !desk ? dockMarkup(o.csrf, perm, { shell: true, noVoice: !vOk, core, b
     heading: null,
     pageClass: desk ? "cc-page cc-desk" : "cc-page",
     assets: desk
-      ? ["mint-desktop-webauthn.js", "voice-live.css", "mint-desktop.css", "console.js", "cc-logic.js", "mint-sound.js", "mint-core.js", "mint-core-d.js", "mint-core-bot.js", "cc-family.js", "cc-map.js", "cc-panels.js", "cc-story.css", "cc-story.js", "voice-live-detect.js", "voice-live.js", "ui-actions.js", "mint-desktop-layout.js", "mint-desktop-glance.js", "mint-desktop-companion.js", "moni-ai.js", "mint-proactive.css", "mint-proactive.js", "mint-widgets.js", "mint-canvas-policy.js", "mint-canvas.css", "mint-canvas.js", "mint-presence.css", "mint-presence-logic.js", "mint-presence.js", "mint-presence-bind.js", "mint-desktop.js"]
-      : ["voice-live.css", "mint-dock.css", "console.js", "cc-logic.js", "mint-sound.js", "mint-core.js", "mint-core-d.js", "mint-core-bot.js", "cc-family.js", "cc-map.js", "cc-panels.js", "cc-story.css", "cc-story.js", "voice-live-detect.js", "voice-live.js", "mint-proactive.css", "mint-proactive.js", "mint-desktop-glance.js", "mint-widgets.js", "mint-canvas-policy.js", "mint-canvas.css", "mint-canvas.js", "mint-presence.css", "mint-presence-logic.js", "mint-presence.js", "mint-presence-bind.js", "ui-actions.js", "moni-ai.js", "mint-dock.js", "mint-shell.js"],
+      ? ["mint-desktop-webauthn.js", "voice-live.css", "mint-desktop.css", "console.js", "cc-logic.js", "mint-sound.js", "mint-core-d.js", "mint-core-bot.js", "cc-family.js", "cc-map.js", "cc-panels.js", "cc-story.css", "cc-story.js", "voice-live-detect.js", "voice-live.js", "ui-actions.js", "mint-desktop-layout.js", "mint-desktop-glance.js", "mint-desktop-companion.js", "moni-ai.js", "mint-proactive.css", "mint-proactive.js", "mint-widgets.js", "mint-canvas-policy.js", "mint-canvas.css", "mint-canvas.js", "mint-presence.css", "mint-presence-logic.js", "mint-presence.js", "mint-presence-bind.js", "mint-desktop.js"]
+      : ["voice-live.css", "mint-dock.css", "console.js", "cc-logic.js", "mint-sound.js", "mint-core-d.js", "mint-core-bot.js", "cc-family.js", "cc-map.js", "cc-panels.js", "cc-story.css", "cc-story.js", "voice-live-detect.js", "voice-live.js", "mint-proactive.css", "mint-proactive.js", "mint-desktop-glance.js", "mint-widgets.js", "mint-canvas-policy.js", "mint-canvas.css", "mint-canvas.js", "mint-presence.css", "mint-presence-logic.js", "mint-presence.js", "mint-presence-bind.js", "ui-actions.js", "moni-ai.js", "mint-dock.js", "mint-shell.js"],
     topExtra: topExtra(),
     topEnd: TOP_CLOCK,
   });
@@ -417,72 +396,10 @@ function deskParts() {
   }</div>`;
 }
 
-/* ------------------------------------------------ Account ▸ Appearance --- */
-
-/**
- * The Appearance card on /account: the three cores, each with a small live
- * preview, the saved one ticked; and the sessions view (Spheres / Classic orbit). Works without JavaScript (a plain form post
- * to /account/appearance); mint-settings.js switches it in place instead, and
- * any open Command Center picks the change up on its next load -- or at once,
- * from its own quick switch.
- *
- * @param o { csrf, core }
- */
-function appearance(o) {
-  const core = logic.normCore(o.core);
-  const sessview = logic.normSessView(o.sessview);
-  const sessDesc = {
-    spheres: "New: each live session is a small sphere like MINT AI, with its name, drifting round her; delegations and replies stream between you.",
-    orbit: "The classic view: each live session is a dot on a faint orbit round the core.",
-  };
-  const sessOpts = Object.keys(logic.SESS_VIEWS)
-    .map(
-      (k) => `<label class="mint-sess-opt" data-sessview-opt="${k}">
-        <input type="radio" name="sessions_view" value="${k}"${k === sessview ? " checked" : ""}>
-        <span class="mint-core-name"><b>${esc(logic.SESS_VIEWS[k])}</b>${k === "spheres" ? " · new" : ""}</span>
-        <span class="mint-core-desc">${esc(sessDesc[k])}</span>
-      </label>`
-    )
-    .join("");
-  const desc = {
-    A: "A sphere of dots that ripples when you talk, knots while it thinks and gathers into rings when it needs you.",
-    B: "A glassy fluid orb that melts into voice waves when it listens and speaks.",
-    C: "The dotted sphere with the brand spark at its heart.",
-    D: "A folding sphere of dots, cyan to magenta, with a glowing rim and a halo of dots. The default.",
-    E: BOT_DESC,
-  };
-  const opts = Object.keys(logic.CORES)
-    .map(
-      (k) => `<label class="mint-core-opt" data-core-opt="${k}">
-        <input type="radio" name="core" value="${k}"${k === core ? " checked" : ""}>
-        <span class="mint-prev"><canvas data-prev-core="${k}" aria-hidden="true"></canvas>${k === "C" ? `<span class="mint-prev-spark" aria-hidden="true">${sparkSvg().replace(/cc-sp/g, "mp-sp")}</span>` : ""}</span>
-        <span class="mint-core-name"><b>${k}</b> · ${esc(logic.CORES[k])}</span>
-        <span class="mint-core-desc">${esc(desc[k])}</span>
-      </label>`
-    )
-    .join("");
-  return {
-    html: card(
-      "Appearance",
-      `<form method="post" action="/account/appearance" class="mint-appearance" id="mint-appearance" data-csrf="${esc(o.csrf)}">
-        <input type="hidden" name="_csrf" value="${esc(o.csrf)}">
-        <p class="muted">The MINT AI core in the Command Center. Switch any time; an open Command Center can switch too, from its voice menu.</p>
-        <fieldset class="mint-core-opts"><legend class="cc-sr">MINT AI core</legend>${opts}</fieldset>
-        <p class="muted mint-sess-h"><b>Sessions view</b> — how the live sessions are shown round the core.</p>
-        <fieldset class="mint-sess-opts"><legend class="cc-sr">Sessions view</legend>${sessOpts}</fieldset>
-        ${botSettings({ core, botHead: o.botHead, botColors: o.botColors, botFace: o.botFace })}
-        <div class="btn-row"><button class="btn primary mint-core-save" type="submit">Save</button><span class="muted small" id="mint-appearance-note" role="status"></span></div>
-      </form>`,
-      { icon: "eye", id: "appearance" }
-    ),
-    assets: APPEARANCE_ASSETS,
-  };
-}
-
 /* ------------------------------------------------ core E: head and colours --- */
 
 const BOT_DESC = "A wireframe bot head; its face shows each state in one colour. Pick a face, a head and colours below.";
-const APPEARANCE_ASSETS = ["mint-settings.css", "cc-logic.js", "mint-core.js", "mint-core-d.js", "mint-core-bot.js", "mint-settings.js"];
+const APPEARANCE_ASSETS = ["mint-settings.css", "cc-logic.js", "mint-core-d.js", "mint-core-bot.js", "mint-settings.js"];
 
 /**
  * Core E's settings in Appearance (the Settings section and the Account card render the same): the
@@ -541,5 +458,5 @@ function botSettings(o) {
       </div>`;
 }
 
-module.exports = { page, appearance, botSettings, BOT_DESC, APPEARANCE_ASSETS, SPRITE, coreSwitch };
+module.exports = { page, botSettings, BOT_DESC, APPEARANCE_ASSETS, SPRITE };
 

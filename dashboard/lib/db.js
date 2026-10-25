@@ -346,10 +346,93 @@ function migrateCoreDefaultD() {
   return run();
 }
 
+/**
+ * Drop retired permissions (rbac.RETIRED) from stored roles: the classic
+ * chat's console.use and console.full went with its code on 2026-10-25.
+ * Idempotent; each role that changed gets an audit line. Returns the count.
+ */
+function migrateRetiredPermissions() {
+  const rows = db.prepare("SELECT id, name, permissions FROM roles").all();
+  const upd = db.prepare("UPDATE roles SET permissions = ? WHERE id = ?");
+  const log = db.prepare("INSERT INTO login_log (ts, ip, username, outcome, detail) VALUES (?, ?, ?, 'roles', ?)");
+  let n = 0;
+  for (const r of rows) {
+    let list;
+    try {
+      list = JSON.parse(r.permissions);
+    } catch (_) {
+      continue;
+    }
+    if (!Array.isArray(list)) continue;
+    const gone = list.filter((p) => rbac.RETIRED.includes(p));
+    if (!gone.length) continue;
+    upd.run(JSON.stringify(list.filter((p) => !rbac.RETIRED.includes(p))), r.id);
+    log.run(nowIso(), null, "migration", `role ${r.name}: removed ${gone.join(", ")} (the classic chat was removed)`);
+    n++;
+  }
+  return n;
+}
+
+/**
+ * The cores A, B and C were retired on 2026-10-25: anyone whose saved core is
+ * one of them moves to E (Bot), the core the administrator uses. Runs at every
+ * start (the three can no longer be chosen, so after the first run it finds
+ * nobody); each account moved gets an audit line, and the last move is recorded
+ * in settings ("migration.mint_core_abc_e": {moved, at}).
+ */
+const CORE_ABC_MIGRATION = "migration.mint_core_abc_e";
+function migrateRetiredCores() {
+  const run = db.transaction(() => {
+    const rows = db.prepare("SELECT id, username, mint_core FROM users WHERE mint_core IN ('A', 'B', 'C')").all();
+    if (!rows.length) return 0;
+    const upd = db.prepare("UPDATE users SET mint_core = 'E' WHERE id = ?");
+    const log = db.prepare("INSERT INTO login_log (ts, ip, username, outcome, detail) VALUES (?, ?, ?, 'account', ?)");
+    const ts = nowIso();
+    for (const r of rows) {
+      upd.run(r.id);
+      log.run(ts, null, r.username, `MINT AI core ${r.mint_core} -> E (Bot) (core ${r.mint_core} retired, migration)`);
+    }
+    db.prepare(
+      "INSERT INTO settings (key, value, updated_at, updated_by) VALUES (?, ?, ?, 'migration') ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, updated_by = excluded.updated_by"
+    ).run(CORE_ABC_MIGRATION, JSON.stringify({ moved: rows.length, at: ts }), ts);
+    return rows.length;
+  });
+  return run();
+}
+
+/**
+ * The sessions view is fixed to spheres (cleanup 2026-10-25: "Classic orbit"
+ * was tried twice and reverted within seconds). The control is gone from
+ * Appearance; anyone still on orbit moves to spheres, with an audit line. The
+ * column stays. Recorded in settings ("migration.sessions_view_spheres").
+ */
+const SESSVIEW_MIGRATION = "migration.sessions_view_spheres";
+function migrateSessionsViewSpheres() {
+  const run = db.transaction(() => {
+    const rows = db.prepare("SELECT id, username FROM users WHERE sessions_view = 'orbit'").all();
+    if (!rows.length) return 0;
+    const upd = db.prepare("UPDATE users SET sessions_view = 'spheres' WHERE id = ?");
+    const log = db.prepare("INSERT INTO login_log (ts, ip, username, outcome, detail) VALUES (?, ?, ?, 'account', ?)");
+    const ts = nowIso();
+    for (const r of rows) {
+      upd.run(r.id);
+      log.run(ts, null, r.username, "Sessions view orbit -> spheres (Classic orbit retired, migration)");
+    }
+    db.prepare(
+      "INSERT INTO settings (key, value, updated_at, updated_by) VALUES (?, ?, ?, 'migration') ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, updated_by = excluded.updated_by"
+    ).run(SESSVIEW_MIGRATION, JSON.stringify({ moved: rows.length, at: ts }), ts);
+    return rows.length;
+  });
+  return run();
+}
+
 seedRoles();
 migrateLegacyAdmin();
 migrateRenamedPermissions();
 migrateCoreDefaultD();
+migrateRetiredPermissions();
+migrateRetiredCores();
+migrateSessionsViewSpheres();
 
 /* --------------------------------------------------------------- users --- */
 
@@ -373,6 +456,9 @@ function userRow(u) {
 }
 
 module.exports = {
+  migrateRetiredCores,
+  migrateSessionsViewSpheres,
+  migrateRetiredPermissions,
   db,
   nowIso,
 

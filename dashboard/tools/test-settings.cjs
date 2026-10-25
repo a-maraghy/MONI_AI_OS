@@ -102,7 +102,7 @@ const server = net.createServer((c) => {
 const last = (op) => seen.filter((m) => m.op === op).pop();
 const count = (op) => seen.filter((m) => m.op === op).length;
 const navOf = (html) => [...((/<nav class="set-nav"[^>]*>([\s\S]*?)<\/nav>/.exec(html) || [])[1] || "").matchAll(/href="\/mint-ai\/settings\/([a-z]+)"/g)].map((m) => m[1]);
-const ALL = ["general", "voice", "chatgpt", "appearance", "sessions", "screen", "approvals", "proactive", "usage", "advanced"];
+const ALL = ["general", "voice", "chatgpt", "appearance", "sessions", "screen", "approvals", "proactive", "usage"];
 
 (async () => {
   await new Promise((r) => server.listen(SOCK, r));
@@ -131,7 +131,7 @@ const ALL = ["general", "voice", "chatgpt", "appearance", "sessions", "screen", 
     let r = await s.req("GET", "/mint-ai/settings", { cookie: A.cookie });
     check("/mint-ai/settings -> the first section the viewer may open (admin: General)", r.status === 302 && r.headers.location === "/mint-ai/settings/general", r.status + " " + r.headers.location);
     r = await s.req("GET", "/mint-ai/settings/general", { cookie: A.cookie });
-    check("an administrator sees all ten sections", JSON.stringify(navOf(r.body)) === JSON.stringify(ALL), navOf(r.body).join());
+    check("an administrator sees all nine sections (Advanced joined General)", JSON.stringify(navOf(r.body)) === JSON.stringify(ALL), navOf(r.body).join());
     const aTok = s.csrfOf(r.body);
     for (const k of ALL) {
       const x = await s.req("GET", "/mint-ai/settings/" + k, { cookie: A.cookie });
@@ -140,13 +140,16 @@ const ALL = ["general", "voice", "chatgpt", "appearance", "sessions", "screen", 
     r = await s.req("GET", "/mint-ai/settings/general", { cookie: A.cookie });
     check("the frame marks MINT AI ▸ Settings (crumbs and sidebar)", /<a href="\/mint-ai\/settings" class="side-item on"/.test(r.body) && /<nav class="crumbs"[^>]*><a href="\/mint-ai">MINT AI<\/a>/.test(r.body));
     check("General reads the supervisor's status and charter", count("status") > 0 && count("charter") > 0 && /claude-opus-5-5/.test(r.body));
+    check("General carries Restart MINT AI (Advanced merged in) and the read-only facts under one Details disclosure", /action="\/mint-ai\/settings\/general\/restart"/.test(r.body) && /<details class="set-more" id="g-details"><summary>Details: model, folder, version, time zone<\/summary>/.test(r.body) && !/>Name</.test(r.body));
+    r = await s.req("GET", "/mint-ai/settings/advanced", { cookie: A.cookie });
+    check("the old Advanced URL lands on General's Restart row", r.status === 302 && r.headers.location === "/mint-ai/settings/general#x-restart", r.status + " " + r.headers.location);
 
     r = await s.req("GET", "/mint-ai/settings", { cookie: U.cookie });
     check("moniai.use only -> /mint-ai/settings/appearance", r.status === 302 && r.headers.location === "/mint-ai/settings/appearance", r.headers.location);
     r = await s.req("GET", "/mint-ai/settings/appearance", { cookie: U.cookie });
     check("  sees Appearance and Briefs & watchers only (both their own)", r.status === 200 && navOf(r.body).join() === "appearance,proactive", navOf(r.body).join());
     const uTok = s.csrfOf(r.body);
-    for (const k of ["general", "voice", "sessions", "screen", "approvals", "usage", "advanced"]) {
+    for (const k of ["general", "voice", "sessions", "screen", "approvals", "usage"]) {
       const x = await s.req("GET", "/mint-ai/settings/" + k, { cookie: U.cookie });
       check(`  ${k} is refused (403)`, x.status === 403, x.status);
     }
@@ -257,7 +260,7 @@ const ALL = ["general", "voice", "chatgpt", "appearance", "sessions", "screen", 
     check("  keeping its note", r.status === 302 && r.headers.location === "/claude/sessions?tab=live&msg=Stopped", r.headers.location);
     r = await s.req("GET", "/services/agents", { cookie: A.cookie });
     check("/services/agents -> 302 /services?kind=agents", r.status === 302 && r.headers.location === "/services?kind=agents", r.status + " " + r.headers.location);
-    r = await s.req("POST", "/account/appearance", { cookie: A.cookie, body: form({ _csrf: aTok, core: "B" }) });
+    r = await s.req("POST", "/account/appearance", { cookie: A.cookie, body: form({ _csrf: aTok, core: "E" }) });
     check("POST /account/appearance -> back to Settings ▸ Appearance with a note", r.status === 302 && /^\/mint-ai\/settings\/appearance\?msg=.*#a-core$/.test(r.headers.location), r.headers.location);
   } catch (e) {
     check("the run completed", false, e.stack + "\n" + (s ? s.out().slice(-2000) : ""));

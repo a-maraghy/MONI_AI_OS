@@ -273,7 +273,7 @@
     delegTo: "",           // the session the last delegation went to, and what it said
     delegText: "",
     spoken: "",            // the sentence being read aloud now
-    pane: null,            // the open sheet: conv | sessions | missions | dec | tl | rules | orders | cost | machine | everything
+    pane: null,            // the open sheet: conv | sessions | missions | dec | tl | rules | cost | machine | everything
   };
   var ML = window.MintLogic;
 
@@ -369,7 +369,7 @@
   /* ================================================================ the core and its orbit */
 
   var Orb = window.MoniMap({
-    root: root, stage: $("cc-stage"), canvas: $("cc-core"), orbit: $("cc-orbit"), ring: $("cc-ring"), halo: $("cc-halo"), spark: $("cc-spark"),
+    root: root, stage: $("cc-stage"), canvas: $("cc-core"), orbit: $("cc-orbit"), ring: $("cc-ring"), halo: $("cc-halo"),
     family: $("cc-family"), kids: $("cc-kids"), kcard: $("cc-kcard"),
   }, {
     onClick: function (key) { openSheet("sessions"); highlightSess(key); },
@@ -1168,6 +1168,8 @@
 
   var SHEET_KEYS = ML.sheetKeys().concat(["everything"]);
   function openSheet(id, toggle) {
+    // Standing orders became the Schedules tab of Rules & alerts (2026-10-25): its old key still opens it.
+    if (id === "orders") { if (P.setRulesSub) P.setRulesSub("orders"); id = "rules"; toggle = false; }
     if (SHEET_KEYS.indexOf(id) < 0) return;
     if (toggle && S.pane === id) return closeSheet();
     closePop();
@@ -1199,7 +1201,7 @@
   /* A deep link (/mint-ai#dec -- the page map's sheets, the top bar's "needs you") opens that sheet. */
   function sheetFromHash() {
     var k = (location.hash || "").slice(1);
-    if (SHEET_KEYS.indexOf(k) >= 0 && k !== "everything") openSheet(k);
+    if ((SHEET_KEYS.indexOf(k) >= 0 && k !== "everything") || k === "orders") openSheet(k);
   }
   window.addEventListener("hashchange", sheetFromHash);
   window.addEventListener("load", sheetFromHash);

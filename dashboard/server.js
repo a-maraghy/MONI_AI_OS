@@ -34,7 +34,6 @@ const credentialViews = require("./lib/views-credentials");
 const addonViews = require("./lib/views-addons");
 const guideViews = require("./lib/views-guide");
 const accessViews = require("./lib/views-access");
-const consoleViews = require("./lib/views-console");
 const moniAiViews = require("./lib/views-moniai");
 const mintLogic = require("./public/cc-logic");
 const mintSound = require("./public/mint-sound"); // MINT AI's sounds: the prefs check (users.mint_sound)
@@ -116,10 +115,7 @@ function moniCall(op, params, actor, opts) {
     return r;
   });
 }
-const voiceEval = require("./lib/voice-live-eval");
-const voiceEvalViews = require("./lib/views-voice-eval");
 const voiceprintTrial = require("./lib/voiceprint-trial");
-const voiceprintTrialViews = require("./lib/views-voiceprint-trial");
 const voiceprintLib = require("./lib/voiceprint");
 const voiceprintRoutes = require("./lib/voiceprint-routes");
 const voiceprintEnrolViews = require("./lib/views-voiceprint-enrol");
@@ -226,21 +222,8 @@ app.use((req, res, next) => {
 
 app.use(express.urlencoded({ extended: false, limit: "64kb" }));
 
-/**
- * 64KB is the right ceiling for a form, and the wrong one for the two routes
- * that carry a file.
- *
- * Those mount their own parser allowing 44MB -- but a parser mounted here runs
- * first, so it is this limit a large upload meets, and it answers by throwing
- * rather than by refusing politely. Skipping them here is what lets their own
- * parser be the one that decides. Everything else keeps the small ceiling,
- * which is the point of having one.
- */
-const PAYLOAD_ROUTES = /^(\/console\/\d+\/(upload|transcribe)|\/mint-ai\/api\/voice-eval\/clip)$/;
-const smallJson = express.json({ limit: "64kb" });
-app.use((req, res, next) =>
-  PAYLOAD_ROUTES.test(req.path) ? next() : smallJson(req, res, next)
-);
+/** 64KB is the right ceiling for a form; no route here carries a file in a JSON body any more. */
+app.use(express.json({ limit: "64kb" }));
 
 /** A body over the limit is a 413 with a reason, not a stack trace. */
 app.use((err, req, res, next) => {
@@ -2674,14 +2657,6 @@ function migrateTranscriptionSetting() {
   }
 }
 migrateTranscriptionSetting();
-/** What is installed for local transcription (the helper), or {error}. */
-async function whisperStatus() {
-  try {
-    return await priv.voiceWhisperStatus();
-  } catch (e) {
-    return { error: priv.redact(String(e.message || e)) };
-  }
-}
 /**
  * At start: a local model selected means its server should run (after a
  * reboot the unit is enabled and does already; this covers a stopped one).
@@ -2903,51 +2878,6 @@ const AUDIO_MIME_RE = /^audio\/[a-z0-9.+-]{1,30}$/;
  */
 const voiceGrounds = new voiceGuard.Grounds();
 
-/** The console's dictation: base64 recording in, text out (the Command Center's push to talk used it too, until 2026-09-30). */
-async function voiceTranscribeRoute(req, res) {
-  if (!voiceEnabled()) return voiceOffRefuse(res);
-  const data = typeof (req.body && req.body.data) === "string" ? req.body.data : "";
-  if (!data || !/^[A-Za-z0-9+/=]+$/.test(data)) return res.status(400).json({ error: "No audio arrived.", code: "invalid" });
-  const mime = String((req.body && req.body.mime) || "").split(";")[0].trim().toLowerCase();
-  const t0 = Date.now();
-  const audio = Buffer.from(data, "base64");
-  let cfg = null;
-  try {
-    cfg = await voiceConfig();
-    const vt = bodyVt(req);
-    // Speech is wanted next ("On it.", then the reply): open a socket now --
-    // unless the clip will not even be transcribed.
-    if (!voiceIntake.preCheck(audio, voiceIntake.cleanLevel(req.body && req.body.level))) voice.warm(cfg);
-    const got = await voiceIntake.transcribeTurn({
-      audio,
-      mime: AUDIO_MIME_RE.test(mime) ? mime : "audio/webm",
-      level: req.body && req.body.level,
-      cfg,
-      transcribe: voiceTranscribe.transcribeFull,
-      grounds: voiceGrounds,
-      actor: req.me && req.me.username,
-      vt,
-    });
-    const text = got.text;
-    const usd = got.heard ? recordTranscription({ vt, actor: req.me && req.me.username, heard: got.heard }) : 0;
-    voiceLog("transcribe", 200, {
-      model: (got.heard && (got.heard.transcriber || got.heard.model)) || cfg.transcriber,
-      fallback_from: got.heard && got.heard.fallback ? got.heard.fallback.from + ":" + got.heard.fallback.why : undefined,
-      ms: Date.now() - t0,
-      bytes: audio.length,
-      audio_s: got.audioSeconds != null ? Math.round(got.audioSeconds * 10) / 10 : undefined,
-      words: text.split(/\s+/).filter(Boolean).length,
-      dropped: got.dropped || undefined,
-      echo_of: got.why && got.why.source ? JSON.stringify(got.why.source) : undefined,
-      usd: usd ? usd.toFixed(6) : undefined,
-    });
-    if (got.dropped) return res.json({ text: "", dropped: got.dropped });
-    res.json({ text });
-  } catch (e) {
-    voiceLog("transcribe", e.code || "error", { model: cfg && cfg.transcriber, ms: Date.now() - t0, bytes: audio.length, why: e.message });
-    voiceFail(res, e);
-  }
-}
 
 /**
  * One line per voice call in the journal: outcome, model, timings, sizes.
@@ -3084,15 +3014,14 @@ async function voiceSpeakRoute(req, res) {
    and a plain POST with a redirect back to the row. */
 
 const voiceSettingsViews = require("./lib/views-settings-voice");
-let vprint = null; // lib/voiceprint.js, made below with the trial's store (see "the voiceprint")
+let vprint = null; // lib/voiceprint.js, made below (see "the voiceprint")
 
 /** The Voiceprint group's data for Settings ▸ Voice. */
 async function voiceprintView(me) {
   if (!vprint) return null;
   if (vprint.enabled()) await vprint.health(true).catch(() => null);
-  const trial = voiceprintTrialStore ? [...new Set(voiceprintTrialStore.readManifest(me).clips.filter((c) => c.part === "enrol").map((c) => c.mic))].filter((sl) => voiceprintTrialStore.readManifest(me).clips.filter((c) => c.mic === sl && c.part === "enrol").length >= 2) : [];
   await vprint.openAll().catch(() => {});
-  return { ...vprint.status(me), stats: vprint.stats(7), trial, presets: voiceprintLib.PRESETS, bounds: voiceprintLib.BOUNDS, users: db.listUsers ? db.listUsers().map((u) => ({ id: u.id, username: u.username })) : [] };
+  return { ...vprint.status(me), stats: vprint.stats(7), presets: voiceprintLib.PRESETS, bounds: voiceprintLib.BOUNDS, users: db.listUsers ? db.listUsers().map((u) => ({ id: u.id, username: u.username })) : [] };
 }
 
 async function voiceSettings() {
@@ -3123,7 +3052,7 @@ settingsRoutes.sections.voice = async (req, res) => {
   const on = voiceEnabled();
   // Which voice models the key reaches: a stale answer is refreshed in the background (the next visit shows it).
   checkVoiceAccess().catch(() => {});
-  const [status, cfg, local] = await Promise.all([voiceSettings(), voiceConfig(), whisperStatus()]);
+  const [status, cfg] = await Promise.all([voiceSettings(), voiceConfig()]);
   const test = req.query.test ? { ok: req.query.test === "ok", text: String(req.query.t || "").slice(0, 600) } : null;
   const persona = personaOf(req.me.id);
   return {
@@ -3141,10 +3070,8 @@ settingsRoutes.sections.voice = async (req, res) => {
       transcription: transcription(),
       transcribers: voiceTranscribe.TRANSCRIBERS,
       languages: voiceTranscribe.LANGUAGES,
-      local,
       persona: { ...voicePersona.describe(persona), mode: persona.mode, preset: persona.preset },
       liveAudio: liveAudio(),
-      usage: voiceUsageSummary(),
       test,
       voiceprint: await voiceprintView(req.me),
     }),
@@ -3316,6 +3243,10 @@ app.post("/mint-ai/settings/voice/transcription", ...voiceGuardSettings, async (
   if ((has("transcriber") && want.model !== field(req.body, "transcriber")) || (has("language") && want.language !== field(req.body, "language"))) {
     return voiceReply(req, res, { err: "Pick a transcription model and a language from the lists.", anchor: "v-transcribe" });
   }
+  // The whisper.cpp models on this server were retired from the list (2026-10-25): only OpenAI's may be picked.
+  if (has("transcriber") && want.model !== was.model && voiceTranscribe.byId(want.model).kind !== "openai") {
+    return voiceReply(req, res, { err: "Pick a transcription model from the list.", anchor: "v-transcribe" });
+  }
   const t = voiceTranscribe.byId(want.model);
   const before = voiceTranscribe.byId(was.model);
   let note = "";
@@ -3483,395 +3414,12 @@ app.get("/addons", requireAuth, requirePerm("addons.view"), async (req, res) => 
 /* -------------------------------------------------------------- console --- */
 
 /*
- * Classic chat is hidden (the 2026-09-30 reorganisation): every /console URL
- * goes to the Command Center. Its data (console_sessions, console_messages) is
- * kept, and so are the handlers below, unreachable, for one release -- per-chat
- * root mode and file upload have no other home yet.
+ * Classic chat was hidden in the 2026-09-30 reorganisation and its code removed
+ * on 2026-10-25 (with the console.use / console.full permissions). Every
+ * /console URL goes to the Command Center. Its data (console_sessions,
+ * console_messages) is kept in the database.
  */
 app.all(/^\/console(?:\/|$)/, (req, res) => res.redirect(302, "/mint-ai"));
-
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-// How long a chat's process is kept alive with nobody talking to it. Long
-// enough to step away and come back mid-thought; short enough that an idle tab
-// does not hold a process overnight.
-const CONSOLE_IDLE_MS = 30 * 60 * 1000;
-const CONSOLE_MODELS = consoleViews.MODELS.map((m) => m[0]);
-const CONSOLE_EFFORTS = consoleViews.EFFORTS.map((e) => e[0]);
-const CONSOLE_ACCESS = consoleViews.ACCESS.map((a) => a[0]);
-const CONSOLE_PERMISSION_MODES = consoleViews.MODES.map((m) => m[0]);
-
-/**
- * Turns in flight, keyed by console session id.
- *
- * Held in memory on purpose: a turn belongs to the process that started it, and
- * if the panel restarts mid-turn the child dies with it. Persisting a pid to
- * adopt later would mean reattaching to a stream nobody is reading.
- */
-const consoleTurns = new Map();
-
-/**
- * Chats whose process is shutting down, keyed by chat id.
- *
- * A restart has to wait for the old process to finish writing its transcript,
- * or the new one resumes a conversation that is still mid-flush and comes back
- * missing the last thing that was said.
- */
-const consoleClosing = new Map();
-
-/** The access levels this actor may actually choose. */
-function allowedAccess(req) {
-  return CONSOLE_ACCESS.filter((a) => a !== "full" || req.perm.can("console.full"));
-}
-
-async function consoleDirs() {
-  try {
-    return await priv.consoleDirs();
-  } catch (_) {
-    return ["/"];
-  }
-}
-
-/**
- * The two lists the sidebar draws.
- *
- * Archived chats are fetched even when the section is closed, because the
- * count on its label is the reason anyone opens it, and a count that needs a
- * second request is a count that arrives late.
- */
-function consoleLists(req) {
-  return {
-    sessions: db.listConsoleSessions(req.me.id),
-    archived: db.listConsoleSessions(req.me.id, { archived: true }),
-  };
-}
-
-/**
- * How long a code buys before another is asked for.
- *
- * Long enough to do a piece of work without being interrupted, short enough
- * that a laptop left open does not stay a root shell all afternoon. It is not
- * extended by use: the question is how long ago somebody proved they were
- * there, and typing does not answer it.
- */
-const ROOT_UNLOCK_MS = 20 * 60 * 1000;
-
-function unlockRoot(req, sessionId) {
-  if (!req.session.rootUnlocked) req.session.rootUnlocked = {};
-  req.session.rootUnlocked[String(sessionId)] = Date.now() + ROOT_UNLOCK_MS;
-}
-
-/** Whether this chat needs a code before it can be opened or spoken to. */
-function rootLocked(req, session) {
-  if (!session || session.root_enabled !== 1) return false;
-  const until = (req.session.rootUnlocked || {})[String(session.id)] || 0;
-  return Date.now() >= until;
-}
-
-function loadConsoleSession(req, res) {
-  const session = db.getConsoleSession(Number(req.params.id), req.me.id);
-  if (!session) {
-    res.status(404).send(views.error("Not found", "No such chat."));
-    return null;
-  }
-  return session;
-}
-
-app.get("/console", requireAuth, requirePerm("console.use"), async (req, res) => {
-  res.send(
-    consoleViews.console({
-      csrf: res.locals.csrf,
-      user: ctx(req, "console"),
-      ...consoleLists(req),
-      session: null,
-      messages: [],
-      dirs: await consoleDirs(),
-      voice: await voicePublic(req),
-    })
-  );
-});
-
-app.post("/console/new", requireAuth, requirePerm("console.use"), requireCsrf, (req, res) => {
-  // Default to the widest access the actor is entitled to. Someone without
-  // console.full gets a workspace chat rather than an error.
-  const access = req.perm.can("console.full") ? "full" : "workspace";
-  const info = db.createConsoleSession({
-    uuid: crypto.randomUUID(),
-    userId: req.me.id,
-    model: "claude-opus-5-5",
-    effort: "medium",
-    access,
-    cwd: access === "full" ? "/" : "/opt/moni-agents/agents",
-  });
-  res.redirect("/console/" + info.lastInsertRowid);
-});
-
-app.get("/console/:id", requireAuth, requirePerm("console.use"), async (req, res) => {
-  const session = loadConsoleSession(req, res);
-  if (!session) return;
-  // A root chat shows its transcript only once somebody has proved they are
-  // here. The lock screen is the page, not an overlay on it -- there is no
-  // point rendering the conversation and then hiding it.
-  const locked = rootLocked(req, session);
-  res.send(
-    consoleViews.console({
-      csrf: res.locals.csrf,
-      user: ctx(req, "console"),
-      ...consoleLists(req),
-      session,
-      locked,
-      messages: locked ? [] : db.listConsoleMessages(session.id),
-      dirs: await consoleDirs(),
-      voice: await voicePublic(req),
-      err: req.query.err || null,
-    })
-  );
-});
-
-app.post("/console/:id/settings", requireAuth, requirePerm("console.use"), requireCsrf, (req, res) => {
-  const session = loadConsoleSession(req, res);
-  if (!session) return;
-
-  const fields = {};
-  const model = field(req.body, "model");
-  const effort = field(req.body, "effort");
-  const access = field(req.body, "access");
-  const cwd = field(req.body, "cwd");
-
-  if (CONSOLE_MODELS.includes(model)) fields.model = model;
-  if (CONSOLE_EFFORTS.includes(effort)) fields.effort = effort;
-  const mode = field(req.body, "permission_mode");
-  if (CONSOLE_PERMISSION_MODES.includes(mode)) fields.permission_mode = mode;
-  // Access is fixed once a session has run a turn: Claude resumes the same
-  // conversation, and moving that conversation from the agent account to root
-  // half way through would be a privilege change disguised as a preference.
-  if (!session.started && allowedAccess(req).includes(access)) fields.access = access;
-  if (/^\/[A-Za-z0-9._/-]{0,200}$/.test(cwd)) fields.cwd = cwd;
-
-  db.updateConsoleSession(session.id, req.me.id, fields);
-  // These are all fixed when the process starts, so a change only takes effect
-  // on a fresh one. Closing it here means the next message uses what the page is
-  // showing -- and because the close is graceful, the replacement resumes the
-  // same conversation rather than starting a new one.
-  closeConsoleChat(session.id);
-  res.redirect("/console/" + session.id);
-});
-
-app.get("/console/:id/root", requireAuth, requirePerm("console.use"), (req, res) => {
-  const session = loadConsoleSession(req, res);
-  if (!session) return;
-  // Already on, wrong sort of chat, or not permitted: nothing to confirm.
-  if (session.root_enabled === 1 || session.access !== "full" || !req.perm.can("console.full")) {
-    return res.redirect("/console/" + session.id);
-  }
-  res.send(
-    consoleViews.enableRoot({
-      csrf: res.locals.csrf,
-      user: ctx(req, "console"),
-      session,
-      err: req.query.err || null,
-    })
-  );
-});
-
-app.post("/console/:id/root", requireAuth, requirePerm("console.use"), requireCsrf, (req, res) => {
-  const session = loadConsoleSession(req, res);
-  if (!session) return;
-  // Only a whole-server chat has root to switch. The workspace profile never
-  // had any, so a toggle there would be a control that does nothing.
-  if (session.access !== "full" || !req.perm.can("console.full")) {
-    return res.redirect("/console/" + session.id);
-  }
-
-  const enabled = session.root_enabled === 0;
-  const back = (q) => res.redirect("/console/" + session.id + (q ? "?" + q : ""));
-
-  // Switching root ON is the privilege change, so that is the direction that
-  // asks for a code. Switching it OFF gives something up, and a control that
-  // makes you prove yourself before you may reduce your own reach is a control
-  // people learn to leave alone.
-  if (enabled) {
-    if (!totp.verifyAndConsume(req.me, req.body.code)) {
-      logAuthFailure(req.ip, "bad code enabling console root");
-      return res.redirect(
-        "/console/" + session.id + "/root?err=" +
-          encodeURIComponent("That code was not accepted. Try the next one.")
-      );
-    }
-    unlockRoot(req, session.id);
-  }
-
-  // Fixed at spawn, so the running process has to go. It is asked to exit
-  // rather than killed, so the conversation is on disk and the next message
-  // resumes it: flipping this costs you nothing but the wait.
-  closeConsoleChat(session.id);
-  db.updateConsoleSession(session.id, req.me.id, { root_enabled: enabled ? 1 : 0 });
-  db.logLogin(
-    req.ip,
-    req.me.username,
-    "console",
-    (enabled ? "enabled" : "disabled") + ` root for chat ${session.id}`
-  );
-  back();
-});
-
-/**
- * Unlock a root-enabled chat for a while.
- *
- * The code proves somebody is at the keyboard now. Sign-in proved it hours ago
- * on a machine that has been left alone since, which is a different claim.
- */
-app.post("/console/:id/unlock", requireAuth, requirePerm("console.use"), requireCsrf, (req, res) => {
-  const session = loadConsoleSession(req, res);
-  if (!session) return;
-  if (!totp.verifyAndConsume(req.me, req.body.code)) {
-    logAuthFailure(req.ip, "bad code unlocking a root console chat");
-    return res.redirect(
-      "/console/" + session.id + "?err=" + encodeURIComponent("That code was not accepted. Try the next one.")
-    );
-  }
-  unlockRoot(req, session.id);
-  db.logLogin(req.ip, req.me.username, "console", `unlocked root chat ${session.id}`);
-  res.redirect("/console/" + session.id);
-});
-
-app.post("/console/:id/rename", requireAuth, requirePerm("console.use"), requireCsrf, (req, res) => {
-  const session = loadConsoleSession(req, res);
-  if (!session) return;
-  const title = field(req.body, "title").replace(/\s+/g, " ").slice(0, 80);
-  // An empty name is a request to go back to being unnamed, not an error: the
-  // next message will name the chat again from what it says.
-  db.updateConsoleSession(session.id, req.me.id, { title: title || "New chat" });
-  res.redirect("/console/" + session.id);
-});
-
-app.post("/console/:id/archive", requireAuth, requirePerm("console.use"), requireCsrf, (req, res) => {
-  const session = loadConsoleSession(req, res);
-  if (!session) return;
-  const archived = !session.archived;
-  // Archiving closes the process; unarchiving and speaking resumes it. Keeping
-  // one alive for a chat that has been put away is paying for a conversation
-  // nobody is having.
-  if (archived) closeConsoleChat(session.id);
-  db.updateConsoleSession(session.id, req.me.id, { archived: archived ? 1 : 0 });
-  res.redirect(archived ? "/console" : "/console/" + session.id);
-});
-
-app.post("/console/:id/delete", requireAuth, requirePerm("console.use"), requireCsrf, (req, res) => {
-  const session = loadConsoleSession(req, res);
-  if (!session) return;
-  closeConsoleChat(session.id);
-  db.deleteConsoleSession(session.id, req.me.id);
-  res.redirect("/console");
-});
-
-/**
- * End a chat's process, letting it write its transcript on the way out.
- *
- * Closing stdin rather than killing matters: a session that exits cleanly
- * leaves its conversation on disk, and the next process resumes it. That is the
- * whole reason changing a setting no longer costs you the chat. A kill is kept
- * as a fallback for a process that will not go.
- *
- * Returns a promise that settles when the process is gone, so a respawn can
- * wait for the transcript to be flushed rather than racing it.
- */
-function closeConsoleChat(sessionId, { hard = false } = {}) {
-  const entry = consoleTurns.get(sessionId);
-  if (!entry) return Promise.resolve();
-
-  clearTimeout(entry.idle);
-  consoleTurns.delete(sessionId);
-
-  if (consoleClosing.has(sessionId)) return consoleClosing.get(sessionId);
-
-  const closing = new Promise((resolve) => {
-    let settled = false;
-    const done = () => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      resolve();
-    };
-    entry.child.once("close", done);
-
-    try {
-      if (hard) entry.child.kill("SIGTERM");
-      else entry.child.stdin.end();
-    } catch (_) {
-      return done();
-    }
-
-    // A turn in flight keeps running until it finishes, so this is generous.
-    // If it is still there afterwards it is stuck, and a stuck process holding
-    // a chat open helps nobody.
-    const timer = setTimeout(() => {
-      try {
-        entry.child.kill("SIGKILL");
-      } catch (_) {
-        /* already gone */
-      }
-      done();
-    }, hard ? 4000 : 20000);
-    timer.unref();
-  }).then(() => {
-    consoleClosing.delete(sessionId);
-  });
-
-  consoleClosing.set(sessionId, closing);
-  return closing;
-}
-
-/**
- * Close a chat that nobody has spoken to for a while.
- *
- * These processes hold a conversation in memory and cost nothing to restart,
- * so there is no reason to keep one alive overnight. Losing it costs the
- * model's memory of the chat, not the chat itself -- the transcript is in the
- * database either way.
- */
-function touchConsoleChat(sessionId) {
-  const entry = consoleTurns.get(sessionId);
-  if (!entry) return;
-  clearTimeout(entry.idle);
-  entry.idle = setTimeout(() => closeConsoleChat(sessionId), CONSOLE_IDLE_MS);
-  entry.idle.unref();
-}
-
-/**
- * Attachments arrive base64 in a JSON body, so this route needs a far larger
- * limit than the 64kb the rest of the panel accepts. Scoped to the route rather
- * than raised globally: nowhere else has any business receiving 40MB.
- */
-const consoleUploadBody = express.json({ limit: "44mb" });
-
-app.post("/console/:id/upload", requireAuth, requirePerm("console.use"), consoleUploadBody, requireCsrf, async (req, res) => {
-  const session = loadConsoleSession(req, res);
-  if (!session) return;
-  try {
-    const saved = await priv.consoleUpload({
-      chat: String(session.id),
-      access: session.access,
-      name: String(req.body.name || "file"),
-      data: String(req.body.data || ""),
-    });
-    res.json(saved);
-  } catch (e) {
-    res.status(400).json({ error: e.message });
-  }
-});
-
-/**
- * Dictation and live mode: the recording goes to OpenAI's transcription model
- * from here, never from the browser. Nothing is saved -- the audio is posted,
- * the text comes back, and the recording is gone.
- */
-app.post("/console/:id/transcribe", requireAuth, requirePerm("console.use"), consoleUploadBody, requireCsrf, async (req, res) => {
-  const session = loadConsoleSession(req, res);
-  if (!session) return;
-  if (rootLocked(req, session))
-    return res.status(401).json({ error: "This chat needs an authenticator code again." });
-  return voiceTranscribeRoute(req, res);
-});
 
 /* ----------------------------------------------- Windows Hello for approvals --- */
 /*
@@ -3922,326 +3470,6 @@ async function holdApproval(req, id) {
 
 /** Refusals of a step-up go to the panel's log like every other sign of a check failing. */
 const stepAudit = (req, line) => db.logLogin(req.ip, req.me.username, "step-up", String(line).slice(0, 200));
-
-/** Answer the CLI's permission question. */
-function answerPermission(entry, requestId, behavior, input, message) {
-  const response =
-    behavior === "allow"
-      ? { behavior: "allow", updatedInput: input || {} }
-      : { behavior: "deny", message: message || "The administrator declined." };
-  try {
-    entry.child.stdin.write(
-      JSON.stringify({
-        type: "control_response",
-        response: { subtype: "success", request_id: requestId, response },
-      }) + "\n"
-    );
-  } catch (_) {
-    /* the process went away; the turn is over anyway */
-  }
-}
-
-/**
- * Decide what to do when Claude asks to use a tool.
- *
- * Nothing reaches this today: driven non-interactively the CLI does not send
- * permission requests, which is why the mode picker offers Auto and Plan rather
- * than a per-action prompt. It is kept because answering is the correct
- * response to a request that may start arriving -- a future CLI that does send
- * one would otherwise wait forever for a reply nobody was writing.
- */
-function handlePermissionRequest(session, entry, event, write) {
-  const requestId = event.request_id;
-  const req = event.request;
-
-  if (entry.mode !== "ask") {
-    return answerPermission(entry, requestId, "allow", req.input);
-  }
-
-  entry.pending.set(String(requestId), { input: req.input });
-  write(
-    JSON.stringify({
-      type: "moni_permission",
-      request_id: requestId,
-      tool: req.tool_name,
-      input: req.input,
-      title: req.title || null,
-      description: req.description || null,
-    })
-  );
-}
-
-/**
- * Speak one sentence of a reply, through OpenAI's realtime voice.
- *
- * Called once per sentence rather than once per turn: the browser plays each
- * clip while fetching the next, so the first words arrive shortly after the
- * reply starts instead of after the whole thing is written.
- *
- * The text comes from the client, which sounds worse than it is -- it is the
- * client's own transcript being read back to the person who is already looking
- * at it. Nothing here reads the session, and a chat still locked behind a code
- * is refused anyway, so this cannot be used to listen to one.
- */
-app.post("/console/:id/speak", requireAuth, requirePerm("console.use"), requireCsrf, async (req, res) => {
-  const session = loadConsoleSession(req, res);
-  if (!session) return;
-  if (rootLocked(req, session))
-    return res.status(401).json({ error: "This chat needs an authenticator code again." });
-  return voiceSpeakRoute(req, res);
-});
-
-// Allow needs Windows Hello (or the code); Skip does not.
-const consoleAllowStepUp = stepup.requireStepUp({
-  bind: (req) => (field(req.body, "decision") === "allow" ? `console:${String(req.params.id).slice(0, 20)}:${String(req.body.request_id || "").slice(0, 80)}:allow` : null),
-  what: () => "Allow this step in the console chat",
-  audit: stepAudit,
-});
-app.post("/console/:id/permission", requireAuth, requirePerm("console.use"), requireCsrf, consoleAllowStepUp, (req, res) => {
-  const session = loadConsoleSession(req, res);
-  if (!session) return;
-  const entry = consoleTurns.get(session.id);
-  if (!entry) return res.status(409).json({ error: "That chat is no longer running." });
-
-  const requestId = String(req.body.request_id || "");
-  const pending = entry.pending.get(requestId);
-  if (!pending) return res.status(404).json({ error: "That question has already been answered." });
-  entry.pending.delete(requestId);
-
-  const allow = field(req.body, "decision") === "allow";
-  answerPermission(entry, requestId, allow ? "allow" : "deny", pending.input);
-  db.logLogin(req.ip, req.me.username, "console", `${allow ? "allowed" : "skipped"} a step in chat ${session.id}${steppedWith(req)}`);
-  res.json({ ok: true });
-});
-
-app.post("/console/:id/stop", requireAuth, requirePerm("console.use"), requireCsrf, (req, res) => {
-  const session = loadConsoleSession(req, res);
-  if (!session) return;
-  // Stops the turn, not the conversation: the process is asked to finish and
-  // write its transcript, and the next message resumes from there. What it was
-  // part way through doing may or may not have completed, so the reply says so
-  // rather than pretending the interruption was clean.
-  closeConsoleChat(session.id, { hard: true });
-  res.json({ stopped: true });
-});
-
-/**
- * Run one turn, streaming Claude's events to the browser as they arrive.
- *
- * The response is newline-delimited JSON rather than SSE: the client reads it
- * with a streaming fetch, which lets the request be a POST carrying the CSRF
- * token in the body. An EventSource cannot POST, and putting a prompt in a
- * query string would write it into the access log.
- */
-app.post("/console/:id/send", requireAuth, requirePerm("console.use"), requireCsrf, async (req, res) => {
-  const session = loadConsoleSession(req, res);
-  if (!session) return;
-
-  const prompt = String(req.body.prompt || "").trim();
-  if (!prompt) return res.status(400).json({ error: "Say something first." });
-
-  let entry = consoleTurns.get(session.id);
-  if (entry && entry.busy)
-    return res.status(409).json({ error: "This chat is already working on something." });
-
-  if (session.access === "full" && !req.perm.can("console.full")) {
-    return res
-      .status(403)
-      .json({ error: "Your role does not allow whole-server chats." });
-  }
-
-  // Checked again here, not only on the page. The page is a courtesy; this is
-  // the thing that actually stops a message reaching a root shell after the
-  // unlock has run out.
-  if (rootLocked(req, session)) {
-    return res.status(401).json({
-      error: "This chat needs an authenticator code again. Reload the page.",
-      locked: true,
-    });
-  }
-
-  db.addConsoleMessage(session.id, "user", prompt);
-
-  // Recorded because a full-access chat has the run of the machine, and that
-  // should leave a trace even when the person opening one is entitled to.
-  db.logLogin(
-    req.ip,
-    req.me.username,
-    "console",
-    `turn in chat ${session.id} (${session.access}, ${session.model}, ${session.effort})`
-  );
-
-  // One process per chat, kept alive between turns. The context lives in it:
-  // `claude -p` writes no transcript to disk, so a fresh process per message
-  // would start every turn from nothing however the session was named.
-  if (!entry) {
-    // A process that was closing must be allowed to finish writing before the
-    // replacement tries to resume what it wrote.
-    if (consoleClosing.has(session.id)) await consoleClosing.get(session.id);
-
-    const child = priv.consoleOpen({
-      model: session.model,
-      effort: session.effort,
-      access: session.access,
-      cwd: session.cwd,
-      permission_mode: session.permission_mode || "auto",
-      root_enabled: session.root_enabled !== 0,
-      // Pick the conversation back up where it was left. Settings fixed at
-      // spawn -- the model, the root switch -- can then be changed by restarting
-      // the process without the chat losing what it knows.
-      resume: session.started && UUID_RE.test(session.uuid) ? session.uuid : "",
-    });
-    entry = {
-      child,
-      busy: false,
-      idle: null,
-      buffer: "",
-      listeners: [],
-      mode: session.permission_mode || "auto",
-      // Permission questions the CLI has asked and the person has not answered.
-      pending: new Map(),
-    };
-    consoleTurns.set(session.id, entry);
-
-    // The CLI only routes permission prompts to the host once the host has
-    // introduced itself. Without this handshake "ask" silently behaves like
-    // "auto", which is the wrong way round for a mistake to go.
-    child.stdin.write(
-      JSON.stringify({
-        type: "control_request",
-        request_id: "init",
-        request: { subtype: "initialize", hooks: null },
-      }) + "\n"
-    );
-
-    child.stdout.on("data", (chunk) => {
-      entry.buffer += chunk;
-      const lines = entry.buffer.split("\n");
-      entry.buffer = lines.pop();
-      for (const line of lines) if (line.trim()) entry.listeners.forEach((fn) => fn(line));
-    });
-    child.stderr.on("data", (chunk) => {
-      console.error("console stderr:", priv.redact(String(chunk)).slice(0, 500));
-    });
-    child.on("close", () => {
-      entry.listeners.forEach((fn) => fn(null));
-      consoleTurns.delete(session.id);
-    });
-    child.on("error", (e) => {
-      console.error("console spawn failed:", e.message);
-      entry.listeners.forEach((fn) => fn(null));
-      consoleTurns.delete(session.id);
-    });
-  }
-
-  entry.busy = true;
-  clearTimeout(entry.idle);
-
-  res.setHeader("Content-Type", "application/x-ndjson; charset=utf-8");
-  res.setHeader("Cache-Control", "no-store");
-  res.setHeader("X-Accel-Buffering", "no"); // nginx would otherwise hold the stream
-
-  let assistantText = "";
-  let result = null;
-  let done = false;
-  // The browser can leave before the turn does. When it does we stop writing,
-  // but keep listening: the answer is still being paid for and still belongs in
-  // the transcript, so it must reach the database even with nobody watching.
-  let watching = true;
-
-  const write = (line) => {
-    if (watching) res.write(line + "\n");
-  };
-
-  const finish = (reason) => {
-    if (done) return;
-    done = true;
-    entry.listeners = entry.listeners.filter((fn) => fn !== onLine);
-    entry.busy = false;
-    touchConsoleChat(session.id);
-
-    if (assistantText.trim()) {
-      db.addConsoleMessage(session.id, "assistant", assistantText, {
-        duration_ms: result && result.duration_ms,
-        cost_usd: result && result.total_cost_usd,
-        model: session.model,
-      });
-      // Name the chat from its opening message, so the list is readable
-      // without opening anything.
-      if (!session.title || session.title === "New chat") {
-        db.updateConsoleSession(session.id, req.me.id, {
-          title: prompt.replace(/\s+/g, " ").slice(0, 60),
-        });
-      }
-      db.updateConsoleSession(session.id, req.me.id, { started: 1 });
-    } else if (reason === "closed") {
-      db.addConsoleMessage(session.id, "system", "That turn ended without an answer.");
-    }
-    if (watching) res.end();
-  };
-
-  function onLine(line) {
-    // A null line means the process went away underneath us.
-    if (line === null) {
-      write(JSON.stringify({ type: "moni_done", exit_code: 1 }));
-      return finish("closed");
-    }
-
-    let event;
-    try {
-      event = JSON.parse(line);
-    } catch (_) {
-      return; // not an event we emitted
-    }
-
-    // The CLI asking whether it may use a tool.
-    if (event.type === "control_request" && event.request) {
-      if (event.request.subtype !== "can_use_tool") return;
-      return handlePermissionRequest(session, entry, event, write);
-    }
-    if (event.type === "control_response") return; // our own handshake echoing back
-
-    // Accumulate the prose so a finished turn can be stored and redisplayed on
-    // reload without replaying the whole event stream.
-    if (event.type === "assistant" && event.message && Array.isArray(event.message.content)) {
-      for (const block of event.message.content) {
-        if (block.type === "text" && block.text) assistantText += block.text;
-      }
-    }
-    if (event.session_id && UUID_RE.test(event.session_id) && event.session_id !== session.uuid) {
-      db.setConsoleSessionUuid(session.id, req.me.id, event.session_id);
-      session.uuid = event.session_id;
-    }
-
-    write(priv.redact(JSON.stringify(event)));
-
-    // `result` ends the turn but not the conversation: the response closes and
-    // the process stays up holding the context for the next message.
-    if (event.type === "result") {
-      result = event;
-      finish("result");
-    }
-  }
-
-  entry.listeners.push(onLine);
-
-  // The CLI's streaming-input format. One line per message.
-  entry.child.stdin.write(
-    JSON.stringify({
-      type: "user",
-      message: { role: "user", content: [{ type: "text", text: prompt }] },
-      parent_tool_use_id: null,
-      session_id: session.uuid,
-    }) + "\n"
-  );
-
-  // If the browser goes away mid-turn, stop waiting on its behalf -- but leave
-  // the process running, because the turn is still being paid for and its
-  // answer belongs in the transcript when it arrives.
-  req.on("close", () => {
-    watching = false;
-  });
-});
 
 /** Read the current allow-list of a channel as an ordered array. */
 function memberList(channel) {
@@ -4395,12 +3623,7 @@ function moniAiVoice(req) {
 }
 
 app.get("/mint-ai", requireAuth, async (req, res) => {
-  // The tab is shared with the older console: someone who may use that but not
-  // MINT AI lands where they are allowed to be rather than on a refusal.
-  if (!req.perm.can("moniai.use")) {
-    if (req.perm.can("console.use")) return res.redirect("/console");
-    return requirePerm("moniai.use")(req, res, () => {});
-  }
+  if (!req.perm.can("moniai.use")) return requirePerm("moniai.use")(req, res, () => {});
   res.send(
     moniAiViews.page({
       csrf: res.locals.csrf,
@@ -4538,7 +3761,7 @@ app.post("/mint-ai/api/prefs/sound", ...moniAiWrite, (req, res) => {
 
 app.post("/mint-ai/api/prefs/core", ...moniAiWrite, (req, res) => {
   const core = req.body && req.body.core;
-  if (!mintLogic.isCore(core)) return res.status(400).json({ error: "The core must be A, B, C, D or E.", code: "invalid" });
+  if (!mintLogic.isCore(core)) return res.status(400).json({ error: "The core must be D (Mesh) or E (Bot).", code: "invalid" });
   setMintCore(req, core);
   res.json({ core, name: mintLogic.CORES[core] });
 });
@@ -5733,7 +4956,7 @@ app.post("/account/appearance", requireAuth, requirePerm("moniai.use"), requireC
   const view = req.body && req.body.sessions_view !== undefined ? String(req.body.sessions_view) : null;
   // The no-JavaScript path of Settings > Appearance: back there with a note.
   const back = "/mint-ai/settings/appearance";
-  if (!mintLogic.isCore(core)) return res.redirect(back + "?err=" + encodeURIComponent("Choose core A, B, C, D or E.") + "#a-core");
+  if (!mintLogic.isCore(core)) return res.redirect(back + "?err=" + encodeURIComponent("Choose core D (Mesh) or E (Bot).") + "#a-core");
   if (view !== null && !mintLogic.isSessView(view)) return res.redirect(back + "?err=" + encodeURIComponent("Choose Spheres or Classic orbit.") + "#a-sessions");
   // Core E's head and colour preset, when the form carries them (custom colours are set with JavaScript).
   const head = req.body && req.body.bot_head !== undefined ? String(req.body.bot_head) : null;
@@ -6622,7 +5845,7 @@ try {
 } catch (e) {
   console.error("page map: the scan failed, page.open keeps its built-in pages: " + e.message);
 }
-settingsRoutes.mount(app, { requireAuth, requireCsrf, ctx, db, moniai, pageMap, voicePublic, stepup, stepAudit, callStepped, steppedWith, desktopDays: () => desktop.days(), desktopSetDays: (d, by) => desktop.setDays(d, by) });
+settingsRoutes.mount(app, { requireAuth, requireCsrf, ctx, db, moniai, pageMap, voicePublic, voiceSpend: () => voiceUsageSummary(), stepup, stepAudit, callStepped, steppedWith, desktopDays: () => desktop.days(), desktopSetDays: (d, by) => desktop.setDays(d, by) });
 
 /* --------------------- MINT AI, proactive: the brief, watchers, catch-up ---- */
 /*
@@ -6665,110 +5888,6 @@ const machines = require("./lib/machines").create({
 machines.start();
 const machineLink = require("./lib/routes-machines").mount(app, { machines, requireAuth, requirePerm, requireCsrf, ctx, db, rateLimit, WebSocketServer });
 
-/* ------------------------------------ live voice evaluation (admin) ---- */
-
-/**
- * The Egyptian evaluation for the live conversation (lib/voice-live-eval.js):
- * an administrator records the 20 phrases in their own voice here (PCM16 mono
- * 24 kHz WAVs, kept in DATA_DIR/voice-eval/<user id>/, 0700), then runs them
- * through each realtime model and voice. A stubbed supervisor: nothing reaches
- * MINT AI, and nothing is written to the usage table (each run's cost is in
- * its results). One run per user at a time, in this process.
- */
-const evalGuard = [requireApiPerm("moniai.use"), requireApiPerm("voice.manage")];
-const evalJobs = new Map(); // user id -> {running, done, total, started_at, finished_at, summary, results, error}
-function evalDir(userId) {
-  const d = path.join(DATA_DIR, "voice-eval", String(Number(userId)));
-  fs.mkdirSync(d, { recursive: true, mode: 0o700 });
-  return d;
-}
-const evalClip = (userId, id) => path.join(evalDir(userId), "clip-" + String(id).padStart(2, "0") + ".wav");
-function evalClips(userId) {
-  return voiceEval.PHRASES.filter((p) => fs.existsSync(evalClip(userId, p.id))).map((p) => p.id);
-}
-
-app.get("/mint-ai/voice-eval", requireAuth, requirePerm("moniai.use"), requirePerm("voice.manage"), (req, res) => {
-  res.send(voiceEvalViews.page({ csrf: res.locals.csrf, user: ctx(req, "console"), phrases: voiceEval.PHRASES, models: voiceEval.MODELS, voices: voiceEval.VOICES, worklet: asset("voice-live-worklet.js") }));
-});
-
-app.get("/mint-ai/api/voice-eval/status", ...evalGuard, (req, res) => {
-  let saved = null;
-  try {
-    saved = JSON.parse(fs.readFileSync(path.join(evalDir(req.me.id), "results.json"), "utf8"));
-  } catch (_) {
-    /* none yet */
-  }
-  const job = evalJobs.get(req.me.id) || null;
-  res.json({ clips: evalClips(req.me.id), job: job ? { ...job, results: undefined } : null, last: saved });
-});
-
-app.get("/mint-ai/api/voice-eval/clip/:id", ...evalGuard, (req, res) => {
-  const id = Number(req.params.id);
-  if (!voiceEval.PHRASES.some((p) => p.id === id) || !fs.existsSync(evalClip(req.me.id, id))) return res.status(404).json({ error: "No such recording." });
-  res.set({ "Content-Type": "audio/wav", "Cache-Control": "no-store" }).send(fs.readFileSync(evalClip(req.me.id, id)));
-});
-
-app.post("/mint-ai/api/voice-eval/clip", ...evalGuard, express.json({ limit: "3mb" }), requireApiCsrf, (req, res) => {
-  const id = Number(req.body && req.body.id);
-  const data = typeof (req.body && req.body.data) === "string" ? req.body.data : "";
-  if (!voiceEval.PHRASES.some((p) => p.id === id)) return res.status(400).json({ error: "Which phrase?" });
-  if (!data || !/^[A-Za-z0-9+/=]+$/.test(data)) return res.status(400).json({ error: "No audio arrived." });
-  const wav = Buffer.from(data, "base64");
-  let pcm;
-  try {
-    pcm = voiceEval.readWav(wav);
-  } catch (e) {
-    return res.status(400).json({ error: e.message });
-  }
-  const seconds = pcm.length / 48000;
-  if (seconds < 0.4 || seconds > 20) return res.status(400).json({ error: "A recording must be between 0.4 and 20 seconds." });
-  fs.writeFileSync(evalClip(req.me.id, id), wav, { mode: 0o600 });
-  res.json({ ok: true, id, seconds: Math.round(seconds * 10) / 10 });
-});
-
-app.post("/mint-ai/api/voice-eval/run", ...evalGuard, requireApiCsrf, async (req, res) => {
-  const uid = req.me.id;
-  const cur = evalJobs.get(uid);
-  if (cur && cur.running) return res.status(409).json({ error: "A run is already going." });
-  const pick = (v, list) => (Array.isArray(v) ? v.filter((x) => list.includes(x)) : []);
-  const models = pick(req.body && req.body.models, voiceEval.MODELS);
-  const voices = pick(req.body && req.body.voices, voiceEval.VOICES);
-  if (!models.length || !voices.length) return res.status(400).json({ error: "Pick at least one model and one voice." });
-  const ids = evalClips(uid);
-  if (!ids.length) return res.status(400).json({ error: "Record at least one phrase first." });
-  const cfg = await voiceConfig();
-  if (!cfg.key) return res.status(409).json({ error: "Add an OpenAI key in Settings first." });
-  const clips = ids.map((id) => ({ phrase: voiceEval.PHRASES.find((p) => p.id === id), pcm: voiceEval.readWav(fs.readFileSync(evalClip(uid, id))) }));
-  const job = { running: true, done: 0, total: clips.length * models.length * voices.length, started_at: new Date().toISOString(), models, voices };
-  evalJobs.set(uid, job);
-  db.logLogin(req.ip, req.me.username, "voice", `live voice evaluation started: ${clips.length} phrases x ${models.join(",")} x ${voices.join(",")}`);
-  res.json({ ok: true, total: job.total });
-  voiceEval
-    .evaluate({
-      clips,
-      models,
-      voices,
-      concurrency: 2,
-      deps: { key: cfg.key, speak: voice.speakStream, transcribe: voice.transcribeFull, isStop: (t) => voiceStop.heard(t) },
-      onProgress: (p) => (job.done = p.done),
-    })
-    .then((out) => {
-      Object.assign(job, { running: false, finished_at: new Date().toISOString(), summary: out.summary, table: voiceEval.tableMarkdown(out.summary) });
-      const report = { at: job.finished_at, models, voices, summary: out.summary, results: out.results };
-      fs.writeFileSync(path.join(evalDir(uid), "results.json"), JSON.stringify(report, null, 1), { mode: 0o600 });
-      fs.writeFileSync(path.join(evalDir(uid), "results.md"), job.table + "\n", { mode: 0o600 });
-      console.log(`voice-eval: done for ${req.me.username}, $${out.summary.reduce((n, r) => n + r.usd_total, 0).toFixed(4)}`);
-    })
-    .catch((e) => Object.assign(job, { running: false, error: voice.scrub(e.message) }));
-});
-
-/* ------------------------------------ voiceprint trial (admin) -------- */
-
-// Phase 1 of the voiceprint: the administrator records a trial set in their
-// own voice for the offline evaluation (tools/voiceprint/). Recordings only;
-// nothing verifies anyone yet. See lib/voiceprint-trial.js.
-const voiceprintTrialStore = voiceprintTrial.mount(app, { requireAuth, requirePerm, requireApiPerm, requireApiCsrf, rateLimit, express, db, ctx, views: voiceprintTrialViews, asset, dataDir: DATA_DIR });
-
 /* ------------------------------------------ the voiceprint (live voice) -- */
 
 // lib/voiceprint.js: the live relay checks each turn against the enrolled voiceprint through the
@@ -6781,12 +5900,8 @@ vprint = voiceprintLib.createVoiceprint({
   log: (m) => console.log(m),
   parseWav: voiceprintTrial.parseWav,
   userById: (id) => db.getUser(id),
-  trialClips: (user) => {
-    const m = voiceprintTrialStore.readManifest(user);
-    return (m.clips || []).map((c) => ({ ...c, path: path.join(voiceprintTrialStore.dirOf(user), c.mic, c.id + ".wav") })).filter((c) => fs.existsSync(c.path));
-  },
 });
-voiceprintRoutes.mount(app, { vprint, trialStore: voiceprintTrialStore, trial: voiceprintTrial, settingsGuard: voiceGuardSettings, reply: (req, res, o) => voiceReply(req, res, o), requireAuth, requirePerm, requireApiPerm, requireApiCsrf, rateLimit, express, db, ctx, views: voiceprintEnrolViews, asset });
+voiceprintRoutes.mount(app, { vprint, trial: voiceprintTrial, settingsGuard: voiceGuardSettings, reply: (req, res, o) => voiceReply(req, res, o), requireAuth, requirePerm, requireApiPerm, requireApiCsrf, rateLimit, express, db, ctx, views: voiceprintEnrolViews, asset });
 if (vprint.enabled()) vprint.health().catch(() => {});
 vprint.openAll().catch(() => {}); // opens (and, once, migrates) the stored voiceprints
 

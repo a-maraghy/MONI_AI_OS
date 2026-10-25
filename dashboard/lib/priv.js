@@ -282,6 +282,7 @@ module.exports = {
   chatgptLoginPoll: (id) => callHelper("chatgpt-login-poll", [id], { timeout: 45000 }),
   chatgptLoginCancel: (id) => callHelper("chatgpt-login-cancel", [id]),
   agentChatgpt: (slug, on) => callHelper("agent-chatgpt", [slug, on ? "on" : "off"], { timeout: 60000 }),
+  agentRestartIdle: (slug) => callHelper("agent-restart-idle", [slug], { timeout: 60000 }),
 
   voiceStatus: () => callHelper("voice-status"),
   voiceKeyRead: () => callHelper("voice-key-read"),

@@ -63,7 +63,7 @@ function makeCopy(o) {
   const record = o.recordCalls
     ? "require('fs').appendFileSync(" + JSON.stringify(path.join(DATA, "helper-calls.jsonl")) + ", JSON.stringify({ subcommand, args, stdin: opts && opts.stdin != null ? String(opts.stdin) : null }) + '\\n'); "
     : "";
-  const canned = reads ? "  { const F = " + JSON.stringify(reads) + "; if (Object.prototype.hasOwnProperty.call(F, subcommand) && /^(list|status|agent-list|channel-list|channel-get|channel-topics-folders|service-list|credential-list|system-probe|cc-)/.test(subcommand)) { " + record + "return Promise.resolve(JSON.parse(JSON.stringify(F[subcommand]))); } }\n" : "";
+  const canned = reads ? "  { const F = " + JSON.stringify(reads) + "; if (Object.prototype.hasOwnProperty.call(F, subcommand) && /^(list|status|agent-list|agent-get|agent-logs|agent-vault-list|agent-memory-stats|agent-read-file|firewall-status|audit-tail|channel-list|channel-get|channel-topics-folders|service-list|credential-list|system-probe|cc-)/.test(subcommand)) { " + record + "return Promise.resolve(JSON.parse(JSON.stringify(F[subcommand]))); } }\n" : "";
   s = s.replace(head, head + canned + '  return Promise.reject(new Error("scratch copy: the helper is not called (" + subcommand + ")"));\n');
   const status = 'voiceStatus: () => callHelper("voice-status"),';
   const key = 'voiceKeyRead: () => callHelper("voice-key-read"),';
@@ -109,7 +109,7 @@ function makeCopy(o) {
     // MINT AI Settings > ChatGPT (lib/routes-chatgpt.js): the helper's chatgpt-* and agent-chatgpt
     // answered from fake-chatgpt.json in the scratch data dir -- {status, calls, login, agents: {slug: bool},
     // log: [...]}. login-start hands out a fixed code; a test flips login.state to "done" to finish it.
-    const names = ["chatgptStatus", "chatgptCalls", "chatgptLoginStart", "chatgptLoginPoll", "chatgptLoginCancel", "agentChatgpt"];
+    const names = ["chatgptStatus", "chatgptCalls", "chatgptLoginStart", "chatgptLoginPoll", "chatgptLoginCancel", "agentChatgpt", "agentRestartIdle"];
     for (const n of names) if (!new RegExp("\\n  " + n + ": ").test(s)) throw new Error("scratch: priv.js " + n + " not found");
     const cf = JSON.stringify(path.join(DATA, "fake-chatgpt.json"));
     const st = Object.assign({ status: { service: "active", answering: true, login: "signed_in", account: "ChatGPT account", detail: "Logged in using ChatGPT", running: 0, queued: 0, max_running: 2, max_queued: 8, timeout_s: 600, login_in_progress: false }, calls: [], agents: {}, login: null, log: [] }, o.fakeChatgpt);
@@ -121,7 +121,8 @@ function makeCopy(o) {
       chatgptLoginStart: `async () => { ${R} C.log.push("login-start"); if (!C.login || C.login.state !== "pending") C.login = { id: "0123456789abcdef", url: "https://auth.openai.com/codex/device", code: "ABCD-12345", expires_at: Math.floor(Date.now() / 1000) + 900, state: "pending" }; W(); return { id: C.login.id, url: C.login.url, code: C.login.code, expires_at: C.login.expires_at }; }`,
       chatgptLoginPoll: `async (id) => { ${R} C.log.push("login-poll " + id); if (!C.login || C.login.id !== id) throw new Error("no such sign-in"); if (C.login.state === "done") { C.status.login = "signed_in"; W(); return { state: "done", login: "signed_in", account: "ChatGPT account", message: "Signed in." }; } W(); return { state: C.login.state, url: C.login.url, code: C.login.code, expires_at: C.login.expires_at, message: C.login.message || "" }; }`,
       chatgptLoginCancel: `async (id) => { ${R} C.log.push("login-cancel " + id); if (C.login && C.login.id === id) C.login.state = "cancelled"; W(); return { cancelled: true, stopped: true }; }`,
-      agentChatgpt: `async (slug, on) => { ${R} C.log.push("agent-chatgpt " + slug + " " + (on ? "on" : "off")); C.agents[slug] = !!on; W(); return { slug, chatgpt: !!on, state: { active: "active" }, restart_needed: true }; }`,
+      agentChatgpt: `async (slug, on) => { ${R} C.log.push("agent-chatgpt " + slug + " " + (on ? "on" : "off")); C.agents[slug] = !!on; W(); const act = !(C.inactive || []).includes(slug); return { slug, chatgpt: !!on, state: { active: act ? "active" : "inactive" }, restart_needed: act, busy: act && !!(C.busy || {})[slug] }; }`,
+      agentRestartIdle: `async (slug) => { ${R} C.log.push("agent-restart-idle " + slug); W(); if ((C.busy || {})[slug]) throw new Error("busy: it is answering a message right now"); return { slug, restarted: true, state: { active: "active" } }; }`,
     };
     for (const n of names) s = s.replace(new RegExp("\\n  " + n + ": [^\\n]*\\n"), "\n  " + n + ": " + fakes[n] + ",\n");
   }

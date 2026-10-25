@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 "use strict";
 /**
- * The MINT AI core setting: which of the five cores (A dotted sphere, B Siri
- * fluid, C hybrid, D mesh, E bot) the Command Center draws, per person, default D
- * (since 2026-10-06; everyone was moved to D once, by a recorded migration).
+ * The MINT AI core setting: which of the two cores (D mesh, E bot) the Command
+ * Center draws, per person, default D (since 2026-10-06; everyone was moved to D
+ * once, by a recorded migration). A, B and C were retired on 2026-10-25: anyone
+ * still on one of them is moved to E at start (a second recorded migration).
  *
  *     NODE_PATH=/opt/moni-dashboard/node_modules node dashboard/tools/test-mint-core.cjs
  *
@@ -51,17 +52,18 @@ const read = (f) => fs.readFileSync(path.join(ROOT, f), "utf8");
 /* ------------------------------------------------------- static checks --- */
 
 const logic = require(path.join(ROOT, "public", "cc-logic.js"));
-check("five cores: A dotted sphere, B Siri fluid, C hybrid, D mesh, E bot", JSON.stringify(logic.CORES) === JSON.stringify({ A: "Dotted sphere", B: "Siri fluid", C: "Hybrid", D: "Mesh", E: "Bot" }));
+check("two cores: D mesh, E bot (A, B and C retired 2026-10-25)", JSON.stringify(logic.CORES) === JSON.stringify({ D: "Mesh", E: "Bot" }));
 check("the default is D", logic.CORE_DEFAULT === "D" && logic.normCore("") === "D" && logic.normCore(null) === "D" && logic.normCore(undefined) === "D");
-check("a saved choice is kept, in any case", logic.normCore("a") === "A" && logic.normCore(" B ") === "B" && logic.normCore("C") === "C" && logic.normCore("d") === "D" && logic.normCore("e") === "E");
+check("a saved choice is kept, in any case; a retired A, B or C reads as E", logic.normCore("a") === "E" && logic.normCore(" B ") === "E" && logic.normCore("C") === "E" && logic.normCore("d") === "D" && logic.normCore("e") === "E");
 check("anything else reads as the default", logic.normCore("F") === "D" && logic.normCore('"><x') === "D" && logic.normCore(7) === "D");
-check("the API accepts exactly A, B, C, D or E", logic.isCore("A") && logic.isCore("B") && logic.isCore("C") && logic.isCore("D") && logic.isCore("E") && !logic.isCore("a") && !logic.isCore("d") && !logic.isCore("F") && !logic.isCore("") && !logic.isCore(null) && !logic.isCore(["A"]));
+check("the API accepts exactly D or E", !logic.isCore("A") && !logic.isCore("B") && !logic.isCore("C") && logic.isCore("D") && logic.isCore("E") && !logic.isCore("a") && !logic.isCore("d") && !logic.isCore("F") && !logic.isCore("") && !logic.isCore(null) && !logic.isCore(["A"]));
 const uia = require(path.join(ROOT, "public", "ui-actions.js"));
-check("the voice / agent action core.set accepts D and E too (both copies of ui-actions.js agree)", uia.CORES.D === "D" && uia.CORES.E === "E" && read("public/ui-actions.js") === fs.readFileSync(path.join(ROOT, "..", "moni-ai", "lib", "ui-actions.js"), "utf8"));
+check("the voice / agent action core.set accepts D and E only (both copies of ui-actions.js agree)", JSON.stringify(uia.CORES) === '{"D":"D","E":"E"}' && read("public/ui-actions.js") === fs.readFileSync(path.join(ROOT, "..", "moni-ai", "lib", "ui-actions.js"), "utf8"));
 
 const dbSrc = read("lib/db.js");
 check("db: users.mint_core is added the migration way, empty by default", /addColumn\("users", "mint_core", "TEXT NOT NULL DEFAULT ''"\)/.test(dbSrc));
 check("db: the one-time move to D is recorded in settings and runs before anyone signs in", /const CORE_D_MIGRATION = "migration\.mint_core_d";/.test(dbSrc) && /^migrateCoreDefaultD\(\);$/m.test(dbSrc) && /if \(db\.prepare\("SELECT 1 FROM settings WHERE key = \?"\)\.get\(CORE_D_MIGRATION\)\) return null;/.test(dbSrc));
+check("db: the retired cores move to E at every start, audited and recorded", /const CORE_ABC_MIGRATION = "migration\.mint_core_abc_e";/.test(dbSrc) && /^migrateRetiredCores\(\);$/m.test(dbSrc) && /WHERE mint_core IN \('A', 'B', 'C'\)/.test(dbSrc));
 check("db: setUserMintCore writes only that column, by id", /setUserMintCore: \(id, core\) =>\s*db\.prepare\("UPDATE users SET mint_core = \? WHERE id = \?"\)/.test(dbSrc));
 
 const server = read("server.js");
@@ -72,7 +74,8 @@ check("server: the change is audited", /db\.logLogin\(req\.ip, req\.me\.username
 check("server: the page is given the saved core", /moniAiViews\.page\(\{[\s\S]{0,200}core: req\.me\.mint_core/.test(server));
 check("server: /account points to Settings ▸ Appearance only with moniai.use", /appearance: req\.perm\.can\("moniai\.use"\),/.test(server));
 
-const main = read("public/moni-ai.js"), map = read("public/cc-map.js"), core = read("public/mint-core.js"), settings = read("public/mint-settings.js");
+const main = read("public/moni-ai.js"), map = read("public/cc-map.js"), settings = read("public/mint-settings.js");
+check("mint-core.js (A, B and C) is gone", !fs.existsSync(path.join(ROOT, "public", "mint-core.js")));
 check("page: the saved core comes from data-core, localStorage only as the fallback", /var c = root\.getAttribute\("data-core"\);\s*if \(!c\) \{ try \{ c = window\.localStorage\.getItem\(CORE_KEY\); \} catch/.test(main));
 check("page: every localStorage use for the core is inside try/catch", main.split("\n").filter((l) => /localStorage/.test(l) && /CORE_KEY/.test(l)).every((l) => /try \{[^}]*localStorage[^}]*\} catch/.test(l)));
 check("page: the quick switch swaps the core in place, then saves it", /function setCoreChoice\(c\) \{[\s\S]{0,160}Orb\.setConcept\(c\);[\s\S]{0,400}api\("prefs\/core", \{ body: \{ core: c \} \}\)/.test(main));
@@ -80,9 +83,9 @@ check("page: nothing reloads the page to switch", !/location\.reload|location\.h
 const coreD = read("public/mint-core-d.js");
 check("core D: its own file, WebGL2 with a 2D fallback, the same instance API, no eval", /window\.MintCoreD = function \(canvas, opts\)/.test(coreD) && /getContext\("webgl2"/.test(coreD) && /getContext\("2d"\)/.test(coreD) && ["setState", "setLight", "resize", "start", "stop", "still", "stats", "draw", "destroy", "setConcept"].every((m) => new RegExp(m + ": ").test(coreD)) && !/\beval\(|new Function/.test(coreD));
 check("core D: stops while hidden, still frame under reduced motion, a resolution guard", /visibilitychange/.test(coreD) && /prefers-reduced-motion: reduce/.test(coreD) && /S\.lowRes = true/.test(coreD));
-check("map: D <-> A/B/C swaps the renderer on a fresh canvas (a WebGL1 canvas never gives WebGL2), releasing the old context", /function swapCore\(c\)/.test(map) && /cloneNode\(false\)/.test(map) && /destroy\(\)/.test(map) && /WEBGL_lose_context/.test(map) && /get core\(\) \{ return core; \}/.test(map));
+check("map: D <-> E swaps the renderer on a fresh canvas, releasing the old context", /function swapCore\(c\)/.test(map) && /cloneNode\(false\)/.test(map) && /destroy\(\)/.test(map) && /WEBGL_lose_context/.test(map) && /get core\(\) \{ return core; \}/.test(map));
 check("page: window.__mintCC.core follows the swap (a getter)", /get core\(\) \{ return Orb\.core; \}/.test(main));
-check("core: switching concept keeps the running loop (no new canvas, no new context)", /setConcept: function \(c\) \{[\s\S]{0,120}S\.concept = c;/.test(core) && (core.match(/getContext\("webgl"/g) || []).length === 1);
+check("map: no renderer for the retired cores (window.MintCore) is called", !/window\.MintCore\(/.test(map + settings));
 check("map: the concept is written back to data-core", /root\.setAttribute\("data-core", core\.S\.concept\)/.test(map));
 check("settings: the Account previews save through the same route, CSRF in a header", /fetch\("\/mint-ai\/api\/prefs\/core"/.test(settings) && /"X-CSRF-Token": CSRF/.test(settings));
 check("settings: its localStorage write is guarded", settings.split("\n").filter((l) => /localStorage/.test(l)).every((l) => /try \{[^}]*localStorage[^}]*\} catch/.test(l)));
@@ -92,17 +95,14 @@ const views = require(path.join(ROOT, "lib", "views-moniai.js"));
 const rbac = require(path.join(ROOT, "lib", "rbac.js"));
 const admin = rbac.actor({ permissions: ["*"] });
 const pageFor = (core) => views.page({ csrf: "t", user: { name: "a", perm: admin }, core, voice: { configured: true, voice: "marin", manage: true } });
-check("view: the saved core is on #cc before first paint", /<div class="cc-shell" id="cc"\s+data-core="B"/.test(pageFor("B")));
+check("view: the saved core is on #cc before first paint", /<div class="cc-shell" id="cc"\s+data-core="E"/.test(pageFor("E")) && /<div class="cc-shell" id="cc"\s+data-core="E"/.test(pageFor("B")));
 check("view: never chosen renders D", /id="cc"\s+data-core="D"/.test(pageFor(undefined)) && /id="cc"\s+data-core="D"/.test(pageFor("")));
 check("view: a bad stored value cannot reach the markup", /id="cc"\s+data-core="D"/.test(pageFor('"><script>')) && !/"><script>/.test(pageFor('"><script>')));
-check("view: the page loads mint-core-d.js and mint-core-bot.js after mint-core.js and before cc-map.js", (read("lib/views-moniai.js").match(/"mint-core\.js", "mint-core-d\.js", "mint-core-bot\.js", "cc-family\.js", "cc-map\.js"/g) || []).length === 2);
-check("view: the brand spark (concept C) is in the page, shown by CSS on data-core", /id="cc-spark"/.test(pageFor("C")) && /\.cc-shell\[data-core="C"\] \.cc-spark \{ opacity: 1; \}/.test(read("public/moni-ai.css")));
-check("view: the quick switch is in the Everything sheet (and the voice menu builds the same)", (pageFor("A").match(/data-core-set="[ABCDE]"/g) || []).length === 5 && /data-core-set="A" aria-checked="true"/.test(pageFor("A")) && /data-core-set=/.test(main));
-const ap = views.appearance({ csrf: 'x"y', core: "B" });
-check("appearance: five options, the saved one checked, a preview canvas each", (ap.html.match(/name="core" value="[ABCDE]"/g) || []).length === 5 && /value="B" checked/.test(ap.html) && (ap.html.match(/data-prev-core="[ABCDE]"/g) || []).length === 5);
-check("appearance: works without JavaScript (a form post with the CSRF token)", /<form method="post" action="\/account\/appearance"/.test(ap.html) && /name="_csrf" value="x&quot;y"/.test(ap.html));
-check("appearance: loads its own stylesheet and scripts, the colour logic and the core renderers first", ap.assets.join(" ") === "mint-settings.css cc-logic.js mint-core.js mint-core-d.js mint-core-bot.js mint-settings.js");
-check("appearance: no inline style or handler", !/\sstyle\s*=|\son[a-z]+\s*=/i.test(ap.html));
+check("view: the page loads mint-core-d.js and mint-core-bot.js before cc-map.js", (read("lib/views-moniai.js").match(/"mint-core-d\.js", "mint-core-bot\.js", "cc-family\.js", "cc-map\.js"/g) || []).length === 2);
+check("view: no brand spark (it was concept C's)", !/id="cc-spark"/.test(pageFor("E")) && !/data-core="C"/.test(read("public/moni-ai.css")));
+check("view: the Everything sheet no longer carries a core switch (Settings and the voice menu do)", !/data-core-set=/.test(pageFor("E")) && /data-core-set=/.test(main));
+check("appearance: the old Account card (views.appearance) is gone", views.appearance === undefined);
+check("appearance: the assets list the two renderers", views.APPEARANCE_ASSETS.join(" ") === "mint-settings.css cc-logic.js mint-core-d.js mint-core-bot.js mint-settings.js");
 
 /* ------------------------------------------------------------- over HTTP --- */
 
@@ -212,45 +212,67 @@ const csrfOf = (html) => (/data-csrf="([^"]+)"/.exec(html) || /name="_csrf" valu
     const tok = csrfOf(r.body);
     const post = (who, body, token) => req("POST", "/mint-ai/api/prefs/core", { cookie: who.cookie, headers: Object.assign({ Accept: "application/json" }, token ? { "X-CSRF-Token": token } : {}), body });
 
-    r = await post(A1, { core: "A" });
+    r = await post(A1, { core: "E" });
     check("quick switch without the CSRF token: refused (403)", r.status === 403, r.status);
     r = await post(A1, { core: "F" }, tok);
-    check("quick switch to an unknown core: refused (400)", r.status === 400 && /A, B, C, D or E/.test(r.body), r.status + " " + r.body);
-    r = await post(A1, { core: "a" }, tok);
-    check("only the capital letter is a core (the page sends exactly A/B/C)", r.status === 400, r.status);
+    check("quick switch to an unknown core: refused (400)", r.status === 400 && /D \(Mesh\) or E \(Bot\)/.test(r.body), r.status + " " + r.body);
     r = await post(A1, { core: "A" }, tok);
-    check("quick switch to A: saved", r.status === 200 && JSON.parse(r.body).core === "A" && JSON.parse(r.body).name === "Dotted sphere", r.status + " " + r.body);
+    check("quick switch to a retired core (A): refused (400)", r.status === 400, r.status);
+    r = await post(A1, { core: "e" }, tok);
+    check("only the capital letter is a core", r.status === 400, r.status);
+    r = await post(A1, { core: "E" }, tok);
+    check("quick switch to E: saved", r.status === 200 && JSON.parse(r.body).core === "E" && JSON.parse(r.body).name === "Bot", r.status + " " + r.body);
     r = await req("GET", "/mint-ai", { cookie: A1.cookie });
-    check("the next page load is drawn as A from its first paint (data-core in the HTML)", coreOn(r.body) === "A", coreOn(r.body));
+    check("the next page load is drawn as E from its first paint (data-core in the HTML)", coreOn(r.body) === "E", coreOn(r.body));
     r = await req("GET", "/mint-ai", { cookie: A2.cookie });
     check("per person: another administrator still has D", coreOn(r.body) === "D", coreOn(r.body));
 
     const db = require(path.join(ROOT, "lib", "db.js"));
     const rows = db.recentLogins(50).filter((x) => x.outcome === "account" && /MINT AI core/.test(x.detail || "") && !/migration/.test(x.detail));
-    check("audited: one line per change, who and what", rows.length === 1 && rows[0].username === "coreadmin" && /MINT AI core D -> A \(Dotted sphere\)/.test(rows[0].detail), JSON.stringify(rows));
-    check("stored on the user row", db.getUserByName("coreadmin").mint_core === "A" && db.getUserByName("coreadmin2").mint_core === "D");
-    // The migration never runs again: a fresh start (db.js loaded in a new process) leaves the switch back to A alone.
+    check("audited: one line per change, who and what", rows.length === 1 && rows[0].username === "coreadmin" && /MINT AI core D -> E \(Bot\)/.test(rows[0].detail), JSON.stringify(rows));
+    check("stored on the user row", db.getUserByName("coreadmin").mint_core === "E" && db.getUserByName("coreadmin2").mint_core === "D");
+    // The D migration never runs again: a fresh start (db.js loaded in a new process) leaves the switch to E alone.
     require("child_process").execFileSync(process.execPath, ["-e", "require(" + JSON.stringify(path.join(ROOT, "lib", "db.js")) + ")"], { env: process.env });
-    check("migration: never re-runs (a restart keeps the switch back to A)", db.getUserByName("coreadmin").mint_core === "A" && db.recentLogins(80).filter((x) => /\(new default, migration\)/.test(x.detail || "")).length === 3);
+    check("migration to D: never re-runs (a restart keeps the switch to E)", db.getUserByName("coreadmin").mint_core === "E" && db.recentLogins(80).filter((x) => /\(new default, migration\)/.test(x.detail || "")).length === 3);
+    // The retired cores: an account still on A, B or C (stored before 2026-10-25) is moved to E at the next start.
+    {
+      const raw = new (require("better-sqlite3"))(path.join(DATA, "moni.db"));
+      raw.prepare("UPDATE users SET mint_core = 'C' WHERE username = 'coreadmin2'").run();
+      raw.prepare("UPDATE users SET mint_core = 'A' WHERE username = 'coreviewer'").run();
+      raw.close();
+    }
+    require("child_process").execFileSync(process.execPath, ["-e", "require(" + JSON.stringify(path.join(ROOT, "lib", "db.js")) + ")"], { env: process.env });
+    const abc = db.recentLogins(80).filter((x) => x.outcome === "account" && /retired, migration\)/.test(x.detail || ""));
+    check("migration A/B/C -> E: both accounts moved to E at start", db.getUserByName("coreadmin2").mint_core === "E" && db.getUserByName("coreviewer").mint_core === "E" && db.getUserByName("coreadmin").mint_core === "E");
+    check("  one audit line per account, naming what it was", abc.length === 2 && abc.some((x) => x.username === "coreadmin2" && /MINT AI core C -> E \(Bot\) \(core C retired, migration\)/.test(x.detail)) && abc.some((x) => x.username === "coreviewer" && /core A -> E/.test(x.detail)), JSON.stringify(abc));
+    const rec2 = dbm.getSetting("migration.mint_core_abc_e", null);
+    check("  recorded in settings (how many, when)", !!rec2 && JSON.parse(rec2).moved === 2, rec2);
+    require("child_process").execFileSync(process.execPath, ["-e", "require(" + JSON.stringify(path.join(ROOT, "lib", "db.js")) + ")"], { env: process.env });
+    check("  a further start finds nobody (idempotent)", db.recentLogins(120).filter((x) => /retired, migration\)/.test(x.detail || "")).length === 2 && JSON.parse(dbm.getSetting("migration.mint_core_abc_e", null)).moved === 2);
+    {
+      const raw = new (require("better-sqlite3"))(path.join(DATA, "moni.db"));
+      raw.prepare("UPDATE users SET mint_core = 'D' WHERE username IN ('coreadmin2', 'coreviewer')").run();
+      raw.close();
+    }
     r = await post(A1, { core: "D" }, tok);
     check("switch back to D: saved, named Mesh", r.status === 200 && JSON.parse(r.body).core === "D" && JSON.parse(r.body).name === "Mesh", r.body);
-    r = await post(A1, { core: "A" }, tok);
+    r = await post(A1, { core: "E" }, tok);
 
     r = await req("GET", "/account", { cookie: A1.cookie });
     check("Account points to MINT AI ▸ Settings ▸ Appearance (the cores moved there)", r.status === 200 && /id="appearance"/.test(r.body) && /href="\/mint-ai\/settings\/appearance"/.test(r.body) && !/name="core"/.test(r.body), r.status);
     r = await req("GET", "/mint-ai/settings/appearance", { cookie: A1.cookie });
-    check("Settings ▸ Appearance shows the saved core checked", r.status === 200 && /id="a-core"/.test(r.body) && /value="A" checked/.test(r.body), r.status);
-    check("…and loads the previews' scripts", /mint-core\.js\?v=/.test(r.body) && /mint-settings\.js\?v=/.test(r.body) && /mint-settings\.css\?v=/.test(r.body));
+    check("Settings ▸ Appearance shows two cores, the saved one checked", r.status === 200 && /id="a-core"/.test(r.body) && /value="E" checked/.test(r.body) && (r.body.match(/name="core" value="[A-Z]"/g) || []).join() === 'name="core" value="D",name="core" value="E"', r.status);
+    check("…and loads the previews' scripts", /mint-core-d\.js\?v=/.test(r.body) && /mint-core-bot\.js\?v=/.test(r.body) && !/mint-core\.js\?v=/.test(r.body) && /mint-settings\.js\?v=/.test(r.body) && /mint-settings\.css\?v=/.test(r.body));
     check("…its no-JavaScript form still posts to /account/appearance", /<form method="post" action="\/account\/appearance"/.test(r.body));
     const accTok = csrfOf(r.body);
-    r = await req("POST", "/account/appearance", { cookie: A1.cookie, body: new URLSearchParams({ _csrf: accTok, core: "B" }).toString() });
+    r = await req("POST", "/account/appearance", { cookie: A1.cookie, body: new URLSearchParams({ _csrf: accTok, core: "D" }).toString() });
     check("the no-JavaScript form saves too, and returns to Appearance", r.status === 302 && /^\/mint-ai\/settings\/appearance\?msg=.*#a-core$/.test(r.headers.location), r.status + " " + r.headers.location);
     r = await req("GET", "/mint-ai", { cookie: A1.cookie });
-    check("…the page then draws B", coreOn(r.body) === "B", coreOn(r.body));
+    check("…the page then draws D", coreOn(r.body) === "D", coreOn(r.body));
     r = await req("POST", "/account/appearance", { cookie: A1.cookie, body: new URLSearchParams({ _csrf: accTok, core: "Z" }).toString() });
-    check("the form refuses anything but A/B/C/D/E", r.status === 302 && /err=/.test(r.headers.location) && db.getUserByName("coreadmin").mint_core === "B", r.headers.location);
-    r = await req("POST", "/account/appearance", { cookie: A1.cookie, body: new URLSearchParams({ _csrf: "wrong", core: "C" }).toString() });
-    check("the form needs its CSRF token", r.status === 403 && db.getUserByName("coreadmin").mint_core === "B", r.status);
+    check("the form refuses anything but D/E", r.status === 302 && /err=/.test(r.headers.location) && db.getUserByName("coreadmin").mint_core === "D", r.headers.location);
+    r = await req("POST", "/account/appearance", { cookie: A1.cookie, body: new URLSearchParams({ _csrf: "wrong", core: "E" }).toString() });
+    check("the form needs its CSRF token", r.status === 403 && db.getUserByName("coreadmin").mint_core === "D", r.status);
 
     r = await req("GET", "/account", { cookie: V.cookie });
     check("a viewer's Account has no Appearance card", r.status === 200 && !/id="appearance"/.test(r.body) && !/mint-settings\.js/.test(r.body), r.status);
@@ -259,11 +281,11 @@ const csrfOf = (html) => (/data-csrf="([^"]+)"/.exec(html) || /name="_csrf" valu
     r = await req("GET", "/mint-ai", { cookie: V.cookie });
     check("a viewer does not get the Command Center", !coreOn(r.body), r.status);
     const vtok = csrfOf((await req("GET", "/account", { cookie: V.cookie })).body);
-    r = await post(V, { core: "A" }, vtok);
+    r = await post(V, { core: "E" }, vtok);
     check("a viewer cannot set a core (403)", r.status === 403, r.status);
-    r = await req("POST", "/account/appearance", { cookie: V.cookie, body: new URLSearchParams({ _csrf: vtok, core: "A" }).toString() });
+    r = await req("POST", "/account/appearance", { cookie: V.cookie, body: new URLSearchParams({ _csrf: vtok, core: "E" }).toString() });
     check("…through the form either", r.status === 403 && db.getUserByName("coreviewer").mint_core === "D", r.status);
-    r = await req("POST", "/mint-ai/api/prefs/core", { headers: { Accept: "application/json" }, body: { core: "A" } });
+    r = await req("POST", "/mint-ai/api/prefs/core", { headers: { Accept: "application/json" }, body: { core: "E" } });
     check("signed out: 401", r.status === 401, r.status);
   } catch (e) {
     check("the HTTP run completed", false, e.stack + "\n" + out);

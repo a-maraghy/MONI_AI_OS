@@ -63,16 +63,17 @@ check("no machine filter (Trial / Live) and no second machine card", !/data-m="l
 check("Hire a session: no \"coming later\"; it says how (ask MINT AI), the limits, Keep / Retire on right-click, and the count of places in use",
   /id="cc-hire-note"[\s\S]{0,300}Hire a session[\s\S]{0,200}id="cc-hire-count"[\s\S]{0,120}Ask MINT AI to hire a session[\s\S]{0,200}At most 7 sessions at a time and 3 hires an hour[\s\S]{0,80}Keep or retire a hired session with its buttons here, or right-click its sphere/.test(html) &&
   !/Hire a session<\/b><span class="sp"><\/span><span class="cc-tag mute">coming later/.test(html) && /hc\.textContent = nLive \+ " of 7 in use · " \+ nHired \+ " hired";/.test(main));
-check("'Add a machine' is there, disabled, and says it comes later", /class="cc-card dashed cc-mach-add" aria-disabled="true"[^>]*>[\s\S]{0,300}Add a machine[\s\S]{0,120}coming later/.test(html));
-const SHEETS = ["conv", "sessions", "missions", "dec", "tl", "rules", "orders", "cost", "machine"];
-check("the dock opens the nine sheets, in order", (() => {
+check("no disabled 'Add a machine'; the Machine sheet links to Computers", !/cc-mach-add|Add a machine/.test(html) && /<a class="cc-card cc-link-card" href="\/machines">/.test(html));
+// Schedules ("orders") live inside Rules & alerts since 2026-10-25: eight sheets.
+const SHEETS = ["conv", "sessions", "missions", "dec", "tl", "rules", "cost", "machine"];
+check("the dock opens the eight sheets, in order", (() => {
   const dockHtml = (/<nav class="cc-rail" id="cc-rail"[^>]*>([\s\S]*?)<\/nav>/.exec(html) || [])[1] || "";
   return [...dockHtml.matchAll(/data-sheet="([a-z]+)"/g)].map((m) => m[1]).join(" ") === SHEETS.join(" ") && /id="cc-kbtn"/.test(dockHtml);
 })());
-check("every sheet has its pane, closed until opened", SHEETS.concat(["everything"]).every((k) => new RegExp(`<section class="cc-pane" id="cc-pane-${k}" data-sheet-pane="${k}"[^>]*hidden>`).test(html)));
-check("the phone gets one button for everything, and the sheet lists all nine", /id="cc-more" aria-label="Everything"/.test(html) && SHEETS.every((k) => new RegExp(`id="cc-pane-everything"[\\s\\S]*data-sheet="${k}"`).test(html)));
+check("every sheet has its pane, closed until opened; Schedules sit inside Rules & alerts", /id="cc-orders-wrap"/.test(html) && SHEETS.concat(["everything"]).every((k) => new RegExp(`<section class="cc-pane" id="cc-pane-${k}" data-sheet-pane="${k}"[^>]*hidden>`).test(html)));
+check("the phone gets one button for everything, and the sheet lists all eight", /id="cc-more" aria-label="Everything"/.test(html) && SHEETS.every((k) => new RegExp(`id="cc-pane-everything"[\\s\\S]*data-sheet="${k}"`).test(html)));
 check("the Machine sheet has the core grid's eight cells", ["core", "sessions", "agents", "memory", "watchers", "rules", "voice", "guard"].every((k) => html.includes(`data-cell="${k}"`)));
-check("the core sits in the centre: one canvas, the orbit, the spark, the caption", /<canvas class="cc-core" id="cc-core"/.test(html) && /id="cc-orbit"/.test(html) && /id="cc-spark"/.test(html) && /id="cc-cap-state"/.test(html) && /id="cc-cap" aria-live="polite"/.test(html));
+check("the core sits in the centre: one canvas, the orbit, the caption (no sparkline)", /<canvas class="cc-core" id="cc-core"/.test(html) && /id="cc-orbit"/.test(html) && !/id="cc-spark"/.test(html) && /id="cc-cap-state"/.test(html) && /id="cc-cap" aria-live="polite"/.test(html));
 check("the missions board is a sheet (tabs, head, lanes)", /id="cc-pane-missions"[\s\S]*id="cc-mis-tabs"[\s\S]*id="cc-mis-head"[\s\S]*id="cc-lanes"/.test(html));
 check("the event log lives under Decisions", /id="cc-pane-dec"[\s\S]*id="cc-evlog"[\s\S]*id="cc-feed"[\s\S]*id="cc-pane-tl"/.test(html));
 check("the composer keeps the mic (a live call), the voice bar and its hint", /id="cc-c-mic"/.test(html) && /id="cc-voicebar"/.test(html) && /id="cc-kb-space">click the mic to talk<\/span>/.test(html) && !/<kbd>Esc<\/kbd> ends/.test(html));
@@ -82,10 +83,10 @@ check("the palette button is in the dock, with its shortcut", /id="cc-kbtn"[^>]*
 check("one decision card, top right, and the amber pill that brings it back", /<aside class="cc-need" id="cc-need" role="alertdialog"/.test(html) && /id="cc-needpill"[^>]*hidden>[\s\S]{0,120}need you/.test(html));
 check("no mockup leftovers (sample-data tag, Play demo, state preview)", !/SAMPLE DATA|Play flow|demo-btn|data-open="hire"|State preview/.test(html + main + panels));
 check("scripts load in order: logic, core, map, panels, then the page", (() => {
-  const i = ["cc-logic.js", "mint-core.js", "cc-map.js", "cc-panels.js", "/moni-ai.js"].map((f) => html.indexOf(f));
+  const i = ["cc-logic.js", "mint-core-d.js", "cc-map.js", "cc-panels.js", "/moni-ai.js"].map((f) => html.indexOf(f));
   return i.every((x, k) => x > 0 && (k === 0 || x > i[k - 1]));
 })());
-check("every page script is deferred", ["cc-logic.js", "mint-core.js", "cc-map.js", "cc-panels.js", "moni-ai.js"].every((f) => new RegExp(`/static/${f.replace(".", "\\.")}\\?v=[^"]+" defer>`).test(html)));
+check("every page script is deferred", ["cc-logic.js", "mint-core-d.js", "cc-map.js", "cc-panels.js", "moni-ai.js"].every((f) => new RegExp(`/static/${f.replace(/\./g, "\\.")}\\?v=[^"]+" defer>`).test(html)));
 check("the overlay root comes after the sheets", /<\/aside>\s*<div id="cc-overlay"><\/div>/.test(html));
 check("no inline style anywhere in the frame", !/\sstyle\s*=/i.test(html) && !/<style[\s>]/i.test(html));
 check("the viewer name is escaped", !html.includes(EVIL));
@@ -179,13 +180,13 @@ check("applyBars: widths, --v and left from data attributes, clamped", (() => {
 
 /* --------------------------------------------------------- the core --- */
 
-const coreSrc = read("mint-core.js");
-check("the core has all three concepts and six states", /A: \{ idle:/.test(coreSrc) && /B: \{ idle:/.test(coreSrc) && /C: \{ idle:/.test(coreSrc) && /var STATES = \["idle", "listening", "thinking", "delegating", "speaking", "needs"\]/.test(coreSrc));
+// Cores A, B and C are retired (2026-10-25); D (Mesh) is the dotted core, E the bot.
+const coreSrc = read("mint-core-d.js");
+check("cores A, B and C are gone; D knows the six states", !fs.existsSync(path.join(__dirname, "..", "public", "mint-core.js")) && /var STATES = \["idle", "listening", "thinking", "delegating", "speaking", "needs"\]/.test(coreSrc));
 check("the core pauses when the tab is hidden", /visibilitychange/.test(coreSrc) && /if \(document\.hidden\) stop\(true\)/.test(coreSrc));
 check("the core honours reduced motion with a still frame per change", /prefers-reduced-motion: reduce/.test(coreSrc) && /function stillFrame\(\)/.test(coreSrc) && /if \(S\.still\) stillFrame\(\)/.test(coreSrc));
 check("the core caps the device pixel ratio at 2", /Math\.min\(window\.devicePixelRatio \|\| 1, 2\)/.test(coreSrc));
-check("concept B drops to half resolution when frames are slow", /function guardB\(\)/.test(coreSrc) && /S\.scale = 0\.5/.test(coreSrc) && /S\.concept === "B" && gl && !S\.halfRes/.test(coreSrc));
-check("without WebGL the core draws in 2D on a fresh canvas", /canvas\.getContext\("2d"\)/.test(coreSrc) && /cloneNode\(false\)/.test(coreSrc) && /function draw2d\(dest\)/.test(coreSrc));
+check("without WebGL the core draws in 2D", /canvas\.getContext\("2d"\)/.test(coreSrc));
 check("the core is fed the real levels: the microphone listening, the voice's output speaking", /micSource: function \(fn\)/.test(map) && /outSource: function \(fn\)/.test(map) && /Orb\.micSource\(/.test(main) && /Orb\.outSource\(outLevel\)/.test(main));
 check("delegation streams fly out to the session, replies flash it", /send: function \(id, ms\)/.test(map) && /reply: function \(id\)/.test(map) && /Orb\.send\(/.test(main) && /Orb\.reply\(/.test(main));
 check("the page sets the core's state from one place (MintLogic)", /Orb\.setState\(st\)/.test(main) && /ML\.coreState\(snap\)/.test(main));

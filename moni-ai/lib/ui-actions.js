@@ -30,7 +30,7 @@
   // The dock's sheets (public/cc-logic.js SHEETS), plus the phone's Everything grid.
   var SHEETS = {
     conv: "Conversation", sessions: "Sessions", missions: "Missions", dec: "Decisions",
-    tl: "Timeline", rules: "Rules & watchers", orders: "Standing orders", cost: "Usage",
+    tl: "Timeline", rules: "Rules & alerts", orders: "Schedules (in Rules & alerts)", cost: "Usage",
     machine: "Machine", everything: "Everything",
   };
   // The words people use for each panel (English and Egyptian Arabic), for the tool's description.
@@ -40,13 +40,14 @@
     "missions (المهام، الميشنز)",
     "dec = decisions / approvals (القرارات، الموافقات)",
     "tl = timeline / activity (التايم لاين، السجل)",
-    "rules = rules & watchers (القواعد، الووتشرز)",
-    "orders = standing orders (الأوامر الدائمة، الأوردرز)",
+    "rules = rules & alerts: approval rules and system alerts (القواعد، التنبيهات، الووتشرز)",
+    "orders = schedules / standing orders, a tab of rules & alerts (الأوامر الدائمة، الأوردرز، المواعيد)",
     "cost = cost & voice usage (التكلفة، المصاريف)",
     "machine = the machine / server (الماشين، السيرفر)",
     "everything (كل حاجة)",
   ].join("; ");
-  var CORES = { A: "A", B: "B", C: "C", D: "D", E: "E" };
+  // A, B and C were retired on 2026-10-25 (dashboard public/cc-logic.js).
+  var CORES = { D: "D", E: "E" };
   // Tier 2 (UI control Phase 3): preferences, applied only after a confirm the server checks.
   var THEMES = { system: "the system theme", dark: "the dark theme", light: "the light theme" };
   // lib/voice-persona.js PRESETS plus "learned" (tested to match).
@@ -70,14 +71,14 @@
     cc: { url: "/mint-ai", label: "Command Center", perm: "moniai.use", kind: "page" },
     settings: { url: "/mint-ai/settings", label: "MINT AI Settings", perm: "moniai.use", kind: "page" },
     "settings.voice": { url: "/mint-ai/settings/voice", label: "Voice settings", perm: "voice.manage", kind: "section" },
-    agents: { url: "/agents/dashboard", label: "Agents & sessions", perm: "agents.view", kind: "page" },
+    agents: { url: "/agents/dashboard", label: "Agents overview", perm: "agents.view", kind: "page" },
     sessions: { url: "/claude/sessions", label: "Sessions", perm: "claude.sessions.view", kind: "page" },
     "sessions.live": { url: "/claude/sessions?tab=live", label: "Live sessions", perm: "claude.running.view", kind: "tab" },
     telegram: { url: "/agents", label: "Telegram agents", perm: "agents.view", kind: "page" },
     channels: { url: "/channels", label: "Channels", perm: "channels.view", kind: "page" },
     addons: { url: "/addons", label: "Add-ons", perm: "addons.view", kind: "page" },
     memory: { url: "/claude/memory", label: "Memory", perm: "claude.memory.read", kind: "page" },
-    os: { url: "/os", label: "Machine overview", perm: "os.view", kind: "page" },
+    os: { url: "/os", label: "Machine health", perm: "os.view", kind: "page" },
     services: { url: "/services", label: "Services", perm: "services.view", kind: "page" },
     "services.agents": { url: "/services?kind=agents", label: "Agent services", perm: "agents.view", kind: "tab" },
     audit: { url: "/audit", label: "Audit log", perm: "audit.view", kind: "page" },
@@ -217,7 +218,7 @@
       name: "ui_action",
       description:
         "Change what the administrator sees on this Command Center screen, at once: end or mute this call (never unmute), stop reading, " +
-        "open or close a panel (" + Object.keys(SHEETS).join(", ") + "), show the map or missions, switch the core (A/B/C/D/E), " +
+        "open or close a panel (" + Object.keys(SHEETS).join(", ") + "), show the map or missions, switch the core (D mesh / E bot), " +
         "show or read the last reply, or show the waiting decision card. " +
         "page.open takes the administrator to a page, a Settings section, a tab or a card of Mint OS (page = one key of the page map: " + Object.keys(NAV_PAGES).join(", ") + "): " +
         "\"open the machine overview\" / «افتحلي الـ OS dashboard» -> os; \"agents and sessions\" -> agents; \"the Telegram agents\" -> telegram; \"users\" -> users; \"the voice settings\" -> settings.voice; " +

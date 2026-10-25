@@ -194,7 +194,7 @@ const local = http.createServer((req, res) => {
     check("  and reports heard_by (the model that answered) and a fallback", /out\.heard_by = heard\.transcriber/.test(src) && /out\.heard_fallback = heard\.fallback/.test(src));
     const server = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
     check("  the Test route names it: 'transcription by <model> … heard … in N ms'", /voice\.check\(\{ \.\.\.cfg, model: cfg\.live_model \}, \{ transcribe: voiceTranscribe\.transcribeFull \}\)/.test(server) && /transcription by \$\{out\.heard_by\}/.test(server) && /in \$\{out\.transcribe_ms\} ms/.test(server));
-    check("the live call and dictation use the selected transcriber; a live hand-off waits heard_wait_ms", /transcribe: voiceTranscribe\.transcribeFull, \/\/ the full-turn transcript/.test(server) && /transcribe: voiceTranscribe\.transcribeFull,\n\s+grounds: voiceGrounds/.test(server) && /heard_wait_ms/.test(fs.readFileSync(path.join(ROOT, "lib", "voice-live.js"), "utf8")));
+    check("the live call uses the selected transcriber (the console's dictation went with the console, 2026-10-25); a live hand-off waits heard_wait_ms", /transcribe: voiceTranscribe\.transcribeFull, \/\/ the full-turn transcript/.test(server) && !/async function voiceTranscribeRoute/.test(server) && /heard_wait_ms/.test(fs.readFileSync(path.join(ROOT, "lib", "voice-live.js"), "utf8")));
   }
 
   section("the transcript guard over what whisper writes");

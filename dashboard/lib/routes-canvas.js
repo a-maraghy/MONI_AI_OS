@@ -35,6 +35,34 @@ function mount(app, deps) {
       /* the audit is a nicety here */
     }
   };
+  /*
+   * Board learning off for everyone, once (the 2026-10-25 cleanup, the administrator's decision): every
+   * offered widget had been dismissed and none pinned. Recorded in settings ("migration.canvas_learn_off")
+   * so it runs once; afterwards a person may switch it on again under Appearance ▸ Board ▸ More.
+   */
+  const LEARN_OFF = "migration.canvas_learn_off";
+  (function migrateLearnOff() {
+    try {
+      if (!deps.db.getSetting || deps.db.getSetting(LEARN_OFF, null)) return;
+      const users = deps.db.listUsers ? deps.db.listUsers() : [];
+      let n = 0;
+      for (const u of users) {
+        if (!store.prefs(u.id).learn) continue;
+        store.setPrefs(u.id, { learn: false });
+        n++;
+        try {
+          deps.db.logLogin(null, u.username, "mint-canvas", "board learning off (cleanup, migration)");
+        } catch (_) {
+          /* the audit is a nicety here */
+        }
+      }
+      deps.db.setSetting(LEARN_OFF, JSON.stringify({ switched_off: n, at: new Date().toISOString() }), "migration");
+      if (n) console.log(`canvas: board learning switched off for ${n} account${n === 1 ? "" : "s"} (migration)`);
+    } catch (e) {
+      console.log("canvas: could not switch board learning off: " + e.message);
+    }
+  })();
+
   const view = (uid) => ({ prefs: store.prefs(uid), pins: store.pins(uid), learned: store.learned(uid), max_pins: store.MAX_PINS, version: W.VERSION });
 
   app.get("/mint-ai/api/canvas", ...G, (req, res) => res.json(view(req.me.id)));
@@ -146,13 +174,15 @@ function mount(app, deps) {
       "core",
       V.row(
         "Lock the layout",
-        "The Command Center's board follows the moment: the morning brief in the centre, a session that failed or waits long grows with a Fix it button, a quiet board when all is calm. Locked, it stays as you arranged it.",
+        "The Command Center's board follows the moment: the brief in the morning, a failed session with a Fix it button, a quiet board when all is calm. Locked, it stays as you arranged it.",
         V.form("/mint-ai/settings/canvas/lock", csrf, V.sw('name="on" value="1" aria-label="Lock the board\'s layout"', pr.locked, "Locked", "Follows the moment")),
         { scope: "you", id: "a-board" }
       ) +
+        V.more(
+          "More: learning",
         V.row(
           "Learn from what I keep",
-          `Kinds you pin often become standing tiles; kinds you always dismiss are no longer offered (MINT AI answers in words instead). ${pins.length} pinned now.`,
+          `Kinds you pin often become standing tiles; kinds you always dismiss stop being offered. ${pins.length} pinned now.`,
           V.form("/mint-ai/settings/canvas/learn", csrf, V.sw('name="on" value="1" aria-label="Learn from what I pin and dismiss"', pr.learn)),
           { scope: "you", id: "a-board-learn" }
         ) +
@@ -167,6 +197,8 @@ function mount(app, deps) {
             confirmYes: "Reset",
           }),
           { scope: "you", id: "a-board-reset" }
+        ),
+          { id: "a-board-more" }
         ),
       { id: "board" }
     );

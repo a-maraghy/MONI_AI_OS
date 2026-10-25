@@ -363,9 +363,9 @@ let WS_NOPONG;
     await userTurn(s, c, "open the agents dashboard");
     const cr = s.of("response.create").length;
     await respond(s, "I'll open the agents dashboard.", { calls: [{ name: "ui_action", args: { action: "page.open", page: "agents" } }] });
-    await until(() => spoke.includes("Opened Agents & sessions."), 1500);
+    await until(() => spoke.includes("Opened Agents overview."), 1500);
     check("\"I'll open the agents dashboard\" in the same response as the ui_action call is not cut", c.diag.trips.length === 0, JSON.stringify(c.diag.trips));
-    check("  after the page's ok, the server says \"Opened Agents & sessions.\" and asks the model for nothing more", spoke.includes("Opened Agents & sessions.") && s.of("response.create").length === cr, JSON.stringify(spoke));
+    check("  after the page's ok, the server says \"Opened Agents overview.\" and asks the model for nothing more", spoke.includes("Opened Agents overview.") && s.of("response.create").length === cr, JSON.stringify(spoke));
     clearInterval(t);
     c.close("test");
   }

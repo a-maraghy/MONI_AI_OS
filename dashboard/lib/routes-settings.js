@@ -60,6 +60,10 @@ function intIn(v, lo, hi) {
   return n >= lo && n <= hi ? n : null;
 }
 
+function usd(n) {
+  return "$" + (Number(n) || 0).toFixed(2);
+}
+
 function fmtTok(n) {
   n = Math.max(0, Math.round(Number(n) || 0));
   return n >= 1e6 ? (n / 1e6).toFixed(n >= 1e7 ? 0 : 1).replace(/\.0$/, "") + "M" : n >= 1e3 ? Math.round(n / 1e3) + "k" : String(n);
@@ -74,52 +78,66 @@ sections.general = async (req, res, deps) => {
   const csrf = res.locals.csrf;
   const ch = await sup(deps, req, "charter");
   const charter = ch && !ch._error && typeof ch.text === "string" ? ch : null;
+  const tz = p.tz || "Africa/Cairo";
+  // The read-only facts of its Claude session (and the clock), from the supervisor's config: they change
+  // only with a deploy, so they sit under one "Details" disclosure (2026-10-25 cleanup).
+  const details = V.more(
+    "Details: model, folder, version, time zone",
+    V.row("Model", null, V.ro(p.model)) +
+      V.row("Effort", null, V.ro(p.effort)) +
+      V.row("Permission mode", "Risky tools still come to you as a Decision.", V.ro(p.permission_mode)) +
+      V.row("Working folder", null, V.ro(p.cwd)) +
+      V.row("Claude Code", null, V.ro(p.cli_version || p.cli_pinned)) +
+      V.row("Time zone", "Used by the clock, the brief and every “today”.", V.ro(tz)),
+    { id: "g-details" }
+  );
   const body =
-    V.head(
-      "General",
-      `Who MINT AI is and how its own Claude session runs. Values tagged <span class="tag-s ro">config</span> live in the supervisor's config file: they are shown here so everything about MINT AI is in one place, and change with a deploy.`
-    ) +
+    V.head("General", "How MINT AI's own Claude session runs, and the desktop app.") +
     (st._error ? offline("MINT AI is not reachable (" + st._error + "): its values could not be read.") : "") +
     V.group(
-      "Identity",
+      "MINT AI",
       "core",
-      V.row("Name", "It speaks as MINT AI, in the first person — one voice, one identity.", V.ro(st.name || "MINT AI")) +
-        V.row(
-          "Charter",
-          "Its standing instructions (moni-ai/home/CLAUDE.md). It reads the live screen-action allowlist with ui_actions_list rather than a list in the charter.",
-          charter
-            ? `<button type="button" class="btn small" data-modal-open="m-charter">${icon("file", 14)} View charter</button>`
-            : `<span class="muted-num">not readable now</span>`
-        )
-    ) +
-    V.group(
-      "Its Claude session",
-      "cpu",
-      V.row("Model", null, V.ro(p.model)) +
-        V.row("Effort", null, V.ro(p.effort)) +
-        V.row("Permission mode", "Risky tools still come to you as a Decision.", V.ro(p.permission_mode)) +
-        V.row("Working folder", null, V.ro(p.cwd)) +
-        V.row("Claude Code", null, V.ro(p.cli_version || p.cli_pinned)) +
+      V.row(
+        "Charter",
+        "Its standing instructions (moni-ai/home/CLAUDE.md).",
+        charter ? `<button type="button" class="btn small" data-modal-open="m-charter">${icon("file", 14)} View charter</button>` : `<span class="muted-num">not readable now</span>`
+      ) +
         V.row(
           "Remote control",
           "Reach this session from the Claude apps.",
-          V.form("/mint-ai/settings/general/rc", csrf, V.sw('name="enabled" value="1"' + (st._error ? " disabled" : ""), !!rc.enabled), { noSave: false }),
+          V.form("/mint-ai/settings/general/rc", csrf, V.sw('name="enabled" value="1" aria-label="Remote control"' + (st._error ? " disabled" : ""), !!rc.enabled), { noSave: false }),
           { scope: "everyone", id: "g-rc" }
-        )
+        ) +
+        details
     ) +
     V.group(
       "Desktop app",
       "monitor",
       V.row(
         "Stay signed in",
-        `How long the MINT AI desktop app for Windows stays signed in after the password and Windows Hello; then it asks again. A browser keeps its 8 hours idle. ${DK.MIN_DAYS} to ${DK.MAX_DAYS} days.`,
+        `How long the Windows app stays signed in before it asks again. ${DK.MIN_DAYS} to ${DK.MAX_DAYS} days; a browser signs out after 8 idle hours.`,
         V.form(
           "/mint-ai/settings/general/desktop",
           csrf,
           `<input type="number" name="days" min="${DK.MIN_DAYS}" max="${DK.MAX_DAYS}" value="${esc(deps.desktopDays ? deps.desktopDays() : DK.DEFAULT_DAYS)}" aria-label="Days the desktop app stays signed in"><span class="unit">days</span>`
         ),
         { scope: "everyone", id: "g-desktop" }
-      ) + V.row("Download", "The installer, and how to trust its certificate on your computers.", `<a class="btn small" href="/desktop/">Open the download page</a>`)
+      ) + V.row("Download", "The installer, and how to trust its certificate.", `<a class="btn small" href="/desktop/">Open the download page</a>`)
+    ) +
+    V.group(
+      "Restart",
+      "restart",
+      V.row(
+        "Restart MINT AI",
+        "Ends the turn it is on. Everything it knows is kept, and hired sessions keep running.",
+        V.form("/mint-ai/settings/general/restart", csrf, `<button type="submit" class="btn small danger">${icon("restart", 14)} Restart…</button>`, {
+          confirm: "Restart MINT AI?",
+          confirmBody: "The turn it is working on ends. Everything in its ledger is kept, and hired sessions keep running. It is back in a few seconds.",
+          confirmYes: "Restart",
+          noSave: true,
+        }),
+        { id: "x-restart" }
+      )
     ) +
     (charter
       ? `<section class="cc-modal os wide" id="m-charter" role="dialog" aria-modal="true" aria-labelledby="m-charter-t" hidden>
@@ -135,32 +153,26 @@ sections.appearance = async (req, res, deps) => {
   const L = require("../public/cc-logic");
   const MV = require("./views-moniai");
   const core = L.normCore(req.me.mint_core);
-  const sessview = L.normSessView(req.me.sessions_view);
   const csrf = res.locals.csrf;
+  // Two cores since 2026-10-25 (A, B and C were retired; their users moved to E).
   const desc = {
-    A: "A sphere of dots that ripples when you talk, knots while it thinks and gathers into rings when it needs you.",
-    B: "A glassy fluid orb that melts into voice waves when it listens and speaks.",
-    C: "The dotted sphere with the brand spark at its heart.",
-    D: "A folding sphere of dots, cyan to magenta, with a glowing rim and a halo of dots. The default.",
+    D: "A folding sphere of dots, cyan to magenta. The default.",
     E: MV.BOT_DESC,
   };
   const cores = Object.keys(L.CORES)
     .map(
       (k) => `<label class="mint-core-opt" data-core-opt="${k}"><input type="radio" name="core" value="${k}"${k === core ? " checked" : ""}>
         <span class="mint-prev"><canvas data-prev-core="${k}" aria-hidden="true"></canvas></span>
-        <span class="mint-core-name"><b>${k}</b> · ${esc(L.CORES[k])}</span><span class="mint-core-desc">${esc(desc[k])}</span></label>`
-    )
-    .join("");
-  const sessDesc = { spheres: "Each live session is a small named sphere drifting round MINT AI.", orbit: "Each live session is a dot on a faint orbit round the core." };
-  const views = Object.keys(L.SESS_VIEWS)
-    .map(
-      (k) => `<label class="mint-sess-opt" data-sessview-opt="${k}"><input type="radio" name="sessions_view" value="${k}"${k === sessview ? " checked" : ""}>
-        <span class="mint-core-name"><b>${esc(L.SESS_VIEWS[k])}</b></span><span class="mint-core-desc">${esc(sessDesc[k])}</span></label>`
+        <span class="mint-core-name"><b>${esc(L.CORES[k])}</b></span><span class="mint-core-desc">${esc(desc[k] || "")}</span></label>`
     )
     .join("");
   const body =
-    V.head("Appearance", "How MINT AI and Mint OS look. The theme also sits in your avatar menu; an open Command Center can switch the core from its voice menu.") +
-    V.group("Theme", "monitor", V.row("Theme", null, `<div class="theme-seg" role="radiogroup" aria-label="Theme" data-theme-switch>${themeButtons()}</div>`, { scope: "this browser" })) +
+    V.head("Appearance", "How MINT AI looks to you.") +
+    V.group(
+      "Theme",
+      "monitor",
+      V.row("Theme", "Light, dark or the system's, from your avatar menu at the top right of every page.", `<span class="muted-num" id="a-theme-where">In your avatar menu</span>`, { scope: "this browser", id: "a-theme" })
+    ) +
     `<form method="post" action="/account/appearance" class="mint-appearance" id="mint-appearance" data-csrf="${esc(csrf)}"><input type="hidden" name="_csrf" value="${esc(csrf)}">` +
     V.group(
       "MINT AI core",
@@ -170,12 +182,7 @@ sections.appearance = async (req, res, deps) => {
         scope: "you",
         id: "a-core",
       }) +
-        V.row("Sessions view", "How live sessions are drawn round the core.", `<fieldset class="mint-sess-opts"><legend class="cc-sr">Sessions view</legend>${views}</fieldset>`, {
-          full: true,
-          scope: "you",
-          id: "a-sessions",
-        }) +
-        V.row("Bot", "Core E's face, head and colours: the sessions, the dock, the page flight and the desktop app follow them.", MV.botSettings({ core, botHead: req.me.mint_bot_head, botColors: req.me.mint_bot_colors, botFace: req.me.mint_bot_face, inRow: true }), {
+        V.row("Bot", "The bot's face, head and colours. Sessions, the dock and the desktop app follow them.", MV.botSettings({ core, botHead: req.me.mint_bot_head, botColors: req.me.mint_bot_colors, botFace: req.me.mint_bot_face, inRow: true }), {
           full: true,
           scope: "you",
           id: "a-bot",
@@ -230,14 +237,18 @@ function presenceSettings(voice) {
           { scope: "this browser", id: "mp-camera-row" }
         ) +
         V.row("Look and speak", "Face MINT AI and start talking: it listens without the talk key. While you face it, a microphone level meter runs on this computer (nothing is recorded or sent until you speak). A reply pauses when you look away and goes on when you look back.", sw("speak", "Look and speak"), { scope: "this browser", id: "mp-speak-row", tag: "" }).replace("</p></div>", "</p>" + voiceOff + "</div>") +
-        V.row(
-          "Show what it sees",
-          "If look and speak does not start, open this, face MINT AI's bot and talk: each condition shows a tick or a cross with its numbers. It uses the camera (and the microphone level) on this page only while it is open; numbers only, nothing is stored or sent.",
-          `<details class="mp-show" data-mp-show><summary>Show what it sees</summary><ul class="mp-checks" data-mp-checks aria-live="polite"></ul><p class="muted small mp-show-note" data-mp-show-note></p></details>`,
-          { scope: "this browser", id: "mp-show-row", full: true }
-        ) +
         V.row("Energy saver", "Let go of the camera while Windows' energy saver is on. On battery it looks less often.", sw("saver", "Release the camera in energy saver"), { scope: "this browser", id: "mp-saver-row" }) +
-        V.row("Now", null, `<span class="mp-state" data-mp-state>Off</span>`, { id: "mp-now" }) +
+        V.more(
+          "More: what it sees now",
+          V.row("Now", null, `<span class="mp-state" data-mp-state>Off</span>`, { id: "mp-now" }) +
+            V.row(
+              "Show what it sees",
+              "If look and speak does not start, open this, face the bot and talk: each check shows a tick or a cross with its numbers. Numbers only; nothing is stored or sent.",
+              `<details class="mp-show" data-mp-show><summary>Show what it sees</summary><ul class="mp-checks" data-mp-checks aria-live="polite"></ul><p class="muted small mp-show-note" data-mp-show-note></p></details>`,
+              { scope: "this browser", id: "mp-show-row", full: true }
+            ),
+          { id: "mp-more" }
+        ) +
         `<div class="lr set-note"><span class="muted small" id="mp-note" role="status"></span><noscript><span class="muted small">Eye contact needs JavaScript.</span></noscript></div>`
     ) +
     `</div>`;
@@ -260,7 +271,7 @@ function soundSettings(saved, csrf) {
       "voice",
       V.row(
         "Sounds",
-        "Small chirps when MINT AI or a session wakes, starts work, finishes, needs you or hits an error (each role has its own voice), a soft chime when an approval is waiting and another when a job is done. Never during a live call or while the voice speaks.",
+        "Short chirps when MINT AI or a session starts, finishes, needs you or fails, and a chime when an approval waits. Never during a call.",
         V.sw('name="snd_on" data-snd="on"', p.on),
         { scope: "you", id: "s-sound" }
       ) +
@@ -278,25 +289,20 @@ function soundSettings(saved, csrf) {
         ) +
         V.row(
           "This browser",
-          "The desktop app plays them (unless switched off above). A browser stays silent until you switch it on in that browser.",
+          "The desktop app plays them. A browser stays silent until you switch it on there.",
           V.sw('name="snd_browser" data-snd="browser"', false),
           { scope: "this browser", id: "s-sound-browser" }
         ) +
-        V.row(
-          "Listen",
-          "Plays at the volume above, whatever the switches and the hour say.",
+        V.row("Try a sound", "Plays at the volume above, whatever the switches and the hour say.", `<div class="snd-try">${chirp("approval", "Try a sound")}</div>`, { id: "s-sound-try" }) +
+        V.more(
+          "More: every sound",
           `<div class="snd-try">${chirp("approval", "Approval waiting")}${chirp("job", "Job done")}</div>` +
             `<div class="snd-try"><label class="snd-role"><span class="cc-sr">Whose voice</span><select data-snd-role aria-label="Whose voice">${roleOpts}</select></label>${chirp("wake", "Wake")}${chirp("think", "Starts")}${chirp("done", "Done")}${chirp("needs", "Needs you")}${chirp("error", "Error")}</div>`,
-          { id: "s-sound-try" }
+          { id: "s-sound-more" }
         ) +
         `<div class="lr set-note"><span class="muted small" id="mint-sound-note" role="status"></span><noscript><span class="muted small">The sounds and these settings need JavaScript.</span></noscript></div>`
     ) +
     `</div>`;
-}
-
-function themeButtons() {
-  const o = (v, ic, l) => `<button type="button" role="radio" data-theme-opt="${v}" aria-checked="${v === "system"}" title="${l}">${icon(ic, 14)}<span>${l}</span></button>`;
-  return o("system", "monitor", "System") + o("dark", "moon", "Dark") + o("light", "sun", "Light");
 }
 
 sections.sessions = async (req, res, deps) => {
@@ -313,7 +319,7 @@ sections.sessions = async (req, res, deps) => {
   const body =
     V.head(
       "Sessions & hiring",
-      "MINT AI may hire worker sessions on its own. Retiring one always needs your consent, and a session you keep is never retired. Your own sessions are never touched."
+      `MINT AI may hire worker sessions on its own. Retiring one always needs your consent, a session you keep is never retired, and your own sessions are never touched. <a href="/claude/sessions">Manage sessions</a>`
     ) +
     (off ? offline("MINT AI is not reachable (" + h._error + "): the limits could not be read.") : "") +
     V.group(
@@ -321,7 +327,7 @@ sections.sessions = async (req, res, deps) => {
       "agents",
       V.row(
         "Live sessions",
-        `Places round MINT AI — yours and hired together, MINT AI itself not counted.${off ? "" : ` Now: ${esc(h.live)} of ${esc(h.max_live)} in use · ${esc(h.hired)} hired.`}`,
+        `Yours and hired together; MINT AI itself is not counted.${off ? "" : ` Now ${esc(h.live)} of ${esc(h.max_live)} in use, ${esc(h.hired)} hired.`} It starts them only in ${((h && h.cwd_roots) || ["/root/moni", "/root"]).map((r) => `<code>${esc(r)}</code>`).join(" or ")}, never in a hidden folder.`,
         V.form(
           "/mint-ai/settings/sessions/limits",
           csrf,
@@ -331,7 +337,7 @@ sections.sessions = async (req, res, deps) => {
       ) +
         V.row(
           "Hires per hour",
-          "A burst guard.",
+          "Stops a burst of hires.",
           V.form(
             "/mint-ai/settings/sessions/limits",
             csrf,
@@ -341,7 +347,7 @@ sections.sessions = async (req, res, deps) => {
         ) +
         V.row(
           "Permission mode for hired sessions",
-          "The destructive-action gate always applies; bypass is never allowed. A session already running keeps the mode it started with.",
+          "The gate for destructive actions always applies. A running session keeps the mode it started with.",
           V.form(
             "/mint-ai/settings/sessions/limits",
             csrf,
@@ -350,20 +356,7 @@ sections.sessions = async (req, res, deps) => {
               .join("")}</select>`
           ),
           { scope: "everyone", id: "s-perm-mode" }
-        ) +
-        V.row("Retiring a hired session", "Standing rule: MINT AI asks, you decide. The transcript is always kept.", `<span class="pill neutral">always asks you</span>`) +
-        V.row(
-          "Folders it may start them in",
-          "Never a hidden folder such as /root/.ssh.",
-          `<div class="chips-r">${((h && h.cwd_roots) || ["/root/moni", "/root"]).map((r) => `<span class="tag-s">${esc(r)}</span>`).join("")}</div>`
         )
-    ) +
-    V.group(
-      "Where to manage them",
-      "activity",
-      V.linkRow("Sessions", "Every session on this machine — live, all and archived — with Keep, Retire and Stop.", "/claude/sessions") +
-        V.linkRow("Command Center ▸ Sessions", "The same, as spheres round MINT AI.", "/mint-ai#sessions") +
-        V.linkRow("Token caps", "A daily cap per session, and what happens at it.", "/mint-ai/settings/usage#u-caps")
     );
   return { body };
 };
@@ -440,49 +433,53 @@ sections.screen = async (req, res, deps) => {
   const body =
     V.head(
       "Screen control",
-      "What MINT AI may do on your screen when you ask. It reads this allowlist at run time; nothing on a page is ever clicked for you, and changing a preference still waits for your confirm."
+      "What MINT AI may do on your screen when you ask. It never clicks anything on a page for you, and a change to a preference waits for your confirm."
     ) +
     V.group(
-      "Acts at once — with a note and 60 s undo",
+      "Screen actions",
       "check",
-      V.row("Allow screen actions", "Off keeps MINT AI to words only.", V.form("/mint-ai/settings/screen/actions", csrf, V.sw('name="on" value="1"', on)), { scope: "you", id: "sc-actions" }) +
-        V.row("Actions", null, `<div class="chips-r">${TIER1.map((x) => `<span class="tag-s">${esc(x)}</span>`).join("")}</div>`, { full: true })
-    ) +
-    V.group(
-      "Asks you first",
-      "shield",
       V.row(
-        "Preference changes",
-        "Applied only after you confirm; the server holds the change until then.",
-        `<div class="chips-r"><span class="tag-s">theme</span><span class="tag-s">voice persona</span><span class="tag-s">voice (for everyone)</span></div>`
-      )
+        "Allow screen actions",
+        "It acts at once, with a note and 60 seconds to undo. Off keeps MINT AI to words.",
+        V.form("/mint-ai/settings/screen/actions", csrf, V.sw('name="on" value="1" aria-label="Allow screen actions"', on)),
+        { scope: "you", id: "sc-actions" }
+      ) +
+        V.more(
+          "What it may do",
+          `<div class="set-more-text"><p>At once: ${TIER1.map((x) => esc(x.charAt(0).toLowerCase() + x.slice(1))).join("; ")}.</p><p>Only after you confirm: the theme, the voice persona, and the voice for everyone.</p></div>`,
+          { id: "sc-what" }
+        )
     ) +
     V.group(
       "Pages it may open",
       "external",
-      `<div class="lr"><div><b>Page map</b><span class="d">Built from the routes, settings sections, Command Center sheets, tabs and card anchors in the source — a new page or section becomes openable without a code change.${
-        push && push.ok === false ? ` <span class="pill warn">MINT AI has not been told yet: ${esc(push.error || "")}</span>` : ""
+      `<div class="lr"><div><b>${st ? `${nAllowed} of ${entries.length} pages allowed` : "Not scanned yet"}</b><span class="d" id="reg-stamp">${st ? "Last scanned " + esc(stampOf(st.at)) + (st.by ? " by " + esc(st.by) : "") + "." : "Until the first scan it uses its built-in pages."}${
+        push && push.ok === false ? ` <span class="state warn">MINT AI has not been told yet: ${esc(push.error || "")}</span>` : ""
       }</span></div>
-      <div class="gap8"><span class="muted-num" id="reg-stamp">${st ? "last scanned " + esc(stampOf(st.at)) + (st.by ? " · " + esc(st.by) : "") : "never scanned"}</span>
-      <form method="post" action="/mint-ai/settings/screen/rescan" class="set-form" data-rescan><input type="hidden" name="_csrf" value="${esc(csrf)}"><button type="submit" class="btn small primary">${icon(
+      <form method="post" action="/mint-ai/settings/screen/rescan" class="set-form" data-rescan><input type="hidden" name="_csrf" value="${esc(csrf)}"><button type="submit" class="btn small">${icon(
         "reindex",
         14
-      )} Rescan pages</button></form></div></div>
+      )} Rescan pages</button></form></div>
       <div id="scan-live" hidden><div class="scanbar"><i id="scan-bar"></i></div><div class="scan-log" id="scan-log"></div></div>
-      ${st && st.diff ? `<div class="gh gh-sub">${icon("activity", 16)}Last scan<span class="aside">${esc(stampOf(st.at))}</span></div>${diffHtml(st.diff)}` : ""}
-      ${V.row(
-        "New entries",
-        "What a newly found page or anchor starts as.",
-        V.form("/mint-ai/settings/screen/policy", csrf, `<select name="policy" aria-label="New entries">${V.opt("auto", "Allowed at once (default)", pm ? pm.policy() : "auto")}${V.opt("wait", "Off until I allow it", pm ? pm.policy() : "auto")}</select>`),
-        { id: "sc-policy" }
-      )}
-      ${
-        st
-          ? `<div class="tree-tools"><input type="search" placeholder="Filter pages, sections, anchors…" data-reg-q aria-label="Filter the page map"><span class="sp"></span><span class="muted-num">${entries.length} entries · ${nAllowed} allowed</span>
-            <form method="post" action="/mint-ai/settings/screen/allow-all" class="set-form" data-live><input type="hidden" name="_csrf" value="${esc(csrf)}"><button type="submit" name="all" value="1" class="btn small">Allow all</button></form></div>
-            <div class="tree" id="reg-tree">${treeHtml(entries, allow, st.new_keys, csrf)}</div>`
-          : `<div class="lr"><div><b>Not scanned yet</b><span class="d">page.open uses its built-in pages until the first scan.</span></div><span class="pill warn">never scanned</span></div>`
-      }`,
+      ${V.more(
+        "Manage the page map",
+        `<p class="set-more-text">Built from the routes, settings sections, Command Center sheets, tabs and card anchors in the source, so a new page becomes openable without a code change.</p>
+        ${st && st.diff ? `<div class="gh gh-sub">${icon("activity", 16)}Last scan<span class="aside">${esc(stampOf(st.at))}</span></div>${diffHtml(st.diff)}` : ""}
+        ${V.row(
+          "New entries",
+          "What a newly found page starts as.",
+          V.form("/mint-ai/settings/screen/policy", csrf, `<select name="policy" aria-label="New entries">${V.opt("auto", "Allowed at once (default)", pm ? pm.policy() : "auto")}${V.opt("wait", "Off until I allow it", pm ? pm.policy() : "auto")}</select>`),
+          { id: "sc-policy" }
+        )}
+        ${
+          st
+            ? `<div class="tree-tools"><input type="search" placeholder="Filter pages, sections, anchors…" data-reg-q aria-label="Filter the page map"><span class="sp"></span><span class="muted-num">${entries.length} entries · ${nAllowed} allowed</span>
+              <form method="post" action="/mint-ai/settings/screen/allow-all" class="set-form" data-live><input type="hidden" name="_csrf" value="${esc(csrf)}"><button type="submit" name="all" value="1" class="btn small">Allow all</button></form></div>
+              <div class="tree" id="reg-tree">${treeHtml(entries, allow, st.new_keys, csrf)}</div>`
+            : ""
+        }`,
+        { id: "sc-map", open: !!(st && st.diff && (st.diff.added.length || st.diff.renamed.length || st.diff.removed.length) && st.at && Date.now() - Date.parse(st.at) < 5 * 60 * 1000) }
+      )}`,
       { id: "sc-registry" }
     );
   return { body, assets: ["mint-screen.js"] };
@@ -490,12 +487,11 @@ sections.screen = async (req, res, deps) => {
 
 sections.approvals = async (req, res, deps) => {
   const csrf = res.locals.csrf;
-  const [t, w, o] = await Promise.all([sup(deps, req, "approval-timeout"), sup(deps, req, "watchers"), sup(deps, req, "orders")]);
+  const [t, w] = await Promise.all([sup(deps, req, "approval-timeout"), sup(deps, req, "watchers")]);
   const watchers = (w && w.watchers) || [];
-  const briefing = ((o && o.orders) || []).find((x) => x.seed_key === "morning-briefing") || null;
   const off = t._error || w._error;
   const body =
-    V.head("Approvals & automations", "What MINT AI watches on its own, what it runs on a schedule, and how long it waits for you.") +
+    V.head("Approvals & automations", "How long MINT AI waits for you, and what it checks on its own.") +
     (off ? offline("MINT AI is not reachable (" + off + "): these values could not be read.") : "") +
     V.group(
       "Approvals",
@@ -509,35 +505,30 @@ sections.approvals = async (req, res, deps) => {
           `<input type="number" name="seconds" min="30" max="3600" value="${esc(t.seconds == null ? 300 : t.seconds)}" aria-label="Seconds to wait"${t._error ? " disabled" : ""}><span class="unit">seconds</span>`
         ),
         { scope: "everyone", id: "p-timeout" }
-      ) + V.row("Approval rules", "Pre-answered allow / ask / deny patterns for the gate.", `<a class="btn small" href="/mint-ai#rules">Rules &amp; watchers</a>`)
+      ) + V.row("Approval rules", "Answers given in advance: allow, ask or deny, by pattern.", `<a class="btn small" href="/mint-ai#rules">Rules &amp; alerts</a>`)
     ) +
     V.group(
-      "Watchers",
+      "System alerts",
       "eye",
-      watchers.length
-        ? watchers
-            .map(
-              (x) =>
-                `<div class="lr"><div><b>${esc(x.name)}</b><span class="d">${esc(x.description || "")}</span></div>${V.form(
-                  "/mint-ai/settings/approvals/watcher/" + encodeURIComponent(x.key),
-                  csrf,
-                  V.sw('name="enabled" value="1" aria-label="' + esc(x.name) + '"', !!x.enabled)
-                )}</div>`
-            )
-            .join("")
-        : `<div class="lr"><div><span class="d">No watchers to show${w._error ? " — MINT AI is not reachable" : ""}.</span></div></div>`,
+      `<div class="lr"><div><span class="d">Checks MINT AI runs on the server and tells you about. Your own watchers are in <a href="/mint-ai/settings/proactive">Briefs &amp; watchers</a>.</span></div></div>` +
+        (watchers.length
+          ? watchers
+              .map(
+                (x) =>
+                  `<div class="lr"><div><b>${esc(x.name)}</b><span class="d">${esc(x.description || "")}</span></div>${V.form(
+                    "/mint-ai/settings/approvals/watcher/" + encodeURIComponent(x.key),
+                    csrf,
+                    V.sw('name="enabled" value="1" aria-label="' + esc(x.name) + '"', !!x.enabled)
+                  )}</div>`
+              )
+              .join("")
+          : `<div class="lr"><div><span class="d">No system alerts to show${w._error ? ": MINT AI is not reachable" : ""}.</span></div></div>`),
       { id: "p-watchers" }
     ) +
     V.group(
-      "Standing orders",
+      "Schedules",
       "clock",
-      (briefing
-        ? `<div class="lr"><div><b>${esc(briefing.name)}</b><span class="d">${esc(briefing.label || "")} · a read-only report on this VPS</span></div>${V.form(
-            "/mint-ai/settings/approvals/briefing",
-            csrf,
-            `<input type="hidden" name="order_id" value="${esc(briefing.id)}">` + V.sw('name="enabled" value="1" aria-label="Morning briefing"', !briefing.paused)
-          )}</div>`
-        : "") + `<div class="lr"><div><span class="d">Add, edit or run orders now from the Command Center.</span></div><a class="btn small" href="/mint-ai#orders">Standing orders</a></div>`,
+      `<div class="lr"><div><span class="d">Standing orders run on a schedule. Add, edit, pause or run them from the Command Center.</span></div><a class="btn small" href="/mint-ai#rules">Rules &amp; alerts</a></div>`,
       { id: "p-orders" }
     );
   return { body };
@@ -577,10 +568,17 @@ sections.usage = async (req, res, deps) => {
       }</div></td></tr>`;
   };
   const d = c.default || { cap: null, at: "warn" };
+  let vs = null;
+  try {
+    const u = deps.voiceSpend ? deps.voiceSpend() : null;
+    vs = u && !u.error && u.today ? u : null;
+  } catch (_) {
+    vs = null;
+  }
   const body =
     V.head(
-      "Usage & budget",
-      "What MINT AI and its sessions spend, in tokens. The live breakdown stays in the Command Center's Usage panel; the limits live here. Tokens count input, output and cache, as the Usage panel shows them; the day is Cairo's."
+      "Usage & token caps",
+      "What MINT AI and its sessions use, in tokens, and the daily caps. Tokens count input, output and cache; the day is Cairo's."
     ) +
     (off ? offline("MINT AI is not reachable (" + c._error + "): the caps could not be read.") : "") +
     V.group(
@@ -605,30 +603,11 @@ sections.usage = async (req, res, deps) => {
       </tbody></table></div>`,
       { id: "u-caps" }
     ) +
-    V.group("See the numbers", "activity", V.linkRow("Usage panel", "Tokens today by session, and the plan windows Claude Code shows.", "/mint-ai#cost"));
-  return { body };
-};
-
-sections.advanced = async (req, res, deps) => {
-  const st = await sup(deps, req, "status");
-  const tz = (st && st.process && st.process.tz) || "Africa/Cairo";
-  const body =
-    V.head("Advanced", "Rarely changed.") +
-    V.group("Clock", "clock", V.row("Time zone", "Used by the Command Center clock, the briefing and every “today”.", V.ro(tz))) +
     V.group(
-      "Restart",
-      "restart",
-      V.row(
-        "Restart MINT AI",
-        "Ends the current turn; the ledger keeps everything. Hired sessions keep running.",
-        V.form("/mint-ai/settings/advanced/restart", res.locals.csrf, `<button type="submit" class="btn small danger">${icon("restart", 14)} Restart…</button>`, {
-          confirm: "Restart MINT AI?",
-          confirmBody: "The turn it is working on ends; everything in the ledger is kept, and hired sessions keep running. It is back in a few seconds.",
-          confirmYes: "Restart",
-          noSave: true,
-        }),
-        { id: "x-restart" }
-      )
+      "See the numbers",
+      "activity",
+      V.row("Voice spend", "From the usage OpenAI reports, at today's prices.", `<span class="muted-num" id="voice-spend">${vs ? `today ${esc(usd(vs.today.total))} · this month ${esc(usd(vs.month_totals.total))}` : "not available"}</span>`, { id: "u-voice-spend" }) +
+        V.linkRow("Usage panel", "Tokens today by session, and Claude Code's plan windows.", "/mint-ai#cost")
     );
   return { body };
 };
@@ -655,6 +634,9 @@ function mount(app, deps) {
     if (!first) return res.status(403).send(require("./views").error("Not allowed", "Your role does not include MINT AI's Settings."));
     res.redirect(302, "/mint-ai/settings/" + first[0]);
   });
+
+  // Advanced was merged into General (2026-10-25): old links land there.
+  app.get("/mint-ai/settings/advanced", requireAuth, (req, res) => res.redirect(302, "/mint-ai/settings/general#x-restart"));
 
   app.get("/mint-ai/settings/:section", requireAuth, (req, res, next) => {
     const key = req.params.section;
@@ -821,29 +803,13 @@ function mount(app, deps) {
     try {
       await moniai.call("watcher-set", { key, enabled }, req.me.username);
       audit(req, `watcher ${key} ${enabled ? "on" : "off"}`);
-      reply(req, res, "approvals", { msg: `Watcher ${enabled ? "on" : "off"}.`, anchor: "p-watchers" });
+      reply(req, res, "approvals", { msg: `System alert ${enabled ? "on" : "off"}.`, anchor: "p-watchers" });
     } catch (e) {
       reply(req, res, "approvals", { err: "Not changed: " + e.message, anchor: "p-watchers" });
     }
   });
-  app.post("/mint-ai/settings/approvals/briefing", requireAuth, guard("approvals"), requireCsrf, async (req, res) => {
-    let id;
-    try {
-      id = moniai.idOf(req.body.order_id, "standing order");
-    } catch (e) {
-      return reply(req, res, "approvals", { err: e.message, anchor: "p-orders" });
-    }
-    const on = req.body.enabled === "1" || req.body.enabled === "on";
-    try {
-      await moniai.call("order-pause", { order_id: id, paused: !on }, req.me.username);
-      audit(req, `${on ? "resume" : "pause"} standing order ${id}`);
-      reply(req, res, "approvals", { msg: `The morning briefing is ${on ? "on" : "paused"}.`, anchor: "p-orders" });
-    } catch (e) {
-      reply(req, res, "approvals", { err: "Not changed: " + e.message, anchor: "p-orders" });
-    }
-  });
 
-  /* ---- Usage & budget ---- */
+  /* ---- Usage & token caps ---- */
   app.post("/mint-ai/settings/usage/warn", requireAuth, guard("usage"), requireCsrf, async (req, res) => {
     const n = intIn(req.body.warn_pct, 50, 100);
     if (n === null) return reply(req, res, "usage", { err: "Warn at: 50 to 100 %.", anchor: "u-warn" });
@@ -899,16 +865,18 @@ function mount(app, deps) {
     }
   });
 
-  /* ---- Advanced ---- */
-  app.post("/mint-ai/settings/advanced/restart", requireAuth, guard("advanced"), requireCsrf, async (req, res) => {
+  /* ---- Restart (General; it was the Advanced section until 2026-10-25, whose URLs still work) ---- */
+  const restart = async (req, res) => {
     try {
       audit(req, "restarted MINT AI");
       await moniai.call("restart", {}, req.me.username, { timeout: 90000 });
-      reply(req, res, "advanced", { msg: "MINT AI restarted." });
+      reply(req, res, "general", { msg: "MINT AI restarted.", anchor: "x-restart" });
     } catch (e) {
-      reply(req, res, "advanced", { err: "Not restarted: " + e.message });
+      reply(req, res, "general", { err: "Not restarted: " + e.message, anchor: "x-restart" });
     }
-  });
+  };
+  app.post("/mint-ai/settings/general/restart", requireAuth, guard("general"), requireCsrf, restart);
+  app.post("/mint-ai/settings/advanced/restart", requireAuth, guard("general"), requireCsrf, restart);
 }
 
 module.exports = { mount, sections, marks, reply, wantsJson, sup, capPill, fmtTok, uiActionsEnabled };

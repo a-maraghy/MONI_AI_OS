@@ -1583,19 +1583,8 @@ let WS_BASE;
     check("  the old code that relabelled the push-to-talk tags during a call is gone", !/cc-voice-mode"\)\.textContent = "Live/.test(page));
   }
 
-  section("the evaluation harness (lib/voice-live-eval.js)");
-  {
-    const ev = require(path.join(ROOT, "lib", "voice-live-eval.js"));
-    check("20 phrases: Egyptian, MSA, English and mixed; status, an action, stop commands, small talk", ev.PHRASES.length === 20 && ["egyptian", "msa", "english", "mixed"].every((l) => ev.PHRASES.some((p) => p.lang === l)) && ["status", "action", "stop", "small talk"].every((k) => ev.PHRASES.some((p) => p.kind === k)));
-    check("the stop phrases are stop commands, and no other phrase is", ev.PHRASES.every((p) => VoiceStop.heard(p.text) === (p.kind === "stop")));
-    check("three models and two voices by default", ev.MODELS.join() === "gpt-realtime-mini,gpt-realtime-2.1-mini,gpt-realtime-2.1" && ev.VOICES.join() === "marin,cedar");
-    check("CER: 0 for the same words however spelled, 1 for nothing", ev.cer("عايز أعرف أودو شغال", "عايز اعرف اودو شغال.") === 0 && ev.cer("abc", "") === 1 && ev.cer("abcd", "abxd") === 0.25);
-    check("dialect: Egyptian answered in MSA is flagged", ev.dialectNote("egyptian", "هل يمكنك أن تخبرني ماذا تريد الآن؟").ok === false && ev.dialectNote("egyptian", "أودو شغال والديسك مش مليان خالص.").ok === true && ev.dialectNote("english", "أودو شغال").ok === false);
-    const w = live.wav(Buffer.alloc(4800));
-    check("readWav takes the page's PCM16 mono 24 kHz and refuses anything else", ev.readWav(w).length === 4800 && (() => { try { ev.readWav(Buffer.from("nope")); return false; } catch (e) { return true; } })());
-    const sum = ev.summarise([{ id: 1, model: "m", voice: "v", first_audio_ms: 900, hold_ms: 100, cer_session: 0.1, cer_turn: 0.05, trips: ["promise"], handoff: true, handoff_expected: true, stopped: false, stop_expected: false, dialect_ok: true, usd: 0.01 }]);
-    check("the summary: one row per model and voice, with the table", sum.length === 1 && sum[0].config === "m · v" && sum[0].handoffs_right === 100 && /\| m · v \| 1 \| 900 \|/.test(ev.tableMarkdown(sum)));
-  }
+  section("the evaluation harness was removed (2026-10-25 cleanup)");
+  check("lib/voice-live-eval.js and its page are gone", ["lib/voice-live-eval.js", "lib/views-voice-eval.js", "public/voice-eval.js"].every((f) => !require("fs").existsSync(path.join(ROOT, f))));
 
   /* ============================================================ the route */
 
@@ -1628,7 +1617,7 @@ let WS_BASE;
     check("voice off: the upgrade is refused (403)", r.status === 403, r.status);
     // Switch it on in the SCRATCH database, through Settings ▸ Voice.
     const set = await s.req("GET", "/mint-ai/settings/voice", { cookie: A.cookie });
-    check("Settings ▸ Voice has the one switch, off", /id="voice-master"/.test(set.body) && /class="set-sec voice-off"/.test(set.body) && /Voice is disabled/.test(set.body));
+    check("Settings ▸ Voice has the one switch, off", /id="voice-master"/.test(set.body) && /class="set-sec voice-off"/.test(set.body) && /Voice is off/.test(set.body));
     check("  and the live audio choices: speakers mode and far-field noise reduction by default", /name="duplex" value="speakers" checked/.test(set.body) && /<option value="far_field" selected>/.test(set.body));
     const stok = s.csrfOf(set.body);
     r = await s.req("POST", "/mint-ai/settings/voice/enabled", { cookie: A.cookie, body: new URLSearchParams({ _csrf: stok, enabled: "1" }).toString() });
@@ -1709,20 +1698,9 @@ let WS_BASE;
     await until(() => r.got.some((m) => m.type === "ready"), 3000);
     check("  any other ?turn is the live conversation as always", r.got.some((m) => m.type === "ready" && m.turn === "vad") && lastSession().session.audio.input.turn_detection.type === "server_vad");
     r.ws.close();
-    // The evaluation page and its API: administrators only; a recording must be PCM16 mono 24 kHz.
-    const evp = await s.req("GET", "/mint-ai/voice-eval", { cookie: A.cookie });
-    check("the evaluation page: 20 phrases, no inline script", evp.status === 200 && (evp.body.match(/data-rec="\d+"/g) || []).length === 20 && !/<script>(?!\s*<\/script>)[^<]+<\/script>/.test(evp.body) && /voice-eval\.js\?v=/.test(evp.body));
-    check("  not for a non-administrator", (await s.req("GET", "/mint-ai/voice-eval", { cookie: O.cookie })).status === 403);
-    const up = (who, t, body) => s.req("POST", "/mint-ai/api/voice-eval/clip", { cookie: who.cookie, headers: { "X-CSRF-Token": t, Accept: "application/json" }, body });
-    const clip = live.wav(Buffer.alloc(48000)).toString("base64");
-    check("  a recording without the CSRF token is refused", (await up(A, "bad", { id: 3, data: clip })).status === 403);
-    check("  a non-administrator cannot upload", (await up(O, otok, { id: 3, data: clip })).status === 403);
-    check("  something that is not PCM16 24 kHz WAV is refused", (await up(A, tok, { id: 3, data: Buffer.from("RIFF....WAVEjunk").toString("base64") })).status === 400);
-    check("  a one-second recording is saved", (await up(A, tok, { id: 3, data: clip })).status === 200);
-    const st = JSON.parse((await s.req("GET", "/mint-ai/api/voice-eval/status", { cookie: A.cookie })).body);
-    check("  and listed, per user, in a 0700 folder", st.clips.join() === "3" && (require("fs").statSync(path.join(s.data, "voice-eval")).mode & 0o777) !== undefined);
-    const runBad = await s.req("POST", "/mint-ai/api/voice-eval/run", { cookie: A.cookie, headers: { "X-CSRF-Token": tok, Accept: "application/json" }, body: { models: ["gpt-5"], voices: ["marin"] } });
-    check("  a run with an unknown model is refused", runBad.status === 400);
+    // The evaluation page and its API were removed (2026-10-25): their URLs answer 404 now.
+    check("the old evaluation page is gone (404)", (await s.req("GET", "/mint-ai/voice-eval", { cookie: A.cookie })).status === 404);
+    check("  and so is its API", (await s.req("GET", "/mint-ai/api/voice-eval/status", { cookie: A.cookie })).status === 404);
 
     r = await open(A.cookie, "?csrf=" + tok);
     await until(() => r.got.some((m) => m.type === "ready"), 3000);

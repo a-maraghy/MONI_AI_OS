@@ -152,6 +152,34 @@ const TABLE = { v: 1, kind: "table", title: "Disk", blocks: [{ type: "table", co
     if (s) s.stop();
     sup.close();
   }
+
+  section("3. board learning switched off once (the 2026-10-25 cleanup)");
+  {
+    const Database = require("better-sqlite3");
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "cv-mig-"));
+    const raw = new Database(path.join(tmp, "m.db"));
+    const settings = new Map();
+    const log = [];
+    const users = [{ id: 1, username: "amaraghy" }, { id: 2, username: "other" }, { id: 3, username: "off-already" }];
+    const fakeDb = {
+      db: raw,
+      getSetting: (k, d) => (settings.has(k) ? settings.get(k) : d),
+      setSetting: (k, v) => settings.set(k, v),
+      listUsers: () => users,
+      logLogin: (ip, u, outcome, detail) => log.push([u, outcome, detail]),
+    };
+    const pre = Store.create(raw, {});
+    pre.setPrefs(1, { locked: true });
+    pre.setPrefs(3, { learn: false });
+    const app = { get() {}, post() {} };
+    const R = require(path.join(ROOT, "lib", "routes-canvas.js"));
+    const m1 = R.mount(app, { db: fakeDb, apiGuard: [], apiWrite: [], requireAuth: () => {}, requireCsrf: () => {} });
+    check("every account that was learning is switched off; the lock and the rest kept", m1.store.prefs(1).learn === false && m1.store.prefs(1).locked === true && m1.store.prefs(2).learn === false && m1.store.prefs(3).learn === false);
+    check("  audited per account changed (2), recorded in settings with the count", log.filter((l) => /board learning off \(cleanup, migration\)/.test(l[2])).length === 2 && JSON.parse(settings.get("migration.canvas_learn_off")).switched_off === 2, JSON.stringify(log));
+    m1.store.setPrefs(2, { learn: true });
+    const m2 = R.mount(app, { db: fakeDb, apiGuard: [], apiWrite: [], requireAuth: () => {}, requireCsrf: () => {} });
+    check("  runs once: switching it back on afterwards sticks across a restart", m2.store.prefs(2).learn === true && log.length === 2);
+  }
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 })().catch((e) => { console.error(e); process.exit(1); });

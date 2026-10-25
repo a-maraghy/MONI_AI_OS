@@ -18,7 +18,7 @@
  * went backwards -> refused; the authenticator code as the fallback (wrong,
  * reused and too many codes refused); an address off the passkey allow-list
  * gets the code only; the card is held while Hello runs; decisions, rules,
- * retire, resume (JSON and the plain forms) and the console's Allow; an older
+ * retire, resume (JSON and the plain forms); the classic chat's Allow is gone; an older
  * supervisor that does not know `verified` still gets the approve.
  */
 const scratch = require("./scratch-server.cjs"); // first: sets MONI_DATA_DIR
@@ -333,10 +333,10 @@ function makeAuthenticator(rpId) {
     r = await s.req("POST", "/mint-ai/settings/usage/resume", { cookie: who.cookie, headers: { Host: A, "X-Requested-With": "fetch", Accept: "application/json" }, body: form({ _csrf: formCsrf, key: "worker-c", step_up: JSON.stringify({ totp: await freshCode() }) }) });
     check("  with the code -> resumed", r.status === 200 && last("budget-resume").key === "worker-c" && last("budget-resume").verified === "totp", r.status + " " + r.body.slice(0, 120));
 
-    // The classic console is hidden (2026-09-30): every /console URL goes to the Command Center,
-    // so its Allow cannot be reached at all; its handler is wrapped anyway, for when it comes back.
+    // The classic chat is retired (2026-10-25): every /console URL goes to the Command Center
+    // and its permission handler is removed with the rest of its code.
     r = await s.req("POST", "/console/1/permission", { cookie: who.cookie, headers: { Host: A, Accept: "application/json" }, body: form({ _csrf: formCsrf, request_id: "r1", decision: "allow" }) });
-    check("the console's Allow is unreachable (302 to /mint-ai) and its handler is wrapped", r.status === 302 && r.headers.location === "/mint-ai" && /"\/console\/:id\/permission", requireAuth, requirePerm\("console\.use"\), requireCsrf, consoleAllowStepUp,/.test(fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8")), r.status + " " + r.headers.location);
+    check("the classic chat's Allow is gone (302 to /mint-ai) and no handler is left behind", r.status === 302 && r.headers.location === "/mint-ai" && !/\/console\/:id\/permission/.test(fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8")), r.status + " " + r.headers.location);
 
     console.log("\ntoo many wrong codes");
     before = ops("approve").length;
@@ -364,7 +364,7 @@ function makeAuthenticator(rpId) {
     /* ----------------------------------------------------------- the page side --- */
     console.log("\nthe page");
     const src = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
-    check("every Approve-type route is wrapped", ["approvalStepUp", "decisionStepUp", "ruleStepUp(\"create\")", "ruleStepUp(\"update\")", "ruleStepUp(\"delete\")", "retireStepUp()", "retireStepUp(liveStepRefuse)", "liveResumeStepUp", "consoleAllowStepUp"].every((k) => src.includes(", " + k + ",") || src.includes(" " + k + ", async") || src.includes(", " + k + ", (")));
+    check("every Approve-type route is wrapped", ["approvalStepUp", "decisionStepUp", "ruleStepUp(\"create\")", "ruleStepUp(\"update\")", "ruleStepUp(\"delete\")", "retireStepUp()", "retireStepUp(liveStepRefuse)", "liveResumeStepUp"].every((k) => src.includes(", " + k + ",") || src.includes(" " + k + ", async") || src.includes(", " + k + ", (")));
     check("no setting can turn it off", !/STEPUP_OFF|stepup_disabled|skipStepUp/i.test(src + fs.readFileSync(path.join(__dirname, "..", "lib", "stepup.js"), "utf8")));
     const cc = fs.readFileSync(path.join(__dirname, "..", "public", "moni-ai.js"), "utf8");
     check("the Command Center's api() asks on a 428 and sends again with the proof", /r\.status === 428 && j\.step_up && !opts\.stepped && window\.MintStepUp/.test(cc));

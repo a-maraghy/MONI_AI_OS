@@ -91,23 +91,6 @@ const PERMISSION_GROUPS = [
     ],
   },
   {
-    key: "console",
-    label: "MINT AI console",
-    blurb: "Chatting with Claude Code from inside the panel.",
-    perms: [
-      {
-        key: "console.use",
-        label: "Use the console",
-        hint: "Confined to the agent workspace, running as the agent account.",
-      },
-      {
-        key: "console.full",
-        label: "Run it against the whole server",
-        hint: "Root, anywhere, tool permissions bypassed. This is shell access to the host.",
-      },
-    ],
-  },
-  {
     key: "moniai",
     label: "MINT AI",
     blurb:
@@ -200,7 +183,6 @@ const IMPLIES = {
   "keys.pair": ["keys.view"],
   "users.manage": ["users.view", "roles.view"],
   "roles.manage": ["roles.view"],
-  "console.full": ["console.use"],
   "claude.memory.write": ["claude.memory.read"],
   "claude.memory.manage": ["claude.memory.write", "claude.memory.read"],
   "claude.sessions.manage": ["claude.sessions.view"],
@@ -217,6 +199,13 @@ const RENAMED = {
   "devices.view": "keys.pair",
   "devices.manage": "keys.pair",
 };
+
+/**
+ * Permissions that were removed with their feature: dropped from stored roles at
+ * startup (lib/db.js). The classic chat's (console.use, console.full) went with
+ * its code on 2026-10-25; the chat's data stays in the database.
+ */
+const RETIRED = Object.freeze(["console.use", "console.full"]);
 
 /** Expand a permission list to include everything it implies. */
 function closure(perms) {
@@ -318,7 +307,7 @@ function actor(role) {
     /** True if the actor can reach anything at all on that dashboard. */
     canDash: (key) =>
       key === "console"
-        ? can("console.use") || can("moniai.use")
+        ? can("moniai.use")
         : key === "agents"
         ? can("agents.view") || can("channels.view") || can("addons.view")
         : can("os.view") ||
@@ -380,6 +369,7 @@ module.exports = {
   PERMISSION_LABEL,
   SYSTEM_ROLES,
   RENAMED,
+  RETIRED,
   closure,
   actor,
   landing,

@@ -205,7 +205,7 @@ function decide(scores, o, th) {
 
 /**
  * deps: { db, priv: {voiceprintSeal, voiceprintOpen, voiceprintForget}, dataDir,
- *         socketPath?, log?, now?, parseWav?, trialClips?(user) -> [{mic, id, part, path}],
+ *         socketPath?, log?, now?, parseWav?,
  *         userById?(id) -> {id, username, display_name} (the migration) }
  */
 function createVoiceprint(deps) {
@@ -510,22 +510,6 @@ function createVoiceprint(deps) {
     pending.delete(k);
     return { person: pid, name: person0.name, mic, windows, speech_s: person0.mics[mic].speech_s, mics: Object.keys(mics) };
   }
-  /** The signed-in user's trial recordings (one slot) into their own voiceprint (made if missing). */
-  async function enrolFromTrial(user, slot) {
-    const clips = (d.trialClips ? d.trialClips(user) : []).filter((c) => c.mic === slot && c.part === "enrol");
-    if (!clips.length) throw bad(400, "There are no trial recordings to enrol from.");
-    let me = personForUser(user);
-    if (!me) {
-      const named = MIGRATE_NAMES[user.username] || null;
-      me = addPerson({ name: named ? named.name : user.display_name || user.username, spoken: named ? named.spoken : "", user_id: user.id, may_command: true });
-    }
-    discardPending(me.id, slot);
-    for (const c of clips) {
-      const w = d.parseWav(fs.readFileSync(c.path));
-      await enrolClip(me.id, slot, c.id, Buffer.from(w.samples.buffer, w.samples.byteOffset, w.samples.length * 2), w.rate);
-    }
-    return enrolSave(me.id, slot, "trial");
-  }
   async function removeMic(pid, mic) {
     const p = find(pid);
     const cur = p ? await printOf(pid) : null;
@@ -740,7 +724,6 @@ function createVoiceprint(deps) {
     removePerson,
     enrolClip,
     enrolSave,
-    enrolFromTrial,
     pendingOf,
     discardPending,
     removeMic,

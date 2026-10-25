@@ -27,7 +27,7 @@ console.log("the setting");
 check("two views, spheres by default; anything else is spheres", logic.normSessView("") === "spheres" && logic.normSessView("orbit") === "orbit" && logic.normSessView("x") === "spheres" && logic.isSessView("orbit") && !logic.isSessView("depth"));
 check("stored on the user row like mint_core", /addColumn\("users", "sessions_view"/.test(read("lib/db.js")) && /setUserSessionsView/.test(read("lib/db.js")));
 check("POST /mint-ai/api/prefs/sessions: CSRF'd (moniAiWrite), validated, audited", /app\.post\("\/mint-ai\/api\/prefs\/sessions", \.\.\.moniAiWrite/.test(server) && /isSessView\(view\)/.test(server) && /"account", `Sessions view \$\{was\} -> \$\{view\}/.test(server));
-check("Account › Appearance posts it too (no JavaScript) and its page script saves it at once", /req\.body\.sessions_view/.test(server) && /name="sessions_view"/.test(views) && /\/mint-ai\/api\/prefs\/sessions/.test(settings));
+check("the sessions view is fixed to spheres: no control in Appearance, the stored column stays", /req\.body\.sessions_view/.test(server) && !/name="sessions_view"/.test(views + read("lib/routes-settings.js")) && /migration\.sessions_view_spheres/.test(read("lib/db.js")));
 check("the page is rendered with data-sessview", /data-sessview="\$\{sessview\}"/.test(views) && /sessview: req\.me\.sessions_view/.test(server));
 check("the canvas, the names and the card are in the page, and cc-family.js loads before cc-map.js", /id="cc-family"/.test(views) && /id="cc-kids"/.test(views) && /id="cc-kcard"/.test(views) && /"cc-family\.js", "cc-map\.js"/.test(views));
 

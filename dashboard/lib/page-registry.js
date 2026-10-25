@@ -36,13 +36,13 @@ const PAGE_KEYS = {
   "moni-ai": ["cc", "Command Center"],
   "mint-settings": ["settings", "MINT AI Settings"],
   machines: ["computers", "Computers"],
-  "agents-dashboard": ["agents", "Agents & sessions"],
+  "agents-dashboard": ["agents", "Agents overview"],
   "claude-sessions": ["sessions", "Sessions"],
   agents: ["telegram", "Telegram agents"],
   channels: ["channels", "Channels"],
   addons: ["addons", "Add-ons"],
   "claude-memory": ["memory", "Memory"],
-  os: ["os", "Machine overview"],
+  os: ["os", "Machine health"],
   services: ["services", "Services"],
   audit: ["audit", "Audit log"],
   users: ["users", "Users"],
@@ -197,6 +197,8 @@ function build(o = {}) {
     }
   }
   add({ key: "account", kind: "page", label: "Your account", url: "/account", perm: null });
+  // The Guide sits in the avatar menu since 2026-10-25 (no longer a sidebar item).
+  add({ key: "guide", kind: "page", label: "Guide", url: "/guide", perm: null });
 
   // 2. MINT AI Settings' sections
   for (const [k, label] of sections) add({ key: "settings." + k, parent: "settings", kind: "section", label, url: "/mint-ai/settings/" + k, perm: k === "voice" ? "voice.manage" : "moniai.use" });
@@ -228,8 +230,6 @@ function build(o = {}) {
     }
   }
   // Settings > Voice > Compare voices opens its own page.
-  if (keys.has("settings.voice")) add({ key: "settings.voice.eval", parent: "settings.voice", kind: "anchor", label: "Voice evaluation", url: "/mint-ai/voice-eval", perm: "voice.manage" });
-  if (keys.has("settings.voice")) add({ key: "settings.voice.voiceprint", parent: "settings.voice", kind: "anchor", label: "Voiceprint trial", url: "/mint-ai/voiceprint-trial", perm: "voice.manage" });
   return out;
 }
 

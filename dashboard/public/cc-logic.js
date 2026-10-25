@@ -22,13 +22,16 @@
 })(typeof self !== "undefined" ? self : this, function () {
   /* ------------------------------------------------------------ the core */
 
-  // D (Mesh, mint-core-d.js) is the default since 2026-10-06; A/B/C stay one switch away.
+  // D (Mesh, mint-core-d.js) is the default since 2026-10-06.
   // E (Bot, mint-core-bot.js, 2026-10-19): a wireframe bot head whose face carries the state.
-  var CORES = { A: "Dotted sphere", B: "Siri fluid", C: "Hybrid", D: "Mesh", E: "Bot" };
+  // A, B and C were retired on 2026-10-25; a stored one reads as E (lib/db.js moved everyone on them to E).
+  var CORES = { D: "Mesh", E: "Bot" };
   var CORE_DEFAULT = "D";
-  /** A saved or requested core, as one of A / B / C / D; anything else is the default. */
+  var RETIRED_CORES = { A: "E", B: "E", C: "E" };
+  /** A saved or requested core, as D or E; a retired one is E; anything else is the default. */
   function normCore(c) {
     c = String(c == null ? "" : c).trim().toUpperCase();
+    if (Object.prototype.hasOwnProperty.call(RETIRED_CORES, c)) return RETIRED_CORES[c];
     return Object.prototype.hasOwnProperty.call(CORES, c) ? c : CORE_DEFAULT;
   }
   /** Whether a request names a core at all (the API refuses anything else). */
@@ -683,8 +686,7 @@
     { key: "dec", icon: "inbox", label: "Decisions" },
     "-",
     { key: "tl", icon: "clock", label: "Timeline" },
-    { key: "rules", icon: "shield", label: "Rules & watchers" },
-    { key: "orders", icon: "repeat", label: "Standing orders" },
+    { key: "rules", icon: "shield", label: "Rules & alerts" },
     "-",
     { key: "cost", icon: "gauge", label: "Usage" },
     { key: "machine", icon: "server", label: "Machine" },

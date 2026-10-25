@@ -67,7 +67,7 @@ ${card(
     csrf,
     active: "moni-ai",
     subtitle: `${who}: about two minutes, four short paragraphs read aloud`,
-    assets: ["voiceprint-trial.css", "voiceprint-enrol.js"],
+    assets: ["voiceprint-enrol.css", "voiceprint-enrol.js"],
     crumbs: [["MINT AI", "/mint-ai"], ["Settings", "/mint-ai/settings/voice#v-vp-people"], [who || "Voiceprint", null]],
   });
 }

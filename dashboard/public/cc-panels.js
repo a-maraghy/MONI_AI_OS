@@ -244,6 +244,10 @@
       var m = P.activeMis && P.missions.get(P.activeMis);
       if (!m || m.status !== "active") m = act[0];
       var chip = $("cc-mis-chip");
+      // The rail's Missions button only while a mission is open (planned) or running, or its sheet is open
+      // (2026-10-25 cleanup); New mission stays in Search (Ctrl K) and in the Everything sheet.
+      var railBtn = document.querySelector('#cc-rail [data-sheet="missions"]');
+      if (railBtn) railBtn.hidden = !(S.pane === "missions" || missionList().some(function (x) { return x.status === "active" || x.status === "planned"; }));
       if (!m) { chip.hidden = true; return; }
       var p = progress(m);
       chip.hidden = false;
@@ -629,8 +633,11 @@
       if (!force && ae && pane.contains(ae) && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA") && P.rulesPending !== "now") { P.rulesPending = true; return; }
       P.rulesPending = false;
       var sub = P.rulesSub;
-      var nr = P.rules.length, nw = P.watchers.length;
-      var h = '<div class="cc-subseg" role="tablist"><button type="button" role="tab" data-sub="rules" aria-selected="' + (sub === "rules") + '">Approval rules · ' + nr + '</button><button type="button" role="tab" data-sub="watch" aria-selected="' + (sub === "watch") + '">Watchers · ' + nw + "</button></div>";
+      var nr = P.rules.length, nw = P.watchers.length, no = P.orders.length;
+      var h = '<div class="cc-subseg" role="tablist"><button type="button" role="tab" data-sub="rules" aria-selected="' + (sub === "rules") + '">Approval rules · ' + nr + '</button><button type="button" role="tab" data-sub="watch" aria-selected="' + (sub === "watch") + '">System alerts · ' + nw + '</button><button type="button" role="tab" data-sub="orders" aria-selected="' + (sub === "orders") + '">Schedules · ' + no + "</button></div>";
+      // Schedules (the standing orders, their own sheet until 2026-10-25) keep their list below this pane.
+      var ow = $("cc-orders-wrap");
+      if (ow) ow.hidden = sub !== "orders";
       if (sub === "rules") {
         h += '<div class="cc-sec-t">Test a command</div><div class="cc-try"><input class="cc-in cc-mono" id="cc-try-in" maxlength="2000" placeholder="systemctl restart odoo" aria-label="Test a command against the rules" value="' + esc(P.tryText) + '">' +
           '<div class="cc-chips-sel sm" data-try-tool><button type="button" data-v="Bash" aria-pressed="' + (P.tryTool === "Bash") + '">Bash</button><button type="button" data-v="SendMessage" aria-pressed="' + (P.tryTool === "SendMessage") + '">Send</button></div>' +
@@ -640,10 +647,12 @@
         h += '<ul class="cc-rules">' + P.rules.map(ruleRow).join("") + "</ul>";
         h += P.addRule ? '<div class="cc-rule edit cc-add-rule">' + ruleForm(null) + "</div>" : '<div class="cc-add-rule"><button type="button" class="cc-btn sm" data-ract="add">' + ic("plus") + "Add a rule</button></div>";
         h += '<p class="cc-rule-hint"><b>Order:</b> Deny wins; built-in asks can\'t be overridden; then the most specific of your rules; with no match the classifier asks for anything destructive. Rules apply to MINT AI\'s own gate on this VPS. “Always allow this” on an approval card adds one here.</p>';
+      } else if (sub === "watch") {
+        if (P.err.watchers) h += '<div class="cc-dec-empty">System alerts are not available: ' + esc(P.err.watchers) + "</div>";
+        h += P.watchers.map(watcherRow).join("") || (P.err.watchers ? "" : '<div class="cc-dec-empty">No system alerts yet.</div>');
+        h += '<p class="cc-rule-hint">A system alert listens to this VPS\'s events. When one fires, MINT AI looks into it and puts a card in Decisions; it acts only after you approve.</p>';
       } else {
-        if (P.err.watchers) h += '<div class="cc-dec-empty">Watchers are not available: ' + esc(P.err.watchers) + "</div>";
-        h += P.watchers.map(watcherRow).join("") || (P.err.watchers ? "" : '<div class="cc-dec-empty">No watchers yet.</div>');
-        h += '<p class="cc-rule-hint">A watcher listens to this VPS\'s events. When one fires, MINT AI investigates and puts a decision card in Decisions; it acts only after you approve. Switching one off is saved on the server.</p>';
+        h += '<p class="cc-rule-hint">Standing orders run on a schedule, as MINT AI or a session.</p>';
       }
       pane.innerHTML = h;
     }
@@ -748,6 +757,7 @@
     function targetLabel(t) { return !t || t === "moni-ai" ? "MINT AI" : t; }
     function renderOrders() {
       var el = $("cc-orders");
+      if (P.rulesSub === "orders" && S.pane === "rules") renderRules(true);
       if (!P.orders.length) {
         el.innerHTML = '<li class="empty">' + esc(P.err.orders ? "Standing orders are not available: " + P.err.orders : "No standing orders yet. + New adds one: a morning briefing, say.") + "</li>";
         return;
@@ -1276,9 +1286,9 @@
       add("Open", "The next decision card", decCount() + " need you", "shield", "", function () { CC.openNeed(); });
       add("Open", "Event log", "Decisions", "bolt", "", function () { CC.openSheet("dec"); var d = $("cc-evlog"); d.open = true; d.scrollIntoView({ block: "start" }); });
       add("Open", "Timeline", "delegations and approvals", "clock", "", function () { CC.openSheet("tl"); });
-      add("Open", "Approval rules", "Rules & watchers", "scale", "", function () { P.rulesSub = "rules"; CC.openSheet("rules"); });
-      add("Open", "Watchers", "Rules & watchers", "eye", "", function () { P.rulesSub = "watch"; CC.openSheet("rules"); });
-      add("Open", "Standing orders", P.orders.length + " scheduled", "repeat", "", function () { CC.openSheet("orders"); });
+      add("Open", "Approval rules", "Rules & alerts", "scale", "", function () { P.rulesSub = "rules"; CC.openSheet("rules"); });
+      add("Open", "System alerts", "Rules & alerts", "eye", "", function () { P.rulesSub = "watch"; CC.openSheet("rules"); });
+      add("Open", "Schedules", P.orders.length + " standing orders · Rules & alerts", "repeat", "", function () { P.rulesSub = "orders"; CC.openSheet("rules"); });
       add("Open", "Usage", "Claude plan limits · tokens · voice", "gauge", "", function () { CC.openSheet("cost"); });
       add("Open", "Machine", "this VPS · the core grid", "server", "", function () { CC.openSheet("machine"); });
       add("Actions", "Usage details", "plan limits · tokens by session", "gauge", "", openCost);
@@ -1470,6 +1480,8 @@
       renderAll: renderAll,
       renderDecisions: renderDecisions,
       renderRules: function () { P.rulesPending = "now"; renderRules(); },
+      /** Which tab the Rules & alerts sheet opens on: rules | watch | orders (the old Standing orders sheet). */
+      setRulesSub: function (sub) { if (sub === "rules" || sub === "watch" || sub === "orders") P.rulesSub = sub; },
       sessionsChanged: function () {
         if (S.pane === "missions") renderMissions();
         if (OV.kind === "deep") renderDeep();

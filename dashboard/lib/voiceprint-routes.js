@@ -9,7 +9,6 @@
  *                                                       accept, reject, stickyMin, echo (Advanced),
  *                                                       or reset=1 (all four back to the defaults);
  *                                                       merged into voiceprint_thresholds, other keys kept
- *   POST /mint-ai/settings/voice/voiceprint/from-trial  slot               my trial recordings -> my voiceprint
  *   POST /mint-ai/settings/voice/voiceprint/people      name, spoken, me   add a person (a plain form: 303
  *                                                                          to their enrolment page)
  *   POST .../voiceprint/people/<id>/rename              name, spoken
@@ -33,7 +32,7 @@ const SET = "/mint-ai/settings/voice/voiceprint";
 const MAX_WAV = 44 + 40 * 24000 * 2 + 1024;
 
 function mount(app, deps) {
-  const { vprint, trialStore, trial, settingsGuard, reply, requireAuth, requirePerm, requireApiPerm, requireApiCsrf, rateLimit, express, db, ctx, views, asset } = deps;
+  const { vprint, trial, settingsGuard, reply, requireAuth, requirePerm, requireApiPerm, requireApiCsrf, rateLimit, express, db, ctx, views, asset } = deps;
   const audit = (req, line) => {
     try {
       db.logLogin(req.ip, req.me.username, "voice", line);
@@ -85,18 +84,6 @@ function mount(app, deps) {
     }
     audit(req, `voiceprint strictness: ${what} (${fmt(now)}; was ${fmt(was)})`);
     reply(req, res, { msg: `Strictness saved: ${what}. It applies from the next turn.`, anchor: "v-vp-strict", reload: true });
-  });
-
-  app.post(SET + "/from-trial", ...settingsGuard, async (req, res) => {
-    const slot = String((req.body && req.body.slot) || "");
-    if (!vpLib.MIC_RE.test(slot)) return reply(req, res, { err: "Which microphone?", anchor: "v-vp-enrol" });
-    try {
-      const r = await vprint.enrolFromTrial(req.me, slot);
-      audit(req, `voiceprint of ${r.name} enrolled from the trial recordings (${slot}, ${r.speech_s} s of speech)`);
-      reply(req, res, { msg: `${r.name}'s voiceprint made from your trial recordings (${r.speech_s} s of speech). Turns are checked from the next one.`, anchor: "v-vp-people", reload: true });
-    } catch (e) {
-      reply(req, res, { err: e.status ? e.message : "The voiceprint could not be made: " + String(e.message).slice(0, 160), anchor: "v-vp-people" });
-    }
   });
 
   /* ---- the stored voiceprints, by name ---- */
@@ -152,10 +139,9 @@ function mount(app, deps) {
   app.post(SET + "/forget-all", ...settingsGuard, async (req, res) => {
     try {
       const r = await vprint.forgetAll();
-      const clips = trialStore.removeAll(req.me);
       if (vprint.gate()) vprint.setGate(false, req.me.username);
-      audit(req, `voiceprint: deleted everything (${r.people} voiceprints, key ${r.key_deleted ? "deleted" : "kept"}, ${clips} trial clips, ${r.results_deleted} result folders, ${r.ledger_rows} check rows)`);
-      reply(req, res, { msg: `Deleted: ${r.people} stored voiceprint${r.people === 1 ? "" : "s"}, ${clips} trial recordings, ${r.results_deleted} evaluation results, ${r.ledger_rows} check log rows${r.key_deleted ? ", and the sealing key" : ""}.`, anchor: "v-vp", reload: true });
+      audit(req, `voiceprint: deleted everything (${r.people} voiceprints, key ${r.key_deleted ? "deleted" : "kept"}, ${r.results_deleted} result folders, ${r.ledger_rows} check rows)`);
+      reply(req, res, { msg: `Deleted: ${r.people} stored voiceprint${r.people === 1 ? "" : "s"}, ${r.results_deleted} evaluation results, ${r.ledger_rows} check log rows${r.key_deleted ? ", and the sealing key" : ""}.`, anchor: "v-vp", reload: true });
     } catch (e) {
       reply(req, res, { err: "Not everything could be deleted: " + String(e.message).slice(0, 160), anchor: "v-vp" });
     }

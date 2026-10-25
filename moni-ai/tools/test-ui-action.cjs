@@ -216,7 +216,7 @@ const UT = "UtUtUtUtUtUtUtUtUtUtUt01";
     check("  a second answer to the same nonce is refused (single use)", !again.ok);
 
     // A refusal from the page.
-    const p2 = ua("core.set", { core: "B" });
+    const p2 = ua("core.set", { core: "D" });
     const ev2 = await sub.waitFor((e) => e.type === "ui" && e.action === "core.set", 3000);
     await call("ui-ack", { nonce: ev2.nonce, ok: false, why: "a live call is on" }, "admin");
     const r2 = await p2;

@@ -9,8 +9,9 @@
  *                  and the page shows its link and one-time code, then polls
  *                  until it is done or the code expires (15 minutes).
  *   Service        the broker running, tasks in progress and queued, the limits.
- *   Who may use it MINT AI (always on: its supervisor has no switch) and one
- *                  switch per Telegram agent (ALLOW_CHATGPT, rendered by the helper).
+ *   Who may use it one switch per Telegram agent (ALLOW_CHATGPT, rendered by
+ *                  the helper; "Restart now" while the agent is idle), and
+ *                  MINT AI (always on: its supervisor has no switch) under More.
  *   Recent calls   the last 100: when, who, how long, outcome, files returned.
  *                  Never the task or the answer -- the broker does not keep them.
  *
@@ -30,6 +31,14 @@ const { esc, icon } = require("./ui");
 
 /** The sign-in waiting for the person, server-wide (the helper allows one at a time). */
 let pending = null; // { id, url, code, expires_at, by }
+
+/**
+ * Agents whose switch changed while they were running and idle: their row offers
+ * "Restart now" (the runtime reads ALLOW_CHATGPT at start). Cleared by the
+ * restart, or when the switch is set back. In memory: a panel restart forgets it,
+ * and the change still applies at the agent's next restart.
+ */
+const offerRestart = new Set();
 
 const SLUG_RE = /^[a-z][a-z0-9-]{1,30}$/;
 
@@ -139,10 +148,14 @@ async function render(req, res, deps) {
     service =
       V.row("Broker", "mint-chatgpt.service: the one process that runs ChatGPT for every agent.", up ? chip("Running", "ok", RUNNING) : chip(st.service === "unknown" ? "Unknown" : "Stopped", "bad", '<path d="M8 2.5 14 13H2Z"/>'), { id: "gpt-service" }) +
       V.row("Right now", "Tasks ChatGPT is working on, and tasks waiting for a free slot.", `<span class="muted-num">${esc(now)}</span>`) +
-      V.row(
-        "Limits",
-        "Set in /etc/mint-chatgpt/config.json, changed with a deploy.",
-        `<span class="muted-num">${esc(st.max_running)} at a time · ${esc(st.max_queued)} waiting · ${esc(Math.round(st.timeout_s / 60))} min per task</span> <span class="tag-s ro">config</span>`
+      V.more(
+        "More: limits",
+        V.row(
+          "Limits",
+          "Set in /etc/mint-chatgpt/config.json, changed with a deploy.",
+          `<span class="muted-num">${esc(st.max_running)} at a time · ${esc(st.max_queued)} waiting · ${esc(Math.round(st.timeout_s / 60))} min per task</span> <span class="tag-s ro">config</span>`
+        ),
+        { id: "gpt-limits" }
       );
   }
 
@@ -151,17 +164,33 @@ async function render(req, res, deps) {
     .map((a) => {
       const on = a.chatgpt !== false;
       const st2 = (a.state && a.state.active) || "inactive";
+      if (st2 !== "active") offerRestart.delete(a.slug);
+      const offer = offerRestart.has(a.slug);
+      const restartBtn = offer
+        ? V.form(
+            "/mint-ai/settings/chatgpt/agent/restart",
+            csrf,
+            `<input type="hidden" name="slug" value="${esc(a.slug)}"><button type="submit" class="btn small primary" id="gpt-restart-${esc(a.slug)}">${icon("restart", 14)}Restart now</button>`,
+            { noSave: true, cls: "inline" }
+          )
+        : "";
       return V.row(
         `${esc(a.name || a.slug)}`,
-        `Telegram agent <span class="mono">${esc(a.slug)}</span> · ${st2 === "active" ? "running: a change applies when it next restarts" : "not running: a change applies when it starts"}`,
-        V.form("/mint-ai/settings/chatgpt/agent", csrf, `<input type="hidden" name="slug" value="${esc(a.slug)}"><input type="hidden" name="on" value="0">${V.sw(`name="on" value="1" aria-label="ChatGPT for ${esc(a.name || a.slug)}"`, on, "On", "Off")}`),
+        `Telegram agent <span class="mono">${esc(a.slug)}</span>. ${
+          offer ? "Restart it to apply the change; it is not answering anyone right now." : st2 === "active" ? "A change applies when it next restarts." : "Not running: a change applies when it starts."
+        }`,
+        `<div class="gpt-agent-ctl">${V.form("/mint-ai/settings/chatgpt/agent", csrf, `<input type="hidden" name="slug" value="${esc(a.slug)}"><input type="hidden" name="on" value="0">${V.sw(`name="on" value="1" aria-label="ChatGPT for ${esc(a.name || a.slug)}"`, on, "On", "Off")}`)}${restartBtn}</div>`,
         { id: "gpt-agent-" + a.slug }
       );
     })
     .join("");
   const who =
-    V.row("MINT AI", "MINT AI, the sessions it hires and console chats. Always on: they use ChatGPT only when you ask them to.", `<span class="tag-s">Always on</span>`, { id: "gpt-mint-ai" }) +
-    (agents === null ? V.row("Telegram agents", "The agent list could not be read.", "") : agentRows || V.row("Telegram agents", "No Telegram agents yet.", ""));
+    (agents === null ? V.row("Telegram agents", "The agent list could not be read.", "") : agentRows || V.row("Telegram agents", "No Telegram agents yet.", "")) +
+    V.more(
+      "More: MINT AI",
+      V.row("MINT AI", "MINT AI and the sessions it hires. Always on: they use ChatGPT only when you ask them to.", `<span class="tag-s">Always on</span>`, { id: "gpt-mint-ai" }),
+      { id: "gpt-who-more" }
+    );
 
   /* ---- recent calls ---- */
   let callsHtml;
@@ -260,12 +289,41 @@ function mount(app, deps, { guard, reply, audit }) {
     try {
       const r = await P().agentChatgpt(slug, on);
       audit(req, `ChatGPT ${on ? "on" : "off"} for agent ${slug}`);
-      const when = r && r.restart_needed ? "It is running, so this applies when it next restarts (Telegram agents ▸ Restart)." : "It applies when the agent starts.";
-      reply(req, res, "chatgpt", { msg: `ChatGPT is ${on ? "on" : "off"} for ${slug}. ${when}`, anchor: "gpt-agent-" + slug });
+      // Running and idle (no Claude Code process in its unit, lib helper agent_busy): offer "Restart now".
+      // Running and mid-turn: the change applies at its next restart. Not running: when it starts.
+      const idle = !!(r && r.restart_needed && !r.busy);
+      if (idle) offerRestart.add(slug);
+      else offerRestart.delete(slug);
+      const when = !(r && r.restart_needed)
+        ? "It applies when the agent starts."
+        : idle
+          ? "Restart it now to apply it, or it applies at its next restart."
+          : "It is answering a message right now, so this applies at its next restart.";
+      reply(req, res, "chatgpt", { msg: `ChatGPT is ${on ? "on" : "off"} for ${slug}. ${when}`, anchor: "gpt-agent-" + slug, reload: idle });
     } catch (e) {
       reply(req, res, "chatgpt", { err: "Not changed: " + e.message, anchor: "gpt-agent-" + slug });
     }
   });
+
+  // "Restart now": only while the agent is idle (the helper checks again and refuses a busy one).
+  app.post("/mint-ai/settings/chatgpt/agent/restart", requireAuth, guard("chatgpt"), requireCsrf, async (req, res) => {
+    const slug = String(req.body.slug || "");
+    if (!SLUG_RE.test(slug)) return reply(req, res, "chatgpt", { err: "No such agent." });
+    try {
+      await P().agentRestartIdle(slug);
+      offerRestart.delete(slug);
+      audit(req, `restarted agent ${slug} to apply its ChatGPT switch`);
+      reply(req, res, "chatgpt", { msg: `${slug} restarted. Its ChatGPT switch applies now.`, anchor: "gpt-agent-" + slug, reload: true });
+    } catch (e) {
+      const busy = /busy/.test(String(e.message));
+      if (busy || /not running/.test(String(e.message))) offerRestart.delete(slug);
+      reply(req, res, "chatgpt", {
+        err: busy ? `${slug} is answering a message right now, so it was not restarted. The change applies at its next restart.` : "Not restarted: " + e.message,
+        anchor: "gpt-agent-" + slug,
+        reload: busy,
+      });
+    }
+  });
 }
 
-module.exports = { install, mount, render, callerOf, took, _reset: () => (pending = null) };
+module.exports = { install, mount, render, callerOf, took, _reset: () => ((pending = null), offerRestart.clear()) };

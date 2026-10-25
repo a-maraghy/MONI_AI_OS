@@ -344,6 +344,8 @@ const XSS = { v: 1, kind: "table", title: "Folders by size", blocks: [{ type: "t
       await shot(v.page, "learned-standing-dark");
       await v.close();
       const set = await open(1280, 900, "", { theme: "light", path: "/mint-ai/settings/appearance" });
+      // The counts and Reset sit under Board ▸ More since the 2026-10-25 cleanup.
+      await set.page.click("#a-board-more > summary");
       await set.page.evaluate(() => document.getElementById("board").scrollIntoView());
       await sleep(400);
       const t = await set.page.evaluate(() => document.querySelector(".cv-learn") && document.querySelector(".cv-learn").textContent.replace(/\s+/g, " "));

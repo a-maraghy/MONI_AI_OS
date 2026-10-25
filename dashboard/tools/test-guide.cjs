@@ -37,7 +37,7 @@ const views = lib("views-guide");
 const admin = rbac.actor({ permissions: ["*"], agent_scope: "*", channel_scope: "*" });
 const user = { name: "Ann", roleLabel: "Administrator", perm: admin, chrome: lib("chrome").forActor(admin, null) };
 
-const IDS = ["around", "cc", "voice", "hire", "screen", "budget", "approvals", "agents", "memory", "machine", "access", "devices", "trouble", "where"];
+const IDS = ["around", "cc", "voice", "hire", "screen", "budget", "approvals", "briefs", "chatgpt", "computers", "agents", "memory", "machine", "access", "devices", "trouble", "where"];
 
 const page = views.guide({ csrf: "c", user, publicHost: "h<x>", publicPort: 8443, sshHost: 'ssh"<b>' });
 const src = fs.readFileSync(path.join(ROOT, "lib", "views-guide.js"), "utf8");
@@ -50,7 +50,7 @@ const text = visible(docMain);
 
 console.log("sections");
 const sections = [...docMain.matchAll(/<section id="([a-z0-9-]+)" class="card gd">([\s\S]*?)<\/section>/g)].map((m) => ({ id: m[1], body: m[2] }));
-check("fourteen guide sections, in order", JSON.stringify(sections.map((s) => s.id)) === JSON.stringify(IDS), sections.map((s) => s.id).join(","));
+check("seventeen guide sections, in order (Briefs, ChatGPT and Computers since 2026-10-25)", JSON.stringify(sections.map((s) => s.id)) === JSON.stringify(IDS), sections.map((s) => s.id).join(","));
 IDS.forEach((id) => check(`#${id} is a literal section id in the source`, src.includes(`<section id="${id}" class="card gd">`)));
 const allIds = [...page.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]);
 const dup = allIds.filter((id, i) => allIds.indexOf(id) !== i);
@@ -87,9 +87,9 @@ console.log("facts");
   [/OS Dashboard|Agents Dashboard/, "the old dashboards"],
 ].forEach(([re, label]) => check(`the guide never mentions ${label}`, !re.test(text), (text.match(new RegExp(".{0,40}" + re.source + ".{0,40}", "i")) || [])[0]));
 check("voice is a live conversation", /live conversation/.test(text));
-check("Disabled turns off all voice incl. read-aloud, token kept", /Disabled[^.]*all voice[^.]*read-aloud/.test(text) && /token stays stored/.test(text));
+check("Off turns off all voice incl. read-aloud, the key kept", /<b>Off<\/b> turns off all voice[^.]*read-aloud/.test(docMain) && /key stays saved/.test(text));
 check("only administrators may talk by voice (voice.use)", /Only administrators may talk by voice/.test(text) && /voice\.use/.test(text));
-check("the voice model: three offered with their facts (2.1 mini default; GPT Realtime mini 14 of 18, retiring; GPT-4o Mini Realtime only when the key can use it), read-aloud by 2.1 mini otherwise; the transcription model is chosen under Transcription (OpenAI or on this server), a live call's own transcript stays OpenAI's", /<h3>Voice model<\/h3>/.test(docMain) && !/One voice model/.test(text) && /GPT Realtime 2\.1 mini/.test(text) && /GPT Realtime mini/.test(text) && /14 of\s+18/.test(text) && /20 January 2027/.test(text) && /GPT-4o Mini Realtime/.test(text) && /only when your OpenAI key can use it/.test(text) && /GPT Realtime 2\.1 mini reads them/.test(text) && /Settings › Voice › Transcription/.test(text) && /GPT-4o mini Transcribe/.test(text) && /On this server/.test(text) && /install-voice-whisper\.sh/.test(text) && /OpenAI accepts only its own transcription models/.test(text) && /says which model transcribed/.test(text) && !/Listening model/.test(text));
+check("the voice model: three offered with their facts (2.1 mini default; GPT Realtime mini 14 of 18, retiring; GPT-4o Mini Realtime only when the key can use it), read-aloud by 2.1 mini otherwise; the transcription model is chosen under Transcription (OpenAI or on this server), a live call's own transcript stays OpenAI's", /<h3>Voice model<\/h3>/.test(docMain) && !/One voice model/.test(text) && /GPT Realtime 2\.1 mini/.test(text) && /GPT Realtime mini/.test(text) && /14 of\s+18/.test(text) && /20 January 2027/.test(text) && /GPT-4o Mini Realtime/.test(text) && /only when your OpenAI key can use it/.test(text) && /GPT Realtime 2\.1 mini reads them/.test(text) && /Settings › Voice › Transcription/.test(text) && /GPT-4o mini Transcribe/.test(text) && /whisper\.cpp, were retired/.test(text) && !/install-voice-whisper\.sh/.test(text) && /running transcript stays on an OpenAI model/.test(text) && !/Listening model/.test(text));
 check("caps count cache tokens, the N tok today figure", /input, output and cache/.test(text) && /N tok today/.test(text));
 check("caps are checked at turn end and after each cost scan", /end of every MINT AI turn/.test(text) && /cost scan/.test(text));
 check("your own sessions only warn", /can only warn/.test(text));
@@ -99,7 +99,9 @@ check("new page-map entries allowed at once by default", /allowed at once \(the 
 check("an administrator may sign out other users' devices", /administrator can sign out another user's devices/.test(text));
 check("SSH pairing lives under SSH keys › Pair a device, /pair unchanged", /SSH keys › Pair a device/.test(text) && /\/pair/.test(text));
 check("avatar menu entries", ["Account & sign-in", "Signed-in devices", "MINT AI appearance", "Sign out"].every((s) => text.includes(s)));
-check("the five sidebar groups", ["MINT AI", "Agents & sessions", "Machine", "Access & security", "Help"].every((s) => text.includes(s)));
+check("the four sidebar groups, the Guide in the avatar menu", /in four groups/.test(text) && ["MINT AI", "Agents & sessions", "Machine", "Access & security"].every((s) => text.includes(s)) && /Guide &amp; help|Guide & help/.test(docMain));
+check("no stale wording: Budgets, Rules & watchers, Standing orders sheet, Usage & budget", !/Budgets|Rules &amp; watchers|Usage &amp; budget|Usage & budget|Morning briefing/.test(docMain));
+check("Briefs, ChatGPT and Computers are covered", /<h2>Briefs and watchers<\/h2>/.test(docMain) && /<h2>ChatGPT<\/h2>/.test(docMain) && /Restart now/.test(docMain) && /<h2>Your computers<\/h2>/.test(docMain));
 check("the ☰ at the foot of the Command Center's icon bar", /☰ button at the bottom of that bar/.test(text));
 
 console.log("nothing lost from the old guide");

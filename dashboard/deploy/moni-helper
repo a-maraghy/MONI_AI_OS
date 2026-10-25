@@ -8471,8 +8471,52 @@ def cmd_agent_chatgpt(args):
     chown_tree(agent_dir(slug), uid, gid)
     seal_agent_files(slug, gid)
     state = unit_state(slug)
-    audit("agent-chatgpt", {"slug": slug, "chatgpt": cfg["chatgpt"], "active": state.get("active")})
-    ok({"slug": slug, "chatgpt": cfg["chatgpt"], "state": state, "restart_needed": state.get("active") == "active"})
+    running = state.get("active") == "active"
+    busy = agent_busy(slug) if running else False
+    audit("agent-chatgpt", {"slug": slug, "chatgpt": cfg["chatgpt"], "active": state.get("active"), "busy": busy})
+    ok({"slug": slug, "chatgpt": cfg["chatgpt"], "state": state, "restart_needed": running, "busy": busy})
+
+
+def agent_busy(slug):
+    """Whether a Telegram agent is in the middle of a turn: a Claude Code process
+    in its unit's cgroup. The runtime starts one per turn and it exits when the
+    turn ends, so an agent with none is idle and can be restarted without
+    cutting anyone off (Settings > ChatGPT's "Restart now")."""
+    r = run(["systemctl", "show", "-p", "ControlGroup", "--value", unit_name(slug)])
+    cg = (r.stdout or "").strip()
+    if not cg:
+        return False
+    base = "/sys/fs/cgroup" + cg
+    pids = []
+    for root, _dirs, files in os.walk(base):
+        if "cgroup.procs" not in files:
+            continue
+        try:
+            with open(os.path.join(root, "cgroup.procs")) as fh:
+                pids += [int(x) for x in fh.read().split() if x.isdigit()]
+        except OSError:
+            continue
+    return any(cc_is_claude(cc_proc(pid)) for pid in pids)
+
+
+def cmd_agent_restart_idle(args):
+    """Restart a running Telegram agent only if it is idle (no turn in progress).
+
+    Fails with "busy" when it is mid-turn, so the panel can say the change applies
+    at the next restart instead."""
+    if len(args) != 1:
+        fail("usage: agent-restart-idle <slug>")
+    slug = check_slug(args[0])
+    existing_agent(slug)
+    state = unit_state(slug)
+    if state.get("active") != "active":
+        fail("not running")
+    if agent_busy(slug):
+        audit("agent-restart-idle", {"slug": slug, "restarted": False, "why": "busy"})
+        fail("busy: it is answering a message right now")
+    restart_agent_unit(slug)
+    audit("agent-restart-idle", {"slug": slug, "restarted": True})
+    ok({"slug": slug, "restarted": True, "state": unit_state(slug)})
 
 
 
@@ -8488,6 +8532,7 @@ COMMANDS = {
     "agent-create": cmd_agent_create,
     "agent-update": cmd_agent_update,
     "agent-action": cmd_agent_action,
+    "agent-restart-idle": cmd_agent_restart_idle,
     "agent-logs": cmd_agent_logs,
     "agent-delete": cmd_agent_delete,
     "agent-read-file": cmd_agent_read_file,

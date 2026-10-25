@@ -8,16 +8,16 @@
  * a too-close warning, the six states in both themes), saved at once through
  * POST /mint-ai/api/prefs/bot.
  *
- * Each option draws its core in a small canvas (mint-core.js; D, the mesh, is
- * mint-core-d.js), cycling through
+ * Each option draws its core in a small canvas (D, the mesh, mint-core-d.js;
+ * E, the bot, mint-core-bot.js; A, B and C were retired on 2026-10-25), cycling through
  * the states so the difference shows. Choosing one saves it at once through
  * the Command Center's own route (POST /mint-ai/api/prefs/core, CSRF in a
  * header), no reload; the form still posts without JavaScript. The previews
- * run only while on screen and stop when the tab is hidden (mint-core.js).
+ * run only while on screen and stop when the tab is hidden.
  */
 (function () {
   var form = document.getElementById("mint-appearance");
-  if (!form || !window.MintCore) return;
+  if (!form || !(window.MintCoreD || window.MintCoreBot)) return;
   var CSRF = form.getAttribute("data-csrf") || "";
   var note = document.getElementById("mint-appearance-note");
   var CYCLE = ["idle", "listening", "thinking", "speaking", "needs", "idle"];
@@ -50,11 +50,12 @@
   for (var i = 0; i < canvases.length; i++) {
     (function (cv, k) {
       var k0 = cv.getAttribute("data-prev-core");
-      var core = k0 === "D" && window.MintCoreD
-        ? window.MintCoreD(cv, { autoAmp: true })
-        : k0 === "E" && window.MintCoreBot
-          ? window.MintCoreBot(cv, { noGuard: true, head: Bot.head(), colors: Bot.colors() })
-          : window.MintCore(cv, { concept: k0, points: 1500, points2d: 500, autoAmp: true });
+      var core = k0 === "E" && window.MintCoreBot
+        ? window.MintCoreBot(cv, { noGuard: true, head: Bot.head(), colors: Bot.colors() })
+        : window.MintCoreD
+          ? window.MintCoreD(cv, { autoAmp: true })
+          : null;
+      if (!core) return;
       if (k0 === "E") Bot.live = core;
       cv = core.canvas || cv; // a core without its GPU context draws on a fresh copy of the canvas
       var p = { cv: cv, core: core, n: k, on: false };

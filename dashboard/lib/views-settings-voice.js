@@ -18,21 +18,23 @@
  * The voice model holds the live call and reads replies aloud when it passed
  * the verbatim check (else gpt-realtime-2.1-mini reads them); a gated model the
  * OpenAI key cannot reach is listed, disabled (2026-10-01).
- * What the administrator said is written down by the Transcription model, a
- * setting again since the evening of 2026-09-30: OpenAI's, or whisper.cpp on
- * this server (lib/voice-transcribe.js), each option with its measured speed,
- * accuracy and cost; a local model that is not installed is listed, disabled.
+ * What the administrator said is written down by the Transcription model
+ * (lib/voice-transcribe.js): OpenAI's models only since 2026-10-25 (the
+ * whisper.cpp options on this server were retired; nothing used them).
  *
  * Anchors (the page registry scans them): v-model, v-transcribe,
- * v-transcribe-lang, v-token, v-voice, v-persona, v-read, v-live-audio, v-spend,
+ * v-transcribe-lang, v-token, v-voice, v-persona, v-read, v-live-audio,
  * v-voiceprint, v-vp-gate, v-vp-strict, v-vp-people, v-vp-stats, v-vp-forget.
+ * Voice spend moved to Usage & token caps (2026-10-25). Rarely needed rows sit
+ * under "More" disclosures (V.more): test and language, noise reduction, the
+ * voiceprint's last 7 days and Delete everything.
  *
  * The Voiceprint group (lib/voiceprint.js): the On / Off switch, "Only respond
  * to my voice" (greyed while the voiceprint is off or not enrolled), the
  * enrolment, the last 7 days of checks, and Delete everything.
  */
 
-const { esc, icon } = require("./ui");
+const { esc, icon, state } = require("./ui");
 const V = require("./views-settings");
 
 const BASE = "/mint-ai/settings/voice";
@@ -45,14 +47,14 @@ const GENDER = {
 
 const PERSONAS = [
   ["learned", "Learn from how I speak (default)"],
-  ["cairene_f", "Cairene Egyptian — feminine"],
-  ["cairene_m", "Cairene Egyptian — masculine"],
-  ["msa_n", "Modern Standard Arabic — neutral"],
+  ["cairene_f", "Cairene Egyptian, feminine"],
+  ["cairene_m", "Cairene Egyptian, masculine"],
+  ["msa_n", "Modern Standard Arabic, neutral"],
 ];
 
 const NOISE = [
-  ["far_field", "Far field — laptop or room mic (default)"],
-  ["near_field", "Near field — headset mic"],
+  ["far_field", "Laptop or room microphone (default)"],
+  ["near_field", "Headset microphone"],
   ["off", "Off"],
 ];
 
@@ -82,7 +84,7 @@ function vpHistogram(st, th) {
 
 /**
  * The Voiceprint group (lib/voiceprint.js). o.voiceprint = { enabled, gate, thresholds, service, enrolled,
- * model, stats, trial: [slots with enrolment recordings] }.
+ * model, stats }.
  */
 function voiceprintGroup(o) {
   const vp = o.voiceprint;
@@ -100,7 +102,7 @@ function voiceprintGroup(o) {
     : "";
   const sw1 = V.row(
     "Voiceprint",
-    `MINT AI checks each turn of a live call — a hold-to-talk press or a hands-free turn — against the stored voiceprints below, on this server (nothing is sent anywhere), and addresses whoever it recognised by name. On its own it only watches: nothing is blocked. Off: nothing is checked and calls work exactly as before; the voiceprints are kept. <b>A voice identifies; it never authorises:</b> approvals and destructive actions still need the signed-in user's click or Windows Hello.`,
+    `Checks each turn of a call against the stored voices, on this server, and greets people by name. On its own it blocks nothing. <b>A voice identifies; it never approves anything.</b>`,
     V.form(`${BASE}/voiceprint`, csrf, V.sw('name="enabled" value="1" id="vp-enabled" aria-label="Voiceprint"', en, "On", "Off"), {
       confirm: en ? "Switch the voiceprint off?" : null,
       confirmBody: en ? "Turns are no longer checked or named; “Only respond to stored voices” stops too. The voiceprints are kept." : null,
@@ -109,7 +111,7 @@ function voiceprintGroup(o) {
     { id: "v-voiceprint", scope: "everyone" }
   );
   const canGate = en && enrolled;
-  const gateHelp = `When on: a stored voice → answered, by name. Once someone is recognised in a call, their later doubtful or very short turns count as theirs (see Strictness). Not sure who's speaking (and nobody recognised yet in this call) → not answered. An unknown voice (people in the room, a TV) → ignored, and a “yes” in it confirms nothing. MINT AI never speaks about either: the state pill shows “Not sure who's speaking” or “Unknown voice — ignored”. MINT AI's own voice coming back → dropped. If the check fails, the turn goes through.${
+  const gateHelp = `On: voices it does not know, and turns where it is not sure who is speaking, get no answer. If the check itself fails, the turn goes through.${
     canGate ? "" : en ? ` <span class="muted" id="vp-gate-why">Store a voiceprint first.</span>` : ` <span class="muted" id="vp-gate-why">The voiceprint is off.</span>`
   }`;
   const sw2 = V.row(
@@ -117,7 +119,7 @@ function voiceprintGroup(o) {
     gateHelp,
     V.form(`${BASE}/voiceprint/gate`, csrf, V.sw(`name="gate" value="1" id="vp-gate" aria-label="Only respond to stored voices"${canGate ? "" : " disabled"}`, canGate && vp.gate, "On", "Off"), {
       confirm: vp.gate ? null : "Only respond to stored voices?",
-      confirmBody: vp.gate ? null : "Unknown voices and unsure turns are not answered from the next turn on. Check the last days' figures below first.",
+      confirmBody: vp.gate ? null : "From the next turn, unknown voices and unsure turns get no answer.",
       confirmYes: vp.gate ? null : "Turn on",
     }),
     { id: "v-vp-gate", scope: "everyone" }
@@ -153,7 +155,7 @@ function voiceprintGroup(o) {
   )}</details>`;
   const strictRow = V.row(
     "Strictness",
-    `How much benefit of the doubt a call gives a speaker once they have been recognised in it. Before that, an unsure turn is never answered. At every level, a very short turn (under 0.8 s of speech) goes through unless it is clearly another voice.${curP ? "" : " Now: custom values."} <span class="muted">Figures from replaying your trial recordings and 200 other people's through the live check.</span>`,
+    `How much benefit of the doubt a speaker gets once recognised in a call.${curP ? "" : " Now: custom values."}`,
     `<div class="vp-strict">${presetForm}${adv}</div>`,
     { id: "v-vp-strict", scope: "everyone", full: true }
   );
@@ -198,15 +200,6 @@ function voiceprintGroup(o) {
         })}</div>
     </li>`;
   };
-  const trial = vp.me && vp.me.mics ? (vp.trial || []).filter((sl) => !vp.me.mics[sl]) : vp.trial || [];
-  const trialBtns = trial
-    .map((sl) =>
-      V.form(`${BASE}/voiceprint/from-trial`, csrf, `<input type="hidden" name="slot" value="${esc(sl)}"><button class="btn small" type="submit" id="vp-from-trial-${esc(sl)}"${en ? "" : " disabled"}>${icon("fingerprint", 14)} My trial recordings (${esc(micLabel(sl))}) → my voiceprint</button>`, {
-        noSave: true,
-        cls: "inline",
-      })
-    )
-    .join("");
   const full = people.length >= (vp.max || 10);
   const addForm = `<form method="post" action="${BASE}/voiceprint/people" class="vp-add" id="vp-add"><input type="hidden" name="_csrf" value="${esc(csrf)}">
       <label class="vp-field"><span class="small">Name</span><input name="name" maxlength="40" required placeholder="Zaghloul" pattern="[A-Za-z0-9][A-Za-z0-9 .'\\-]{0,39}"${full || !en ? " disabled" : ""}></label>
@@ -215,10 +208,8 @@ function voiceprintGroup(o) {
       <button class="btn small primary" type="submit" id="vp-add-btn"${full || !en ? " disabled" : ""}>${icon("plus", 14)} Add and enrol</button></form>`;
   const peopleRow = V.row(
     `Stored voiceprints <span class="muted">(${people.length} of ${vp.max || 10})</span>`,
-    `Each person is recognised by voice and addressed by name — the spoken name in Arabic, if given. “May give commands” off: they are answered in conversation only — nothing is handed to MINT AI, no screen is changed, and their “yes” confirms nothing. Only record someone who agreed to it. A voiceprint is a list of numbers, sealed with a key only the server's root can use — never the recordings. Model: ${esc(vp.model || "")} (WeSpeaker project).`,
-    `<div class="vp-people-box">${people.length ? `<ul class="vp-people" id="vp-people">${people.map(personCard).join("")}</ul>` : `<span class="kv-mask" id="vp-none">${icon("fingerprint", 15)}<span>No voiceprints stored</span></span>`}${
-      trialBtns ? `<div class="vp-acts">${trialBtns}</div>` : ""
-    }${full ? `<p class="small muted">At most ${vp.max || 10} stored voiceprints.</p>` : addForm}</div>`,
+    `People MINT AI knows by voice. With “May give commands” off, it only talks with them. Record only people who agreed. Stored as sealed numbers, never as recordings (model ${esc(vp.model || "")}).`,
+    `<div class="vp-people-box">${people.length ? `<ul class="vp-people" id="vp-people">${people.map(personCard).join("")}</ul>` : `<span class="kv-mask" id="vp-none">${icon("fingerprint", 15)}<span>No voiceprints stored</span></span>`}${full ? `<p class="small muted">At most ${vp.max || 10} stored voiceprints.</p>` : addForm}</div>`,
     { id: "v-vp-people", full: true }
   );
   const st = vp.stats || { checked: 0, by: {} };
@@ -233,7 +224,7 @@ function voiceprintGroup(o) {
     : `<span class="muted-num" id="vp-stats">${en ? (enrolled ? "No turns checked yet — talk in a live call." : "Nothing yet: store a voiceprint first.") : "The voiceprint is off."}</span>`;
   const statsRow = V.row(
     `Last ${st.days || 7} days${vp.gate ? "" : " (watching only)"}`,
-    `Who was heard. With “Only respond to stored voices” off, unknown and unsure turns were still answered; on, they were not. <span id="vp-active">Now: recognised from ${th.accept}; unknown below ${th.reject}; the call's speaker from ${th.stickyMin}; MINT AI's own voice from ${th.echo}${
+    `Who was heard. <span id="vp-active">Now: recognised from ${th.accept}; unknown below ${th.reject}; the call's speaker from ${th.stickyMin}; MINT AI's own voice from ${th.echo}${
       curP ? ` (${esc(curP.label.replace(/ \(recommended\)$/, ""))})` : " (custom)"
     }.</span>`,
     statsBody,
@@ -241,21 +232,17 @@ function voiceprintGroup(o) {
   );
   const forget = V.row(
     "Delete everything",
-    "Every stored voiceprint, their sealing key, your voiceprint trial's recordings and evaluation results, MINT AI's own voice print and the check log — all of it, from this server.",
+    "Every stored voiceprint, its sealing key, MINT AI's own voice print and the check log.",
     V.form(`${BASE}/voiceprint/forget-all`, csrf, `<button class="btn small danger" type="submit" id="vp-forget-all">${icon("trash", 14)} Delete everything</button>`, {
       noSave: true,
       cls: "inline",
       confirm: "Delete every stored voiceprint?",
-      confirmBody: "All voiceprints, the key, the trial recordings, the evaluation results and the check log are removed. This cannot be undone.",
+      confirmBody: "All voiceprints, the key and the check log are removed. This cannot be undone.",
       confirmYes: "Delete everything",
     }),
     { id: "v-vp-forget" }
   );
-  return V.group("Voiceprint", "fingerprint", warn + sw1 + `<div class="vp-dep${en ? "" : " vp-off"}">${sw2}${strictRow}${peopleRow}${statsRow}</div>` + forget, { id: "v-vp" });
-}
-
-function usd(n) {
-  return "$" + (Number(n) || 0).toFixed(2);
+  return V.group("Voiceprint", "fingerprint", warn + sw1 + `<div class="vp-dep${en ? "" : " vp-off"}">${sw2}${strictRow}${peopleRow}</div>` + V.more("More: last 7 days, delete everything", statsRow + forget, { id: "v-vp-more" }), { id: "v-vp" });
 }
 
 /** A voice card: name, gender (as the voice presents in OpenAI's samples), a word or two. */
@@ -279,11 +266,9 @@ function voiceCard(name, cur, meta) {
  *   voice, voices, meta   the voice, the list, lib/voice.js VOICE_META
  *   transcribe    the live session's own transcription model (always OpenAI's)
  *   transcription { model, language }: the Transcription setting
- *   transcribers  lib/voice-transcribe.js TRANSCRIBERS; languages its LANGUAGES
- *   local         the helper's voice-whisper-status (installed models), or { error }
+ *   transcribers  lib/voice-transcribe.js TRANSCRIBERS (OpenAI's shown); languages its LANGUAGES
  *   persona       voice-persona describe() + mode/preset
  *   liveAudio     { duplex, noise }
- *   usage         voice-usage summary (or { error })
  *   test          { ok, text } from a no-JavaScript Test
  *   switchRow     settings row of the switch: { updated_at, updated_by } | null
  * }
@@ -294,43 +279,40 @@ function body(o) {
   const csrf = o.csrf;
 
   const hero = `<div class="hero-sw"><span class="hs-ico">${icon("voice", 22)}</span><div class="hs-t"><b id="voice-state">${
-    on ? "Voice is enabled" : "Voice is disabled"
+    on ? "Voice is on" : "Voice is off"
   }</b><span>${
-    on
-      ? set
-        ? `Live conversation · ${esc(o.model)} · ${esc(o.voice)}`
-        : "Enabled, but no token yet — add one below"
-      : "Nothing listens or speaks. The token stays stored."
-  }</span></div>${V.form(`${BASE}/enabled`, csrf, V.sw('name="enabled" value="1" id="voice-master" aria-label="Voice for everyone"', on, "Enabled", "Disabled", "big"), {
+    on ? (set ? `Live calls · ${esc(o.model)} · ${esc(o.voice)}` : "On, but there is no OpenAI key yet. Add one below.") : "Nothing listens or speaks. The key stays saved."
+  }</span></div>${V.form(`${BASE}/enabled`, csrf, V.sw('name="enabled" value="1" id="voice-master" aria-label="Voice for everyone"', on, "On", "Off", "big"), {
     cls: "hs-form",
     confirm: on ? "Turn voice off for everyone?" : null,
-    confirmBody: on ? "The microphone, read-aloud and live-call controls disappear, and any open live call ends. The token stays stored." : null,
+    confirmBody: on ? "The microphone and call buttons disappear, and an open call ends. The key stays saved." : null,
     confirmYes: on ? "Turn voice off" : null,
   })}</div>`;
 
-  const offnote = `<div class="offnote">${icon("info", 16)}<div>Voice is off for everyone: the microphone, read-aloud and live-call controls disappear from the Command Center and the dock, and MINT AI's voice screen actions are refused. Typing works as always. The token stays stored — you can still replace or remove it below.</div></div>`;
+  const offnote = `<div class="offnote">${icon("info", 16)}<div>Voice is off for everyone. The microphone and call buttons are hidden, and MINT AI's voice actions are refused. Typing works as usual.</div></div>`;
 
   const listen = o.transcribe || "gpt-4o-mini-transcribe";
-  // The voice model: each option says its facts; a gated model the key cannot
-  // reach is listed, disabled (lib/voice.js modelAccess), unless it is current.
+  // The voice model: the option says its name; the line under the list says its facts. A gated model the
+  // key cannot reach is listed, disabled (lib/voice.js modelAccess), unless it is current.
   const access = o.access || {};
   const models = o.models || [];
   const reach = (m) => !m.gated || !!(access[m.id] && access[m.id].available);
-  const away = (m) => (access[m.id] && access[m.id].known ? "not available on this OpenAI key" : "not checked on this OpenAI key yet");
+  const away = (m) => (access[m.id] && access[m.id].known ? "not on this key" : "not checked yet");
   const mCur = models.find((m) => m.id === o.model) || models[0] || { hint: "" };
   const mHint = (m) =>
     reach(m)
       ? m.hint || ""
       : access[m.id] && access[m.id].known
-        ? "Not available on this OpenAI key: its model list does not carry it. It is offered here once the key can use it."
-        : "Not checked on this OpenAI key yet: it is offered once the key's model list shows it.";
+        ? "This OpenAI key cannot use it. It is offered once the key can."
+        : "Not checked on this OpenAI key yet. It is offered once the key's model list shows it.";
   const mOpt = (m) =>
     `<option value="${esc(m.id)}" data-hint="${esc(mHint(m))}"${m.id === o.model ? " selected" : ""}${reach(m) || m.id === o.model ? "" : " disabled"}>${esc(
-      (m.label || m.id) + " · " + (reach(m) ? m.short || "" : away(m)) + (m.id === o.model ? " · current" : "")
+      (m.label || m.id) + (reach(m) ? "" : " (" + away(m) + ")") + (m.id === o.model ? " (current)" : "")
     )}</option>`;
+  const retiring = models.some((m) => m.id === "gpt-realtime-mini");
   const modelRow = V.row(
     "Voice model",
-    `Holds the live conversation. Replies are read aloud by the voice model when it reads word for word; otherwise by <code>gpt-realtime-2.1-mini</code>, so read-aloud never paraphrases. <span class="muted" id="voice-listen-note">Your words are written down by the transcription model below: MINT AI always works from that transcript, never from the voice model's retelling.</span>`,
+    `Holds the call and speaks.${retiring ? ` <span class="muted" id="voice-retire-note">GPT Realtime mini retires on 20 January 2027.</span>` : ""}`,
     `<div class="tr-pick">${V.form(
       `${BASE}/options`,
       csrf,
@@ -340,27 +322,22 @@ function body(o) {
   );
 
   const token = set
-    ? `<span class="kv-mask">${icon("lock", 15)}<span>••••••••••••••••••••</span><span class="pill ok">set</span></span>
+    ? `<span class="kv-mask">${icon("lock", 15)}<span>••••••••••••••••••••</span>${state("ok", "Set")}</span>
        <button type="button" class="btn small" data-modal-open="m-voice-token" id="voice-token-replace">Replace</button>
        ${V.form(`${BASE}/clear`, csrf, `<button class="btn small danger" type="submit" id="voice-remove">${icon("trash", 14)} Remove</button>`, {
          noSave: true,
          cls: "inline",
-         confirm: "Remove the voice token?",
-         confirmBody: "Voice stops at once for everyone until a token is added again. Typing keeps working.",
-         confirmYes: "Remove token",
+         confirm: "Remove the OpenAI key?",
+         confirmBody: "Voice stops for everyone until a key is added again. Typing keeps working.",
+         confirmYes: "Remove key",
        })}`
-    : `<span class="kv-mask">${icon("lock", 15)}<span>No token</span><span class="pill bad">not set</span></span>
-       <button type="button" class="btn small primary" data-modal-open="m-voice-token" id="voice-token-replace">${icon("plus", 14)} Add token</button>`;
-  const tokenRow = V.row(
-    "Voice API token",
-    "The OpenAI key. Written straight to a root-only file on the server and never shown again — only whether it is set.",
-    `<div class="keybox">${token}</div>`,
-    { id: "v-token" }
-  );
+    : `<span class="kv-mask">${icon("lock", 15)}<span>No key</span>${state("bad", "Not set")}</span>
+       <button type="button" class="btn small primary" data-modal-open="m-voice-token" id="voice-token-replace">${icon("plus", 14)} Add key</button>`;
+  const tokenRow = V.row("OpenAI key", "Saved in a file only root can read, and never shown again.", `<div class="keybox">${token}</div>`, { id: "v-token" });
 
   const testRow = V.row(
-    "Check the voice",
-    "Speaks one short line and transcribes it back with the transcription model — a real call, a fraction of a cent. It says which model answered and how long it took.",
+    "Test the voice",
+    "Speaks one line and writes it back. Costs a fraction of a cent.",
     V.form(`${BASE}/test`, csrf, `<button class="btn small" type="submit" id="voice-test"${on && set ? "" : " disabled"}>${icon("play", 14)} Test</button>`, { noSave: true, cls: "inline" }),
     { dep: true }
   );
@@ -370,51 +347,35 @@ function body(o) {
       }</strong> ${esc(o.test.text)}</div></div>`
     : "";
 
+  // Transcription: OpenAI's models only (the whisper.cpp options were retired on 2026-10-25; a stored
+  // local choice still shows, as the current one, until it is changed).
   const tr = o.transcription || { model: "gpt-4o-mini-transcribe", language: "auto" };
-  const list = o.transcribers || [];
-  const local = o.local || {};
-  const installed = new Set(((local && local.models) || []).map((m) => m.model));
-  const ready = (t) => t.kind === "openai" || (local.installed && installed.has(t.model));
+  const list = (o.transcribers || []).filter((t) => t.kind === "openai" || t.id === tr.model);
   const cur = list.find((t) => t.id === tr.model) || list[0] || { hint: "" };
-  const groups = [];
-  for (const t of list) {
-    let g = groups.find((x) => x.name === t.group);
-    if (!g) groups.push((g = { name: t.group, items: [] }));
-    g.items.push(t);
-  }
   const trOpt = (t) =>
-    `<option value="${esc(t.id)}" data-hint="${esc(t.hint)}"${t.id === tr.model ? " selected" : ""}${ready(t) || t.id === tr.model ? "" : " disabled"}>${esc(t.label)} · ${esc(
-      ready(t) ? t.hint : "not installed on this server"
-    )}</option>`;
-  const notInstalled = list.some((t) => t.kind !== "openai" && !ready(t));
+    `<option value="${esc(t.id)}" data-hint="${esc(t.hint)}"${t.id === tr.model ? " selected" : ""}>${esc(t.label)}${t.id === tr.model ? " (current)" : ""}</option>`;
   const trRow = V.row(
     "Transcription",
-    `Writes down what you say — the transcript MINT AI works from, in a live call and in dictation. A model on this server costs nothing but is slower; if it is down, too slow or returns junk, that turn goes to <code>gpt-4o-mini-transcribe</code> instead. <span class="muted" id="voice-session-note">Inside a live call OpenAI accepts only its own models, so the call's running transcript stays on <code>${esc(
-      listen
-    )}</code> whichever you pick.</span>${
-      notInstalled ? ` <span class="muted" id="voice-local-note">Models on this server are installed with <code>deploy/install-voice-whisper.sh</code>.</span>` : ""
-    }`,
+    `Writes down what you say. MINT AI works from this text. <span class="muted" id="voice-session-note">Inside a call, the call's own transcript uses <code>${esc(listen)}</code>.</span>`,
     `<div class="tr-pick">${V.form(
       `${BASE}/transcription`,
       csrf,
-      `<select name="transcriber" id="voice-transcriber" aria-label="Transcription model"${on ? "" : " disabled"}>${groups
-        .map((g) => `<optgroup label="${esc(g.name)}">${g.items.map(trOpt).join("")}</optgroup>`)
-        .join("")}</select>`
+      `<select name="transcriber" id="voice-transcriber" aria-label="Transcription model"${on ? "" : " disabled"}>${list.map(trOpt).join("")}</select>`
     )}<small class="tr-hint" id="voice-transcriber-hint">${esc(cur.hint || "")}</small></div>`,
     { dep: true, scope: "everyone", id: "v-transcribe" }
   );
   const langRow = V.row(
     "Transcription language",
-    "Detect suits a mix of Arabic and English. Pin one only if you speak just that language: pinned to Arabic, English comes out as Arabic words; pinned to English, Arabic is translated. On this server, Detect can translate the Arabic half of a mixed turn into English.",
+    "Detect handles Arabic and English mixed. Pin a language only if you speak just that one.",
     V.form(`${BASE}/transcription`, csrf, `<select name="language" aria-label="Transcription language"${on ? "" : " disabled"}>${(o.languages || [["auto", "Detect"]])
       .map(([v, l]) => V.opt(v, l + (v === "auto" ? " (default)" : ""), tr.language))
       .join("")}</select>`),
     { dep: true, scope: "everyone", id: "v-transcribe-lang" }
   );
 
-  const main = `<div class="group" id="v-main">${hero}${offnote}${modelRow}${trRow}${langRow}${tokenRow}${testRow}${test}</div>`;
+  const main = `<div class="group" id="v-main">${hero}${offnote}${modelRow}${trRow}${tokenRow}${test}${V.more("More: test, language", testRow + langRow, { id: "v-more", open: !!o.test })}</div>`;
 
-  const hiddenNote = `<p class="hidden-note">${icon("info", 16)}Voice, Live audio and Spend are hidden while voice is off. Their values are kept.</p>`;
+  const hiddenNote = `<p class="hidden-note">${icon("info", 16)}The rest of the voice settings are hidden while voice is off. Their values are kept.</p>`;
 
   const cards = o.voices.map((n) => voiceCard(n, o.voice, o.meta[n])).join("");
   const p = o.persona || {};
@@ -424,20 +385,20 @@ function body(o) {
     "voice",
     V.row(
       "Voice",
-      "How MINT AI sounds. Changing it reconnects an open call in the new voice.",
+      "How MINT AI sounds. An open call reconnects in the new voice.",
       V.form(`${BASE}/options`, csrf, `<div class="voice-cards" role="radiogroup" aria-label="Voice">${cards}</div>`, { cls: "voice-form" }),
       { full: true, scope: "everyone", id: "v-voice" }
     ) +
       V.row(
-        "Arabic persona",
-        `How it speaks Arabic. It answers in the language you last used; English stays plain English. It is always MINT AI and never claims to be human.${
+        "Arabic",
+        `How MINT AI speaks Arabic. It answers in the language you last used.${
           p.choice ? ` <span class="muted">Now: ${esc(p.choice)}${p.mode !== "explicit" && p.dialect ? ` · ${esc(p.dialect)}` : ""}.</span>` : ""
         }`,
         V.form(`${BASE}/persona`, csrf, `<select name="preset" aria-label="Arabic persona">${PERSONAS.map(([v, l]) => V.opt(v, l, pcur)).join("")}</select>`) +
           V.form(`${BASE}/persona/reset`, csrf, `<button class="btn small" type="submit" id="voice-persona-reset">Reset</button>`, {
             noSave: true,
             cls: "inline",
-            confirm: "Reset the voice persona?",
+            confirm: "Reset the Arabic persona?",
             confirmBody: "It learns again from how you speak, starting from nothing.",
             confirmYes: "Reset",
           }),
@@ -445,7 +406,7 @@ function body(o) {
       ) +
       V.row(
         "Read replies aloud",
-        "Typed conversations too: MINT AI's replies are read in the same voice, by the voice model, as they stream.",
+        "Reads typed replies aloud too, as they arrive.",
         // This browser's choice (localStorage "mint-read-aloud"), set by public/mint-settings-voice.js
         // and read by the Command Center; the Command Center's speaker button switches the same one.
         `<label class="sw"><input type="checkbox" id="voice-read-aloud" data-read-aloud aria-label="Read replies aloud in this browser"><span class="tr"></span><span class="on-t">On</span><span class="off-t">Off</span></label>`,
@@ -455,63 +416,40 @@ function body(o) {
 
   const a = o.liveAudio || {};
   const liveGroup = V.group(
-    "Live conversation audio",
+    "Live calls",
     "network",
     V.row(
-      "Speaker handling",
-      "Speakers mode pauses the microphone while MINT AI speaks, so laptop speakers never make it interrupt itself — interrupt with a tap, Space or Esc. Headphones mode lets you talk over it.",
+      "Speakers or headphones",
+      "Speakers: the microphone pauses while MINT AI talks. Headphones: you can talk over it. A call lasts up to 20 minutes, one at a time.",
       V.form(`${BASE}/live-audio`, csrf, V.seg("duplex", [["speakers", "Speakers"], ["full", "Headphones"]], a.duplex === "full" ? "full" : "speakers")),
       { scope: "default · each browser can switch", id: "v-live-audio" }
     ) +
-      V.row(
-        "Noise reduction",
-        "OpenAI's filter on the microphone.",
-        V.form(`${BASE}/live-audio`, csrf, `<select name="noise" aria-label="Noise reduction">${NOISE.map(([v, l]) => V.opt(v, l, a.noise || "far_field")).join("")}</select>`),
-        { scope: "everyone", id: "v-noise" }
-      ) +
-      V.row("Call limits", "Saying “stop listening”, Esc, or the red End ends a call.", `<span class="muted-num">20 min a call · one call at a time</span>`)
-  );
-
-  const u = o.usage && !o.usage.error && o.usage.today ? o.usage : null;
-  const spendGroup = V.group(
-    "Spend",
-    "activity",
-    V.row(
-      "Voice spend",
-      "From the usage OpenAI reports, at today's prices. The daily token caps are in Usage &amp; budget.",
-      `<span class="muted-num" id="voice-spend">${u ? `today ${esc(usd(u.today.total))} · month ${esc(usd(u.month_totals.total))}` : "not available"}</span>`,
-      { id: "v-spend" }
-    ) +
-      V.row(
-        "Compare voices",
-        "Record your own voice and compare models and voices side by side.",
-        `<a class="btn small" href="/mint-ai/voice-eval" id="voice-eval-link">${icon("voice", 14)} Voice evaluation</a>`
-      ) +
-      V.row(
-        "Voiceprint trial",
-        "Record a short trial set so we can measure how well your own voice can be recognised. Stays on this server.",
-        `<a class="btn small" href="/mint-ai/voiceprint-trial" id="voiceprint-trial-link">${icon("fingerprint", 14)} Voiceprint trial</a>`
+      V.more(
+        "More: noise reduction",
+        V.row(
+          "Noise reduction",
+          "OpenAI's filter on the microphone.",
+          V.form(`${BASE}/live-audio`, csrf, `<select name="noise" aria-label="Noise reduction">${NOISE.map(([v, l]) => V.opt(v, l, a.noise || "far_field")).join("")}</select>`),
+          { scope: "everyone", id: "v-noise" }
+        )
       )
   );
 
   const dialog = `<section class="cc-modal os narrow" id="m-voice-token" role="dialog" aria-modal="true" aria-labelledby="m-voice-token-t" hidden>
-    <div class="cc-mh">${icon("lock", 18)}<div class="cc-min0"><h2 id="m-voice-token-t">${set ? "Replace the voice token" : "Add the voice token"}</h2><small>An OpenAI API key. A project key limited to the Realtime and Audio endpoints is enough.</small></div>
+    <div class="cc-mh">${icon("lock", 18)}<div class="cc-min0"><h2 id="m-voice-token-t">${set ? "Replace the OpenAI key" : "Add the OpenAI key"}</h2><small>A project key limited to the Realtime and Audio endpoints is enough.</small></div>
       <span class="cc-sp"><button type="button" class="cc-ibtn" data-modal-close aria-label="Close">${icon("close", 16)}</button></span></div>
     <form method="post" action="${BASE}/key" autocomplete="off" id="voice-key-form">
       <input type="hidden" name="_csrf" value="${esc(csrf)}">
-      <div class="mb"><label>OpenAI API key <span class="hint">written straight to a root-only file and never shown again</span>
+      <div class="mb"><label>OpenAI API key <span class="hint">Saved in a file only root can read, and never shown again.</span>
         <input name="value" type="password" placeholder="sk-proj-…" required autocomplete="new-password" spellcheck="false" minlength="20"></label></div>
-      <div class="mf"><span class="sp"></span><button type="button" class="btn" data-modal-close>Cancel</button><button class="btn primary" type="submit" id="voice-key-save">Save token</button></div>
+      <div class="mf"><span class="sp"></span><button type="button" class="btn" data-modal-close>Cancel</button><button class="btn primary" type="submit" id="voice-key-save">Save key</button></div>
     </form></section>`;
 
   return (
-    V.head(
-      "Voice",
-      "Talk with MINT AI in a live conversation: you speak, it answers at once, and you can interrupt it. OpenAI hears and speaks; MINT AI thinks and acts. One switch turns voice on or off for everyone."
-    ) +
+    V.head("Voice", "Talk with MINT AI in a live call. You speak, it answers at once, and you can interrupt it. One switch turns voice on or off for everyone.") +
     main +
     hiddenNote +
-    `<div class="dep-hide">${voiceGroup}${voiceprintGroup(o)}${liveGroup}${spendGroup}</div>` +
+    `<div class="dep-hide">${voiceGroup}${voiceprintGroup(o)}${liveGroup}</div>` +
     dialog
   );
 }
