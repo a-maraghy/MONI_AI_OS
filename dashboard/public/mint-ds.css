@@ -112,9 +112,10 @@ main:focus { outline: none; }
 .side-item { min-height: 40px; padding: 0 10px; gap: 12px; margin: 1px 0; border: 0; border-radius: var(--radius); font: 500 var(--fs-md)/1.2 var(--ui); color: var(--body); grid-template-columns: 20px minmax(0, 1fr) auto; }
 .side-item .ico { width: 20px; height: 20px; color: var(--muted); }
 .side-item:hover { background: var(--panel-3); color: var(--ink); text-decoration: none; }
-.side-item.on { background: var(--panel); color: var(--ink); font-weight: 700; box-shadow: var(--shadow-sm), inset 0 0 0 1px var(--line); }
+/* The current page: inverted, the boldest thing in the menu (black on white, white on black). */
+.side-item.on, .side-item.on:hover { background: var(--accent); color: var(--on-accent); font-weight: 700; box-shadow: none; }
 .side-item.on::before { display: none; }
-.side-item.on .ico { color: var(--accent); }
+.side-item.on .ico { color: var(--on-accent); }
 .badge { min-width: 22px; justify-content: center; padding: 0 7px; line-height: 22px; border-radius: 999px; font: 600 var(--fs-xs)/22px var(--ui); color: var(--muted); background: var(--panel-3); border: 0; }
 .badge.ok { color: var(--ok); background: var(--ok-tint); }
 .badge.warn { color: var(--warn-ink); background: var(--warn-tint); }

@@ -98,8 +98,8 @@ check("one family for reading, its Mono for code", /--ui: "Atkinson Hyperlegible
 check("no font is fetched from anywhere but the panel", !/url\(["']?https?:/.test(css) && !/@import/.test(css));
 const light = /:root\s*\{([\s\S]*?)\n\}/.exec(css)[1];
 const dark = /:root\[data-theme="dark"\]\s*\{([\s\S]*?)\n\}/.exec(css)[1];
-check("light: the ground is #F5F7F6 and the accent is spearmint ink #0B6B4C", /--bg: #F5F7F6/.test(light) && /--accent: #0B6B4C/.test(light) && /--on-accent: #FFFFFF/.test(light));
-check("dark: the ground is #101513 and the accent is mint #6ED3A6", /--bg: #101513/.test(dark) && /--accent: #6ED3A6/.test(dark) && /--on-accent: #0C2219/.test(dark));
+check("light: a white ground with black as the accent", /--bg: #FFFFFF/.test(light) && /--accent: #000000/.test(light) && /--on-accent: #FFFFFF/.test(light));
+check("dark: a black ground with white as the accent", /--bg: #000000/.test(dark) && /--accent: #FFFFFF/.test(dark) && /--on-accent: #000000/.test(dark));
 check("no glow: the old glow token is transparent", /--glow: transparent/.test(light));
 {
   // Mint #00E6A5 is never a text colour on the light ground.

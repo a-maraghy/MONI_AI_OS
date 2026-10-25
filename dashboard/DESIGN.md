@@ -43,23 +43,29 @@
 
 ## Colour
 
+**Revision 2026-10-25 (user): bold black and white.** Light mode is pure white, dark mode pure
+black; black and white are the main colours and the accent is the ink itself (black primary
+buttons on white, white on black). Neutrals are true greys (no green tint). Colour is kept only
+for state (ok / warning / failed / info), always with a word and a shape. Links are underlined,
+since they no longer differ from text by colour.
+
 Strategy: Restrained — tinted neutrals plus one accent; state colours carry meaning only.
 
 | Token | Light | Dark | Use |
 |---|---|---|---|
-| `--bg` | `#F5F7F6` | `#101513` | page |
-| `--panel` | `#FFFFFF` | `#171D1A` | cards, inputs, menus |
-| `--panel-2` | `#ECF0EE` | `#1C2421` | sidebar, table heads, hovers |
-| `--panel-3` | `#E2E8E5` | `#232C28` | pressed, badges |
-| `--line` | `#DCE3DF` | `#2A3430` | hairlines between things |
-| `--line-strong` | `#7D8A84` | `#6B7872` | control edges (≥ 3:1 on page and panel) |
-| `--ink` | `#141A17` | `#E9EEEB` | headings, values (16–17:1) |
-| `--body` | `#2A332F` | `#D0D8D4` | running text (≥ 11:1) |
-| `--muted` | `#525E58` | `#A8B4AE` | secondary text (≥ 5.9:1 on every ground) |
-| `--accent` | `#0B6B4C` | `#6ED3A6` | primary action, links, current place, focus |
-| `--on-accent` | `#FFFFFF` | `#0C2219` | text on the accent (6.5:1 / 9.2:1) |
-| `--accent-soft` | `#E3EFE9` | `#1E3A2F` | selected ground |
-| `--ok` / `--warn` / `--bad` / `--info` | `#1C6B44` / `#8A5200` / `#B3261E` / `#1F5799` | `#6ED3A6` / `#F0B45C` / `#FF8F85` / `#8DB9F2` | state text, each with a `-tint` ground and `-line` edge |
+| `--bg` | `#FFFFFF` | `#000000` | page |
+| `--panel` | `#FFFFFF` | `#0D0D0D` | cards, inputs, menus |
+| `--panel-2` | `#F2F2F2` | `#161616` | sidebar, table heads, hovers |
+| `--panel-3` | `#E6E6E6` | `#1F1F1F` | pressed, badges |
+| `--line` | `#DEDEDE` | `#2B2B2B` | hairlines between things |
+| `--line-strong` | `#757575` | `#8C8C8C` | control edges (≥ 3:1 on page and panel) |
+| `--ink` | `#000000` | `#FFFFFF` | headings, values (16–17:1) |
+| `--body` | `#1A1A1A` | `#EBEBEB` | running text (≥ 11:1) |
+| `--muted` | `#4D4D4D` | `#B8B8B8` | secondary text (≥ 5.9:1 on every ground) |
+| `--accent` | `#000000` | `#FFFFFF` | primary action, links, current place, focus |
+| `--on-accent` | `#FFFFFF` | `#000000` | text on the accent (21:1 both) |
+| `--accent-soft` | `#EDEDED` | `#262626` | selected ground |
+| `--ok` / `--warn` / `--bad` / `--info` | `#0A7A3D` / `#8A4B00` / `#C4170C` / `#0B4FB3` | `#4ADE80` / `#FBBF24` / `#FF6B61` / `#7CB0FF` | state text, each with a `-tint` ground and `-line` edge |
 | `--violet-ink` | `#5B3FA8` | `#B9A6F2` | MINT AI's own things (a hired session) |
 
 Every text pair is ≥ 4.5:1 (checked in `tools/test-brand.cjs` against `--bg`, `--panel` and
