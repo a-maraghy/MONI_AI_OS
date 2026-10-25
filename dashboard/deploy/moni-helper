@@ -8328,6 +8328,9 @@ def chatgpt_login_current():
 
 def chatgpt_device_prompt(out):
     """The link and the one-time code from the CLI's device-auth output."""
+    # The CLI colours the code (ESC[94mGIDR-0IKNIESC[0m); the "m" of the colour
+    # sequence touches the code, so \b never matched. Strip colours first.
+    out = ANSI_RE.sub("", out or "")
     url = None
     for m in DEVICE_URL_RE.finditer(out):
         u = m.group(0).rstrip(".,)")

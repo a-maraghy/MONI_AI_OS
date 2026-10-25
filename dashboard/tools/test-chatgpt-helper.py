@@ -41,6 +41,8 @@ print("the device-code prompt")
 out = "Welcome to Codex\n\nFollow these steps to sign in:\n1. Open this link in your browser\n   \x1b[94mhttps://auth.openai.com/codex/device\x1b[0m\n2. Enter this one-time code \x1b[94mK3PQ-7ZB2X\x1b[0m\n(expires in 15 minutes)\n"
 url, code = h.chatgpt_device_prompt(h.ANSI_RE.sub("", out))
 check("the link and the code are read off the CLI's output", url == "https://auth.openai.com/codex/device" and code == "K3PQ-7ZB2X", (url, code))
+raw = "2. Enter this one-time code (expires in 15 minutes)\n   \x1b[94mGIDR-0IKNI\x1b[0m\n"  # as the real CLI 0.164.0 printed it
+check("a coloured code straight from the CLI is read", h.chatgpt_device_prompt(raw)[1] == "GIDR-0IKNI")
 check("a link to anywhere but OpenAI is not offered", h.chatgpt_device_prompt("open https://evil.example/x code ABCD-12345")[0] is None)
 
 print("the call log")
