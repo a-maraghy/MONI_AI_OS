@@ -1023,6 +1023,7 @@
       desk: DESK, running: false, wanted: false, still: !!(reduceMq && reduceMq.matches), frames: [], gl: false, lowRes: false,
       // expressive (2026-10-20): the mouth's viseme mix, the pointer, a glance, dozing, a reaction
       vis: { closed: 1, open: 0, wide: 0, round: 0 }, ptr: [0, 0], ptrOn: false, near: false, lookK: 0,
+      headCheck: 0, headEdges: -1, testNoHead: false, // the head self-check (checkHead); testNoHead: tests only, as a GPU that skips the head
       gzUntil: 0, gzAt: null, doze: 0, dozeT: 0, dozeChk: 0, actAt: 0, rk: "", rt: 0, rd: 0,
       // eye contact (2026-10-20, mint-presence-bind.js): the camera's presence state and where the person is
       presence: null, contact: null, lookUpUntil: 0,
@@ -1368,7 +1369,7 @@
       gl.uniform2f(u.u_res, cw, ch); gl.uniform1i(u.u_wt, 0); gl.uniform1f(u.u_maxPt, maxPt);
       gl.uniform3f(u.u_wire, pal.wire[0] / 255, pal.wire[1] / 255, pal.wire[2] / 255);
       var lineGain = dpr > 1.4 ? 1.25 : 0.85;
-      for (i = nHeads - 1; i >= 0; i--) { // the sessions first, the core on top
+      for (i = nHeads - 1; i >= 0 && !S.testNoHead; i--) { // the sessions first, the core on top
         h = POOL[i]; o = geoFor(h.head, h.detail);
         setHeadU(u, h, 1, dpr, home);
         var hInd = i === 0 ? S.ind : null; // look and speak: the core (and the companion bot, which is a core) only, never a session's head
@@ -1533,8 +1534,36 @@
     function draw() {
       if (!canvas.width || !canvas.height) return;
       if (!nHeads) prepare(0);
-      if (gl) drawGL(); else if (ctx) draw2d();
+      if (gl) { drawGL(); if (S.headCheck < 2) checkHead(); } else if (ctx) draw2d();
       if (onFrame) onFrame(S, W);
+    }
+    /*
+     * Some GPUs draw the glow and the z z z but not the head itself (user screenshots, 2026-10-25: a soft grey blob
+     * in the dock, only the glow in the Command Center; the same page draws the head on others). Once the core's
+     * head is fully there, read back a patch over it, right after drawing it: the wireframe makes sharp edges, the
+     * glow alone none. No edges twice, a second apart -> this GPU does not draw the head; the 2D renderer does.
+     * S.headCheck: 0 not checked yet, 1 failed once, 2 done.
+     */
+    var headCheckAt = 0;
+    function checkHead() {
+      var c0 = POOL[0];
+      if (!c0 || S.ctxLost || c0.alpha < 0.95 || c0.form < 1 || c0.dis > 0 || c0.wa < 0.3 || S.frames.length < 20) return;
+      var t = performance.now();
+      if (t < headCheckAt) return;
+      var dpr = S.dpr, hr = Math.max(6, Math.round(0.45 * c0.r * dpr)), cx = Math.round(c0.cx * dpr), cy = Math.round((S.cssH - c0.cy) * dpr);
+      var x0 = Math.max(0, cx - hr), y0 = Math.max(0, cy - hr), w = Math.min(canvas.width, cx + hr) - x0, h = Math.min(canvas.height, cy + hr) - y0;
+      if (w < 8 || h < 8) return;
+      var px = new Uint8Array(w * h * 4), edges = 0, i, j, k;
+      try { gl.readPixels(x0, y0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, px); } catch (e) { S.headCheck = 2; return; }
+      for (j = 0; j < h; j++) for (i = 1; i < w; i++) { k = (j * w + i) * 4 + 3; if (Math.abs(px[k] - px[k - 4]) > 48) edges++; }
+      S.headEdges = edges;
+      if (edges >= 8) { S.headCheck = 2; return; }
+      if (S.headCheck === 0) { S.headCheck = 1; headCheckAt = t + 1000; return; }
+      S.headCheck = 2;
+      var info = "";
+      try { var dbg = gl.getExtension("WEBGL_debug_renderer_info"); info = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : ""; } catch (e) { info = ""; }
+      if (window.console) console.warn("[core E] this GPU does not draw the head (" + (info || "unknown renderer") + "); drawing in 2D");
+      setTimeout(function () { to2D(true); }, 0);
     }
     var slowSince = 0;
     function guard(now) {
@@ -1615,13 +1644,15 @@
      * rebuilt when it comes back; if it does not come back within 4 s, the core draws in 2D instead.
      */
     var lostTimer = 0, destroyed = false;
-    function to2D() {
+    function to2D(quiet) {
       if (destroyed) return;
+      var lose = gl && !S.ctxLost && gl.getExtension("WEBGL_lose_context"); // free the GPU side of a context we leave
       S.ctxLost = false; gl = null; geos = {}; fvGrid = null; fbo = null; fboTex = null; fboW = 0; fboH = 0;
       canvas.removeEventListener("webglcontextlost", onCtxLost); canvas.removeEventListener("webglcontextrestored", onCtxRestored);
       if (canvas.parentNode) { var fresh = canvas.cloneNode(false); canvas.parentNode.replaceChild(fresh, canvas); canvas = fresh; }
+      if (lose) try { lose.loseContext(); } catch (e) { /* already gone */ }
       ctx = canvas.getContext("2d"); S.gl = false;
-      if (window.console) console.warn("[core E] the GPU context did not come back; drawing in 2D");
+      if (!quiet && window.console) console.warn("[core E] the GPU context did not come back; drawing in 2D");
       if (S.wanted) start(); else redrawIfIdle();
     }
     function onCtxLost(e) {
