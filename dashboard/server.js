@@ -1845,7 +1845,7 @@ app.post("/agents/:slug/settings", requireAuth, requirePerm("agents.edit"), requ
   if (!agent) return;
   const addons = pickAddons(req.body, "agent");
   try {
-    await priv.agentUpdate({
+    const result = await priv.agentUpdate({
       slug: agent.slug,
       name: field(req.body, "name"),
       role: agent.role || "",
@@ -1861,7 +1861,11 @@ app.post("/agents/:slug/settings", requireAuth, requirePerm("agents.edit"), requ
       addons,
       addon_env: catalog.envFor(addons, "agent", req.body),
     });
-    res.redirect(agentRedirect(agent.slug, "/settings", { msg: "Settings saved." }));
+    const moved = result && result.api_port_moved;
+    const msg = moved
+      ? `Settings saved. Port ${moved.asked} is used by another agent, so this agent's webhook API stays on port ${moved.port}.`
+      : "Settings saved.";
+    res.redirect(agentRedirect(agent.slug, "/settings", { msg }));
   } catch (e) {
     res.redirect(agentRedirect(agent.slug, "/settings", { err: e.message }));
   }

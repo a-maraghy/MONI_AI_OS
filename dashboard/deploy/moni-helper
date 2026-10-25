@@ -1059,6 +1059,79 @@ def public_meta(cfg):
     return meta
 
 
+API_PORT_DEFAULT = 8080
+API_PORT_FIRST_SPARE = 8081
+
+
+def read_env_file(path):
+    out = {}
+    try:
+        with open(path) as fh:
+            for line in fh:
+                if "=" in line and not line.startswith("#"):
+                    k, v = line.rstrip("\n").split("=", 1)
+                    out[k.strip()] = v.strip()
+    except OSError:
+        pass
+    return out
+
+
+def api_ports_in_use(except_slug):
+    """API ports other agents are set to use, from their environment files."""
+    used = set()
+    try:
+        slugs = os.listdir(AGENTS_DIR)
+    except OSError:
+        return used
+    for other in slugs:
+        if other == except_slug or not SLUG_RE.match(other):
+            continue
+        env = read_env_file(os.path.join(agent_dir(other), "agent.env"))
+        if env.get("ENABLE_API_SERVER", "").lower() != "true":
+            continue
+        try:
+            used.add(int(env.get("API_SERVER_PORT") or API_PORT_DEFAULT))
+        except ValueError:
+            pass
+    return used
+
+
+def assign_api_port(slug, cfg):
+    """Give an agent with the webhook API a port no other agent uses.
+
+    Every agent's API server binds 0.0.0.0:<port>; two on the same port means
+    the second crashes at every start ("address already in use"). The panel's
+    form always offers the catalogue default, so a save could silently move an
+    agent back onto another agent's port (MINT Pace, 2026-10-25). Order: the
+    port asked for if free, else the port the agent already runs on if free,
+    else the first free one from 8081. Returns (old, new) when it had to move.
+    """
+    env = cfg.get("addon_env") or {}
+    if str(env.get("ENABLE_API_SERVER", "")).lower() != "true":
+        return None
+    used = api_ports_in_use(slug)
+    def port(v):
+        try:
+            p = int(str(v).strip())
+        except (TypeError, ValueError):
+            return None
+        return p if 1024 <= p <= 65535 else None
+    asked = port(env.get("API_SERVER_PORT")) or API_PORT_DEFAULT
+    current = port(read_env_file(os.path.join(agent_dir(slug), "agent.env")).get("API_SERVER_PORT"))
+    if asked not in used:
+        chosen = asked
+    elif current and current not in used:
+        chosen = current
+    else:
+        chosen = API_PORT_FIRST_SPARE
+        while chosen in used or chosen == API_PORT_DEFAULT:
+            chosen += 1
+    env = dict(env)
+    env["API_SERVER_PORT"] = str(chosen)
+    cfg["addon_env"] = env
+    return (asked, chosen) if chosen != asked else None
+
+
 def cmd_agent_create(args):
     payload = read_stdin_json()
     cfg = validate_config(payload, creating=True)
@@ -1068,6 +1141,7 @@ def cmd_agent_create(args):
     if not os.path.isdir(RUNTIME_DIR):
         fail("agent runtime is not installed at " + RUNTIME_DIR + "; run the bootstrap first")
 
+    port_moved = assign_api_port(slug, cfg)
     uid, gid = agent_ids()
     os.makedirs(AGENTS_DIR, exist_ok=True)
     try:
@@ -1100,14 +1174,17 @@ def cmd_agent_create(args):
     elif channel:
         message = "Served by its WhatsApp bridge."
 
-    audit("agent-create", {"slug": slug, "name": cfg["name"], "started": started})
-    ok({
+    audit("agent-create", {"slug": slug, "name": cfg["name"], "started": started, "api_port_moved": port_moved})
+    out = {
         "slug": slug,
         "started": started,
         "obsidian_registered": registered,
         "message": message,
         "state": unit_state(slug),
-    })
+    }
+    if port_moved:
+        out["api_port_moved"] = {"asked": port_moved[0], "port": port_moved[1]}
+    ok(out)
 
 
 def cmd_agent_update(args):
@@ -1119,6 +1196,7 @@ def cmd_agent_update(args):
     merged = dict(current)
     merged.update({k: v for k, v in payload.items() if v is not None})
     cfg = validate_config(merged, creating=False)
+    port_moved = assign_api_port(slug, cfg)
 
     uid, gid = agent_ids()
     channel = channel_bound_to(slug)
@@ -1135,8 +1213,11 @@ def cmd_agent_update(args):
     if unit_state(slug)["active"] == "active":
         restarted = run(["systemctl", "restart", unit_name(slug)], timeout=30).returncode == 0
     audit("agent-update", {"slug": slug, "restarted": restarted,
-                           "topics": plan.get("enabled", False), "topics_skipped": plan.get("skipped")})
+                           "topics": plan.get("enabled", False), "topics_skipped": plan.get("skipped"),
+                           "api_port_moved": port_moved})
     out = {"slug": slug, "restarted": restarted, "state": unit_state(slug)}
+    if port_moved:
+        out["api_port_moved"] = {"asked": port_moved[0], "port": port_moved[1]}
     if plan.get("skipped"):
         out["topics_skipped"] = plan["skipped"]
     ok(out)
