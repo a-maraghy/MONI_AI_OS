@@ -272,7 +272,13 @@
     var box = $("dk-log");
     if (!box) return;
     var list = turns(), out = [];
-    list.forEach(function (x) { if (x.me) out.push({ who: "me", text: x.me, id: "m" + x.id }); if (x.ai) out.push({ who: "ai", text: x.ai, id: "a" + x.id }); });
+    list.forEach(function (x) {
+      // A message's files (the Command Center's attachments) are named under it.
+      var me = x.me || "";
+      if (x.files && x.files.length) me = (me ? me + "\n" : "") + "Attached: " + x.files.join(", ");
+      if (me) out.push({ who: "me", text: me, id: "m" + x.id });
+      if (x.ai) out.push({ who: "ai", text: x.ai, id: "a" + x.id });
+    });
     // The newest reply: a new one while the panel is closed lights the button's dot.
     var ai = out.filter(function (b) { return b.who === "ai" && b.text !== "…"; }).pop();
     var aiSig = ai ? ai.id + ":" + ai.text.length : "";

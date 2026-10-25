@@ -84,7 +84,7 @@ console.log("the Command Center");
   check("its title is MINT AI (the AI brand names itself once)", titleOf(cc) === "MINT AI", titleOf(cc));
   check("the Machine sheet's core grid is headed MINT AI core", /class="cc-sec-t">MINT AI core</.test(cc));
   check("the conversation sheet is MINT AI's session", /id="cc-dr-sub">the MINT AI session</.test(cc));
-  check("the composer says Ask MINT AI…", /placeholder="Ask MINT AI…"/.test(cc));
+  check("the composer says Ask MINT AI", /placeholder="Ask MINT AI"/.test(cc));
   check("the voice bar says TALK TO MINT AI", /TALK TO MINT AI/.test(cc) && /aria-label="Message MINT AI"/.test(cc));
   check("no old name in the Command Center", !OLD_NAME.test(visible(cc)) && !/MONI/.test(cc.replace(/moni-ai|MoniMap|MoniPanels/g, "")), (cc.match(/.{0,40}MONI.{0,40}/) || [])[0]);
 

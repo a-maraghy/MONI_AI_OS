@@ -4102,7 +4102,17 @@ app.post("/mint-ai/api/live/end", ...moniAiWrite, (req, res) => {
 
 app.post("/mint-ai/api/send", ...moniAiWrite, async (req, res) => {
   try {
-    const params = moniai.cleanSend(req.body || {});
+    const b0 = req.body || {};
+    // Attached files (lib/uploads.js): ids the page got from /mint-ai/api/uploads, the sender's own. Their
+    // lines are added here, never by the page; a voice turn carries none.
+    if (b0.attachments !== undefined && b0.vt !== undefined) return res.status(400).json({ error: "A voice turn can't carry files.", code: "invalid" });
+    const files = uploads.forSend(b0.attachments, req.me.username);
+    const typed = typeof b0.text === "string" ? b0.text.trim() : "";
+    const params = moniai.cleanSend(files.length && !typed ? { ...b0, text: "(files attached)" } : b0);
+    if (files.length) {
+      params.text = (typed ? params.text + "\n\n" : "") + require("./lib/uploads").trailer(files);
+      if (params.text.length > 20000) throw Object.assign(new Error("The message and its file list are too long. Shorten the message."), { code: "invalid" });
+    }
     // A voice turn (the page sends its voice-turn id): MINT AI gets exactly
     // what this server heard for it, once -- never a prompt echo, never words
     // that no transcript here produced. Typed turns are the administrator's
@@ -4113,9 +4123,9 @@ app.post("/mint-ai/api/send", ...moniAiWrite, async (req, res) => {
       return res.status(422).json({ error: "That voice turn was not sent: it does not match what was heard.", code: "ungrounded" });
     }
     // A pending Tier-2 confirm: this "yes" / "no" answers it and goes no further.
-    const conf = uiConfirmHeard({ username: req.me.username, ip: req.ip }, params.text, "typed or direct voice");
+    const conf = files.length ? null : uiConfirmHeard({ username: req.me.username, ip: req.ip }, params.text, "typed or direct voice");
     if (conf && (conf.confirmed || conf.cancelled)) return res.json({ confirm: { id: (conf.confirmed || conf.cancelled).id, ok: !!conf.confirmed } });
-    db.logLogin(req.ip, req.me.username, "moni-ai", `turn${params.target ? " for " + params.target : ""}`);
+    db.logLogin(req.ip, req.me.username, "moni-ai", `turn${params.target ? " for " + params.target : ""}${files.length ? ` with ${files.length} file${files.length === 1 ? "" : "s"}` : ""}`);
     // A one-time ui token for this send, from this tab (lib/ui-relay.js).
     const ut = uiRelay.mint({ actor: req.me.username, tab: (req.body || {}).tab, via: "page" });
     if (ut) params.ut = ut;
@@ -5936,6 +5946,14 @@ const proactive = require("./lib/routes-proactive").mount(app, {
  * building blocks public/mint-widgets.js and the layout policy public/mint-canvas-policy.js).
  */
 const canvas = require("./lib/routes-canvas").mount(app, { requireAuth, requireCsrf, apiGuard: moniAiGuard, apiWrite: moniAiWrite, db, settingsRoutes });
+
+/*
+ * Files attached to a message to MINT AI (2026-10-25): lib/uploads.js keeps them under
+ * <data dir>/uploads/<day>/<message>/, lib/routes-uploads.js takes and serves them; /mint-ai/api/send
+ * turns a message's ids into its "[Attached file: …]" lines.
+ */
+const uploads = require("./lib/uploads").create({ root: process.env.MONI_UPLOAD_DIR || path.join(DATA_DIR, "uploads") });
+require("./lib/routes-uploads").mount(app, { apiGuard: moniAiGuard, apiWrite: moniAiWrite, express, uploads, db });
 
 /* ------------------------------------- Computers (laptop control) ---- */
 /*

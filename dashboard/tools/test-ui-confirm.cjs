@@ -102,7 +102,7 @@ check("/ui/confirm: CSRF'd, strict body, only the user's pending id, re-checks t
 }
 check("  it writes no setting itself: it hands the page the form for the existing route", !/setVoicePersona|voiceOptionsSet|setSetting/.test(route) && /form = \{ voice: t\.args\.voice \}/.test(route));
 const send = s.slice(s.indexOf('app.post("/mint-ai/api/send"'), s.indexOf('app.post("/mint-ai/api/interrupt"'));
-check("/send: a whole yes/no answers a pending confirm and goes nowhere else", /const conf = uiConfirmHeard\(/.test(send) && send.indexOf("uiConfirmHeard") < send.indexOf('moniai.call("send"') && /return res\.json\(\{ confirm:/.test(send));
+check("/send: a whole yes/no answers a pending confirm and goes nowhere else", /const conf = (files\.length \? null : )?uiConfirmHeard\(/.test(send) && send.indexOf("uiConfirmHeard") < send.indexOf('moniai.call("send"') && /return res\.json\(\{ confirm:/.test(send));
 check("the front desk and its routes are gone", !/\/mint-ai\/api\/desk\//.test(s.replace(/\/\*[\s\S]*?\*\//g, "")));
 check("voice.set and call.* are refused while voice is off: opening a confirm, MINT AI's own, and the confirm itself", /if \(uiVoiceOff\(v\.action\)\) return \{ error: "voice is off" \};/.test(s) && /if \(uiVoiceOff\(v\.action\)\) return void ack\(false, "voice is off"\);/.test(s) && /if \(uiVoiceOff\(t\.action\)\) return res\.status\(409\)/.test(s));
 check("the live call: openConfirm and confirmHeard", /openConfirm: \(v\) => uiConfirmOpen\(\{ username: actor, ip, canVoice \}, v, tab, "the live voice"\)/.test(s) && /confirmHeard: \(text\) => uiConfirmHeard\(/.test(s));

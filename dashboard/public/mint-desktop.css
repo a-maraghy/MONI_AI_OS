@@ -35,7 +35,7 @@ html.cc-desk body { background-image: none !important; }
 
 /* No page round it: no top bar, sidebar, icon rail, page background, hint row or routing chip. */
 html.cc-desk .topbar, html.cc-desk .sidebar, html.cc-desk .nav-scrim, html.cc-desk .os-scrim, html.cc-desk .dock-band,
-html.cc-desk #cc-rail, html.cc-desk .cc-bg, html.cc-desk #cc-hint, html.cc-desk #cc-target, html.cc-desk .cc-vb-tags,
+html.cc-desk #cc-rail, html.cc-desk .cc-bg, html.cc-desk #cc-hint, html.cc-desk #cc-target, html.cc-desk #cc-vm, html.cc-desk .cc-vb-tags,
 html.cc-desk .cc-static, html.cc-desk #cc-cap, html.cc-desk #cc-cap-more, html.cc-desk #cc-reply,
 html.cc-desk .cc-sheet-scrim, html.cc-desk #cc-ring, html.cc-desk .cc-orbit { display: none !important; }
 html.cc-desk .layout, html.cc-desk .layout.bare, html.cc-desk main.content { background: transparent !important; padding: 0 !important; margin: 0 !important; border: 0 !important; }
@@ -93,19 +93,24 @@ html.cc-desk .dk-panel-dock { flex: none; }
 /* The composer and the live call's bar, inside the panel. */
 html.cc-desk .cc-dock { position: static; padding: 0; gap: 0; display: block; }
 html.cc-desk .cc-composer, html.cc-desk .cc-voicebar { width: 100%; box-sizing: border-box; background: rgba(128, 128, 128, .10); border: 1px solid var(--dk-card-b); color: var(--dk-tx); box-shadow: none; }
-html.cc-desk .cc-composer { height: 48px; padding: 0 6px 0 8px; }
-html.cc-desk .cc-composer input { color: var(--dk-tx); }
-html.cc-desk .cc-composer input::placeholder { color: var(--dk-tx2); }
+html.cc-desk .cc-composer { min-height: 48px; padding: 4px 6px 4px 12px; border-radius: 18px; gap: 2px; }
+html.cc-desk .cc-composer textarea { color: var(--dk-tx); font: 400 14px/20px var(--ui); padding: 8px 2px 2px; min-height: 36px; height: 36px; max-height: 128px; }
+html.cc-desk .cc-composer textarea::placeholder { color: var(--dk-tx2); }
+html.cc-desk .cc-c-row { margin-left: -6px; }
+html.cc-desk .cc-c-tool, html.cc-desk .cc-c-round { width: 36px; height: 36px; min-width: 36px; }
+html.cc-desk .cc-c-tool { color: var(--dk-tx); }
+html.cc-desk .cc-c-attach { border-color: var(--dk-card-b); }
+html.cc-desk .cc-chip { background: transparent; border-color: var(--dk-card-b); color: var(--dk-tx); height: 48px; }
+html.cc-desk .cc-chip .th { width: 36px; height: 36px; }
+html.cc-desk .cc-chip .x { width: 36px; height: 36px; color: var(--dk-tx2); }
+html.cc-desk .dk-msg span { white-space: pre-wrap; }
 html.cc-desk .cc-dock.calm:not(:hover):not(:focus-within) .cc-composer { opacity: 1; }
-html.cc-desk .dk-kb { font: 600 13px var(--mono); color: var(--dk-tx2); white-space: nowrap; order: 3; flex: none; }
+html.cc-desk .dk-kb { font: 600 13px var(--mono); color: var(--dk-tx2); white-space: nowrap; flex: none; }
 /* Too narrow for the message box's placeholder (mint-desktop.js fitHint): the key caps alone, then nothing. */
 html.cc-desk .dk-kb.dk-kb-short .dk-kb-w { display: none; }
 html.cc-desk .dk-kb.dk-kb-none { display: none; }
 html.cc-desk .dk-kb b { border: 1px solid var(--dk-pill-b); border-radius: 4px; padding: 1px 5px; margin: 0 1px; font-weight: 600; }
 html.cc-desk[data-dk-mode="floating"] .dk-kb { display: none; }
-html.cc-desk .cc-composer input { order: 2; }
-html.cc-desk .cc-composer .cc-c-mic { order: 4; }
-html.cc-desk .cc-composer .cc-c-stop, html.cc-desk .cc-composer .cc-c-send { order: 5; }
 
 @keyframes dk-in { from { opacity: 0; transform: translateY(8px); } }
 

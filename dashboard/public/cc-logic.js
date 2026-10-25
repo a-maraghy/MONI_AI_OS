@@ -765,6 +765,61 @@
     return "offline";
   }
 
+  /* ------------------------------------------------------------ attachments
+     Files attached to a message (lib/uploads.js keeps them; the server adds one line per file to the
+     turn's text). The same allow-list and limits as the server, so the page can say no before uploading. */
+  var ATTACH_MAX_BYTES = 20 * 1024 * 1024, ATTACH_MAX_FILES = 10;
+  var ATTACH_EXT = ["png", "jpg", "jpeg", "gif", "webp", "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "odt", "ods", "odp", "rtf", "txt", "csv", "tsv", "md", "json", "log", "xml", "yaml", "yml", "zip"];
+  var ATTACH_ACCEPT = ATTACH_EXT.map(function (e) { return "." + e; }).join(",");
+  // A pasted image comes as "image.png" or with no name: its type names the extension.
+  var TYPE_EXT = { "image/png": "png", "image/jpeg": "jpg", "image/gif": "gif", "image/webp": "webp", "application/pdf": "pdf", "text/plain": "txt" };
+  function attachExt(name) { var m = /\.([A-Za-z0-9]{1,5})$/.exec(String(name || "")); return m ? m[1].toLowerCase() : ""; }
+  function attachSize(n) {
+    n = Number(n) || 0;
+    if (n < 1024) return n + " B";
+    if (n < 1024 * 1024) return Math.round(n / 1024) + " KB";
+    return (Math.round((n / (1024 * 1024)) * 10) / 10).toFixed(1) + " MB";
+  }
+  /** Why a file can't be attached, in words, or "" if it can. o: { name, size, have (files already attached) } */
+  function attachRefusal(o) {
+    o = o || {};
+    var ext = attachExt(o.name);
+    if (!ext || ATTACH_EXT.indexOf(ext) < 0) return (ext ? "." + ext + " files" : "Files without an extension") + " can't be attached";
+    if (!o.size) return "it is empty";
+    if (o.size > ATTACH_MAX_BYTES) return "it is " + attachSize(o.size) + "; the limit is 20 MB";
+    if ((o.have || 0) >= ATTACH_MAX_FILES) return "a message can carry at most " + ATTACH_MAX_FILES + " files";
+    return "";
+  }
+  /** A name for a file the clipboard gave without a useful one: "Pasted image 2026-10-25 21.48.png". */
+  function pastedName(name, type, now) {
+    var ext = attachExt(name);
+    if (ext && !/^image\.(png|jpe?g|gif|webp)$/i.test(String(name))) return String(name);
+    var e = ext || TYPE_EXT[type] || "";
+    var d = new Date(now || Date.now());
+    var p = function (x) { return (x < 10 ? "0" : "") + x; };
+    var stamp = d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) + " " + p(d.getHours()) + "." + p(d.getMinutes()) + "." + p(d.getSeconds());
+    return (/^image\//.test(type || "") ? "Pasted image " : "Pasted file ") + stamp + (e ? "." + e : "");
+  }
+  var ATTACHED_RE = /^\[Attached file: (\/[^|\]\n]+) \| ([^|\]\n]+) \| ([A-Za-z0-9.+\/-]+) \| ([0-9.]+ (?:B|KB|MB))\]$/;
+  /**
+   * A turn's text and its files: the "[Attached file: …]" lines at its end, read back.
+   * Returns { text, files: [{ path, name, type, size, image, url }] }; url is the page's route to
+   * the file (its last three path parts), or "" for a path that is not an upload.
+   */
+  function splitAttached(text) {
+    var lines = String(text == null ? "" : text).split("\n"), files = [];
+    while (lines.length) {
+      var m = ATTACHED_RE.exec(lines[lines.length - 1]);
+      if (!m) break;
+      lines.pop();
+      var tail = /\/(\d{4}-\d{2}-\d{2}\/[a-f0-9]{16}\/[a-f0-9]{12}\.[a-z0-9]{1,5})$/.exec(m[1]);
+      files.unshift({ path: m[1], name: m[2], type: m[3], size: m[4], image: /^image\/(png|jpeg|gif|webp)$/.test(m[3]), url: tail ? "/mint-ai/api/uploads/" + tail[1] : "" });
+    }
+    var rest = lines.join("\n").replace(/\s+$/, "");
+    if (files.length && rest === "(files attached)") rest = "";
+    return { text: files.length ? rest : String(text == null ? "" : text), files: files };
+  }
+
   return {
     CORES: CORES, CORE_DEFAULT: CORE_DEFAULT, normCore: normCore, isCore: isCore,
     BOT_HEADS: BOT_HEADS, BOT_HEAD_DEFAULT: BOT_HEAD_DEFAULT, normBotHead: normBotHead, isBotHead: isBotHead,
@@ -781,5 +836,6 @@
     TOK_KEYS: TOK_KEYS, tokens: tokens, tokLine: tokLine, tokTip: tokTip,
     SHEETS: SHEETS, sheetKeys: sheetKeys,
     normName: normName, makeAliases: makeAliases, resolveTarget: resolveTarget, resolveFrom: resolveFrom, ghostWhere: ghostWhere,
+    ATTACH_MAX_BYTES: ATTACH_MAX_BYTES, ATTACH_MAX_FILES: ATTACH_MAX_FILES, ATTACH_EXT: ATTACH_EXT, ATTACH_ACCEPT: ATTACH_ACCEPT, attachExt: attachExt, attachSize: attachSize, attachRefusal: attachRefusal, pastedName: pastedName, splitAttached: splitAttached,
   };
 });

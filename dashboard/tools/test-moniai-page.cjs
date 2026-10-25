@@ -86,7 +86,7 @@ check("every id is unique", (() => {
 })());
 check("a page without an OpenAI key (voice on) has no mic, and points a manager to Settings ▸ Voice", (() => {
   const p = views.page({ csrf: "t", user: { name: "a", perm: admin }, voice: { configured: false, manage: true, on: true, use: true, live: false } });
-  return !/id="cc-c-mic"/.test(p) && /add a token in Settings ▸ Voice/.test(p) && /href="\/mint-ai\/settings\/voice"/.test(p);
+  return !/id="cc-c-mic"/.test(p) && /id="cc-mic-off"[^>]*title="Voice is off: add an OpenAI token in MINT AI Settings ▸ Voice"/.test(p) && /data-voice-off="Voice is off: add an OpenAI token in MINT AI Settings ▸ Voice"/.test(p);
 })());
 
 /* ----------------------------------------------------------- the shell --- */

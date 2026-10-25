@@ -357,6 +357,49 @@ Everything is built in `public/moni-ai.js` from the API; the frame is
 `lib/views-moniai.js`, the styles `public/moni-ai.css`. No inline script or
 style (the CSP forbids both) and no external requests.
 
+### The composer and attached files (2026-10-25)
+
+The message bar at the bottom of the Command Center is one pill-shaped field (as ChatGPT's): **+**
+(Upload a file, Upload a photo, Address a session), the message (a text area: Enter sends,
+Shift+Enter is a new line, Enter while an input method composes does nothing; it grows to about six
+lines, then scrolls, and takes the full width once it has more than one line), the voice chip
+("Live · <voice>": the voice and core menu), and one round button that is the live conversation
+(the waveform) while the field is empty, **send** once something is typed or attached, and **stop**
+while MINT AI works and nothing is typed. With voice off the waveform is struck through on a dashed
+ring and says why (tooltip, description, a click explains it with the Settings link). `@` typed first
+still opens the session picker; the chosen session shows as a chip in the bar.
+
+**Attachments.** Three ways in: the **+** menu (a file picker, several at once), a paste (Ctrl+V of
+files, or a screenshot on the clipboard -- a paste that also carries text pastes the text) and a drop
+anywhere on the Command Center (the bar lights up). Each file is uploaded at once and shown above the
+text as a chip (a preview for an image, its size, a remove button); progress and errors are announced
+(`#cc-att-live`, aria-live) and a failed upload or send never touches the typed message.
+
+- `POST /mint-ai/api/uploads` (moniai.use + the CSRF token in `X-CSRF-Token`): the raw bytes of one
+  file, `X-File-Name` (URI-encoded), `X-Upload-Batch` for the message's folder after its first file.
+  20 MB per file (413), ten files per message; an allow-list of extensions (images png/jpg/gif/webp,
+  pdf, doc/docx/xls/xlsx/ppt/pptx/odt/ods/odp/rtf, txt/csv/tsv/md/json/log/xml/yaml, zip; 415 for
+  anything else, SVG included) checked against the first bytes; programs (MZ, ELF, Mach-O, `#!`) are
+  refused whatever they are called. `lib/uploads.js`, `lib/routes-uploads.js`.
+- **Storage:** `<data dir>/uploads/<yyyy-mm-dd>/<message folder>/<random>.<ext>` (on the VPS
+  `/var/lib/moni-dashboard/uploads/…`, env `MONI_UPLOAD_DIR` overrides), 0700 folders and 0600 files
+  owned by the dashboard user; the original name, type, size, sha256 and owner are in `<file>.json`.
+  Nothing a browser sends becomes part of a path. **Files are kept**: there is no cleanup job yet;
+  delete old day folders by hand if the disk needs it.
+- **To MINT AI:** `POST /mint-ai/api/send {text, attachments: [ids]}` -- the server (never the page)
+  checks each id is the sender's own file and adds one line per file to the turn's text:
+  `[Attached file: /var/lib/moni-dashboard/uploads/2026-10-25/<folder>/<file> | name.pdf | application/pdf | 1.2 MB]`.
+  The supervisor runs as root and needs no change; MINT AI opens the path with its Read tool (images
+  and PDFs included). A voice turn carries no files. Files with no text are allowed.
+- `GET /mint-ai/api/uploads/<day>/<folder>/<file>` (moniai.use): the file, `nosniff`, a sandboxing CSP,
+  inline only for images and PDFs. The Conversation reads the lines back (`cc-logic.js
+  splitAttached`) and shows each file under the message: a thumbnail for an image, else its name and
+  size, each a link. The desktop app's chat names them under the message.
+- **The desktop app** keeps the attach button and paste (WebView2 has the file picker and the
+  clipboard); a drop of files from Windows is taken by the app window (Tauri's own drag and drop) and
+  does not reach the page there -- use the button or paste.
+- Tests: `tools/test-composer.cjs` (scratch server + fake supervisor; `--shots DIR`).
+
 ### OpenAI voice
 
 Voice only: OpenAI hears the person and reads the replies aloud; Claude does

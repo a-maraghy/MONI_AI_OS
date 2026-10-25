@@ -649,7 +649,7 @@
     } else {
       cdot.className = "cc-dot"; lab("All systems nominal", "Nominal");
     }
-    $("cc-stop").hidden = !(S.status && S.status.busy);
+    paintSend();
     clearTimeout(stateTimer);
     if (S.delegatingUntil > Date.now()) stateTimer = setTimeout(paintState, S.delegatingUntil - Date.now() + 30);
   }
@@ -1032,8 +1032,9 @@
     $("cc-target-label").textContent = set ? "→ " + clip(S.target, 26) : "Auto-route";
     $("cc-vb-target").textContent = set ? "→ " + clip(S.target, 22) : "Auto-route";
     $("cc-target").classList.toggle("set", set);
-    $("cc-target").title = set ? "Addressed to " + S.target + " (MINT AI delegates it there) — click to change" : "MINT AI picks the session — click to address one";
-    input.placeholder = set ? "Tell " + clip(S.target, 30) + " what to do (through MINT AI)…" : "Ask MINT AI…";
+    $("cc-target").title = set ? "Addressed to " + S.target + " (MINT AI delegates it there): click to change" : "Address a session (@): MINT AI picks one now";
+    $("cc-target").setAttribute("aria-label", set ? "Addressed to " + S.target + ": change" : "Address a session: MINT AI picks");
+    input.placeholder = set ? "Tell " + clip(S.target, 30) + " what to do (through MINT AI)" : "Ask MINT AI";
     renderSessions(true);
   }
 
@@ -1054,7 +1055,8 @@
       h += '<button type="button" role="menuitemradio" aria-checked="' + (S.target === s.name) + '" data-t="' + esc(s.name || "") + '" class="' + (S.target === s.name ? "on" : "") + '"' + (s.name ? "" : " disabled") + '><span class="cc-dot ' + (st === "working" ? "work" : st === "waiting" ? "wait" : "idle") + '"></span><span class="nm">' + esc(s.name || "unnamed") + "</span><small>" + esc(String(s.where || "").replace(" · Remote Control", " · RC")) + "</small></button>";
     });
     menu.innerHTML = h;
-    $("cc-target").appendChild(menu);
+    // In the field (the @ button shows only once a session is chosen), above the bar.
+    $("cc-compose").appendChild(menu);
     $("cc-target").setAttribute("aria-expanded", "true");
     menu.addEventListener("click", function (ev) {
       ev.stopPropagation();
@@ -1069,6 +1071,8 @@
       var i = items.indexOf(document.activeElement);
       if (ev.key === "ArrowDown") { ev.preventDefault(); (items[i + 1] || items[0]).focus(); }
       if (ev.key === "ArrowUp") { ev.preventDefault(); (items[i - 1] || items[items.length - 1]).focus(); }
+      // Enter picks the highlighted session (the button's own click); it never reaches the message box.
+      if (ev.key === "Enter") ev.stopPropagation();
       if (ev.key === "Escape") { closeMenu(); input.focus(); }
     });
     var on = menu.querySelector("button.on") || menu.querySelector("button[data-t]");
@@ -1079,9 +1083,49 @@
     e.stopPropagation();
     if (menu) closeMenu(); else openMenu();
   });
-  document.addEventListener("click", function (e) { if (menu && !$("cc-target").contains(e.target)) closeMenu(); });
+  document.addEventListener("click", function (e) { if (menu && !$("cc-target").contains(e.target) && !menu.contains(e.target)) closeMenu(); });
+
+  /* The message box: a text area that grows with what is typed (up to about six lines, then it
+     scrolls inside) and shrinks back after a send. Enter sends; Shift+Enter is a new line; Enter while
+     an input method is composing (Arabic, Japanese…) belongs to the input method. */
+  // One line, the field sits between "+" and the buttons; once the text wraps or has a new line, it takes
+  // the whole width above them (as ChatGPT's does) and stays that way until it is emptied.
+  function fitInput() {
+    var form = $("cc-compose");
+    if (!input.value) form.classList.remove("multi");
+    else if (!form.classList.contains("multi")) {
+      input.style.height = "auto";
+      if (/\n/.test(input.value) || input.scrollHeight > input.clientHeight + 2) form.classList.add("multi");
+    }
+    input.style.height = "auto";
+    var max = parseFloat(getComputedStyle(input).maxHeight) || 168;
+    var h = Math.min(input.scrollHeight, max);
+    input.style.height = h + "px";
+    input.classList.toggle("scrolls", input.scrollHeight > max + 1);
+  }
+  function composerReady() { return !!$("cc-input").value.trim() || ((S.att || []).some(function (a) { return a.state === "done"; })); }
+  /* The round button at the right: send (filled when there is something to send, greyed when not); while
+     MINT AI works and nothing is typed, it is the stop square instead (a typed message still sends: it queues). */
+  function paintSend() {
+    var up = (S.att || []).some(function (a) { return a.state === "queued" || a.state === "up"; });
+    var ready = composerReady(), busy = !!(S.status && S.status.busy);
+    // One round button at the end of the bar: stop while MINT AI works and nothing is typed; send once there
+    // is text or a file; otherwise the live conversation (the waveform; struck through when voice is off).
+    var stop = busy && !ready, mic = $("cc-c-mic") || document.querySelector(".cc-composer .cc-c-mic.off");
+    $("cc-stop").hidden = !stop;
+    $("cc-send").hidden = stop || !ready;
+    if (mic) mic.hidden = stop || ready;
+    if (!mic) $("cc-send").hidden = stop;
+    $("cc-send").classList.toggle("ready", ready && !up);
+    $("cc-send").setAttribute("aria-disabled", ready && !up ? "false" : "true");
+    $("cc-send").title = up ? "Waiting for the files to finish uploading" : ready ? "Send (Enter)" : "Type a message or attach a file to send";
+  }
   input.addEventListener("keydown", function (e) {
-    if (e.key === "@" && !input.value) { e.preventDefault(); openMenu(); }
+    if (e.key === "@" && !input.value) { e.preventDefault(); openMenu(); return; }
+    if (e.key !== "Enter" || e.shiftKey || e.altKey || e.isComposing || e.keyCode === 229) return;
+    e.preventDefault();
+    var f = $("cc-compose");
+    if (f.requestSubmit) f.requestSubmit(); else f.dispatchEvent(new Event("submit", { cancelable: true }));
   });
   // "@planning-engine do this": a session named at the start addresses the message to it.
   input.addEventListener("focus", capActivity);
@@ -1089,14 +1133,16 @@
   input.addEventListener("input", function () {
     capActivity();
     paintCalm();
-    $("cc-send").classList.toggle("ready", !!input.value.trim());
+    fitInput();
+    paintSend();
     if (Orb.poke) Orb.poke(); // core E: typing wakes a dozing bot
     var m = /^@(\S+)\s/.exec(input.value);
     if (!m) return;
     var q = m[1].toLowerCase(), hit = null;
     liveSessions().forEach(function (s) { if (!hit && s.name && s.name.toLowerCase().indexOf(q) === 0) hit = s; });
-    if (hit) { setTarget(hit.name); input.value = input.value.slice(m[0].length); }
+    if (hit) { setTarget(hit.name); input.value = input.value.slice(m[0].length); fitInput(); }
   });
+  window.addEventListener("resize", function () { if (input.value) fitInput(); });
 
   function hint(text, bad) {
     var h = $("cc-hint");
@@ -1106,12 +1152,236 @@
     h.classList.toggle("err", !!bad);
   }
 
+  /* ---------------------------------------------------------- attachments
+     Files go with a message three ways: the paperclip (a file picker), a paste (files or a screenshot
+     on the clipboard) and a drop onto the composer or anywhere on the Command Center. Each is
+     uploaded at once (POST /mint-ai/api/uploads, lib/routes-uploads.js) into one folder for the
+     message, shown as a chip (a small preview for an image) with its size and a remove button, and
+     sent as ids with the message; the server adds a line per file to the turn, which MINT AI opens
+     with its Read tool. Progress and errors are said in words (#cc-att-live) and on the chip; a
+     failed upload never touches what was typed. */
+  S.att = [];
+  S.attBatch = "";
+  var attSeq = 0, attQueue = Promise.resolve();
+  function attDone() { return S.att.filter(function (a) { return a.state === "done"; }); }
+  function attBusy() { return S.att.some(function (a) { return a.state === "queued" || a.state === "up"; }); }
+  function announce(text) {
+    var l = $("cc-att-live");
+    l.textContent = "";
+    setTimeout(function () { l.textContent = text; }, 30);
+  }
+  function renderAtt() {
+    var box = $("cc-att");
+    box.hidden = !S.att.length;
+    $("cc-compose").classList.toggle("has-att", S.att.length > 0);
+    var keep = {};
+    S.att.forEach(function (a) {
+      keep[a.key] = true;
+      var el = box.querySelector('[data-att="' + a.key + '"]');
+      if (!el) {
+        el = document.createElement("div");
+        el.setAttribute("role", "listitem");
+        el.setAttribute("data-att", a.key);
+        el.innerHTML = '<span class="th" aria-hidden="true"></span><span class="tx"><b class="nm"></b><span class="st"></span></span>' +
+          '<button type="button" class="x">' + ic("close") + "</button>";
+        el.querySelector(".nm").textContent = a.name;
+        el.querySelector(".nm").title = a.name;
+        box.appendChild(el);
+      }
+      el.className = "cc-chip " + a.state + (a.image ? " img" : "");
+      var th = el.querySelector(".th");
+      if (a.image && a.url && !th.querySelector("img")) th.innerHTML = '<img alt="" src="' + esc(a.url) + '">';
+      else if (!th.firstChild || (!a.image && !th.querySelector("svg"))) th.innerHTML = ic(a.image ? "image" : "file");
+      var st = a.state === "up" ? "Uploading… " + (a.pct || 0) + "%" : a.state === "queued" ? "Waiting to upload" : a.state === "err" ? "Not attached: " + a.err : ML.attachSize(a.size);
+      el.querySelector(".st").textContent = st;
+      var x = el.querySelector(".x");
+      x.setAttribute("aria-label", (a.state === "err" ? "Dismiss " : a.state === "up" || a.state === "queued" ? "Cancel " : "Remove ") + a.name);
+      x.title = a.state === "err" ? "Dismiss" : a.state === "up" || a.state === "queued" ? "Cancel the upload" : "Remove";
+    });
+    Array.prototype.slice.call(box.children).forEach(function (el) { if (!keep[el.getAttribute("data-att")]) el.remove(); });
+    paintSend();
+    paintCalm();
+  }
+  function uploadOne(a) {
+    return new Promise(function (resolve) {
+      if (a.state !== "queued") return resolve();
+      a.state = "up";
+      a.pct = 0;
+      renderAtt();
+      var x = new XMLHttpRequest();
+      a.xhr = x;
+      x.open("POST", "/mint-ai/api/uploads");
+      x.setRequestHeader("Content-Type", "application/octet-stream");
+      x.setRequestHeader("X-CSRF-Token", CSRF);
+      x.setRequestHeader("X-File-Name", encodeURIComponent(a.name));
+      if (S.attBatch) x.setRequestHeader("X-Upload-Batch", S.attBatch);
+      x.setRequestHeader("Accept", "application/json");
+      var lastPaint = 0;
+      x.upload.onprogress = function (ev) {
+        if (!ev.lengthComputable) return;
+        a.pct = Math.min(99, Math.round((ev.loaded / ev.total) * 100));
+        if (Date.now() - lastPaint > 120) { lastPaint = Date.now(); renderAtt(); }
+      };
+      x.onload = function () {
+        var j = {};
+        try { j = JSON.parse(x.responseText || "{}"); } catch (e) { j = {}; }
+        a.xhr = null;
+        if (a.state !== "up") return resolve(); // removed while uploading
+        if (x.status >= 200 && x.status < 300 && j.id) {
+          a.state = "done"; a.id = j.id; a.url = j.url; a.size = j.size; a.image = !!j.image;
+          if (j.batch) S.attBatch = j.batch;
+          announce(a.name + " attached.");
+        } else {
+          a.state = "err";
+          a.err = x.status === 401 || x.status === 403 && !j.error ? "you are signed out; reload the page" : (j.error || "the upload failed (" + x.status + ")").replace(/\.$/, "");
+          announce(a.name + " could not be attached: " + a.err + ".");
+        }
+        renderAtt();
+        resolve();
+      };
+      x.onerror = x.ontimeout = function () {
+        a.xhr = null;
+        if (a.state === "up") { a.state = "err"; a.err = "the connection dropped; try again"; announce(a.name + " could not be attached: " + a.err + "."); renderAtt(); }
+        resolve();
+      };
+      x.send(a.file);
+    });
+  }
+  /** Attach files (a FileList or an array of File). how: "picked" | "pasted" | "dropped". */
+  function addFiles(list, how) {
+    var files = Array.prototype.slice.call(list || []).filter(function (f) { return f && typeof f.size === "number"; });
+    if (!files.length) return 0;
+    if (liveActive()) { toast("End the live conversation to attach files.", true); return 0; }
+    var took = 0, refused = [];
+    files.forEach(function (f) {
+      var name = how === "pasted" ? ML.pastedName(f.name, f.type) : f.name || ML.pastedName("", f.type);
+      var why = ML.attachRefusal({ name: name, size: f.size, have: S.att.filter(function (a) { return a.state !== "err"; }).length });
+      if (why) { refused.push(name + ": " + why); return; }
+      var a = { key: "a" + ++attSeq, file: f, name: name, size: f.size, image: /^image\/(png|jpeg|gif|webp)$/.test(f.type || ""), state: "queued" };
+      S.att.push(a);
+      took++;
+      attQueue = attQueue.then(function () { return uploadOne(a); });
+    });
+    renderAtt();
+    if (took) announce((took === 1 ? "Uploading 1 file" : "Uploading " + took + " files") + (refused.length ? ". Not attached: " + refused.join("; ") + "." : "."));
+    else if (refused.length) announce("Not attached: " + refused.join("; ") + ".");
+    if (refused.length) hint("Not attached: " + refused.join("; "), true);
+    return took;
+  }
+  $("cc-att").addEventListener("click", function (e) {
+    var x = e.target.closest ? e.target.closest(".x") : null;
+    if (!x) return;
+    var key = x.closest("[data-att]").getAttribute("data-att");
+    var i = -1;
+    S.att.forEach(function (a, k) { if (a.key === key) i = k; });
+    if (i < 0) return;
+    var a = S.att[i];
+    if (a.xhr) { try { a.xhr.abort(); } catch (er) { /* gone */ } }
+    a.state = "gone";
+    S.att.splice(i, 1);
+    // Focus goes to the next chip's button, else the message box: never lost.
+    var next = S.att[i] || S.att[i - 1];
+    renderAtt();
+    announce(a.name + " removed.");
+    var nb = next && $("cc-att").querySelector('[data-att="' + next.key + '"] .x');
+    (nb || input).focus();
+  });
+  // The "+": a small menu, Upload a file / Upload a photo (on a phone the photo picker offers the camera too).
+  function openAttachMenu() {
+    var p = $("cc-pop");
+    closePop();
+    var off = root.getAttribute("data-voice-off") || "", manage = root.getAttribute("data-voice-manage") === "1";
+    p.innerHTML = '<button type="button" role="menuitem" data-attach="file">' + ic("clip") + "Upload a file<small>PDF, Office, text, ZIP</small></button>" +
+      '<button type="button" role="menuitem" data-attach="photo">' + ic("image") + "Upload a photo<small>PNG, JPEG, GIF, WebP</small></button>" +
+      '<button type="button" role="menuitem" data-attach="session">' + ic("at") + "Address a session<small>" + esc(S.target !== "auto" ? "→ " + clip(S.target, 18) : "or type @") + "</small></button>" +
+      (off && manage && /Settings/.test(off) ? '<div class="line">' + ic("info") + "<span>Voice is off.</span><a href=\"/mint-ai/settings/voice\">Settings ▸ Voice</a></div>" : "") +
+      '<div class="line ft">' + ic("info") + "<span>Paste or drop files too · up to " + ML.ATTACH_MAX_FILES + " per message, 20 MB each · Shift+Enter new line · Ctrl K everything</span></div>";
+    p.setAttribute("data-kind", "attach");
+    p.hidden = false;
+    $("cc-attach").setAttribute("aria-expanded", "true");
+    var r = $("cc-attach").getBoundingClientRect(), pr = p.getBoundingClientRect();
+    p.style.left = Math.min(window.innerWidth - pr.width - 12, Math.max(12, r.left)) + "px";
+    p.style.top = Math.max(12, r.top - pr.height - 8) + "px";
+    var first = p.querySelector("[data-attach]");
+    if (first) first.focus();
+  }
+  $("cc-attach").addEventListener("click", function (e) {
+    e.stopPropagation();
+    if (!$("cc-pop").hidden && $("cc-pop").getAttribute("data-kind") === "attach") closePop(); else openAttachMenu();
+  });
+  $("cc-pop").addEventListener("click", function (e) {
+    var b = e.target.closest ? e.target.closest("[data-attach]") : null;
+    if (!b) return;
+    e.stopPropagation();
+    closePop();
+    var k = b.getAttribute("data-attach");
+    if (k === "session") return openMenu();
+    $(k === "photo" ? "cc-photo" : "cc-file").click();
+  });
+  $("cc-pop").addEventListener("keydown", function (e) {
+    if ($("cc-pop").getAttribute("data-kind") !== "attach") return;
+    var items = Array.prototype.slice.call($("cc-pop").querySelectorAll("[data-attach]"));
+    var i = items.indexOf(document.activeElement);
+    if (e.key === "ArrowDown") { e.preventDefault(); (items[i + 1] || items[0]).focus(); }
+    if (e.key === "ArrowUp") { e.preventDefault(); (items[i - 1] || items[items.length - 1]).focus(); }
+    if (e.key === "Escape") { e.stopPropagation(); closePop(); $("cc-attach").focus(); }
+  });
+  ["cc-file", "cc-photo"].forEach(function (id) {
+    $(id).addEventListener("change", function () {
+      addFiles(this.files, "picked");
+      this.value = "";
+      input.focus();
+    });
+  });
+  // Paste: files or an image on the clipboard are attached; text pastes as text (a copy from an
+  // office app carries both: then it is the text that was meant).
+  function pastedFiles(e) {
+    var cd = e.clipboardData;
+    if (!cd) return [];
+    var text = cd.getData && cd.getData("text/plain");
+    if (text && text.trim()) return [];
+    var out = [];
+    if (cd.files && cd.files.length) out = Array.prototype.slice.call(cd.files);
+    else if (cd.items) for (var k = 0; k < cd.items.length; k++) if (cd.items[k].kind === "file") { var f = cd.items[k].getAsFile(); if (f) out.push(f); }
+    return out;
+  }
+  input.addEventListener("paste", function (e) {
+    var files = pastedFiles(e);
+    if (!files.length) return;
+    e.preventDefault();
+    addFiles(files, "pasted");
+  });
+  document.addEventListener("paste", function (e) {
+    if (e.target === input || (e.target && e.target.closest && e.target.closest("input, textarea, [contenteditable], .cc-sheet, .cc-need, #cc-overlay"))) return;
+    var files = pastedFiles(e);
+    if (!files.length) return;
+    e.preventDefault();
+    if (addFiles(files, "pasted")) input.focus();
+  });
+  // Drop: anywhere on the Command Center (the composer lights up as the place they go).
+  var dragDepth = 0;
+  function hasFiles(e) { var t = e.dataTransfer && e.dataTransfer.types; return !!t && Array.prototype.indexOf.call(t, "Files") >= 0; }
+  function dragOn(on) { $("cc-compose").classList.toggle("dragging", on); $("cc-dock").classList.toggle("dragging", on); }
+  document.addEventListener("dragenter", function (e) { if (!hasFiles(e) || liveActive()) return; dragDepth++; dragOn(true); });
+  document.addEventListener("dragover", function (e) { if (!hasFiles(e) || liveActive()) return; e.preventDefault(); e.dataTransfer.dropEffect = "copy"; dragOn(true); });
+  document.addEventListener("dragleave", function (e) { if (!hasFiles(e)) return; dragDepth = Math.max(0, dragDepth - 1); if (!dragDepth) dragOn(false); });
+  document.addEventListener("drop", function (e) {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    dragDepth = 0;
+    dragOn(false);
+    if (addFiles(e.dataTransfer.files, "dropped")) input.focus();
+  });
+  window.addEventListener("blur", function () { dragDepth = 0; dragOn(false); });
+
   var voiceTurns = new Set();    // turns whose reply is read aloud
   var sending = false;
   function send(text, opts) {
     opts = opts || {};
     text = String(text || "").trim();
-    if (!text || sending) return Promise.resolve(null);
+    var files = opts.voice ? [] : attDone();
+    if ((!text && !files.length) || sending) return Promise.resolve(null);
+    if (!opts.voice && attBusy()) { hint("Wait for the files to finish uploading, then send.", true); announce("Still uploading. Send again when the files are attached."); return Promise.resolve(null); }
     if (S.target !== "auto" && !liveSessions().some(function (s) { return s.name === S.target; })) {
       toast("“" + S.target + "” is no longer running. Sending with auto-route instead.", true);
       setTarget("auto");
@@ -1121,12 +1391,25 @@
     $("cc-send").disabled = true;
     var body = { text: text, tab: TAB_ID };
     if (S.target !== "auto") body.target = S.target;
+    if (files.length) body.attachments = files.map(function (a) { return a.id; });
     // A voice turn names its voice-turn id: the server sends it to MINT AI
     // only if it is exactly what the server heard for that id.
     if (opts.voice && opts.vt) body.vt = opts.vt;
     return api("send", { body: body }).then(function (r) {
       hint("");
-      if (!opts.voice) input.value = "";
+      if (!opts.voice) {
+        input.value = "";
+        fitInput();
+        if (files.length) {
+          // What was sent leaves the composer; anything that failed stays to be dismissed.
+          var sent = {};
+          files.forEach(function (a) { sent[a.key] = true; });
+          S.att = S.att.filter(function (a) { return !sent[a.key]; });
+          if (!S.att.some(function (a) { return a.state !== "err"; })) S.attBatch = "";
+          renderAtt();
+          announce("Sent with " + files.length + (files.length === 1 ? " file." : " files."));
+        }
+      }
       // "yes" / "no" to a pending Tier-2 confirm: answered on the server, sent nowhere.
       if (r && r.confirm && typeof uiConfirmAnswer === "function") uiConfirmAnswer(r.confirm.id, r.confirm.ok);
       if (r && r.turn) {
@@ -1140,11 +1423,13 @@
         if (opts.voice && r.queued_behind) Voice.say("Got it. I'll pick that up as soon as I'm free.");
         else if (opts.voice && !opts.acked) Voice.say("On it.");
       }
-      $("cc-send").classList.remove("ready");
+      paintSend();
       paintState();
       return r;
     }).catch(function (e) {
+      // The typed message and the attached files stay where they are, to send again.
       hint("Not sent: " + e.message, true);
+      if (!opts.voice) announce("Not sent: " + e.message);
       if (opts.voice) Voice.say("Sorry, that did not go through.");
       return null;
     }).then(function (r) {
@@ -1155,10 +1440,12 @@
   }
   $("cc-compose").addEventListener("submit", function (e) {
     e.preventDefault();
+    if (!composerReady()) { input.focus(); return; }
     // "Tell me when ..." may be a watcher: proactive MINT AI asks first (public/mint-proactive.js).
-    if (window.MintProactive && window.MintProactive.intercept && window.MintProactive.intercept(input.value)) return;
+    if (!attDone().length && window.MintProactive && window.MintProactive.intercept && window.MintProactive.intercept(input.value)) return;
     send(input.value);
   });
+  paintSend();
   $("cc-stop").addEventListener("click", function () { interrupt($("cc-stop")); });
 
   /* ================================================================ sheets
@@ -1292,13 +1579,25 @@
     if (tr.source === "dashboard" || tr.source === "voice-desk" || tr.source === "remote" || tr.source === "mission-request") {
       var name = tr.source === "remote" ? "You · via Remote Control" : tr.source === "voice-desk" ? (tr.actor && tr.actor !== VIEWER ? esc(tr.actor) : "You") + " · by voice" : tr.actor && tr.actor !== VIEWER ? esc(tr.actor) : "You";
       var tag = tr.source === "mission-request" ? ' · <span class="cc-badge b-mis">' + ic("flag") + "new mission</span>" : "";
-      return '<div class="cc-msg me"><div class="who"><b>' + name + "</b> · " + esc(when) + tag + (tr.target ? " · → " + esc(clip(tr.target, 30)) : "") + '</div><div class="cc-bubble">' + esc(text) + "</div></div>";
+      var sa = ML.splitAttached(text);
+      return '<div class="cc-msg me"><div class="who"><b>' + name + "</b> · " + esc(when) + tag + (tr.target ? " · → " + esc(clip(tr.target, 30)) : "") + "</div>" +
+        (sa.text ? '<div class="cc-bubble">' + esc(sa.text) + "</div>" : "") + attListHTML(sa.files) + "</div>";
     }
     if (tr.source === "peer") {
       return '<div class="cc-msg ai"><div class="who"><span class="cc-av"></span><b>' + esc(tr.actor || "A session") + "</b> · " + esc(when) + ' · peer message</div><div class="cc-bubble"><div class="cc-relay"><div class="src">' + esc(tr.actor || "session") + " → MINT AI</div>" + md(clip(text, 4000)) + "</div></div></div>";
     }
     var line = clip(firstLine(text.replace(/\[Cross-session [a-z ]+\]/i, "")) || who, 160);
     return '<div class="cc-msg sys"><div class="cc-bubble">' + esc(who) + (tr.actor && tr.actor.toLowerCase() !== String(tr.source).toLowerCase() ? " · " + esc(aiLabel(tr.actor)) : "") + " · " + esc(when) + (line && line !== who ? " — " + esc(line) : "") + "</div></div>";
+  }
+
+  /** A sent message's files (the turn's "[Attached file: …]" lines): a thumbnail for an image, else an icon; each opens the file. */
+  function attListHTML(files) {
+    if (!files || !files.length) return "";
+    return '<ul class="cc-sent-att" aria-label="Attached files">' + files.map(function (f) {
+      var inner = (f.image && f.url ? '<img alt="" loading="lazy" src="' + esc(f.url) + '">' : '<span class="th" aria-hidden="true">' + ic(f.image ? "image" : "file") + "</span>") +
+        '<span class="tx"><b>' + esc(f.name) + "</b><span>" + esc(f.size) + "</span></span>";
+      return "<li>" + (f.url ? '<a href="' + esc(f.url) + '" target="_blank" rel="noopener" title="Open ' + esc(f.name) + '">' + inner + "</a>" : '<span title="' + esc(f.path) + '">' + inner + "</span>") + "</li>";
+    }).join("") + "</ul>";
   }
 
   /** A standing order's run, as a briefing card. */
@@ -1483,7 +1782,8 @@
       var ai = plain(aiText(tr));
       if (!ai && tr.status === "running") ai = "…";
       if (!mine && !ai) continue;
-      out.unshift({ id: tr.id, me: mine ? String(tr.text || "") : "", ai: ai });
+      var sa = mine ? ML.splitAttached(String(tr.text || "")) : { text: "", files: [] };
+      out.unshift({ id: tr.id, me: mine ? sa.text : "", files: sa.files.map(function (f) { return f.name; }), ai: ai });
     }
     return out;
   }
@@ -1750,7 +2050,9 @@
     if (p.hidden) return;
     p.hidden = true;
     p.innerHTML = "";
+    p.removeAttribute("data-kind");
     $("cc-vm").setAttribute("aria-expanded", "false");
+    $("cc-attach").setAttribute("aria-expanded", "false");
   }
   function openVoiceMenu() {
     var p = $("cc-pop"), manage = root.getAttribute("data-voice-manage") === "1";
@@ -1769,7 +2071,9 @@
       }).join("") + "</div><hr>" +
       '<button type="button" data-sheet="cost">' + ic("coin") + "Voice usage<small id=\"cc-pop-vu\">" + esc(P.voiceToday ? P.voiceToday() : "") + "</small></button>";
     p.innerHTML = h;
+    p.setAttribute("data-kind", "voice");
     p.hidden = false;
+    $("cc-attach").setAttribute("aria-expanded", "false");
     $("cc-vm").setAttribute("aria-expanded", "true");
     var r = $("cc-vm").getBoundingClientRect(), pr = p.getBoundingClientRect();
     var x = Math.min(window.innerWidth - pr.width - 12, Math.max(12, r.left + r.width / 2 - pr.width / 2));
@@ -1778,7 +2082,7 @@
   }
   $("cc-vm").addEventListener("click", function (e) {
     e.stopPropagation();
-    if ($("cc-pop").hidden) openVoiceMenu(); else closePop();
+    if ($("cc-pop").hidden || $("cc-pop").getAttribute("data-kind") !== "voice") openVoiceMenu(); else closePop();
   });
   $("cc-pop").addEventListener("click", function (e) {
     e.stopPropagation();
@@ -1790,7 +2094,7 @@
     if (cs) { setCoreChoice(cs.getAttribute("data-core-set")); openVoiceMenu(); return; }
     if (e.target.closest("[data-sheet]")) { var k = e.target.closest("[data-sheet]").getAttribute("data-sheet"); closePop(); openSheet(k); }
   });
-  document.addEventListener("click", function (e) { if (!$("cc-pop").hidden && !e.target.closest("#cc-pop") && !e.target.closest("#cc-vm")) closePop(); });
+  document.addEventListener("click", function (e) { if (!$("cc-pop").hidden && !e.target.closest("#cc-pop") && !e.target.closest("#cc-vm") && !e.target.closest("#cc-attach")) closePop(); });
 
   /* ---------------------------------------------------------- activity */
 
@@ -2765,11 +3069,18 @@
   function liveSelected() { return !!(LiveUI && LiveUI.selected); }
   function paintLiveMode() {
     var mb = $("cc-mic-mode"), mic = $("cc-c-mic");
-    if (mb) { mb.textContent = LIVE_OK ? "Live · " + (VOICE || "voice") : "Voice"; mb.setAttribute("data-mode", LIVE_OK ? "live" : "off"); }
+    if (mb) { mb.textContent = LIVE_OK ? "Live · " + (VOICE || "voice") : "Voice off"; mb.setAttribute("data-mode", LIVE_OK ? "live" : "off"); }
     if (mic) {
-      mic.title = LiveUI.active ? "End the live conversation" : LIVE_OK ? LIVE_TIP : "Live conversation is not supported in this browser";
-      mic.setAttribute("aria-label", mic.title);
-      if (!LIVE_OK) mic.disabled = true;
+      mic.title = LiveUI.active ? "In a live conversation: click to mute or unmute (the red X ends it)" : LIVE_OK ? LIVE_TIP : "Voice is off: this browser can't hold a live conversation (no microphone access)";
+      mic.setAttribute("aria-label", LiveUI.active ? "Mute or unmute the live conversation" : LIVE_OK ? LIVE_TIP : "Voice is off");
+      if (!LIVE_OK && !mic.classList.contains("off")) {
+        // Voice is on, but this browser can't do it: the off state, with the reason (never a dead grey button).
+        mic.classList.add("off");
+        mic.setAttribute("aria-disabled", "true");
+        mic.innerHTML = ic("waveoff");
+        $("cc-mic-why").textContent = mic.title;
+        mic.setAttribute("aria-describedby", "cc-mic-why");
+      }
     }
   }
   function paintLive(st) {
@@ -3023,6 +3334,9 @@
   // The mic starts and ends a call; the voice bar belongs to the call while one is on.
   window.addEventListener("click", function (e) {
     if (!e.target.closest) return;
+    // The mic while voice is off: it says why, in words, where the hint row is (with the way to switch it on).
+    var off = e.target.closest(".cc-c-mic.off");
+    if (off) { e.stopPropagation(); e.preventDefault(); return micOffSay(off.title); }
     // The desktop app: a mic held down was a hold-to-talk turn, not a tap.
     if (DESKTOP && pttMic.swallow && e.target.closest("#cc-c-mic")) { pttMic.swallow = false; e.stopPropagation(); e.preventDefault(); return; }
     // The mic starts a call; during one it mutes (only the red X ends it).
@@ -3058,13 +3372,29 @@
   window.addEventListener("keyup", function (e) { if (LiveUI.active && e.code === "Space" && !liveTyping(document.activeElement)) e.stopPropagation(); }, true);
   /** The hint under the pill: "click the mic to talk", then what Space and Esc do in a call. */
   function paintLiveKeys() {
-    var sp = $("cc-kb-space"), lk = $("cc-kb-live");
-    if (!sp || !lk) return;
-    sp.hidden = !!LiveUI.active;
+    var lk = $("cc-kb-live");
+    if (!lk) return;
     lk.hidden = !LiveUI.active;
     var speaking = LiveUI.active && LiveUI.state === "speaking";
     lk.innerHTML = speaking && LiveUI.duplex !== "full" ? "<kbd>Space</kbd> or <kbd>Esc</kbd> interrupt"
       : "<kbd>Space</kbd> mute · <kbd>Esc</kbd> interrupt";
+  }
+  function micOffSay(why) {
+    var h = $("cc-hint");
+    hint(why || "Voice is off.", false);
+    if (root.getAttribute("data-voice-manage") === "1" && /Settings/.test(why || "")) {
+      h.textContent = "";
+      var t = document.createElement("span");
+      t.textContent = String(why).replace(/:.*$/, "") + ": ";
+      var a = document.createElement("a");
+      a.href = "/mint-ai/settings/voice";
+      a.textContent = String(why).replace(/^[^:]*:\s*/, "").replace(/^./, function (c) { return c.toUpperCase(); });
+      h.appendChild(t);
+      h.appendChild(a);
+    }
+    announce(why || "Voice is off.");
+    clearTimeout(micOffSay.t);
+    micOffSay.t = setTimeout(function () { hint(""); }, 8000);
   }
   function liveTyping(el) { return el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable || el.tagName === "BUTTON"); }
   // Leaving the page ends the call, and says so (the socket's last message, and a beacon).

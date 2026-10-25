@@ -76,9 +76,9 @@ check("the Machine sheet has the core grid's eight cells", ["core", "sessions", 
 check("the core sits in the centre: one canvas, the orbit, the caption (no sparkline)", /<canvas class="cc-core" id="cc-core"/.test(html) && /id="cc-orbit"/.test(html) && !/id="cc-spark"/.test(html) && /id="cc-cap-state"/.test(html) && /id="cc-cap" aria-live="polite"/.test(html));
 check("the missions board is a sheet (tabs, head, lanes)", /id="cc-pane-missions"[\s\S]*id="cc-mis-tabs"[\s\S]*id="cc-mis-head"[\s\S]*id="cc-lanes"/.test(html));
 check("the event log lives under Decisions", /id="cc-pane-dec"[\s\S]*id="cc-evlog"[\s\S]*id="cc-feed"[\s\S]*id="cc-pane-tl"/.test(html));
-check("the composer keeps the mic (a live call), the voice bar and its hint", /id="cc-c-mic"/.test(html) && /id="cc-voicebar"/.test(html) && /id="cc-kb-space">click the mic to talk<\/span>/.test(html) && !/<kbd>Esc<\/kbd> ends/.test(html));
+check("the composer keeps the live-conversation button (the waveform), the voice bar and the call's keys line", /id="cc-c-mic"[^>]*title="Start a live conversation"/.test(html) && /id="cc-voicebar"/.test(html) && /id="cc-kb-live"/.test(html) && !/<kbd>Esc<\/kbd> ends/.test(html));
 check("replies-aloud toggle is in the Conversation sheet's head", /id="cc-pane-conv"[\s\S]{0,900}id="cc-speak-toggle"/.test(html));
-check("without a key: no toggle, no mic, the note links to Settings ▸ Voice", !/id="cc-speak-toggle"/.test(noKey) && !/id="cc-c-mic"/.test(noKey) && /href="\/mint-ai\/settings\/voice"/.test(noKey));
+check("without a key: no toggle, no live button; the struck-through waveform says to add a token in Settings ▸ Voice", !/id="cc-speak-toggle"/.test(noKey) && !/id="cc-c-mic"/.test(noKey) && /id="cc-mic-off"[^>]*title="Voice is off: add an OpenAI token in MINT AI Settings ▸ Voice"/.test(noKey));
 check("the palette button is in the dock, with its shortcut", /id="cc-kbtn"[^>]*aria-keyshortcuts="Control\+K"/.test(html));
 check("one decision card, top right, and the amber pill that brings it back", /<aside class="cc-need" id="cc-need" role="alertdialog"/.test(html) && /id="cc-needpill"[^>]*hidden>[\s\S]{0,120}need you/.test(html));
 check("no mockup leftovers (sample-data tag, Play demo, state preview)", !/SAMPLE DATA|Play flow|demo-btn|data-open="hire"|State preview/.test(html + main + panels));

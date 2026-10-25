@@ -90,6 +90,13 @@ Object.assign(SPRITE, {
   user: '<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-8 8-8s8 3.6 8 8"/>',
   gauge: '<path d="M4.2 17.5a9 9 0 1 1 15.6 0"/><path d="M12 13.5l4-5"/><circle cx="12" cy="14" r="1.6"/>',
   spark: '<path d="M12 2.5c.6 4.6 2.9 6.9 9.5 9.5-6.6 2.6-8.9 4.9-9.5 9.5-.6-4.6-2.9-6.9-9.5-9.5 6.6-2.6 8.9-4.9 9.5-9.5Z"/>',
+  clip: '<path d="M20.5 11.5 12.4 19.6a5 5 0 0 1-7.1-7.1l8.5-8.5a3.3 3.3 0 0 1 4.7 4.7l-8.4 8.4a1.7 1.7 0 0 1-2.4-2.4l7.8-7.8"/>',
+  at: '<circle cx="12" cy="12" r="3.6"/><path d="M15.6 8.6v4.6a2.6 2.6 0 0 0 5.2 0V12a8.8 8.8 0 1 0-3.5 7"/>',
+  micoff: '<path d="M9 9V6a3 3 0 0 1 5.8-1.1M15 10.5V11a3 3 0 0 1-4.6 2.5"/><path d="M5.5 11a6.5 6.5 0 0 0 10.8 4.9M18.5 11a6.4 6.4 0 0 1-.4 2.2M12 17.5V21"/><path d="M3.5 3.5l17 17"/>',
+  file: '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/>',
+  wave: '<path d="M6 10v4M10 7v10M14 4v16M18 9v6"/>',
+  waveoff: '<path d="M6 10v4M10 7v4M14 4v4M18 9v6M3.5 3.5l17 17M10 16v1M14 17v3"/>',
+  image: '<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><circle cx="9" cy="10" r="1.8"/><path d="M20.5 16l-5-5-9 8.5"/>',
 });
 
 function ic(name, cls) {
@@ -168,9 +175,20 @@ function page(o) {
   const perm = o.user && o.user.perm;
   // Voice is live conversation only; with voice off, no key or no voice.use there is no mic at all.
   const vOk = !!(voice.configured && voice.live);
-  const voiceOff = vOk || !voice.manage || (voice.on && voice.configured)
+  // Why the mic is off, for its tooltip and screen readers (the hint row says it in words with a link).
+  const micOffWhy = vOk
     ? ""
-    : `<span class="cc-voice-off">voice is off: <a href="/mint-ai/settings/voice">${voice.on && !voice.configured ? "add a token in" : "switch it on in"} Settings ▸ Voice</a></span>`;
+    : !voice.use
+      ? "Voice is off: your role does not include voice"
+      : !voice.manage
+        ? "Voice is off: an administrator can switch it on"
+        : !voice.on
+        ? "Voice is off: switch it on in MINT AI Settings ▸ Voice"
+        : !voice.configured
+          ? "Voice is off: add an OpenAI token in MINT AI Settings ▸ Voice"
+          : "Voice is off for this account";
+  // (With voice off there is no note under the field any more: the waveform button is struck through and
+  // says why -- tooltip, description, and in words with the link when clicked; the + menu links there too.)
   // Every page of Mint OS is in the ☰ drawer; these are the few worth one tap on a phone.
   const dashLinks = [
     ["/agents/dashboard", "bot", "Agents & sessions", (p) => p.can("agents.view") || p.can("claude.running.view")],
@@ -193,6 +211,7 @@ function page(o) {
      data-viewer="${esc(o.user && o.user.name)}"
      data-voice-ready="${vOk ? "1" : ""}"
      data-voice-manage="${voice.manage ? "1" : ""}"
+     data-voice-off="${esc(micOffWhy)}"
      data-voice="${esc(vOk ? voice.voice || "" : "")}"
      data-voice-model="${esc(vOk ? voice.model || "" : "")}"
      data-voice-live="${vOk ? "1" : ""}"
@@ -217,13 +236,25 @@ ${desk ? deskParts() : ""}
       <button type="button" class="cc-cap-more" id="cc-cap-more" aria-expanded="false" aria-controls="cc-reply" hidden>${ic("chev")}<span id="cc-cap-more-t">Full reply</span> · <span id="cc-cap-at"></span></button>
     </div>
     <div class="cc-dock" id="cc-dock">
-      <form class="cc-composer" id="cc-compose" autocomplete="off">
-        ${vOk ? `<button type="button" class="cc-c-mic" id="cc-c-mic" title="Start a live conversation" aria-label="Start a live conversation" aria-pressed="false">${ic("voice")}</button>` : ""}
-        <button type="button" class="cc-target" id="cc-target" aria-haspopup="menu" aria-expanded="false" title="MINT AI picks the session">${ic("route")}<span id="cc-target-label">Auto-route</span></button>
-        <input id="cc-input" name="text" placeholder="Ask MINT AI…" aria-label="Message MINT AI" maxlength="20000" autocomplete="off">
-        <button type="button" class="cc-c-stop" id="cc-stop" title="Interrupt the current turn" aria-label="Interrupt" hidden>${ic("stop")}</button>
-        ${desk ? `<span class="kb dk-kb" id="dk-kb" title="Hold Ctrl+Space to talk"><span class="dk-kb-w">hold </span><b>Ctrl</b><b>Space</b><span class="dk-kb-w"> to talk</span></span>` : ""}<button type="submit" class="cc-c-send" id="cc-send" title="Send" aria-label="Send">${ic("up")}</button>
+      <form class="cc-composer" id="cc-compose" autocomplete="off" aria-label="Message to MINT AI">
+        <div class="cc-att" id="cc-att" role="list" aria-label="Attached files" hidden></div>
+        <div class="cc-c-row">
+          <button type="button" class="cc-c-tool cc-c-attach" id="cc-attach" aria-haspopup="menu" aria-expanded="false" title="Attach files or photos, or address a session (you can also paste or drop files)" aria-label="Add: files, photos, a session">${ic("plus")}</button>
+          <button type="button" class="cc-target" id="cc-target" aria-haspopup="menu" aria-expanded="false" title="Address a session (@): MINT AI picks one now" aria-label="Address a session: MINT AI picks">${ic("at")}<span id="cc-target-label">Auto-route</span></button>
+          <textarea id="cc-input" name="text" rows="1" placeholder="Ask MINT AI" aria-label="Message MINT AI" aria-describedby="cc-kbd-help" maxlength="20000" autocomplete="off" enterkeyhint="send" spellcheck="true"></textarea>
+          ${desk ? `<span class="kb dk-kb" id="dk-kb" title="Hold Ctrl+Space to talk"><span class="dk-kb-w">hold </span><b>Ctrl</b><b>Space</b><span class="dk-kb-w"> to talk</span></span>` : ""}<button type="button" class="cc-vm cc-c-pill" id="cc-vm" aria-haspopup="menu" aria-expanded="false" title="Voice and core settings: how MINT AI speaks, read-aloud, the core"><span id="cc-mic-mode" data-mode="${vOk ? "live" : "off"}">${vOk ? `Live · ${esc(voice.voice || "voice")}` : "Voice off"}</span>${ic("chevd")}</button>${
+            vOk
+              ? `<button type="button" class="cc-c-mic cc-c-round" id="cc-c-mic" title="Start a live conversation" aria-label="Start a live conversation" aria-pressed="false">${ic("wave")}</button>`
+              : `<button type="button" class="cc-c-mic cc-c-round off" id="cc-mic-off" aria-disabled="true" title="${esc(micOffWhy)}" aria-label="Voice is off" aria-describedby="cc-mic-why">${ic("waveoff")}</button>`
+          }<button type="button" class="cc-c-stop cc-c-round" id="cc-stop" title="Stop: interrupt the current turn" aria-label="Interrupt the current turn" hidden>${ic("stop")}</button><button type="submit" class="cc-c-send cc-c-round" id="cc-send" title="Send (Enter)" aria-label="Send" hidden>${ic("up")}</button>
+        </div>
+        <div class="cc-drop" id="cc-drop" aria-hidden="true">${ic("clip")}<span>Drop files to attach them</span></div>
+        <input type="file" id="cc-file" multiple hidden tabindex="-1" aria-hidden="true" accept="${esc(logic.ATTACH_ACCEPT)}">
+        <input type="file" id="cc-photo" multiple hidden tabindex="-1" aria-hidden="true" accept="image/png,image/jpeg,image/gif,image/webp">
       </form>
+      <span class="cc-sr" id="cc-kbd-help">Enter sends. Shift+Enter starts a new line. Type @ first to address a session. Attach files with the paperclip, by pasting, or by dropping them here.</span>
+      <span class="cc-sr" id="cc-mic-why">${esc(vOk ? "" : micOffWhy)}</span>
+      <div class="cc-sr" id="cc-att-live" role="status" aria-live="polite"></div>
       <div class="cc-voicebar" id="cc-voicebar">
         <button type="button" class="cc-c-mic cc-live-end cc-live-only" id="cc-live-end" title="End the conversation" aria-label="End conversation" hidden>${ic("close")}</button>
         <div class="cc-vb-text"><b>TALK TO MINT AI</b><span id="cc-vb-text">Listening…</span></div>
@@ -233,9 +264,7 @@ ${desk ? deskParts() : ""}
         <span class="cc-live-acts cc-live-only" id="cc-live-acts" hidden><button type="button" class="cc-btn sm cc-live-duplex" id="cc-live-duplex" data-duplex="speakers" title="Speakers mode" aria-label="Speakers mode: switch to headphones mode">${ic("speaker", "dx-sp")}${ic("headphones", "dx-hp")}<span class="lbl" id="cc-live-duplex-lbl">Speakers</span></button><button type="button" class="cc-ibtn" id="cc-live-mute" title="Mute the microphone (the conversation stays open)" aria-label="Mute" aria-pressed="false">${ic("mute")}</button></span>
         <button type="button" class="cc-ibtn" id="cc-vb-close" title="Back to typing" aria-label="Back to typing">${ic("close")}</button>
       </div>
-      <div class="cc-hint" id="cc-hint"><button type="button" class="cc-vm" id="cc-vm" aria-haspopup="menu" aria-expanded="false" title="Voice and core settings">${ic("voice")}<span id="cc-mic-mode" data-mode="${vOk ? "live" : "off"}">${vOk ? `Live · ${esc(voice.voice || "voice")}` : "Voice"}</span>${ic("chevd")}</button>${
-        vOk ? `<span class="kb" id="cc-kb-space">click the mic to talk</span><span class="kb cc-live-only" id="cc-kb-live" hidden></span>` : ""
-      }<span class="kb"><kbd>@</kbd> a session</span><span class="kb"><kbd>Ctrl K</kbd> everything</span><span class="kb cc-guard">destructive steps wait for your approval</span>${voiceOff}</div>
+      <div class="cc-hint" id="cc-hint" role="status">${vOk ? `<span class="kb cc-live-only" id="cc-kb-live" hidden></span>` : ""}<span class="kb cc-guard">destructive steps wait for your approval</span></div>
     </div>
   </main>
 

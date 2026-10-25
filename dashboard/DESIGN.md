@@ -140,6 +140,10 @@ agent": name, what it does, model, then the channel) — no planting words or pi
 
 The core (A–E, the person's choice) and everything it draws stay as they are. Around it:
 opaque panels instead of glass, the rail always visible (44 px buttons, names on hover and
-focus), the composer an opaque field with a visible edge (no fading at rest), the caption
+focus), the composer a pill-shaped field modelled on ChatGPT's (2026-10-25: 56 px, radius = half
+its height, a fill one step off the page -- `--cc-field`, panel-2 light / panel-3 dark -- and a hairline;
+"+" plain, the voice chip quiet text with a chevron, one round ink disc at the end that is the
+waveform / send / stop; files as chips above the text; nothing under it at rest; see README "The
+composer and attached files"), the caption
 in sentence case, the decision card without its coloured edge bar. The desktop app's render
 mode (`html.cc-desk`) keeps its own measured layout.

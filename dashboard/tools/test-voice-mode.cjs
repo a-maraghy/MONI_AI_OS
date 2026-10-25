@@ -40,7 +40,7 @@ const noKey = page({ configured: false, manage: true, on: true, use: true, live:
 /* ---- the frame ---- */
 const mic = (/<button[^>]*id="cc-c-mic"[^>]*>/.exec(on) || [])[0] || "";
 check("voice on: the mic starts a live conversation", /title="Start a live conversation"/.test(mic) && /aria-label="Start a live conversation"/.test(mic));
-check("  the hint: click the mic to talk (Esc no longer ends a call; only the red X does)", /<span class="kb" id="cc-kb-space">click the mic to talk<\/span>/.test(on) && !/<kbd>Esc<\/kbd> ends/.test(on));
+check("  the button is the waveform; no hint strip under the bar (Esc no longer ends a call; only the red X does)", /id="cc-c-mic"[^>]*>[^]*?cc-i-wave"/.test(on) && !/id="cc-kb-space"/.test(on) && !/<kbd>Esc<\/kbd> ends/.test(on));
 check("  the voice menu button says Live · the voice", /<span id="cc-mic-mode" data-mode="live">Live · marin<\/span>/.test(on));
 check("  the voice bar's tag says Live; no Direct / Front desk tag, no trial", /id="cc-vb-mode">Live</.test(on) && !/cc-voice-mode|Front desk|Direct · MINT AI|trial/i.test(on));
 check("  read-aloud is there: the toggle and the reply's Read aloud", /id="cc-speak-toggle"/.test(on) && /id="cc-reply-read"/.test(on));
@@ -49,7 +49,7 @@ check("  the page may go live (data-voice-live) and is ready (data-voice-ready)"
 for (const [name, html] of [["voice off", off], ["no voice.use", noUse], ["no key", noKey]]) {
   check(`${name}: no mic, no read-aloud, no live, no voice hint`, !/id="cc-c-mic"/.test(html) && !/id="cc-speak-toggle"/.test(html) && !/id="cc-reply-read"/.test(html) && /data-voice-live=""/.test(html) && /data-voice-ready=""/.test(html) && !/click the mic to talk/.test(html));
 }
-check("voice off, for a manager: a note that links to Settings ▸ Voice", /voice is off: <a href="\/mint-ai\/settings\/voice">switch it on in Settings ▸ Voice<\/a>/.test(off));
+check("voice off, for a manager: the struck-through waveform says to switch it on in Settings ▸ Voice (tooltip, description; the + menu links there)", /id="cc-mic-off"[^>]*aria-disabled="true"[^>]*title="Voice is off: switch it on in MINT AI Settings ▸ Voice"/.test(off) && /data-voice-off="Voice is off: switch it on in MINT AI Settings ▸ Voice"/.test(off));
 check("no voice.use: not even the note", !/cc-voice-off/.test(noUse));
 check("the voice menu and the core switch stay (the core is not voice)", /id="cc-vm"/.test(off) && /id="cc-vm"/.test(noUse));
 const ids = [...on.matchAll(/\sid="([^"]+)"/g)].map((m) => m[1]);

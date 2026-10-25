@@ -195,10 +195,11 @@ html.cc-page .cc-sheet code, html.cc-page #cc-overlay code { background: none; b
 .cc-reply .bd pre { background: var(--code-bg); padding: 8px 10px; border-radius: 8px; overflow-x: auto; font-size: 13px; }
 .cc-reply .ft { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
 
-/* The pill composer. */
+/* The composer: a message field that grows, its attachments above the line of controls (the look is mint-ds.css). */
 .cc-dock { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 0 16px 22px; position: relative; }
-.cc-composer { width: min(760px, 100%); display: flex; align-items: center; gap: 10px; padding: 8px; border-radius: 999px; background: var(--cc-glass);
-  border: 1px solid var(--cc-glass-line); box-shadow: var(--cc-shadow); backdrop-filter: blur(18px); transition: border-color .25s, box-shadow .25s; }
+.cc-composer { width: min(760px, 100%); box-sizing: border-box; display: flex; flex-direction: column; gap: 6px; padding: 6px; border-radius: 16px; background: var(--cc-glass);
+  border: 1px solid var(--cc-glass-line); box-shadow: var(--cc-shadow); position: relative; transition: border-color .25s, box-shadow .25s; }
+.cc-c-row { display: flex; align-items: flex-end; gap: 6px; min-width: 0; }
 .cc-composer:focus-within { border-color: var(--accent-2); }
 .cc-c-mic { position: relative; width: 52px; height: 52px; border-radius: 50%; flex: none; display: grid; place-items: center; color: var(--on-brand); background: var(--grad-ai);
   border: 0; padding: 0; box-shadow: 0 6px 18px var(--cc-mic-glow); transition: transform .15s, box-shadow .2s; }
@@ -209,9 +210,11 @@ html.cc-page .cc-sheet code, html.cc-page #cc-overlay code { background: none; b
 .cc-c-mic.live { animation: cc-micpulse 1.2s infinite; } /* no scale: the button keeps its exact box while it records */
 .cc-c-mic[data-mode="ptt"] { touch-action: none; user-select: none; -webkit-user-select: none; }
 @keyframes cc-micpulse { 50% { box-shadow: 0 0 0 10px var(--accent-soft), 0 6px 22px var(--cc-mic-glow); } }
-html.cc-page .cc-composer input { flex: 1; min-width: 0; height: 40px; border: 0; outline: 0; background: transparent; color: var(--ink); font: 400 16px var(--ui); padding: 0; box-shadow: none; }
-.cc-composer input::placeholder { color: var(--dim); }
-html.cc-page .cc-composer input:focus-visible { outline: none; }
+html.cc-page .cc-composer textarea { flex: 1; min-width: 0; height: 44px; min-height: 44px; max-height: 168px; box-sizing: border-box; resize: none; overflow-y: hidden; border: 0; outline: 0; background: transparent; color: var(--ink);
+  font: 400 16px/24px var(--ui); padding: 10px 4px; margin: 0; box-shadow: none; border-radius: 0; }
+html.cc-page .cc-composer textarea.scrolls { overflow-y: auto; }
+.cc-composer textarea::placeholder { color: var(--dim); }
+html.cc-page .cc-composer textarea:focus-visible { outline: none; }
 .cc-target { display: inline-flex; align-items: center; gap: 6px; max-width: 220px; padding: 5px 10px; border-radius: 999px; border: 1px solid var(--cc-glass-line-2);
   background: transparent; color: var(--dim); font: 500 13px var(--mono); white-space: nowrap; position: relative; flex: none; }
 .cc-target > span { overflow: hidden; text-overflow: ellipsis; }
@@ -1094,7 +1097,6 @@ html.cc-page .cc-tbl { width: 100%; border-collapse: collapse; font-size: 13px; 
   .cc-caption { min-height: 100px; padding: 0 16px 12px; }
   .cc-composer { padding: 6px; gap: 6px; }
   .cc-c-mic { width: 48px; height: 48px; }
-  html.cc-page .cc-composer input { font-size: 15px; }
   .cc-target { max-width: 110px; padding: 5px 8px; }
   .cc-target #cc-target-label { display: none; }
   .cc-target.set #cc-target-label { display: inline; }

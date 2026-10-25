@@ -226,7 +226,7 @@ KEEP.forEach(([name, ok]) => check("kept: " + name, !!ok));
     !L.captionRests({ ...b, typing: true, now: 1e9 }) && !L.captionRests({ ...b, voice: true, now: 1e9 }) && !L.captionRests({ ...b, replyOpen: true, now: 1e9 }) && !L.captionRests({ ...b, online: false, now: 1e9 }) && !L.captionRests({ ...b, hasReply: false, now: 1e9 }));
   check("caption rest: when to look again", L.captionRestIn({ ...b, now: 6000 }) === 10000 && L.captionRestIn({ ...b, now: 99999 }) === 0);
   check("the page: new caption / non-idle state / typing / focus / closing the reply restart the quiet spell; the line is aria-hidden while it rests; the control says See last reply",
-    /if \(c\.state !== "idle" \|\| sig !== capRestSig\) \{ capQuietSince = Date\.now\(\);/.test(main) && /input\.addEventListener\("focus", capActivity\);/.test(main) && /capActivity\(\);\n    paintCalm\(\);\n    \$\("cc-send"\)/.test(main) &&
+    /if \(c\.state !== "idle" \|\| sig !== capRestSig\) \{ capQuietSince = Date\.now\(\);/.test(main) && /input\.addEventListener\("focus", capActivity\);/.test(main) && /capActivity\(\);\n    paintCalm\(\);\n    fitInput\(\);\n    paintSend\(\);/.test(main) &&
     /line\.setAttribute\("aria-hidden", rest \? "true" : "false"\);/.test(main) && /rest \|\| !o\.hasReply \? "See last reply" : "Full reply"/.test(main) && /\.cc-caption\.rest \.cc-cap-line \{ opacity: 0; max-height: 0; \}/.test(read("public/moni-ai.css")) && /prefers-reduced-motion: reduce\) \{ \.cc-cap-line \{ transition: none; \}/.test(read("public/moni-ai.css")));
 }
 

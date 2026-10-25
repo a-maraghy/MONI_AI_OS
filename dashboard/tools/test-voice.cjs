@@ -751,15 +751,15 @@ print(json.dumps(res))
 function viewTests() {
   const user = { name: "Tester", username: "tester", perm: rbac.actor({ permissions: ["*"] }) };
   const off = views.page({ csrf: "c", user, voice: { configured: false, manage: true, voice: "marin", on: true, use: true, live: false } });
-  check("Command Center without a key (voice on): a manager is pointed to Settings ▸ Voice, linked", /add a token in Settings ▸ Voice/.test(off) && /href="\/mint-ai\/settings\/voice"/.test(off));
+  check("Command Center without a key (voice on): a manager is pointed to Settings ▸ Voice (the struck-through waveform says it; a click links there)", /id="cc-mic-off"[^>]*title="Voice is off: add an OpenAI token in MINT AI Settings ▸ Voice"/.test(off));
   // v3: the big "Talk to MINT" card left the rail; the composer mic is the one control -- and without voice it is not there.
   check("  no mic, voice-ready flag off, no big mic card", !/id="cc-c-mic"/.test(off) && /data-voice-ready=""/.test(off) && !/id="cc-mic-big"/.test(off));
   const offNoManage = views.page({ csrf: "c", user, voice: { configured: false, manage: false, on: true, use: true, live: false } });
-  check("  someone who cannot manage it gets no link and no note", !/href="\/mint-ai\/settings\/voice"/.test(offNoManage) && !/cc-voice-off/.test(offNoManage));
+  check("  someone who cannot manage it gets no link and no pointer to Settings", !/href="\/mint-ai\/settings\/voice"/.test(offNoManage) && /id="cc-mic-off"[^>]*title="Voice is off: an administrator can switch it on"/.test(offNoManage) && !/data-voice-off="[^"]*Settings/.test(offNoManage));
   const on = views.page({ csrf: "c", user, voice: { configured: true, manage: true, voice: "marin", model: "gpt-realtime-2.1-mini", on: true, use: true, live: true } });
   check("with a key and voice on: the mic starts a live call, OpenAI and the voice named, no setup prompt",
     /id="cc-c-mic"[^>]*title="Start a live conversation"/.test(on) && /data-voice-ready="1"/.test(on) && />OpenAI</.test(on) && />marin</.test(on) && !/cc-voice-off/.test(on) &&
-    /id="cc-speak-toggle"/.test(on) && /click the mic to talk/.test(on));
+    /id="cc-speak-toggle"/.test(on) && !/id="cc-mic-off"/.test(on));
   check("no Whisper or Piper left on the page", !/Whisper|Piper/i.test(on + off));
 
   check("the classic chat's view is gone (removed 2026-10-25)", !fs.existsSync(path.join(ROOT, "lib", "views-console.js")));
