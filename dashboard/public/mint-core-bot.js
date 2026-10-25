@@ -1607,6 +1607,37 @@
     LIVE.push(onPageFace);
 
     if (initGL()) S.gl = true; else ctx = canvas.getContext("2d");
+
+    /*
+     * The GPU can drop a WebGL context (a laptop waking from sleep, a driver reset, too many contexts).
+     * Nothing caught that, so the head vanished and only the glow and the z z z stayed (user screenshot,
+     * 2026-10-25, Command Center and dock alike). Now the context is kept restorable and everything is
+     * rebuilt when it comes back; if it does not come back within 4 s, the core draws in 2D instead.
+     */
+    var lostTimer = 0, destroyed = false;
+    function to2D() {
+      if (destroyed) return;
+      S.ctxLost = false; gl = null; geos = {}; fvGrid = null; fbo = null; fboTex = null; fboW = 0; fboH = 0;
+      canvas.removeEventListener("webglcontextlost", onCtxLost); canvas.removeEventListener("webglcontextrestored", onCtxRestored);
+      if (canvas.parentNode) { var fresh = canvas.cloneNode(false); canvas.parentNode.replaceChild(fresh, canvas); canvas = fresh; }
+      ctx = canvas.getContext("2d"); S.gl = false;
+      if (window.console) console.warn("[core E] the GPU context did not come back; drawing in 2D");
+      if (S.wanted) start(); else redrawIfIdle();
+    }
+    function onCtxLost(e) {
+      if (destroyed) return;
+      e.preventDefault(); // without this the browser never restores it
+      S.ctxLost = true; stop(true);
+      clearTimeout(lostTimer); lostTimer = setTimeout(function () { if (S.ctxLost) to2D(); }, 4000);
+    }
+    function onCtxRestored() {
+      if (destroyed) return;
+      clearTimeout(lostTimer); S.ctxLost = false;
+      geos = {}; fvGrid = null; fbo = null; fboTex = null; fboW = 0; fboH = 0; // the old objects died with the context
+      if (initGL()) S.gl = true; else { gl = null; ctx = canvas.getContext("2d"); S.gl = false; }
+      if (S.wanted) start(); else redrawIfIdle();
+    }
+    if (gl) { canvas.addEventListener("webglcontextlost", onCtxLost, false); canvas.addEventListener("webglcontextrestored", onCtxRestored, false); }
     mixPal(); coreAnim.color(pal); coreAnim.pcol = coreAnim.rgb.slice();
 
     return {
@@ -1690,6 +1721,8 @@
       setConcept: function () {},
       /** Stop and give the GPU context back (cc-map.js calls it before swapping to another core). */
       destroy: function () {
+        destroyed = true; clearTimeout(lostTimer);
+        canvas.removeEventListener("webglcontextlost", onCtxLost); canvas.removeEventListener("webglcontextrestored", onCtxRestored);
         stop(false);
         var li = LIVE.indexOf(onPageFace); if (li >= 0) LIVE.splice(li, 1);
         document.removeEventListener("visibilitychange", onVis);
