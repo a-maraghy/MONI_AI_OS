@@ -1205,7 +1205,12 @@
       if (dz > 0.5) { an.gxT = 0; an.gyT = 0; }
       var back = !gzOn && !follow && an.gxT === 0 && an.gyT === 0;
       var ek = S.still ? 1 : 1 - Math.exp(-dt * (back ? 3 : 10)); // the pointer left: drift back, slowly
+      // a target from a place that had no size yet (a session's spot, the pointer over a core of radius 0, a value carried
+      // over in a flight) can be NaN; one NaN in the gaze stays for good and takes the whole head with it -- every point
+      // of it turns with the gaze -- leaving only the glow (user screenshots 2026-10-25, after Settings round trips)
+      if (!isFinite(an.gxT)) an.gxT = 0; if (!isFinite(an.gyT)) an.gyT = 0;
       an.gx += (an.gxT - an.gx) * ek; an.gy += (an.gyT - an.gy) * ek;
+      if (!isFinite(an.gx)) an.gx = an.gxT; if (!isFinite(an.gy)) an.gy = an.gyT;
       if (S.still) an.gx = Math.round(an.gx); // a still frame: the eyes on whole nodes (a frozen in-between shift reads as a garbled face)
       S.lookK += ((gzOn || follow ? 1 : 0) - S.lookK) * (S.still ? 1 : 1 - Math.exp(-dt * 4));
       FACE.vec(S.face, an, rc, S.dpr, W.speak > 0.05 ? S.amp : 0, W.speak > 0.05 ? S.vis : null, FVEC[0], W8, 0);
@@ -1255,7 +1260,9 @@
           // the pointer close by: that session looks at it
           var pdx = S.ptr[0] - k.x, pdy = S.ptr[1] - k.y, kp = S.ptrOn && !S.still && Math.abs(pdx) < kr * 3 && Math.abs(pdy) < kr * 3;
           ka.gxT = kp ? clamp(pdx / (kr * 2.2), -1, 1) * 1.6 : !S.still && ka.glanceUntil > ka.t ? ka.glx : dx * 1.2; ka.gyT = 0;
+          if (!isFinite(ka.gxT)) ka.gxT = 0;
           ka.gx += (ka.gxT - ka.gx) * ek; ka.gy = 0;
+          if (!isFinite(ka.gx)) ka.gx = ka.gxT;
           if (S.still) ka.gx = Math.round(ka.gx);
           FACE.vec(S.face, ka, kr, S.dpr, sf.state === "speaking" ? 0.35 + 0.55 * synthAmp(ka.t + ka.ph) : 0, null, FVEC[i + 1], W8, (i + 1) * NF);
           var q = POOL[nHeads++];
@@ -1758,10 +1765,11 @@
       adopt: function (o) {
         if (!o || !o.S || o.S.concept !== "E") return;
         var a = o.S;
-        ["t", "amp", "ampSlow", "bead", "arrive", "light", "lightT", "doze", "dozeT", "actAt"].forEach(function (k) { if (typeof a[k] === "number") S[k] = a[k]; });
+        // (never a NaN carried over: one in the gaze would hide the head for good)
+        ["t", "amp", "ampSlow", "bead", "arrive", "light", "lightT", "doze", "dozeT", "actAt"].forEach(function (k) { if (typeof a[k] === "number" && isFinite(a[k])) S[k] = a[k]; });
         S.state = a.state; S.offline = !!a.offline; if (a.head && HEADS[a.head]) S.head = a.head;
         KEYS.forEach(function (k) { if (typeof o.W[k] === "number") W[k] = o.W[k]; });
-        if (o._anim) { var src = o._anim(); ["face", "prev", "fk", "col", "ck", "t", "blinkAt", "blinkP", "gx", "gy", "glanceAt", "glanceUntil"].forEach(function (k) { coreAnim[k] = src[k]; }); coreAnim.pcol = src.pcol.slice(); }
+        if (o._anim) { var src = o._anim(); ["face", "prev", "fk", "col", "ck", "t", "blinkAt", "blinkP", "gx", "gy", "glanceAt", "glanceUntil"].forEach(function (k) { var v = src[k]; if (typeof v === "number" ? isFinite(v) : v != null) coreAnim[k] = v; }); coreAnim.pcol = src.pcol.slice(); }
       },
       _anim: function () { return coreAnim; },
       setConcept: function () {},
