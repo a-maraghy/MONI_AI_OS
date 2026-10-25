@@ -12,7 +12,7 @@
 /* Transcription: the selector and the chosen model's measured figures under it. */
 .tr-pick { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; width: min(360px, 100%); }
 .tr-pick .set-form, .tr-pick select { width: 100%; }
-.tr-hint { color: var(--muted); font-size: 12px; line-height: 1.35; text-align: right; }
+.tr-hint { color: var(--muted); font-size: 13px; line-height: 1.35; text-align: right; }
 @media (max-width: 640px) {
   .set-sec #v-main .row .rc select, .set-sec .dep-hide .row .rc select { width: 100%; }
   .row .rc > .set-form { width: 100%; }
@@ -27,11 +27,11 @@
 .vp-enrol { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; width: min(420px, 100%); }
 .vp-mics { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; width: 100%; }
 .vp-mic { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
-.vp-mic .muted { font-size: 12px; }
+.vp-mic .muted { font-size: 13px; }
 .vp-acts { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
 .vp-stats { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; justify-content: space-between; width: 100%; }
 .vp-nums { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 13px; color: var(--body); min-width: 0; flex: 1 1 260px; }
-.vp-nums .muted { font-size: 12px; flex-basis: 100%; }
+.vp-nums .muted { font-size: 13px; flex-basis: 100%; }
 .vp-attn b { color: var(--warn, var(--bad)); }
 .vp-hist { width: min(280px, 100%); height: auto; flex: 0 1 280px; }
 .vp-hist rect.ok { fill: var(--accent); }
@@ -40,7 +40,7 @@
 .vp-hist line.base { stroke: var(--line-strong, var(--line)); stroke-width: 1; }
 .vp-hist line.acc { stroke: var(--accent); stroke-width: 1; stroke-dasharray: 3 2; }
 .vp-hist line.rej { stroke: var(--bad); stroke-width: 1; stroke-dasharray: 3 2; }
-.vp-hist text { fill: var(--muted); font-size: 8px; }
+.vp-hist text { fill: var(--muted); font-size: 13px; }
 @media (max-width: 640px) {
   .vp-enrol { align-items: stretch; width: 100%; }
   .vp-acts { justify-content: flex-start; }
@@ -53,13 +53,13 @@
 .vp-preset.on, .vp-preset:has(input:checked) { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
 .vp-preset input { margin-top: 3px; flex: none; }
 .vp-preset .t { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-.vp-preset small { color: var(--muted); font-size: 12px; line-height: 1.35; }
+.vp-preset small { color: var(--muted); font-size: 13px; line-height: 1.35; }
 .vp-custom { grid-column: 1 / -1; margin: 0; color: var(--warn); }
 .vp-adv summary { cursor: pointer; font-size: 13px; color: var(--body); }
 .vp-nums-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 8px; }
 .vp-num { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .vp-num input { width: 100%; max-width: 140px; }
-.vp-num small { font-size: 11px; }
+.vp-num small { font-size: 13px; }
 @media (max-width: 900px) { .vp-presets { grid-template-columns: 1fr; } .vp-nums-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 420px) { .vp-nums-grid { grid-template-columns: 1fr; } .vp-num input { max-width: none; } }
 /* Stored voiceprints (voiceprintGroup personCard). */

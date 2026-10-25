@@ -1,9 +1,10 @@
 # Mint OS — design system: "Plain label"
 
-> Stage 1 of the 2026-10-25 redesign (accessible, simple, professional; the leaf logo
-> replaced by the word MINT). Built on the shell, Telegram agents, MINT AI Settings
-> (Voice, and the new ChatGPT section) and the Command Center's chrome; every other page
-> already reads these tokens and is converted in stage 2. Source of truth for values:
+> The 2026-10-25 redesign (accessible, simple, professional; the leaf logo replaced by
+> the word MINT). Stage 1 built the shell, Telegram agents, MINT AI Settings and the
+> Command Center's chrome; stage 2 (same day) carried it to every page, removed the leaf
+> everywhere (lib/marks.js, the seedlings, the marks) and the three old font families
+> (Space Grotesk, Inter, JetBrains Mono). Source of truth for values:
 > `public/style.css` (tokens) and `public/mint-ds.css` (components). Product truth:
 > `PRODUCT.md`.
 
@@ -37,9 +38,12 @@
   top bar (32 px on sign-in), tracking +0.16 em, colour `--ink`. No mark, no tag, no
   gradient. Markup: `brand.lockup()` → `<span class="wordmark"><span class="wm-mint">MINT</span></span>`.
 - Sign-in adds one plain line under it ("Operating System").
-- Proposed favicon / app icon (not wired, awaiting approval): an **M monogram** — white
-  geometric M (straight stems, the V to 60 % height) on a spearmint-ink rounded square
-  (radius 22 %). Today's live icon is the core E bot head (`MINT_APP_ICON=bot`), not a leaf.
+- Browser-tab icon: an **M monogram**, black on a white rounded square with a black frame;
+  white on black in dark mode (the SVG's own `prefers-color-scheme`; the .ico is the light
+  one). `tools/make-monogram.cjs` → `public/brand/m/`. The installed app icon (apple-touch,
+  manifest, desktop app) stays the core E bot head (`MINT_APP_ICON=bot`).
+- "More: …" — rarely used rows fold into a `<details class="set-more">` at the end of their
+  group (`V.more()` in lib/views-settings.js): a 44 px summary, no script needed.
 
 ## Colour
 

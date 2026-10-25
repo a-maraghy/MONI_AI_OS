@@ -14,7 +14,7 @@
 .pa-card.catchup .pa-ic { background: color-mix(in srgb, var(--violet-ink, #7420C4) 12%, transparent); color: var(--violet-ink, #7420C4); }
 .pa-h { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .pa-h b { font: 600 14px/1.25 var(--brand-font, var(--ui)); }
-.pa-h small { color: var(--dim); font-size: 11.5px; }
+.pa-h small { color: var(--dim); font-size: 13px; }
 .pa-x { flex: none; width: 26px; height: 26px; border: 0; border-radius: 8px; background: transparent; color: var(--dim); font-size: 18px; line-height: 1; cursor: pointer; padding: 0; }
 .pa-x:hover { background: var(--cc-glass, rgba(128, 128, 128, .15)); color: var(--ink); }
 .pa-x:focus-visible, .pa-b:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
@@ -32,10 +32,10 @@
 .pa-lines .t-err b { color: var(--bad); }
 .pa-lines span { color: var(--muted); overflow-wrap: anywhere; }
 .pa-card footer { display: flex; align-items: center; gap: 6px; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--cc-glass-line, var(--line)); }
-.pa-card footer small { color: var(--dim); font-size: 11px; }
+.pa-card footer small { color: var(--dim); font-size: 13px; }
 .pa-card footer .sp { flex: 1; }
 .pa-b { display: inline-flex; align-items: center; height: 28px; padding: 0 11px; border-radius: 8px; border: 1px solid var(--line-strong, var(--line)); background: transparent; color: var(--ink);
-  font: 500 12px var(--ui); cursor: pointer; text-decoration: none; white-space: nowrap; }
+  font: 500 13px var(--ui); cursor: pointer; text-decoration: none; white-space: nowrap; }
 .pa-b:hover { background: var(--cc-glass, rgba(128, 128, 128, .12)); }
 .pa-b.pri { background: var(--brand, var(--accent)); border-color: transparent; color: var(--on-brand, #fff); }
 .pa-b[disabled] { opacity: .5; cursor: default; }
@@ -43,23 +43,23 @@
 /* ---- watcher toasts, top right under the bar ---- */
 .pa-toasts { position: fixed; right: 18px; top: calc(var(--topbar-h, 56px) + 14px); z-index: 75; display: flex; flex-direction: column; gap: 8px; width: min(360px, calc(100vw - 36px)); pointer-events: none; }
 .pa-toast { pointer-events: auto; display: flex; align-items: flex-start; gap: 10px; padding: 10px 10px 10px 12px; border-radius: 12px; background: var(--cc-glass-2, var(--panel));
-  border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); box-shadow: var(--cc-shadow, var(--shadow)); backdrop-filter: blur(18px); color: var(--ink); font: 12.5px/1.4 var(--ui);
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); box-shadow: var(--cc-shadow, var(--shadow)); backdrop-filter: blur(18px); color: var(--ink); font: 13px/1.4 var(--ui);
   animation: pa-in .25s ease-out; transition: opacity .35s, transform .35s; }
 .pa-toast.out { opacity: 0; transform: translateX(12px); }
 .pa-toast > i { flex: none; width: 8px; height: 8px; margin-top: 5px; border-radius: 50%; background: var(--warn); box-shadow: 0 0 0 4px color-mix(in srgb, var(--warn) 18%, transparent); }
 .pa-toast > div { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.pa-toast b { font: 600 10.5px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--warn); }
-.pa-toast small { color: var(--dim); font-size: 11px; }
+.pa-toast b { font: 600 13px var(--mono); letter-spacing: 0; color: var(--warn); }
+.pa-toast small { color: var(--dim); font-size: 13px; }
 .pa-toast button { flex: none; width: 22px; height: 22px; border: 0; border-radius: 6px; background: transparent; color: var(--dim); cursor: pointer; font-size: 16px; line-height: 1; padding: 0; }
-.pa-toast button.pa-b { width: auto; height: 24px; align-self: flex-start; margin-top: 6px; padding: 0 9px; font-size: 12px; color: var(--ink); border: 1px solid var(--line-strong, var(--line)); }
+.pa-toast button.pa-b { width: auto; height: 24px; align-self: flex-start; margin-top: 6px; padding: 0 9px; font-size: 13px; color: var(--ink); border: 1px solid var(--line-strong, var(--line)); }
 
 /* ---- "Set a watcher?" above the composer ---- */
 .pa-offer { position: relative; z-index: 2; width: min(760px, 100%); box-sizing: border-box; display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 14px; background: var(--panel);
-  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); box-shadow: var(--cc-shadow, var(--shadow)); backdrop-filter: blur(18px); color: var(--ink); font: 12.5px/1.4 var(--ui); animation: pa-in .2s ease-out; }
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent); box-shadow: var(--cc-shadow, var(--shadow)); backdrop-filter: blur(18px); color: var(--ink); font: 13px/1.4 var(--ui); animation: pa-in .2s ease-out; }
 .pa-o-t { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.pa-o-t b { font: 600 10.5px var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--accent); }
+.pa-o-t b { font: 600 13px var(--mono); letter-spacing: 0; color: var(--accent); }
 .pa-o-t span { font-weight: 600; font-size: 13.5px; }
-.pa-o-t small { color: var(--dim); font-size: 11.5px; }
+.pa-o-t small { color: var(--dim); font-size: 13px; }
 .pa-o-a { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 
 /* the event log's badges */
@@ -84,8 +84,8 @@ html.cc-desk .dk-gl-pa .dk-gl-k > span:first-of-type { color: var(--dk-accent); 
 html.cc-desk .dk-gl-pa.catchup { box-shadow: 0 0 0 1px rgba(167, 107, 255, .5), var(--dk-shadow); }
 html.cc-desk .dk-gl-pa.catchup .dk-gl-k > span:first-of-type { color: #B98CFF; }
 html.cc-desk[data-theme="light"] .dk-gl-pa.catchup .dk-gl-k > span:first-of-type { color: #7420C4; }
-html.cc-desk .dk-gl-k time { font: 600 11px var(--mono); letter-spacing: 0; color: var(--dk-tx2); }
-html.cc-desk .dk-gl-pa-lines { list-style: none; margin: 5px 0 8px; padding: 0; display: flex; flex-direction: column; gap: 4px; font: 12.5px/1.35 var(--ui); color: var(--dk-tx2); }
+html.cc-desk .dk-gl-k time { font: 600 13px var(--mono); letter-spacing: 0; color: var(--dk-tx2); }
+html.cc-desk .dk-gl-pa-lines { list-style: none; margin: 5px 0 8px; padding: 0; display: flex; flex-direction: column; gap: 4px; font: 13px/1.35 var(--ui); color: var(--dk-tx2); }
 html.cc-desk .dk-gl-pa-lines li { overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 html.cc-desk .dk-gl-pa-lines b { color: var(--dk-tx); font-weight: 600; }
 html.cc-desk .dk-gl-pa-lines .t-warn b { color: var(--dk-amber); }

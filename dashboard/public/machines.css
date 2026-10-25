@@ -11,7 +11,7 @@
 .mc-take textarea { width: 100%; }
 .mc-more form { margin-top: 8px; }
 .mc-code { margin-top: 8px; }
-.mc-code-value { font-size: 2rem; letter-spacing: 0.18em; margin: 6px 0 10px; }
+.mc-code-value { font-size: 2rem; letter-spacing: 0; margin: 6px 0 10px; }
 .mc-acts { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
 .mc-act { display: grid; grid-template-columns: 240px 1fr; gap: 12px; align-items: start; }
 .mc-shot img { width: 240px; height: auto; border-radius: 8px; border: 1px solid var(--line, rgba(127, 127, 127, 0.25)); display: block; }

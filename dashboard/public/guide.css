@@ -6,7 +6,7 @@
 .gd p, .gd li { font-size: 13.5px; line-height: 1.6; color: var(--body); }
 .gd p.muted { color: var(--muted); }
 .gd ul, .gd ol { padding-left: 20px; margin: 6px 0 10px; }
-.gd .where { font: 400 11.5px var(--mono); color: var(--muted); margin: -4px 0 8px; }
+.gd .where { font: 400 13px var(--mono); color: var(--muted); margin: -4px 0 8px; }
 .gd .gd-body > :first-child { margin-top: 0; }
 .gd .gd-body > :last-child { margin-bottom: 0; }
 .gd .gd-sub { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 2px; scroll-margin-top: 12px; }

@@ -19,7 +19,6 @@ const {
 const { byScope } = require("./catalog");
 const { renderAddons } = require("./views-addons");
 const { graphPanel, viewSwitch } = require("./views-memgraph");
-const brand = require("./brand");
 
 const MODELS = [
   ["claude-opus-5-5", "Opus 5.5 — best all-round, the default"],
@@ -83,85 +82,9 @@ function tabs(slug, active) {
 
 /** The trail for every page under one agent. */
 const agentCrumbs = (agent, here) =>
-  [["Agents Dashboard", "/agents/dashboard"], ["Agents", "/agents"], [agent.slug, "/agents/" + agent.slug]].concat(
+  [["Agents overview", "/agents/dashboard"], ["Agents", "/agents"], [agent.slug, "/agents/" + agent.slug]].concat(
     here ? [[here, null]] : []
   );
-
-/* ------------------------------------------------------------- seedlings - */
-
-const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"];
-
-/**
- * An agent drawn as a seedling. Stem height from the size of its memory,
- * leaf pairs from its notes, one root per channel (a dashed one when it has
- * none). Posture from its state: an active one stands and sways, a failed one
- * droops with red tips, an inactive one is grey and still. Colours are classes,
- * so the theme repaints it.
- */
-function seedling(agent) {
-  const st = (agent.state && agent.state.active) || "inactive";
-  const kind = st === "active" ? "on" : st === "failed" ? "failed" : "off";
-  const notes = agent.notes || 0;
-  // Grown from the OS leaf: a sprout, then a pair, then a sapling as its
-  // memory fills.
-  const stage = notes < 10 ? 1 : notes < 60 ? 2 : 3;
-  const chans = agent.channel ? [agent.channel] : [];
-  return brand.seedling(stage, `seed-art sd-${kind}`, {
-    droop: kind === "failed",
-    sway: kind === "on",
-    roots: chans.map((c, j) => (chans.length === 1 ? 0 : j ? 1 : -1)),
-  });
-}
-
-function pips(effort) {
-  const n = Math.max(1, EFFORT_LEVELS.indexOf(effort || "medium") + 1);
-  let out = "";
-  for (let k = 0; k < 5; k++) out += `<i class="${k < n ? "on" : ""}"></i>`;
-  return `<span class="pips" aria-label="effort ${esc(effort || "medium")}">${out}</span>`;
-}
-
-function channelLink(ch) {
-  if (!ch) return `<a class="ch-link none" href="/channels/new">${icon("plus")}No channel — add one</a>`;
-  const handle = ch.telegram_bot_username ? "@" + ch.telegram_bot_username : ch.type === "whatsapp" ? ch.name : "";
-  return `<a class="ch-link" href="/channels/${esc(ch.slug)}">${icon(ch.type === "whatsapp" ? "whatsapp" : "telegram")}${esc(
-    ch.type || "channel"
-  )}${handle && handle !== ch.type ? ` <small>${esc(handle)}</small>` : ""}</a>`;
-}
-
-/** One seedling card: the agent at a glance, with its controls. */
-function seedCard(csrf, user, a) {
-  const st = (a.state && a.state.active) || "inactive";
-  const mem = a.memory || {};
-  const canControl = can(user, "agents.control", a.slug);
-  return `<article class="card seed ${st === "active" ? "hud " : ""}${esc(st)}">
-    <div class="seed-top">${seedling(a)}
-      <div class="min0"><a class="seed-name" href="/agents/${esc(a.slug)}">${esc(a.name || a.slug)}</a>
-        <div class="seed-slug">${esc(a.slug)}</div></div>
-      ${agentPill(st)}</div>
-    <div class="seed-ch">${channelLink(a.channel)}</div>
-    <div class="seed-meta"><span><b>${a.notes || 0}</b>notes</span><span><b>${(mem.chunks || 0).toLocaleString("en-US")}</b>chunks</span><span><b>${esc(
-      ago(mem.last_indexed)
-    )}</b>indexed</span></div>
-    <div class="seed-model"><span class="mono">${esc(a.model || "—")}</span><span><span class="pips-l">${esc(
-      a.effort || "medium"
-    )}</span>${pips(a.effort)}</span></div>
-    <div class="seed-foot">${canControl ? controls(csrf, a) : "<span></span>"}
-      <nav class="seed-links" aria-label="${esc(a.name || a.slug)} sections">
-        <a href="/agents/${esc(a.slug)}/instructions" title="Instructions" aria-label="Instructions">${icon("guide")}</a>
-        <a href="/agents/${esc(a.slug)}/memory" title="Memory" aria-label="Memory">${icon("memory")}</a>
-        <a href="/agents/${esc(a.slug)}/logs" title="Logs" aria-label="Logs">${icon("logs")}</a>
-        <a href="/agents/${esc(a.slug)}/settings" title="Settings" aria-label="Settings">${icon("settings")}</a>
-      </nav></div>
-  </article>`;
-}
-
-function fleetGrid(csrf, user, agents) {
-  return `<div class="fleet" aria-label="Fleet">${agents.map((a) => seedCard(csrf, user, a)).join("")}${
-    can(user, "agents.create")
-      ? `<a class="card seed new" href="/agents/new"><span>${brand.seedling(2, "seed-new")}<b>Plant a new agent</b><span class="small">Step 1: the mind · Step 2: its channel</span></span></a>`
-      : ""
-  }</div>`;
-}
 
 const GETS = [
   ["Workspace", "An isolated directory it may read and write. Nothing outside it."],
@@ -170,13 +93,6 @@ const GETS = [
   ["systemd unit", "Restarts on crash, starts on boot, logs to the journal."],
   ["A channel", "Added separately, so you can change how it is reached without rebuilding it."],
 ];
-
-function getsCard(open) {
-  return `<details class="card gets-d"${open ? " open" : ""}>
-    <summary>${icon("info")}<b>What an agent gets</b><span>${GETS.map((g) => g[0]).join(" · ")}</span><em>show</em></summary>
-    <div class="gets">${GETS.map(([k, v]) => `<div><b>${esc(k)}</b><span>${esc(v)}</span></div>`).join("")}</div>
-  </details>`;
-}
 
 function controls(csrf, agent) {
   const state = agent.state || {};
@@ -246,7 +162,7 @@ exports.dashboard = ({ csrf, user, agents, channels, probe, flash, err, team, li
   const claudeViews = require("./views-claude");
   const seesAgents = can(user, "agents.view");
   return shell(
-    "Agents & sessions",
+    "Agents overview",
     `${flashes({ msg: flash, err })}
     <div class="stats4">
       ${stat(liveTeam ? liveTeam.length + (limits && limits.max_live ? " / " + limits.max_live : "") : "—", "sessions live", "activity")}
@@ -274,9 +190,9 @@ exports.dashboard = ({ csrf, user, agents, channels, probe, flash, err, team, li
         : `<section class="card" id="a-telegram"><div class="card-head"><h2>${icon("agents")}Telegram agents</h2><span class="muted small">${running.length} running · ${channels.length} channel${
             channels.length === 1 ? "" : "s"
           }</span></div>${
-            agents.length || can(user, "agents.create")
-              ? fleetGrid(csrf, user, agents)
-              : empty("agents", "No agents yet", 'An agent is a Claude session with its own memory. <a href="/agents/new">Create the first one</a>.')
+            agents.length
+              ? agentTable(csrf, user, agents)
+              : empty("agents", "No agents yet", can(user, "agents.create") ? 'An agent is a Claude session with its own memory. <a href="/agents/new">Create the first one</a>.' : "An agent is a Claude session with its own memory.")
           }</section>
     ${card(
       "Capabilities",
@@ -284,7 +200,7 @@ exports.dashboard = ({ csrf, user, agents, channels, probe, flash, err, team, li
         ${can(user, "addons.view") ? `<tr><td>Add-ons</td><td><a href="/addons">What an agent can be given</a></td></tr>` : ""}
         <tr><td>Agent services</td><td><a href="/services?kind=agents">Services ▸ Agents</a></td></tr>
       </table>
-      ${getsCard(false)}`,
+      <details class="set-more" id="a-gets"><summary>What every agent gets</summary><div class="set-more-body"><dl class="ds-dl">${GETS.map(([k, v]) => `<div><dt>${esc(k)}</dt><dd>${esc(v)}</dd></div>`).join("")}</dl></div></details>`,
       { icon: "addons", id: "a-capabilities" }
     )}`
     }`,
@@ -293,7 +209,7 @@ exports.dashboard = ({ csrf, user, agents, channels, probe, flash, err, team, li
       csrf,
       active: "agents-dashboard",
       pattern: "c",
-      heading: "Agents & sessions",
+      heading: "Agents overview",
       subtitle: "Everything that acts on this machine: MINT AI's sessions and the Telegram agents.",
       actions: `${can(user, "channels.view") ? `<a class="btn" href="/channels">${icon("channels")} Channels</a>` : ""}
         ${can(user, "agents.create") ? `<a class="btn primary" href="/agents/new">${icon("plus")} New agent</a>` : ""}`,
@@ -588,7 +504,7 @@ exports.detail = ({ csrf, user, agent, notes = [], journal = null, journalErr = 
           }</div>
           <table class="kv">
             <tr><td>Model</td><td class="mono small">${esc(agent.model || "—")}</td></tr>
-            <tr><td>Thinking effort</td><td>${pips(agent.effort)} ${esc(agent.effort || "medium")}</td></tr>
+            <tr><td>Thinking effort</td><td>${esc(EFFORT_WORDS[agent.effort || "medium"] || agent.effort)}</td></tr>
             <tr><td>Verbosity</td><td>${esc(String(agent.verbose_level))}</td></tr>
             <tr><td>Max turns</td><td>${esc(String(agent.max_turns || "—"))}</td></tr>
             <tr><td>Timeout</td><td>${esc(String(agent.timeout_seconds || "—"))}s</td></tr>
@@ -619,7 +535,7 @@ exports.detail = ({ csrf, user, agent, notes = [], journal = null, journalErr = 
           }</div></div>
         <div class="vault-art">
           <svg data-vault="${esc(agent.notes || 0)}" viewBox="-160 -160 320 320" aria-hidden="true"></svg>
-          <div class="v-center">${brand.osMark({ cls: "mark v-leaf" })}<b>${esc(agent.notes || 0)}</b><span>notes</span></div>
+          <div class="v-center"><b>${esc(agent.notes || 0)}</b><span>notes</span></div>
         </div>
         <div>
           <div class="vault-stats">
@@ -670,7 +586,6 @@ exports.detail = ({ csrf, user, agent, notes = [], journal = null, journalErr = 
       crumbs: agentCrumbs(agent),
       heading: agent.name || agent.slug,
       headingHtml: agentHead(agent),
-      headArt: seedling(agent),
       subtitle: `<span class="mono small">${esc(agent.slug)}</span> · ${esc(agent.dir || "")}`,
       actions: `${canLogs ? `<a class="btn" href="/agents/${esc(agent.slug)}/logs">${icon("logs")} Logs</a>` : ""}${
         canControl ? controls(csrf, agent).replace('class="btn-row"', 'class="btn-row flat"').replace(/ small"/g, '"') : ""
@@ -707,7 +622,6 @@ exports.instructions = ({ csrf, user, agent, content, flash, err }) =>
       crumbs: agentCrumbs(agent, "Instructions"),
       heading: agent.name || agent.slug,
       headingHtml: agentHead(agent),
-      headArt: seedling(agent),
       subtitle: "Standing instructions.",
     }
   );
@@ -827,7 +741,6 @@ exports.memory = ({ csrf, user, agent, agents, notes, query, hits, view, flash, 
       crumbs: agentCrumbs(agent, "Memory"),
       heading: agent.name || agent.slug,
       headingHtml: agentHead(agent),
-      headArt: seedling(agent),
       subtitle: "What this agent remembers — and how it connects.",
       actions: viewSwitch(v, [
         ["graph", "Graph", "network", base + "?view=graph"],
@@ -868,7 +781,6 @@ exports.note = ({ csrf, user, agent, path, content, flash, err }) =>
       crumbs: agentCrumbs(agent, "Memory").slice(0, -1).concat([["Memory", "/agents/" + agent.slug + "/memory"], [path, null]]),
       heading: agent.name || agent.slug,
       headingHtml: agentHead(agent),
-      headArt: seedling(agent),
       subtitle: `<span class="mono">${esc(path)}</span>`,
     }
   );
@@ -901,7 +813,6 @@ exports.logs = ({ csrf, user, agent, lines, err }) =>
       crumbs: agentCrumbs(agent, "Logs"),
       heading: agent.name || agent.slug,
       headingHtml: agentHead(agent),
-      headArt: seedling(agent),
       subtitle: "Journal output.",
     }
   );
@@ -937,20 +848,22 @@ exports.settings = ({ csrf, user, agent, probe, flash, err }) =>
             ).join("")}
           </select></label>
         ${effortSelect(agent.effort)}
-        <label>Verbosity
-          <select name="verbose_level">
-            <option value="0" ${agent.verbose_level === 0 ? "selected" : ""}>Quiet</option>
-            <option value="1" ${agent.verbose_level === 1 ? "selected" : ""}>Normal</option>
-            <option value="2" ${agent.verbose_level === 2 ? "selected" : ""}>Detailed</option>
-          </select></label>
-        <label>Max turns per request<input name="max_turns" type="number" min="1" max="500"
-          value="${esc(String(agent.max_turns || 100))}"></label>
-        <label>Request timeout (seconds)<input name="timeout_seconds" type="number" min="60" max="7200"
-          value="${esc(String(agent.timeout_seconds || 1800))}"></label>
         <label>Project directory<input name="project_dir" value="${esc(agent.project_dir || "")}"
           placeholder="/opt/projects/odoo"></label>
         ${fileSendSwitch(agent.file_send)}
-        ${drawingSwitch(agent.drawing)}`,
+        ${drawingSwitch(agent.drawing)}
+        <details class="set-more" id="agent-more"${agent.verbose_level !== 1 || (agent.max_turns && agent.max_turns !== 100) || (agent.timeout_seconds && agent.timeout_seconds !== 1800) ? " open" : ""}><summary>More: turns, timeout, verbosity</summary><div class="set-more-body">
+        <label>Max turns per request <span class="hint">100 suits almost every agent</span><input name="max_turns" type="number" min="1" max="500"
+          value="${esc(String(agent.max_turns || 100))}"></label>
+        <label>Request timeout (seconds) <span class="hint">1800 (30 minutes) by default</span><input name="timeout_seconds" type="number" min="60" max="7200"
+          value="${esc(String(agent.timeout_seconds || 1800))}"></label>
+        <label>Verbosity <span class="hint">how much of its own work it narrates in chat</span>
+          <select name="verbose_level">
+            <option value="0" ${agent.verbose_level === 0 ? "selected" : ""}>Quiet: the final answer only</option>
+            <option value="1" ${agent.verbose_level === 1 ? "selected" : ""}>Normal: tool names as it works</option>
+            <option value="2" ${agent.verbose_level === 2 ? "selected" : ""}>Detailed: tools with inputs</option>
+          </select></label>
+        </div></details>`,
         { icon: "settings" }
       )}
 
@@ -993,7 +906,6 @@ exports.settings = ({ csrf, user, agent, probe, flash, err }) =>
       crumbs: agentCrumbs(agent, "Settings"),
       heading: agent.name || agent.slug,
       headingHtml: agentHead(agent),
-      headArt: seedling(agent),
       subtitle: "Configuration.",
     }
   );

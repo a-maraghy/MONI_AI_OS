@@ -109,8 +109,8 @@ const osPage = views.osDashboard({
   logins: [{ ts: "2026-09-27T10:00:00Z", ip: "1.2.3.4", username: "<u>", outcome: "success" }],
   users: [], roles: [], devices: [], audit: [{ ts: "2026-09-27T10:00:00Z", action: "a<x>", detail: { k: "<v>" } }],
 });
-check("the OS overview is one screen (A)", /class="content pat-a"/.test(osPage));
-check("it is headed Machine core", /<h1>Machine core<\/h1>/.test(osPage));
+check("the OS overview is a scrolling document (C) since the 16 px redesign", /class="content pat-c"/.test(osPage));
+check("it is headed Machine health", /<h1>Machine health<\/h1>/.test(osPage));
 const mycJson = /data-myc="([^"]*)"/.exec(osPage);
 const myc = mycJson && JSON.parse(mycJson[1].replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&"));
 check("the Machine core hero is the mycelium (growth rings gone)", myc && Array.isArray(myc.nodes) && /<h2>Mycelium<\/h2>/.test(osPage) && !/data-machine-core/.test(osPage));
@@ -126,10 +126,10 @@ const fleet = [
   { slug: "odd", name: "Odd", state: { active: "failed" }, notes: 0, memory: {}, channel: null },
 ];
 const nursery = agentViews.dashboard({ csrf: "c", user, agents: fleet, channels: [{}], probe: null });
-check("Agents & sessions ▸ Overview is a document holding the Telegram nursery", /<h1>Agents &amp; sessions<\/h1>/.test(nursery) && /class="content pat-c"/.test(nursery) && />Telegram agents<\/h2>/.test(nursery));
-check("every agent is a seedling card", (nursery.match(/class="card seed (hud )?(active|failed|inactive)"/g) || []).length === 2 && /class="seedling seed-art sd-on"/.test(nursery) && /class="seedling seed-art sd-failed"/.test(nursery));
-check("an agent with no channel gets a dashed root and an add link", /sd-root none/.test(nursery) && /No channel — add one/.test(nursery));
-check("effort shows as pips", /aria-label="effort high"/.test(nursery));
+check("Agents overview is a document holding the Telegram agents table", /<h1>Agents overview<\/h1>/.test(nursery) && /class="content pat-c"/.test(nursery) && />Telegram agents<\/h2>/.test(nursery) && /class="ds-table agents-table"/.test(nursery));
+check("every agent is a table row with its state as a word and a shape (no seedling)", (nursery.match(/<th scope="row" data-h="Agent">/g) || []).length === 2 && /class="state ok"[^>]*><svg[^>]*>.*?<\/svg>Running/.test(nursery) && /class="state bad"[^>]*><svg[^>]*>.*?<\/svg>Failed/.test(nursery) && !/seedling|class="card seed/.test(nursery));
+check("an agent with no channel gets an add link", /href="\/channels\/new"/.test(nursery) && /No channel — add one/.test(nursery));
+check("effort shows as a word", /High effort/.test(nursery));
 check("card controls are the existing forms", /action="\/agents\/scout\/action"/.test(nursery) && /name="action" value="restart"/.test(nursery));
 check("agent names are escaped", nursery.includes("Scout &lt;x&gt;") && !nursery.includes("Scout <x>"));
 const noControl = rbac.actor({ permissions: ["agents.view"], agent_scope: "*", channel_scope: "*" });

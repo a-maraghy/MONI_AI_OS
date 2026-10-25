@@ -206,9 +206,10 @@ function ring(key, label, pct, sub) {
 const gib = (n) => (n == null ? "—" : (n / 1024 ** 3).toFixed(n >= 10 * 1024 ** 3 ? 0 : 1));
 
 /**
- * The OS dashboard: the machine, not the fleet -- "Machine core".
+ * The OS dashboard: the machine, not the fleet -- "Machine health".
  *
- * One screen (pattern A). The centre is the host drawn as a mycelium: every
+ * A document (pattern C, 2026-10-25: at the 16 px type of the redesign one
+ * fixed screen cut the cards off, so the page scrolls). The centre is the host drawn as a mycelium: every
  * tracked unit a knot on the web, every thread a real dependency (thicker for
  * more real traffic in the last 24 h), and pulses running along the threads
  * as real events happen (public/mycelium.js, fed by /api/os/pulse). A unit
@@ -365,7 +366,7 @@ exports.osDashboard = ({
         </section>
       </div>
 
-      <section class="core-hero myc-hero" id="mc-hero" aria-label="Machine core: what runs on the host and what depends on what" data-myc="${esc(JSON.stringify(mycData))}">
+      <section class="core-hero myc-hero" id="mc-hero" aria-label="Machine health: what runs on the host and what depends on what" data-myc="${esc(JSON.stringify(mycData))}">
         <canvas aria-hidden="true"></canvas>
         <div class="hero-title"><h2>Mycelium</h2><p data-mc-sub>${
           svcDown.length
@@ -476,9 +477,9 @@ exports.osDashboard = ({
       user,
       csrf,
       active: "os",
-      pattern: "a",
+      pattern: "c",
       assets: ["mycelium-graph.js", "mycelium.js"],
-      heading: "Machine core",
+      heading: "Machine health",
       subtitle: "The machine everything runs on — host health, capabilities, and who can reach it.",
       actions: `${can(user, "services.view") ? `<a class="btn" href="/services">${icon("services")} Services</a>` : ""}${
         can(user, "firewall.view") ? `<a class="btn" href="/firewall">${icon("ban")} Firewall</a>` : ""

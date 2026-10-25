@@ -6,17 +6,17 @@
 /* The indicator: visible whenever the camera is open. */
 .mp-cam { position: fixed; left: 14px; bottom: 14px; z-index: 90; display: flex; align-items: center; gap: 7px; height: 28px; padding: 0 4px 0 10px;
   border-radius: 14px; background: var(--panel, rgba(16, 18, 40, .86)); border: 1px solid var(--line-strong, rgba(255, 255, 255, .18));
-  color: var(--tx, #e9ecff); font: 600 11.5px/1 var(--brand-font, system-ui, sans-serif); box-shadow: 0 6px 20px rgba(0, 0, 0, .25); pointer-events: auto; }
+  color: var(--tx, #e9ecff); font: 600 13px/1 var(--brand-font, system-ui, sans-serif); box-shadow: 0 6px 20px rgba(0, 0, 0, .25); pointer-events: auto; }
 .mp-cam .mp-t { max-width: 230px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 1.3; }
 html.cc-desk .mp-cam .mp-t { max-width: 190px; }
 .mp-cam .mp-dot { width: 8px; height: 8px; border-radius: 50%; background: #3ddc97; box-shadow: 0 0 0 3px rgba(61, 220, 151, .22); }
 .mp-cam .mp-off { height: 20px; padding: 0 9px; border: 0; border-radius: 10px; background: rgba(128, 128, 128, .22); color: inherit; font: inherit; cursor: pointer; }
 .mp-cam .mp-off:hover { background: rgba(128, 128, 128, .36); }
 .mp-cam .mp-off:focus-visible { outline: 2px solid #5ad1ff; outline-offset: 1px; }
-html.cc-desk .mp-cam { left: 8px; bottom: auto; top: 8px; height: 22px; padding: 0 3px 0 8px; font-size: 10.5px; }
+html.cc-desk .mp-cam { left: 8px; bottom: auto; top: 8px; height: 22px; padding: 0 3px 0 8px; font-size: 13px; }
 html.cc-desk .mp-cam .mp-off { height: 16px; padding: 0 7px; } /* a hit region in the app (mint-desktop.js HIT); the tray's "Camera presence" switches it off too */
 html.dk-comp-out .mp-cam { top: auto; bottom: 6px; left: 50%; transform: translateX(-50%); height: 18px; padding: 0 2px 0 6px; } /* under the bot, centred (companion at the top of the screen) */
-html.dk-comp-out .mp-cam .mp-off { height: 14px; padding: 0 5px; font-size: 9.5px; }
+html.dk-comp-out .mp-cam .mp-off { height: 14px; padding: 0 5px; font-size: 13px; }
 html.dk-comp-out .mp-cam .mp-t, html.dk-comp-out .mp-cam .mp-s { display: none; }
 
 /* The pill's state word (2026-10-21): Watching / You're here / Looking at me / Listening / Paused; the camera after it, quieter. */
@@ -32,15 +32,15 @@ html.cc-desk .mp-cam .mp-t { max-width: 130px; }
 .mp-cam[data-cap="paused"] .mp-s { color: #e9a23b; }
 .mp-cam[data-cap="listening"] .mp-s { color: #3ddc97; }
 /* Look and speak waits (voice off, busy, cool-down, someone else in view): a quiet "i", the reason in the hint. Never more. */
-.mp-cam .mp-i { display: none; width: 13px; height: 13px; border-radius: 50%; border: 1px solid currentColor; opacity: .55; font: italic 700 9px/12px Georgia, serif; text-align: center; flex: none; }
+.mp-cam .mp-i { display: none; width: 13px; height: 13px; border-radius: 50%; border: 1px solid currentColor; opacity: .55; font: italic 700 13px/12px Georgia, serif; text-align: center; flex: none; }
 .mp-cam.mp-blocked .mp-i { display: inline-block; }
 /* The hint: on hover, keyboard focus or a tap. Drawn only (it takes no clicks; the pill under it is the hit region). */
 .mp-cam .mp-why { position: absolute; left: 0; bottom: calc(100% + 6px); display: none; flex-direction: column; gap: 2px; width: max-content; max-width: min(280px, calc(100vw - 24px));
   padding: 6px 9px; border-radius: 9px; background: var(--panel, rgba(16, 18, 40, .94)); border: 1px solid var(--line-strong, rgba(255, 255, 255, .18)); color: var(--tx, #e9ecff);
-  font: 500 11.5px/1.35 var(--brand-font, system-ui, sans-serif); white-space: normal; box-shadow: 0 6px 18px rgba(0, 0, 0, .25); pointer-events: none; }
+  font: 500 13px/1.35 var(--brand-font, system-ui, sans-serif); white-space: normal; box-shadow: 0 6px 18px rgba(0, 0, 0, .25); pointer-events: none; }
 .mp-cam .mp-why-c { opacity: .7; }
 .mp-cam:hover .mp-why, .mp-cam:focus-within .mp-why, .mp-cam.mp-open .mp-why { display: flex; }
-html.cc-desk .mp-cam .mp-why { bottom: auto; top: calc(100% + 5px); font-size: 10.5px; background: rgba(14, 17, 28, .97); color: var(--dk-tx, #eef1ff); border-color: var(--dk-pill-b, rgba(255, 255, 255, .16)); }
+html.cc-desk .mp-cam .mp-why { bottom: auto; top: calc(100% + 5px); font-size: 13px; background: rgba(14, 17, 28, .97); color: var(--dk-tx, #eef1ff); border-color: var(--dk-pill-b, rgba(255, 255, 255, .16)); }
 html.cc-desk[data-theme="light"] .mp-cam .mp-why { background: rgba(250, 251, 253, .98); color: #141824; border-color: rgba(20, 24, 36, .14); }
 html.dk-comp-out .mp-cam .mp-why { top: auto; bottom: calc(100% + 4px); left: 50%; transform: translateX(-50%); max-width: 168px; }
 
@@ -77,7 +77,7 @@ html.cc-desk.mp-cam-on.mp-away .dk-glance:not(:hover):not(:focus-within) { opaci
 .mp-set .mp-camhint .btn { margin-top: 4px; }
 .mp-set .mp-camused.warn { color: #d9822b; }
 @media (max-width: 640px) { .mp-set .mp-camsel { align-items: stretch; } .mp-set .mp-camhint, .mp-set .mp-camused { text-align: left; } }
-.mp-set .mp-voiceoff { display: block; margin-top: 6px; color: #d9822b; font-size: 12.5px; }
+.mp-set .mp-voiceoff { display: block; margin-top: 6px; color: #d9822b; font-size: 13px; }
 .mp-set .mp-show summary { cursor: pointer; font-weight: 600; width: max-content; }
 .mp-set .mp-checks { list-style: none; margin: 8px 0 4px; padding: 0; display: grid; gap: 4px; font-size: 13px; }
 .mp-set .mp-checks li { display: grid; grid-template-columns: 18px 130px 1fr; align-items: baseline; gap: 6px; }
