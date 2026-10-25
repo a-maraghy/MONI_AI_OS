@@ -105,6 +105,25 @@ function makeCopy(o) {
     s = s.replace(open, `voiceprintOpen: async (sealedB64) => { const C = require("crypto"), F = require("fs"); const K = F.readFileSync(${kf}); const b = Buffer.from(sealedB64, "base64"); const d = C.createDecipheriv("aes-256-gcm", K, b.subarray(0, 12)); d.setAAD(Buffer.from("moni-voiceprint-v1")); d.setAuthTag(b.subarray(b.length - 16)); return { plain: Buffer.concat([d.update(b.subarray(12, b.length - 16)), d.final()]).toString("base64") }; },`);
     s = s.replace(forget, `voiceprintForget: async (keepKey) => { const F = require("fs"); F.writeFileSync(${ff}, JSON.stringify({ keepKey: !!keepKey })); let had = false; if (!keepKey) { try { F.unlinkSync(${kf}); had = true; } catch (_) {} } return { key_deleted: had, results_deleted: 0 }; },`);
   }
+  if (o.fakeChatgpt) {
+    // MINT AI Settings > ChatGPT (lib/routes-chatgpt.js): the helper's chatgpt-* and agent-chatgpt
+    // answered from fake-chatgpt.json in the scratch data dir -- {status, calls, login, agents: {slug: bool},
+    // log: [...]}. login-start hands out a fixed code; a test flips login.state to "done" to finish it.
+    const names = ["chatgptStatus", "chatgptCalls", "chatgptLoginStart", "chatgptLoginPoll", "agentChatgpt"];
+    for (const n of names) if (!new RegExp("\\n  " + n + ": ").test(s)) throw new Error("scratch: priv.js " + n + " not found");
+    const cf = JSON.stringify(path.join(DATA, "fake-chatgpt.json"));
+    const st = Object.assign({ status: { service: "active", answering: true, login: "signed_in", account: "ChatGPT account", detail: "Logged in using ChatGPT", running: 0, queued: 0, max_running: 2, max_queued: 8, timeout_s: 600, login_in_progress: false }, calls: [], agents: {}, login: null, log: [] }, o.fakeChatgpt);
+    fs.writeFileSync(path.join(DATA, "fake-chatgpt.json"), JSON.stringify(st));
+    const R = `const F = require("fs"); const C = JSON.parse(F.readFileSync(${cf}, "utf8")); const W = () => F.writeFileSync(${cf}, JSON.stringify(C));`;
+    const fakes = {
+      chatgptStatus: `async () => { ${R} return Object.assign({}, C.status, { login_in_progress: !!(C.login && C.login.state === "pending") }); }`,
+      chatgptCalls: `async (n) => { ${R} return { calls: C.calls.slice(0, Number(n) || 100) }; }`,
+      chatgptLoginStart: `async () => { ${R} C.log.push("login-start"); if (!C.login || C.login.state !== "pending") C.login = { id: "0123456789abcdef", url: "https://auth.openai.com/codex/device", code: "ABCD-12345", expires_at: Math.floor(Date.now() / 1000) + 900, state: "pending" }; W(); return { id: C.login.id, url: C.login.url, code: C.login.code, expires_at: C.login.expires_at }; }`,
+      chatgptLoginPoll: `async (id) => { ${R} C.log.push("login-poll " + id); if (!C.login || C.login.id !== id) throw new Error("no such sign-in"); if (C.login.state === "done") { C.status.login = "signed_in"; W(); return { state: "done", login: "signed_in", account: "ChatGPT account", message: "Signed in." }; } W(); return { state: C.login.state, url: C.login.url, code: C.login.code, expires_at: C.login.expires_at, message: C.login.message || "" }; }`,
+      agentChatgpt: `async (slug, on) => { ${R} C.log.push("agent-chatgpt " + slug + " " + (on ? "on" : "off")); C.agents[slug] = !!on; W(); return { slug, chatgpt: !!on, state: { active: "active" }, restart_needed: true }; }`,
+    };
+    for (const n of names) s = s.replace(new RegExp("\\n  " + n + ": [^\\n]*\\n"), "\n  " + n + ": " + fakes[n] + ",\n");
+  }
   if (o.fakeKeys) {
     // /keys lists keys through the helper; a test that renders it gets these.
     const list = 'listAllKeys: () => callHelper("list-all-keys"),';

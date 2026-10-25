@@ -544,6 +544,8 @@ def agent_summary(slug):
     meta["memory"] = memory_counts(slug)
     meta["notes"] = vault_counts(slug)
     meta["dir"] = agent_dir(slug)
+    # ChatGPT (MINT AI Settings > ChatGPT): the stored switch, else what the environment says.
+    meta["chatgpt"] = parse_flag(meta.get("chatgpt"), chatgpt_seed(slug))
     # The credential lives on the channel now, so "can this agent be reached"
     # is a question about its channel, not about the agent.
     channel = channel_bound_to(slug)
@@ -672,6 +674,11 @@ def validate_config(cfg, creating):
     # off; it rides on file sending, so the environment says false whenever
     # file_send is off, whatever is stored here.
     out["drawing"] = parse_flag(cfg.get("drawing"), True)
+    # ChatGPT through the mint-chatgpt broker (ask_chatgpt), read by the runtime
+    # as ALLOW_CHATGPT. On unless switched off in MINT AI Settings > ChatGPT; an
+    # agent.json from before the switch has no key (agent-update seeds it from
+    # the value the agent's environment already had, so a hand-set "false" stays).
+    out["chatgpt"] = parse_flag(cfg.get("chatgpt"), True)
 
     # Add-ons are named capabilities; the environment they imply is computed by
     # the dashboard from its catalogue and passed here as a flat map. The helper
@@ -834,6 +841,7 @@ def render_env(cfg, channel=None, topics=None):
             "ALLOW_DRAWING": "true"
             if cfg.get("file_send", True) and cfg.get("drawing", True)
             else "false",
+            "ALLOW_CHATGPT": "true" if cfg.get("chatgpt", True) else "false",
         }
     )
 
@@ -1244,6 +1252,8 @@ def cmd_agent_update(args):
 
     merged = dict(current)
     merged.update({k: v for k, v in payload.items() if v is not None})
+    if "chatgpt" not in merged:
+        merged["chatgpt"] = chatgpt_seed(slug)
     cfg = validate_config(merged, creating=False)
     port_moved = assign_api_port(slug, cfg)
 
@@ -1270,6 +1280,12 @@ def cmd_agent_update(args):
     if plan.get("skipped"):
         out["topics_skipped"] = plan["skipped"]
     ok(out)
+
+
+def chatgpt_seed(slug):
+    """An agent saved before the ChatGPT switch existed: keep what its environment said."""
+    v = read_env_file(os.path.join(agent_dir(slug), "agent.env")).get("ALLOW_CHATGPT")
+    return parse_flag(v, True)
 
 
 def read_stored_token(slug):
@@ -8089,6 +8105,350 @@ def cmd_cc_stop(args):
     cc_ok(cc_run(lambda: cc_stop(cc_read_payload())))
 
 
+# --- ChatGPT (the mint-chatgpt broker), for MINT AI Settings > ChatGPT ---------
+#
+# Read-only status and call log, the device-code sign-in, and the per-agent
+# switch. The sign-in itself lives in /root/.codex and is never read here:
+# not auth.json, not a token, not a copy. `codex login status` says whether it
+# is valid; `codex login --device-auth` prints a link and a one-time code that
+# the person types on OpenAI's page, and that is all that reaches the panel.
+# The call log carries no task text and no answer (the broker never writes
+# them), and only whitelisted fields leave this function.
+
+CHATGPT_SERVICE = "mint-chatgpt"
+CHATGPT_SOCK = "/run/mint-chatgpt/sock"
+CHATGPT_CONFIG = "/etc/mint-chatgpt/config.json"
+CHATGPT_STATE = "/var/lib/mint-chatgpt"
+CHATGPT_CODEX = "/usr/bin/codex"
+CHATGPT_HOME = "/root/.codex"
+CHATGPT_LOGIN_DIR = "/run/moni-helper/chatgpt-login"
+CHATGPT_LOGIN_TTL = 15 * 60
+CHATGPT_DEFAULTS = {"max_running": 2, "max_queued": 8, "timeout_s": 600}
+CHATGPT_LOGIN_ID_RE = re.compile(r"^[0-9a-f]{16}$")
+ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+DEVICE_URL_RE = re.compile(r"https://[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]+")
+DEVICE_CODE_RE = re.compile(r"\b([A-Z0-9]{4,5}-[A-Z0-9]{4,6})\b")
+# Long opaque strings (a token that strayed into an error) never leave.
+OPAQUE_RE = re.compile(r"[A-Za-z0-9_\-.+/=]{32,}")
+
+
+def chatgpt_config():
+    cfg = dict(CHATGPT_DEFAULTS)
+    try:
+        with open(CHATGPT_CONFIG) as fh:
+            raw = json.load(fh)
+        for k in CHATGPT_DEFAULTS:
+            if isinstance(raw.get(k), (int, float)) and not isinstance(raw.get(k), bool):
+                cfg[k] = int(raw[k])
+    except (OSError, ValueError):
+        pass
+    return cfg
+
+
+def chatgpt_clean(text, limit=160):
+    """A line of CLI or broker text that is safe for the page: no escapes, no long opaque strings."""
+    t = ANSI_RE.sub("", str(text or ""))
+    t = OPAQUE_RE.sub("[…]", t)
+    t = " ".join(t.split())
+    return t[:limit]
+
+
+def chatgpt_login_state(text, rc):
+    """signed_in / expired / signed_out from `codex login status` (rc and wording)."""
+    low = (text or "").lower()
+    if rc == 0 and "logged in" in low and "not logged in" not in low:
+        return "signed_in"
+    if any(w in low for w in ("expired", "refresh token", "re-authenticate", "reauthenticate", "sign in again", "log in again")):
+        return "expired"
+    return "signed_out"
+
+
+def chatgpt_account(text):
+    """What the CLI says it signed in with ("ChatGPT", "an API key"), never more."""
+    m = re.search(r"logged in using (chatgpt|an api key|api key)", (text or "").lower())
+    if not m:
+        return None
+    return "ChatGPT account" if m.group(1) == "chatgpt" else "API key"
+
+
+def chatgpt_codex_status():
+    env = {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "HOME": "/root",
+           "CODEX_HOME": CHATGPT_HOME, "LANG": "C.UTF-8", "TERM": "dumb", "NO_COLOR": "1"}
+    try:
+        r = subprocess.run([CHATGPT_CODEX, "login", "status"], capture_output=True, text=True, timeout=30, env=env)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return "signed_out", None, chatgpt_clean(type(exc).__name__)
+    text = (r.stdout or "") + (r.stderr or "")
+    return chatgpt_login_state(text, r.returncode), chatgpt_account(text), chatgpt_clean(text)
+
+
+def chatgpt_broker_status(timeout=40):
+    """The broker's own status op: running / queued now. None when it does not answer."""
+    import socket as _socket
+    try:
+        s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        s.connect(CHATGPT_SOCK)
+        s.sendall(b'{"op":"status"}\n')
+        buf = b""
+        while not buf.endswith(b"\n") and len(buf) < 65536:
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            buf += chunk
+        s.close()
+        r = json.loads(buf.decode("utf-8", "replace") or "{}")
+        return r if isinstance(r, dict) and r.get("ok") else None
+    except (OSError, ValueError):
+        return None
+
+
+def cmd_chatgpt_status(args):
+    """Is the broker up, is ChatGPT signed in (and with what), what is running, the limits."""
+    active = run(["systemctl", "is-active", CHATGPT_SERVICE], timeout=10).stdout.strip() or "unknown"
+    installed = os.path.exists(CHATGPT_CODEX)
+    cfg = chatgpt_config()
+    broker = chatgpt_broker_status() if active == "active" else None
+    if broker is not None:
+        login = "signed_in" if broker.get("logged_in") else chatgpt_login_state(broker.get("login_status") or "", 1)
+        account = chatgpt_account(broker.get("login_status") or "")
+        detail = chatgpt_clean(broker.get("login_status") or "")
+    elif installed:
+        login, account, detail = chatgpt_codex_status()
+    else:
+        login, account, detail = "signed_out", None, "the Codex CLI is not installed"
+    def num(v, d):
+        return int(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else d
+    ok({
+        "service": active,
+        "answering": broker is not None,
+        "login": login,
+        "account": account,
+        "detail": detail,
+        "running": num((broker or {}).get("running"), None) if broker else None,
+        "queued": num((broker or {}).get("queued"), None) if broker else None,
+        "max_running": num((broker or {}).get("max_running"), cfg["max_running"]),
+        "max_queued": num((broker or {}).get("max_queued"), cfg["max_queued"]),
+        "timeout_s": num((broker or {}).get("timeout_s"), cfg["timeout_s"]),
+        "login_in_progress": chatgpt_login_current() is not None,
+    })
+
+
+CHATGPT_CALL_FIELDS = ("ts", "caller", "ok", "kind", "seconds", "out_files", "in_files", "model")
+
+
+def chatgpt_calls(path, limit):
+    """The last `limit` calls, newest first, whitelisted fields only (never task text or answers)."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            lines = fh.readlines()[-max(limit * 3, 300):]
+    except OSError:
+        return []
+    out = []
+    for line in reversed(lines):
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(ev, dict) or ev.get("op") != "ask":
+            continue
+        row = {k: ev.get(k) for k in CHATGPT_CALL_FIELDS}
+        row["caller"] = chatgpt_clean(row.get("caller"), 80)
+        row["kind"] = chatgpt_clean(row.get("kind"), 24) or None
+        row["model"] = chatgpt_clean(row.get("model"), 40) or None
+        row["ts"] = chatgpt_clean(row.get("ts"), 40)
+        row["ok"] = bool(row.get("ok"))
+        for k in ("seconds",):
+            row[k] = float(row[k]) if isinstance(row.get(k), (int, float)) and not isinstance(row.get(k), bool) else None
+        for k in ("out_files", "in_files"):
+            row[k] = int(row[k]) if isinstance(row.get(k), int) and not isinstance(row.get(k), bool) else 0
+        row["error"] = chatgpt_clean(ev.get("error"), 120) or None if not row["ok"] else None
+        out.append(row)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def cmd_chatgpt_calls(args):
+    try:
+        limit = int(args[0]) if args else 100
+    except ValueError:
+        fail("usage: chatgpt-calls [N]")
+    limit = max(1, min(limit, 200))
+    ok({"calls": chatgpt_calls(os.path.join(CHATGPT_STATE, "calls.jsonl"), limit)})
+
+
+def chatgpt_login_paths(lid):
+    return os.path.join(CHATGPT_LOGIN_DIR, lid + ".json"), os.path.join(CHATGPT_LOGIN_DIR, lid + ".out")
+
+
+def chatgpt_pid_alive(pid):
+    try:
+        os.kill(int(pid), 0)
+    except (OSError, ValueError, TypeError):
+        return False
+    try:  # a zombie of ours is not alive
+        with open("/proc/%d/stat" % int(pid)) as fh:
+            return fh.read().split(")")[-1].split()[0] != "Z"
+    except OSError:
+        return False
+
+
+def chatgpt_login_read(lid):
+    meta_path, out_path = chatgpt_login_paths(lid)
+    try:
+        with open(meta_path) as fh:
+            meta = json.load(fh)
+    except (OSError, ValueError):
+        return None, ""
+    try:
+        with open(out_path, encoding="utf-8", errors="replace") as fh:
+            out = fh.read(65536)
+    except OSError:
+        out = ""
+    return meta, ANSI_RE.sub("", out)
+
+
+def chatgpt_login_current():
+    """The sign-in still waiting for the person, if there is one (id), else None."""
+    try:
+        names = os.listdir(CHATGPT_LOGIN_DIR)
+    except OSError:
+        return None
+    now = time.time()
+    for n in sorted(names):
+        if not n.endswith(".json"):
+            continue
+        lid = n[:-5]
+        meta, _ = chatgpt_login_read(lid)
+        if meta and chatgpt_pid_alive(meta.get("pid")) and now - float(meta.get("started", 0)) < CHATGPT_LOGIN_TTL:
+            return lid
+    return None
+
+
+def chatgpt_device_prompt(out):
+    """The link and the one-time code from the CLI's device-auth output."""
+    url = None
+    for m in DEVICE_URL_RE.finditer(out):
+        u = m.group(0).rstrip(".,)")
+        if "openai.com" in u or "chatgpt.com" in u:
+            url = u
+            break
+    code = None
+    for m in DEVICE_CODE_RE.finditer(out):
+        code = m.group(1)
+        break
+    return url, code
+
+
+def cmd_chatgpt_login_start(args):
+    """Start `codex login --device-auth` in the background; return the link and the code."""
+    if not os.path.exists(CHATGPT_CODEX):
+        fail("the Codex CLI is not installed on this server")
+    lid = chatgpt_login_current()
+    if lid is None:
+        os.makedirs(CHATGPT_LOGIN_DIR, mode=0o700, exist_ok=True)
+        os.chmod(CHATGPT_LOGIN_DIR, 0o700)
+        for n in os.listdir(CHATGPT_LOGIN_DIR):  # old, finished sign-ins
+            p = os.path.join(CHATGPT_LOGIN_DIR, n)
+            try:
+                if time.time() - os.path.getmtime(p) > 2 * CHATGPT_LOGIN_TTL:
+                    os.unlink(p)
+            except OSError:
+                pass
+        lid = uuid.uuid4().hex[:16]
+        meta_path, out_path = chatgpt_login_paths(lid)
+        env = {"PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", "HOME": "/root",
+               "CODEX_HOME": CHATGPT_HOME, "LANG": "C.UTF-8", "TERM": "dumb", "NO_COLOR": "1"}
+        fd = os.open(out_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        proc = subprocess.Popen([CHATGPT_CODEX, "login", "--device-auth"], stdin=subprocess.DEVNULL, stdout=fd, stderr=fd,
+                                env=env, cwd="/root", start_new_session=True, close_fds=True)
+        os.close(fd)
+        with open(meta_path, "w") as fh:
+            json.dump({"pid": proc.pid, "started": time.time()}, fh)
+        os.chmod(meta_path, 0o600)
+        audit("chatgpt-login-start", {"id": lid})
+    meta, out = chatgpt_login_read(lid)
+    url, code = chatgpt_device_prompt(out)
+    for _ in range(40):  # the CLI prints its link within a second or two
+        if url and code:
+            break
+        if not chatgpt_pid_alive(meta.get("pid")):
+            break
+        time.sleep(0.25)
+        meta, out = chatgpt_login_read(lid)
+        url, code = chatgpt_device_prompt(out)
+    if not (url and code):
+        detail = chatgpt_clean(out, 200)
+        fail("the sign-in did not start: " + (detail or "the Codex CLI printed no link"))
+    ok({"id": lid, "url": url, "code": code, "expires_at": int(float(meta.get("started", time.time())) + CHATGPT_LOGIN_TTL)})
+
+
+def cmd_chatgpt_login_poll(args):
+    """pending (still waiting for the person) / done / failed / expired."""
+    if len(args) != 1 or not CHATGPT_LOGIN_ID_RE.match(args[0]):
+        fail("usage: chatgpt-login-poll <id>")
+    lid = args[0]
+    meta, out = chatgpt_login_read(lid)
+    if not meta:
+        fail("no such sign-in (it may have finished long ago)")
+    started = float(meta.get("started", 0))
+    alive = chatgpt_pid_alive(meta.get("pid"))
+    if alive and time.time() - started >= CHATGPT_LOGIN_TTL:
+        try:
+            os.killpg(int(meta["pid"]), 15)
+        except (OSError, ValueError):
+            pass
+        audit("chatgpt-login-expired", {"id": lid})
+        ok({"state": "expired", "message": "The code expired after 15 minutes. Start again."})
+    if alive:
+        url, code = chatgpt_device_prompt(out)
+        ok({"state": "pending", "url": url, "code": code, "expires_at": int(started + CHATGPT_LOGIN_TTL)})
+    login, account, detail = chatgpt_codex_status()
+    state = "done" if login == "signed_in" else "failed"
+    if not meta.get("reported"):
+        meta["reported"] = state
+        meta_path, _ = chatgpt_login_paths(lid)
+        try:
+            with open(meta_path, "w") as fh:
+                json.dump(meta, fh)
+        except OSError:
+            pass
+        audit("chatgpt-login-" + state, {"id": lid})
+    last = [l for l in out.splitlines() if l.strip()]
+    ok({"state": state, "login": login, "account": account,
+        "message": "Signed in." if state == "done" else chatgpt_clean(last[-1] if last else detail, 200) or "The sign-in did not finish."})
+
+
+def cmd_agent_chatgpt(args):
+    """ChatGPT on or off for one Telegram agent (ALLOW_CHATGPT, rendered by the panel).
+
+    Written like a save (agent.json, then agent.env re-rendered), but the agent
+    is not restarted here: the runtime reads the switch at start, so the reply
+    says whether it is running and the panel offers the restart.
+    """
+    if len(args) != 2 or args[1] not in ("on", "off"):
+        fail("usage: agent-chatgpt <slug> on|off")
+    slug = check_slug(args[0])
+    existing_agent(slug)
+    current = read_agent_json(slug)
+    merged = dict(current)
+    merged["chatgpt"] = args[1] == "on"
+    cfg = validate_config(merged, creating=False)
+    assign_api_port(slug, cfg)
+    uid, gid = agent_ids()
+    write_agent_files(cfg, uid, gid, channel_bound_to(slug))
+    meta = public_meta(cfg)
+    meta["created_at"] = current.get("created_at", now_iso())
+    write_agent_json(slug, meta, uid, gid)
+    chown_tree(agent_dir(slug), uid, gid)
+    seal_agent_files(slug, gid)
+    state = unit_state(slug)
+    audit("agent-chatgpt", {"slug": slug, "chatgpt": cfg["chatgpt"], "active": state.get("active")})
+    ok({"slug": slug, "chatgpt": cfg["chatgpt"], "state": state, "restart_needed": state.get("active") == "active"})
+
+
+
 COMMANDS = {
     "list-keys": cmd_list_keys,
     "list-all-keys": cmd_list_all_keys,
@@ -8132,6 +8492,11 @@ COMMANDS = {
     "credential-get": cmd_credential_get,
     "credential-set": cmd_credential_set,
     "credential-clear": cmd_credential_clear,
+    "chatgpt-status": cmd_chatgpt_status,
+    "chatgpt-calls": cmd_chatgpt_calls,
+    "chatgpt-login-start": cmd_chatgpt_login_start,
+    "chatgpt-login-poll": cmd_chatgpt_login_poll,
+    "agent-chatgpt": cmd_agent_chatgpt,
     "voice-status": cmd_voice_status,
     "voice-key-read": cmd_voice_key_read,
     "voice-key-set": cmd_voice_key_set,

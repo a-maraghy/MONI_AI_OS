@@ -53,7 +53,7 @@ const byKey = new Map(entries.map((e) => [e.key, e]));
   check("every entry names a kind of page / section / sheet / tab / anchor", entries.every((e) => ["page", "section", "sheet", "tab", "anchor"].includes(e.kind)));
   check("every child's parent is an entry", entries.every((e) => !e.parent || byKey.has(e.parent)));
   const sections = require(path.join(ROOT, "lib", "views-settings.js")).SETTINGS_SECTIONS.map((s) => s[0]);
-  check("the nine Settings sections are sections of settings", sections.length === 9 && sections.every((k) => byKey.get("settings." + k) && byKey.get("settings." + k).kind === "section" && byKey.get("settings." + k).url === "/mint-ai/settings/" + k));
+  check("the ten Settings sections are sections of settings (ChatGPT since 2026-10-25)", sections.length === 10 && sections.every((k) => byKey.get("settings." + k) && byKey.get("settings." + k).kind === "section" && byKey.get("settings." + k).url === "/mint-ai/settings/" + k));
   check("  Voice needs voice.manage, the others moniai.use", byKey.get("settings.voice").perm === "voice.manage" && byKey.get("settings.general").perm === "moniai.use");
   const sheets = require(path.join(ROOT, "public", "cc-logic.js")).SHEETS;
   check("the Command Center's sheets open as /mint-ai#<sheet>", sheets.filter((s) => s && s.key).length >= 9 && sheets.filter((s) => s && s.key).every((s) => byKey.get("cc." + s.key) && byKey.get("cc." + s.key).url === "/mint-ai#" + s.key && byKey.get("cc." + s.key).kind === "sheet"));

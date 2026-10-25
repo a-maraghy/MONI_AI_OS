@@ -435,7 +435,8 @@ class Broker:
                         ok, text = await self.logged_in()
                         resp = {"ok": True, "logged_in": ok, "login_status": text[:200],
                                 "running": self.running, "queued": self.queued,
-                                "max_running": self.cfg["max_running"], "timeout_s": self.cfg["timeout_s"]}
+                                "max_running": self.cfg["max_running"], "max_queued": self.cfg["max_queued"],
+                                "timeout_s": self.cfg["timeout_s"]}
                     elif op == "ask":
                         resp = await self.ask(req, user)
                     else:

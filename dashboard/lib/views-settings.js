@@ -1,7 +1,7 @@
 "use strict";
 /**
  * MINT AI ▸ Settings (/mint-ai/settings/<section>): every setting of MINT AI
- * in one place, in nine sections. The left sub-nav becomes a chip row on a
+ * in one place, in ten sections. The left sub-nav becomes a chip row on a
  * narrow screen.
  *
  * Every setting is a row: label and help on the left, the control on the
@@ -25,6 +25,7 @@ const { esc, shell, icon, flashes } = require("./ui");
 const SETTINGS_SECTIONS = [
   ["general", "General", "core"],
   ["voice", "Voice", "voice"],
+  ["chatgpt", "ChatGPT", "network"],
   ["appearance", "Appearance", "eye"],
   ["sessions", "Sessions & hiring", "agents"],
   ["screen", "Screen control", "monitor"],

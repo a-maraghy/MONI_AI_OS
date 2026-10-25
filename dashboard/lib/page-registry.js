@@ -80,6 +80,7 @@ const ANCHOR_HOMES = {
     ["u-", "settings.usage"],
   ],
   "views-settings-voice.js": [["v-", "settings.voice"]],
+  "routes-chatgpt.js": [["gpt-", "settings.chatgpt"]],
   "views-agents.js": [["a-", "agents"]],
   "views-claude.js": [["s-", "sessions"]],
   "views-guide.js": [["", "guide", "section"]], // only the Guide's <section>s, not its search box

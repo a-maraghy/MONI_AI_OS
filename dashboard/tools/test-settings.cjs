@@ -102,7 +102,7 @@ const server = net.createServer((c) => {
 const last = (op) => seen.filter((m) => m.op === op).pop();
 const count = (op) => seen.filter((m) => m.op === op).length;
 const navOf = (html) => [...((/<nav class="set-nav"[^>]*>([\s\S]*?)<\/nav>/.exec(html) || [])[1] || "").matchAll(/href="\/mint-ai\/settings\/([a-z]+)"/g)].map((m) => m[1]);
-const ALL = ["general", "voice", "appearance", "sessions", "screen", "approvals", "proactive", "usage", "advanced"];
+const ALL = ["general", "voice", "chatgpt", "appearance", "sessions", "screen", "approvals", "proactive", "usage", "advanced"];
 
 (async () => {
   await new Promise((r) => server.listen(SOCK, r));
@@ -131,7 +131,7 @@ const ALL = ["general", "voice", "appearance", "sessions", "screen", "approvals"
     let r = await s.req("GET", "/mint-ai/settings", { cookie: A.cookie });
     check("/mint-ai/settings -> the first section the viewer may open (admin: General)", r.status === 302 && r.headers.location === "/mint-ai/settings/general", r.status + " " + r.headers.location);
     r = await s.req("GET", "/mint-ai/settings/general", { cookie: A.cookie });
-    check("an administrator sees all nine sections", JSON.stringify(navOf(r.body)) === JSON.stringify(ALL), navOf(r.body).join());
+    check("an administrator sees all ten sections", JSON.stringify(navOf(r.body)) === JSON.stringify(ALL), navOf(r.body).join());
     const aTok = s.csrfOf(r.body);
     for (const k of ALL) {
       const x = await s.req("GET", "/mint-ai/settings/" + k, { cookie: A.cookie });

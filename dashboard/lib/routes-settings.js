@@ -633,6 +633,9 @@ sections.advanced = async (req, res, deps) => {
   return { body };
 };
 
+/* ChatGPT (the mint-chatgpt broker) lives in its own file: lib/routes-chatgpt.js. */
+require("./routes-chatgpt").install(sections);
+
 /* ---------------------------------------------------------------- mount --- */
 
 function mount(app, deps) {
@@ -686,6 +689,8 @@ function mount(app, deps) {
       }
     });
   });
+
+  require("./routes-chatgpt").mount(app, deps, { guard, reply, audit });
 
   /* ---- General ---- */
   app.post("/mint-ai/settings/general/desktop", requireAuth, guard("general"), requireCsrf, (req, res) => {

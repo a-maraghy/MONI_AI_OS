@@ -272,6 +272,16 @@ module.exports = {
   /* ------------------------------------------------------- openai voice -- */
   // The key goes in over stdin, never argv. voiceKeyRead is the only call that
   // returns it, and only the server's voice config cache uses it.
+  /* ------------------------------------------------- chatgpt (broker) -- */
+  // MINT AI Settings > ChatGPT (lib/routes-chatgpt.js). Nothing here carries the
+  // sign-in: status says whether it is valid, login-start returns the device link
+  // and one-time code, the call log has no task text or answer.
+  chatgptStatus: () => callHelper("chatgpt-status", [], { timeout: 60000 }),
+  chatgptCalls: (n = 100) => callHelper("chatgpt-calls", [String(n)]),
+  chatgptLoginStart: () => callHelper("chatgpt-login-start", [], { timeout: 30000 }),
+  chatgptLoginPoll: (id) => callHelper("chatgpt-login-poll", [id], { timeout: 45000 }),
+  agentChatgpt: (slug, on) => callHelper("agent-chatgpt", [slug, on ? "on" : "off"], { timeout: 60000 }),
+
   voiceStatus: () => callHelper("voice-status"),
   voiceKeyRead: () => callHelper("voice-key-read"),
   voiceKeySet: (value) => callHelper("voice-key-set", [], { stdin: value }),
