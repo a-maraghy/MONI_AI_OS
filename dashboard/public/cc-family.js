@@ -134,13 +134,30 @@
 
     /* rectangles the spheres stay clear of, refreshed a few times a second */
     var rects = [], rectsAt = -1;
-    function refreshRects() { rects = opts.obstacles ? opts.obstacles() : []; }
+    function refreshRects() {
+      rects = opts.obstacles ? opts.obstacles() : [];
+      // The floor of the stage: the top of the bottom band (caption, composer / voice bar, hint).
+      // Spheres stay above it, never in the strip under the message bar (2026-10-25: a session
+      // parked under the composer looked like it had left the canvas).
+      var f = H;
+      rects.forEach(function (rc) { if ((rc.name === "composer" || rc.name === "caption") && rc.t > H * 0.45) f = Math.min(f, rc.t); });
+      L.floor = f;
+      if (L.cy < f) L.fay = Math.max(L.R * 0.7, Math.min(L.fay, f - L.cy - (L.rBase * 1.2 + 60))); // the drift ellipse ends above it too
+    }
+    function yMax(k) { var r = k.r, lo = L.top + r + 30, hi = Math.min(H - 12 - r * 1.2 - 40, (L.floor || H) - r * 1.2 - 34); return Math.max(lo, hi); }
     function kidBox(k, x, y) { var r = k.r, hw = Math.max(r * 1.1, k.lw / 2 + 4); return { l: x - hw, r: x + hw, t: y - r - (k.badge ? 30 : 6), b: y + r * 1.2 + 40 }; }
     function pen(a, b, pad) {
       if (a.r < b.l - pad || a.l > b.r + pad || a.b < b.t - pad || a.t > b.b + pad) return null;
       var px1 = b.r + pad - a.l, px2 = a.r - (b.l - pad), py1 = b.b + pad - a.t, py2 = a.b - (b.t - pad);
-      var m = Math.min(px1, px2, py1, py2);
-      if (m === px1) return [px1, 0]; if (m === px2) return [-px2, 0]; if (m === py1) return [0, py1]; return [0, -py2];
+      // The way out is the shortest one that keeps the sphere and its name on screen: pushing a
+      // sphere down past the composer used to drop it below the window (2026-10-25, a session
+      // seen with only its antenna showing at the bottom edge).
+      var ways = [[px1, px1, 0], [px2, -px2, 0], [py1, 0, py1], [py2, 0, -py2]].filter(function (w) {
+        return a.l + w[1] >= 0 && a.r + w[1] <= L.sceneR && a.t + w[2] >= L.top && a.b + w[2] <= H;
+      });
+      if (!ways.length) ways = [[py2, 0, -py2]]; // nowhere fits: up, towards the open middle, never off the bottom
+      ways.sort(function (x, y) { return x[0] - y[0]; });
+      return [ways[0][1], ways[0][2]];
     }
     function herMin(k, dy, hd) {
       var up = Math.max(0, -dy / hd);
@@ -171,6 +188,7 @@
         var hd = Math.hypot(dx, dy) || 0.01, minD = herMin(k, dy, hd), soft = minD * 1.3;
         if (hd < soft) { var hf = 140 * (1 - hd / soft); ax += dx / hd * hf; ay += dy / hd * hf; }
         rects.forEach(function (rc) { var p = pen(kidBox(k, k.x, k.y), rc, 18); if (p) { ax += p[0] * 3; ay += p[1] * 3; } });
+        var ym = yMax(k); if (k.y > ym - 20) ay -= (k.y - (ym - 20)) * 4;
         k.vx += ax * dt; k.vy += ay * dt;
         var damp = Math.exp(-dt * 1.1); k.vx *= damp; k.vy *= damp;
         var sp = Math.hypot(k.vx, k.vy); if (sp > 38) { k.vx *= 38 / sp; k.vy *= 38 / sp; }
@@ -185,7 +203,7 @@
         live.forEach(function (k) {
           var r = k.r, hw = Math.max(r, k.lw / 2);
           k.x = clamp(k.x, 12 + hw, Math.max(12 + hw, L.sceneR - 12 - hw));
-          k.y = clamp(k.y, L.top + r + 30, Math.max(L.top + r + 30, H - 12 - r * 1.2 - 40));
+          k.y = clamp(k.y, L.top + r + 30, yMax(k));
           var dx = k.x - L.cx, dy = k.y - L.cy, hd = Math.hypot(dx, dy) || 0.01, minD = herMin(k, dy, hd);
           if (hd < minD) { k.x = L.cx + dx / hd * minD; k.y = L.cy + dy / hd * minD; }
           rects.forEach(function (rc) { var p = pen(kidBox(k, k.x, k.y), rc, 0); if (p) { k.x += p[0]; k.y += p[1]; } });
@@ -199,6 +217,12 @@
           }
         }
       }
+      // last word: whatever the pushes above did, every sphere ends on screen
+      live.forEach(function (k) {
+        var r = k.r, hw = Math.max(r, k.lw / 2);
+        k.x = clamp(k.x, 12 + hw, Math.max(12 + hw, L.sceneR - 12 - hw));
+        k.y = clamp(k.y, L.top + r + 30, yMax(k));
+      });
     }
     function freeSpot() { // the point on the ellipse furthest from everyone
       var best = null, bs = -1e9, others = kids.filter(function (k) { return !k.dead && !k.dis; });
@@ -669,6 +693,7 @@
           if (Math.hypot(p.x - L.cx, p.y - L.cy) < L.R + p.r - 2) bad.push(k.label + " x MINT AI");
           ks.forEach(function (q, j) { if (j <= i) return; var qp = kidPos(q); if (Math.hypot(p.x - qp.x, p.y - qp.y) < p.r + qp.r) bad.push(k.label + " x " + q.label); });
           if (p.x - p.r < 0 || p.x + p.r > W || p.y - p.r < 0 || p.y + p.r > H) bad.push(k.label + " off screen");
+          if (L.floor < H && p.y + p.r > L.floor) bad.push(k.label + " below the message bar");
         });
         return bad;
       },
