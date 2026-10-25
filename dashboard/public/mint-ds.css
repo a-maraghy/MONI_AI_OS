@@ -524,3 +524,29 @@ html.cc-page .cc-card-h h2, html.cc-page .cc-sec-h h2, .cc-sec-t, .cc-inbox-h, .
 .muted-num { font: 400 var(--fs-sm)/1.4 var(--ui); color: var(--body); }
 /* the sticky Settings chip row never hides the focused control (WCAG 2.4.11) */
 @media (max-width: 900px) { .content { scroll-padding-top: 72px; } }
+
+/* ------------------------------------------------- fixes, review round --- */
+/* A checkbox's label is its target: at least 44 px tall, the box inside it. */
+.set-sec label:has(> input[type=checkbox]):not(.sw), .set-sec label:has(> input[type=radio]):not(.seg-opt), label.vp-me { display: inline-flex; align-items: center; gap: 10px; min-height: 44px; margin: 0; font-weight: 500; }
+.set-sec label:has(> input[type=checkbox]):not(.sw) input, label.vp-me input { margin: 0; }
+/* Long option names keep more of their width. */
+.row { grid-template-columns: minmax(0, 1fr) minmax(260px, 420px); }
+.row .rc select { max-width: 100%; }
+@media (max-width: 900px) { .row { grid-template-columns: minmax(0, 1fr); } .row .rc select { width: 100%; } }
+/* The selected Settings chip on phones: an accent edge as well as the raised ground. */
+@media (max-width: 900px) { .set-nav a.on { box-shadow: inset 0 -3px 0 var(--accent), var(--shadow-sm); border-color: var(--line-strong); } }
+/* Definition list: five facts fit one row when there is room. */
+.ds-dl { grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr)); }
+/* Command Center on phones: the health word stays (never a bare dot), and the
+   decision card sits under the top bar instead of over the caption. */
+@media (max-width: 720px) {
+  .cc-sys-chip #cc-sys-label { display: inline; }
+  .cc-sys-chip .long { display: none; } .cc-sys-chip .short { display: inline; }
+  .cc-need { top: calc(var(--topbar-h) + 8px); bottom: auto; max-height: calc(100dvh - var(--topbar-h) - 280px); overflow: auto; }
+}
+/* The "needs you" tag by a session: no halo, the word and the dot say it. */
+.cc-kid .badge::before { box-shadow: none; }
+/* Settings > ChatGPT: the sign-in that waits */
+.gpt-code-row { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.gpt-login .acts { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+.gpt-login .acts form { margin: 0; }

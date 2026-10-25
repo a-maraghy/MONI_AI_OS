@@ -53,8 +53,22 @@
     setTimeout(tick, 3000);
   }
 
+  /* "Copy code": shown only where the clipboard works; says so for screen readers too. */
+  function copyButton() {
+    var b = document.getElementById("gpt-copy");
+    if (!b || !navigator.clipboard || !window.isSecureContext) return;
+    b.hidden = false;
+    b.addEventListener("click", function () {
+      navigator.clipboard.writeText(b.getAttribute("data-copy") || "").then(function () {
+        b.textContent = "Copied";
+        setTimeout(function () { b.textContent = "Copy code"; }, 2000);
+      }, function () { b.textContent = "Copy failed"; });
+    });
+  }
+
   function start() {
     localTimes();
+    copyButton();
     poll();
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start);

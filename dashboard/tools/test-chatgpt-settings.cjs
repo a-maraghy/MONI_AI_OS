@@ -107,6 +107,7 @@ const fetchH = { "X-Requested-With": "fetch", Accept: "application/json" };
     r = await s.req("GET", "/mint-ai/settings/chatgpt", { cookie: A.cookie });
     check("the page shows the link and the one-time code, and no Sign in again button while it waits", /href="https:\/\/auth\.openai\.com\/codex\/device" target="_blank" rel="noopener noreferrer"/.test(r.body) && /<code class="gpt-code" id="gpt-code">ABCD-12345<\/code>/.test(r.body) && !/>Sign in again</.test(r.body) && /id="gpt-login-state" role="status" aria-live="polite"/.test(r.body));
     if (process.env.SHOTS) await shots(s, A.cookie, "pending");
+    check("  the account row says it waits (not Signed in), and offers Cancel and Copy code", /Waiting for sign-in/.test(r.body) && !/>Signed in</.test(r.body) && /action="\/mint-ai\/settings\/chatgpt\/login\/cancel"/.test(r.body) && /id="gpt-copy" data-copy="ABCD-12345"/.test(r.body));
     r = await s.req("GET", "/mint-ai/settings/chatgpt/login/state", { cookie: A.cookie, headers: fetchH });
     check("the poll says pending while the person has not finished", JSON.parse(r.body).state === "pending");
     setFake((c) => (c.login.state = "done"));
@@ -116,6 +117,14 @@ const fetchH = { "X-Requested-With": "fetch", Accept: "application/json" };
     check("  and afterwards nothing is waiting", JSON.parse(r.body).state === "none");
     r = await s.req("GET", "/mint-ai/settings/chatgpt", { cookie: A.cookie });
     check("  the page is back to Signed in with the button", /Signed in/.test(r.body) && />Sign in again</.test(r.body) && !/gpt-code/.test(r.body));
+
+    console.log("cancel");
+    r = await s.req("POST", "/mint-ai/settings/chatgpt/login", { cookie: A.cookie, headers: fetchH, body: form({ _csrf: tok, step_up: JSON.stringify({ totp: await freshCode() }) }) });
+    setFake((c) => (c.login.state = "pending"));
+    r = await s.req("POST", "/mint-ai/settings/chatgpt/login/cancel", { cookie: A.cookie, headers: fetchH, body: form({ _csrf: tok }) });
+    check("Cancel stops the waiting sign-in through the helper (chatgpt-login-cancel)", r.status === 200 && FAKE().log.some((l) => /^login-cancel 0123456789abcdef$/.test(l)), JSON.stringify(FAKE().log));
+    r = await s.req("GET", "/mint-ai/settings/chatgpt/login/state", { cookie: A.cookie, headers: fetchH });
+    check("  and nothing waits afterwards", JSON.parse(r.body).state === "none");
 
     console.log("states");
     setFake((c) => { c.status.login = "expired"; });

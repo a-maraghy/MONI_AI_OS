@@ -8420,6 +8420,30 @@ def cmd_chatgpt_login_poll(args):
         "message": "Signed in." if state == "done" else chatgpt_clean(last[-1] if last else detail, 200) or "The sign-in did not finish."})
 
 
+def cmd_chatgpt_login_cancel(args):
+    """Stop a sign-in that waits for the person. The current sign-in is not touched."""
+    if len(args) != 1 or not CHATGPT_LOGIN_ID_RE.match(args[0]):
+        fail("usage: chatgpt-login-cancel <id>")
+    meta, _ = chatgpt_login_read(args[0])
+    if not meta:
+        fail("no such sign-in")
+    stopped = False
+    if chatgpt_pid_alive(meta.get("pid")):
+        try:
+            os.killpg(int(meta["pid"]), 15)
+            stopped = True
+        except (OSError, ValueError):
+            pass
+    meta["reported"] = "cancelled"
+    try:
+        with open(chatgpt_login_paths(args[0])[0], "w") as fh:
+            json.dump(meta, fh)
+    except OSError:
+        pass
+    audit("chatgpt-login-cancel", {"id": args[0], "stopped": stopped})
+    ok({"cancelled": True, "stopped": stopped})
+
+
 def cmd_agent_chatgpt(args):
     """ChatGPT on or off for one Telegram agent (ALLOW_CHATGPT, rendered by the panel).
 
@@ -8496,6 +8520,7 @@ COMMANDS = {
     "chatgpt-calls": cmd_chatgpt_calls,
     "chatgpt-login-start": cmd_chatgpt_login_start,
     "chatgpt-login-poll": cmd_chatgpt_login_poll,
+    "chatgpt-login-cancel": cmd_chatgpt_login_cancel,
     "agent-chatgpt": cmd_agent_chatgpt,
     "voice-status": cmd_voice_status,
     "voice-key-read": cmd_voice_key_read,

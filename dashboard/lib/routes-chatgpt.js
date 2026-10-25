@@ -74,20 +74,21 @@ function chip(word, tone, shape) {
 const RUNNING = '<circle cx="8" cy="8" r="5"/>';
 const STOPPED = '<circle cx="8" cy="8" r="4.25" fill="none" stroke-width="1.5"/>';
 
-function loginBox(p) {
+function loginBox(p, csrf) {
   if (!p) return "";
   const exp = new Date(p.expires_at * 1000);
   const until = Number.isFinite(exp.getTime())
     ? exp.toLocaleTimeString("en-GB", { timeZone: "Africa/Cairo", hour: "2-digit", minute: "2-digit" })
     : "";
   return `<div class="gpt-login" id="gpt-login" data-login-pending>
-    <h3>Finish signing in</h3>
+    <h3>Finish the sign-in</h3>
     <ol class="gpt-steps">
       <li>Open <a href="${esc(p.url)}" target="_blank" rel="noopener noreferrer">${esc(p.url)}</a> and sign in to ChatGPT.</li>
-      <li>Enter this one-time code: <code class="gpt-code" id="gpt-code">${esc(p.code)}</code></li>
+      <li>Enter this one-time code: <span class="gpt-code-row"><code class="gpt-code" id="gpt-code">${esc(p.code)}</code><button type="button" class="btn small" id="gpt-copy" data-copy="${esc(p.code)}" hidden>Copy code</button></span></li>
       <li>Come back here. This page notices when you are done.</li>
     </ol>
     <p class="gpt-wait" id="gpt-login-state" role="status" aria-live="polite">Waiting for you to enter the code${until ? ` · the code works until <time datetime="${esc(exp.toISOString())}" data-local data-time-only>${esc(until)}</time>` : ""}.</p>
+    <div class="acts"><form method="post" action="/mint-ai/settings/chatgpt/login/cancel" class="set-form"><input type="hidden" name="_csrf" value="${esc(csrf)}"><button type="submit" class="btn small">Cancel sign-in</button></form></div>
   </div>`;
 }
 
@@ -120,8 +121,8 @@ async function render(req, res, deps) {
         : "Nobody is signed in, so agents that ask get “not signed in”.";
     const button = `<form method="post" action="/mint-ai/settings/chatgpt/login" class="set-form" data-step-up data-confirm-dlg="Sign ChatGPT in again?" data-confirm-body="The server starts a new sign-in and this page shows a link and a one-time code to enter on OpenAI's page. The current sign-in keeps working until the new one is done." data-confirm-yes="Start sign-in" data-confirm-danger="0"><input type="hidden" name="_csrf" value="${esc(csrf)}"><button type="submit" class="btn${st.login === "signed_in" ? "" : " primary"}">${icon("user", 16)}${st.login === "signed_out" ? "Sign in" : "Sign in again"}</button></form>`;
     signIn =
-      V.row("ChatGPT account", help, `${chip(word, tone, shape)}${p ? "" : button}`, { id: "gpt-account" }) +
-      (p ? `<div class="row full">${loginBox(p)}</div>` : "");
+      V.row("ChatGPT account", p ? "A new sign-in is waiting for you below. Until it is done, agents keep using the current one." : help, p ? chip("Waiting for sign-in", "warn", '<path d="M8 3a5 5 0 0 1 0 10Z"/><circle cx="8" cy="8" r="4.25" fill="none" stroke-width="1.5"/>') : `${chip(word, tone, shape)}${button}`, { id: "gpt-account" }) +
+      (p ? `<div class="row full">${loginBox(p, csrf)}</div>` : "");
   }
 
   /* ---- service ---- */
@@ -214,6 +215,21 @@ function mount(app, deps, { guard, reply, audit }) {
     } catch (e) {
       reply(req, res, "chatgpt", { err: "The sign-in did not start: " + e.message, anchor: "gpt-account" });
     }
+  });
+
+  // Cancel the sign-in that waits: the helper stops the CLI; the old sign-in is untouched.
+  app.post("/mint-ai/settings/chatgpt/login/cancel", requireAuth, guard("chatgpt"), requireCsrf, async (req, res) => {
+    const p = pending;
+    pending = null;
+    if (p) {
+      try {
+        await P().chatgptLoginCancel(p.id);
+      } catch (_) {
+        /* it may have finished on its own; nothing waits any more either way */
+      }
+      audit(req, "cancelled a ChatGPT sign-in");
+    }
+    reply(req, res, "chatgpt", { msg: "Sign-in cancelled. The current sign-in is unchanged.", anchor: "gpt-account", reload: true });
   });
 
   // The page polls this while a sign-in waits (public/chatgpt-settings.js).

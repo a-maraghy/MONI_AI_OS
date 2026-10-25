@@ -99,6 +99,12 @@ h.chatgpt_codex_status = lambda: ("signed_out", None, "Not logged in")
 r = run_cmd(h.cmd_chatgpt_login_poll, [lid])
 check("when it finished without a valid sign-in: failed", r["data"]["state"] == "failed", r)
 
+with open(os.path.join(h.CHATGPT_LOGIN_DIR, lid + ".json"), "w") as fh:
+    json.dump({"pid": 999999999, "started": __import__("time").time()}, fh)
+r = run_cmd(h.cmd_chatgpt_login_cancel, [lid])
+check("cancel answers for a finished sign-in too, and marks it cancelled", r["ok"] and r["data"]["cancelled"] and json.load(open(os.path.join(h.CHATGPT_LOGIN_DIR, lid + ".json")))["reported"] == "cancelled")
+check("cancel refuses an id that is not 16 hex", run_cmd(h.cmd_chatgpt_login_cancel, ["x;rm"])["ok"] is False)
+
 print("the per-agent switch (ALLOW_CHATGPT)")
 base = h.validate_config({"slug": "odoo-dev", "name": "Odoo Dev"}, creating=False)
 check("on by default", base["chatgpt"] is True)
@@ -137,7 +143,7 @@ check("agent-chatgpt off writes the switch to agent.json and re-renders agent.en
 check("  it does not restart the agent; it says a restart is needed", r["data"]["restart_needed"] is True and not any(c[0] == "run" and "restart" in str(c) for c in calls_made))
 r = run_cmd(h.cmd_agent_chatgpt, ["odoo-dev", "maybe"])
 check("anything but on / off is refused", r["ok"] is False)
-check("the five subcommands are registered", all(k in h.COMMANDS for k in ("chatgpt-status", "chatgpt-calls", "chatgpt-login-start", "chatgpt-login-poll", "agent-chatgpt")))
+check("the six subcommands are registered", all(k in h.COMMANDS for k in ("chatgpt-status", "chatgpt-calls", "chatgpt-login-start", "chatgpt-login-poll", "chatgpt-login-cancel", "agent-chatgpt")))
 
 print("\n%d passed, %d failed" % (passed, failed))
 sys.exit(1 if failed else 0)

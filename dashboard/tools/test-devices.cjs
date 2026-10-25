@@ -316,7 +316,7 @@ const UA_PHONE = "Mozilla/5.0 (iPhone; CPU iPhone OS 26_0 like Mac OS X) AppleWe
 
     console.log("\nthe frame");
     page = await get(a1, "/devices");
-    const badge = (page.body.match(/<span class="badge [^"]*" data-badge="devices"[^>]*>[^<]*<\/span>/) || [""])[0];
+    const badge = (page.body.match(/<span class="badge [^"]*" data-badge="devices"[^>]*>[^<]*(?:<span class="sr">[^<]*<\/span>)?<\/span>/) || [""])[0];
     check("the sidebar's Devices item carries the count of your browsers", /badge plain/.test(badge) && />1</.test(badge), badge || page.body.slice(0, 200));
     plant(idOf("admin1"), "admin1", { device: { ua: UA_MAC, ip: "10.0.0.6", at: Date.now() } }, 0);
     await post(a1, "/devices/signout-others"); // a sign-out forgets the cached count

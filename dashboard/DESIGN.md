@@ -1,0 +1,119 @@
+# Mint OS — design system: "Plain label"
+
+> Stage 1 of the 2026-10-25 redesign (accessible, simple, professional; the leaf logo
+> replaced by the word MINT). Built on the shell, Telegram agents, MINT AI Settings
+> (Voice, and the new ChatGPT section) and the Command Center's chrome; every other page
+> already reads these tokens and is converted in stage 2. Source of truth for values:
+> `public/style.css` (tokens) and `public/mint-ds.css` (components). Product truth:
+> `PRODUCT.md`.
+
+## Direction contract
+
+- **THESIS.** A working control panel that reads like a well-made printed label: one
+  legible typeface, plain words, ink on paper, one green for "this is yours / act here".
+  It refuses the category default it came from — near-black, neon mint, glows, glass,
+  gradient pills, tracked mono capitals and a leaf.
+- **OWN-WORLD.** Tinted paper neutrals (a breath of leaf green in the greys), one
+  spearmint-ink accent, state colours that always travel with a word and a shape;
+  Atkinson Hyperlegible Next for everything a person reads, its Mono for code and ids;
+  flat cards with hairlines, 8–10 px corners, no glow.
+- **STORY.** The administrator sees within seconds whether anything needs him (the top
+  bar's single sentence), finds every page in one labelled sidebar, and acts with
+  controls that look the same everywhere.
+- **FIRST VIEWPORT.** Top bar: the wordmark MINT left, the health sentence and avatar
+  right. Sidebar: the machine, then five groups of labelled items, the current one a
+  raised white chip. Content: crumbs, a 28 px title, one line of purpose, the primary
+  action top right; then the work (a table, a settings group, the core).
+- **FORM.** Operate mode; standard web controls only. Signature move: **state as word +
+  shape** (● Running, ▲ Failed, ○ Stopped, ◐ Starting) everywhere a status appears, so
+  colour only ever repeats what the text already says. The roll (`concept-seed`) could not
+  run here (the Impeccable launcher is not allowed on this box): `seed: none (unavailable)`.
+- **FINISH.** unreviewed and undocumented is unfinished; this build ends with the finish
+  review, the verdict, DESIGN.md, and every shipping raster carrying its provenance.
+
+## Logo
+
+- The logo is the word **MINT**, set as text: Atkinson Hyperlegible Next 800, 20 px in the
+  top bar (32 px on sign-in), tracking +0.16 em, colour `--ink`. No mark, no tag, no
+  gradient. Markup: `brand.lockup()` → `<span class="wordmark"><span class="wm-mint">MINT</span></span>`.
+- Sign-in adds one plain line under it ("Operating System").
+- Proposed favicon / app icon (not wired, awaiting approval): an **M monogram** — white
+  geometric M (straight stems, the V to 60 % height) on a spearmint-ink rounded square
+  (radius 22 %). Today's live icon is the core E bot head (`MINT_APP_ICON=bot`), not a leaf.
+
+## Colour
+
+Strategy: Restrained — tinted neutrals plus one accent; state colours carry meaning only.
+
+| Token | Light | Dark | Use |
+|---|---|---|---|
+| `--bg` | `#F5F7F6` | `#101513` | page |
+| `--panel` | `#FFFFFF` | `#171D1A` | cards, inputs, menus |
+| `--panel-2` | `#ECF0EE` | `#1C2421` | sidebar, table heads, hovers |
+| `--panel-3` | `#E2E8E5` | `#232C28` | pressed, badges |
+| `--line` | `#DCE3DF` | `#2A3430` | hairlines between things |
+| `--line-strong` | `#7D8A84` | `#6B7872` | control edges (≥ 3:1 on page and panel) |
+| `--ink` | `#141A17` | `#E9EEEB` | headings, values (16–17:1) |
+| `--body` | `#2A332F` | `#D0D8D4` | running text (≥ 11:1) |
+| `--muted` | `#525E58` | `#A8B4AE` | secondary text (≥ 5.9:1 on every ground) |
+| `--accent` | `#0B6B4C` | `#6ED3A6` | primary action, links, current place, focus |
+| `--on-accent` | `#FFFFFF` | `#0C2219` | text on the accent (6.5:1 / 9.2:1) |
+| `--accent-soft` | `#E3EFE9` | `#1E3A2F` | selected ground |
+| `--ok` / `--warn` / `--bad` / `--info` | `#1C6B44` / `#8A5200` / `#B3261E` / `#1F5799` | `#6ED3A6` / `#F0B45C` / `#FF8F85` / `#8DB9F2` | state text, each with a `-tint` ground and `-line` edge |
+| `--violet-ink` | `#5B3FA8` | `#B9A6F2` | MINT AI's own things (a hired session) |
+
+Every text pair is ≥ 4.5:1 (checked in `tools/test-brand.cjs` against `--bg`, `--panel` and
+`--panel-2` in both themes). The MINT AI cores keep their own colours: they are a product
+feature the person chooses, not chrome.
+
+## Type
+
+- `--ui`: "Atkinson Hyperlegible Next" (400, 500, 600, 700, 800), system fallback with
+  Noto Sans Arabic for Arabic. `--mono`: "Atkinson Hyperlegible Mono" (400–600) for code,
+  ids, slugs, hostnames, clocks. Self-hosted in `public/fonts` (OFL, latin).
+- Fixed rem scale, ratio ≈ 1.125–1.25: 13 (`--fs-xs`, tags and table heads only) · 14
+  (`--fs-sm`, secondary lines) · **16 (`--fs-md`, body)** · 18 (card titles) · 22 (section
+  titles) · 28 (page titles; 24 on phones). Line height 1.5 for text, 1.2–1.3 for titles.
+- Sentence case everywhere. No tracked capitals, no monospace as decoration.
+- Tabular figures on by default (`font-variant-numeric: tabular-nums`).
+
+## Space, shape, depth
+
+- 4 px grid; content padding 24/32 px desktop, 16 px phone; card padding 20/24 px; gap 16 px.
+- Radius: 8 px controls (`--radius`), 10 px cards, groups and menus (`--r`), 999 px pills.
+- Depth: cards are flat with a 1 px hairline. Shadows only on things that float (menus,
+  toasts, dialogs, the decision card): `--shadow-pop`. No glow, no glass, no gradients.
+
+## Components (public/mint-ds.css)
+
+- **Top bar** 56 px, `--panel`, hairline below: wordmark · (Command Center only: where you
+  are) · health sentence · needs-you pill · avatar menu. Framed pages name themselves in
+  their own head, so the bar does not repeat it.
+- **Sidebar** `--panel-2`; group labels 13 px sentence case; items 40 px (44 on touch),
+  icon + label, current item a raised `--panel` chip with an accent icon and
+  `aria-current="page"`. Badges carry their sentence for screen readers. Off-canvas
+  (phone, Command Center drawer) it is `visibility: hidden` so focus never enters it.
+- **Page head**: crumbs (underlined links) · h1 28 px · one line of purpose (70 ch) · actions.
+- **Buttons** 40 px (44 on touch; 36 for `.small`): default (panel, strong edge), `primary`
+  (accent fill), `danger` (red text and edge; red ground on hover). One primary per view.
+- **Forms**: visible label above, 14 px hint under it, 44 px fields with a ≥ 3:1 edge;
+  20 px checkboxes inside a 44 px label; the switch is a real checkbox under a 44 × 24 track.
+- **Tables** (`.ds-table`): head row on `--panel-2`, 13 px; rows 14 px padding with a hairline;
+  numbers right-aligned; a second line in `.sub`. Under 760 px each row becomes a block with
+  every value under its column name.
+- **State** (`.state`): shape + word in the state colour; never colour alone.
+- **Alerts**: tinted ground, matching edge, icon, 16 px text; links underlined.
+- **Empty state**: icon tile, a title that says what is missing, one sentence on what to do.
+- **Menu** (`.ds-menu`): a `<details>` — works without script, by keyboard and touch.
+- **Toasts**: opaque panel, `--shadow-pop`, 16 px, 36 px actions.
+- **Focus**: one ring everywhere — 2 px `--focus`, 2 px offset. A skip link is the first stop.
+- **Motion**: 160 ms, `cubic-bezier(.2,0,0,1)`, state changes only; reduced motion turns
+  transitions off. The core's own motion is the core's.
+
+## Command Center
+
+The core (A–E, the person's choice) and everything it draws stay as they are. Around it:
+opaque panels instead of glass, the rail always visible (44 px buttons, names on hover and
+focus), the composer an opaque field with a visible edge (no fading at rest), the caption
+in sentence case, the decision card without its coloured edge bar. The desktop app's render
+mode (`html.cc-desk`) keeps its own measured layout.
