@@ -23,6 +23,10 @@ Environment=HOME=/opt/moni-agents/shared/home
 Environment=PATH=/opt/moni-agents/runtime/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=MONI_MODEL_CACHE=/opt/moni-agents/shared/models
 Environment=PYTHONUNBUFFERED=1
+# Use the server's Claude Code, not the copy bundled with the Python SDK:
+# the bundled one (2.1.139) rejects newer models such as claude-opus-5-5
+# ("version 2.1.280 or newer is required", MINT Pace 2026-10-25).
+Environment=CLAUDE_CLI_PATH=/usr/bin/claude
 
 # Claude authentication, shared by every agent (0640 root:moniagent).
 # Leading '-' so an agent still starts to report a clear error if it is missing.

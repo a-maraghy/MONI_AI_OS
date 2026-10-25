@@ -21,6 +21,8 @@ WorkingDirectory=/opt/moni-agents/whatsapp
 Environment=HOME=/opt/moni-agents/shared/home
 Environment=PATH=/opt/moni-agents/runtime/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 Environment=NODE_ENV=production
+# Server Claude Code, not the SDK-bundled 2.1.139 (rejects newer models).
+Environment=CLAUDE_CLI_PATH=/usr/bin/claude
 
 # The Claude credential, shared with every agent.
 EnvironmentFile=-/opt/moni-agents/shared/claude-auth.env
