@@ -120,7 +120,8 @@ pub struct Settings {
     /// The monitor MINT AI lives on (its name); empty = the primary.
     pub monitor: String,
     pub per_monitor: BTreeMap<String, PerMonitor>,
-    /// Desktop layer behind the desktop icons (WorkerW). Undocumented Windows behaviour; no clicks reach it there.
+    /// Desktop layer behind the desktop icons (WorkerW). Retired in 0.1.14 (it made MINT AI unclickable):
+    /// kept only so older settings files still load; fix() always turns it off.
     pub experimental_behind_icons: bool,
     pub check_updates: bool,
     /// The site, for a test server only; the app refuses anything that is not https.
@@ -186,6 +187,8 @@ impl Settings {
             self.before_companion = Mode::Floating;
         }
         self.presence.fix();
+        // "Desktop layer behind the icons" was removed in 0.1.14: an older settings file that had it on loads off.
+        self.experimental_behind_icons = false;
         if !origin_ok(&self.origin) {
             self.origin = DEFAULT_ORIGIN.into();
         }
@@ -294,6 +297,14 @@ mod tests {
         assert!(s.real_blur, "real blur behind the cards is on by default");
         assert_eq!(s.monitor_prefs("any").corner, Corner::Br);
         assert_eq!(s.monitor_prefs("any").opacity, 100);
+    }
+
+    #[test]
+    fn behind_the_icons_is_retired() {
+        let mut s: Settings = serde_json::from_str(r#"{"mode":"desktop","experimental_behind_icons":true}"#).unwrap();
+        s.fix();
+        assert!(!s.experimental_behind_icons, "0.1.14 removed the switch: an old file that had it on loads off");
+        assert_eq!(s.mode, Mode::Desktop, "the Desktop layer itself stays");
     }
 
     #[test]

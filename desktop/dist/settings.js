@@ -76,7 +76,6 @@
     bn.classList.toggle("warn", !!v.blurNote);
     $("autostart").checked = !!S.autostart;
     $("updates").checked = !!S.check_updates;
-    $("icons").checked = !!S.experimental_behind_icons;
     $("hk-talk").value = S.hotkeys.talk; $("hk-show").value = S.hotkeys.show; $("hk-focus").value = S.hotkeys.focus; $("hk-live").value = S.hotkeys.live || "";
     $("live-note").textContent = v.liveFallback ? "Ctrl+Alt+L is taken by another app: using " + v.liveKey + " for now." : v.liveKey ? "Now: press " + v.liveKey + " once to start, again to end." : "Not set: the key is taken by another app.";
     $("talk-note").textContent = v.talkFallback ? "Ctrl+Space is taken by another app: listening on " + v.talkKey + " for now." : v.talkKey ? "Now: hold " + v.talkKey + "." : "Not set: the key is taken by another app.";
@@ -95,7 +94,7 @@
     S.glance = $("glance").checked;
     S.companion = { stay_on_monitor: $("comp-stay").checked };
     pres().camera = $("cam-on").checked; pres().look_and_speak = $("cam-on").checked && $("cam-speak").checked; pres().release_on_saver = $("cam-saver").checked;
-    S.autostart = $("autostart").checked; S.check_updates = $("updates").checked; S.experimental_behind_icons = $("icons").checked;
+    S.autostart = $("autostart").checked; S.check_updates = $("updates").checked;
     if (window.MintMachine) window.MintMachine.collect(S);
   }
   function save() {
