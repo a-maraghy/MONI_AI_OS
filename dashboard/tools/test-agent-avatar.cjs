@@ -104,7 +104,7 @@ check("a small tile stays small (under 40 kB)", Buffer.byteLength(A.tile(a1, "sm
 /* ------------------------------------------------------------ pages */
 const AGENTS = [
   { slug: "mavix-bot", name: "MAVIX", role: "", model: "claude-sonnet-5", effort: "medium", verbose_level: 1, state: { active: "active" }, memory: { chunks: 40 }, notes: 12,
-    avatar: { v: 1, theme: "design", head: "beret", face: "smooth", hue: "rose", turn: "l", seed: 12345 },
+    avatar: { v: 1, theme: "design", head: "beret", face: "minimal", hue: "orange", turn: "l", seed: 244245234 },
     channel: { slug: "mavix-tg", name: "MAVIX bot", type: "telegram", telegram_bot_username: "mavix_bot", allowed_users: "1234567" } },
   { slug: "mint-pace", name: "MINT Pace", role: PACE_ROLE, model: "claude-opus-5-5", effort: "medium", verbose_level: 1, state: { active: "active" }, memory: { chunks: 9 }, notes: 4,
     avatar: a1, channel: { slug: "pace-tg", name: "MINT Pace", type: "telegram", telegram_bot_username: "mint_pace_bot", allowed_users: "1234567" } },
@@ -132,7 +132,7 @@ const CHANNELS = [
     const get = (p) => s.req("GET", p, { cookie: who.cookie });
 
     const ov = await get("/agents/dashboard");
-    check("Agents overview: a tile per agent, beside its name", ov.status === 200 && (ov.body.match(/class="av av-sm av-h-/g) || []).length === 3 && /<div class="who"><span class="av av-sm av-h-rose"[\s\S]*?<a class="nm" href="\/agents\/mavix-bot">MAVIX<\/a>/.test(ov.body));
+    check("Agents overview: a tile per agent, beside its name", ov.status === 200 && (ov.body.match(/class="av av-sm av-h-/g) || []).length === 3 && /<div class="who"><span class="av av-sm av-h-orange"[\s\S]*?<a class="nm" href="\/agents\/mavix-bot">MAVIX<\/a>/.test(ov.body));
     const list = await get("/agents");
     check("Telegram agents: the same tiles", list.status === 200 && (list.body.match(/class="av av-sm av-h-/g) || []).length === 3);
     check("no planting words on the agent pages", !/\b(plant|seedling|sprout|nursery|garden)/i.test(ov.body + list.body));
