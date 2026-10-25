@@ -7,16 +7,17 @@
  * no supervisor) to check the files are served with the right content types
  * and that pages reference them:
  *
- *  - the SVG marks and favicons are current with lib/marks.js (tools/make-brand.cjs);
+ *  - the M monogram favicons are current with tools/make-monogram.cjs, and the
+ *    leaf marks (lib/marks.js, tools/make-brand.cjs) are gone;
  *  - the fonts (Atkinson Hyperlegible Next + Mono, 2026-10-25) are self-hosted
  *    with their licences, latin woff2 only;
  *  - style.css declares them and holds the redesign's palette in both themes, every
  *    text token at 4.5:1 or more and every control edge at 3:1 or more;
- *  - every page (MINT AI's too) carries the one Mint OS icon set and the
- *    web app manifest (tools/make-app-icon.cjs); every top bar
+ *  - every page (MINT AI's too) carries the M monogram in the tab, the app icon
+ *    set for apple-touch and the web app manifest (tools/make-app-icon.cjs); every top bar
  *    (MINT AI's too) carries the same logo: the word MINT as text, no leaf, no tag;
  *  - the sign-in page carries the wordmark and no leaf;
- *  - the nursery's seedlings are built from the leaf; no style="" anywhere.
+ *  - no seedling, leaf or spark is left in lib/brand.js; no style="" anywhere.
  *
  * .cjs because it uses require.
  */
@@ -47,10 +48,18 @@ function check(name, ok, detail) {
 
 /* ------------------------------------------------------------- files --- */
 
-const make = require("./make-brand.cjs");
-for (const [name, body] of Object.entries(make.files())) {
-  const f = path.join(PUB, name);
-  check(`${name} is current with lib/marks.js`, fs.existsSync(f) && fs.readFileSync(f, "utf8") === body);
+const mono = require("./make-monogram.cjs");
+for (const [name, body] of Object.entries(mono.files())) {
+  const f = path.join(PUB, "brand", "m", name);
+  check(`brand/m/${name} is current with tools/make-monogram.cjs`, fs.existsSync(f) && fs.readFileSync(f, "utf8") === body);
+}
+check("the monogram is black on white, white on black in dark mode, and draws an M", Object.values(mono.files()).every((b) => /\.t\{fill:#FFFFFF;stroke:#000000\}/.test(b) && /prefers-color-scheme: dark\)\{\.t\{fill:#000000;stroke:#FFFFFF\}/.test(b) && /<path class="m" d="M/.test(b) && !/<image|<text|url\(|href=/.test(b)));
+{
+  const entries = require("./make-app-icon.cjs").readIco(fs.readFileSync(path.join(PUB, "brand/m/favicon.ico")));
+  check("brand/m/favicon.ico holds 16/32/48 PNGs", !!entries && entries.map((e) => `${e.size}:${e.png && e.png.w}x${e.png && e.png.h}`).join(",") === "16:16x16,32:32x32,48:48x48", JSON.stringify(entries));
+}
+for (const gone of ["lib/marks.js", "tools/make-brand.cjs", "public/brand/mint-os-mark.svg", "public/brand/mint-ai-mark.svg"]) {
+  check(`the leaf ${gone} is gone`, !fs.existsSync(path.join(ROOT, gone)));
 }
 // The Mint OS icon ("Mesh"), the same on every page: tools/make-app-icon.cjs.
 const appIcon = require("./make-app-icon.cjs");
@@ -72,13 +81,9 @@ for (const r of appIcon.RASTERS) {
 for (const gone of ["favicon-ai.svg", "favicon-ai.ico", "brand/favicon-os-16.svg", "brand/favicon-os-32.svg", "brand/favicon-ai-16.svg", "brand/favicon-ai-32.svg"]) {
   check(`the old leaf favicon ${gone} is gone`, !fs.existsSync(path.join(PUB, gone)));
 }
-const osMark = fs.readFileSync(path.join(PUB, "brand/mint-os-mark.svg"), "utf8");
-check("the OS mark is the two leaf tones, #6DEBA8 / #248273", osMark.includes('fill="#6DEBA8"') && osMark.includes('fill="#248273"'));
-const aiMark = fs.readFileSync(path.join(PUB, "brand/mint-ai-mark.svg"), "utf8");
-check("the AI mark runs mint to violet and carries the spark", aiMark.includes("#00E6A5") && aiMark.includes("#8A2BE2") && aiMark.includes('class="ai-spark"'));
 
 // The 2026-10-25 redesign: one family, Atkinson Hyperlegible Next, and its Mono.
-// (The three old families stay on disk until stage 2 converts every page.)
+check("the three old families (Space Grotesk, Inter, JetBrains Mono) are gone", !fs.readdirSync(path.join(PUB, "fonts")).some((f) => /space-grotesk|inter-|jetbrains|OFL-(Inter|SpaceGrotesk|JetBrainsMono)/.test(f)));
 const FONTS = [
   ...[400, 500, 600, 700, 800].map((w) => `atkinson-hyperlegible-next-latin-${w}-normal.woff2`),
   ...[400, 500, 600].map((w) => `atkinson-hyperlegible-mono-latin-${w}-normal.woff2`),
@@ -131,14 +136,14 @@ const osPage = ui.shell("Services", "<p>x</p>", { user: { name: "desk" }, active
 const TOP_LOCKUP = /<a class="brand" href="[^"]*" aria-label="Mint OS">\s*<span class="wordmark brand-text"><span class="wm-mint">MINT<\/span><\/span>\s*<\/a>/;
 check("an OS page's top bar is the word MINT as text: no leaf, no [OS] tag", TOP_LOCKUP.test(osPage) && !/pill-brand/.test(osPage) && !/mark-os|lk-mk/.test(osPage));
 const ICON_LINKS = (pg) =>
-  /<link rel="icon" href="\/static\/brand\/favicon-16\.svg\?v=[^"]+" type="image\/svg\+xml" sizes="16x16">/.test(pg) &&
-  /<link rel="icon" href="\/static\/brand\/favicon-32\.svg\?v=[^"]+" type="image\/svg\+xml" sizes="32x32">/.test(pg) &&
-  /<link rel="icon" href="\/static\/favicon\.svg\?v=[^"]+" type="image\/svg\+xml" sizes="any">/.test(pg) &&
-  /<link rel="alternate icon" href="\/static\/favicon\.ico\?v=[^"]+"/.test(pg) &&
+  /<link rel="icon" href="\/static\/brand\/m\/favicon-16\.svg\?v=[^"]+" type="image\/svg\+xml" sizes="16x16">/.test(pg) &&
+  /<link rel="icon" href="\/static\/brand\/m\/favicon-32\.svg\?v=[^"]+" type="image\/svg\+xml" sizes="32x32">/.test(pg) &&
+  /<link rel="icon" href="\/static\/brand\/m\/favicon\.svg\?v=[^"]+" type="image\/svg\+xml" sizes="any">/.test(pg) &&
+  /<link rel="alternate icon" href="\/static\/brand\/m\/favicon\.ico\?v=[^"]+"/.test(pg) &&
   /<link rel="apple-touch-icon" href="\/static\/brand\/app-icon-180\.png\?v=[^"]+" sizes="180x180">/.test(pg) &&
   /<link rel="manifest" href="\/manifest\.webmanifest\?v=[0-9a-f]{10}">/.test(pg) &&
   !/favicon-(os|ai)/.test(pg);
-check("an OS page carries the Mint OS icon (16 lines, 32 dots, any, .ico, apple-touch, manifest)", ICON_LINKS(osPage));
+check("an OS page carries the M monogram in the tab (16, 32, any, .ico) and the app icon for apple-touch and the manifest", ICON_LINKS(osPage));
 check("an OS page's title ends Mint OS", /<title>Services — Mint OS<\/title>/.test(osPage));
 // MINT AI's own page is the Command Center (brand "ai"); the classic chat is gone.
 const aiPage = ui.shell("MINT AI", "<p>x</p>", { user: { name: "desk" }, active: "moni-ai", bare: true, brand: "ai", csrf: "c" });
@@ -157,13 +162,8 @@ check("every framed page starts with a skip link to the content", /<a class="ski
 const login = views.login({ csrf: "c" });
 check("the sign-in card carries the MINT wordmark", /<div class="card auth-card"><div class="auth-lockup"><span class="wordmark full"><span class="wm-mint">MINT<\/span>/.test(login) && /Operating System/.test(login));
 check("the sign-in page has no leaf behind the card", !/auth-leaf/.test(login) && !/<svg class="mark/.test(login));
-{
-  const a = brand.osMark(), b = brand.osMark();
-  const ida = /mask id="([^"]+)"/.exec(a)[1], idb = /mask id="([^"]+)"/.exec(b)[1];
-  check("two marks on one page never share gradient/mask ids", ida !== idb);
-}
-check("a seedling is drawn from the leaf path", brand.seedling(3).includes(require(path.join(ROOT, "lib", "marks.js")).LEAF));
-for (const [n, html] of [["OS page", osPage], ["AI page", aiPage], ["sign-in", login], ["seedling", brand.seedling(2, "x", { droop: true, roots: [0] })]]) {
+check("lib/brand.js is the wordmark only (no leaf, seedling, spark or watermark)", Object.keys(brand).join() === "lockup");
+for (const [n, html] of [["OS page", osPage], ["AI page", aiPage], ["sign-in", login]]) {
   check(`${n}: no style attributes and no inline script (CSP)`, !/\sstyle=/.test(html) && !/<script>(?!<\/script>)/.test(html) && !/<script(?![^>]*\ssrc=)[^>]*>/.test(html));
 }
 
@@ -197,9 +197,10 @@ function req(p) {
       ["/static/fonts/atkinson-hyperlegible-next-latin-400-normal.woff2", "font/woff2"],
       ["/static/fonts/atkinson-hyperlegible-next-latin-800-normal.woff2", "font/woff2"],
       ["/static/fonts/atkinson-hyperlegible-mono-latin-500-normal.woff2", "font/woff2"],
-      ["/static/fonts/OFL-Inter.txt", "text/plain"],
-      ["/static/brand/mint-os-mark.svg", "image/svg+xml"],
-      ["/static/brand/mint-ai-mark.svg", "image/svg+xml"],
+      ["/static/fonts/OFL-AtkinsonHyperlegibleNext.txt", "text/plain"],
+      ["/static/brand/m/favicon-16.svg", "image/svg+xml"],
+      ["/static/brand/m/favicon.svg", "image/svg+xml"],
+      ["/static/brand/m/favicon.ico", "image/x-icon"],
       ["/static/brand/favicon-16.svg", "image/svg+xml"],
       ["/static/brand/favicon-32.svg", "image/svg+xml"],
       ["/static/favicon.svg", "image/svg+xml"],
@@ -217,7 +218,7 @@ function req(p) {
     }
     {
       const ico = await req("/favicon.ico");
-      check("/favicon.ico is the Mesh icon, cached a day", ico.body.equals(fs.readFileSync(path.join(PUB, "favicon.ico"))) && /max-age=86400/.test(ico.headers["cache-control"] || ""), ico.headers["cache-control"]);
+      check("/favicon.ico is the M monogram, cached a day", ico.body.equals(fs.readFileSync(path.join(PUB, "brand/m/favicon.ico"))) && /max-age=86400/.test(ico.headers["cache-control"] || ""), ico.headers["cache-control"]);
       const plain = await req("/manifest.webmanifest");
       const stamped = await req("/manifest.webmanifest?v=" + ui.MANIFEST_VERSION());
       let m = null; try { m = JSON.parse(stamped.body.toString()); } catch (_) {}
@@ -230,7 +231,7 @@ function req(p) {
       // token is the panel's own 404 page -- an error page, rendered by page() like the rest.
       let first = await req("/login");
       if (first.status >= 300 && first.status < 400) first = await req(new URL(first.headers.location, "http://x").pathname);
-      check("a served error page (setup without its token) carries the Mint OS icon links", first.status === 404 && ICON_LINKS(first.body.toString()), first.status);
+      check("a served error page (setup without its token) carries the monogram icon links", first.status === 404 && ICON_LINKS(first.body.toString()), first.status);
     }
     const r = await req("/static/fonts/atkinson-hyperlegible-next-latin-400-normal.woff2?v=5.3.0");
     check("a stamped font is cached long", /max-age=2592000/.test(r.headers["cache-control"] || ""), r.headers["cache-control"]);

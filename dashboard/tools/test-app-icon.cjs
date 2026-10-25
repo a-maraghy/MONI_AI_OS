@@ -8,8 +8,8 @@
  *
  * A scratch copy of the panel (tools/scratch-server.cjs: temp data dir, helper
  * cut off) and Chromium. For the sign-in page, the Command Center, OS pages,
- * the account page and an error page: the page links the one icon set (16 lines,
- * 32 dots, any, .ico, apple-touch PNG, manifest) and no leaf favicon; every one
+ * the account page and an error page: the page links the M monogram for the tab (16,
+ * 32, any, .ico), the app icon for apple-touch and the manifest and no leaf favicon; every one
  * of those URLs loads 200 with its content type; the manifest's icons load too;
  * no CSP violation and no console error about any of it. --shots writes a
  * screenshot of each icon as the browser decoded it.
@@ -41,10 +41,10 @@ const shotsAt = process.argv.indexOf("--shots");
 const SHOTS = shotsAt > 0 ? process.argv[shotsAt + 1] : null;
 
 const WANT = [
-  { rel: "icon", sizes: "16x16", file: /\/static\/brand\/favicon-16\.svg\?v=/, type: "image/svg+xml" },
-  { rel: "icon", sizes: "32x32", file: /\/static\/brand\/favicon-32\.svg\?v=/, type: "image/svg+xml" },
-  { rel: "icon", sizes: "any", file: /\/static\/favicon\.svg\?v=/, type: "image/svg+xml" },
-  { rel: "alternate icon", file: /\/static\/favicon\.ico\?v=/, type: "image/x-icon" },
+  { rel: "icon", sizes: "16x16", file: /\/static\/brand\/m\/favicon-16\.svg\?v=/, type: "image/svg+xml" },
+  { rel: "icon", sizes: "32x32", file: /\/static\/brand\/m\/favicon-32\.svg\?v=/, type: "image/svg+xml" },
+  { rel: "icon", sizes: "any", file: /\/static\/brand\/m\/favicon\.svg\?v=/, type: "image/svg+xml" },
+  { rel: "alternate icon", file: /\/static\/brand\/m\/favicon\.ico\?v=/, type: "image/x-icon" },
   { rel: "apple-touch-icon", sizes: "180x180", file: /\/static\/brand\/app-icon-180\.png\?v=/, type: "image/png" },
   { rel: "manifest", file: /\/manifest\.webmanifest\?v=/, type: "application/manifest+json" },
 ];
@@ -143,7 +143,7 @@ const WANT = [
       fs.mkdirSync(SHOTS, { recursive: true });
       const ctx = await browser.newContext();
       const page = await ctx.newPage();
-      const imgs = ["/static/brand/favicon-16.svg", "/static/brand/favicon-32.svg", "/static/favicon.svg", "/static/favicon.ico", "/static/brand/app-icon-180.png", "/static/brand/app-icon-192.png", "/static/brand/app-icon-maskable-512.png"];
+      const imgs = ["/static/brand/m/favicon-16.svg", "/static/brand/m/favicon-32.svg", "/static/brand/m/favicon.svg", "/static/brand/m/favicon.ico", "/static/brand/app-icon-180.png", "/static/brand/app-icon-192.png", "/static/brand/app-icon-maskable-512.png"];
       await page.goto(BASE + "/login"); // same origin: the panel's CORP header is same-origin
       await page.setContent(`<body style="margin:0;background:#dee1e6;display:flex;gap:12px;padding:12px;align-items:flex-end">${imgs.map((i) => `<img src="${BASE}${i}" style="max-width:128px">`).join("")}</body>`);
       await page.waitForTimeout(500);

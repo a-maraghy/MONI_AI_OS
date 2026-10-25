@@ -129,7 +129,7 @@ const NAV = [
     key: "agents",
     label: "Agents & sessions",
     items: [
-      { key: "agents-dashboard", href: "/agents/dashboard", label: "Overview", icon: "overview", when: (p) => p.can("agents.view") || p.can("claude.running.view") },
+      { key: "agents-dashboard", href: "/agents/dashboard", label: "Agents overview", icon: "overview", when: (p) => p.can("agents.view") || p.can("claude.running.view") },
       { key: "claude-sessions", href: "/claude/sessions", label: "Sessions", icon: "activity", when: (p) => p.can("claude.sessions.view") || p.can("claude.running.view") },
       { key: "agents", href: "/agents", label: "Telegram agents", icon: "agents", perm: "agents.view" },
       { key: "channels", href: "/channels", label: "Channels", icon: "channels", perm: "channels.view" },
@@ -141,7 +141,7 @@ const NAV = [
     key: "machine",
     label: "Machine",
     items: [
-      { key: "os", href: "/os", label: "Overview", icon: "cpu", perm: "os.view" },
+      { key: "os", href: "/os", label: "Machine health", icon: "cpu", perm: "os.view" },
       { key: "services", href: "/services", label: "Services", icon: "services", when: (p) => p.can("services.view") || p.can("agents.view") },
       { key: "audit", href: "/audit", label: "Audit log", icon: "audit", perm: "audit.view" },
     ],
@@ -159,12 +159,8 @@ const NAV = [
       { key: "credentials", href: "/credentials", label: "Credentials", icon: "credentials", perm: "credentials.view" },
     ],
   },
-  {
-    key: "help",
-    label: "Help",
-    items: [{ key: "guide", href: "/guide", label: "Guide", icon: "guide" }],
-  },
 ];
+// The Guide moved from a one-item "Help" group to the avatar menu ("Guide & help", 2026-10-25).
 
 /** Keys pages pass that are not items of their own, and the item they sit under. */
 const ALIASES = {
@@ -314,6 +310,7 @@ function avatarMenu(who, perm, csrf) {
     <a href="/account" role="menuitem">${icon("user")}Account &amp; sign-in</a>
     <a href="/devices" role="menuitem">${icon("devices")}Signed-in devices</a>
     ${settings ? `<a href="/mint-ai/settings/appearance" role="menuitem">${icon("eye")}MINT AI appearance</a>` : ""}
+    <a href="/guide" role="menuitem">${icon("guide")}Guide &amp; help</a>
     <div class="lbl">Theme</div>
     ${themeSwitch()}
     <hr>
@@ -353,7 +350,7 @@ function shell(title, body, opts = {}) {
     const kind = opts.brand === "ai" ? "ai" : "os";
     const head = `<div class="auth-lockup">${brand.lockup(kind, { sub: true })}</div>`;
     const inner = /^\s*<div class="card">/.test(body) ? body.replace(/<div class="card">/, `<div class="card auth-card">${head}`) : head + body;
-    return page(title, `<main class="auth-wrap">${brand.watermark(kind)}${inner}</main>`, opts);
+    return page(title, `<main class="auth-wrap">${inner}</main>`, opts);
   }
 
   const perm = who.perm || opts.perm || null;
@@ -517,7 +514,13 @@ const ICON_SETS = {
   bot: { f16: "brand/bot/favicon-16.svg", f32: "brand/bot/favicon-32.svg", any: "brand/bot/favicon.svg", ico: "brand/bot/favicon.ico", a180: "brand/bot/app-icon-180.png", a192: "brand/bot/app-icon-192.png", a512: "brand/bot/app-icon-512.png", mask: "brand/bot/app-icon-maskable-512.png" },
 };
 function appIconSet() { return process.env.MINT_APP_ICON === "bot" ? "bot" : "mesh"; }
-function appIcons() { return ICON_SETS[appIconSet()]; }
+/*
+ * The browser-tab icon is the M monogram whatever the app icon is (2026-10-25,
+ * tools/make-monogram.cjs): black on white, white on black in dark mode. The
+ * apple-touch and manifest icons keep the app set above (the bot head live).
+ */
+const FAVICON = { f16: "brand/m/favicon-16.svg", f32: "brand/m/favicon-32.svg", any: "brand/m/favicon.svg", ico: "brand/m/favicon.ico" };
+function appIcons() { return Object.assign({}, ICON_SETS[appIconSet()], FAVICON); }
 function iconLinks() {
   const I = appIcons();
   return [
@@ -552,7 +555,7 @@ function manifest() {
       { src: asset(appIcons().a192), sizes: "192x192", type: "image/png", purpose: "any" },
       { src: asset(appIcons().a512), sizes: "512x512", type: "image/png", purpose: "any" },
       { src: asset(appIcons().mask), sizes: "512x512", type: "image/png", purpose: "maskable" },
-      { src: asset(appIcons().any), sizes: "any", type: "image/svg+xml", purpose: "any" },
+      { src: asset(ICON_SETS[appIconSet()].any), sizes: "any", type: "image/svg+xml", purpose: "any" },
     ],
   };
 }
@@ -646,20 +649,38 @@ function steps(current, items) {
   </ol>`;
 }
 
-function statusPill(state) {
-  const good = state === "active";
-  return `<span class="pill ${good ? "ok" : "bad"}">${esc(state)}</span>`;
+/*
+ * A state as a word and a shape, never colour alone (DESIGN.md): a filled dot
+ * for ok, a triangle for failed, a half dot for in between, a hollow ring for
+ * off. `tone` is ok | bad | warn | off | info; the word is what it says.
+ */
+const SHAPES = {
+  ok: '<circle cx="8" cy="8" r="5"/>',
+  bad: '<path d="M8 2.5 14 13H2Z"/>',
+  warn: '<path d="M8 3a5 5 0 0 1 0 10Z"/><circle cx="8" cy="8" r="4.25" fill="none" stroke-width="1.5"/>',
+  info: '<rect x="3.5" y="3.5" width="9" height="9" rx="1.5"/>',
+  off: '<circle cx="8" cy="8" r="4.25" fill="none" stroke-width="1.5"/>',
+};
+function state(tone, word, title) {
+  const t = SHAPES[tone] ? tone : "off";
+  return `<span class="state ${t}"${title ? ` title="${esc(title)}"` : ""}><svg viewBox="0 0 16 16" aria-hidden="true" focusable="false" fill="currentColor" stroke="currentColor">${SHAPES[t]}</svg>${esc(word)}</span>`;
 }
 
-function agentPill(state) {
-  const map = {
-    active: "ok",
-    activating: "warn",
-    deactivating: "warn",
-    failed: "bad",
-    inactive: "neutral",
-  };
-  return `<span class="pill ${map[state] || "neutral"}">${esc(state || "unknown")}</span>`;
+/** A service's state (systemd ActiveState) as a word and a shape. */
+function statusPill(st) {
+  return st === "active" ? state("ok", "Running", "systemd: active") : state("bad", st || "unknown", "systemd: " + (st || "unknown"));
+}
+
+const AGENT_STATES = {
+  active: ["ok", "Running"],
+  activating: ["warn", "Starting"],
+  deactivating: ["warn", "Stopping"],
+  failed: ["bad", "Failed"],
+  inactive: ["off", "Stopped"],
+};
+function agentPill(st) {
+  const [tone, word] = AGENT_STATES[st] || ["off", st || "Unknown"];
+  return state(tone, word, "systemd: " + (st || "unknown"));
 }
 
 function meter(name, label, used, total) {
@@ -672,9 +693,10 @@ function meter(name, label, used, total) {
   </div>`;
 }
 
+/** A figure and its label, plain (2026-10-25: no icon disc). `iconName` is kept for the callers and ignored. */
+// eslint-disable-next-line no-unused-vars
 function stat(value, label, iconName) {
   return `<div class="statbox">
-    ${iconName ? `<span class="statbox-ico">${icon(iconName, 20)}</span>` : ""}
     <span class="statbox-value">${esc(String(value))}</span>
     <span class="statbox-label">${esc(label)}</span>
   </div>`;
@@ -755,6 +777,7 @@ module.exports = {
   appIcons,
   appIconSet,
   ICON_SETS,
+  FAVICON,
   manifest,
   MANIFEST_VERSION,
   pageMapFor,
@@ -769,6 +792,7 @@ module.exports = {
   shell,
   page,
   statusPill,
+  state,
   agentPill,
   meter,
   stat,
