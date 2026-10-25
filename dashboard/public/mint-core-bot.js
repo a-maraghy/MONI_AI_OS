@@ -1534,7 +1534,7 @@
     function draw() {
       if (!canvas.width || !canvas.height) return;
       if (!nHeads) prepare(0);
-      if (gl) { drawGL(); if (S.headCheck < 2) checkHead(); } else if (ctx) draw2d();
+      if (gl) { drawGL(); if (S.headCheck < 2) { checkFrames++; checkHead(); } } else if (ctx) draw2d();
       if (onFrame) onFrame(S, W);
     }
     /*
@@ -1542,12 +1542,14 @@
      * in the dock, only the glow in the Command Center; the same page draws the head on others). Once the core's
      * head is fully there, read back a patch over it, right after drawing it: the wireframe makes sharp edges, the
      * glow alone none. No edges twice, a second apart -> this GPU does not draw the head; the 2D renderer does.
-     * S.headCheck: 0 not checked yet, 1 failed once, 2 done.
+     * S.headCheck: 0 not checked yet, 1 failed once, 2 done. Checked again whenever the core starts drawing again
+     * (back to the Command Center, the tab shown again) and after the GPU gives a lost context back (rearmHeadCheck).
      */
-    var headCheckAt = 0;
+    var headCheckAt = 0, checkFrames = 0;
+    function rearmHeadCheck() { S.headCheck = 0; headCheckAt = 0; checkFrames = 0; }
     function checkHead() {
       var c0 = POOL[0];
-      if (!c0 || S.ctxLost || c0.alpha < 0.95 || c0.form < 1 || c0.dis > 0 || c0.wa < 0.3 || S.frames.length < 20) return;
+      if (!c0 || S.ctxLost || c0.alpha < 0.95 || c0.form < 1 || c0.dis > 0 || c0.wa < 0.3 || checkFrames < 20) return;
       var t = performance.now();
       if (t < headCheckAt) return;
       var dpr = S.dpr, hr = Math.max(6, Math.round(0.45 * c0.r * dpr)), cx = Math.round(c0.cx * dpr), cy = Math.round((S.cssH - c0.cy) * dpr);
@@ -1591,6 +1593,7 @@
       if (S.still) { stillFrame(); return; }
       if (S.running || document.hidden) return;
       S.running = true; last = 0; raf = requestAnimationFrame(frame);
+      if (gl) rearmHeadCheck();
     }
     function stop(keep) { S.running = false; if (!keep) S.wanted = false; if (raf) cancelAnimationFrame(raf); raf = 0; }
     /** One still frame of the current state (reduced motion, hold still): the face fully there, eyes open, no sway. */
@@ -1666,8 +1669,20 @@
       clearTimeout(lostTimer); S.ctxLost = false;
       geos = {}; fvGrid = null; fbo = null; fboTex = null; fboW = 0; fboH = 0; // the old objects died with the context
       if (initGL()) S.gl = true; else { gl = null; ctx = canvas.getContext("2d"); S.gl = false; }
+      rearmHeadCheck(); // the head must be seen again on the new context
       if (S.wanted) start(); else redrawIfIdle();
     }
+    /*
+     * A page that goes away (a Settings page in the Command Center's frame, opened and left again and again) hands its
+     * GPU contexts back at once: the browser keeps only about 16 and takes the oldest -- the Command Center's own -- when
+     * more are open (user screenshot 2026-10-25: after several Settings visits only the glow was left).
+     */
+    function onPageHide(e) {
+      if (destroyed || (e && e.persisted)) return;
+      destroyed = true; clearTimeout(lostTimer); stop(false);
+      try { var lc = gl && gl.getExtension("WEBGL_lose_context"); if (lc) lc.loseContext(); } catch (x) { /* gone already */ }
+    }
+    window.addEventListener("pagehide", onPageHide);
     if (gl) { canvas.addEventListener("webglcontextlost", onCtxLost, false); canvas.addEventListener("webglcontextrestored", onCtxRestored, false); }
     mixPal(); coreAnim.color(pal); coreAnim.pcol = coreAnim.rgb.slice();
 
@@ -1752,7 +1767,7 @@
       setConcept: function () {},
       /** Stop and give the GPU context back (cc-map.js calls it before swapping to another core). */
       destroy: function () {
-        destroyed = true; clearTimeout(lostTimer);
+        destroyed = true; clearTimeout(lostTimer); window.removeEventListener("pagehide", onPageHide);
         canvas.removeEventListener("webglcontextlost", onCtxLost); canvas.removeEventListener("webglcontextrestored", onCtxRestored);
         stop(false);
         var li = LIVE.indexOf(onPageFace); if (li >= 0) LIVE.splice(li, 1);

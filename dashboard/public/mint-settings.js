@@ -90,6 +90,9 @@
     previews.forEach(function (p) { io.observe(p.cv); });
   } else previews.forEach(function (p) { visible(p, true); });
   window.addEventListener("resize", function () { previews.forEach(function (p) { p.fit(); }); });
+  // leaving the page (it opens in the Command Center's frame) gives the previews' GPU contexts back at once: the
+  // browser keeps only about 16 and would take the Command Center's own when Settings is opened again and again
+  window.addEventListener("pagehide", function (e) { if (e.persisted) return; previews.forEach(function (p) { try { p.core.destroy(); } catch (x) { /* gone already */ } }); previews.length = 0; });
   paintBot();
   function repaint() { previews.forEach(function (p) { p.core.setLight(isLight()); }); paintBot(); }
 
