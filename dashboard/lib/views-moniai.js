@@ -79,6 +79,7 @@ const SPRITE = {
 
 /* Icons the simple Command Center added: the dock, the menus, the chevrons. */
 Object.assign(SPRITE, {
+  settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1 2 2 0 1 1-4 0 1.6 1.6 0 0 0-2.7-1.1l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.6 1.6 0 0 0 3.6 15a2 2 0 1 1 0-4 1.6 1.6 0 0 0 1.1-2.7l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.6 1.6 0 0 0 10.2 4.4a2 2 0 1 1 4 0 1.6 1.6 0 0 0 2.7 1.1l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0 1.1 2.7 2 2 0 1 1 0 4Z"/>',
   inbox: '<path d="M3 13h5l1.5 3h5L16 13h5"/><path d="M5 5h14l2 8v6H3v-6Z"/>',
   repeat: '<path d="M17 2l3 3-3 3"/><path d="M4 11V9a4 4 0 0 1 4-4h12"/><path d="M7 22l-3-3 3-3"/><path d="M20 13v2a4 4 0 0 1-4 4H4"/>',
   grid: '<rect x="4" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.5"/>',
@@ -143,7 +144,9 @@ function dock() {
     `<button type="button" id="cc-kbtn" aria-label="Search or run (Ctrl+K)" aria-keyshortcuts="Control+K">${ic("search")}<span class="tip">Search or run · Ctrl K</span></button>` +
     // The whole Mint OS sidebar, as a drawer over the Command Center (app.js).
     `<span class="sep" aria-hidden="true"></span>` +
-    `<button type="button" class="cc-os-btn" id="cc-os-btn" data-os-toggle aria-controls="sidebar" aria-label="Mint OS menu" aria-expanded="false"><svg class="cc-i" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h11"/></svg><span class="tip">Mint OS · every page</span></button>`
+    `<button type="button" class="cc-os-btn" id="cc-os-btn" data-os-toggle aria-controls="sidebar" aria-label="Mint OS menu" aria-expanded="false"><svg class="cc-i" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h11"/></svg><span class="tip">Mint OS · every page</span></button>` +
+    // Settings were only reachable through the menu drawer, which users did not find (2026-10-25).
+    `<a class="cc-set-btn" href="/mint-ai/settings" aria-label="MINT AI settings">${ic("settings")}<span class="tip">Settings</span></a>`
   );
 }
 

@@ -426,6 +426,11 @@ html.cc-page:not(.cc-desk) .cc-rail:hover, html.cc-page:not(.cc-desk) .cc-rail:f
 .cc-rail button:hover { background: var(--panel-2); color: var(--ink); }
 .cc-rail button[aria-expanded="true"] { background: var(--accent-soft); color: var(--accent); }
 .cc-rail .sep { background: var(--line); opacity: 1; margin: 4px 6px; }
+/* the Settings link sits in the rail like its buttons */
+.cc-rail a.cc-set-btn { position: relative; width: 44px; height: 44px; border-radius: var(--radius); display: grid; place-items: center; color: var(--muted); text-decoration: none; }
+.cc-rail a.cc-set-btn .cc-i { width: 20px; height: 20px; stroke-width: 1.8; }
+.cc-rail a.cc-set-btn:hover { background: var(--panel-2); color: var(--ink); }
+.cc-rail a.cc-set-btn:hover .tip, .cc-rail a.cc-set-btn:focus-visible .tip { opacity: 1; }
 .cc-rail .tip { left: 54px; padding: 6px 10px; border-radius: var(--radius); font: 600 var(--fs-sm)/1.2 var(--ui); background: var(--ink); color: var(--bg); border: 0; box-shadow: var(--shadow-md); }
 .cc-badge-n { min-width: 18px; height: 18px; font: 700 12px/18px var(--ui); top: 2px; right: 2px; background: var(--accent); color: var(--on-accent); }
 .cc-badge-n.warn { background: var(--warn); color: var(--on-brand); }
