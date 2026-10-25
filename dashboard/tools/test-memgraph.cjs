@@ -256,7 +256,9 @@ const base = {
   facts: { rows: [], total: 0, page: 1, per_page: 25 }, files: [], hooks: [], services: null, search: null, errors: {},
 };
 const pg = claudeViews.memory(Object.assign({ user: { name: "a", perm: admin } }, base));
-check("the memory page opens on the graph", /class="mg"[^>]*data-view-panel="graph"(?![^>]*hidden)/.test(pg) && /data-view-panel="list" hidden/.test(pg) && /data-view-panel="overview" hidden/.test(pg));
+check("the memory page opens on Browse; the graph is the optional view", /data-view-panel="browse"(?! hidden)/.test(pg) && /class="mg"[^>]*data-view-panel="graph" hidden/.test(pg) && /data-view-panel="list" hidden/.test(pg) && /data-view-panel="overview" hidden/.test(pg));
+const pgGraph = claudeViews.memory(Object.assign({ user: { name: "a", perm: admin }, view: "graph" }, base));
+check("?view=graph opens on the graph", /class="mg"[^>]*data-view-panel="graph"(?![^>]*hidden)/.test(pgGraph) && /data-view-panel="browse" hidden/.test(pgGraph));
 check("its project chips come from the database, escaped", pg.includes('data-group-chip="moni"') && pg.includes("o&lt;b&gt;"));
 check("the list view keeps the facts form and the search form", pg.includes('action="/claude/memory" class="searchbar"') && pg.includes('class="cc-filters"'));
 check("the overview keeps stats, files, hooks and services", pg.includes("current facts") && pg.includes("Auto-memory files") && pg.includes("Hook activity") && pg.includes("Memory services"));
@@ -271,7 +273,9 @@ const agent = { slug: "scout", name: "Scout <x>", state: { active: "active" }, m
 const ap = agentViews.memory({ csrf: "t", user: { name: "a", perm: viewer }, agent, agents: [agent, { slug: "other", name: "Other" }], notes: [], query: "", hits: null });
 check("the agent memory page is a graph of every agent the reader may see", ap.includes('data-src="/api/agents/memory/graph?agent=all"') && ap.includes('data-group-chip="other"') && ap.includes('data-group="scout"'));
 check("names are escaped in the chips", ap.includes("Scout &lt;x&gt;") && !ap.includes("Scout <x>"));
-check("the notes list is kept as the other view", ap.includes('data-view-panel="list" hidden') && ap.includes("Search the vault"));
+check("the organised notes are the default view, the graph the other", /data-view-panel="notes"(?! hidden)/.test(ap) && /data-view-panel="graph" hidden/.test(ap) && ap.includes("Search this agent"));
+const apGraph = agentViews.memory({ csrf: "t", user: { name: "a", perm: viewer }, agent, agents: [agent], notes: [], query: "", hits: null, view: "graph" });
+check("?view=graph opens the agent's graph", /data-view-panel="notes" hidden/.test(apGraph) && /class="mg"[^>]*data-view-panel="graph"(?![^>]*hidden)/.test(apGraph));
 const scoped = rbac.actor({ permissions: ["agents.view", "agents.memory.read"], agent_scope: "scout", channel_scope: "*" });
 const ap2 = agentViews.memory({ csrf: "t", user: { name: "a", perm: scoped }, agent, agents: [agent], notes: [], query: "", hits: null });
 check("a scoped reader's chips name only agents in scope", !ap2.includes('data-group-chip="other"'));
@@ -279,7 +283,7 @@ check("a scoped reader's chips name only agents in scope", !ap2.includes('data-g
 /* ------------------------------------------------------------ the rules --- */
 
 console.log("stylesheets");
-for (const f of ["os.css", "memgraph.css"]) {
+for (const f of ["os.css", "memgraph.css", "memory.css"]) {
   const css = fs.readFileSync(path.join(ROOT, "public", f), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
   const lits = (css.match(/#[0-9a-fA-F]{3,8}\b/g) || []);
   check(f + " uses tokens, not literal colours", lits.length === 0, lits.join(" "));

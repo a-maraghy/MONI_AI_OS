@@ -1221,12 +1221,21 @@
         u.searchParams.set("view", v);
         history.replaceState(null, "", u.pathname + u.search + u.hash);
       } catch (e) { /* the view still switched */ }
+      mountVisible();
       graphs.forEach(function (g) { g.resize(); g.dirty = true; g.wake(); });
     });
   }
 
+  // A graph starts (and fetches its data) only once its panel is shown: the organised
+  // list is the default view now, and most visits never open the graph.
+  function mountVisible() {
+    Array.prototype.forEach.call(document.querySelectorAll("[data-memgraph]"), function (root) {
+      if (!root.closest("[hidden]") && !root.hasAttribute("hidden")) mount(root);
+    });
+  }
+
   function boot() {
-    Array.prototype.forEach.call(document.querySelectorAll("[data-memgraph]"), mount);
+    mountVisible();
     views();
   }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);

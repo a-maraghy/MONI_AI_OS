@@ -159,6 +159,9 @@ module.exports = {
     callHelper("agent-write-file", [slug, relpath], { stdin: content }),
   agentVaultList: (slug, subdir) =>
     callHelper("agent-vault-list", subdir ? [slug, subdir] : [slug]),
+  // The organised view of a vault: every note (title, type, links, tags, frontmatter
+  // properties) and the other files by name and size -- never their content.
+  agentVaultIndex: (slug) => callHelper("agent-vault-index", [slug], { timeout: 30000 }).then(redactDeep),
 
   /* -------------------------------------------------------------- memory -- */
   agentMemoryIndex: (slug, force = false) =>
@@ -321,6 +324,7 @@ module.exports = {
   ccIngestAll: (actor) => cc("cc-ingest-all", [], { stdin: JSON.stringify({ actor }), timeout: 30000 }),
   ccFactsList: (filters) =>
     cc("cc-facts-list", [], { stdin: JSON.stringify(filters || {}), timeout: 30000 }),
+  ccMemoryOutline: () => cc("cc-memory-outline", [], { timeout: 30000 }),
   ccFactGet: (id) => cc("cc-fact-get", [String(id)], { timeout: 30000 }),
   ccFactAdd: (fact) => cc("cc-fact-add", [], { stdin: JSON.stringify(fact), timeout: 60000 }),
   ccFactEdit: (fact) => cc("cc-fact-edit", [], { stdin: JSON.stringify(fact), timeout: 60000 }),

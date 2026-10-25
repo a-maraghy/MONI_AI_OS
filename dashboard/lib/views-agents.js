@@ -18,7 +18,6 @@ const {
 } = require("./ui");
 const { byScope } = require("./catalog");
 const { renderAddons } = require("./views-addons");
-const { graphPanel, viewSwitch } = require("./views-memgraph");
 const avatar = require("./agent-avatar");
 
 const MODELS = [
@@ -630,162 +629,10 @@ exports.instructions = ({ csrf, user, agent, content, flash, err }) =>
 
 /* --------------------------------------------------------------- memory --- */
 
-exports.memory = ({ csrf, user, agent, agents, notes, query, hits, view, flash, err }) => {
-  const mem = agent.memory || {};
-  const v = ["graph", "list"].includes(view) ? view : query ? "list" : "graph";
-  const peers = (agents && agents.length ? agents : [agent]).filter((a) => can(user, "agents.memory.read", a.slug));
-  const base = "/agents/" + agent.slug + "/memory";
-  return shell(
-    "Memory — " + (agent.name || agent.slug),
-    `${tabs(agent.slug, "memory")}
-    ${flashes({ msg: flash, err })}
-    <div class="mg-page">
-    ${graphPanel({
-      kind: "agents",
-      src: "/api/agents/memory/graph?agent=all",
-      search: "/api/agents/memory/search",
-      incremental: false,
-      poll: 20000,
-      groups: [{ key: "", label: "All agents" }].concat(
-        peers.map((a) => ({
-          key: a.slug,
-          label: a.name || a.slug,
-          dot: a.state && a.state.active === "active" ? "ok" : a.state && a.state.active === "failed" ? "bad" : "off",
-        }))
-      ),
-      group: agent.slug,
-      listHref: base,
-      placeholder: "Search… (Enter = by meaning)",
-      hidden: v !== "graph",
-    })}
-    <div data-view-panel="list"${v === "list" ? "" : " hidden"}>
-    ${card(
-      "Search the vault",
-      `<p class="muted small">The same index the agent queries. Vector similarity finds
-        paraphrase, keyword matching finds exact tokens, and the two rankings are merged.
-        Everything is embedded locally — no text leaves this machine.</p>
-      <form method="get" action="/agents/${esc(agent.slug)}/memory" class="searchbar">
-        <input type="hidden" name="view" value="list">
-        <input name="q" value="${esc(query || "")}" placeholder="what did we decide about deployments?">
-        <button class="btn primary" type="submit">${icon("search")} Search</button>
-      </form>
-      ${
-        query
-          ? hits && hits.length
-            ? `<div class="hits">${hits
-                .map(
-                  (h) => `<div class="hit">
-                    <div class="hit-head">
-                      <a class="mono small" href="/agents/${esc(agent.slug)}/memory/note?path=${encodeURIComponent(
-                    h.path
-                  )}">${esc(h.path)}</a>
-                      ${h.heading ? `<span class="muted small">› ${esc(h.heading)}</span>` : ""}
-                      <span class="muted small right">${esc(h.score.toFixed(4))}</span>
-                    </div>
-                    <pre class="snippet">${esc(h.text)}</pre>
-                  </div>`
-                )
-                .join("")}</div>`
-            : `<p class="muted">Nothing matched. If the vault has notes but search finds
-               none, the index may be empty — try Reindex.</p>`
-          : ""
-      }`,
-      { icon: "search" }
-    )}
-
-    ${card(
-      "Notes",
-      notes.length
-        ? `<table class="rows">
-            <thead><tr><th>Path</th><th>Size</th><th>Modified</th></tr></thead>
-            <tbody>${notes
-              .map(
-                (n) => `<tr>
-                <td><a class="mono small" href="/agents/${esc(agent.slug)}/memory/note?path=${encodeURIComponent(
-                  n.path
-                )}">${esc(n.path)}</a></td>
-                <td class="mono small">${bytes(n.bytes)}</td>
-                <td class="mono small">${esc(stamp(n.modified))}</td>
-              </tr>`
-              )
-              .join("")}</tbody></table>`
-        : `<p class="muted">The vault is empty.</p>`,
-      {
-        icon: "memory",
-        actions: `<span class="muted small">${notes.length} files · ${mem.chunks || 0} indexed chunks</span>
-        ${
-          can(user, "agents.memory.write", agent.slug)
-            ? `<form method="post" action="/agents/${esc(agent.slug)}/memory/reindex" class="inline">
-                <input type="hidden" name="_csrf" value="${esc(csrf)}">
-                <button class="btn small" type="submit">${icon("reindex")} Reindex</button>
-              </form>`
-            : ""
-        }`,
-      }
-    )}
-
-    ${card(
-      "Open in Obsidian",
-      `<p class="muted small">The vault is a plain folder of Markdown, already registered
-        in Obsidian on this server's desktop. Reach it over an SSH tunnel to RDP — see the
-        <a href="/guide#obsidian">Guide</a>.</p>
-      <pre>${esc((agent.dir || "") + "/vault")}</pre>`,
-      { icon: "guide" }
-    )}
-    </div>
-    </div>`,
-    {
-      user,
-      csrf,
-      active: "agents",
-      pattern: "a",
-      assets: ["memgraph.css", "memgraph.js"],
-      crumbs: agentCrumbs(agent, "Memory"),
-      heading: agent.name || agent.slug,
-      headingHtml: agentHead(agent),
-      subtitle: "What this agent remembers — and how it connects.",
-      actions: viewSwitch(v, [
-        ["graph", "Graph", "network", base + "?view=graph"],
-        ["list", "Notes", "logs", base + "?view=list"],
-      ]),
-    }
-  );
-};
-
-exports.note = ({ csrf, user, agent, path, content, flash, err }) =>
-  shell(
-    path,
-    `${tabs(agent.slug, "memory")}
-    ${flashes({ msg: flash, err })}
-    ${card(
-      path,
-      `<p class="muted small">Edit freely — the agent reads these files and the index
-        catches up on its next search. Correcting a wrong memory here is the fastest way to
-        fix an agent that keeps repeating a mistake.</p>
-      <form method="post" action="/agents/${esc(agent.slug)}/memory/note">
-        <input type="hidden" name="_csrf" value="${esc(csrf)}">
-        <input type="hidden" name="path" value="${esc(path)}">
-        <textarea name="content" rows="26" class="code" spellcheck="false">${esc(content)}</textarea>
-        <button class="btn primary" type="submit">${icon("save")} Save note</button>
-      </form>`,
-      {
-        icon: "file",
-        actions: `<a class="btn small" href="/agents/${esc(agent.slug)}/memory">${icon(
-          "chevron"
-        )} Back to notes</a>`,
-      }
-    )}`,
-    {
-      user,
-      csrf,
-      active: "agents",
-      pattern: "c",
-      crumbs: agentCrumbs(agent, "Memory").slice(0, -1).concat([["Memory", "/agents/" + agent.slug + "/memory"], [path, null]]),
-      heading: agent.name || agent.slug,
-      headingHtml: agentHead(agent),
-      subtitle: `<span class="mono">${esc(path)}</span>`,
-    }
-  );
+/* The memory tab and one note live in lib/views-memory.js (the organised view, 2026-10-25). */
+const memoryChrome = () => ({ shell, tabs, agentCrumbs, agentHead });
+exports.memory = (d) => require("./views-memory").agentMemory(d, memoryChrome());
+exports.note = (d) => require("./views-memory").agentNote(d, memoryChrome());
 
 /* ----------------------------------------------------------------- logs --- */
 

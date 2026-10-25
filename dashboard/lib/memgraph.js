@@ -207,7 +207,7 @@ function buildAgents(vaults) {
     }
     for (const { id, n } of notes.filter((x) => x.slug === slug)) {
       for (const target of n.links || []) {
-        const key = String(target).split("/").pop().replace(/\.md$/i, "").toLowerCase();
+        const key = String(target).replace(/\\+$/, "").split("/").pop().replace(/\.md$/i, "").toLowerCase();
         let to = byName.get(key);
         if (!to) {
           // An unresolved [[link]] is a subject nobody has written up yet:

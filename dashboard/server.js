@@ -1679,12 +1679,19 @@ app.get("/agents/:slug/memory", requireAuth, requirePerm("agents.memory.read"), 
   if (!agent) return;
   const query = String(req.query.q || "").slice(0, 500).trim();
   let notes = [];
+  let index = null;
   let hits = null;
   let err = req.query.err || null;
+  // The organised view reads the whole vault index (notes with their links, files by name);
+  // the flat list is the fallback, so the page still lists notes if the index read fails.
   try {
-    notes = await priv.agentVaultList(agent.slug);
+    index = await priv.agentVaultIndex(agent.slug);
   } catch (e) {
-    err = e.message;
+    try {
+      notes = await priv.agentVaultList(agent.slug);
+    } catch (e2) {
+      err = e2.message;
+    }
   }
   if (query) {
     try {
@@ -1708,6 +1715,7 @@ app.get("/agents/:slug/memory", requireAuth, requirePerm("agents.memory.read"), 
       agents: peers,
       view: String(req.query.view || ""),
       notes,
+      index,
       query,
       hits,
       flash: req.query.msg || null,
@@ -1737,12 +1745,21 @@ app.get("/agents/:slug/memory/note", requireAuth, requirePerm("agents.memory.rea
   const path = String(req.query.path || "");
   try {
     const file = await priv.agentReadFile(agent.slug, path);
+    // The vault index gives the note's links in and out; without it the note still reads.
+    let index = null;
+    try {
+      index = await priv.agentVaultIndex(agent.slug);
+    } catch (_) {
+      index = null;
+    }
     res.send(
       agentViews.note({
         csrf: res.locals.csrf,
         user: ctx(req),
         agent,
         path,
+        index,
+        mode: String(req.query.mode || ""),
         content: file.content,
         flash: req.query.msg || null,
         err: req.query.err || null,
@@ -5318,12 +5335,20 @@ app.get("/claude/memory", requireAuth, requirePerm("claude.memory.read"), async 
     topic: String(req.query.topic || "").slice(0, 121).trim(),
     project: String(req.query.project || "").slice(0, 61).trim(),
     superseded: req.query.sup === "1",
+    kind: /^[a-z_]{1,20}$/.test(String(req.query.kind || "")) ? String(req.query.kind) : "",
     q: String(req.query.fq || "").slice(0, 200).trim(),
     page: qint(req.query.page, 1),
     per_page: 25,
   };
   const data = await gather({
     stats: () => priv.ccMemoryStats(),
+    outline: () => priv.ccMemoryOutline(),
+    recent: () => priv.ccFactsList({ page: 1, per_page: 10 }),
+    // Browse lists the Telegram agents' memories too, for whoever may read them.
+    memAgents: () =>
+      req.perm.can("agents.memory.read")
+        ? priv.agentList().then((list) => scopeAgents(req, list).filter((a) => req.perm.canAgent("agents.memory.read", a.slug)))
+        : Promise.resolve([]),
     facts: () => priv.ccFactsList(filters),
     files: () => priv.ccMemfilesList(),
     hooks: () => priv.ccHooksTail(50),
@@ -5337,12 +5362,12 @@ app.get("/claude/memory", requireAuth, requirePerm("claude.memory.read"), async 
     sort: String(req.query.sort || ""),
     dir: String(req.query.dir || ""),
   };
-  const filtered = query || filters.topic || filters.project || filters.q || filters.superseded || filters.page > 1;
+  const filtered = query || filters.topic || filters.project || filters.kind || filters.q || filters.superseded || filters.page > 1;
   res.send(
     claudeViews.memory({
       csrf: res.locals.csrf,
       user: ctx(req),
-      view: claudeViews.MEMORY_VIEWS.some((v) => v[0] === asked) ? asked : filtered ? "list" : "graph",
+      view: claudeViews.MEMORY_VIEWS.some((v) => v[0] === asked) ? asked : filtered ? "list" : "browse",
       mmQuery,
       mmErr: data.errors && data.errors.mm,
       query,

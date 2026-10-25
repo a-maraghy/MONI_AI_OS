@@ -113,6 +113,7 @@ async def memory_write(
     content: str,
     tags: Optional[List[str]] = None,
     links: Optional[List[str]] = None,
+    kind: str = "fact",
 ) -> str:
     """Record one durable fact as its own note, and index it in MEMORY.md.
 
@@ -126,12 +127,16 @@ async def memory_write(
         content: The fact itself, in Markdown. Include why, not just what.
         tags: Optional tags for Obsidian.
         links: Optional titles of related notes; rendered as [[wikilinks]].
+        kind: What the note is about, which decides its folder: "person",
+            "project", "decision", "preference", "lesson" (a gotcha and its fix)
+            or "fact" (the default) -> memory/people/, memory/projects/,
+            memory/decisions/, memory/preferences/, memory/lessons/, memory/facts/.
 
     Returns:
         JSON with the created path.
     """
     vault, store = _components()
-    result = await asyncio.to_thread(vault.write_note, title, content, tags, links)
+    result = await asyncio.to_thread(vault.write_note, title, content, tags, links, False, kind)
     _dirty()
     return json.dumps(result, ensure_ascii=False)
 
@@ -141,10 +146,11 @@ async def memory_read(path: str) -> str:
     """Read one note from the vault verbatim.
 
     Args:
-        path: Vault-relative path, e.g. 'memory/billing-policy.md'.
+        path: Vault-relative path, e.g. 'memory/decisions/billing-policy.md'.
+            A note moved to another kind folder is still found by its name.
     """
     vault, _ = _components()
-    target = vault.resolve(path)
+    target = vault.find_note(path)
     if not target.is_file():
         return "Error: no such note: " + path
     return target.read_text(encoding="utf-8", errors="replace")

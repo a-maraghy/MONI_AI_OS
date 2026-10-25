@@ -10,7 +10,11 @@ Layout (created from deploy/vault-template):
     CLAUDE.md      identity and standing instructions
     MEMORY.md      the index, injected into the system prompt every request
     WORKLOG.md     dated narrative of work done
-    memory/        one durable fact per file, linked with [[wikilinks]]
+    memory/        one durable fact per file, linked with [[wikilinks]], filed by kind:
+                   people/ projects/ decisions/ preferences/ lessons/ facts/
+    outbox/ drawings/ chatgpt/ attachments/inbox/ mail/ topics/
+                   written by the runtime's tools; superseded versions go to
+                   an archive/ folder inside each, never away
 """
 
 from __future__ import annotations
@@ -37,6 +41,30 @@ INDEX_MARKER = "## Memory index"
 # reading -- and MEMORY.md is the worst offender, because its one-line pointers
 # are short, topical, and outrank the notes they point at.
 ALWAYS_IN_PROMPT = {"CLAUDE.md", "MEMORY.md"}
+# Folder guides (memory/README.md, outbox/README.md ...) say what a folder is for;
+# they are not memories and would only crowd search results.
+FOLDER_GUIDES = {"README.md"}
+
+
+# memory_write(kind=...) -> the folder under memory/ it files the note in, and the
+# heading of MEMORY.md's index it is listed under. Anything unknown is a fact.
+KINDS = {
+    "person": ("people", "People"), "people": ("people", "People"),
+    "project": ("projects", "Projects"), "projects": ("projects", "Projects"),
+    "decision": ("decisions", "Decisions"), "decisions": ("decisions", "Decisions"),
+    "preference": ("preferences", "Preferences"), "preferences": ("preferences", "Preferences"),
+    "lesson": ("lessons", "Lessons learned"), "lessons": ("lessons", "Lessons learned"),
+    "trap": ("lessons", "Lessons learned"), "gotcha": ("lessons", "Lessons learned"),
+    "fact": ("facts", "Facts"), "facts": ("facts", "Facts"),
+}
+KIND_TYPE = {"people": "person", "projects": "project", "decisions": "decision",
+             "preferences": "preference", "lessons": "lesson", "facts": "fact"}
+
+
+def kind_folder(kind: Optional[str]):
+    """(folder, index heading, type) for a kind; unknown or empty -> facts."""
+    folder, heading = KINDS.get(str(kind or "fact").strip().lower(), KINDS["fact"])
+    return folder, heading, KIND_TYPE[folder]
 
 
 def slugify(title: str) -> str:
@@ -62,6 +90,8 @@ class Vault:
                 continue
             if len(rel_parts) == 1 and rel_parts[0] in ALWAYS_IN_PROMPT:
                 continue
+            if rel_parts[-1] in FOLDER_GUIDES:
+                continue
             if path.is_file():
                 yield path
 
@@ -78,6 +108,24 @@ class Vault:
         if candidate != self.root and self.root not in candidate.parents:
             raise ValueError("path escapes the vault: " + relpath)
         return candidate
+
+    def find_note(self, relpath: str) -> Path:
+        """resolve(), and if a memory note is not where the path says, find it by name.
+
+        Notes are filed by kind (memory/people/, memory/decisions/, ...) and may be
+        moved between folders when the vault is tidied; an old path such as
+        'memory/x.md' still reaches memory/decisions/x.md when exactly one note has
+        that name.
+        """
+        target = self.resolve(relpath)
+        if target.exists() or target.suffix.lower() != ".md":
+            return target
+        rel = Path(relpath)
+        if not rel.parts or rel.parts[0] != "memory":
+            return target
+        found = [p for p in (self.root / "memory").rglob(rel.name)
+                 if p.is_file() and not any(part.startswith(".") for part in p.relative_to(self.root).parts)]
+        return found[0] if len(found) == 1 else target
 
     @staticmethod
     def sha(text: str) -> str:
@@ -185,20 +233,34 @@ class Vault:
         tags: Optional[List[str]] = None,
         links: Optional[List[str]] = None,
         overwrite: bool = False,
+        kind: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Create (or replace) one fact under memory/ and index it in MEMORY.md."""
-        memory_dir = self.root / "memory"
+        """Create (or replace) one fact under memory/<kind folder>/ and index it in MEMORY.md.
+
+        The file name must be unique across all of memory/ (wikilinks resolve by name),
+        so an existing note of that name in another folder counts as taken.
+        """
+        folder, heading, ntype = kind_folder(kind)
+        memory_root = self.root / "memory"
+        memory_dir = memory_root / folder
         memory_dir.mkdir(parents=True, exist_ok=True)
+
+        def taken(name: str):
+            return [p for p in memory_root.rglob(name + ".md") if p.is_file()]
+
         slug = slugify(title)
         path = memory_dir / (slug + ".md")
-        if path.exists() and not overwrite:
+        existing = taken(slug)
+        if existing and overwrite:
+            path = existing[0]
+        elif existing:
             suffix = 2
-            while (memory_dir / (slug + "-" + str(suffix) + ".md")).exists():
+            while taken(slug + "-" + str(suffix)):
                 suffix += 1
             slug = slug + "-" + str(suffix)
             path = memory_dir / (slug + ".md")
 
-        front = ["---", "name: " + slug, "title: " + title.replace("\n", " ")]
+        front = ["---", "name: " + slug, "title: " + title.replace("\n", " "), "type: " + ntype]
         if tags:
             front.append("tags: [" + ", ".join(sorted(set(tags))) + "]")
         front.append("created: " + _now())
@@ -211,11 +273,11 @@ class Vault:
         path.write_text("\n".join(front) + "\n\n# " + title.strip() + "\n\n" + body + "\n", encoding="utf-8")
 
         summary = self._first_sentence(content)
-        self.add_index_line(slug, summary)
-        return {"path": self.rel(path), "slug": slug, "created": True}
+        self.add_index_line(slug, summary, heading)
+        return {"path": self.rel(path), "slug": slug, "kind": ntype, "created": True}
 
     def update_note(self, relpath: str, content: str) -> Dict[str, Any]:
-        path = self.resolve(relpath)
+        path = self.find_note(relpath)
         if path.suffix.lower() != ".md":
             raise ValueError("only .md files can be written")
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -228,7 +290,7 @@ class Vault:
         Memory is expensive to recreate and an agent deleting its own past is
         exactly the mistake worth making reversible.
         """
-        path = self.resolve(relpath)
+        path = self.find_note(relpath)
         if not path.is_file():
             raise ValueError("no such note: " + relpath)
         trash = self.root / ".trash"
@@ -245,11 +307,14 @@ class Vault:
         line = match.group(1) if match else flat[:160]
         return line.strip()
 
-    def add_index_line(self, slug: str, summary: str) -> None:
+    def add_index_line(self, slug: str, summary: str, section: Optional[str] = None) -> None:
         """Append a pointer under MEMORY.md's index heading.
 
         MEMORY.md is what gets injected into the system prompt, so a note that
-        is not listed here is a note the agent will not know exists.
+        is not listed here is a note the agent will not know exists. When the
+        index is organised in "### <Kind>" subsections and one matches `section`,
+        the pointer goes at the top of that subsection; otherwise at the top of
+        the index, as before.
         """
         memory_md = self.root / "MEMORY.md"
         line = "- [[" + slug + "]] — " + summary
@@ -265,6 +330,13 @@ class Vault:
         except StopIteration:
             memory_md.write_text(text.rstrip() + "\n\n" + INDEX_MARKER + "\n\n" + line + "\n", encoding="utf-8")
             return
+        if section:
+            # Only inside the index: from its marker to the next "## " heading.
+            end = next((i for i in range(at + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
+            want = "### " + section.strip().lower()
+            sub = next((i for i in range(at + 1, end) if lines[i].strip().lower() == want), None)
+            if sub is not None:
+                at = sub
         insert = at + 1
         # Skip the italic explainer and any blank lines directly under the
         # heading, then land above the existing pointers.
@@ -276,7 +348,7 @@ class Vault:
         # Keep a blank line before whatever follows. Without it the first
         # pointer ends up flush against the section's --- rule, and MEMORY.md is
         # read by a human as often as by the agent.
-        if insert < len(lines) and lines[insert].strip():
+        if insert < len(lines) and lines[insert].strip() and not lines[insert].lstrip().startswith("- [["):
             block.append("")
         lines[insert:insert] = block
         memory_md.write_text("\n".join(lines) + "\n", encoding="utf-8")

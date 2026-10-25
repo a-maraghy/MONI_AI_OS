@@ -44,6 +44,8 @@ function pager(base, params, page, pages) {
   </div>`;
 }
 
+/** A kind as people say it ("Traps and fixes", not "trap"). */
+const kindLabel = (k) => require("./views-memory").KIND_ONE[k] || k;
 const pill = (cls, text) => `<span class="pill ${cls}">${esc(text)}</span>`;
 
 function unitPill(u) {
@@ -223,6 +225,12 @@ function factFilters(filters, stats) {
           .join("")}
       </select>
     </label>
+    <label>Kind
+      <select name="kind">
+        <option value="">Any</option>
+        ${KINDS.map((k) => `<option value="${esc(k)}"${k === filters.kind ? " selected" : ""}>${esc(kindLabel(k))}</option>`).join("")}
+      </select>
+    </label>
     <label>Contains
       <input name="fq" value="${esc(filters.q || "")}" maxlength="200">
     </label>
@@ -244,7 +252,7 @@ function factsTable(facts, emptyText) {
         <td class="mono small"><a href="/claude/memory/facts/${esc(f.id)}">${esc(f.id)}</a></td>
         <td class="mono small">${esc(f.topic || "—")}</td>
         <td class="small">${esc(snippet(f.content, 220))}</td>
-        <td class="small">${esc((f.meta && f.meta.kind) || "—")}</td>
+        <td class="small">${esc(kindLabel((f.meta && f.meta.kind) || "fact"))}</td>
         <td class="small">${esc((f.meta && f.meta.project) || "—")}</td>
         <td class="small nowrap">${when(f.ts)}</td>
         <td>${factStatus(f)}</td>
@@ -389,12 +397,13 @@ function servicesCard(csrf, user, svc, err) {
  */
 exports.memory = (d) => {
   const { csrf, user, query, searchProject, filters, stats, facts, files, hooks, services, search, errors } = d;
-  const view = MEMORY_VIEWS.some((v) => v[0] === d.view) ? d.view : "graph";
+  const view = MEMORY_VIEWS.some((v) => v[0] === d.view) ? d.view : "browse";
   const f = facts || { rows: [], total: 0, page: 1, per_page: 25 };
   const pages = Math.max(1, Math.ceil((f.total || 0) / (f.per_page || 25)));
   const filterParams = {
     topic: filters.topic,
     project: filters.project,
+    kind: filters.kind,
     fq: filters.q,
     sup: filters.superseded,
   };
@@ -404,7 +413,14 @@ exports.memory = (d) => {
   return page(
     "Claude Code memory",
     `    ${flashes({ msg: d.flash, err: d.err })}
-    <div class="mg-page">
+    <div class="mg-page mem-page">
+      ${require("./views-memory").claudeBrowse({
+        outline: d.outline,
+        recent: d.recent && d.recent.rows,
+        agents: d.memAgents,
+        errors: Object.assign({ facts: errors.recent }, errors),
+        hidden: view !== "browse",
+      })}
       ${graphPanel({
         kind: "claude",
         src: "/api/claude/memory/graph",
@@ -451,8 +467,8 @@ exports.memory = (d) => {
       csrf,
       active: "memory",
       pattern: "a",
-      assets: ["memgraph.css", "memgraph.js"],
-      subtitle: "What Claude Code remembers across sessions on this machine — and how it connects.",
+      assets: ["memgraph.css", "memgraph.js", "memory.css", "memory.js"],
+      subtitle: "What Claude Code remembers across sessions on this machine, sorted by kind and topic.",
       actions: viewSwitch(
         view,
         MEMORY_VIEWS.map(([key, label, ic]) => [key, label, ic, "/claude/memory?view=" + key])
@@ -467,15 +483,19 @@ exports.fact = ({ csrf, user, data, flash, err }) => {
   const writable = can(user, "claude.memory.write") && current;
   const meta = f.meta || {};
   const metaRows = Object.entries(meta)
+    .filter(([k]) => k !== "kind")
     .map(([k, v]) => `<tr><td>${esc(k)}</td><td class="mono small">${esc(typeof v === "object" ? JSON.stringify(v) : v)}</td></tr>`)
     .join("");
   return page(
     "Fact #" + f.id,
     `    ${flashes({ msg: flash, err })}
+    <div class="mem-note">
+    <div class="mem-fact-main">
     ${card(
       f.topic || "Fact",
-      `<pre class="snippet cc-fact">${esc(f.content)}</pre>
+      `<div class="md-body mem-fact">${require("./markdown").render(f.content, { shift: 2 }).html}</div>
       <table class="kv mt-12">
+        <tr><td>Kind</td><td>${esc(kindLabel(meta.kind || "fact"))}</td></tr>
         <tr><td>Status</td><td>${factStatus(f)}${
         data.newer
           ? ` replaced by <a href="/claude/memory/facts/${esc(data.newer.id)}">#${esc(data.newer.id)}</a>`
@@ -545,8 +565,11 @@ exports.fact = ({ csrf, user, data, flash, err }) => {
           )}
         </div>`
         : ""
-    }`,
-    { user, csrf, active: "memory", pattern: "c", crumbs: memCrumbs("Fact #" + f.id), subtitle: `<span class="mono">${esc(f.topic || "")}</span>` }
+    }
+    </div>
+    <aside class="mem-side" aria-label="Related facts">${require("./views-memory").factSide(data)}</aside>
+    </div>`,
+    { user, csrf, active: "memory", pattern: "c", assets: ["memory.css"], crumbs: memCrumbs("Fact #" + f.id), subtitle: `<span class="mono">${esc(f.topic || "")}</span>` }
   );
 };
 
@@ -597,8 +620,9 @@ exports.memfile = ({ csrf, user, file, flash, err }) => {
 
 /** Memory's views, for the page's switch and the page map (lib/page-registry.js). */
 const MEMORY_VIEWS = [
+  ["browse", "Browse", "memory"],
+  ["list", "Facts", "logs"],
   ["graph", "Graph", "network"],
-  ["list", "List", "logs"],
   ["sessions", "Sessions", "clock"],
   ["overview", "Overview", "activity"],
 ];
