@@ -20,7 +20,9 @@ mkdir -p /var/lib/mint-library /var/www/library
 chown -R mintlib:mintlib /var/lib/mint-library /var/www/library
 chmod 0755 /var/lib/mint-library /var/www/library
 [ -f /var/lib/mint-library/secret.key ] && chmod 0600 /var/lib/mint-library/secret.key
-[ -f /var/lib/mint-library/library.db ] && chmod 0600 /var/lib/mint-library/library.db
+for f in library.db library.db-wal library.db-shm; do
+  [ -f "/var/lib/mint-library/$f" ] && chmod 0600 "/var/lib/mint-library/$f"
+done
 
 install -m 0644 "$REPO/library/deploy/mint-library.service" /etc/systemd/system/mint-library.service
 changed=0

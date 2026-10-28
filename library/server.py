@@ -115,11 +115,13 @@ def db():
 
 def init_db():
     os.makedirs(os.path.dirname(L.DB_PATH), exist_ok=True)
-    new = not os.path.exists(L.DB_PATH)
-    c = db()
-    c.executescript(SCHEMA)
-    if new:
-        os.chmod(L.DB_PATH, 0o600)
+    # Created 0600 before SQLite opens it: its -wal and -shm files take the same mode.
+    if not os.path.exists(L.DB_PATH):
+        os.close(os.open(L.DB_PATH, os.O_WRONLY | os.O_CREAT, 0o600))
+    for suffix in ('', '-wal', '-shm'):
+        if os.path.exists(L.DB_PATH + suffix):
+            os.chmod(L.DB_PATH + suffix, 0o600)
+    db().executescript(SCHEMA)
 
 
 def audit(user_id, action, slug=None, detail=''):
