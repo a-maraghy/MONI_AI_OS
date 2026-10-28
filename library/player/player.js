@@ -33,7 +33,10 @@
     next: '<path d="M9.5 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2"/>',
     check: '<path d="M5 12.5l4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="2.2"/>',
     rew: '<path d="M12 5a7 7 0 1 1-7 7" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 1.5v7L8 5z"/>',
-    fwd: '<path d="M12 5a7 7 0 1 0 7 7" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 1.5v7l4-3.5z"/>'
+    fwd: '<path d="M12 5a7 7 0 1 0 7 7" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12 1.5v7l4-3.5z"/>',
+    theater: '<rect x="2.5" y="6.5" width="19" height="11" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.8"/>',
+    theaterOff: '<rect x="5" y="7.5" width="14" height="9" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.8"/>',
+    skipNext: '<path d="M6 6l9 6-9 6z"/><path d="M17 6h2v12h-2z"/>'
   };
   function svg(name) {
     return '<svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" focusable="false" fill="currentColor">' + ICON[name] + '</svg>';
@@ -156,6 +159,10 @@
     this.replay = el('button', 'mlp-chip mlp-chip-solid', svg('replay') + '<span>Replay</span>'); this.replay.type = 'button';
     this.endBox.appendChild(this.replay);
     this.endBox.hidden = true;
+    // Up next (the watch page hands it over with setNext); shown in the end panel.
+    this.nextBox = el('div', 'mlp-next');
+    this.nextBox.hidden = true;
+    this.endBox.appendChild(this.nextBox);
 
     // Controls
     this.ctrl = el('div', 'mlp-controls');
@@ -193,9 +200,12 @@
     this.bSet.setAttribute('aria-haspopup', 'menu'); this.bSet.setAttribute('aria-expanded', 'false');
     this.bPip = btn('mlp-pip', 'Picture in picture (i)', 'pip');
     this.bFs = btn('mlp-fs', 'Full screen (f)', 'fs');
+    this.bTheater = btn('mlp-theater', 'Theater mode (t)', 'theater');
+    this.bTheater.setAttribute('aria-pressed', 'false');
+    this.bTheater.hidden = !cfg.theater;
     this.qBadge = el('span', 'mlp-qbadge'); this.qBadge.setAttribute('aria-hidden', 'true');
     this.bSet.appendChild(this.qBadge);
-    right.appendChild(this.bCC); right.appendChild(this.bSet); right.appendChild(this.bPip); right.appendChild(this.bFs);
+    right.appendChild(this.bCC); right.appendChild(this.bSet); right.appendChild(this.bPip); right.appendChild(this.bTheater); right.appendChild(this.bFs);
     bar.appendChild(left); bar.appendChild(right);
     this.ctrl.appendChild(this.seek); this.ctrl.appendChild(bar);
 
@@ -213,6 +223,7 @@
     var rows = [['Space or K', 'Play or pause'], ['J / L', 'Back / forward 10 seconds'], ['← / →', 'Back / forward 5 seconds'],
       ['↑ / ↓', 'Volume up / down'], ['M', 'Mute'], ['F', 'Full screen'], ['C', 'Captions'], ['I', 'Picture in picture'],
       ['0 – 9', 'Jump to 0 – 90 %'], ['< / >', 'Slower / faster'], ['?', 'Show these shortcuts'], ['Esc', 'Close']];
+    if (cfg.theater) rows.splice(7, 0, ['T', 'Theater mode'], ['Shift + N', 'Next video']);
     this.help.innerHTML = '<div class="mlp-help-head"><h2 class="mlp-help-title">Keyboard shortcuts</h2></div><dl>' +
       rows.map(function (x) { return '<div><dt><kbd>' + x[0] + '</kbd></dt><dd>' + x[1] + '</dd></div>'; }).join('') + '</dl>';
     this.helpClose = el('button', 'mlp-chip mlp-chip-solid', 'Close'); this.helpClose.type = 'button';
@@ -268,6 +279,7 @@
     on(this.bCC, 'click', function () { self.setCC(!self.ccOn, true); });
     on(this.bPip, 'click', function () { self.togglePip(); });
     on(this.bFs, 'click', function () { self.toggleFs(); });
+    on(this.bTheater, 'click', function () { self.requestTheater(); });
     on(this.bSet, 'click', function () { self.menu.hidden ? self.openMenu('main', false) : self.closeMenu(false); });
     on(this.bSet, 'keydown', function (e) {
       if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && self.menu.hidden) { e.preventDefault(); self.openMenu('main', true); }
@@ -359,6 +371,12 @@
     var url = new URL(location.href);
     var t = parseTime(url.searchParams.get('t') || (/(?:^|&)t=([^&]+)/.exec(location.hash.slice(1)) || [])[1]);
     var pos = store.get(this.keyPos, null);
+    if (url.searchParams.get('autoplay') === '1') {
+      // Arrived from Up next: start at once when the browser allows it, else the Play button stays.
+      url.searchParams.delete('autoplay');
+      try { history.replaceState(history.state, '', url.pathname + url.search + url.hash); } catch (e) {}
+      this.autoStart = true;
+    }
     if (t != null && t > 0) { this.startAt = t; }
     else if (pos && pos.t > 10 && pos.t < (cfg.duration || 1e9) - 10) {
       this.resumeAt = pos.t;
@@ -400,6 +418,15 @@
     this.renderMenu();
     this.updateTime();
     this.sync();
+    if (this.autoStart) {
+      var vv = v;
+      var p = vv.play();
+      if (p && p.then) p.then(function () {
+        if (!self.started) { self.started = true; self.root.classList.remove('mlp-fresh'); self.startOver.hidden = true; }
+        if (self.startAt) { self.seekTo(self.startAt); self.startAt = null; }
+        self.sync();
+      }, function () { self.sync(); });
+    }
   };
 
   /* ---------------- quality ---------------- */
@@ -678,12 +705,86 @@
   };
   Player.prototype.onEnded = function () {
     store.del(this.keyPos);
+    store.set('mintlib:seen:' + this.cfg.id, Date.now());
     this.endBox.hidden = false;
     this.root.classList.add('mlp-ended');
     this.sync();
-    this.say('Finished');
+    this.root.dispatchEvent(new CustomEvent('mlp:ended', { bubbles: true }));
+    if (this.next) this.showNext(); else this.say('Finished');
   };
-  Player.prototype.hideEnd = function () { this.endBox.hidden = true; this.root.classList.remove('mlp-ended'); };
+  Player.prototype.hideEnd = function () {
+    this.endBox.hidden = true; this.root.classList.remove('mlp-ended'); this.cancelNext(true);
+  };
+  /* Up next: {title, url, poster, duration}. autoplay = count down and go when the video ends. */
+  Player.prototype.setNext = function (next, autoplay) {
+    this.next = next || null;
+    this.autoNext = !!autoplay;
+    if (!this.endBox.hidden && this.next) this.showNext();
+    if (!this.autoNext) this.cancelNext(false);
+  };
+  Player.prototype.setAutoNext = function (on) {
+    this.autoNext = !!on;
+    if (!on) this.cancelNext(false);
+  };
+  Player.prototype.goNext = function () {
+    if (!this.next) return;
+    var u = new URL(this.next.url, location.href);
+    u.searchParams.set('autoplay', '1');
+    location.href = u.pathname + u.search;
+  };
+  Player.prototype.showNext = function () {
+    var self = this, n = this.next, box = this.nextBox;
+    box.innerHTML = '';
+    var head = el('p', 'mlp-next-label', 'Up next');
+    var link = el('a', 'mlp-next-card');
+    link.href = n.url;
+    link.innerHTML = '<span class="mlp-next-img"><img alt="" src="' + n.poster + '"><span class="mlp-next-dur">' +
+      (n.duration || '') + '</span></span><span class="mlp-next-title"></span>';
+    link.querySelector('.mlp-next-title').textContent = n.title;
+    var row = el('div', 'mlp-next-row');
+    this.nextCount = el('p', 'mlp-next-count');
+    this.nextCount.setAttribute('aria-live', 'off');
+    var play = el('button', 'mlp-chip mlp-chip-solid', svg('skipNext') + '<span>Play now</span>'); play.type = 'button';
+    var cancel = el('button', 'mlp-chip', 'Cancel'); cancel.type = 'button';
+    play.addEventListener('click', function () { self.goNext(); });
+    cancel.addEventListener('click', function () { self.cancelNext(false); self.replay.focus(); });
+    this.nextCancel = cancel;
+    row.appendChild(play); row.appendChild(cancel);
+    box.appendChild(head); box.appendChild(link); box.appendChild(this.nextCount); box.appendChild(row);
+    box.hidden = false;
+    this.root.classList.add('mlp-has-next');
+    if (this.autoNext && !this.isFs()) {
+      var left = 8;
+      var tick = function () {
+        self.nextCount.textContent = 'Playing in ' + left + ' s';
+        if (left <= 0) { self.goNext(); return; }
+        left--;
+        self.nextTimer = setTimeout(tick, 1000);
+      };
+      tick();
+      this.say('Finished. Up next: ' + n.title + ', playing in 8 seconds. Cancel to stay.');
+    } else {
+      cancel.hidden = true;
+      this.say('Finished. Up next: ' + n.title + '.');
+    }
+  };
+  Player.prototype.cancelNext = function (hide) {
+    clearTimeout(this.nextTimer); this.nextTimer = null;
+    if (this.nextCount) this.nextCount.textContent = '';
+    if (this.nextCancel) this.nextCancel.hidden = true;
+    if (hide) { this.nextBox.hidden = true; this.root.classList.remove('mlp-has-next'); }
+  };
+  Player.prototype.isFs = function () { return !!this.fsElement(); };
+  /* Theater mode belongs to the page: ask it, and it answers with setTheater. */
+  Player.prototype.requestTheater = function () {
+    this.root.dispatchEvent(new CustomEvent('mlp:theater', { bubbles: true }));
+  };
+  Player.prototype.setTheater = function (on) {
+    this.bTheater.setAttribute('aria-pressed', on ? 'true' : 'false');
+    this.bTheater.setAttribute('aria-label', on ? 'Default view (t)' : 'Theater mode (t)');
+    this.bTheater.innerHTML = svg(on ? 'theaterOff' : 'theater');
+    this.autoRecheck();
+  };
   Player.prototype.onError = function () {
     if (this.switching) { this.switching = false; this.releaseFrame(); }
     var e = this.video.error;
@@ -1036,6 +1137,8 @@
       case 'ArrowDown': this.nudgeVolume(-0.05); break;
       case 'm': this.toggleMute(); break;
       case 'f': this.toggleFs(); break;
+      case 't': if (this.cfg.theater && !this.isFs()) this.requestTheater(); else done = false; break;
+      case 'n': if (e.shiftKey && this.next) this.goNext(); else done = false; break;
       case 'c': if (this.cfg.captions && this.cfg.captions.length) this.setCC(!this.ccOn, true); else done = false; break;
       case 'i': if (!this.bPip.hidden) this.togglePip(); else done = false; break;
       case '<': case ',': if (e.key === '<' || e.shiftKey) this.stepSpeed(-1); else done = false; break;

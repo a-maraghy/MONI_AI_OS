@@ -1,147 +1,182 @@
 # MINT Library
 
-A static site of shared videos in folders, served by nginx at **https://library.mint-stack.com**
-from `/var/www/library`. There is no login. Anyone with a link can watch, and every page is `noindex`.
-The first folder is **Pre-read**.
+Our own video site at **https://library.mint-stack.com**: folders of shared videos with a
+YouTube-like home page, watch page and studio, but nothing from YouTube. **Watching needs no
+account.** Signing in (the **studio**, `/studio/`) is only for uploading and managing videos.
+Every page is `noindex`, the site makes no third-party requests (no CDN, no outside fonts, no
+analytics), and it uses the MINT OS "Plain label" look: black and white, Atkinson Hyperlegible
+Next and Mono, light or dark from the system, the word MINT as the logo.
 
-The site makes no external requests: no CDN, no web fonts from elsewhere and no analytics. It uses
-the MINT OS "Plain label" look: black and white, Atkinson Hyperlegible Next and Mono (copied from
-`dashboard/public/fonts`), and it follows the system's light or dark setting. The player is dark in
-both themes.
+## How it fits together
 
-## Where things live
-
-| What | Where |
+| Part | What it is |
 |---|---|
-| Code, templates, the player | this folder (in the repo) |
-| Manifest (folders + videos) | `/var/lib/mint-library/library.json`, outside the repo because it is data. A `.bak` of the previous version is kept next to it. |
-| Published site | `/var/www/library` (`index.html`, `assets/`, `<folder>/`, `<folder>/<slug>/`, `embed/<slug>/`) |
+| Static pages | `build.py` writes every public page into `/var/www/library`. nginx serves them, so watching keeps working even when the service is down (only the counts disappear). |
+| Service | `server.py`, systemd unit **`mint-library`**, Python standard library only, on **127.0.0.1:8795** behind nginx. It answers `/api/*` (view counts, the studio API) and `/studio/*` (studio pages). |
+| Manifest | `/var/lib/mint-library/library.json` (+ `.bak`): folders and videos. The CLI and the studio both write it, one at a time (`library.json.lock`). |
+| Database | `/var/lib/mint-library/library.db` (SQLite, 0600): studio users, sessions, plays and views, uploads, jobs, an audit log. |
+| Secret | `/var/lib/mint-library/secret.key` (0600, made on first start): the HMAC key for device and IP hashes. Never print it. |
+| Private store | `/var/lib/mint-library/store/<slug>/`: private and trashed videos. nginx serves them only to the studio (`/_store/` is `internal`). |
+| Uploads, originals | `/var/lib/mint-library/uploads/` (partial uploads, 0700) and `/var/lib/mint-library/sources/<slug>/` (the uploaded original, kept for re-encoding). |
+| Code the service runs | `/opt/mint-library/library` (a copy made by `deploy/install.sh`; the `mintlib` user cannot read `/root`). |
 
-You can override these with the environment variables `MINT_LIBRARY_MANIFEST`, `MINT_LIBRARY_ROOT`
-and `MINT_LIBRARY_URL`, which is useful for testing in a scratch folder.
-Video files and generated media never go into the repo.
+Files belong to the system user **`mintlib`** (the service runs as it). The CLI tools run as root
+and hand what they write back to `mintlib`. Video files, the database and secrets never go into the repo.
+
+## Visibility (like YouTube)
+
+| | Where | Listed | Who can watch |
+|---|---|---|---|
+| **Public** | `/<folder>/<slug>/`, embed `/embed/<slug>/` | home page, its folder, search, Up next | anyone |
+| **Unlisted** | `/u/<24-hex token>/<slug>/`, embed `/u/<token>/<slug>/embed/` | nowhere: not on any page, in search, in Up next, in `/api/stats` | anyone with the link |
+| **Private** | the store | nowhere | the studio only; public links 404 |
+
+- An unlisted video keeps **one token for life**: edits, new uploads and switching back and forth
+  between Public, Unlisted and Private never change its link. `/u/` and `/u/<token>/` are 404.
+- Switching to Public moves the files into the folder and rebuilds the pages; switching away
+  removes it from every listing at once.
+- **Delete is "Move to the trash"**: the files move to the store and the video leaves the site.
+  The studio's Trash lists it, and **Restore** brings it back as Private. Nothing is deleted for good.
+- Moving a public video to another folder leaves a small redirect page at its old address.
+
+## View counts
+
+- **A view** is counted once a play has really played **30 seconds, or half of a shorter video**,
+  whichever comes first. Only time that passed while playing counts: seeking ahead does not.
+- **One view per device per video in 30 minutes**: replays and reloads in that window do not add views.
+- **Unique viewers** are distinct devices. A device is a random id the browser keeps in localStorage
+  and a first-party cookie (`mlid`). When storage is blocked, the fallback is a keyed hash
+  (HMAC with the secret) of the IP address and browser. **Raw IP addresses are never stored**: the
+  database holds only keyed hashes; per-address rate limits live in memory.
+- **Embeds count too**, and are told apart in the studio ("Embedded on <site>").
+- **Bots** (crawler, preview, headless and script user agents) are ignored, and an address may report
+  at most 120 times a minute, start 60 plays in 10 minutes and add 40 views an hour.
+- The server also bounds what a play can claim by the real time since it started (up to 2× speed).
+- `count.js` sends the reports (`POST /api/beat`): when playback starts, when it crosses the
+  threshold, every 15 s while playing, on pause, at the end and when the page is left.
+- Public pages ask `GET /api/stats?ids=…` for their counts; if the service is down the pages still
+  render, just without counts. Unlisted pages ask with `u:<token>`.
+
+## The public site
+
+- **Home** (`/`): every public video, newest first, with folder chips, **Sort** (Newest first,
+  Most viewed, Oldest first, Title A–Z, Longest; kept in `?sort=` and localStorage) and **search** in
+  the top bar (title, description and folder words; `?q=`). Cards show poster, length, title,
+  folder, views and a relative date ("3 days ago"), plus a watched-progress bar.
+  **Continue watching** lists videos you left part way (from this browser's localStorage).
+- **Folder pages** (`/<folder>/`): the same grid for one folder.
+- **Watch page**: the player; title; folder; **Share** (copy link, link at the current time `?t=`,
+  embed code); **Download** (one link per quality); the description box with "N views · M unique
+  viewers", date and length, three lines with Show more; **Up next** with an **Autoplay** switch
+  (on by default, off under reduced motion; an 8-second countdown with Cancel at the end);
+  **theater mode** (button or `T`, remembered).
+- **Keyboard**: Space/K play, J/L ±10 s, ←/→ ±5 s, ↑/↓ volume, M mute, F full screen, T theater,
+  C captions, I picture in picture, </> speed, 0–9 jump, Shift+N next video, ? shortcuts, / search.
+- `404.html` for anything that is not there.
+
+## The player (`player/player.js`, `player/player.css`)
+
+Vanilla JS, no dependencies, shared by the watch page, the embed and the studio preview. Quality
+Auto/1080/720/480 with seamless switching, seek previews from a sprite, captions drawn by the
+player, speed, picture in picture, full screen, resume where you left off, `?t=` start times,
+keyboard shortcuts with a `?` overlay, a live region for announcements, reduced-motion support.
+New in v2: a theater button (when the page offers it), `T` and `Shift+N`, and the Up next end screen
+(`setNext(next, autoplay)`, `setAutoNext`), and `?autoplay=1` when arriving from Up next.
+
+## The studio (`/studio/`)
+
+- **Sign in** at `/studio/login`. Sessions last 14 days (sliding), in an HttpOnly, Secure,
+  SameSite=Strict cookie. Ten failed attempts per address or per user name in 15 minutes lock
+  sign-in for that address or name, and nginx limits `/api/studio/login` to 20 requests a minute.
+- **Every write** needs a session **and** a same-origin request (the `Origin` header, else
+  `Sec-Fetch-Site`, else the `Referer`, must be the site itself); otherwise 403.
+- **Your videos**: a table of every video with visibility (● Public, ◐ Unlisted, ○ Private,
+  ▲ In the trash), folder, date, views and unique viewers; filters All / Public / Unlisted /
+  Private / Trash; search.
+- **Upload**: drag files anywhere on the page or use Upload video. Files go up in 8 MB chunks with
+  a progress bar and time left; Pause/Resume; a dropped connection retries; **picking the same file
+  again resumes** where it stopped. Fill in title, description, folder (or **New folder…**), date
+  and visibility (Private by default) while it uploads and press **Save details**. Encoding starts
+  when both are done and runs in the background with its progress shown (the same pipeline as the
+  CLI). A failed job can be retried.
+- **Edit a video** (`/studio/v/<slug>`): title, description, folder, date, visibility; a preview
+  player; the link and embed code; **poster** from the frame you paused on or from an uploaded
+  image; **captions** (.vtt) per language, added or removed (a removed file is kept as
+  `captions.<lang>.vtt.removed`); **Move to the trash** / **Restore**.
+- **Analytics** per video: views, unique viewers, watch time, plays started, average view duration
+  and the share of the video it is, views per day for the last 28 days (UTC; a bar chart with a
+  table view and keyboard reading), and where views came from (library pages, direct, links from
+  another site, embedded on a site).
 
 ## Commands
 
 ```sh
-# Add or update a video. It encodes, makes the poster and thumbnails, updates the manifest and rebuilds the pages.
+# Accounts for the studio (prompts for the password; at least 12 characters).
+python3 /opt/mint-library/library/admin.py user add <name>
+python3 /opt/mint-library/library/admin.py user passwd <name>     # also signs that user out
+python3 /opt/mint-library/library/admin.py user disable|enable <name>
+python3 /opt/mint-library/library/admin.py user list
+python3 /opt/mint-library/library/admin.py sessions clear
+
+# Add or update a video from the command line (still works; same pipeline as the studio).
 python3 library/add.py --folder pre-read --title "Title" --desc "One paragraph." \
-    [--date YYYY-MM-DD] [--captions captions.vtt] [--poster poster.jpg] [--slug custom-slug] [--force] video.mp4
+    [--visibility public|unlisted|private] [--date YYYY-MM-DD] [--captions captions.vtt] \
+    [--poster poster.jpg] [--slug custom-slug] [--force] video.mp4
+python3 library/add.py --slug <slug> --visibility public      # change visibility (or --title/--desc/--date/--folder)
+python3 library/add.py --remove <slug>                         # move to the trash
+python3 library/add.py --restore <slug>                        # back from the trash, as Private
+python3 library/add.py --list                                  # every video with its link
 
-# Remove a video. This deletes its folder and embed and rebuilds the pages.
-python3 library/add.py --remove <slug>
-
-# Rebuild every page from the manifest, for example after changing the player or the templates.
+# Rebuild every page from the manifest.
 python3 library/build.py
+
+# Install or update the service and the pages after a code change.
+bash library/deploy/install.sh
 
 # Captions from a film timeline (the agents-film timeline.json + words.js format).
 python3 library/tools/timeline_to_vtt.py timeline.json words.js > captions.en.vtt
 ```
 
-- **Slug.** The slug comes from the title. If you run the tool again with the same title, it updates
-  that entry and does not add a second one.
-- **Re-encoding.** The renditions are re-encoded only when the source file's sha256 changes or when
-  you pass `--force`.
-- **Unique slugs.** Slugs are unique across the whole library, because the embed URL is `/embed/<slug>/`.
-- **New folders.** `--folder <slug>` creates the folder if it does not exist yet. `--folder-title`
-  names it.
-- **Folder order.** `order` in the manifest sets the order on the home page. Pre-read is first.
+- **Slug.** From the title. A CLI run with the same title updates that video and keeps its
+  visibility and its unlisted link. The studio never overwrites: a second upload with the same
+  title gets `-2`.
+- **Re-encoding.** Only when the source's sha256 changes or with `--force`.
+- **New folders.** `--folder <slug>` (with `--folder-title`) or **New folder…** in the studio.
+  Folder names that are routes (`u`, `embed`, `assets`, `studio`, `api`, …) are refused.
 
-## What add.py makes for each video
+## What the pipeline makes for each video
 
-The files go in `/var/www/library/<folder>/<slug>/`.
+`1080p.mp4`, `720p.mp4`, `480p.mp4` (H.264 High + AAC, `+faststart`, a keyframe every 2 s on the same
+grid in every rendition, never upscaled; CRF / maxrate 21 / 6, 22 / 3.5 and 23 / 1.6 Mbit/s),
+`poster.jpg` (≤ 1280 wide, og:image) and `poster-640.jpg` (cards), `thumbs.jpg` + `thumbs.vtt` (seek
+previews, ≤ 100 tiles), and `captions.<lang>.vtt`. Files are 0644 and folders 0755 (nginx reads them).
 
-- **Renditions.** `1080p.mp4`, `720p.mp4` and `480p.mp4`. The top rendition is the source height
-  when the source is shorter than 1080, and nothing is ever upscaled. The encoding is H.264 High and
-  AAC with `+faststart` and a keyframe every 2 s on the same grid in every rendition, so switching
-  quality lands cleanly. The CRF and maxrate per rendition are 21 / 6 Mbit/s, 22 / 3.5 Mbit/s and
-  23 / 1.6 Mbit/s.
-- **Posters.** `poster.jpg` (up to 1280 wide, also used as og:image) and `poster-640.jpg` (for the
-  cards). They come from `--poster`, or from a frame at 10 % of the video.
-- **Seek previews.** `thumbs.jpg` is a sprite of up to 100 tiles of 160 px, one every
-  max(2 s, duration/100). `thumbs.vtt` maps each time range to a tile with `#xywh`.
-- **Captions.** `captions.<lang>.vtt`, when `--captions` is given.
-- **Permissions.** Files are 0644 and folders 0755, because nginx runs as www-data.
+## nginx
 
-## Pages (build.py)
+The `library.mint-stack.com` server block holds TLS, `root /var/www/library`, `error_page 404`,
+the internal `/_store/` alias and `include snippets/mint-library-locations.conf`
+(`deploy/nginx-library-locations.conf`: `/api/` and `/studio/` to the service, `/api/studio/login`
+rate-limited, media and assets caching, dot-files and bare folders 404). `deploy/nginx-http.conf`
+becomes `/etc/nginx/conf.d/mint-library.conf` (the upstream and the login rate zone).
+`install.sh` installs both and reloads nginx only after `nginx -t` passes.
 
-- **`/`** lists the folders with a cover and a video count.
-- **`/<folder>/`** shows a grid of cards: poster, duration badge, title, date, length and a
-  two-line description.
-  - The **Sort** control offers Newest first (the default), Oldest first, Title A–Z and Longest.
-    The choice is kept in `?sort=` and in localStorage, and the URL wins.
-  - **Search** matches title and description words and is kept in `?q=`. There is an empty state
-    for no matches and one for an empty folder.
-- **`/<folder>/<slug>/`** has the player, title, date, length and description.
-  - **Copy link** and **Copy embed code** copy the page URL and an `<iframe>` snippet.
-  - **Download** is a menu with one link per quality.
-  - **More in <folder>** lists the other videos.
-- **`/embed/<slug>/`** shows the player alone, filling its frame. Use it in an iframe.
+## Tests
 
-Every page has a `<title>`, a description, Open Graph tags and `robots` noindex. The Open Graph tags
-are og:title, og:description, an absolute og:image with its size and alt text, og:video (the 720p
-MP4), video:duration and a twitter card. Every page also has the MINT M monogram as its favicon.
-Asset URLs carry a content hash (`?v=`), so a rebuild is picked up at once.
+```sh
+bash library/tests/scratch.sh up   /tmp/mintlib-scratch   # its own nginx :18790 + service :18795
+bash library/tests/scratch.sh seed /tmp/mintlib-scratch   # 4 test videos + a throwaway user "tester"
+NODE_PATH=/opt/moni-dashboard/node_modules PLAYWRIGHT=/root/e2e/pw/node_modules/playwright \
+  node library/tests/e2e.cjs /tmp/mintlib-scratch [/tmp/shots]
+bash library/tests/scratch.sh down /tmp/mintlib-scratch
+```
 
-## The player (`player/player.js`, `player/player.css`)
-
-The player is vanilla JS with no dependencies and is shared by the video and embed pages. Without
-JS, the browser's own controls stay.
-
-- **Picture.** A big Play button sits over the poster. When there is a saved position, it reads
-  "Resume from 1:23", with a "Start from the beginning" chip.
-- **Click and tap.** Click or tap to play or pause. Double-click or double-tap the middle for full
-  screen. On touch, double-tap the left or right third to skip 10 s back or forward.
-- **Seek bar.** It shows the buffered ranges and, on hover or drag, the time with a thumbnail from
-  the sprite. It works with the mouse and touch. It is a focusable `role="slider"`: arrows move 5 s,
-  PageUp and PageDown move 10 s, and Home and End go to the start and end.
-- **Controls.**
-  - **Time:** played / total. Click it to show the time left.
-  - **Volume:** a slider and a mute button.
-  - **Speed:** 0.5 to 2×.
-  - **Quality:** Auto, 1080p, 720p and 480p, only the renditions that exist.
-  - **Also:** CC, picture in picture (including Safari's `webkitSetPresentationMode`) and full screen
-    (the container, with `webkitRequestFullscreen`, and `video.webkitEnterFullscreen()` on iPhone).
-- **Settings menu.** The gear opens Speed, Quality and Captions, plus Keyboard shortcuts. Use the
-  arrows to move, → or Enter to open a submenu, and ← or Esc to go back.
-- **Quality switching.**
-  - **Warm-up:** the new file is first warmed in a hidden `<video>`.
-  - **Swap:** the same `<video>` then takes the new `src`. Its current frame is held on a canvas
-    during the swap.
-  - **What carries over:** the position, play or pause state and speed.
-  - **Auto:** Auto picks by player width × devicePixelRatio, capped by `navigator.connection`
-    (saveData, effectiveType and downlink). It steps down one rendition after 3 stalls in 30 s.
-  - **Label:** the label reads "Auto (720p)".
-- **Captions.**
-  - **Loading:** captions are fetched and given to the `<track>` as a blob, so the server's content
-    type does not matter.
-  - **Display:** the player draws them itself, above the controls.
-  - **iPhone:** in native full screen on iPhone, the track is shown natively.
-  - **Default:** captions are off unless you turned them on before.
-- **Keyboard.**
-  - **Play and seek:** Space or K play / pause. J / L skip −10 / +10 s. ← / → skip −5 / +5 s.
-    0–9 jump to 0–90 %.
-  - **Sound and speed:** ↑ / ↓ change the volume, M mutes, and < / > change the speed.
-  - **Views:** F is full screen, C is captions, I is picture in picture, ? shows the shortcuts and
-    Esc closes.
-  - **When they are ignored:** keys do nothing while you type in a field. Space and Enter are left
-    to a focused link or button elsewhere on the page. The keys act only while the player is on
-    screen.
-- **Controls auto-hide** after 2.5 s of no mouse movement while playing. They stay while paused,
-  while the menu is open and while a control has keyboard focus.
-- **Memory.** The position is saved per video every 5 s and on pause or leaving the page, and it is
-  cleared at the end. Volume, mute, speed, quality choice and captions are remembered too. The keys
-  are `mintlib:*` in localStorage. `?t=83`, `?t=1m23s` or `#t=1:23` start at a time.
-- **States.** The player shows a loading spinner, an error panel with "Try again" (it reloads at the
-  last good position), and an end panel with "Replay".
-- **Accessibility.**
-  - **Controls:** controls are real `<button>`s with labels that name their key. The slider has
-    aria-valuetext ("1 minute 23 seconds of 3 minutes 13 seconds").
-  - **Focus and touch:** there is one visible focus ring, and touch targets are 44 px.
-  - **Announcements:** a polite live region announces quality, speed, volume, mute and caption
-    changes.
-  - **Motion:** `prefers-reduced-motion` turns off the animation.
-- **Media Session metadata** gives the lock-screen title and artwork.
+The scratch instance never touches production. The suite covers listings and search (unlisted and
+private never appear), the 404s, view counting (threshold, 30-minute dedup, unique viewers, seeks,
+bots, embeds), the watch page (theater, keys, share, Continue watching, Most viewed), the studio
+(sign-in, cookie flags, 401 without a session, 403 for another or missing Origin, resumable chunked
+upload, upload → encode → publish, visibility and the stable unlisted link, poster, captions,
+trash and restore, analytics, sign-out), and with a shots folder every page at 1920, 1366 and
+390 px in light and dark with no sideways scrolling and no console errors.
 
 ## Content so far
 
@@ -151,4 +186,5 @@ JS, the browser's own controls stay.
 
 The source was `/root/moni/docs/allocate_film/AlloCate_meets_Matrix_EN.mp4`, the final render of
 2026-10-27 06:37. Its captions were made from the film's own `player/timeline.json` + `words.js`.
-The film also has its captions burned in, which is why CC starts off.
+The film also has its captions burned in, which is why CC starts off. The old share link
+`os.mint-stack.com/share/bf202a41…/` redirects to its watch page.
