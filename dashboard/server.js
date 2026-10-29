@@ -51,6 +51,7 @@ const voiceShared = require("./lib/voice-shared"); // the guard, the supervisor 
 const voiceUsage = require("./lib/voice-usage");
 const voicePersona = require("./lib/voice-persona");
 const voiceLive = require("./lib/voice-live");
+const voiceGptLive = require("./lib/voice-gptlive"); // the live call on GPT-Live (Settings ▸ Voice ▸ Voice model)
 // MINT AI ▸ Settings; the Voice section is rendered and handled with the voice code below.
 const settingsRoutes = require("./lib/routes-settings");
 // The MINT AI desktop app for Windows: its render mode, session length, sign-in hand-off and update feed.
@@ -6104,7 +6105,9 @@ function liveConnected(ws, { me, cfg, ip, duplex, noise, route, tab, canVoice, s
     json({ type: "error", code: "busy", error: "You already have a live conversation open (another tab?). End it there first." });
     return ws.close(4409, "busy");
   }
-  const call = new voiceLive.LiveCall({
+  // The voice model decides the class: GPT-Live (its own protocol, MINT AI behind it) or the realtime call.
+  const Call = voice.protocolFor(cfg.live_model) === "live" ? voiceGptLive.GptLiveCall : voiceLive.LiveCall;
+  const call = new Call({
     cfg: { ...liveCfgOf(cfg), noise_reduction: noise },
     actor,
     ops: voiceShared.voiceOps(moniCall, actor),
@@ -6167,7 +6170,7 @@ function liveConnected(ws, { me, cfg, ip, duplex, noise, route, tab, canVoice, s
   call.sid = sid || null;
   voiceLive.register(actor, call);
   db.logLogin(ip, actor, "voice", `live conversation started (${turn === "ptt" ? "hold-to-talk, " : ""}${duplex === "full" ? "headphones" : "speakers"} mode, playback ${route}, noise reduction ${noise})`);
-  console.log(`live: call ${call.id} started: ${turn === "ptt" ? "hold-to-talk, " : ""}${duplex} mode, playback ${route}, noise reduction ${noise}${resume ? ", resumed after a restart" : ""}`);
+  console.log(`live: call ${call.id} started${call.kind === "gpt-live" ? " on GPT-Live" : ""}: ${turn === "ptt" ? "hold-to-talk, " : ""}${duplex} mode, playback ${route}, noise reduction ${noise}${resume ? ", resumed after a restart" : ""}`);
   // Twice real time is the most a microphone can send; more is not a microphone.
   let window0 = Date.now();
   let bytes = 0;

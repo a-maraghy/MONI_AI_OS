@@ -71,6 +71,12 @@ mockHttp.on("upgrade", (req, sock, head) => {
     ws.on("message", (d) => {
       const ev = JSON.parse(String(d));
       if (ev.type === "session.update") ws.send(JSON.stringify({ type: "session.updated", session: ev.session }));
+      // GPT-Live ({ws}/live/sessions): session.start -> session.started; no Origin header may be sent.
+      if (ev.type === "session.start") {
+        s.start = ev.session;
+        s.origin = req.headers.origin || null;
+        ws.send(JSON.stringify({ type: "session.started", session: { id: "live_t", ...ev.session } }));
+      }
     });
   });
 });
@@ -92,6 +98,8 @@ mockHttp.on("upgrade", (req, sock, head) => {
   const origin = "http://127.0.0.1:" + s.port;
   const opts = () => JSON.parse(fs.readFileSync(path.join(s.data, "fake-voice-options.json"), "utf8"));
   const sel = (body) => (body.match(/<select name="model"[\s\S]*?<\/select>/) || [""])[0];
+  // GPT-Live is gated too and not on this key until the end: its own option is left out of "nothing disabled".
+  const noLive = (m) => m.replace(/<option value="gpt-live-1"[^>]*>[^<]*<\/option>/, "");
   const open = (cookie, csrf) =>
     new Promise((resolve) => {
       const ws = new WebSocket("ws://127.0.0.1:" + s.port + "/mint-ai/api/live?csrf=" + encodeURIComponent(csrf || ""), { headers: { Cookie: cookie || "", Origin: origin } });
@@ -139,7 +147,7 @@ mockHttp.on("upgrade", (req, sock, head) => {
     check("  the message names the reader", /Replies%20are%20read%20aloud%20by%20gpt-realtime-2.1-mini/.test(r.headers.location || ""), r.headers.location);
     set = await s.req("GET", SET, { cookie: A.cookie });
     m = sel(set.body);
-    check("  Settings: GPT-4o Mini Realtime current, offered normally, nothing disabled", /<option value="gpt-4o-mini-realtime-preview" data-hint="A preview model[^"]*" selected>GPT-4o Mini Realtime \(current\)</.test(m) && !/ disabled>/.test(m), m);
+    check("  Settings: GPT-4o Mini Realtime current, offered normally, nothing disabled", /<option value="gpt-4o-mini-realtime-preview" data-hint="A preview model[^"]*" selected>GPT-4o Mini Realtime \(current\)</.test(m) && !/ disabled>/.test(noLive(m)), m);
     c = await callModel(A);
     check("  a live call connects with the listed snapshot id", c.status === 101 && c.model === SNAP && c.url.endsWith("model=" + SNAP), JSON.stringify(c));
 
@@ -159,12 +167,24 @@ mockHttp.on("upgrade", (req, sock, head) => {
     await until(() => gets > before, 3000);
     set = await s.req("GET", SET, { cookie: A.cookie });
     m = sel(set.body);
-    check("it comes back (the plain id): the option enables itself, the stored choice is current again", /<option value="gpt-4o-mini-realtime-preview" data-hint="A preview model[^"]*" selected>[^<]*\(current\)</.test(m) && !/ disabled>/.test(m), m);
+    check("it comes back (the plain id): the option enables itself, the stored choice is current again", /<option value="gpt-4o-mini-realtime-preview" data-hint="A preview model[^"]*" selected>[^<]*\(current\)</.test(m) && !/ disabled>/.test(noLive(m)), m);
     c = await callModel(A);
     check("  a live call connects with it", c.model === "gpt-4o-mini-realtime-preview" && c.url.endsWith("model=gpt-4o-mini-realtime-preview"), JSON.stringify(c));
 
     r = await s.req("POST", SET + "/options", { cookie: A.cookie, body: form({ _csrf: stok, model: "gpt-realtime-2.1-mini" }) });
     check("back to 2.1 mini (the default): saved; it reads aloud itself", db.getSetting("voice_model") === "gpt-realtime-2.1-mini" && opts().model === "gpt-realtime-2.1-mini");
+
+    // GPT-Live (2026-10-29): offered once the key lists it; a live call then speaks its protocol.
+    listed = listed.concat(["gpt-live-1"]);
+    r = await s.req("POST", SET + "/options", { cookie: A.cookie, body: form({ _csrf: stok, model: "gpt-live-1" }) });
+    check("GPT-Live on the key: saved; read-aloud stays on 2.1 mini", r.status === 303 && /msg=/.test(r.headers.location || "") && db.getSetting("voice_model") === "gpt-live-1" && opts().model === "gpt-realtime-2.1-mini", r.headers.location + " " + JSON.stringify(opts()));
+    set = await s.req("GET", SET, { cookie: A.cookie });
+    check("  Settings: GPT-Live + MINT AI current, its hint under the list", /<option value="gpt-live-1" data-hint="GPT-Live holds the conversation[^"]*" selected>GPT-Live \+ MINT AI \(current\)</.test(sel(set.body)), sel(set.body));
+    c = await callModel(A);
+    const ls = sessions[sessions.length - 1];
+    check("  a live call opens {ws}/live/sessions with client delegation, no Origin header", c.status === 101 && c.model === "gpt-live-1" && /\/v1\/live\/sessions$/.test(c.url) && ls.start && ls.start.model === "gpt-live-1" && ls.start.delegation && ls.start.delegation.type === "client" && ls.origin === null, JSON.stringify({ c, start: ls.start && ls.start.model, origin: ls.origin }));
+    r = await s.req("POST", SET + "/options", { cookie: A.cookie, body: form({ _csrf: stok, model: "gpt-realtime-2.1-mini" }) });
+    check("  and back to 2.1 mini", db.getSetting("voice_model") === "gpt-realtime-2.1-mini");
 
     await s.makeUser("mop", "operator-voice", ["moniai.use", "voice.use", "os.view"]);
     const O = await s.signIn("mop");

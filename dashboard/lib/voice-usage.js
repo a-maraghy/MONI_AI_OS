@@ -46,6 +46,9 @@ const PRICES = Object.freeze({
   // Listed per minute only (read 2026-09-30); token usage is priced by its audio
   // length (TRANSCRIBE_AUDIO_TOKENS_PER_S), marked as an estimate there.
   "gpt-transcribe": { per_minute: 0.0045 },
+  // GPT-Live (lib/voice-gptlive.js) is billed by session time, per second (read 2026-10-29 on
+  // https://developers.openai.com/api/docs/models/gpt-live-1); it reports {seconds}.
+  "gpt-live-1": { per_minute: 0.05 },
 });
 // About 10 audio tokens a second of speech on the transcribe models (lib/voice-guard.js uses the same).
 const TRANSCRIBE_AUDIO_TOKENS_PER_S = 10;

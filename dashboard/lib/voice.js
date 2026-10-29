@@ -28,8 +28,8 @@
  *               instructions); audio arrives as response.output_audio.delta,
  *               the model's own transcript as ..._transcript.delta. See the
  *               note above RealtimeConn for why it must be out of band. Or
- *             - gpt-live-1 on {ws}/live/sessions (no longer offered; kept for
- *               the record), one socket per sentence,
+ *             - gpt-live-1 on {ws}/live/sessions (never a reader: it
+ *               paraphrases by design; kept for the record), one socket per sentence,
  *               driven the way the Odoo
  *               walkthrough learned by testing: no Origin header,
  *               session.commentary.append with delegation_id: null, and a
@@ -108,6 +108,14 @@ const AUDIO_TOKENS_PER_SECOND = 20;
  *                           by design: read aloud 5/6 English, 0/4 Arabic (it
  *                           translated Arabic into English).
  *
+ * gpt-live-1 is offered again since 2026-10-29 -- as the live CONVERSATION,
+ * never as a reader: lib/voice-gptlive.js drives it with client delegation (it
+ * hands every real request to MINT AI through this server, which grounds it on
+ * its own transcript; MINT AI's answer goes back as commentary that it says in
+ * its own words, judged by the summary guard a sentence at a time; a cut is
+ * read word for word by 2.1 mini). Its read-aloud failures above are why it
+ * stays off READER_MODELS.
+ *
  * On 2026-09-30 the list was cut to gpt-realtime-2.1-mini alone. On 2026-10-01
  * the administrator asked for gpt-realtime-mini and GPT-4o Mini Realtime back:
  * they are offered again with the facts above in their hints, for the live
@@ -164,6 +172,13 @@ const VOICE_MODELS = Object.freeze([
     label: "GPT-4o Mini Realtime",
     short: "preview · replies read by 2.1 mini",
     hint: "A preview model. Holds the call; it did not pass the word-for-word check, so replies are read aloud by 2.1 mini.",
+    gated: true,
+  }),
+  Object.freeze({
+    id: "gpt-live-1",
+    label: "GPT-Live + MINT AI",
+    short: "most natural · full duplex · $0.05/min · beta",
+    hint: "GPT-Live holds the conversation: it listens while it speaks, backchannels and yields when you talk over it, and hands every real request to MINT AI (Claude), whose answer it then says in its own words, checked by the guard. Replies cut by the guard, and safe lines, are read by 2.1 mini word for word. $0.05 a minute of call.",
     gated: true,
   }),
 ]);

@@ -22,7 +22,8 @@
  *     transcription model (the helper's options); gpt-realtime-mini is a choice
  *     again (2026-10-01), GPT-4o Mini Realtime only when the key's model list
  *     shows it (tools/test-voice-models.cjs); unknown values (gpt-realtime,
- *     gpt-live-1) are migrated once at start and refused after; no
+ *     junk) are migrated once at start and refused after; gpt-live-1 is a
+ *     choice again (2026-10-29), gated on the key's model list like 4o; no
  *     listening-model row;
  *   - Transcription (2026-09-30 evening): the selector (OpenAI and on this
  *     server, each with its figures; a local model not installed is disabled
@@ -140,7 +141,7 @@ mockHttp.on("upgrade", (req, sock, head) => {
     check("  rarely needed rows sit under More: test and language, noise reduction, the voiceprint's last days", /<details class="set-more" id="v-more"><summary>More: test, language<\/summary>[\s\S]*id="voice-test"[\s\S]*id="v-transcribe-lang"/.test(set.body) && /<details class="set-more"><summary>More: noise reduction<\/summary>[\s\S]*?id="v-noise"/.test(set.body));
     check("  the voice evaluation and voiceprint trial links are gone", !/voice-eval|voiceprint-trial|from-trial/.test(set.body));
     const mSel = (set.body.match(/<select name="model"[\s\S]*?<\/select>/) || [""])[0];
-    check("  the voice model selector: 2.1 mini (current), GPT Realtime mini, GPT-4o Mini Realtime (disabled: OpenAI not reachable here, so not checked)", (set.body.match(/<select name="model"/g) || []).length === 1 && (mSel.match(/<option value="gpt-/g) || []).length === 3 && /<option value="gpt-realtime-2\.1-mini" data-hint="[^"]*" selected>GPT Realtime 2\.1 mini \(current\)<\/option>/.test(mSel) && /<option value="gpt-realtime-mini" data-hint="[^"]*">GPT Realtime mini<\/option>/.test(mSel) && /<option value="gpt-4o-mini-realtime-preview" data-hint="[^"]*" disabled>GPT-4o Mini Realtime \(not checked yet\)<\/option>/.test(mSel) && /id="voice-retire-note">GPT Realtime mini retires on 20 January 2027\./.test(set.body) && !/gpt-live-1/.test(mSel), mSel);
+    check("  the voice model selector: 2.1 mini (current), GPT Realtime mini, GPT-4o Mini Realtime and GPT-Live (both disabled: OpenAI not reachable here, so not checked)", (set.body.match(/<select name="model"/g) || []).length === 1 && (mSel.match(/<option value="gpt-/g) || []).length === 4 && /<option value="gpt-live-1" data-hint="[^"]*" disabled>GPT-Live \+ MINT AI \(not checked yet\)<\/option>/.test(mSel) && /<option value="gpt-realtime-2\.1-mini" data-hint="[^"]*" selected>GPT Realtime 2\.1 mini \(current\)<\/option>/.test(mSel) && /<option value="gpt-realtime-mini" data-hint="[^"]*">GPT Realtime mini<\/option>/.test(mSel) && /<option value="gpt-4o-mini-realtime-preview" data-hint="[^"]*" disabled>GPT-4o Mini Realtime \(not checked yet\)<\/option>/.test(mSel) && /id="voice-retire-note">GPT Realtime mini retires on 20 January 2027\./.test(set.body), mSel);
     check("  no old listening-model field; the voice model's help points at the transcription row", !/id="v-listen"/.test(set.body) && !/name="transcribe_model"/.test(set.body) && !/Listening model/.test(set.body) && !/not a setting/.test(set.body));
     const trSel = (set.body.match(/<select name="transcriber"[\s\S]*?<\/select>/) || [""])[0];
     check("Transcription: its rows (v-transcribe, v-transcribe-lang), scope everyone", /id="v-transcribe"/.test(set.body) && /id="v-transcribe-lang"/.test(set.body));
@@ -160,7 +161,7 @@ mockHttp.on("upgrade", (req, sock, head) => {
     check("model gpt-realtime-2.1-mini: live AND read-aloud on it, listening on its fixed pair", r.status === 303 && db.getSetting("voice_model") === "gpt-realtime-2.1-mini" && opts().model === "gpt-realtime-2.1-mini" && opts().transcribe_model === "gpt-4o-mini-transcribe" && opts().voice === "marin", r.status + " " + JSON.stringify(opts()));
     for (const old of ["gpt-realtime", "gpt-live-1", "gpt-4o-mini-transcribe"]) {
       r = await s.req("POST", SET + "/options", { cookie: A.cookie, body: form({ _csrf: stok, model: old }) });
-      check(`${old} is refused (not in the list)`, /err=/.test(r.headers.location || "") && /#v-model$/.test(r.headers.location || "") && db.getSetting("voice_model") === "gpt-realtime-2.1-mini" && opts().model === "gpt-realtime-2.1-mini");
+      check(`${old} is refused (${old === "gpt-live-1" ? "not on this key here" : "not in the list"})`, /err=/.test(r.headers.location || "") && /#v-model$/.test(r.headers.location || "") && db.getSetting("voice_model") === "gpt-realtime-2.1-mini" && opts().model === "gpt-realtime-2.1-mini");
     }
     r = await s.req("POST", SET + "/options", { cookie: A.cookie, body: form({ _csrf: stok, model: "gpt-4o-mini-realtime-preview" }) });
     check("gpt-4o-mini-realtime-preview is refused while the key's model list does not show it", /err=/.test(r.headers.location || "") && /not%20available%20on%20this%20OpenAI%20key|not\+available\+on\+this\+OpenAI\+key/.test(r.headers.location || "") && db.getSetting("voice_model") === "gpt-realtime-2.1-mini", r.headers.location);

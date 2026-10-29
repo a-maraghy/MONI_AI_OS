@@ -456,6 +456,11 @@ class LiveCall {
   async swapUpstream(patch, o) {
     o = o || {};
     if (this.closed) return { ok: false, why: "the call has ended" };
+    // GPT-Live is another protocol (lib/voice-gptlive.js): a realtime call cannot become one; it ends.
+    if (patch && patch.live_model && /^gpt-live/.test(String(patch.live_model)) && this.kind !== "gpt-live") {
+      this.close("voice-changed", "The voice model changed. Start the call again to use it.", "model " + patch.live_model);
+      return { ok: false, why: "the voice model changed" };
+    }
     const drop = o.reason === "drop";
     const t0 = this.now();
     const was = this.cfg.voice;
@@ -2564,6 +2569,11 @@ function status() {
 
 module.exports = {
   pageReport,
+  scrub,
+  WS_BASE,
+  TALK_ONLY_LINE,
+  STREAM_MAX_SENTENCES,
+  VERBATIM_MAX_SENTENCES,
   LIVE_MODEL,
   RATE,
   SILENCE_MS,

@@ -434,6 +434,15 @@ function clauses(text) {
     .filter(Boolean);
 }
 
+/**
+ * Is the claim at `idx` only asked about -- "whether it was done", «هشوف إذا كان تم»? (2026-10-29: GPT-Live's
+ * natural "I'll check whether it was done" was cut as a claim.) An "if" or "whether" before it, in this clause.
+ */
+function conditionalBefore(clause, idx) {
+  const pre = String(clause).slice(0, Math.max(0, idx || 0));
+  return /\b(?:whether|if)\b/.test(pre) || /(?:^|\s)(?:إذا|اذا|لو|إن كان|ان كان)(?:\s|$)/u.test(pre);
+}
+
 /** Is there a negation before `idx` in this clause? (English: anywhere before; Arabic: just before.) */
 function negatedBefore(clause, idx) {
   return NEGATION.test(clause.slice(0, idx)) || (arabic.hasArabic(clause) && arabic.negatedAt(clause, idx));
@@ -899,15 +908,20 @@ function judge(sentences, ctx) {
       if (!summary && sClauses.length > 1 && raw !== sClauses[0] && (m = CLAIM_BARE_PAST.exec(cl)) && !replyDid("act:" + stem(m[1])) && !(c.uiOk && UI_VERBS.test(m[1]))) return fail("action-claim", raw, si);
       if (!summary && (m = PROGRESSIVE_BARE.exec(cl))) return fail("action-claim", raw, si); // in a summary a gerund is a noun ("recommends rebooting"), judged below
       if (summary && (m = PROGRESSIVE_FIRST.exec(cl)) && !negatedBefore(cl, m.index + m[0].length - m[2].length) && !replyDoing(reply, m[2])) return fail("action-claim", raw, si);
+      // A clause said exactly as the reply has it (GPT-Live repeating the result) adds nothing to it --
+      // «الباك أب ... خلص الساعة 3:05» was cut as an added claim because the clause split at the time's colon.
+      const fromReplyVerbatim = summary && replyText && cl.trim().length >= 8 && replyText.includes(cl.trim());
       if (summary) {
-        const ar = arabicSummaryRule(cl, replyDid);
-        if (ar) return fail(ar, raw, si);
-        const s = summaryClause(cl, raw, reply);
-        if (s) return fail(s.rule, s.match, si);
-        if ((m = CLAIM_BARE.exec(cl)) && !polarClaims(cl).length) return fail("added-claim", raw, si);
+        if (!fromReplyVerbatim) {
+          const ar = arabicSummaryRule(cl, replyDid);
+          if (ar) return fail(ar, raw, si);
+          const s = summaryClause(cl, raw, reply);
+          if (s) return fail(s.rule, s.match, si);
+          if ((m = CLAIM_BARE.exec(cl)) && !polarClaims(cl).length) return fail("added-claim", raw, si);
+        }
       } else {
         if ((m = CLAIM_BARE.exec(cl)) && !(stepTalk && /^(done|finished|completed)$/.test(m[1]))) return fail("action-claim", raw, si);
-        if ((m = CLAIM_THIRD.exec(cl)) && !negatedBefore(cl, m.index + m[0].length - m[2].length)) {
+        if ((m = CLAIM_THIRD.exec(cl)) && !negatedBefore(cl, m.index + m[0].length - m[2].length) && !conditionalBefore(cl, m.index + m[0].length - m[2].length)) {
           const word = m[2];
           const fromReply = replyText && uni(new RegExp("\\b" + word.replace(/ /g, "\\s+") + "\\b")).test(replyText);
           // "1 of 4 steps done", "the mission has completed 1 out of 4 steps": a status, from the snapshot.
@@ -1007,6 +1021,7 @@ function arabicDeskRule(cl, { stepTalk, replyDid, replied, uiDid, uiSentence }) 
     if (x.role === "did1" || x.role === "amb" || x.role === "prog1" || x.role === "ptc1") return "action-claim"; // ptc1: «أنا عاملة ده»
     if (x.role === "done" || x.role === "pass" || x.role === "prog3") {
       if (stepTalk && x.role === "done" && x.generic) continue;
+      if (x.idx != null && conditionalBefore(cl, x.idx)) continue; // «هشوف إذا كان تم»: asked about, not claimed
       if (!x.generic && replyDid("act:" + stem(x.en))) continue;
       return "action-claim";
     }

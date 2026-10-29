@@ -1,0 +1,479 @@
+#!/usr/bin/env node
+"use strict";
+/**
+ * The live call on GPT-Live (lib/voice-gptlive.js) against a mock of OpenAI's
+ * {ws}/live/sessions that speaks the event shapes measured on the real API
+ * on 2026-10-29 (session.started, session.input_transcript.delta and
+ * session.output_transcript.delta with start_ms / end_ms, a continuous
+ * session.output_audio.delta stream, session.delegation.created with
+ * metadata only, the appends' acknowledgements, session.usage.updated in
+ * seconds, session.closed), with a fake page, a fake supervisor, a fake
+ * reader and a fake transcriber. No network beyond 127.0.0.1.
+ *
+ *     NODE_PATH=/opt/moni-dashboard/node_modules node dashboard/tools/test-voice-gptlive.cjs
+ */
+const path = require("path");
+const http = require("http");
+const fs = require("fs");
+const WebSocket = require("ws");
+const { WebSocketServer } = WebSocket;
+
+const ROOT = path.join(__dirname, "..");
+const live = require(path.join(ROOT, "lib", "voice-live.js"));
+const gl = require(path.join(ROOT, "lib", "voice-gptlive.js"));
+const voice = require(path.join(ROOT, "lib", "voice.js"));
+const desk = require(path.join(ROOT, "lib", "voice-shared.js"));
+const usage = require(path.join(ROOT, "lib", "voice-usage.js"));
+const VoiceStop = require(path.join(ROOT, "public", "voice-stop.js"));
+
+let passed = 0;
+let failed = 0;
+function check(name, cond, detail) {
+  if (cond) {
+    passed++;
+    console.log("  ok   " + name);
+  } else {
+    failed++;
+    console.log("  FAIL " + name + (detail !== undefined ? "\n       " + String(detail).slice(0, 600) : ""));
+  }
+}
+const section = (t) => console.log("\n" + t);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+async function until(fn, ms, label) {
+  const end = Date.now() + (ms || 2000);
+  while (Date.now() < end) {
+    if (fn()) return true;
+    await sleep(5);
+  }
+  if (label) console.log("       (timed out waiting for " + label + ")");
+  return false;
+}
+
+/* --------------------------------------------------------- mock GPT-Live --- */
+
+const KEY = "sk-proj-" + "G".repeat(40) + "live";
+const mock = { sessions: [] };
+const mockServer = http.createServer((q, s) => (s.writeHead(404), s.end()));
+const mockWss = new WebSocketServer({ noServer: true });
+mockServer.on("upgrade", (req, sock, head) => {
+  if (String(req.headers.authorization || "") !== "Bearer " + KEY) {
+    sock.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+    return sock.destroy();
+  }
+  // The real endpoint answers 403 to a browser Origin.
+  if (req.headers.origin) {
+    sock.write("HTTP/1.1 403 Forbidden\r\n\r\n");
+    return sock.destroy();
+  }
+  mockWss.handleUpgrade(req, sock, head, (ws) => {
+    const s = { url: req.url, ws, events: [], session: null, appended: 0, closed: false, silentBytes: 0 };
+    s.push = (o) => ws.readyState === 1 && ws.send(JSON.stringify({ event_id: "ev" + Math.random().toString(36).slice(2), ...o }));
+    s.of = (type) => s.events.filter((e) => e.type === type);
+    ws.on("close", () => (s.closed = true));
+    ws.on("message", (d) => {
+      const ev = JSON.parse(String(d));
+      if (ev.type === "session.input_audio.append") {
+        const b = Buffer.from(ev.audio, "base64");
+        s.appended += b.length;
+        if (b.every((x) => x === 0)) s.silentBytes += b.length;
+        return;
+      }
+      s.events.push(ev);
+      if (ev.type === "session.start") {
+        s.session = ev.session;
+        s.push({ type: "session.started", session: { id: "live_test", ...ev.session } });
+      }
+      if (/^session\.(commentary|thinking|instructions)\.append$/.test(ev.type)) {
+        setTimeout(() => s.push({ type: ev.type.replace(/append$/, "appended"), client_event_id: ev.event_id, start_ms: 0, end_ms: 200 }), s.ackMs || 5);
+      }
+      if (ev.type === "session.close") s.push({ type: "session.closed", client_event_id: ev.event_id, usage: { seconds: (s.secs || 0) + 3 } });
+    });
+    mock.sessions.push(s);
+  });
+});
+const lastSession = () => mock.sessions[mock.sessions.length - 1];
+
+function tone(ms, amp) {
+  const b = Buffer.alloc(Math.round(ms * 48));
+  const a = amp == null ? 6000 : amp;
+  for (let i = 0; i < b.length; i += 2) b.writeInt16LE(i % 8 < 4 ? a : -a, i);
+  return b;
+}
+
+/** GPT-Live saying `say`: each word's transcript, then ~100 ms of loud audio (its transcript leads by a little). */
+async function speak(s, say, o) {
+  const opt = o || {};
+  const words = say.match(/\S+\s*/g) || [];
+  let tl = opt.tl || 5000;
+  for (let i = 0; i < words.length; i++) {
+    s.push({ type: "session.output_transcript.delta", delta: (i ? "" : " ") + words[i], start_ms: tl, end_ms: tl + 200 });
+    await sleep(opt.gap || 15);
+    s.push({ type: "session.output_audio.delta", delta: tone(100).toString("base64") });
+    tl += 200;
+    if (opt.stopAfter && i + 1 >= opt.stopAfter) return;
+  }
+  // then silence, as the real stream goes on
+  for (let i = 0; i < (opt.tail == null ? 2 : opt.tail); i++) {
+    s.push({ type: "session.output_audio.delta", delta: Buffer.alloc(4800).toString("base64") });
+    await sleep(10);
+  }
+}
+/** The administrator's words, as GPT-Live transcribes them. */
+async function hear(s, c, text, o) {
+  const opt = o || {};
+  c.audioIn(tone(opt.ms || 1500, 3000));
+  let tl = opt.tl == null ? 1000 : opt.tl;
+  for (const w of text.split(" ")) {
+    s.push({ type: "session.input_transcript.delta", delta: " " + w, start_ms: tl, end_ms: tl + 200 });
+    tl += 200;
+    await sleep(opt.gap || 2);
+  }
+  return tl;
+}
+
+/* ------------------------------------------------------------ the fakes --- */
+
+function makeCall(extra) {
+  const x = extra || {};
+  const client = { json: [], audio: [], closed: null };
+  const sup = { calls: [], replies: new Map(), nextTurn: 700 };
+  const call = (op, params, actor) => {
+    sup.calls.push([op, params, actor]);
+    if (op === "snapshot") {
+      const snap = { machine: {}, services: {} };
+      if (params && params.turns) snap.requests_to_moni_ai = params.turns.map((id) => ({ id, answered: sup.replies.has(id), reply: sup.replies.get(id) }));
+      return Promise.resolve(snap);
+    }
+    if (op === "send") return Promise.resolve({ turn: { id: ++sup.nextTurn, status: "queued" } });
+    return Promise.reject(new Error("refused " + op));
+  };
+  const spoke = [];
+  const rows = [];
+  const transcribed = [];
+  const logs = [];
+  const c = new gl.GptLiveCall({
+    cfg: { key: KEY, voice: "cedar", model: "gpt-realtime-2.1-mini", live_model: "gpt-live-1", transcribe_model: "gpt-4o-mini-transcribe", wsBase: WS_BASE, ...(x.cfg || {}) },
+    actor: "amaraghy",
+    ops: desk.voiceOps(call, "amaraghy"),
+    client: {
+      json: (o) => client.json.push(o),
+      audio: (seg, buf) => client.audio.push({ seg, bytes: buf.length, at: Date.now() }),
+      close: (code, why) => (client.closed = { code, why }),
+    },
+    persona: () => x.persona || {},
+    hearPersona: () => x.persona || {},
+    speak: async (text, cfg, sink) => {
+      spoke.push(text);
+      sink.start({ engine: "fake" });
+      sink.audio(tone(200));
+      return { billing: [{ model: "gpt-realtime-2.1-mini", tokens: { text_in: 20, audio_out: 40 } }], lateBilling: Promise.resolve([]) };
+    },
+    transcribe: async (wav) => {
+      transcribed.push(wav.length);
+      return { text: x.turnText == null ? "" : x.turnText, model: "gpt-4o-mini-transcribe", tokens: { audio_in: 30, text_in: 5, text_out: 10 } };
+    },
+    record: (row) => {
+      const r = { ...row, usd: usage.costOf(row.tokens, row.model) };
+      rows.push(r);
+      return r.usd;
+    },
+    isStop: (t) => VoiceStop.heard(t),
+    isUndo: (t) => VoiceStop.undo(t),
+    log: (m) => logs.push(m),
+    redact: (t) => t,
+    voiceprint: x.voiceprint || null,
+    opts: { pollMs: 20, duplex: x.duplex || "full", holdMs: x.holdMs == null ? 60 : x.holdMs, ...(x.opts || {}) },
+  });
+  return { c, client, sup, spoke, rows, transcribed, logs };
+}
+const sentOf = (s, type) => s.events.filter((e) => e.type === type);
+
+let WS_BASE;
+
+(async () => {
+  await new Promise((r) => mockServer.listen(0, "127.0.0.1", r));
+  WS_BASE = "ws://127.0.0.1:" + mockServer.address().port + "/v1";
+
+  section("the model list and the price");
+  {
+    const m = voice.VOICE_MODELS.find((v) => v.id === "gpt-live-1");
+    check("gpt-live-1 is offered as a voice model (gated on the key's model list), never the default", m && m.gated === true && voice.VOICE_MODEL_DEFAULT === "gpt-realtime-2.1-mini");
+    check("its replies are never read aloud by it (the reader stays 2.1 mini)", voice.readerModelFor("gpt-live-1") === "gpt-realtime-2.1-mini");
+    check("it speaks the live protocol", voice.protocolFor("gpt-live-1") === "live" && voice.protocolFor("gpt-realtime-2.1-mini") === "realtime");
+    check("priced by session time: $0.05 a minute (60 s -> $0.05)", Math.abs(usage.costOf({ seconds: 60 }, "gpt-live-1") - 0.05) < 1e-9);
+    const access = voice.modelAccess(["gpt-live-1", "gpt-realtime-2.1-mini"]);
+    check("offered when the key lists it, not when it does not", access["gpt-live-1"].available && !voice.modelAccess(["gpt-realtime-2.1-mini"])["gpt-live-1"].available);
+    const src = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
+    check("server.js starts a GptLiveCall when the voice model speaks the live protocol", /voice\.protocolFor\(cfg\.live_model\) === "live" \? voiceGptLive\.GptLiveCall : voiceLive\.LiveCall/.test(src));
+  }
+
+  section("the session: client delegation, the voice, no Origin header");
+  {
+    const { c, client, logs } = makeCall({ persona: { dialect: "egyptian", gender: "f" } });
+    await c.connect();
+    const s = lastSession();
+    check("connects to {ws}/live/sessions (the mock refuses any Origin header with 403)", /\/v1\/live\/sessions$/.test(s.url), s.url);
+    const cfg = s.session;
+    check("session.start: model gpt-live-1, client delegation", cfg.model === "gpt-live-1" && cfg.delegation && cfg.delegation.type === "client");
+    check("PCM 24 kHz, the panel's voice (cedar)", cfg.audio.format.type === "audio/pcm" && cfg.audio.format.rate === 24000 && cfg.audio.output.voice === "cedar");
+    check("the prompt asks for delegation with <|SpawnThinking|> and has the three policies", /<\|SpawnThinking\|>/.test(cfg.instructions) && /Backchannel policy/.test(cfg.instructions) && /Interruption policy/.test(cfg.instructions) && /Delegation policy/.test(cfg.instructions));
+    check("the persona's language line is in it", /Egyptian/i.test(cfg.instructions));
+    check("state listening once started", client.json.some((m) => m.type === "state" && m.state === "listening"));
+    // Realtime events the base class may send never reach GPT-Live.
+    c.send({ type: "response.cancel" });
+    c.send({ type: "conversation.item.truncate", item_id: "x", content_index: 0, audio_end_ms: 0 });
+    c.send({ type: "input_audio_buffer.clear" });
+    c.send({ type: "conversation.item.create", item: { type: "message", role: "user", content: [{ type: "input_text", text: "(System note: the line dropped.)" }] } });
+    await sleep(40);
+    check("realtime-only events are dropped; a conversation note becomes session.thinking.append", !s.events.some((e) => /^(response|conversation|input_audio_buffer)\./.test(e.type)) && sentOf(s, "session.thinking.append").some((e) => /line dropped/.test(e.content) && e.delegation_id === null));
+    // The clock: the page sends nothing, the session still hears (silence).
+    const before = s.appended;
+    await sleep(450);
+    check("with no microphone audio the server keeps GPT-Live's timeline fed with silence", s.appended - before >= 48 * 200 && s.silentBytes >= 48 * 200, s.appended - before);
+    c.audioIn(tone(100, 3000));
+    await sleep(20);
+    check("the microphone's audio is relayed as session.input_audio.append", s.appended > before);
+    s.push({ type: "session.usage.updated", usage: { seconds: 12 }, context_window: { usage_ratio: 0.01 } });
+    s.push({ type: "session.usage.updated", usage: { seconds: 30 }, context_window: { usage_ratio: 0.02 } });
+    s.secs = 30; // the mock's session.closed reports the cumulative total + 3
+    await sleep(30);
+    c.close("hung-up");
+    await sleep(60);
+    check("session.close is sent when the call ends", sentOf(s, "session.close").length === 1);
+    check("usage: the session's seconds are billed once each (12 + 18 + the closing 3 = 33 s)", Math.abs(c.liveSecs - 33) < 1e-9 && Math.abs(c.usd - (33 / 60) * 0.05) < 1e-9, c.liveSecs + " s, $" + c.usd);
+    void logs;
+  }
+
+  section("small talk: GPT-Live answers itself, its words are guarded before they are heard");
+  {
+    const { c, client } = makeCall();
+    await c.connect();
+    const s = lastSession();
+    await hear(s, c, "hey how are you");
+    await speak(s, "I'm good, thanks. How are you?");
+    await until(() => client.json.some((m) => m.type === "segend"), 2000, "segend");
+    check("its audio reaches the page (held a moment for its words)", client.audio.length >= 6);
+    check("its words are captioned", client.json.some((m) => m.type === "caption" && m.who === "desk" && /good/.test(m.text)));
+    await until(() => client.json.some((m) => m.type === "caption" && m.who === "you"), 2500, "the turn's caption");
+    check("the administrator's turn is captioned from GPT-Live's transcript", client.json.some((m) => m.type === "caption" && m.who === "you" && /how are you/.test(m.text)));
+    check("no hand-off for small talk", !c.requests.size);
+    c.close("hung-up");
+  }
+
+  section("a claim GPT-Live cannot back is cut before it is heard");
+  {
+    const { c, client, spoke } = makeCall();
+    await c.connect();
+    const s = lastSession();
+    await hear(s, c, "restart the odoo service");
+    await speak(s, "Sure, I restarted the Odoo service and it is running again.");
+    await until(() => c.diag.gptlive.cuts > 0, 2000, "the cut");
+    check("the guard cuts the utterance", c.diag.gptlive.cuts === 1 && c.diag.trips[0] && /claim/.test(c.diag.trips[0].rule), JSON.stringify(c.diag.trips));
+    const heard = client.audio.length;
+    check("none of it reached the page (cut while its audio was still held)", heard === 0, heard + " chunks");
+    check("GPT-Live is told to stop (session.instructions.append)", sentOf(s, "session.instructions.append").some((e) => /Stop speaking/.test(e.content)));
+    await until(() => spoke.length > 0, 3000, "the safe line");
+    check("the safe line is read by the verbatim reader", spoke.length >= 1);
+    c.close("hung-up");
+  }
+
+  section("a delegation: this server's transcript goes to MINT AI, the result goes back as commentary");
+  {
+    const { c, client, sup, transcribed } = makeCall({ turnText: "Can you check why the dashboard restarted last night?" });
+    await c.connect();
+    const s = lastSession();
+    const end = await hear(s, c, "can you check why the dashboard restarted last nite");
+    s.push({ type: "session.delegation.created", offset_ms: end + 300, delegation: { id: "item_deleg1", type: "delegation", target: "client" } });
+    await speak(s, "On it.");
+    await until(() => sup.calls.some((x) => x[0] === "send"), 4000, "the hand-off");
+    const sent = sup.calls.find((x) => x[0] === "send");
+    check("the hand-off was transcribed by this server (the full-turn transcript)", transcribed.length >= 1);
+    check("MINT AI gets this server's transcript, not GPT-Live's words", sent && /Can you check why the dashboard restarted last night\?/.test(sent[1].text), sent && sent[1].text);
+    check("...and, marked, what the live voice heard (they differ: 'nite')", sent && /live voice's own transcript/.test(sent[1].text) && /last nite/.test(sent[1].text));
+    check("the ack 'On it.' passes (a delegation backs it)", client.json.some((m) => m.type === "caption" && /On it/.test(m.text)) && !client.json.some((m) => m.type === "cut"));
+    const id = [...c.requests.keys()][0];
+    sup.replies.set(id, "The dashboard restarted at 02:14 because a deploy ran. It has been up since and nothing is wrong.");
+    await until(() => sentOf(s, "session.commentary.append").length > 0, 3000, "the commentary");
+    const com = sentOf(s, "session.commentary.append")[0];
+    check("the result goes to GPT-Live as commentary on the same delegation", com && com.delegation_id === "item_deleg1" && /02:14/.test(com.content) && /nothing is wrong/.test(com.content), JSON.stringify(com));
+    // GPT-Live says it in its own words, faithfully: heard.
+    await speak(s, "Looks like the dashboard restarted at 02:14 because a deploy ran. It's been up since, and nothing is wrong.");
+    await until(() => client.json.filter((m) => m.type === "caption" && m.who === "mint").length >= 2, 3000, "the result captions");
+    check("a faithful paraphrase is heard and captioned as MINT AI's", client.json.filter((m) => m.type === "caption" && m.who === "mint").length >= 2 && !client.json.some((m) => m.type === "cut"));
+    check("state: waiting while MINT AI works (or speaking/listening after)", client.json.some((m) => m.type === "state" && m.state === "waiting"));
+    c.close("hung-up");
+  }
+
+  section("\"I'll check that right now\" with a delegation behind it is not a promise; one hand-off per turn");
+  {
+    const { c, client, sup } = makeCall({ turnText: "قوليلي فاضل قد ايه مساحة على الديسك" });
+    await c.connect();
+    const s = lastSession();
+    const end = await hear(s, c, "قوليلي فاضل قد ايه مساحة على الديسك");
+    s.push({ type: "session.delegation.created", offset_ms: end + 200, delegation: { id: "item_deleg5", type: "delegation", target: "client" } });
+    await speak(s, "حاضر، هشوف المساحة حالا.");
+    await until(() => sup.calls.some((x) => x[0] === "send"), 4000, "the hand-off");
+    await sleep(1900);
+    check("«هشوف ... حالا» after a delegation: not cut", c.diag.gptlive.cuts === 0 && !client.json.some((m) => m.type === "cut"), JSON.stringify(c.diag.trips));
+    check("  and captioned as said", client.json.some((m) => m.type === "caption" && /حالا/.test(m.text || "")));
+    check("exactly one hand-off for the turn", sup.calls.filter((x) => x[0] === "send").length === 1);
+    c.close("hung-up");
+  }
+
+  section("a result said wrongly is cut and read word for word");
+  {
+    const { c, client, sup, spoke } = makeCall({ turnText: "How much disk space is free?" });
+    await c.connect();
+    const s = lastSession();
+    const end = await hear(s, c, "how much disk space is free");
+    s.push({ type: "session.delegation.created", offset_ms: end + 200, delegation: { id: "item_deleg2", type: "delegation", target: "client" } });
+    await until(() => c.requests.size > 0, 4000, "the hand-off");
+    const id = [...c.requests.keys()][0];
+    sup.replies.set(id, "There are 41 GB free on the main disk, out of 200 GB.");
+    await until(() => sentOf(s, "session.commentary.append").length > 0, 3000, "the commentary");
+    await speak(s, "You've got about 14 GB free on the main disk.", { gap: 25 });
+    await until(() => c.diag.gptlive.cuts > 0, 2000, "the cut");
+    check("a wrong figure in a result is cut (before it is heard)", c.diag.gptlive.cuts === 1 && /figure/.test(c.diag.trips[0].rule), JSON.stringify(c.diag.trips));
+    await until(() => spoke.some((t) => /41 GB/.test(t)), 3000, "the verbatim reading");
+    check("the result is then read word for word by the reader", spoke.some((t) => /There are 41 GB free on the main disk, out of 200 GB\./.test(t)), spoke.join(" | "));
+    check("GPT-Live is told what was read instead (quiet context)", sentOf(s, "session.thinking.append").some((e) => /read to the administrator word for word/.test(e.content)));
+    c.close("hung-up");
+  }
+
+  section("barge-in: the page's detector stops the voice at once, GPT-Live is muted until quiet");
+  {
+    const { c, client } = makeCall();
+    await c.connect();
+    const s = lastSession();
+    await hear(s, c, "tell me something");
+    const p = speak(s, "Here is a long sentence that goes on and on while the administrator wants to say something else entirely.", { gap: 30 });
+    await until(() => client.audio.length >= 3, 2000, "audio");
+    c.message({ type: "voice", on: true });
+    check("a flush goes to the page at once", client.json.some((m) => m.type === "flush"));
+    const n = client.audio.length;
+    await p;
+    await sleep(100);
+    check("nothing more of that utterance reaches the page", client.audio.length === n, client.audio.length - n);
+    // GPT-Live goes quiet (silence frames), then speaks again: heard.
+    for (let i = 0; i < 5; i++) s.push({ type: "session.output_audio.delta", delta: Buffer.alloc(4800).toString("base64") }), await sleep(80);
+    await speak(s, "Sure, go ahead.");
+    await until(() => client.audio.length > n, 2000, "audio after the barge-in");
+    check("once it has been quiet, its next words are heard again", client.audio.length > n);
+    check("the barge-in is in the diagnostics", c.diag.bargeIns.length === 1 && c.diag.gptlive.bargeStops.length === 1);
+    c.close("hung-up");
+  }
+
+  section("headphones: the administrator's voice over the voice, heard in the relayed microphone, is a barge-in");
+  {
+    const { c, client } = makeCall();
+    await c.connect();
+    const s = lastSession();
+    for (let i = 0; i < 10; i++) c.audioIn(tone(20, 30)); // a quiet room
+    await hear(s, c, "tell me a story", { ms: 20 });
+    const p = speak(s, "Once upon a time there was a server that never slept and always answered.", { gap: 30 });
+    await until(() => client.audio.length >= 2, 2000, "audio");
+    check("no flush from a quiet room while it speaks", !client.json.some((m) => m.type === "flush"));
+    for (let i = 0; i < 4; i++) c.audioIn(tone(100, 4000));
+    check("300 ms of the administrator's voice over it: flushed", client.json.some((m) => m.type === "flush") && c.diag.gptlive.bargeStops.some((b) => b.how === "mic"));
+    await p;
+    c.close("hung-up");
+  }
+
+  section("speakers mode: GPT-Live hears silence while it is audible; a tap interrupts");
+  {
+    const { c, client } = makeCall({ duplex: "speakers" });
+    await c.connect();
+    const s = lastSession();
+    await hear(s, c, "hello there");
+    const p = speak(s, "Hello! It is good to hear from you today, how can I help?", { gap: 30 });
+    await until(() => client.audio.length >= 2, 2000, "audio");
+    const silentBefore = s.silentBytes;
+    c.audioIn(tone(100, 5000));
+    await sleep(20);
+    check("the microphone is replaced by silence while the voice is audible", s.silentBytes - silentBefore >= 4800, s.silentBytes - silentBefore);
+    c.message({ type: "interrupt" });
+    check("a tap flushes the page", client.json.some((m) => m.type === "flush"));
+    await sleep(20);
+    check("and tells GPT-Live to stop and listen", sentOf(s, "session.instructions.append").some((e) => /interrupted/.test(e.content)));
+    await p;
+    c.close("hung-up");
+  }
+
+  section("language: a switch is told to GPT-Live quietly");
+  {
+    const { c } = makeCall();
+    await c.connect();
+    const s = lastSession();
+    await hear(s, c, "how much disk is free");
+    await sleep(1700);
+    await hear(s, c, "قوليلي فاضل قد ايه مساحة", { tl: 6000 });
+    await sleep(60);
+    check("after English, three Arabic words: a thinking note to answer in Egyptian Arabic", sentOf(s, "session.thinking.append").some((e) => /Egyptian Arabic/.test(e.content)));
+    check("never as an instruction (that would cut off what it is saying)", !sentOf(s, "session.instructions.append").some((e) => /Arabic/.test(e.content)));
+    c.close("hung-up");
+  }
+
+  section("a request said in two pieces is one hand-off");
+  {
+    const { c, sup } = makeCall({ turnText: "Can you check why the dashboard restarted?" });
+    await c.connect();
+    const s = lastSession();
+    await hear(s, c, "can you check why the");
+    await sleep(1650); // GPT-Live's transcript paused: the first piece finishes as a turn
+    const end = await hear(s, c, "dashboard restarted", { tl: 2500 });
+    s.push({ type: "session.delegation.created", offset_ms: end + 200, delegation: { id: "item_deleg3", type: "delegation", target: "client" } });
+    await until(() => sup.calls.some((x) => x[0] === "send"), 5000, "the hand-off");
+    const sent = sup.calls.filter((x) => x[0] === "send");
+    check("one hand-off for both pieces", sent.length === 1 && c.diag.merged === 1, sent.length + " / merged " + c.diag.merged);
+    c.close("hung-up");
+  }
+
+  section("nothing grounded: no hand-off, GPT-Live says it did not catch it");
+  {
+    const { c, sup } = makeCall({ turnText: "" });
+    await c.connect();
+    const s = lastSession();
+    const end = await hear(s, c, "mumble");
+    s.push({ type: "session.delegation.created", offset_ms: end + 200, delegation: { id: "item_deleg4", type: "delegation", target: "client" } });
+    await until(() => sentOf(s, "session.commentary.append").length > 0, 9000, "the commentary");
+    check("no hand-off without this server's own transcript", !sup.calls.some((x) => x[0] === "send"));
+    const com = sentOf(s, "session.commentary.append")[0];
+    check("GPT-Live is given the not-caught line on that delegation", com && com.delegation_id === "item_deleg4" && com.content === desk.linesFor("en").notCaught, JSON.stringify(com));
+    c.close("hung-up");
+  }
+
+  section("the spoken stop command ends the call");
+  {
+    const { c, client } = makeCall();
+    await c.connect();
+    const s = lastSession();
+    await hear(s, c, "stop listening");
+    await until(() => c.closed, 3000, "the end");
+    check("stop listening ends it (voice-command)", c.closed && c.endWhy.why === "voice-command" && client.json.some((m) => m.type === "stop"));
+  }
+
+  section("a voice change to a realtime model ends a GPT-Live call (and the other way round)");
+  {
+    const { c, client } = makeCall();
+    await c.connect();
+    const r = await c.swapUpstream({ live_model: "gpt-realtime-2.1-mini" });
+    check("the GPT-Live call ends with voice-changed", !r.ok && c.closed && c.endWhy.why === "voice-changed" && client.json.some((m) => m.type === "ended"));
+    const src = fs.readFileSync(path.join(ROOT, "lib", "voice-live.js"), "utf8");
+    check("a realtime call asked to become GPT-Live ends too", /\/\^gpt-live\/\.test\(String\(patch\.live_model\)\) && this\.kind !== "gpt-live"/.test(src));
+  }
+
+  section("helpers");
+  {
+    const long = Array.from({ length: 90 }, (_, i) => "Sentence number " + (i + 1) + " is here.").join(" ");
+    const parts = gl.chunksOf(long);
+    check("a long result is split into appends under the 500-token limit, on sentence boundaries", parts.length > 1 && parts.every((p) => p.length <= 1200 && /\.$/.test(p)));
+    check("rmsOf: silence is 0, a tone is loud", gl.rmsOf(Buffer.alloc(960)) === 0 && gl.rmsOf(tone(20)) > gl.LOUD_RMS);
+  }
+
+  mockServer.close();
+  console.log(`\n${passed} passed, ${failed} failed`);
+  process.exit(failed ? 1 : 0);
+})().catch((e) => {
+  console.log("crashed: " + e.stack);
+  process.exit(1);
+});

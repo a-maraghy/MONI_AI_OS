@@ -426,8 +426,9 @@ talks to OpenAI and never sees the key (the CSP still forbids it to).
   word for word on the real API on 2026-09-30, English and Egyptian, including
   the ones that tempt a model to answer); `readerModelFor` gives
   `gpt-realtime-2.1-mini` for any other voice model. A reading that still fails the verbatim check is read again by
-  `gpt-4o-mini-tts` -- a fixed safety net, not a setting. `gpt-live-1` is not
-  offered. Each sentence is an **out-of-band** `response.create`
+  `gpt-4o-mini-tts` -- a fixed safety net, not a setting. `gpt-live-1` never
+  reads aloud (it paraphrases by design); it is offered as the live
+  conversation only (see *Live conversation on GPT-Live*). Each sentence is an **out-of-band** `response.create`
   (`conversation: "none"`, empty input, the text quoted in that response's
   instructions): put in as a user message, the real model *answers* it ("Hello,
   can you hear me?" -> "Yes, I can hear you loud and clear. How can I assist
@@ -801,6 +802,46 @@ Arabic, an unknown past-tense result verb), the summary rules across the two
 languages, the Arabic fixed lines, and the Arabic silence phrases and
 subtitle credits on the transcript side. `ask_moni` sends the server's own
 transcript of the turn, never the voice model's paraphrase.
+
+### Live conversation on GPT-Live (beta, 2026-10-29)
+
+Settings ▸ Voice ▸ Voice model **GPT-Live + MINT AI** (`gpt-live-1`, gated on
+the key's model list; not the default). `lib/voice-gptlive.js` (`GptLiveCall`,
+a `LiveCall` with the upstream leg swapped; server.js picks the class by
+`voice.protocolFor(live_model)`). The page and its protocol are unchanged.
+
+- **Protocol** (OpenAI docs + real API, 2026-10-29): `wss://api.openai.com/v1/live/sessions`,
+  no Origin header; `session.start {model, instructions, audio: {format:
+  {type: "audio/pcm", rate: 24000}, output: {voice}}, delegation: {type:
+  "client"}}` -> `session.started`. Input `session.input_audio.append`
+  (continuous: it only talks while it hears, so the server sends silence
+  when the page sends nothing). Out: `session.input_transcript.delta` /
+  `session.output_transcript.delta` (`start_ms`/`end_ms` on GPT-Live's own
+  clock, which drifts from the audio sent), `session.output_audio.delta`
+  (continuous, silence included, no timing), `session.delegation.created
+  {delegation: {id}, offset_ms}` (metadata only, never the words),
+  `session.usage.updated {usage: {seconds}}` (cumulative), `session.closed`.
+  Back: `session.commentary.append {delegation_id, content}` (said in its own
+  words), `session.thinking.append` (quiet context), `session.instructions.append`
+  (steers; can cut off its speech); <= 500 tokens each. $0.05 a minute.
+- **Delegation = MINT AI.** The prompt asks for `<|SpawnThinking|>` for
+  anything about the machine or the screen. On a delegation the turn is
+  found in the relayed audio (`speechSpan`), transcribed by this server's
+  transcription model and handed over through `passOn` -- the same door, the
+  voiceprint, talk-only speakers, the approval gate. GPT-Live's own
+  transcript goes along only as a marked note. MINT AI's reply (or its first
+  sentences while it is written) goes back as commentary on that delegation.
+- **Guard.** Output audio is held `HOLD_MS` (250 ms; an utterance's start `LEAD_MS` 150 ms more, the page's jitter buffer) for its words; the
+  Releaser judges the words so far (claims, figures). A result is judged with
+  the summary rules against exactly the commentary it was given, figures on the
+  words so far. A cut flushes the page, mutes GPT-Live until it is quiet, and
+  the safe line -- or the result itself -- is read word for word by 2.1 mini.
+  An unbacked "let me check" is made true (the turn is handed over).
+- **Barge-in.** GPT-Live yields by itself (~1-1.5 s, measured); the page's
+  detector makes it immediate (headphones mode). Speakers mode: GPT-Live
+  hears silence while it is audible; a tap interrupts.
+- Tests: `tools/test-voice-gptlive.cjs` (mock of the live protocol),
+  `tools/test-voice-models.cjs` (the route opens a GPT-Live session).
 
 ### Live conversation
 
