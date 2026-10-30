@@ -71,6 +71,16 @@
  *     response.cancel, truncation, buffer clears) are translated or dropped
  *     in send(): notes become `session.thinking.append`.
  *
+ *   - 2026-10-30 (call lv1jz4g): the prompt names the exact fillers ("One second." / «ثانية واحدة.») and
+ *     forbids "I'll ask ..." of anyone (it said «ثواني وهسال mint ai» and was cut mid-word); it names the
+ *     other agents (the supervisor's live sessions, read at call start: loadAgents) so "ask MINT Pace"
+ *     is delegated like any request -- the supervisor routes it to that session (moni-ai
+ *     lib/voiceroute.js) and its later reply is said here (LiveCall.followUpEvent); quick facts
+ *     (weather, time, general knowledge) are delegated too and answered in seconds by the call's quick
+ *     lane, never from GPT-Live's memory. A summary cut part-way: the rest of the reply goes to the
+ *     verbatim reader once GPT-Live has said the lines before it (afterResultSaid), not "the rest is on
+ *     screen". "The details are on screen" only when the page showed the reply (LiveCall.screenLine).
+ *
  * Pure of I/O except through what it is given, as LiveCall.
  */
 
@@ -120,6 +130,8 @@ const SUPPRESS_QUIET_MS = 300;
 const APPEND_CHARS = 1200; // each append is limited to 500 tokens; Arabic runs ~2.5 characters a token
 const STUCK_MS = 30000;
 const UNBACKED_WAIT_MS = 1500; // a delegation with no result after this: one quiet progress note
+const AGENTS_WAIT_MS = 600; // the session start waits this long at most for the agents' names
+const RESULT_SAID_MAX_MS = 25000; // the rest of a cut summary waits this long at most for GPT-Live to say the lines before it
 const LIVE_EVENTS = new Set([
   "session.start",
   "session.close",
@@ -140,6 +152,8 @@ const LIVE_EVENTS = new Set([
 const INSTRUCTIONS = [
   "You are MINT AI, the assistant that runs this VPS (a server) for its administrator, in a live spoken conversation. Speak in the first person, warmly and naturally, in short spoken sentences, like a capable colleague on a call. One identity: never speak of MINT AI as someone else, and never say you passed, sent, forwarded or delegated anything.",
   "",
+  "While a result is on its way, say only one of these fillers, nothing else: \"One second.\", \"Just a second.\", \"Let me see.\" -- in Arabic «ثانية واحدة.» or «ثانية بس.». Never say you will ask, check with, consult or hear back from anyone (not MINT AI, not \"the system\", not another agent): the work is yours.",
+  "",
   "Backchannel policy: Use few backchannels. A short \"mm-hmm\" at most while the administrator is mid-thought.",
   "",
   "Interruption policy: When the administrator interrupts, stop speaking right away, even in the middle of a sentence. Listen until they finish, then respond to what they said.",
@@ -148,10 +162,14 @@ const INSTRUCTIONS = [
   "Backend tools:",
   "- Your own deeper work: it reads the machine's live state (services, disk, memory, CPU, logs, Claude sessions, missions, approvals, Odoo, backups, files), reasons about it, and acts on the machine (restart, deploy, fix, delete, push, send).",
   "- This screen: open or close panels and pages, dark or light mode, the voice, the Arabic voice persona, ending or muting this call.",
+  "- Quick facts: the weather, the time and date, conversions, general knowledge. They are looked up for you in a second or two; never answer them from memory.",
+  "- The other agents on this machine, by name (AGENTS). When the administrator asks you to ask, tell or check something with one of them, that request goes straight to that agent and its answer comes back to you as a result.",
   "",
   "Generate <|SpawnThinking|> when:",
   "- The administrator asks anything about the machine or its work that you would have to look up.",
   "- The administrator asks you to do, change, check, open, close, switch, restart, fix, send or approve anything, on the machine or on this screen.",
+  "- The administrator asks for a fact you would have to know: the weather, the time or date, a conversion, a number, a name, news.",
+  "- The administrator names one of the agents above and wants something from it.",
   "- A correction changes something already asked for.",
   "- You are not sure.",
   "",
@@ -170,8 +188,13 @@ const INSTRUCTIONS = [
   "- When a result arrives, say all of it -- every point, in order, not a shorter version -- in your own words, but keep every number, name, time, unit and every \"not\" or \"no\" exactly as given, in the language of the conversation. Add no advice, next steps or offers the result does not contain. If it says the rest is on the screen, say so.",
 ].join("\n");
 
-function instructionsFor(persona) {
-  return INSTRUCTIONS + "\n" + personaLib.liveNote(persona);
+// The agents the prompt names when the supervisor's list cannot be read (call start, lib/voice-gptlive.js loadAgents).
+const DEFAULT_AGENTS = ["MINT Pace", "[GSH] Planning Automation", "Mint Builder", "Mint Convener"];
+
+/** The prompt with this call's agent names (the supervisor's live sessions; DEFAULT_AGENTS if unknown). */
+function instructionsFor(persona, agents) {
+  const list = (agents && agents.length ? agents : DEFAULT_AGENTS).slice(0, 12).map((n) => String(n).replace(/[\n\r"]/g, " ").slice(0, 60));
+  return INSTRUCTIONS.replace("(AGENTS)", "(" + list.join(", ") + ")") + "\n" + personaLib.liveNote(persona);
 }
 
 function rmsOf(buf) {
@@ -236,7 +259,7 @@ class GptLiveCall extends LiveCall {
     if (recap) input.push({ type: "message", role: "developer", content: [{ type: "input_text", text: "This conversation was reconnected." + recap }] });
     return {
       model: GPT_LIVE_MODEL,
-      instructions: instructionsFor(this.persona),
+      instructions: instructionsFor(this.persona, this.agents),
       ...(input.length ? { input } : {}),
       audio: { format: { type: "audio/pcm", rate: RATE }, output: { voice: this.cfg.voice || "marin" } },
       // Client delegation: this server owns the hand-off (and its transcript, permissions and approvals).
@@ -244,9 +267,26 @@ class GptLiveCall extends LiveCall {
     };
   }
 
+  /**
+   * The other agents MINT AI can reach (the supervisor's live sessions, from the voice door's snapshot), for
+   * the prompt and for the guard ("MINT Pace replied" is another agent, not MINT AI as someone else).
+   */
+  async loadAgents() {
+    try {
+      const snap = await this.d.ops.snapshot();
+      const list = ((snap && snap.sessions && snap.sessions.list) || []).map((x) => String((x && x.name) || "")).filter((n) => n && !/^unnamed/i.test(n));
+      this.agents = list.slice(0, 12);
+      desk.setMintAgents(this.agents);
+    } catch (e) {
+      this.agents = null;
+    }
+    return this.agents;
+  }
+
   /** Open the GPT-Live session: no Origin header, session.start, ready on session.started. */
   open() {
     if (this.ready) return this.ready;
+    if (!this.agentsP) this.agentsP = this.loadAgents();
     this.ready = new Promise((resolve, reject) => {
       const ws = (this.ws = new WebSocket(this.upstreamUrl(), {
         headers: { Authorization: "Bearer " + this.cfg.key },
@@ -281,7 +321,12 @@ class GptLiveCall extends LiveCall {
       });
       ws.on("close", (code, reason) => lost("code " + code + (reason && reason.length ? ' "' + live.scrub(String(reason)).slice(0, 120) + '"' : "")));
       ws.on("pong", () => (up.heardAt = this.now()));
-      ws.on("open", () => ws.send(JSON.stringify({ type: "session.start", event_id: "start_" + this.id, session: this.sessionConfig() })));
+      // The agents' names go into the prompt: waited for briefly (the supervisor answers in ~50 ms), never blocking the call.
+      ws.on("open", () =>
+        Promise.race([this.agentsP, new Promise((r) => setTimeout(r, AGENTS_WAIT_MS))]).then(() => {
+          if (ws === this.ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "session.start", event_id: "start_" + this.id, session: this.sessionConfig() }));
+        })
+      );
       ws.on("message", (data) => {
         if (ws !== this.ws) return;
         up.heardAt = this.now();
@@ -977,11 +1022,16 @@ class GptLiveCall extends LiveCall {
     };
     let fallback = !this.d.summarise;
     const t0 = this.now();
+    const verbatim = [];
     if (this.d.summarise) {
       try {
         const out = await this.d.summarise(id, {
           onLine: (l) => {
             if (!parts.length) this.log(`live: call ${this.id} request ${id}: first summary line ${this.now() - t0} ms after the reply`);
+            // The rest of the reply after a summary cut (Summariser restOfReply): word for word, by the reader,
+            // once GPT-Live has said the lines before it -- never back to GPT-Live to paraphrase.
+            if (l.verbatim) return verbatim.push(l);
+            if (l.details) return (verbatim.length ? verbatim.push({ text: this.detailsLine(reply, id), safe: true }) : give(this.detailsLine(reply, id)));
             give(l.text);
           },
           persona: this.persona,
@@ -996,18 +1046,40 @@ class GptLiveCall extends LiveCall {
         if (!parts.length) fallback = true;
       }
     }
+    if (verbatim.length && !this.closed) {
+      this.log(`live: call ${this.id} request ${id}: the summary was cut part-way; the rest of the reply (${verbatim.length} line${verbatim.length === 1 ? "" : "s"}) is read word for word`);
+      await this.afterResultSaid(id);
+      this.quietNote(null, "The rest of the result is being read to the administrator word for word: " + verbatim.map((l) => l.text).join(" ").slice(0, 800));
+      this.say(verbatim, "mint", null, this.id + "r" + id);
+    }
     if (fallback && !this.closed) {
       const sents = speakableSentences(clean).slice(alreadySaid.length);
       let content = sents.slice(0, live.VERBATIM_MAX_SENTENCES).join(" ");
-      if (sents.length > live.VERBATIM_MAX_SENTENCES || /```|\n\s*[-*|#]/.test(reply)) content += " " + this.detailsLine(reply);
-      if (!sents.length && !alreadySaid.length) content = this.detailsLine(reply);
+      if (sents.length > live.VERBATIM_MAX_SENTENCES || /```|\n\s*[-*|#]/.test(reply)) content += " " + this.detailsLine(reply, id);
+      if (!sents.length && !alreadySaid.length) content = this.detailsLine(reply, id);
       give(content);
     }
     this.log(`live: call ${this.id} request ${id}: result handed to the live voice ${mine.askedAt ? mine.repliedAt - mine.askedAt + " ms after the ask" : ""}${fallback ? " (as written)" : " (detailed summary)"}`);
   }
 
-  detailsLine(reply) {
-    return desk.linesFor(arabic.isArabic(reply) ? "ar" : "en", this.persona.gender).details;
+  /**
+   * Wait (at most RESULT_SAID_MAX_MS) until GPT-Live has said the result it was given for request `id`:
+   * its window opened, an utterance of it began and ended, and nothing is being said now.
+   */
+  async afterResultSaid(id) {
+    const end = this.now() + RESULT_SAID_MAX_MS;
+    while (!this.closed && this.now() < end) {
+      const w = this.resultWin;
+      const said = w && w.id === id && (w.utts || 0) > 0;
+      if (said && (!this.utt || this.utt.done)) return true;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    return false;
+  }
+
+  /** "The details are on screen" when the page showed reply `id`, else an offer to say the rest (LiveCall.screenLine). */
+  detailsLine(reply, id) {
+    return this.screenLine(arabic.isArabic(reply) ? "ar" : "en", id);
   }
 
   /** A sentence of MINT AI's reply released while it is written: GPT-Live says it at once. */
@@ -1022,6 +1094,7 @@ class GptLiveCall extends LiveCall {
     if (!st.read.length) {
       st.firstAt = this.now();
       this.log(`live: call ${this.id} request ${st.id}: first sentence of the reply handed to the live voice while it is written, ${st.firstAt - (mine.askedAt || st.at)} ms after the ask`);
+      this.toClient({ type: "replying", turn: st.id }); // the page shows the reply as it is written (its reply card)
     }
     st.read.push(line);
     st.msgRead.push(line);
@@ -1275,7 +1348,7 @@ class GptLiveCall extends LiveCall {
       const sents = speakableSentences(r.result.reply || r.result.content);
       const from = Math.min(sents.length, r.rel.released);
       const lines = sents.slice(from, from + live.VERBATIM_MAX_SENTENCES).map((s) => ({ text: s, safe: false }));
-      if (sents.length > from + live.VERBATIM_MAX_SENTENCES) lines.push({ text: this.detailsLine(r.result.reply || ""), safe: true });
+      if (sents.length > from + live.VERBATIM_MAX_SENTENCES) lines.push({ text: this.detailsLine(r.result.reply || "", r.result.id), safe: true });
       r.result.cut = true; // (the window stays open: GPT-Live repeating the result is still judged against it)
       this.quietNote(null, "The rest of the result was read to the administrator word for word: " + lines.map((l) => l.text).join(" ").slice(0, 800));
       if (lines.length) await this.say(lines, "mint", null, this.id + "r" + (r.result.id || "x"));
@@ -1291,7 +1364,7 @@ class GptLiveCall extends LiveCall {
     if (t && t.talkOnly) line = lang === "ar" ? live.TALK_ONLY_LINE.ar : live.TALK_ONLY_LINE.en;
     else if (!recentTurn || !t || t.dropped) {
       // Nothing new was said: no hand-off. A recent result -> "the details are on screen"; work pending -> still on it; else just stop.
-      line = this.replies.length && this.resultWin && this.now() - this.resultWin.at < 60000 ? L.details : this.anyPending() ? L.asked : null;
+      line = this.replies.length && this.resultWin && this.now() - this.resultWin.at < 60000 ? this.screenLine(lang, this.resultWin.id) : this.anyPending() ? L.asked : null;
       if (!line) return;
     } else if (t && !t.asked && !t.handing && !t.dropped) {
       // What it said needed real work it had not asked for: the turn goes to MINT AI, so the safe line is true.

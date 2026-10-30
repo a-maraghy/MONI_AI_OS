@@ -145,6 +145,7 @@ function makeCall(extra) {
       return Promise.resolve(snap);
     }
     if (op === "send") return Promise.resolve({ turn: { id: ++sup.nextTurn, status: "queued" } });
+    if (op === "voice-warm") return Promise.resolve({ warmed: true, lanes: [] });
     return Promise.reject(new Error("refused " + op));
   };
   const spoke = [];
@@ -483,6 +484,82 @@ let WS_BASE;
     check("  one result window: the second line joins the first", c.resultWin && /02:14/.test(c.resultWin.content) && /9 hours/.test(c.resultWin.content) && /9 hours/.test(c.resultWin.reply), c.resultWin && c.resultWin.content);
     check("the summary's tokens are recorded (part desk)", rows.some((r) => r.part === "desk"));
     c.close("hung-up");
+  }
+
+  section("2026-10-30: a summary cut part-way -> the rest of the reply word for word, by the reader (not \"the rest is on screen\")");
+  {
+    const summarise = async (id, o) => {
+      o.onLine({ text: "آخر شغل في أودو كان امبارح، 29 أكتوبر.", safe: false });
+      o.onLine({ text: "اتعملت كذا نسخة من 4.40 لـ 4.44.", safe: false, verbatim: true });
+      o.onLine({ text: "وكلاء GIA بقوا شغالين على Claude Code.", safe: false, verbatim: true });
+      return { tokens: { text_in: 300, text_out: 40 }, trip: { rule: "action-claim", rest: 2 } };
+    };
+    const { c, sup, spoke, logs } = makeCall({ summarise });
+    await c.connect();
+    const s = lastSession();
+    const end = await hear(s, c, "ممكن تقولي آخر حاجة اشتغلنا عليها في أودو");
+    s.push({ type: "session.delegation.created", offset_ms: end + 200, delegation: { id: "item_deleg9", type: "delegation", target: "client" } });
+    await until(() => c.requests.size > 0, 4000, "the hand-off");
+    const id = [...c.requests.keys()][0];
+    sup.replies.set(id, "آخر شغل في أودو كان امبارح، 29 أكتوبر. اتعملت كذا نسخة من 4.40 لـ 4.44. وكلاء GIA بقوا شغالين على Claude Code.");
+    await until(() => sentOf(s, "session.commentary.append").length >= 1, 3000, "the first line");
+    await speak(s, "آخر شغل في أودو كان امبارح، 29 أكتوبر.");
+    await until(() => spoke.length >= 2, 5000, "the verbatim reader");
+    const coms = sentOf(s, "session.commentary.append").filter((e) => e.delegation_id === "item_deleg9").map((e) => e.content);
+    check("the released summary line goes to GPT-Live; the rest does NOT (it would paraphrase it again)", coms.length === 1 && /29 أكتوبر/.test(coms[0]), JSON.stringify(coms));
+    check("the rest of the reply is read word for word by the verbatim reader, after GPT-Live said the line before it", spoke.join(" | ") === "اتعملت كذا نسخة من 4.40 لـ 4.44. | وكلاء GIA بقوا شغالين على Claude Code.", JSON.stringify(spoke));
+    check("  and no \"the rest is on screen\"", !spoke.concat(coms).some((t) => /على الشاشة|on screen/.test(t)));
+    check("  logged", logs.some((l) => /cut part-way; the rest of the reply \(2 lines\) is read word for word/.test(l)));
+    c.close("hung-up");
+  }
+
+  section("2026-10-30: \"the details are on screen\" only when the page showed the reply; the page and panel go with each hand-off");
+  {
+    const { c, sup } = makeCall();
+    await c.connect();
+    const s = lastSession();
+    check("before the page says it showed a reply, the voice offers the rest instead of pointing at the screen", c.screenLine("en", 5) === "That's the main part; ask me if you want the rest." && /قولّي/.test(c.screenLine("ar", 5)));
+    c.message({ type: "reply-shown", turn: 5 });
+    check("once the page showed reply 5, its details line points at the screen (and only for 5)", c.screenLine("en", 5) === desk.DETAILS_LINE && c.screenLine("en", 6) !== desk.DETAILS_LINE);
+    c.message({ type: "screen", path: "/services", title: "Services \"x\" [y]", panel: "the Decisions sheet" });
+    const end = await hear(s, c, "what is on my screen");
+    s.push({ type: "session.delegation.created", offset_ms: end + 200, delegation: { id: "item_deleg10", type: "delegation", target: "client" } });
+    await until(() => sup.calls.some((x) => x[0] === "send"), 4000, "the hand-off");
+    const sent = sup.calls.find((x) => x[0] === "send");
+    check("the hand-off carries the Mint OS page and panel in view, after the words, quotes and brackets cleaned", sent && /^what is on my screen\n\n\[Screen: the administrator is looking at the Mint OS page "Services x y" \(\/services\), with the Decisions sheet open\./.test(sent[1].text), sent && sent[1].text);
+    check("  and the call id, so MINT AI's own small session for this call takes it", sent && sent[1].call === c.id);
+    c.close("hung-up");
+  }
+
+  section("2026-10-30: the call starts its MINT AI sessions ahead, and an agent's later reply is said");
+  {
+    const summarise = async (id, o) => {
+      o.onLine({ text: "MINT Pace says your inbox has nothing urgent.", safe: false });
+      return { tokens: { text_in: 100, text_out: 20 } };
+    };
+    const watchers = new Set(); // the call's own follow-up watcher, and each reply stream's
+    const watcher = (ev) => [...watchers].forEach((f) => f(ev));
+    const { c, sup, logs: logsG } = makeCall({ summarise });
+    c.d.watchTurns = (fn) => (watchers.add(fn), () => watchers.delete(fn));
+    await c.connect();
+    const s = lastSession();
+    check("voice-warm is asked for the call's own sessions as it connects", sup.calls.some((x) => x[0] === "voice-warm" && x[1].call === c.id), JSON.stringify(sup.calls.map((x) => x[0])));
+    check("the agents' names are in GPT-Live's prompt (the supervisor's sessions, or the defaults)", /MINT Pace/.test(s.session.instructions) && /Planning Automation/.test(s.session.instructions));
+    check("the prompt gives the exact fillers and forbids saying it asks anyone", /"One second\."/.test(s.session.instructions) && /ثانية واحدة/.test(s.session.instructions) && /Never say you will ask, check with, consult or hear back from anyone/.test(s.session.instructions));
+    const end = await hear(s, c, "ask mint pace if my inbox has anything urgent");
+    s.push({ type: "session.delegation.created", offset_ms: end + 200, delegation: { id: "item_deleg11", type: "delegation", target: "client" } });
+    await until(() => c.requests.size > 0, 4000, "the hand-off");
+    const id = [...c.requests.keys()][0];
+    sup.replies.set(id, "I sent it to MINT Pace and asked whether your inbox has anything urgent.");
+    sup.replies.set(9001, "MINT Pace says your inbox has nothing urgent.");
+    watcher({ type: "result", turn: { id: 9001, call_id: "lvOTHER", follows: id, source: "peer", result_text: "x" } });
+    watcher({ type: "result", turn: { id: 9001, call_id: c.id, follows: id, source: "idle", result_text: "x" } });
+    check("another call's turn, or an idle notice, is not said", !c.requests.has(9001));
+    watcher({ type: "result", turn: { id: 9001, call_id: c.id, follows: id, source: "peer", actor: "MINT Pace", result_text: "MINT Pace says your inbox has nothing urgent." } });
+    await until(() => sentOf(s, "session.commentary.append").some((e) => /nothing urgent/.test(e.content)), 3000, "the agent's reply as a result");
+    check("the agent's reply to this call's request is said like any result (the detailed summary, as commentary)", sentOf(s, "session.commentary.append").some((e) => /nothing urgent/.test(e.content)) && c.requests.get(9001) && c.requests.get(9001).followUp, JSON.stringify(sentOf(s, "session.commentary.append")) + " " + JSON.stringify(logsG.slice(-8)));
+    c.close("hung-up");
+    check("the call stops watching when it ends", watchers.size === 0, watchers.size);
   }
 
   section("the spoken stop command ends the call");

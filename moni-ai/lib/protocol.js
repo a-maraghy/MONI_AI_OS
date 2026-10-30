@@ -27,6 +27,7 @@ const MAX_LINE = 64 * 1024;
 const MAX_TEXT = 20000;
 const ACTOR_RE = /^[A-Za-z0-9._@-]{1,64}$/;
 const ID_RE = /^[A-Za-z0-9._:-]{1,64}$/;
+const LANE_RE = /^v[a-z0-9-]{1,60}$/; // a voice lane's id (supervisor lib/voicelane.js)
 // A token-cap key: "<self>" (MINT AI), "default" (new hires), a hire slug or a session id.
 const CAP_KEY_RE = /^(<self>|default|[a-z0-9][a-z0-9-]{0,39}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/;
 
@@ -77,6 +78,9 @@ const OPS = {
       vp: optEnum(["command", "other"]),
     },
   },
+  // A live call is starting (the dashboard, at call start): its voice lanes are started ahead, so its first
+  // request does not wait for a CLI to come up (lib/voicelane.js). No turn, nothing billed until one is sent.
+  "voice-warm": { mutating: false, params: { call: str(42, /^lv[a-z0-9]{1,40}$/) } },
   // The dashboard (re)started: what it runs now, for MINT AI's next turn and the snapshot.
   "deploy-event": {
     mutating: true,
@@ -477,9 +481,16 @@ function parseRequest(line) {
 
   if (typeof msg.actor !== "string" || !ACTOR_RE.test(msg.actor)) return { ok: false, id, error: "actor is missing or malformed" };
 
+  // A voice lane's MCP server (bin/moni-ai-mcp, MONI_AI_LANE) names its session on every call: which
+  // lane's running turn a screen action, widget or mission belongs to. MINT AI's own actor only.
+  let lane = null;
+  if (msg.lane !== undefined) {
+    if (msg.actor !== "moni-ai" || typeof msg.lane !== "string" || !LANE_RE.test(msg.lane)) return { ok: false, id, error: "lane is malformed or not allowed for this actor" };
+    lane = msg.lane;
+  }
   const params = {};
   for (const key of Object.keys(msg)) {
-    if (key === "id" || key === "op" || key === "actor") continue;
+    if (key === "id" || key === "op" || key === "actor" || key === "lane") continue;
     if (!Object.prototype.hasOwnProperty.call(spec.params, key)) return { ok: false, id, error: `unexpected field: ${key.slice(0, 40)}` };
   }
   for (const [name, check] of Object.entries(spec.params)) {
@@ -506,7 +517,7 @@ function parseRequest(line) {
 
   // ui-pages without pages or reset only reads the map: not a write, not audited.
   const mutating = msg.op === "ui-pages" ? params.pages !== undefined || !!params.reset : spec.mutating;
-  return { ok: true, req: { id, op: msg.op, actor: msg.actor, params, mutating } };
+  return { ok: true, req: { id, op: msg.op, actor: msg.actor, params, mutating, ...(lane ? { lane } : {}) } };
 }
 
 /** Serialise a reply line. */
@@ -517,4 +528,4 @@ function replyError(id, error) {
   return JSON.stringify({ id, ok: false, error: String(error).slice(0, 500) }) + "\n";
 }
 
-module.exports = { OPS, TABLES, WATCHERS, STATUSES, MAX_LINE, MAX_TEXT, ACTOR_RE, parseRequest, reply, replyError };
+module.exports = { OPS, TABLES, WATCHERS, STATUSES, MAX_LINE, MAX_TEXT, ACTOR_RE, LANE_RE, parseRequest, reply, replyError };

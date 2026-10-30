@@ -76,7 +76,7 @@ console.log("\npublic/mint-dock.js");
   const js = fs.readFileSync(path.join(ROOT, "public", "mint-dock.js"), "utf8");
   const code = js.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, "");
   check("no eval, no new Function, no document.write", !/\beval\(|new Function|document\.write/.test(code));
-  check("innerHTML only for the escaped «You: …» line", (code.match(/innerHTML/g) || []).length === 1 && /innerHTML = st\.you \? "You: <b>" \+ esc\(st\.you\)/.test(code));
+  check("innerHTML only for the escaped «You: …» line and the reply card's body (the Command Center's markdown, which escapes first)", (code.match(/innerHTML/g) || []).length === 2 && /innerHTML = st\.you \? "You: <b>" \+ esc\(st\.you\)/.test(code) && /body\.innerHTML = o\.html \|\| ""/.test(code));
   check("its posts carry the CSRF header", /"X-CSRF-Token": CSRF/.test(code));
   check("the tab's id is the Command Center's (sessionStorage mint-tab), so MINT AI's screen actions reach this tab", /sessionStorage\.getItem\("mint-tab"\)/.test(code) && /events\?tab=/.test(code) && /tab: TAB_ID/.test(code));
   check("the mic starts a live call in the Command Center, this page kept in its frame (no push to talk here)", /location\.assign\("\/mint-ai\?at=" \+ encodeURIComponent\(here\) \+ "&call=1"\)/.test(code) && !/api\("transcribe"|MediaRecorder|getUserMedia/.test(code));

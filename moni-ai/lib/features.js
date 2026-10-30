@@ -443,7 +443,10 @@ function createFeatures(deps) {
   /** Called on every result: the turn's own cost from the running total. */
   function recordTurnCost(turnId, totalUsd, procStart) {
     if (totalUsd == null) return;
-    const prev = db.prepare("SELECT cost_usd, proc_start FROM turns WHERE cost_usd IS NOT NULL AND id < ? ORDER BY id DESC LIMIT 1").get(turnId);
+    // The previous turn of the same chain: a voice lane's own process, or MINT AI's main session (lib/cost.js chainOf).
+    const prev = String(procStart || "").startsWith("lane:")
+      ? db.prepare("SELECT cost_usd, proc_start FROM turns WHERE cost_usd IS NOT NULL AND id < ? AND proc_start = ? ORDER BY id DESC LIMIT 1").get(turnId, procStart)
+      : db.prepare("SELECT cost_usd, proc_start FROM turns WHERE cost_usd IS NOT NULL AND id < ? AND (proc_start IS NULL OR proc_start NOT LIKE 'lane:%') ORDER BY id DESC LIMIT 1").get(turnId);
     const rows = [];
     if (prev) rows.push({ id: -1, cost_usd: prev.cost_usd, proc_start: prev.proc_start });
     rows.push({ id: turnId, cost_usd: totalUsd, proc_start: procStart });
@@ -454,7 +457,9 @@ function createFeatures(deps) {
   /** Called on every result: the turn's own tokens from the running usage (M-6 follow-up: missions show tokens). */
   function recordTurnTokens(turnId, usage, procStart) {
     if (!usage || typeof usage !== "object") return;
-    const prevRow = db.prepare("SELECT tokens_cum, proc_start FROM turns WHERE tokens_cum IS NOT NULL AND id < ? ORDER BY id DESC LIMIT 1").get(turnId);
+    const prevRow = String(procStart || "").startsWith("lane:")
+      ? db.prepare("SELECT tokens_cum, proc_start FROM turns WHERE tokens_cum IS NOT NULL AND id < ? AND proc_start = ? ORDER BY id DESC LIMIT 1").get(turnId, procStart)
+      : db.prepare("SELECT tokens_cum, proc_start FROM turns WHERE tokens_cum IS NOT NULL AND id < ? AND (proc_start IS NULL OR proc_start NOT LIKE 'lane:%') ORDER BY id DESC LIMIT 1").get(turnId);
     let prev = null;
     try {
       prev = prevRow ? { cum: JSON.parse(prevRow.tokens_cum), proc_start: prevRow.proc_start } : null;

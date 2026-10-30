@@ -104,6 +104,32 @@ call's id (`call`). Said again while its first is still waiting in the queue
 folded into that turn (`[Said again while this was waiting:] ...`); `send`
 answers with the same turn and `merged: true`, and MINT AI answers once.
 
+**A live call's requests run in its own small sessions (voice lanes, 2026-10-30).** A `voice-desk`
+send carrying a call id no longer waits in this queue: `lib/voiceroute.js` sends it to one of the
+call's own fresh CLI sessions (`lib/voicelane.js`, named `mint-internal-voice-<call>-<kind><n>`, hidden
+from the session list, their ids kept as MINT AI's own in `state.json` `lane_sessions`):
+
+| lane | model | what it has | for |
+|---|---|---|---|
+| quick | `voice_quick_model` (claude-haiku-5-5) | its own short prompt, the `weather` tool (Open-Meteo, `lib/weather.js`), WebSearch / WebFetch, memory search; no charter, no machine | the weather, time and date, conversions, general knowledge; answers `ESCALATE` when it needs more, and the same row goes to a work lane |
+| work | `voice_lane_model` (claude-sonnet-5) at `voice_lane_effort` (medium) | MINT AI's charter, hooks (the gate, the ledger), MCP (`MONI_AI_LANE` names the lane on every call), memory, `--permission-prompt-tool stdio` | everything else; up to `voice_lane_max_work` (3) per call in parallel |
+| agent | a work lane | the same, told to hand the request straight to the named session with `SendMessage` (the gate, approvals and delegation ledger as ever) and relay its reply | "ask MINT Pace ...", «اسأل Planning Automation ...»: live sessions and hires by name, plus `voice_agent_aliases` |
+
+The dashboard starts a call's quick and work lanes when the call starts (op `voice-warm`), so the
+first request does not wait for a CLI. A lane's turns are ledger rows like any (`call_id`, `lane`;
+`follows` and `voice_actor` for an agent's reply, which arrives as the lane's own peer turn and is
+read out on the call), its events carry the row id, its approvals are cards answered on its stdin,
+its hook events are attributed to its running turn, `ui_do` reaches the call's tab through the
+request's ui token, and its cost is a chain of its own (`proc_start` `lane:<session>#new`,
+`lib/cost.js` `chainOf`). A follow-up said while the call's request is younger than `voice_fold_s`
+(45 s) and has written nothing, held no card and run nothing that changes anything is **folded**: the
+running turn is interrupted and asked once with both parts under the same row (`send` answers
+`merged: true`); otherwise it runs in parallel in another lane, which is told what this call asked so
+far. Lanes close after `voice_lane_idle_s` (900 s) idle unless a delegation they made is still open;
+at most `voice_lanes_max` (12) on the box. `voice_lanes: false`, the token cap, or a lane that cannot
+start: the request goes to this queue as before. `status.voice_lanes` lists them. Tests:
+`tools/test-voicelanes.cjs` (end to end, fake CLI) and `tools/test-voiceroute.cjs`.
+
 **Restarts are told.** At start the supervisor notes its own (re)start, with
 the commit and time `deploy/deploy-moni-ai.sh` stamped in `/opt/moni-ai/DEPLOYED`,
 and the dashboard sends `deploy-event` when it starts; the next turn handed to
@@ -254,7 +280,9 @@ every call; unknown fields are refused. `lib/protocol.js` is the definition.
 | `ping`, `status`, `sessions`, `rc-url` | – | read |
 | `events` | `since?` | reply, then `{"event": …}` lines until closed |
 | `ledger` | `table` (delegations, inbound, approvals, turns, audit), `limit?`, `before_id?`, `status?` | read |
-| `send` | `text`, `target?` (a live session's name, or `auto`), `via?` (`voice-desk`: recorded as the turn's source), `call?` (the live call's id: a queued repeat is folded in) | audited |
+| `send` | `text`, `target?` (a live session's name, or `auto`), `via?` (`voice-desk`: recorded as the turn's source), `call?` (the live call's id: the request runs in the call's voice lanes; a repeat is folded in) | audited |
+| `voice-warm` | `call` | read: start the call's quick and work lanes ahead of its first request |
+| (any op, MINT AI's MCP only) | `lane?` beside `actor` (`^v[a-z0-9-]+$`, actor `moni-ai`) | the voice lane the call comes from: its running turn is "the" turn for `ui-action`, `ui-widget`, missions and take-overs |
 | `deploy-event` | `component` (`dashboard`), `started_at?`, `commit?`, `deployed_at?` | audited |
 | `snapshot` | `turns?` (the voice front desk's own earlier turns) | read: counts, titles and human-unit figures for the voice front desk, never a command (`lib/snapshot.js`) |
 | `interrupt` | – | audited |

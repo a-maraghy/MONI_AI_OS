@@ -97,6 +97,18 @@
 .md-shell .md-dock { z-index: 1002; }
 .md-shell .md-bubble { z-index: 1003; }
 .md-shell .md-toast { z-index: 1004; }
+/* A live call's reply over the page (mint-dock.js api_.reply): the whole answer, scrollable, until closed. */
+.md-reply { position: fixed; right: 20px; bottom: 150px; z-index: 61; width: min(440px, calc(100vw - 40px)); max-height: min(52vh, 520px); display: none; flex-direction: column;
+  border-radius: 14px; background: var(--md-glass-2); border: 1px solid var(--md-line); box-shadow: var(--md-shadow); color: var(--md-ink); }
+.md-reply.on { display: flex; }
+.md-reply .r-top { display: flex; align-items: center; gap: 8px; padding: 10px 10px 8px 14px; border-bottom: 1px solid var(--md-line); font: 600 13px/1.2 var(--ui, "Atkinson Hyperlegible Next", sans-serif); color: var(--md-muted); }
+.md-reply .r-top b { font-weight: 600; margin-right: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.md-reply .r-top button { height: 28px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--md-line-2); background: transparent; color: var(--md-ink); font: 500 13px var(--ui, "Atkinson Hyperlegible Next", sans-serif); cursor: pointer; }
+.md-reply .r-body { padding: 10px 14px 12px; overflow: auto; font: 400 14px/1.5 var(--ui, "Atkinson Hyperlegible Next", sans-serif); overflow-wrap: anywhere; }
+.md-reply .r-body p { margin: 0 0 8px; }
+.md-reply .r-body ul, .md-reply .r-body ol { margin: 0 0 8px; padding-left: 20px; }
+.md-reply .r-body pre { white-space: pre-wrap; font: 400 12px/1.4 var(--mono, monospace); }
+.md-shell .md-reply { z-index: 1004; }
 .md-dock.off { opacity: 0; visibility: hidden; pointer-events: none; }
 .md-frame { position: fixed; left: 0; top: 0; width: 100vw; height: 100vh; height: 100dvh; border: 0; z-index: 1000; background: transparent; color-scheme: normal; }
 .md-frame[hidden] { display: none; }
@@ -113,8 +125,9 @@ html.md-fly-mesh #md-orb-c { visibility: hidden; }
   .md-dock.live .md-name { display: none; }
   .md-orb { width: 48px; height: 48px; }
   .md-bubble, .md-toast { left: 12px; right: 12px; width: auto; bottom: 84px; }
+  .md-reply { left: 12px; right: 12px; width: auto; bottom: 140px; max-height: 45vh; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .md-dock *, .md-dock *::after, .md-bubble, .md-toast { animation: none !important; transition: none !important; }
+  .md-dock *, .md-dock *::after, .md-bubble, .md-toast, .md-reply { animation: none !important; transition: none !important; }
 }
 @media print { .md-root { display: none; } }

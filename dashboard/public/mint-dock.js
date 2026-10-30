@@ -20,7 +20,9 @@
  *     viewer's role may see (data-pages) -- and settings.open work here; the
  *     rest need the Command Center, and say so;
  *   - "Mint opened ..." with Undo (back) after a page.open, and the Command
- *     Center one click away.
+ *     Center one click away;
+ *   - a live call's reply card (api_.reply, 2026-10-30): MINT AI's whole reply over the page while the
+ *     call says it, so "the details are on screen" is true wherever the administrator is looking.
  * No inline script or style (the CSP forbids both): positions and sizes go
  * through the CSSOM.
  */
@@ -404,6 +406,46 @@
         },
       };
     };
+    /*
+     * A live call's reply while a page is up (2026-10-30, call lv1jz4g: the voice said "the details are on
+     * screen" and nothing was): MINT AI's whole reply in a card over the page, kept up to date as it is
+     * written, until closed or the next one. o: { head, html (already escaped and rendered by the Command
+     * Center's markdown), onOpen (to the conversation) }. Returns true once it is on screen.
+     */
+    var replyEl = null;
+    api_.reply = function (o) {
+      if (!o) {
+        if (replyEl) replyEl.classList.remove("on");
+        return false;
+      }
+      if (!replyEl) {
+        replyEl = document.createElement("section");
+        replyEl.className = "md-reply";
+        replyEl.id = "md-reply";
+        replyEl.setAttribute("role", "region");
+        replyEl.setAttribute("aria-label", "MINT AI's reply");
+        var mk = function (tag, cls, id, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (id) e.id = id; if (text) e.textContent = text; return e; };
+        var top = mk("div", "r-top"), x = mk("button", "", "md-r-x", "\u00d7");
+        top.appendChild(mk("b", "", "md-r-head"));
+        var ob = mk("button", "", "md-r-open", "Conversation");
+        ob.type = "button"; x.type = "button"; x.setAttribute("aria-label", "Close the reply");
+        top.appendChild(ob);
+        top.appendChild(x);
+        replyEl.appendChild(top);
+        replyEl.appendChild(mk("div", "r-body", "md-r-body"));
+        (root || document.body).appendChild(replyEl);
+        replyEl.querySelector("#md-r-x").addEventListener("click", function () { replyEl.classList.remove("on"); });
+      }
+      replyEl.querySelector("#md-r-head").textContent = o.head || "MINT AI";
+      var body = replyEl.querySelector("#md-r-body");
+      var stick = body.scrollTop + body.clientHeight >= body.scrollHeight - 8;
+      body.innerHTML = o.html || ""; // the Command Center's markdown (MD in moni-ai.js), which escapes first
+      if (stick) body.scrollTop = body.scrollHeight;
+      replyEl.querySelector("#md-r-open").onclick = function () { replyEl.classList.remove("on"); if (o.onOpen) o.onOpen(); };
+      replyEl.classList.add("on");
+      return true;
+    };
+    api_.replyOpen = function () { return !!(replyEl && replyEl.classList.contains("on")); };
     api_.orbRect = function () { var r = $("md-orb").getBoundingClientRect(); return { cx: r.left + r.width / 2, cy: r.top + r.height / 2, R: r.width * 0.36 }; };
   }
   paint();

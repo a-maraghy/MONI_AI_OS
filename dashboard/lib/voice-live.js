@@ -79,6 +79,13 @@
  * (public/voice-stop.js: ends the call), usage per response priced into the
  * voice_usage table under the category "live", and a 20-minute cap.
  *
+ * Since 2026-10-30 (call lv1jz4g) a call also: starts its own small MINT AI sessions as it connects
+ * (op voice-warm: the supervisor's voice lanes, which answer its requests instead of MINT AI's main
+ * conversation); says an agent's later reply to one of its requests (followUpEvent); adds the Mint OS
+ * page and panel the page reports ({type: "screen"}) to each hand-off as a marked note (screenNote); and
+ * says "the details are on screen" only for a reply the page reported showing ({type: "reply-shown"},
+ * screenLine), else offers to say the rest.
+ *
  * Pure of I/O except through what it is given (tests pass fakes).
  */
 
@@ -299,19 +306,25 @@ function wav(pcm) {
 }
 
 /** MINT AI's reply as sentences to read aloud: no code, no links, no markup. */
-function speakableSentences(reply) {
-  const t = String(reply || "")
-    .replace(/```[\s\S]*?(```|$)/g, " ")
-    .replace(/`[^`\n]+`/g, (m) => m.replace(/`/g, ""))
-    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
-    .replace(/https?:\/\/\S+/g, " ")
-    .replace(/^\s*[#>]+\s*/gm, "")
-    .replace(/^\s*(?:[-*+]|\d+\.)\s+/gm, "")
-    .replace(/[*_~|]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  return desk.sentencesOf(t, true);
+// Moved to lib/voice-shared.js (the summary guard's restatement check reads the reply the same way).
+const speakableSentences = desk.speakableSentences;
+
+/*
+ * What the administrator sees (2026-10-30, call lv1jz4g: "what's on my screen?" got "I can't see your
+ * screen"): the page reports the Mint OS page and panel in view ({type: "screen"}, public/moni-ai.js), kept
+ * here in plain words and added to each hand-off as a marked note, never as the request.
+ */
+function screenOf(m) {
+  const clean = (v, n) => String(v == null ? "" : v).replace(/[\u0000-\u001f"\[\]]+/g, " ").replace(/\s+/g, " ").trim().slice(0, n);
+  const path = clean(m.path, 160);
+  return { path: /^\/[^\s]*$/.test(path) ? path : "", title: clean(m.title, 100), panel: clean(m.panel, 120), at: Date.now() };
 }
+function screenNote(sc) {
+  if (!sc || (!sc.title && !sc.path)) return "";
+  return `[Screen: the administrator is looking at the Mint OS page "${sc.title || sc.path}"${sc.path ? ` (${sc.path})` : ""}${sc.panel ? `, with ${sc.panel} open` : ""}. Use it if they ask about what is on their screen.]`;
+}
+// Said instead of "the details are on screen" when the page has not shown this reply (an older page, a closed tab).
+const NOT_SHOWN_LINE = { en: "That's the main part; ask me if you want the rest.", ar: "ده أهم جزء، ولو عايز الباقي قولّي." };
 
 let callSeq = 0;
 
@@ -558,6 +571,7 @@ class LiveCall {
 
   /** open(), tried OPEN_TRIES times (a connect failure is retried once). */
   async connect() {
+    this.startSideWork();
     const tries = Math.max(1, this.opts.openTries || OPEN_TRIES);
     let last = null;
     for (let i = 0; i < tries; i++) {
@@ -576,6 +590,51 @@ class LiveCall {
       }
     }
     throw last || new Error("could not connect");
+  }
+
+  /**
+   * "The details are on screen" -- only when the page has shown this reply (its reply card answered
+   * {type: "reply-shown"}); otherwise an offer to say the rest. `lang`: "ar" | "en".
+   */
+  screenLine(lang, id) {
+    const shown = id != null && this.shownReplies && this.shownReplies.has(Number(id));
+    if (shown) return desk.linesFor(lang, this.persona.gender).details;
+    this.diag.notShown = (this.diag.notShown || 0) + 1;
+    return lang === "ar" ? NOT_SHOWN_LINE.ar : NOT_SHOWN_LINE.en;
+  }
+
+  /**
+   * Once per call, beside the upstream connection (2026-10-30):
+   *   - the call's own MINT AI sessions are started now (op voice-warm, moni-ai lib/voicelane.js), so the
+   *     first request does not wait ~2.5 s for a CLI to come up;
+   *   - an agent's reply to a request of this call (a turn of its lane with `follows` and source peer:
+   *     "ask MINT Pace ..." went straight to MINT Pace, and its answer came back later) is said like any
+   *     result -- the detailed summary, guarded -- while the call is still on (followUpEvent).
+   */
+  startSideWork() {
+    if (this.sideWork) return;
+    this.sideWork = true;
+    if (this.d.ops && this.d.ops.warm && /^lv[a-z0-9]{1,40}$/.test(this.id))
+      Promise.resolve()
+        .then(() => this.d.ops.warm(this.id))
+        .catch((e) => this.log(`live: call ${this.id} could not start its MINT AI sessions ahead: ${scrub(e.message)}`));
+    if (this.d.watchTurns)
+      try {
+        this.fuClose = this.d.watchTurns((ev) => this.followUpEvent(ev));
+      } catch (e) {
+        this.fuClose = null;
+      }
+  }
+
+  followUpEvent(ev) {
+    if (this.closed || !ev || ev.type !== "result" || !ev.turn) return;
+    const t = ev.turn;
+    if (t.call_id !== this.id || !t.follows || t.source !== "peer" || this.requests.has(t.id)) return;
+    const asked = this.requests.get(t.follows);
+    this.requests.set(t.id, { text: (asked && asked.text) || "", answered: false, askedAt: this.now(), turnN: asked ? asked.turnN : 0, followUp: true });
+    this.diag.followUps = (this.diag.followUps || 0) + 1;
+    this.log(`live: call ${this.id} request ${t.follows}: ${t.actor ? "the agent " + JSON.stringify(String(t.actor).slice(0, 60)) : "the agent"} replied (turn ${t.id}); it is said now`);
+    this.deliverReply(t.id, String(t.result_text || ""), asked ? asked.text : "").catch((e) => this.log("live: an agent's reply could not be said: " + scrub(e.message)));
   }
 
   /** IPv4 only for the OpenAI WebSocket (on by default; see FORCE_IPV4). */
@@ -765,6 +824,13 @@ class LiveCall {
   close(why, text, detail) {
     if (this.closed) return;
     for (const st of [...(this.streams || [])]) this.closeStream(st);
+    if (this.fuClose)
+      try {
+        this.fuClose();
+      } catch (_) {
+        /* closed */
+      }
+    this.fuClose = null;
     this.endWhy = { why: why || "ended", detail: detail ? String(detail).slice(0, 120) : "" };
     this.toClient({ type: "ended", why: why || "ended", text: text || undefined });
     this.closed = true;
@@ -828,6 +894,19 @@ class LiveCall {
   message(m) {
     if (!m || typeof m !== "object") return;
     switch (m.type) {
+      case "reply-shown": {
+        // The page put this reply on screen (the call's reply card): "the details are on screen" is true now.
+        const id = Number(m.turn);
+        if (Number.isInteger(id) && id > 0) {
+          this.shownReplies = this.shownReplies || new Set();
+          this.shownReplies.add(id);
+          if (this.shownReplies.size > 100) this.shownReplies.delete(this.shownReplies.values().next().value);
+        }
+        break;
+      }
+      case "screen":
+        this.screen = screenOf(m);
+        break;
       case "played": {
         const seg = Number(m.seg);
         const ms = Number(m.ms);
@@ -1891,6 +1970,9 @@ class LiveCall {
     // Who asked, when the voice recognised them (Settings ▸ Voice ▸ Voiceprint): MINT AI and its record see it.
     // The name is the stored voiceprint's display name, as Settings has it (never a model's guess).
     if (t && t.speaker && t.speaker.name) request = `[speaker: ${t.speaker.name}] ` + request;
+    // What is on their screen (the page tells this server: the Mint OS page and panel), after the words.
+    const sn = screenNote(this.screen);
+    if (sn) request = request + "\n\n" + sn;
     // Listen for MINT AI's text before asking: the turn may start (and stream) before the ask returns.
     const stream = this.openStream(request);
     let ut = null;
@@ -2196,6 +2278,7 @@ class LiveCall {
       try {
         const out = await this.d.summarise(id, {
           onLine: (l) => {
+            if (l.details) l = { ...l, text: this.screenLine(arabic.isArabic(l.text) ? "ar" : "en", id) };
             lines.push(l);
             this.say([l], "mint", null, vt);
           },
@@ -2217,7 +2300,7 @@ class LiveCall {
     if (fallback) {
       const sents = speakableSentences(reply).slice(said.length);
       for (const s of sents.slice(0, VERBATIM_MAX_SENTENCES)) lines.push({ text: s, safe: false });
-      if (sents.length > VERBATIM_MAX_SENTENCES) lines.push({ text: desk.linesFor(arabic.isArabic(reply) ? "ar" : "en", this.persona.gender).details, safe: true });
+      if (sents.length > VERBATIM_MAX_SENTENCES) lines.push({ text: this.screenLine(arabic.isArabic(reply) ? "ar" : "en", id), safe: true });
       if (lines.length) this.say(lines, "mint", null, vt);
     }
     return { lines, fallback };
@@ -2320,6 +2403,7 @@ class LiveCall {
     if (!st.read.length) {
       st.firstAt = this.now();
       this.log(`live: call ${this.id} request ${st.id}: first sentence of the reply read while it is written, ${st.firstAt - (mine.askedAt || st.at)} ms after the ask`);
+      this.toClient({ type: "replying", turn: st.id }); // the page shows the reply as it is written (its reply card)
       if ((this.lastHeardN || 0) > (mine.turnN || 0)) this.say([{ text: arabic.isArabic(mine.text || "") ? EARLIER_LINE.ar : EARLIER_LINE.en, safe: true }], "mint", null, this.id + "r" + st.id);
       this.firstSpokenFor = { id: st.id, at: this.now(), askedAt: mine.askedAt, streamed: true };
     }

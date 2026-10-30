@@ -27,7 +27,10 @@
  * cc-panels.js, handed this file's helpers and state (the CC object below).
  *
  * Voice goes through OpenAI, on the server only, and is live conversation
- * (public/voice-live.js, the live block below): the mic starts a call. Replies
+ * (public/voice-live.js, the live block below): the mic starts a call. While a call is on, each reply
+ * it says is put on screen in full (callReply: the reply panel, or the dock's reply card over a page or
+ * a sheet) and the call is told so; the page and panel in view go to the call too (screenTick), so MINT
+ * AI can answer "what's on my screen" for Mint OS pages. Replies
  * can also be read aloud: each sentence is posted to /mint-ai/api/speak, whose
  * audio streams back as PCM chunks (NDJSON) and starts playing with the first
  * one. With voice off in Settings, no key, or no voice.use, the page carries
@@ -1819,8 +1822,11 @@
      the way to the whole conversation and to hear it read aloud. */
 
   var replySig = "";
+  /* A live call's reply is pinned while its card is up (callReply): the card follows that turn as it is written. */
+  function pinnedReply() { var x = S.replyPin ? S.turns.get(S.replyPin) : null; return x && aiText(x) ? x : null; }
   function renderSay() {
-    var last = lastReplyTurn();
+    var last = pinnedReply() || lastReplyTurn();
+    if (S.dockReplyPin) dockReply(S.dockReplyPin, false);
     if (!$("cc-reply").hidden && last) {
       var sig = last.id + "|" + aiText(last).length;
       if (sig !== replySig) { replySig = sig; paintReply(last); }
@@ -1832,8 +1838,8 @@
     $("cc-reply-body").innerHTML = md(aiText(last));
     $("cc-reply").setAttribute("data-turn", String(last.id));
   }
-  function openReply() {
-    var last = lastReplyTurn();
+  function openReply(pin) {
+    var last = pin || pinnedReply() || lastReplyTurn();
     if (!last) return;
     closePop();
     replySig = last.id + "|" + aiText(last).length;
@@ -1844,6 +1850,7 @@
     $("cc-cap-more").classList.add("open");
   }
   function closeReply() {
+    S.replyPin = null;
     if ($("cc-reply").hidden) return;
     $("cc-reply").hidden = true;
     $("cc-cap-more").setAttribute("aria-expanded", "false");
@@ -1859,6 +1866,60 @@
     Voice.unlock();
     Voice.flush("r" + last.id, aiText(last));
   });
+
+  /* ---------------------------------------------------------- a live call's reply, on screen
+     (2026-10-30, call lv1jz4g: the voice said "the details are on screen" and nothing was). When the call
+     starts saying a reply ("replying": read while it is written; "replied": finished), the whole reply goes
+     on the screen the administrator is looking at: the Command Center's reply panel, or -- with a page up
+     in the shell, or a sheet open over the Command Center -- the dock's reply card over it. The call is
+     told once it is shown ({type: "reply-shown"}); only then may the voice say the details are on screen. */
+
+  function dockReply(id, first) {
+    var d = window.__mintDock;
+    var tr = S.turns.get(id);
+    if (!d || !d.reply || !tr || !aiText(tr)) return false;
+    if (!first && !(d.replyOpen && d.replyOpen())) { S.dockReplyPin = null; return false; }
+    return d.reply({
+      head: "MINT AI · " + (tr.status === "running" ? "writing…" : hm(tr.ended_at || tr.started_at || tr.created_at)),
+      html: md(aiText(tr)),
+      onOpen: function () { S.dockReplyPin = null; if (shellUp()) window.MintShell.expand(); setTimeout(function () { openSheet("conv"); }, shellUp() ? 450 : 0); },
+    });
+  }
+  function callReply(id, tries) {
+    id = Number(id);
+    if (!id || !LiveUI.active) return;
+    var tr = S.turns.get(id);
+    if (!tr || !aiText(tr)) {
+      // The event stream may be a moment behind the call: look again (3 s at most).
+      if ((tries || 0) < 15) setTimeout(function () { callReply(id, (tries || 0) + 1); }, 200);
+      return;
+    }
+    var shown = false;
+    if (S.pane === "conv") shown = true; // the conversation itself is open: the reply is in it
+    else if (shellUp() || S.pane) { S.dockReplyPin = id; shown = dockReply(id, true); }
+    else { S.replyPin = id; openReply(tr); shown = !$("cc-reply").hidden; }
+    if (shown && window.VoiceLive && window.VoiceLive.tell) window.VoiceLive.tell({ type: "reply-shown", turn: id });
+  }
+  /* What is on the administrator's screen, for the call (sent when it changes): the page and the panel open. */
+  var screenSig = "";
+  function screenNow() {
+    var w = shellUp() && window.MintShell.where ? window.MintShell.where() : null;
+    if (w) return { path: w.path, title: w.title || w.path, panel: (window.__mintDock && window.__mintDock.replyOpen && window.__mintDock.replyOpen()) ? "MINT AI's reply card" : "" };
+    var panel = "";
+    if (S.pane) {
+      var b = document.querySelector('#cc-rail [data-sheet="' + S.pane + '"]');
+      panel = "the " + ((b && (b.getAttribute("aria-label") || b.textContent || "").trim()) || S.pane) + " sheet";
+    } else if (!$("cc-reply").hidden) panel = "MINT AI's full reply";
+    return { path: "/mint-ai", title: "Command Center", panel: panel };
+  }
+  function screenTick() {
+    if (!LiveUI.active || !window.VoiceLive || !window.VoiceLive.tell) return;
+    var sc = screenNow();
+    var sig = sc.path + "|" + sc.title + "|" + sc.panel;
+    if (sig === screenSig) return;
+    screenSig = sig;
+    window.VoiceLive.tell({ type: "screen", path: sc.path, title: String(sc.title).slice(0, 100), panel: String(sc.panel).slice(0, 120) });
+  }
 
   /* ---------------------------------------------------------- approvals */
 
@@ -3130,7 +3191,12 @@
       },
       onLevel: function (l) { LiveUI.mic = l.mic || 0; LiveUI.out = l.out || 0; if (LiveUI.latched) latchVad(LiveUI.mic); },
       onEvent: function (m) {
+        if (m.type === "replying" || m.type === "replied") callReply(m.turn);
         if (m.type === "ready") {
+          screenSig = "";
+          clearInterval(LiveUI.screenT);
+          LiveUI.screenT = setInterval(screenTick, 1500);
+          screenTick();
           LiveUI.model = m.model || ""; LiveUI.voice = m.voice || ""; LiveUI.route = window.VoiceLive.route ? window.VoiceLive.route() : "";
           LiveUI.wasReady = true; LiveUI.retry = 0;
           if (LiveUI.ptt) pttReady();
@@ -3187,6 +3253,7 @@
     LiveUI.skipUp = false;
     clearTimeout(LiveUI.latchT);
     clearInterval(LiveUI.paintT);
+    clearInterval(LiveUI.screenT);
     clearTimeout(LiveUI.warmT);
     LiveUI.resuming = false;
     paintLive("idle");

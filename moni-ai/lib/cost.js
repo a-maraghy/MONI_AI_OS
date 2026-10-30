@@ -35,22 +35,30 @@ const path = require("path");
  */
 function turnDeltas(rows) {
   const out = new Map();
-  let prevTotal = null;
-  let prevProc;
+  // Each chain has its own running total: MINT AI's main session, and each voice lane's process (2026-10-30,
+  // proc_start "lane:<session id>#new", lib/voicelane.js) -- their turns interleave by id.
+  const chains = new Map(); // chain -> { prevTotal, prevProc }
   for (const r of rows) {
     if (r.cost_usd == null || !isFinite(r.cost_usd)) continue;
     const total = Number(r.cost_usd);
     const proc = r.proc_start || null;
+    const key = chainOf(proc);
+    const c = chains.get(key) || { prevTotal: null, prevProc: undefined };
     let delta;
-    if (prevTotal === null) delta = total;
-    else if (proc && proc !== prevProc && /#new$/.test(proc)) delta = total; // a new session starts from zero
-    else if (total < prevTotal - 1e-9) delta = total; // the total went down: a fresh session starts from zero
-    else delta = total - prevTotal; // the same process, or a new one that resumed the session (its total carried on)
+    if (c.prevTotal === null) delta = total;
+    else if (proc && proc !== c.prevProc && /#new$/.test(proc)) delta = total; // a new session starts from zero
+    else if (total < c.prevTotal - 1e-9) delta = total; // the total went down: a fresh session starts from zero
+    else delta = total - c.prevTotal; // the same process, or a new one that resumed the session (its total carried on)
     out.set(r.id, Math.max(0, delta));
-    prevTotal = total;
-    prevProc = proc || prevProc;
+    c.prevTotal = total;
+    c.prevProc = proc || c.prevProc;
+    chains.set(key, c);
   }
   return out;
+}
+/** Which running total a turn belongs to: a voice lane's own process ("lane:..."), else MINT AI's main session. */
+function chainOf(procStart) {
+  return typeof procStart === "string" && procStart.startsWith("lane:") ? procStart : "main";
 }
 
 /**
@@ -390,4 +398,4 @@ function turnTokenDelta(usage, procStart, prev) {
   return { cum, delta };
 }
 
-module.exports = { turnDeltas, recomputeTurnDeltas, priceOf, usageCost, parseUsage, Scanner, PRICES, tokenReport, turnTokenDelta, TOKEN_KEYS };
+module.exports = { turnDeltas, chainOf, recomputeTurnDeltas, priceOf, usageCost, parseUsage, Scanner, PRICES, tokenReport, turnTokenDelta, TOKEN_KEYS };

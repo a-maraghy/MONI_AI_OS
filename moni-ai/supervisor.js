@@ -19,7 +19,10 @@
  *     replies, approvals and audit;
  *   - serves a narrow, validated JSON protocol on a unix socket that only root
  *     and the moniai group can open (see lib/protocol.js);
- *   - takes ledger events from its hooks on a second, root-only socket.
+ *   - takes ledger events from its hooks on a second, root-only socket;
+ *   - runs a live call's requests in the call's own small, fresh CLI sessions
+ *     ("voice lanes": lib/voicelane.js, routed by lib/voiceroute.js), with the
+ *     same ledger rows, events, approvals and hooks as this one's turns.
  *
  * Runs as root under systemd (moni-ai.service). Never run two.
  */
@@ -50,6 +53,8 @@ const planUsageLib = require("./lib/usage");
 const settingsLib = require("./lib/settings");
 const machinesLib = require("./lib/machines");
 const { chatgptServer } = require("./lib/chatgpt");
+const voiceRoute = require("./lib/voiceroute");
+const voiceLane = require("./lib/voicelane");
 
 /* ----------------------------------------------------------------- config --- */
 
@@ -96,6 +101,20 @@ const DEFAULTS = {
   queue_requeue_max_age_s: 21600, // after a supervisor restart, re-queue unsent turns younger than this
   queue_start_timeout_s: 120, // a handed-over turn that has not started by then, with nothing running, frees the queue
   voice_merge_s: 20, // a live call's request said again within this, while the first still waits in the queue: one turn
+  // Voice lanes (lib/voicelane.js, 2026-10-30): a live call's requests run in small fresh sessions of its own.
+  voice_lanes: true,
+  voice_lane_model: "claude-sonnet-5",
+  voice_lane_effort: "medium",
+  voice_quick_model: "claude-haiku-5-5",
+  voice_lane_max_work: 3, // work lanes per call (requests that run in parallel)
+  voice_lane_idle_s: 900, // a lane with no turn for this long is closed (unless a delegation it made is still open)
+  voice_lanes_max: 12, // lanes on the box at once; the oldest idle one goes first
+  voice_fold_s: 45, // a follow-up while the call's request is this young (and has done nothing yet): asked once with both parts
+  // The administrator's own names for agents, beside their session names (lib/voiceroute.js agentNames).
+  voice_agent_aliases: {
+    "[GSH] Planning Automation": ["planning automation", "giza odoo automation", "odoo automation", "gsh planning automation", "giza planning automation"],
+    "MINT Pace": ["mint pace", "مينت بيس"],
+  },
   cli_extra_args: [], // tests only, e.g. ["--setting-sources", "project"]
   // Hired sessions (M-6): each runs as mint-session@<slug>.service (deploy/mint-session@.service).
   systemctl: "/usr/bin/systemctl",
@@ -315,6 +334,7 @@ function selfSessionIds() {
   if (s.session_id) ids.add(s.session_id);
   if (s.previous_session_id) ids.add(s.previous_session_id);
   for (const h of Array.isArray(s.session_history) ? s.session_history : []) if (h && h.session_id) ids.add(h.session_id);
+  for (const id of Array.isArray(s.lane_sessions) ? s.lane_sessions : []) if (id) ids.add(id); // voice lanes (lib/voicelane.js)
   return ids;
 }
 
@@ -451,12 +471,13 @@ function checkCli() {
  * proposals, read the snapshot, or ask for a checked screen action.
  */
 const MCP_NAME = "mint-ai";
-function mcpArgs() {
+function mcpArgs(laneId) {
   const servers = {};
   const allow = [];
   const server = path.join(__dirname, "bin", "moni-ai-mcp");
   if (cfg.mcp && fs.existsSync(server)) {
-    servers[MCP_NAME] = { type: "stdio", command: process.execPath, args: [server], env: { MONI_AI_SOCKET: CONTROL_SOCKET } };
+    // A voice lane's server names its lane on every call (bin/moni-ai-mcp MONI_AI_LANE).
+    servers[MCP_NAME] = { type: "stdio", command: process.execPath, args: [server], env: { MONI_AI_SOCKET: CONTROL_SOCKET, ...(laneId ? { MONI_AI_LANE: laneId } : {}) } };
     allow.push("mcp__" + MCP_NAME);
   }
   // ask_chatgpt (lib/chatgpt.js): ChatGPT through the Mint OS broker, only when the administrator asks.
@@ -587,7 +608,7 @@ function onExit(gen, code, signal) {
 
   // Whatever was waiting on this process is over (a hired session's questions and retire questions are not its).
   for (const [aid, a] of approvals) {
-    if (a.kind) continue;
+    if (a.kind || a.lane) continue; // a hired session's or a voice lane's question is not this process's
     clearTimeout(a.timer);
     const row = ledger.updateApproval(aid, { status: "cancelled", decided_at: now(), note: "MINT AI's process ended before an answer" });
     approvals.delete(aid);
@@ -696,6 +717,11 @@ const OUR_SOURCES = new Set(["dashboard", "voice-desk", "order", "watcher", "mis
  * Nothing here ever interrupts a running turn.
  */
 function queueTurn({ source, actor, text, target, order_id, mission_id, decision_id, ut, call, vp }) {
+  // A live call's request runs in the call's own small session (voice lanes, below), not in this queue.
+  if (source === "voice-desk" && call && !target) {
+    const t = voiceLaneTurn({ actor, text, ut, call, vp });
+    if (t) return t;
+  }
   const merged = call ? mergeVoiceTurn({ actor, text, target, ut, call, vp }) : null;
   if (merged) return merged;
   const row = ledger.addTurn({ uuid: crypto.randomUUID(), source, actor, text, target: target || null, status: "queued", order_id, mission_id, decision_id });
@@ -736,6 +762,516 @@ function mergeVoiceTurn({ actor, text, target, ut, call, vp }) {
   log(`queue: a repeat from live call ${call} folded into queued turn #${p.row.id} (${p.merges} so far)`);
   emit("turn", { phase: "merged", turn: publicTurn(p.row) });
   return { ...publicTurn(p.row), merged: true };
+}
+
+/* ------------------------------------------------------------ voice lanes --- */
+/*
+ * A live call's requests run in small, fresh sessions of the call's own (lib/voicelane.js has the why
+ * and the processes; lib/voiceroute.js decides where each request goes). Here is their bookkeeping, the
+ * same as the main session's: a ledger row per request (source voice-desk, call_id, lane), the events the
+ * Command Center and the call follow (turn / text / assistant / tool / steps / result, with the row's id),
+ * approvals as cards (answered on the lane's own stdin), the hooks' delegation records attributed to the
+ * lane's running turn, screen actions through the request's ui ticket (the lane's MCP names its lane), and
+ * each lane's cost as a chain of its own (proc_start "lane:<session>#new").
+ *
+ *   - quick  -> the call's quick lane; "ESCALATE" -> the same row goes to a work lane.
+ *   - work   -> an idle work lane of the call (up to voice_lane_max_work, then the oldest queues it).
+ *   - agent  -> a work lane told to hand the request straight to that session (SendMessage) and relay the
+ *              reply; the reply arrives as the lane's own turn (source peer, `follows` the request), which
+ *              the call reads out (dashboard) or the Command Center shows when the call is over.
+ *   - a follow-up while the call's request is young and has done nothing yet (lib/voiceroute.js foldable):
+ *     the running turn is stopped and asked once with both parts, under the same row -- one answer, no
+ *     wait in line (call lv1jz4g: "I live in 6th of October" waited 16 s behind "the weather today").
+ *     Otherwise it runs in parallel in another lane, told what this call asked so far.
+ * Off (voice_lanes false), paused at the token cap, or a lane that cannot start: the request goes to the
+ * main queue exactly as before.
+ */
+const lanes = new Map(); // lane id -> LaneProc
+const callLanes = new Map(); // call id -> { lanes: [LaneProc], history: [{ id, text, reply, running }], actor, lastAt }
+const laneBySession = new Map(); // session id -> LaneProc
+let laneSeq = 0;
+let ctxLane = undefined; // the lane a control-socket request or a hook event comes from, while it is handled
+
+function lanesOn() {
+  return !!cfg.voice_lanes;
+}
+/** Run fn with `lane` as the context (its running turn is "the" running turn for it); returns fn's result. */
+function withLane(lane, fn) {
+  const prev = ctxLane;
+  ctxLane = lane;
+  try {
+    return fn();
+  } finally {
+    ctxLane = prev;
+  }
+}
+/** The running turn a request or hook belongs to: its lane's (null when that lane runs none), else the main one. */
+function runningTurn() {
+  if (ctxLane !== undefined) return ctxLane ? ctxLane.running && !ctxLane.running.ignored ? ctxLane.running : null : null;
+  return turns.running;
+}
+function callFor(call) {
+  let C = callLanes.get(call);
+  if (!C) {
+    C = { lanes: [], history: [], actor: null, lastAt: Date.now() };
+    callLanes.set(call, C);
+  }
+  return C;
+}
+function agentList() {
+  let hired = [];
+  try {
+    hired = ledger.hiredList(false);
+  } catch (_) {
+    hired = [];
+  }
+  return voiceRoute.agentNames(sessionsCache.list || [], hired, cfg.voice_agent_aliases || {});
+}
+function quickDir() {
+  const d = path.join(cfg.state_dir, "voice-quick");
+  fs.mkdirSync(d, { recursive: true, mode: 0o700 });
+  return d;
+}
+function quickMcp(laneId) {
+  const servers = {};
+  const server = path.join(__dirname, "bin", "moni-ai-mcp");
+  if (cfg.mcp && fs.existsSync(server)) servers["mint-quick"] = { type: "stdio", command: process.execPath, args: [server], env: { MONI_AI_SOCKET: CONTROL_SOCKET, MONI_AI_MCP_SET: "quick", MONI_AI_LANE: laneId } };
+  const mem = voiceLane.memoryServer(cfg.home, fs);
+  if (mem) servers.memory = mem;
+  return servers;
+}
+/** Lane session ids are MINT AI's own (the cost scanner must not count them as another session's spend). */
+function rememberLaneSession(id) {
+  const s = readState();
+  const list = (Array.isArray(s.lane_sessions) ? s.lane_sessions : []).concat([id]).slice(-300);
+  writeState({ lane_sessions: list });
+}
+
+function spawnLane(call, kind) {
+  const C = callFor(call);
+  // Too many on the box: the oldest idle lane of any call goes first.
+  const live = [...lanes.values()].filter((l) => l.state !== "closed");
+  if (live.length >= cfg.voice_lanes_max) {
+    const idle = live.filter((l) => !l.busy() && !laneHoldsDelegation(l)).sort((a, b) => a.lastAt - b.lastAt)[0];
+    if (!idle) return null;
+    closeLane(idle, "the box's lane limit");
+  }
+  const n = C.lanes.filter((l) => l.kind === kind).length + 1;
+  const id = "v" + (++laneSeq).toString(36) + "-" + String(call).slice(2, 20);
+  const lane = new voiceLane.LaneProc({
+    id,
+    call,
+    kind,
+    n,
+    cfg,
+    spawn,
+    env: { ...childEnv(), MINT_INTERNAL: "1" },
+    cwd: kind === "quick" ? quickDir() : cfg.cwd,
+    mcp: kind === "quick" ? null : mcpArgs(id),
+    quickMcp: kind === "quick" ? quickMcp(id) : null,
+    onEvent: onLaneEvent,
+    onExit: onLaneExit,
+    log: warn,
+  });
+  lane.delegs = new Set();
+  lanes.set(id, lane);
+  C.lanes.push(lane);
+  laneBySession.set(lane.sessionId, lane);
+  rememberLaneSession(lane.sessionId);
+  lane.start();
+  log(`voice lane ${id} started for call ${call}: ${kind}, ${lane.model}, session ${lane.sessionId}`);
+  emit("lane", { lane: lane.view(), phase: "start" });
+  return lane;
+}
+
+function closeLane(lane, why) {
+  if (lane.state === "closed" && !lane.child) return;
+  log(`voice lane ${lane.id} closed (${why})`);
+  lane.close();
+}
+
+/** An idle lane of the call for this kind, else a new one, else (all busy, at the limit) the one idle longest. */
+function laneFor(call, kind) {
+  const C = callFor(call);
+  const mine = C.lanes.filter((l) => l.kind === kind && l.state !== "closed");
+  const idle = mine.find((l) => !l.busy() && !l.pendingDispatch);
+  if (idle) return idle;
+  const max = kind === "quick" ? 2 : Math.max(1, cfg.voice_lane_max_work);
+  if (mine.length < max) {
+    const l = spawnLane(call, kind);
+    if (l) return l;
+  }
+  return mine.sort((a, b) => a.lastAt - b.lastAt)[0] || null;
+}
+
+/** Was a delegation this lane made answered or closed? Open ones keep the lane (the reply comes back to it). */
+function laneHoldsDelegation(lane) {
+  for (const id of lane.delegs || []) {
+    const d = ledger.get("delegations", id);
+    if (d && ["sent", "working", "held"].includes(d.status) && Date.now() - Date.parse(d.created_at) < 30 * 60 * 1000) return true;
+  }
+  return false;
+}
+
+/** The op voice-warm: the call's quick lane and one work lane, started ahead of its first request. */
+function voiceWarm(actor, p) {
+  if (!lanesOn() || features.caps.selfPaused()) return { warmed: false, lanes: [] };
+  const C = callFor(p.call);
+  C.actor = C.actor || actor;
+  C.lastAt = Date.now();
+  for (const kind of ["quick", "work"]) if (!C.lanes.some((l) => l.kind === kind && l.state !== "closed")) spawnLane(p.call, kind);
+  return { warmed: true, lanes: C.lanes.filter((l) => l.state !== "closed").map((l) => l.view()) };
+}
+
+/**
+ * A live call's request (queueTurn, voice-desk with a call id). Returns the public turn, { merged: true }
+ * when it was folded into the call's running request, or null to leave it to the main queue.
+ */
+function voiceLaneTurn({ actor, text, ut, call, vp }) {
+  if (!lanesOn() || !call || features.caps.selfPaused()) return null;
+  const C = callFor(call);
+  C.actor = C.actor || actor;
+  C.lastAt = Date.now();
+  // D: a follow-up while this call's request is just starting.
+  const fold = foldTarget(call, actor);
+  if (fold) return foldInto(fold, { actor, text, ut, vp });
+  const route = voiceRoute.classify(text, { agents: agentList() });
+  const row = ledger.addTurn({ uuid: crypto.randomUUID(), source: "voice-desk", actor, text, target: route.agent ? route.agent.name : null, status: "queued" });
+  ledger.updateTurn(row.id, { call_id: call, lane: route.lane, voice_actor: actor });
+  if (ut && !UI_REFUSED_ACTORS.has(actor)) {
+    uiTokens.set(row.id, { ut, actor, source: "voice-desk" });
+    if (uiTokens.size > 200) uiTokens.delete(uiTokens.keys().next().value);
+  }
+  turnVp.set(row.id, vp === "command" ? "command" : "other");
+  if (turnVp.size > 200) turnVp.delete(turnVp.keys().next().value);
+  C.history.push({ id: row.id, text, reply: null, running: true });
+  if (C.history.length > 20) C.history.shift();
+  log(`voice: call ${call} request #${row.id} -> ${route.lane}${route.agent ? " (" + route.agent.name + ")" : ""} (${route.why})`);
+  const fresh = ledger.get("turns", row.id);
+  emit("turn", { phase: "queued", turn: publicTurn(fresh) });
+  dispatchLane(fresh, route);
+  return publicTurn(fresh);
+}
+
+/** The running request of this call a follow-up may fold into (foldable), with its lane; else null. */
+function foldTarget(call, actor) {
+  if (!(cfg.voice_fold_s > 0)) return null;
+  const C = callLanes.get(call);
+  if (!C) return null;
+  for (const lane of C.lanes) {
+    const r = lane.running;
+    if (!r || r.ignored || r.actor !== actor) continue;
+    const f = voiceRoute.foldable(r, { call, now: Date.now(), maxMs: cfg.voice_fold_s * 1000 });
+    if (f.ok) return { lane, r };
+  }
+  return null;
+}
+
+/**
+ * Fold a follow-up into the call's running request: that turn is stopped (its partial work is dropped:
+ * it has written nothing and changed nothing) and the request is asked again with both parts, under the
+ * same ledger row -- re-routed as a whole (the weather plus "I live in 6th of October" is still quick).
+ */
+function foldInto({ lane, r }, { actor, text, ut, vp }) {
+  const row = ledger.get("turns", r.id);
+  const joined = clip(voiceRoute.foldedText(row.text, text), 20000);
+  const upd = ledger.updateTurn(row.id, { text: joined });
+  r.folding = true;
+  if (ut && !uiTokens.has(row.id) && !UI_REFUSED_ACTORS.has(actor)) uiTokens.set(row.id, { ut, actor, source: "voice-desk" });
+  if (vp !== "command") turnVp.set(row.id, "other");
+  const C = callFor(lane.call);
+  const h = C.history.find((x) => x.id === row.id);
+  if (h) h.text = joined;
+  const entry = lane.byUuid.get(r.uuid);
+  if (entry) entry.ignore = true;
+  r.ignored = true;
+  const route = voiceRoute.classify(joined, { agents: agentList() });
+  ledger.updateTurn(row.id, { lane: route.lane, target: route.agent ? route.agent.name : null });
+  log(`voice: call ${lane.call} folded a follow-up into request #${row.id} (it had run ${Math.round((Date.now() - r.startedMs) / 100) / 10} s, nothing written); asked again as one -> ${route.lane}`);
+  let sent = false;
+  const go = () => {
+    if (sent) return;
+    sent = true;
+    dispatchLane(ledger.get("turns", row.id), route);
+  };
+  lane.afterIdle = go;
+  lane.interrupt().catch((e) => warn(`voice lane ${lane.id}: interrupt for a fold failed: ${e.message}`));
+  // Should the interrupted turn not end promptly, the merged request goes on anyway (another lane).
+  setTimeout(() => {
+    if (!sent) {
+      if (lane.afterIdle === go) lane.afterIdle = null;
+      go();
+    }
+  }, 6000).unref();
+  emit("turn", { phase: "merged", turn: publicTurn(upd) });
+  return { ...publicTurn(ledger.get("turns", row.id)), merged: true };
+}
+
+/** What a lane is handed for this row: what this call asked before (if it did not see it), the request, its notes. */
+function laneMessage(lane, row, route) {
+  const C = callFor(lane.call);
+  const preface = voiceLane.prefaceFor(C.history.filter((h) => h.id !== row.id), lane.seen, 4);
+  for (const h of C.history) lane.seen.add(h.id);
+  if (lane.kind === "quick") return `${voiceLane.nowNote(Date.now(), cfg.tz)}\n${preface}${row.text}`;
+  let content = preface + row.text;
+  content +=
+    `\n\n[Dashboard: the administrator said this aloud in a live call. Your reply is read to them as a detailed spoken summary, held to what you wrote, and shown in full on their screen. ` +
+    `So say plainly what happened, what did not, and anything that needs their approval or answer.]`;
+  if (route && route.lane === "agent" && route.agent) {
+    const nm = route.agent.name;
+    lane.lastAgent = { turn: row.id, name: nm };
+    content +=
+      `\n\n[Voice routing: the administrator is asking the agent "${nm}" for this. Hand it straight to that session: ListAgents if you need its address, then SendMessage to it with notify_when_idle: true -- ` +
+      `their request in their words, plus only what it needs to act. Do not do the work yourself and do not pass it to anyone else. Then reply in one or two sentences: that it went to ${nm} and what you asked. ` +
+      `When ${nm} replies, relay its answer plainly, saying it is from ${nm}.]`;
+  }
+  return content;
+}
+
+/** Hand a row to a lane of its kind (when the lane is up); a lane that cannot start leaves it to the main queue. */
+function dispatchLane(row, route) {
+  const kind = route.lane === "quick" ? "quick" : "work";
+  const lane = laneFor(row.call_id, kind);
+  if (!lane) return toMainQueue(row, "no lane could start");
+  lane.pendingDispatch = (lane.pendingDispatch || 0) + 1;
+  lane.ready().then((ok) => {
+    lane.pendingDispatch--;
+    if (!ok || lane.state !== "ready") return toMainQueue(row, `lane ${lane.id} did not start`);
+    const uuid = crypto.randomUUID();
+    const content = laneMessage(lane, row, route);
+    if (!lane.sendTurn(uuid, row.id, content)) return toMainQueue(row, `lane ${lane.id} would not take it`);
+    ledger.updateTurn(row.id, { sent_at: now() });
+  });
+}
+
+/** The fallback: the row goes to MINT AI's main queue, as every voice request did before the lanes. */
+function toMainQueue(row, why) {
+  warn(`voice: request #${row.id} goes to the main queue: ${why}`);
+  const r = ledger.updateTurn(row.id, { lane: "main", status: "queued", sent_at: null });
+  turns.pending.push({ row: r, message: userMessage(r), call: r.call_id || null, lastAt: Date.now() });
+  pump();
+}
+
+/* ---- a lane's stream: the same events as the main session's, with its own running turn ---- */
+
+function onLaneEvent(lane, ev) {
+  switch (ev.type) {
+    case "control_request":
+      return withLane(lane, () => onControlRequest(ev, lane));
+    case "control_cancel_request":
+      return onControlCancel(ev);
+    case "command_lifecycle":
+      return laneLifecycle(lane, ev);
+    case "user":
+      return laneUser(lane, ev);
+    case "assistant":
+      return laneAssistant(lane, ev);
+    case "stream_event":
+      return laneStream(lane, ev);
+    case "result":
+      return laneResult(lane, ev);
+    case "system":
+      if (ev.subtype === "init" && ev.session_id && ev.session_id !== lane.sessionId) {
+        laneBySession.set(ev.session_id, lane);
+        rememberLaneSession(ev.session_id);
+      }
+      return;
+    default:
+      return;
+  }
+}
+
+function laneLifecycle(lane, ev) {
+  const uuid = ev.command_uuid;
+  if (!uuid) return;
+  let entry = lane.byUuid.get(uuid);
+  if (ev.state === "started") {
+    if (lane.inflight && lane.inflight.uuid === uuid) lane.inflight = null;
+    if (!entry) {
+      // A turn the CLI started on its own: an agent's reply to a request this lane passed on, an idle notice.
+      const C = callFor(lane.call);
+      const row0 = ledger.addTurn({ uuid, source: "unknown", text: "", status: "running" });
+      ledger.updateTurn(row0.id, { call_id: lane.call, lane: lane.kind, voice_actor: C.actor, follows: lane.lastAgent ? lane.lastAgent.turn : null });
+      entry = { rowId: row0.id, own: true };
+      lane.byUuid.set(uuid, entry);
+    }
+    if (entry.ignore) {
+      lane.running = { ignored: true, uuid };
+      return;
+    }
+    const row = ledger.updateTurn(entry.rowId, { status: "running", started_at: now() });
+    lane.running = { id: row.id, uuid, source: row.source, actor: row.actor, text: row.text, call: lane.call, started_at: row.started_at, startedMs: Date.now(), steps: [], tools: [], wrote: false, approvals: 0, lane };
+    lane.toolSteps.clear();
+    emit("turn", { phase: "start", turn: publicTurn(row) });
+    return;
+  }
+  if (ev.state === "completed" || ev.state === "cancelled" || ev.state === "failed") {
+    const r = lane.running;
+    lane.running = null;
+    if (lane.inflight && lane.inflight.uuid === uuid) lane.inflight = null;
+    lane.byUuid.delete(uuid);
+    if (entry && !entry.ignore && entry.escalate) {
+      // The quick lane found it needs the machine: the same row, to a work lane.
+      const row = ledger.updateTurn(entry.rowId, { status: "queued", lane: "work" });
+      log(`voice: request #${row.id} escalated from the quick lane to a work lane`);
+      dispatchLane(row, { lane: "work" });
+    } else if (entry && !entry.ignore) {
+      let row = ledger.get("turns", entry.rowId);
+      if (row && (row.status === "running" || row.status === "queued")) {
+        row = ledger.updateTurn(row.id, { status: ev.state === "completed" ? "done" : ev.state === "cancelled" ? "interrupted" : "error", ended_at: now() });
+        emit("turn", { phase: "end", turn: publicTurn(row) });
+        features.hooks.onTurnEnd(row);
+      }
+      const h = row && callFor(lane.call).history.find((x) => x.id === row.id);
+      if (h) {
+        h.running = false;
+        h.reply = row.result_text || h.reply;
+      }
+      if (row) uiTokens.delete(row.id);
+    }
+    if (r && r.id) lane.toolSteps.clear();
+    lane.lastAt = Date.now();
+    const next = lane.afterIdle;
+    lane.afterIdle = null;
+    if (next) next();
+    emit("lane", { lane: lane.view(), phase: "idle" });
+  }
+}
+
+function laneUser(lane, ev) {
+  const content = ev.message && ev.message.content;
+  if (Array.isArray(content) && content.some((b) => b && b.type === "tool_result")) {
+    for (const b of content) if (b && b.type === "tool_result") onToolResult(b, ev, lane);
+    return;
+  }
+  if (!ev.isReplay) return;
+  const entry = lane.byUuid.get(ev.uuid);
+  if (!entry || !entry.own) return; // our own message: recorded already
+  const text = contentText(content);
+  let source = "remote";
+  let fromName = null;
+  if (ev.origin && ev.origin.kind === "peer") {
+    source = "peer";
+    fromName = ev.origin.name || null;
+  } else if (text.includes("[Cross-session idle notice]")) source = "idle";
+  else if (text.includes("[Cross-session delivery notice]")) source = "delivery";
+  else if (ev.isSynthetic || ev.isMeta) source = "system";
+  const shown = source === "peer" && ev.origin && ev.origin.body ? ev.origin.body : text;
+  const row = ledger.updateTurn(entry.rowId, { source, actor: fromName, text: clip(shown, 20000) });
+  if (lane.running && lane.running.id === row.id) lane.running.source = source;
+  emit("turn", { phase: "source", turn: publicTurn(row), from_pid: ev.origin && ev.origin.verifiedPeerPid });
+}
+
+function laneEmitSteps(lane) {
+  if (!lane.running || lane.running.ignored) return;
+  emit("steps", { turn_id: lane.running.id, steps: lane.running.steps });
+}
+
+function laneAssistant(lane, ev) {
+  const r = lane.running;
+  if (!r || r.ignored) return;
+  const blocks = (ev.message && ev.message.content) || [];
+  for (const b of blocks) {
+    if (!b) continue;
+    if (b.type === "text" && b.text) {
+      if (!ev.parent_tool_use_id) r.wrote = r.wrote || /\S/.test(b.text);
+      // The quick lane's text is held until its result (it may be the single word ESCALATE).
+      if (lane.kind === "quick") continue;
+      emit("assistant", { turn_id: r.id, text: clip(b.text, 20000), parent_tool_use_id: ev.parent_tool_use_id || null });
+    } else if (b.type === "tool_use") {
+      const step = { t: now(), tool: b.name, txt: describeTool(b.name, b.input), st: "run", tool_use_id: b.id, sub: !!ev.parent_tool_use_id };
+      r.steps.push(step);
+      if (r.steps.length > 200) r.steps.splice(0, r.steps.length - 200);
+      r.tools.push({ name: b.name, harmless: b.name === "Bash" ? !classifier.gateDecision("Bash", b.input || {}, cfg) && /^\s*(?:curl|cat|ls|df|free|uptime|date|systemctl (?:status|is-active)|journalctl|grep|head|tail|ps|du|wc|find)\b/.test(String((b.input || {}).command || "")) : false });
+      lane.toolSteps.set(b.id, { step, name: b.name, input: b.input });
+      emit("tool", { turn_id: r.id, tool_use_id: b.id, name: b.name, summary: step.txt, input: clipInput(b.input) });
+      laneEmitSteps(lane);
+    }
+  }
+}
+
+function laneStream(lane, ev) {
+  const r = lane.running;
+  if (!r || r.ignored || lane.kind === "quick") return;
+  const e = ev.event || {};
+  if (e.type === "content_block_delta" && e.delta && e.delta.type === "text_delta" && !ev.parent_tool_use_id) {
+    if (/\S/.test(e.delta.text)) r.wrote = true;
+    const line = JSON.stringify({ event: { seq: 0, ts: now(), type: "text", turn_id: r.id, delta: redact(e.delta.text) } }) + "\n";
+    for (const v of viewers) if (!v.destroyed && v.writableLength < 1024 * 1024) v.write(line);
+  }
+}
+
+function laneResult(lane, ev) {
+  const r = lane.running;
+  if (!r || r.ignored) return;
+  const text = String(ev.result || "");
+  if (lane.kind === "quick" && !ev.is_error && voiceLane.ESCALATE_RE.test(text)) {
+    const entry = lane.byUuid.get(r.uuid);
+    if (entry) entry.escalate = true;
+    r.ignored = true;
+    // Its cost is still its own (the chain of this lane).
+    features.hooks.onResult(ledger.get("turns", r.id), { ...ev, result: "" }, lane.procStamp);
+    return;
+  }
+  if (lane.kind === "quick" && text) emit("assistant", { turn_id: r.id, text: clip(text, 20000), parent_tool_use_id: null });
+  const row = ledger.updateTurn(r.id, {
+    duration_ms: ev.duration_ms || null,
+    cost_usd: ev.total_cost_usd || null,
+    result_text: clip(text, 20000),
+    error: ev.is_error ? clip(text || ev.subtype || "error", 2000) : null,
+  });
+  features.hooks.onResult(row, ev, lane.procStamp);
+  const h = callFor(lane.call).history.find((x) => x.id === row.id);
+  if (h) h.reply = row.result_text;
+  emit("result", { turn: publicTurn(ledger.get("turns", row.id)), is_error: !!ev.is_error, subtype: ev.subtype });
+}
+
+function onLaneExit(lane, code, signal) {
+  log(`voice lane ${lane.id} exited code=${code} signal=${signal} after ${lane.turns} turn(s)${code && lane.stderr ? ": " + clip(lane.stderr.trim(), 300) : ""}`);
+  for (const [aid, a] of approvals) {
+    if (a.lane !== lane) continue;
+    clearTimeout(a.timer);
+    const row = ledger.updateApproval(aid, { status: "cancelled", decided_at: now(), note: "the voice lane's process ended before an answer" });
+    approvals.delete(aid);
+    requestToApproval.delete(a.requestId);
+    emit("approval", { approval: publicApproval(row) });
+  }
+  const retry = [];
+  for (const [uuid, entry] of lane.byUuid) {
+    if (entry.ignore) continue;
+    const row = ledger.get("turns", entry.rowId);
+    if (!row) continue;
+    if (row.status === "running") {
+      const upd = ledger.updateTurn(row.id, { status: "lost", ended_at: now(), error: "the voice lane's process exited mid-turn" });
+      emit("turn", { phase: "end", turn: publicTurn(upd) });
+      features.hooks.onTurnEnd(upd);
+    } else if (row.status === "queued" && !entry.retried) retry.push(row);
+    lane.byUuid.delete(uuid);
+  }
+  lane.running = null;
+  lane.inflight = null;
+  lanes.delete(lane.id);
+  laneBySession.delete(lane.sessionId);
+  const C = callLanes.get(lane.call);
+  if (C) {
+    C.lanes = C.lanes.filter((l) => l !== lane);
+    if (!C.lanes.length && Date.now() - C.lastAt > cfg.voice_lane_idle_s * 1000) callLanes.delete(lane.call);
+  }
+  emit("lane", { lane: lane.view(), phase: "end" });
+  // A request written to it but never started goes once more, to another lane (or the main queue).
+  for (const row of retry) dispatchLane(row, { lane: row.lane === "quick" ? "quick" : "work" });
+}
+
+/** Every 30 s: lanes idle past voice_lane_idle_s close (not one whose delegation is still open). */
+function sweepLanes() {
+  const idleMs = cfg.voice_lane_idle_s * 1000;
+  for (const lane of lanes.values()) {
+    if (lane.state === "closed" || lane.busy() || lane.pendingDispatch) continue;
+    if (Date.now() - lane.lastAt < idleMs) continue;
+    if (laneHoldsDelegation(lane)) continue;
+    closeLane(lane, "idle");
+  }
+  for (const [call, C] of callLanes) if (!C.lanes.length && Date.now() - C.lastAt > idleMs) callLanes.delete(call);
 }
 
 /* ---- deploy events: MINT AI hears about restarts with its next turn ---- */
@@ -1126,8 +1662,8 @@ function clipInput(input) {
   return { _truncated: clip(s, 4000) };
 }
 
-function onToolResult(b, ev) {
-  const t = turns.toolSteps.get(b.tool_use_id);
+function onToolResult(b, ev, lane) {
+  const t = (lane ? lane.toolSteps : turns.toolSteps).get(b.tool_use_id);
   const text = contentText(b.content);
   if (t) {
     t.step.st = b.is_error ? "error" : "done";
@@ -1135,7 +1671,8 @@ function onToolResult(b, ev) {
     if (b.is_error) t.step.error = clip(text, 300);
   }
   emit("tool_result", { tool_use_id: b.tool_use_id, ok: !b.is_error, name: t ? t.name : null, summary: clip(text, 600) });
-  emitSteps();
+  if (lane) laneEmitSteps(lane);
+  else emitSteps();
 }
 
 function onStreamEvent(ev) {
@@ -1167,18 +1704,22 @@ function onResult(ev) {
 
 /* --------------------------------------------------------------- approvals --- */
 
-function onControlRequest(ev) {
+function onControlRequest(ev, lane) {
   const req = ev.request || {};
+  // A voice lane's question is answered on its own stdin, and belongs to its running turn.
+  const write = lane ? (o) => lane.write(o) : writeChild;
+  const running = lane ? (lane.running && !lane.running.ignored ? lane.running : null) : turns.running;
+  const steps = lane ? lane.toolSteps : turns.toolSteps;
   if (req.subtype !== "can_use_tool") {
     // Nothing else is registered, so nothing else should arrive; answering
     // stops the CLI waiting on a reply that would never come.
-    writeChild({ type: "control_response", response: { subtype: "error", request_id: ev.request_id, error: "not supported by the MINT AI supervisor" } });
+    write({ type: "control_response", response: { subtype: "error", request_id: ev.request_id, error: "not supported by the MINT AI supervisor" } });
     return;
   }
   const tool = req.tool_name || "unknown";
   const input = req.input || {};
   const auto = features.autoDecision(tool, input);
-  if (auto) return autoAnswer(ev, req, tool, input, auto);
+  if (auto) return autoAnswer(ev, req, tool, input, auto, lane);
   const gate = classifier.gateDecision(tool, input, cfg) || {};
   const summary =
     tool === "SendMessage"
@@ -1190,7 +1731,7 @@ function onControlRequest(ev) {
   const row = ledger.addApproval({
     request_id: ev.request_id,
     tool_use_id: req.tool_use_id,
-    turn_id: turns.running && turns.running.id,
+    turn_id: running && running.id,
     tool,
     input_json: clip(JSON.stringify(redactDeep(input)), 16000),
     summary: clip(redact(summary), 4000),
@@ -1201,16 +1742,18 @@ function onControlRequest(ev) {
   });
   const expire = () => expireApproval(row.id);
   const timer = setTimeout(expire, approvalTimeoutS() * 1000);
-  approvals.set(row.id, { requestId: ev.request_id, input, generation: proc.generation, timer, expire, tool, toolUseId: req.tool_use_id });
+  approvals.set(row.id, { requestId: ev.request_id, input, generation: proc.generation, timer, expire, tool, toolUseId: req.tool_use_id, ...(lane ? { lane } : {}) });
   requestToApproval.set(ev.request_id, row.id);
-  const t = turns.toolSteps.get(req.tool_use_id);
+  if (running && lane) running.approvals++;
+  const t = steps.get(req.tool_use_id);
   if (t) {
     t.step.st = "wait";
     t.step.approval_id = row.id;
-    emitSteps();
+    if (lane) laneEmitSteps(lane);
+    else emitSteps();
   }
-  log(`approval #${row.id} raised: ${tool} ${clip(summary, 120)}`);
-  features.hooks.onApproval(row, input, turns.running ? ledger.get("turns", turns.running.id) : null);
+  log(`approval #${row.id} raised${lane ? " (voice lane " + lane.id + ")" : ""}: ${tool} ${clip(summary, 120)}`);
+  features.hooks.onApproval(row, input, running ? ledger.get("turns", running.id) : null);
   emit("approval", { approval: publicApproval(ledger.get("approvals", row.id)) });
 }
 
@@ -1219,13 +1762,14 @@ function onControlRequest(ev) {
  * this" rule, or a deny. Recorded as an approval row like any other, decided
  * by "rule:<id>", so the audit trail shows it.
  */
-function autoAnswer(ev, req, tool, input, auto) {
+function autoAnswer(ev, req, tool, input, auto, lane) {
+  const running = lane ? (lane.running && !lane.running.ignored ? lane.running : null) : turns.running;
   const summary = tool === "SendMessage" ? `SendMessage to ${peers.bareName(input.to)}: ${input.message || ""}` : typeof input.command === "string" ? input.command : JSON.stringify(input);
   const t = now();
   const row = ledger.addApproval({
     request_id: ev.request_id,
     tool_use_id: req.tool_use_id,
-    turn_id: turns.running && turns.running.id,
+    turn_id: running && running.id,
     tool,
     input_json: clip(JSON.stringify(redactDeep(input)), 16000),
     summary: clip(redact(summary), 4000),
@@ -1238,7 +1782,7 @@ function autoAnswer(ev, req, tool, input, auto) {
   const response = auto.allow
     ? { behavior: "allow", updatedInput: input }
     : { behavior: "deny", message: `MINT AI rules: ${auto.explain} Do not retry it or route it through another session; tell the user it is not allowed.` };
-  writeChild({ type: "control_response", response: { subtype: "success", request_id: ev.request_id, response } });
+  (lane ? (o) => lane.write(o) : writeChild)({ type: "control_response", response: { subtype: "success", request_id: ev.request_id, response } });
   const upd = ledger.updateApproval(row.id, { status: auto.allow ? "approved" : "denied", decided_at: t, decided_by: who, rule_id: auto.rule ? auto.rule.id : null, note: auto.explain });
   log(`approval #${row.id} ${auto.allow ? "allowed" : "denied"} by ${who}: ${tool} ${clip(summary, 120)}`);
   if (!auto.allow) recordDeniedDelegation({ tool, input, toolUseId: req.tool_use_id }, upd, `denied by ${who}`);
@@ -1260,16 +1804,19 @@ function answer(approvalId, allow, message, actor) {
     }
     return a;
   }
-  if (a.generation !== proc.generation) return false;
+  if (!a.lane && a.generation !== proc.generation) return false;
   clearTimeout(a.timer);
   approvals.delete(approvalId);
   requestToApproval.delete(a.requestId);
   const response = allow ? { behavior: "allow", updatedInput: a.input } : { behavior: "deny", message };
-  writeChild({ type: "control_response", response: { subtype: "success", request_id: a.requestId, response } });
-  const t = turns.toolSteps.get(a.toolUseId);
+  // A voice lane's question goes back on the lane's own stdin.
+  (a.lane ? (o) => a.lane.write(o) : writeChild)({ type: "control_response", response: { subtype: "success", request_id: a.requestId, response } });
+  if (a.lane && a.lane.running && a.lane.running.approvals) a.lane.running.approvals--;
+  const t = (a.lane ? a.lane.toolSteps : turns.toolSteps).get(a.toolUseId);
   if (t) {
     t.step.st = allow ? "run" : "error";
-    emitSteps();
+    if (a.lane) laneEmitSteps(a.lane);
+    else emitSteps();
   }
   return a;
 }
@@ -1812,7 +2359,8 @@ function emitDelegation(d) {
 }
 
 function currentTurnId() {
-  return turns.running ? turns.running.id : null;
+  const r = runningTurn();
+  return r ? r.id : null;
 }
 
 /** A live session by session id, then pid, then a UNIQUE normalised name (lib/targets.js); namesakes -> null. */
@@ -1836,8 +2384,14 @@ function onListAgents(msg) {
 }
 
 function onHookEvent(msg) {
+  // A voice lane's hook (it runs in /root/moni-ai with the same hooks): handled as its running turn's.
+  const lane = msg && msg.session_id ? laneBySession.get(msg.session_id) : null;
+  if (lane) return withLane(lane, () => onHookEventFor(msg, lane));
   const ours = readState().session_id;
   if (!msg || (msg.session_id && ours && msg.session_id !== ours)) return; // someone else working in /root/moni-ai
+  return onHookEventFor(msg, null);
+}
+function onHookEventFor(msg, lane) {
   if (features.hooks.onHook(msg)) return;
   if (msg.event === "PostToolUse" && msg.tool_name === "SendMessage") return onSendMessageResult(msg);
   if (msg.event === "UserPromptSubmit") return onInboundPrompt(msg.prompt);
@@ -1885,6 +2439,7 @@ function onSendMessageResult(msg) {
     note: ok ? null : clip(resp.message || resp.error || "SendMessage failed", 500),
   });
   if (d) emitDelegation(d);
+  if (d && ctxLane && ctxLane.delegs) ctxLane.delegs.add(d.id); // a lane holding an open delegation is kept (its reply comes back to it)
   // Unknown or ambiguous name: look at the sessions again first, then pin it only if it is now unique.
   if (d && !target && kind !== "subagent" && kind !== "remote") {
     refreshSessions(() => {
@@ -2299,7 +2854,7 @@ const features = createFeatures({
   sessionsWithLedger: () => sessionsWithLedger(),
   selfSessionId: () => readState().session_id || null,
   selfSessionIds: () => selfSessionIds(),
-  currentTurnId: () => (turns.running ? turns.running.id : null),
+  currentTurnId: () => currentTurnId(),
   projectsDir: PROJECTS_DIR,
   describeTool: (n, i) => describeTool(n, i),
   planUsage: (o) => planUsage.get(o),
@@ -2327,7 +2882,7 @@ const machines = machinesLib.create({
 function takeOverPolicy(actor) {
   if (isHuman(actor)) return { ok: true };
   if (actor !== "moni-ai") return { ok: false, why: "only MINT AI or the administrator can take over a computer" };
-  const r = turns.running;
+  const r = runningTurn();
   if (!r) return { ok: false, why: "no turn is running: taking over a computer answers the administrator's own request, during it" };
   if (r.source === "dashboard") return { ok: true };
   if (r.source === "voice-desk") {
@@ -2364,7 +2919,7 @@ function turnWidgets(row) {
 }
 function publicTurn(row) {
   if (!row) return null;
-  return { widgets: turnWidgets(row), id: row.id, source: row.source, actor: row.actor, text: row.text, target: row.target, status: row.status, created_at: row.created_at, started_at: row.started_at, ended_at: row.ended_at, duration_ms: row.duration_ms, cost_usd: row.cost_usd, cost_delta_usd: row.cost_delta_usd == null ? null : row.cost_delta_usd, result_text: row.result_text, error: row.error, order_id: row.order_id || null, mission_id: row.mission_id || null, decision_id: row.decision_id || null };
+  return { widgets: turnWidgets(row), id: row.id, source: row.source, actor: row.actor, text: row.text, target: row.target, status: row.status, created_at: row.created_at, started_at: row.started_at, ended_at: row.ended_at, duration_ms: row.duration_ms, cost_usd: row.cost_usd, cost_delta_usd: row.cost_delta_usd == null ? null : row.cost_delta_usd, result_text: row.result_text, error: row.error, order_id: row.order_id || null, mission_id: row.mission_id || null, decision_id: row.decision_id || null, call_id: row.call_id || null, lane: row.lane || null, follows: row.follows || null };
 }
 function publicDelegation(d) {
   if (!d) return null;
@@ -2428,6 +2983,8 @@ function status() {
     approval_timeout_s: approvalTimeoutS(),
     // Paused at its daily token cap (build spec §6): the Command Center says "Paused at its daily cap -- Resume".
     paused_at_cap: features.caps.selfPaused(),
+    // A live call's small sessions (lib/voicelane.js).
+    voice_lanes: [...lanes.values()].map((l) => l.view()),
     delegation_allow: cfg.delegation_allow,
     seq,
   };
@@ -2444,7 +3001,7 @@ function snapshotFor(actor, turnIds) {
   if (turnIds && turnIds.length) {
     requests = turnIds
       .map((id) => ledger.get("turns", id))
-      .filter((r) => r && r.source === "voice-desk" && r.actor === actor);
+      .filter((r) => r && ((r.source === "voice-desk" && r.actor === actor) || (r.call_id && r.voice_actor === actor))); // a call's agent replies too
   }
   return buildSnapshot({
     now: now(),
@@ -2600,6 +3157,8 @@ async function handle(req, sock) {
       return machines.report(req.actor, p);
     case "machine-state":
       return machines.state(req.actor, p);
+    case "voice-warm":
+      return voiceWarm(req.actor, p);
     case "deploy-event":
       // The dashboard (re)started (server.js announceStart): remembered for the snapshot, told to MINT AI once.
       return { noted: noteDeploy(p, req.actor) };
@@ -2636,7 +3195,7 @@ async function handle(req, sock) {
  */
 async function uiAction(actor, p) {
   if (actor !== "moni-ai") throw new Error("ui-action is MINT AI's own tool (actor moni-ai)");
-  const running = turns.running;
+  const running = runningTurn(); // a voice lane's own running turn when the call comes from its MCP
   if (!running) throw new Error("no turn is running: a screen action answers the administrator's own request, during it");
   const tok = uiTokens.get(running.id);
   if (!tok || (running.source !== "dashboard" && running.source !== "voice-desk")) throw new Error("this turn was not started by the administrator from the Command Center, so it cannot change their screen");
@@ -2673,7 +3232,7 @@ async function uiAction(actor, p) {
 const uiWidgetCount = new Map(); // turn id -> widgets sent
 async function uiWidget(actor, p) {
   if (actor !== "moni-ai") throw new Error("ui-widget is MINT AI's own tool (actor moni-ai)");
-  const running = turns.running;
+  const running = runningTurn();
   if (!running) throw new Error("no turn is running: a widget goes with your answer to the administrator's own request, during it");
   const tok = uiTokens.get(running.id);
   if (!tok || (running.source !== "dashboard" && running.source !== "voice-desk")) throw new Error("this turn was not started by the administrator from the Command Center, so it cannot put a widget on their screen");
@@ -2799,7 +3358,7 @@ function serveControl() {
         }
         const req = parsed.req;
         Promise.resolve()
-          .then(() => handle(req, sock))
+          .then(() => (req.lane ? withLane(lanes.get(req.lane) || null, () => handle(req, sock)) : handle(req, sock)))
           .then(
             (data) => {
               if (req.mutating) auditLine(req.actor, req.op, auditDetail(req), true);
@@ -2937,6 +3496,7 @@ async function main() {
 
   refreshSessions();
   const pollSessions = setInterval(refreshSessions, cfg.sessions_poll_s * 1000);
+  const pollLanes = setInterval(sweepLanes, 30000);
   const pollVitals = setInterval(() => {
     vitalsCache = vitals();
     emit("vitals", { vitals: vitalsCache });
@@ -2958,6 +3518,8 @@ async function main() {
     clearTimeout(proc.timer);
     clearInterval(pollSessions);
     clearInterval(pollVitals);
+    clearInterval(pollLanes);
+    for (const l of lanes.values()) closeLane(l, "the supervisor is stopping");
     features.stop();
     control.close();
     hooks.close();

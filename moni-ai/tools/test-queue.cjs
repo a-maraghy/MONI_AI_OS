@@ -46,6 +46,7 @@ fs.writeFileSync(
     run_dir: path.join(tmp, "run"),
     socket_group: "root",
     approval_timeout_s: 20,
+    voice_lanes: false, // this test is about the main queue; a live call's lanes are tools/test-voicelanes.cjs
     sessions_poll_s: 1,
     backoff_min_s: 1,
     backoff_max_s: 2,

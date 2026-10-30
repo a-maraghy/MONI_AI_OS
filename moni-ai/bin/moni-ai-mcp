@@ -27,12 +27,19 @@
  *   machine_list / machine_take_over / machine_tell / machine_release
  *                         the user's own computers (Path A laptop control): a session ON the
  *                         computer under a lease the user can stop; lib/machines.js
+ *   weather               the weather now and for the next days at a place (Open-Meteo, lib/weather.js;
+ *                         read-only, no key)
  *   ui_do                 do one: change what the administrator sees in the tab
  *                         they asked from (open a page or a panel, end the
  *                         call...), during their own turn only; never approves,
  *                         denies or changes a setting. Its schema never changes.
  *
  * Plain JSON-RPC 2.0 over newline-delimited stdio (MCP's stdio transport).
+ *
+ * Voice lanes (2026-10-30, supervisor lib/voicelane.js): a live call's small sessions start this server
+ * with MONI_AI_LANE=<lane id>, sent with every call as `lane` so the supervisor knows which session's turn
+ * a screen action or a mission belongs to; MONI_AI_MCP_SET=quick (the quick lane, registered as
+ * "mint-quick") serves the weather tool only.
  */
 const net = require("net");
 const path = require("path");
@@ -40,6 +47,9 @@ const readline = require("readline");
 const { FORBIDDEN_KEYS } = require(path.join(__dirname, "..", "lib", "snapshot.js"));
 const UiActions = require(path.join(__dirname, "..", "lib", "ui-actions.js"));
 const Widgets = require(path.join(__dirname, "..", "lib", "mint-widgets.js"));
+const { weather } = require(path.join(__dirname, "..", "lib", "weather.js"));
+const LANE = /^v[a-z0-9-]{1,60}$/.test(process.env.MONI_AI_LANE || "") ? process.env.MONI_AI_LANE : null;
+const QUICK_ONLY = process.env.MONI_AI_MCP_SET === "quick";
 
 const SOCKET = process.env.MONI_AI_SOCKET || "/run/moni-ai/moni-ai.sock";
 const STEP_STATUSES = ["planned", "delegated", "working", "waiting_approval", "done", "failed", "skipped"];
@@ -251,6 +261,25 @@ const TOOLS = [
     noArgs: true,
     shape: snapshotView,
   },
+  {
+    name: "weather",
+    description:
+      "The weather now and for the next days at a place, from Open-Meteo (a real forecast service): the sky in words, temperature and " +
+      "feels-like in °C, humidity, wind in km/h, each day's low, high and chance of rain. Read-only. Give the place by name (a city or area, " +
+      "e.g. \"6th of October City\", \"Cairo\") or as lat/lon. Never state the weather without calling this.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        place: { type: "string", description: "The city or area, e.g. \"6th of October City\"." },
+        lat: { type: "number", description: "Optional: latitude, instead of a name." },
+        lon: { type: "number", description: "Optional: longitude, instead of a name." },
+        days: { type: "integer", description: "How many days of forecast, 1 to 7 (default 2: today and tomorrow)." },
+      },
+      additionalProperties: false,
+    },
+    local: (a) => weather(a),
+    shape: (d) => d,
+  },
   ...uiTools(),
   // Hired sessions (M-6). Stable schemas from day one: plain strings, no enums (a resumed CLI keeps what it first loaded).
   {
@@ -409,7 +438,7 @@ function call(op, params) {
       clearTimeout(timer);
       reject(new Error("cannot reach the MINT AI supervisor: " + e.message));
     });
-    s.on("connect", () => s.write(JSON.stringify({ id: "mcp" + ++n, op, actor: "moni-ai", ...params }) + "\n"));
+    s.on("connect", () => s.write(JSON.stringify({ id: "mcp" + ++n, op, actor: "moni-ai", ...(LANE ? { lane: LANE } : {}), ...params }) + "\n"));
     s.on("data", (c) => {
       buf += c;
       const nl = buf.indexOf("\n");
@@ -444,6 +473,8 @@ function brief(data) {
 }
 
 const out = (o) => process.stdout.write(JSON.stringify(o) + "\n");
+/** The tools this instance serves: all of them, or the weather alone for a voice call's quick lane. */
+const served = () => (QUICK_ONLY ? TOOLS.filter((t) => t.name === "weather") : TOOLS);
 
 async function onMessage(msg) {
   const { id, method, params } = msg;
@@ -454,8 +485,8 @@ async function onMessage(msg) {
       result: {
         protocolVersion: (params && params.protocolVersion) || "2025-06-18",
         capabilities: { tools: {} },
-        serverInfo: { name: "mint-ai", version: "1.0.0" }, // registered as "mint-ai" (supervisor.js MCP_NAME)
-        instructions:
+        serverInfo: { name: QUICK_ONLY ? "mint-quick" : "mint-ai", version: "1.0.0" }, // registered as "mint-ai" (supervisor.js MCP_NAME)
+        instructions: QUICK_ONLY ? "weather: the weather now and for the next days at a place (Open-Meteo)." :
           "MINT AI's missions and decision proposals, recorded by the supervisor and shown in the Command Center; status_snapshot: this VPS at a glance, read-only; " +
           "ui_actions_list / ui_do: change what the administrator sees in the tab they asked from, during their own request only (list first, then do); " +
           "ui_widgets_list / ui_widget: a small live widget beside your answer on their board, built only from fixed building blocks (list first; words always too); " +
@@ -466,9 +497,9 @@ async function onMessage(msg) {
   }
   if (method === "notifications/initialized" || (method && method.startsWith("notifications/"))) return;
   if (method === "ping") return out({ jsonrpc: "2.0", id, result: {} });
-  if (method === "tools/list") return out({ jsonrpc: "2.0", id, result: { tools: TOOLS.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })) } });
+  if (method === "tools/list") return out({ jsonrpc: "2.0", id, result: { tools: served().map(({ name, description, inputSchema }) => ({ name, description, inputSchema })) } });
   if (method === "tools/call") {
-    const tool = TOOLS.find((t) => t.name === (params && params.name));
+    const tool = served().find((t) => t.name === (params && params.name));
     if (!tool) return out({ jsonrpc: "2.0", id, error: { code: -32602, message: "unknown tool" } });
     try {
       const given = (params && params.arguments) || {};
@@ -476,7 +507,7 @@ async function onMessage(msg) {
         throw new Error(tool.name + " takes no arguments");
       let args = tool.noArgs ? {} : { ...(tool.defaults || {}), ...given };
       if (tool.map) args = tool.map(args);
-      const data = tool.local ? tool.local(args) : await call(tool.op, args);
+      const data = tool.local ? await tool.local(args) : await call(tool.op, args);
       const view = tool.shape ? tool.shape(data) : brief(data);
       return out({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(view) }] } });
     } catch (e) {

@@ -9,8 +9,9 @@
  * reorganisation); what the live call (lib/voice-live.js) still relies on
  * stayed here:
  *
- *   voiceOps(call, actor)  the only door to the supervisor: `snapshot` (read)
- *                          and `send` (via "voice-desk", the supervisor's
+ *   voiceOps(call, actor)  the only door to the supervisor: `snapshot` (read),
+ *                          `voice-warm` (read: the call's own MINT AI sessions
+ *                          started ahead, 2026-10-30) and `send` (via "voice-desk", the supervisor's
  *                          existing name for a voice hand-off) -- never
  *                          approve, deny, interrupt, rules or decisions; and
  *                          `send` refuses text that is an echo of a prompt
@@ -30,7 +31,10 @@
  *                          recommendation it did not make, "I'll ask" turned
  *                          into "done", a name or a path it did not give -- each
  *                          is cut, and a pending approval that the summary left
- *                          out is said anyway. Every rule holds in Egyptian and
+ *                          out is said anyway. A clause that restates one of the
+ *                          reply's own plain sentences in other words (the same
+ *                          facts and numbers, «عملنا» for «خلّينا»: restatesReply,
+ *                          2026-10-30) is not an added claim. Every rule holds in Egyptian and
  *                          Modern Standard Arabic and in mixed sentences
  *                          (lib/voice-arabic.js), and fails closed;
  *   Summariser             a detailed spoken summary of one of MINT AI's
@@ -38,7 +42,10 @@
  *                          sentences: 2026-10-30), written by a text-only
  *                          realtime response (SUMMARY_MODEL) and released
  *                          sentence by sentence through the guard; a short
- *                          plain reply is read word for word instead;
+ *                          plain reply is read word for word instead; a summary
+ *                          cut part-way goes on with the rest of the reply,
+ *                          word for word (restOfReply, lines marked `verbatim`),
+ *                          never "the rest is on screen";
  *   linesFor / langOf      the fixed lines (first person, in the language of
  *                          the cut sentence, feminine / masculine / neutral in
  *                          Arabic after the persona).
@@ -201,7 +208,9 @@ function summaryLanguage(utterance, persona) {
 /* ------------------------------------------------ the supervisor door -- */
 
 /** The only supervisor ops the voice may ever reach, and how. */
-const VOICE_OPS = Object.freeze({ snapshot: "read", send: "write" });
+// voice-warm (2026-10-30): the call's own small MINT AI sessions are started ahead of its first request
+// (moni-ai lib/voicelane.js); it starts processes, never a turn, and nothing is billed until one is sent.
+const VOICE_OPS = Object.freeze({ snapshot: "read", send: "write", "voice-warm": "read" });
 
 class OpsError extends Error {
   constructor(message, code) {
@@ -225,6 +234,7 @@ function voiceOps(call, actor) {
   return {
     gate,
     snapshot: (turns) => gate("snapshot", turns && turns.length ? { turns } : {}),
+    warm: (call) => gate("voice-warm", { call }),
     // extra.ut: the one-time ui token this server minted for the tab (UI control Phase 2).
     // extra.call: the live call's id -- a repeat still queued in MINT AI is folded into its turn.
     ask: (text, extra) => {
@@ -299,7 +309,10 @@ const DO_ING =
 const NEGATION = uni(/\b(not|never|no|nothing|none|cannot|unable|without|n't|cant|can't|wont|won't|haven't|hasn't|hadn't|didn't|isn't|aren't|wasn't|weren't|don't|doesn't|nobody|neither|nor|no longer|مش|لم|لن|ليس|ليست|مفيش|مافيش|محدش|ماحدش|بدون)\b|n't\b/);
 // "MINT AI OS" is a separate session (the one that builds this OS), not the voice's own self:
 // passing work to it, or naming it, is not speaking of MINT AI in the third person.
-const NOT_OS = "(?!\\s+(?:ai\\s+|اي\\s*اي\\s+)?(?:os|او\\s*اس)(?![\\p{L}\\p{N}]))";
+// "MINT" that is not the voice itself: the product (MINT AI OS) and the other agents and parts named MINT
+// (MINT Pace, Mint Builder, Mint Convener, ...) -- "I've sent it to MINT Pace" is no hand-off to MINT AI.
+const MINT_OTHERS = "os|pace|builder|convener|library|desktop|dock|canvas|presence|core|sound|session|sessions";
+const NOT_OS = "(?!\\s+(?:ai\\s+|اي\\s*اي\\s+)?(?:" + MINT_OTHERS + "|او\\s*اس|بيس)(?![\\p{L}\\p{N}]))";
 // "I've passed that to MINT AI", "I asked MINT AI to ..." -- the one thing the
 // desk may say it did. Removed before any claim is looked for.
 const HANDOFF_EN = new RegExp(
@@ -489,6 +502,21 @@ function sentencesOf(text, final) {
   return out;
 }
 
+/** A reply as it can be spoken: no code, links, list marks or markup, in sentences (the verbatim reader's text). */
+function speakableSentences(reply) {
+  const t = String(reply || "")
+    .replace(/```[\s\S]*?(```|$)/g, " ")
+    .replace(/`[^`\n]+`/g, (m) => m.replace(/`/g, ""))
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+    .replace(/https?:\/\/\S+/g, " ")
+    .replace(/^\s*[#>]+\s*/gm, "")
+    .replace(/^\s*(?:[-*+]|\d+\.)\s+/gm, "")
+    .replace(/[*_~|]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return sentencesOf(t, true);
+}
+
 const HANDOFF_ANY = new RegExp(HANDOFF.source, "u"); // not global: no lastIndex to trip over
 /**
  * The passive hand-off in Arabic: «تم تمرير الطلب لـ MINT AI», «طلبك اتبعت لـ
@@ -569,9 +597,27 @@ function mintAsOther(cl) {
     if (SELF_INTRO.test(cl.slice(0, m.index))) continue;
     // The product: "MINT AI OS", "MINT AI's OS dashboard", "Mint AIOS", "MINT AI O.S." (as transcribed).
     if (/^\s*(?:os\b|'s voice\b|s voice\b|'?s os\b|o\.\s?s\b|aios\b|ai\s?os\b)/.test(cl.slice(m.index + m[0].length))) continue;
+    // Another agent or part named MINT ("MINT Pace replied", "ask Mint Builder"): not the voice as someone else.
+    if (!/\s+ai$/.test(m[0]) && otherMint(cl.slice(m.index + m[0].length))) continue;
     return true;
   }
   return false;
+}
+const MINT_OTHERS_RE = new RegExp("^\\s+(?:" + MINT_OTHERS + ")(?![\\p{L}\\p{N}])", "u");
+let mintAgentWords = new Set(); // the second word of live agents named "MINT <word>" (setMintAgents)
+function otherMint(after) {
+  if (MINT_OTHERS_RE.test(after)) return true;
+  const w = /^\s+([\p{L}\p{N}]+)/u.exec(after);
+  return !!(w && mintAgentWords.has(w[1].toLowerCase()));
+}
+/** The agents MINT AI knows (names), so "MINT <word>" for one of them is not MINT AI spoken of as someone else. */
+function setMintAgents(names) {
+  const next = new Set();
+  for (const n of names || []) {
+    const m = /^(?:\[[^\]]*\]\s*)?(?:mint|moni)\s+([\p{L}\p{N}]+)/iu.exec(String(n || "").trim());
+    if (m && !/^ai$/i.test(m[1])) next.add(m[1].toLowerCase());
+  }
+  mintAgentWords = next;
 }
 /** Speaking of passing things to MINT AI, or of MINT AI as someone else? */
 function thirdPerson(cl) {
@@ -926,7 +972,7 @@ function judge(sentences, ctx) {
       const fromReplyVerbatim = summary && replyText && cl.trim().length >= 8 && replyText.includes(cl.trim());
       if (summary) {
         if (!fromReplyVerbatim) {
-          const ar = arabicSummaryRule(cl, replyDid);
+          const ar = arabicSummaryRule(cl, replyDid, reply);
           if (ar) return fail(ar, raw, si);
           const s = summaryClause(cl, raw, reply);
           if (s) return fail(s.rule, s.match, si);
@@ -1057,22 +1103,99 @@ function arabicDeskRule(cl, { stepTalk, replyDid, replied, uiDid, uiSentence }) 
   return null;
 }
 
+/*
+ * Does a summary clause restate one sentence of the reply -- the same facts, its own words? The
+ * summariser paraphrases verbs the guard's lexicon may not know (the reply's «خلّينا» became «عملنا»),
+ * so a first-person "we did" is held to the reply's facts instead of its verb:
+ *   - one reply sentence carries at least RESTATE_SHARE of the clause's content words (and RESTATE_MIN,
+ *     a word among them; RESTATE_EXTRA of them missing at most), with Arabic prefixes (و ب ل ال) and English endings taken off both sides;
+ *   - every number of the clause is in that sentence;
+ *   - that sentence says it plainly: no question, offer, "if", future or modal ("we can make a copy"),
+ *     and a negation in it before the shared words only if the clause is negated too (and the other way);
+ *   - `concept` (a named action, "act:delet"): the sentence names the same action, done -- so "we deleted
+ *     the live copy at 8" never passes on "we made the live copy at 8".
+ * Pure; used only in summary mode, where the reply is the voice's own finished work.
+ */
+const RESTATE_SHARE = 0.8;
+const RESTATE_EXTRA = 1; // words of the clause the sentence lacks, at most ("a copy of the CLIENT's database" is another fact)
+const RESTATE_MIN = 3;
+const AR_STOP = new Set("من في على الى الي عن مع هي هو ده دي دا اللي الذي التي كان كانت بتاع بتاعه بتاعت بتاعنا بتاعتنا لسه بس كمان يعني علشان عشان لان".split(" "));
+const MODAL_EN = /\b(?:can|could|would|will|shall|should|may|might|want me|wants? to|going to|gonna|if|whether|unless|once)\b|'ll\b/;
+const MODAL_AR = /(?:^|\s)(?:ممكن|يمكن|نقدر|اقدر|أقدر|تقدر|لو|اذا|إذا|هل|عايز|عاوز|محتاج|لازم|سوف)(?:\s|$)/u;
+function restateTokens(text, skip) {
+  const sk = new Set((skip || []).map((w) => norm(w)));
+  const out = [];
+  for (const m of arabic.joinDigits(norm(text)).matchAll(/\d+(?:[.,:]\d+)*|[\p{L}][\p{L}']*/gu)) {
+    let w = m[0];
+    if (sk.has(w)) continue;
+    if (/^\d/.test(w)) {
+      out.push(w);
+      continue;
+    }
+    if (arabic.hasArabic(w)) {
+      if (AR_STOP.has(w)) continue;
+      const bare = w.replace(/^(?:و|ف)?(?:بال|وال|لل|ال|ب|ل)/u, "");
+      w = bare.length >= 3 ? bare : w;
+      if (w.length < 3) continue;
+      out.push(w);
+    } else {
+      if (w.length < 3 || STOP.has(w)) continue;
+      out.push(stem(w));
+    }
+  }
+  return out;
+}
+function restatesReply(cl, reply, o) {
+  o = o || {};
+  const mine = restateTokens(cl, o.skip);
+  const words = mine.filter((w) => !/^\d/.test(w));
+  if (mine.length < RESTATE_MIN || !words.length) return false;
+  const nums = numbersIn(cl);
+  const clNeg = NEGATION.test(cl) || (arabic.hasArabic(cl) && arabic.claimsIn(cl).some((x) => x.negated)); // «معملناش» is "we did not"
+  for (const sent of speakableSentences(reply.text)) {
+    const n = norm(sent);
+    if (QUESTION_END.test(n) || OFFER_EN.test(n) || arabic.OFFER_AR.test(n) || MODAL_EN.test(n) || MODAL_AR.test(n)) continue;
+    const theirs = restateTokens(sent);
+    const set = new Set(theirs);
+    const shared = mine.filter((w) => set.has(w));
+    if (shared.length < RESTATE_MIN || shared.length < Math.ceil(mine.length * RESTATE_SHARE) || mine.length - shared.length > RESTATE_EXTRA || !shared.some((w) => !/^\d/.test(w))) continue;
+    const theirNums = new Set(numbersIn(sent));
+    if (nums.some((x) => !theirNums.has(x))) continue;
+    // A negation before (or among) the shared words, unless the clause says "not" too; a future-tense claim.
+    const firstAt = Math.min(...shared.map((w) => theirs.indexOf(w)).filter((i) => i >= 0));
+    const negBefore = theirs.slice(0, Math.max(firstAt, 0)).some((w) => NEGATION.test(w) || arabic.isNegWord(w)) || NEGATION.test(n.split(/\s+/).slice(0, 3).join(" "));
+    if (negBefore !== clNeg) continue;
+    if (arabic.hasArabic(n) && arabic.claimsIn(n).some((x) => !x.negated && (x.role === "fut1" || x.role === "fut3"))) continue;
+    if (o.concept) {
+      const done = polarClaims(n).some((p) => p.concept === o.concept && p.sign > 0 && !p.future);
+      if (!done) continue;
+    }
+    return true;
+  }
+  return false;
+}
+
 /**
  * The Arabic rules in a summary, beyond what summaryClause checks against the
  * reply: "I did" only what the reply says was done (the voice is its author); a
  * bare "done" (تم، خلاص) that names nothing the reply did; a result it cannot read.
  */
-function arabicSummaryRule(cl, replyDid) {
+function arabicSummaryRule(cl, replyDid, reply) {
   if (!arabic.hasArabic(cl)) return null;
   const claims = arabic.claimsIn(cl);
   for (const x of claims) {
     if (x.negated) continue;
     // First person, as the reply's author: «عملت restart لأودو» only if the reply says it was done.
     if ((x.role === "did1" || x.role === "ptc1") && replyDid && claimConcept(cl, x) && replyDid(claimConcept(cl, x))) continue;
+    // ... or restates a sentence the reply states as done, in other words («عملنا نسخة من اللايف الساعة 8»
+    // for «خلّينا نسخة من اللايف ... الساعة 8»: cut on call lv1jz4g, 2026-10-30). The generic "we did / made"
+    // needs the same facts in one plain, unnegated reply sentence; a named action ("we deleted") also needs
+    // that sentence to name the same action (restatesReply).
+    if ((x.role === "did1" || x.role === "ptc1") && reply && restatesReply(cl, reply, { skip: [x.word], concept: x.generic ? claimConcept(cl, x) : "act:" + stem(x.en) })) continue;
     if (x.role === "did1" || x.role === "prog1" || x.role === "ptc1") return "action-claim";
     if (x.generic && (x.role === "done" || x.role === "pass") && !polarClaims(cl).length) return "added-claim";
   }
-  if (arabic.unparsed(cl)) return "unparsed-claim";
+  if (arabic.unparsed(cl) && !(reply && restatesReply(cl, reply))) return "unparsed-claim";
   return null;
 }
 
@@ -1517,8 +1640,13 @@ class Summariser {
       // Cut before a word of it was heard: the reply itself is read word for word (the caller's verbatim
       // reader) rather than "the answer is on screen" -- the administrator asked for the result spoken (2026-10-30).
       if (!rel.released) return finish("verbatim");
-      const L = linesFor(langOf(rel.trip.sentence || rel.sentences[rel.trip.at], asked || reply), sumPersona.gender);
-      emit({ text: rel.released ? L.summaryCut : L.summaryNone, safe: true });
+      // Cut part-way (2026-10-30, call lv1jz4g: "the rest is on screen" after one line): the part of the
+      // reply the released lines did not cover is read word for word, marked `verbatim` so the caller hands
+      // it to its verbatim reader, never to a voice that would paraphrase it again (restOfReply).
+      const rest = restOfReply(reply, turn.lines.map((l) => l.text), REST_MAX_SENTENCES);
+      turn.trip.rest = rest.lines.length;
+      for (const text of rest.lines) emit({ text, safe: false, verbatim: true });
+      if (rest.more) emit({ text: linesFor(langOf(reply, asked || reply), sumPersona.gender).details, safe: true, details: true });
     }
     const spoken = turn.lines.map((l) => l.text).join(" ");
     const C = linesFor(sumLang, sumPersona.gender);
@@ -1529,7 +1657,7 @@ class Summariser {
       emit({ text: SCREEN.test(norm(spoken)) ? C.approvalShort : C.approval, safe: true });
     } else if (!turn.trip && (shape.code || shape.paths) && !SCREEN.test(norm(spoken))) {
       // Only what cannot be spoken is left to the screen; a long reply or a list is summed up in words.
-      emit({ text: C.details, safe: true });
+      emit({ text: C.details, safe: true, details: true });
     }
     return finish(null);
   }
@@ -1545,6 +1673,35 @@ class Summariser {
       timings,
     };
   }
+}
+
+/**
+ * What is left of a reply once these summary lines were said: its speakable sentences after the last one a
+ * line covered (the reply sentence sharing the most words with each line, moving forward only; a line that
+ * matches none moves nothing). Returns { lines: up to `max` sentences, more: whether any were left out }.
+ */
+const REST_MAX_SENTENCES = 8;
+function restOfReply(reply, said, max) {
+  const sents = speakableSentences(reply);
+  const toks = sents.map((x) => new Set(restateTokens(x)));
+  let start = 0;
+  for (const line of said || []) {
+    const mine = restateTokens(line);
+    if (!mine.length) continue;
+    let best = -1;
+    let bestN = 1; // at least two shared words
+    for (let j = start; j < sents.length; j++) {
+      const n = mine.filter((w) => toks[j].has(w)).length;
+      if (n > bestN) {
+        best = j;
+        bestN = n;
+      }
+    }
+    if (best >= 0) start = best + 1;
+  }
+  const left = sents.slice(start);
+  const n = max || REST_MAX_SENTENCES;
+  return { lines: left.slice(0, n), more: left.length > n, from: start };
 }
 
 /** What kind of reply this is: lists, code, paths, how many sentences. */
@@ -1631,6 +1788,10 @@ module.exports = {
   guard,
   judge,
   sentencesOf,
+  speakableSentences,
+  restatesReply,
+  restOfReply,
+  REST_MAX_SENTENCES,
   needsNext,
   replyShape,
   replyModel,
@@ -1641,6 +1802,7 @@ module.exports = {
   mentionsHandoff,
   mentionsChecking,
   thirdPerson,
+  setMintAgents,
   uiAnnounce,
   HANDOFF_PASSIVE_AR,
   numbersIn,

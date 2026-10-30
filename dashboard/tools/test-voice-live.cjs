@@ -450,7 +450,7 @@ let WS_BASE;
     } catch (e) {
       refused = e.code === "refused";
     }
-    check("the only door (voiceOps) refuses anything but snapshot and send", refused && Object.keys(desk.VOICE_OPS).join() === "snapshot,send");
+    check("the only door (voiceOps) refuses anything but snapshot, send and voice-warm", refused && Object.keys(desk.VOICE_OPS).join() === "snapshot,send,voice-warm");
     c.close("test");
   }
 

@@ -93,6 +93,12 @@ function fakeSupervisor(sock, replies) {
   const turns = new Map();
   let next = 900;
   const asks = [];
+  const warms = [];
+  // The event stream (2026-10-30): the turn and its result, as the real supervisor sends them, so the
+  // Command Center has the reply to put on screen while the call says it (public/moni-ai.js callReply).
+  const subs = new Set();
+  let seq = 10;
+  const push = (type, data) => { const line = JSON.stringify({ event: { seq: ++seq, ts: new Date().toISOString(), type, ...data } }) + "\n"; for (const c of subs) if (!c.destroyed) c.write(line); };
   const server = net.createServer((c) => {
     let buf = "";
     c.setEncoding("utf8");
@@ -104,18 +110,27 @@ function fakeSupervisor(sock, replies) {
         buf = buf.slice(nl + 1);
         let m;
         try { m = JSON.parse(line); } catch (_) { continue; }
-        if (m.op === "events") continue; // kept open, nothing pushed
+        if (m.op === "events") { subs.add(c); c.on("close", () => subs.delete(c)); continue; } // kept open: turn events pushed
         let data = {};
         if (m.op === "status") data = { name: "MINT AI", seq: 1, process: { state: "ready", pid: 100 }, approvals: [], counts: {} };
         else if (m.op === "send") {
           const id = ++next;
           const r = replies.find((x) => x.match.test(m.text)) || { reply: "I couldn't find anything about that." };
           turns.set(id, { at: Date.now(), reply: r.reply });
-          asks.push({ at: Date.now(), text: m.text });
+          asks.push({ at: Date.now(), text: m.text, call: m.call });
+          const row = { id, source: "voice-desk", actor: m.actor, text: m.text, status: "queued", created_at: new Date().toISOString(), call_id: m.call || null, lane: "work" };
           data = { turn: { id, status: "queued" } };
+          setTimeout(() => push("turn", { phase: "queued", turn: row }), 20);
+          setTimeout(() => push("turn", { phase: "start", turn: { ...row, status: "running", started_at: new Date().toISOString() } }), 60);
+          setTimeout(() => {
+            const done = { ...row, status: "done", started_at: row.created_at, ended_at: new Date().toISOString(), result_text: r.reply, duration_ms: REPLY_MS };
+            push("result", { turn: done });
+            push("turn", { phase: "end", turn: done });
+          }, Math.max(100, REPLY_MS - 50));
         } else if (m.op === "snapshot") {
           data = { machine: {}, services: {}, requests_to_moni_ai: (m.turns || []).map((id) => { const t = turns.get(id); return { id, answered: !!t && Date.now() - t.at >= REPLY_MS, reply: t ? t.reply : "" }; }) };
-        } else if (m.op === "sessions") data = { sessions: [] };
+        } else if (m.op === "voice-warm") { warms.push(m.call); data = { warmed: true, lanes: [] }; }
+        else if (m.op === "sessions") data = { sessions: [] };
         else if (m.op === "missions") data = { missions: [] };
         else if (m.op === "decisions") data = { decisions: [] };
         else if (m.op === "ledger") data = { rows: [] };
@@ -124,7 +139,7 @@ function fakeSupervisor(sock, replies) {
     });
     c.on("error", () => {});
   });
-  return new Promise((res) => server.listen(sock, () => res({ close: () => server.close(), asks })));
+  return new Promise((res) => server.listen(sock, () => res({ close: () => server.close(), asks, warms })));
 }
 
 function speech(pcm) {
@@ -261,6 +276,14 @@ function speech(pcm) {
       out.results.push({ clip: "en_why", ms: rep ? await firstLoud(rep) : null });
       const cs = await caps();
       check(`[${MODEL}] MINT AI's answer is heard (02:14, a deploy)`, rep && out.results[0].ms != null && cs.some((t) => /02:14|2:14/.test(t)), JSON.stringify(out.results[0]) + " " + JSON.stringify(cs.slice(-6)));
+      // 2026-10-30: the call's own MINT AI sessions are started at call start, the hand-off says what is on screen,
+      // and the reply the voice is saying is ON the screen (the reply panel), and the page tells the server so.
+      check(`[${MODEL}] the call asked the supervisor to start its own MINT AI sessions (voice-warm with the call id)`, sup.warms.length >= 1 && /^lv[a-z0-9]+$/.test(sup.warms[0]) && ask && ask.call === sup.warms[0], JSON.stringify({ warms: sup.warms, call: ask && ask.call }));
+      check(`[${MODEL}] the hand-off carries the Mint OS page in view (the Command Center), after the words`, ask && /\n\n\[Screen: the administrator is looking at the Mint OS page "Command Center" \(\/mint-ai\)/.test(ask.text), ask && ask.text);
+      const shown = await page.evaluate(() => { const r = document.getElementById("cc-reply"); return { visible: !!r && !r.hidden && r.getBoundingClientRect().height > 20, text: r ? r.textContent : "" }; });
+      check(`[${MODEL}] the reply the voice is saying is on screen in full (the reply panel opened by the call)`, shown.visible && /02:14/.test(shown.text) && /nothing is wrong/.test(shown.text), JSON.stringify(shown).slice(0, 300));
+      const told = await page.evaluate(() => window.__out.some((x) => /"type":"reply-shown"/.test(x.m)));
+      check(`[${MODEL}] and the page told the call it is shown ({type: "reply-shown"})`, told);
     }
     // 3. a barge-in: a long answer, talked over
     await quietFor(1500, 10000);

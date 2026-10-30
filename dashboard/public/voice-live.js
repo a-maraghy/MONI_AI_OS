@@ -18,6 +18,8 @@
  *                                    (headphones: talk over it)
  *   VoiceLive.active() / .state() / .speaking() / .route()
  *   VoiceLive.ack(nonce, ok, why)    answer a "ui" message (a screen action the voice asked for)
+ *   VoiceLive.tell(m)                {type: "reply-shown", turn} / {type: "screen", path, title, panel}:
+ *                                    what the page shows, for the voice (see tell below)
  *
  *   onState(state)     "connecting" | "listening" | "talking" | "thinking" |
  *                      "speaking" | "interrupted" | "waiting" | "muted" |
@@ -687,6 +689,15 @@
     /* Hold-to-talk: is the microphone closed between presses (micRest)? */
     resting: function () { return !!(S && S.resting); },
     note: note,
+    /*
+     * What the page shows, for the server (2026-10-30): {type: "reply-shown", turn} once a reply of this
+     * call is on the screen (the voice may then say "the details are on screen"), and {type: "screen",
+     * path, title, panel} -- the Mint OS page and panel in view, sent with each hand-off to MINT AI.
+     */
+    tell: function (m) {
+      if (!S || !S.ws || S.ws.readyState !== 1 || !m || (m.type !== "reply-shown" && m.type !== "screen")) return;
+      try { S.ws.send(JSON.stringify(m)); } catch (e) { /* closed */ }
+    },
     ack: function (nonce, ok, why) {
       if (!S || !S.ws || S.ws.readyState !== 1 || !nonce) return;
       try { S.ws.send(JSON.stringify({ type: "ui-ack", nonce: String(nonce), ok: !!ok, why: why ? String(why).slice(0, 200) : undefined })); } catch (e) { /* closed */ }

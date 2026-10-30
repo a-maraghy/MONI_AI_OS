@@ -168,5 +168,17 @@ check("a refusal keeps the request id when it could be read", req({ id: "abc", o
   check("  refuses a bad nonce or a non-boolean ok", !good({ op: "ui-ack", nonce: "../x", ok: true }).ok && !good({ op: "ui-ack", nonce: "abcdef012345", ok: "yes" }).ok);
 }
 
+// Voice lanes (2026-10-30): voice-warm, and the lane MINT AI's MCP names beside the actor.
+{
+  const P = require("../lib/protocol.js");
+  const pr = (o) => P.parseRequest(JSON.stringify({ id: "x", ...o }));
+  check("voice-warm takes a call id, a read", pr({ op: "voice-warm", actor: "amaraghy", call: "lvab12" }).ok && pr({ op: "voice-warm", actor: "amaraghy", call: "lvab12" }).req.mutating === false);
+  check("  refuses anything that is not a call id", !pr({ op: "voice-warm", actor: "amaraghy", call: "../x" }).ok && !pr({ op: "voice-warm", actor: "amaraghy" }).ok);
+  const ln = pr({ op: "ui-action", actor: "moni-ai", lane: "v3-ab12", action: "sheet.close" });
+  check("lane: MINT AI's actor may name its voice lane on any op (kept out of the params)", ln.ok && ln.req.lane === "v3-ab12" && !("lane" in ln.req.params), JSON.stringify(ln));
+  check("  nobody else may", !pr({ op: "status", actor: "amaraghy", lane: "v3-ab12" }).ok);
+  check("  and it must look like a lane id", !pr({ op: "status", actor: "moni-ai", lane: "x y" }).ok && !pr({ op: "status", actor: "moni-ai", lane: 5 }).ok);
+}
+
 console.log(`\n${passes} passed, ${failures} failed`);
 process.exit(failures ? 1 : 0);

@@ -398,6 +398,8 @@
     active: function () { return mode === "dock" || mode === "down"; },
     framed: function () { return mode === "dock"; },
     mode: function () { return mode; },
+    /** The page in the frame: { path, title } (for the live call's "what is on my screen"), or null. */
+    where: function () { var p = frameUrl(); return p && (mode === "dock" || mode === "down") ? { path: p, title: frameTitle() } : null; },
     feed: function (f) { lastFeed = f; if (D() && D().feed) D().feed(f); },
     toast: toast,
     /** A Tier-2 confirm while a page is up: Confirm / Cancel on the dock (returns {remove, expired}). */

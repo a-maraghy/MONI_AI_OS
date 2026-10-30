@@ -272,7 +272,7 @@ const lastSession = () => mock.sessions[mock.sessions.length - 1];
     check("send carries no target (MINT AI routes it)", !("target" in calls[0][1]));
     await ops.snapshot();
     check("read_status maps to snapshot, a read", calls[1][0] === "snapshot" && JSON.stringify(calls[1][1]) === "{}");
-    check("VOICE_OPS is exactly snapshot:read and send:write", JSON.stringify(shared.VOICE_OPS) === '{"snapshot":"read","send":"write"}' && Object.isFrozen(shared.VOICE_OPS));
+    check("VOICE_OPS is exactly snapshot:read, send:write and voice-warm:read (the call's own sessions started ahead)", JSON.stringify(shared.VOICE_OPS) === '{"snapshot":"read","send":"write","voice-warm":"read"}' && Object.isFrozen(shared.VOICE_OPS));
     let echo = null;
     try {
       ops.ask(require(path.join(ROOT, "lib", "voice.js")).TRANSCRIBE_PROMPT);
@@ -526,6 +526,29 @@ const lastSession = () => mock.sessions[mock.sessions.length - 1];
       const g = desk.guard(said, sctx(reply));
       check(`summary passes: ${said}`, g.ok, JSON.stringify(g));
     }
+    // The call of 2026-10-30 (lv1jz4g, request 400): the summary's «عملنا نسخه من اللايف الساعه 8 بالليل بتوقيت
+    // القاهره» restates the reply's «خلّينا نسخة من اللايف ... الساعة 8 بالليل بتوقيت القاهرة» and was cut (action-claim).
+    const R_ODOO_AR =
+      "آخر شغل في أودو كان امبارح، 29 أكتوبر، على أودو بتاع السيرفر:\n\n" +
+      "1. **خلّينا نسخة من اللايف هي أودو بتاعنا الأساسي:** الساعة 8 بالليل بتوقيت القاهرة. بقى gizaseeds_test فيه نسخة من بيانات اللايف بتاعة الساعة 6 المغرب. الداتابيز القديمة لسه محفوظة، ونقدر نرجع لها.\n" +
+      "   - 22 مهمة أوتوماتيك اتقفلت، زي الفواتير الإلكترونية والإيميلات والـ SMS، علشان مفيش حاجة تطلع برّه.\n" +
+      "2. **شغل على شاشة الأوردر في محرّك التخطيط:** بين 7:40 و8:35 بالليل اتعملت كذا نسخة، من 4.40 لـ 4.44.\n\n" +
+      "تحب أعرف من جلسة \"[GSH] Planning Automation\" إيه الخطوة الجاية؟";
+    const arCtx = { ...sctx(R_ODOO_AR), heardText: "ممكن تقولي آخر حاجة اشتغلنا عليها في أودو كانت ايه", numbers: desk.strictNumberSet([R_ODOO_AR, "ممكن تقولي آخر حاجة اشتغلنا عليها في أودو كانت ايه"]) };
+    for (const said of ["عملنا نسخه من اللايف الساعه 8 بالليل بتوقيت القاهره", "عملنا نسخة من اللايف الساعة 8 بالليل بتوقيت القاهرة.", "آخر شغل في أودو كان امبارح، 29 أكتوبر. عملنا نسخة من اللايف الساعة 8 بالليل."])
+      check(`summary restating the reply in other words passes (lv1jz4g): ${said}`, desk.guard(said, arCtx).ok, JSON.stringify(desk.guard(said, arCtx)));
+    const arTrips = [
+      ["عملنا نسخة من الداتابيز بتاعة العميل الساعة 8.", "a fact the reply never states (the client's database)"],
+      ["عملت restart لأودو الساعة 8 بالليل.", "an action the reply never says was done"],
+      ["عملنا نسخة من اللايف الساعة 9 بالليل بتوقيت القاهرة.", "a time changed"],
+      ["معملناش نسخة من اللايف الساعة 8 بالليل بتوقيت القاهرة.", "the negation flipped"],
+    ];
+    for (const [said, why] of arTrips) check(`summary still cut: ${why}`, !desk.guard(said, arCtx).ok, JSON.stringify(desk.guard(said, arCtx)));
+    const offer = "ممكن نعمل نسخة من اللايف الساعة 8 بالليل لو تحب.";
+    check("a reply that only OFFERS the thing does not ground «عملنا ...»", !desk.guard("عملنا نسخة من اللايف الساعة 8 بالليل.", { ...sctx(offer), numbers: desk.strictNumberSet([offer]) }).ok);
+    const enReply = "We did not make a copy of live at 8 pm Cairo time; the old database is still the main one.";
+    check("English: a negated reply sentence never grounds the same words said as done", !desk.restatesReply("we made a copy of live at 8 pm cairo time", desk.replyModel(enReply)));
+    check("restOfReply: the reply's sentences after the last one a summary line covered", desk.restOfReply("Odoo is up. The disk is 6% used. Backups ran at 3:05. Nothing needs you.", ["Odoo is up and the disk is 6% used."]).lines.join(" ") === "Backups ran at 3:05. Nothing needs you.", JSON.stringify(desk.restOfReply("Odoo is up. The disk is 6% used. Backups ran at 3:05. Nothing needs you.", ["Odoo is up and the disk is 6% used."])));
     check("strictNumberSet: exact or correctly rounded only", desk.strictNumberSet(["2.7 GB"]).has(3) && !desk.strictNumberSet(["2.7 GB"]).has(2) && desk.numberSet(["2.7 GB"]).has(2));
     check("replyShape spots lists, code and paths", desk.replyShape(R_STATUS).list && desk.replyShape(R_STATUS).code && !desk.replyShape("Odoo is up.").list && desk.replyShape("Odoo is up.").plain);
   }
@@ -573,7 +596,10 @@ const lastSession = () => mock.sessions[mock.sessions.length - 1];
     mock.summaryText = "The server is healthy and lightly loaded. I suggest a reboot tonight.";
     const heard3 = [];
     const c = await d.summarise(r3.asked[0].id, { onLine: (l) => heard3.push(l.text) });
-    check("a first sentence heard, a later one adding a recommendation cut: the rest is on screen", heard3.join("|") === "The server is healthy and lightly loaded.|" + desk.SUMMARY_CUT_LINE && c.trip.rule === "added-recommendation", JSON.stringify(heard3));
+    // Since 2026-10-30 (call lv1jz4g): the rest of the reply is read word for word, not "the rest is on screen".
+    const rest3 = c.lines.filter((l) => l.verbatim).map((l) => l.text);
+    check("a first sentence heard, a later one adding a recommendation cut: the REST OF THE REPLY is read word for word (marked verbatim), not \"the rest is on screen\"",
+      heard3[0] === "The server is healthy and lightly loaded." && !heard3.includes(desk.SUMMARY_CUT_LINE) && c.trip.rule === "added-recommendation" && rest3.join(" ") === "Load: very light. Disk: 6% used. Services: everything that should be running is running. Nothing needs doing right now.", JSON.stringify({ heard3, rest3 }));
     mock.summaryText = "The server is healthy and lightly loaded, and nothing needs doing right now.";
     const r4 = await ask("Ask MINT AI how the server is again");
     sup.replies.set(r4.asked[0].id, R_LIST);

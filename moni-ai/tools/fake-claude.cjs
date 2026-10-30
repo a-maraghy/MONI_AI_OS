@@ -14,7 +14,10 @@
  *   DELEGATE  "sends" a message to fake-target (DELEGATE "<name>": to that name; QUIET: no reply): posts the PostToolUse event to
  *             the hook socket the way hooks/ledger.js would, then a reply and
  *             an idle notice as UserPromptSubmit events
- *   SLOW <ms> takes that long (up to 30 s) before answering "slow done"
+ *   SLOW <ms> takes that long (up to 30 s) before answering "slow done"; an interrupt ends it ("cancelled")
+ *   SAYESCALATE answers the single word ESCALATE (a voice call's quick lane handing the question on)
+ *   PEERTURN <name>  after the answer, a turn of its own: <name>'s reply arriving as a peer message
+ *   (each turn also logs "turn <-n name> <first 200 chars>" to HOME/fake-turns.log)
  *   RUN <cmd> asks permission to run <cmd> with Bash (rules may answer it)
  *   MISSION2  creates a two-step mission over the control socket (as the MCP
  *             server would) and delegates both steps, tagged, to fake-target
@@ -146,9 +149,13 @@ async function delegate(message) {
   return msgId;
 }
 
+let interruptNow = null;
 async function turn(msg) {
   const uuid = msg.uuid || crypto.randomUUID();
-  const text = typeof msg.message.content === "string" ? msg.message.content : "";
+  const raw = typeof msg.message.content === "string" ? msg.message.content : "";
+  fs.appendFileSync(path.join(home, "fake-turns.log"), JSON.stringify({ n: flag("-n"), text: raw.slice(0, 8000) }) + "\n");
+  // A voice lane's preface quotes earlier requests: their magic words are not this turn's.
+  const text = raw.replace(/^\[Earlier in this voice call:\][\s\S]*?\n\n/, "");
   out({ type: "command_lifecycle", command_uuid: uuid, state: "queued", session_id: sessionId });
   out({ type: "command_lifecycle", command_uuid: uuid, state: "started", session_id: sessionId });
   out({ type: "user", message: { role: "user", content: text }, uuid, isReplay: true, session_id: sessionId });
@@ -167,8 +174,16 @@ async function turn(msg) {
   } else if (text.startsWith("[Standing order:")) {
     reply = "**Services** all 12 up\n**Disk** 6%\n**Needs you** nothing";
   } else if (/^SLOW (\d+)/.test(text)) {
-    await sleep(Math.min(Number(/^SLOW (\d+)/.exec(text)[1]), 30000));
-    reply = "slow done";
+    const cut = await Promise.race([sleep(Math.min(Number(/^SLOW (\d+)/.exec(text)[1]), 30000)).then(() => false), new Promise((r) => (interruptNow = () => r(true)))]);
+    interruptNow = null;
+    if (cut) {
+      out({ type: "result", subtype: "error_during_execution", is_error: true, result: "", duration_ms: 5, total_cost_usd: runningCost, usage: { ...runningUsage }, session_id: sessionId });
+      out({ type: "command_lifecycle", command_uuid: uuid, state: "cancelled", session_id: sessionId });
+      return;
+    }
+    reply = /^SLOW \d+\s*$/.test(text.split("\n")[0]) ? "slow done" : "slow done: " + text;
+  } else if (text.includes("SAYESCALATE") && text.startsWith("[Now:")) {
+    reply = "ESCALATE";
   } else if (/^RUN /.test(text)) {
     const { allowed, resp } = await askTool("Bash", { command: text.slice(4).split("\n")[0], description: "test" });
     reply = allowed ? "allowed" : "denied: " + resp.message;
@@ -230,6 +245,20 @@ async function turn(msg) {
   runningUsage.input_tokens += 1500; runningUsage.output_tokens += 200; runningUsage.cache_read_input_tokens += 5000; runningUsage.cache_creation_input_tokens += 300;
   out({ type: "result", subtype: "success", is_error: false, result: reply, duration_ms: 5, total_cost_usd: runningCost, usage: { ...runningUsage }, session_id: sessionId });
   out({ type: "command_lifecycle", command_uuid: uuid, state: "completed", session_id: sessionId });
+  const peer = /PEERTURN ([A-Za-z-]{1,40})/.exec(text);
+  if (peer) {
+    await sleep(300);
+    const pu = crypto.randomUUID();
+    const body = "All 42 tests passed.";
+    out({ type: "command_lifecycle", command_uuid: pu, state: "queued", session_id: sessionId });
+    out({ type: "command_lifecycle", command_uuid: pu, state: "started", session_id: sessionId });
+    out({ type: "user", message: { role: "user", content: `<cross-session-message from-name="${peer[1]}">${body}</cross-session-message>` }, uuid: pu, isReplay: true, origin: { kind: "peer", name: peer[1], body }, session_id: sessionId });
+    const relay = `${peer[1]} says: ${body}`;
+    out({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: relay }] }, session_id: sessionId });
+    runningCost = Math.round((runningCost + 0.01) * 100) / 100;
+    out({ type: "result", subtype: "success", is_error: false, result: relay, duration_ms: 5, total_cost_usd: runningCost, usage: { ...runningUsage }, session_id: sessionId });
+    out({ type: "command_lifecycle", command_uuid: pu, state: "completed", session_id: sessionId });
+  }
 }
 
 const rl = readline.createInterface({ input: process.stdin });
@@ -249,6 +278,7 @@ rl.on("line", (line) => {
       out({ type: "control_response", response: { subtype: "success", request_id: msg.request_id, response: r.enabled ? { session_url: "https://claude.ai/code/session_FAKE", bridge_session_id: "session_FAKE" } : {} } });
     } else if (r.subtype === "interrupt") {
       out({ type: "control_response", response: { subtype: "success", request_id: msg.request_id } });
+      if (interruptNow) interruptNow();
     } else if (r.subtype === "get_usage") {
       // The shape 2.1.283 answers with (trimmed), plus a secret-looking field that must never be passed on.
       out({ type: "control_response", response: { subtype: "success", request_id: msg.request_id, response: {
