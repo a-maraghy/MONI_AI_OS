@@ -80,6 +80,7 @@ check("argvFor work: its model and effort, the permission prompt on stdio, a fre
 const pf = lane.prefaceFor([{ id: 1, text: "weather?", reply: "Sunny, 25." }, { id: 2, text: "disk?", running: true }, { id: 3, text: "seen one", reply: "x" }], new Set([3]), 4);
 check("prefaceFor: what the lane did not see, answers clipped, running ones marked", /They asked: "weather\?" -- you answered: "Sunny, 25\."/.test(pf) && /disk\?" \(still being answered separately\)/.test(pf) && !/seen one/.test(pf));
 check("nowNote dates a quick question in the administrator's zone", /^\[Now: \w{3}, \d{1,2} \w{3} 2026, \d\d:\d\d \(Africa\/Cairo\)\]$/.test(lane.nowNote(Date.parse("2026-10-30T12:28:00Z"), "Africa/Cairo")), lane.nowNote(Date.parse("2026-10-30T12:28:00Z"), "Africa/Cairo"));
+check("langNote: the request's own words decide (a speaker tag and notes aside)", /English/.test(lane.langNote("[speaker: Abdul] what's the weather like today\n\n[Screen: ... «عربي» ...]")) && /Egyptian Arabic/.test(lane.langNote("الجو عامل ايه النهارده")) && /Egyptian Arabic/.test(lane.langNote("ممكن تقولي آخر حاجة في Odoo")));
 check("ESCALATE is recognised only as the answer itself", lane.ESCALATE_RE.test("ESCALATE") && lane.ESCALATE_RE.test(" **ESCALATE**") && !lane.ESCALATE_RE.test("It is sunny. ESCALATE"));
 
 // weather, with a fake HTTP client

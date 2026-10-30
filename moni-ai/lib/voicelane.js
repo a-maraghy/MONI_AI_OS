@@ -131,6 +131,16 @@ function nowNote(ms, tz) {
   return `[Now: ${s} (${tz})]`;
 }
 
+/** "[Reply in English ...]" / "[Reply in Egyptian Arabic ...]": the language of the request's own words (notes aside). */
+function langNote(text) {
+  const words = String(text || "")
+    .replace(/^\s*\[speaker:[^\]]*\]\s*/i, "")
+    .replace(/\n\n\[[\s\S]*$/, "");
+  const ar = (words.match(/[\u0600-\u06FF]/g) || []).length;
+  const la = (words.match(/[A-Za-z]/g) || []).length;
+  return ar > la / 2 ? "[Reply in Egyptian Arabic, the language they spoke.]" : "[Reply in English, the language they spoke.]";
+}
+
 /**
  * What this call asked and answered before, for a lane that did not see it (a parallel or new lane):
  * the last few exchanges, each answer clipped. `history`: [{ id, text, reply, running }] oldest first.
@@ -312,4 +322,4 @@ class LaneProc {
   }
 }
 
-module.exports = { LaneProc, argvFor, prefaceFor, nowNote, memoryServer, WORK_PROMPT, QUICK_PROMPT, ESCALATE_RE, NAME_PREFIX };
+module.exports = { LaneProc, argvFor, prefaceFor, nowNote, langNote, memoryServer, WORK_PROMPT, QUICK_PROMPT, ESCALATE_RE, NAME_PREFIX };

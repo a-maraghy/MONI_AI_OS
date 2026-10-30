@@ -1012,8 +1012,11 @@ function laneMessage(lane, row, route) {
   const C = callFor(lane.call);
   const preface = voiceLane.prefaceFor(C.history.filter((h) => h.id !== row.id), lane.seen, 4);
   for (const h of C.history) lane.seen.add(h.id);
-  if (lane.kind === "quick") return `${voiceLane.nowNote(Date.now(), cfg.tz)}\n${preface}${row.text}`;
-  let content = preface + row.text;
+  // The language they spoke (the quick model answered an English question in Arabic on 2026-10-30, taking
+  // the administrator's Egyptian Arabic from memory): said with every message.
+  const lang = voiceLane.langNote(row.text);
+  if (lane.kind === "quick") return `${voiceLane.nowNote(Date.now(), cfg.tz)}\n${preface}${row.text}\n\n${lang}`;
+  let content = preface + row.text + "\n\n" + lang;
   content +=
     `\n\n[Dashboard: the administrator said this aloud in a live call. Your reply is read to them as a detailed spoken summary, held to what you wrote, and shown in full on their screen. ` +
     `So say plainly what happened, what did not, and anything that needs their approval or answer.]`;
