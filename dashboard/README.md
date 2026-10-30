@@ -850,8 +850,27 @@ a `LiveCall` with the upstream leg swapped; server.js picks the class by
 - **Barge-in.** GPT-Live yields by itself (~1-1.5 s, measured); the page's
   detector makes it immediate (headphones mode). Speakers mode: GPT-Live
   hears silence while it is audible; a tap interrupts.
+- **2026-10-30 (call lv1jz4g).** Both live call kinds: the call starts its own small
+  MINT AI sessions as it connects (`voice-warm`; moni-ai voice lanes: a quick lane for
+  weather / time / facts, work lanes with MINT AI's full abilities, agents by name --
+  see moni-ai/README "voice lanes"), instead of queueing in MINT AI's main conversation
+  (31-39 s and up to $1.00 a request there; 2-9 s and 1-11 cents measured in lanes). A
+  follow-up while the request is starting is folded into it by the supervisor
+  (`merged`). An agent's later reply to a request (a peer turn of the lane that
+  `follows` it) is said on the call (`followUpEvent`). The reply being said is put on
+  screen in full (`replying` / `replied` -> the Command Center's reply panel, or the
+  dock's reply card over a page or sheet); the page answers `reply-shown`, and only
+  then may the voice say "the details are on screen" (`screenLine`, else "ask me if
+  you want the rest"). The page reports the Mint OS page and panel in view
+  (`screen`), added to each hand-off as a marked note. GPT-Live's prompt gives exact
+  fillers ("One second." / «ثانية واحدة.»), forbids "I'll ask ..." of anyone, and names
+  the agents (real API: 6 of 6 delegations, EN + AR, no third-person line). The
+  summary guard passes a clause that restates one of the reply's plain sentences in
+  other words (`restatesReply`); a summary cut part-way reads the rest of the reply
+  word for word (`restOfReply`), never "the rest is on screen".
 - Tests: `tools/test-voice-gptlive.cjs` (mock of the live protocol),
-  `tools/test-voice-models.cjs` (the route opens a GPT-Live session).
+  `tools/test-voice-models.cjs` (the route opens a GPT-Live session),
+  `tools/e2e-live-browser.cjs` (real API, headless Chromium: also the reply on screen).
 
 ### Live conversation
 

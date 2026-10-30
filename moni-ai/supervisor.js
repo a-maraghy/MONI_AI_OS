@@ -1265,6 +1265,30 @@ function onLaneExit(lane, code, signal) {
   for (const row of retry) dispatchLane(row, { lane: row.lane === "quick" ? "quick" : "work" });
 }
 
+/** At shutdown: every lane's stdin closed (its transcript finished), then waited for; SIGTERM after `ms`. */
+function closeAllLanes(ms) {
+  const live = [...lanes.values()].filter((l) => l.child);
+  if (!live.length) return Promise.resolve();
+  return Promise.all(
+    live.map(
+      (l) =>
+        new Promise((res) => {
+          const c = l.child;
+          c.once("exit", res);
+          closeLane(l, "the supervisor is stopping");
+          setTimeout(() => {
+            try {
+              c.kill("SIGTERM");
+            } catch (_) {
+              /* gone */
+            }
+            setTimeout(res, 1000).unref();
+          }, ms).unref();
+        })
+    )
+  );
+}
+
 /** Every 30 s: lanes idle past voice_lane_idle_s close (not one whose delegation is still open). */
 function sweepLanes() {
   const idleMs = cfg.voice_lane_idle_s * 1000;
@@ -3522,7 +3546,7 @@ async function main() {
     clearInterval(pollSessions);
     clearInterval(pollVitals);
     clearInterval(pollLanes);
-    for (const l of lanes.values()) closeLane(l, "the supervisor is stopping");
+    await closeAllLanes(6000);
     features.stop();
     control.close();
     hooks.close();
