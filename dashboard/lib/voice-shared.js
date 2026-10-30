@@ -1226,6 +1226,21 @@ function unheardLines(sentences, heard, source) {
   return out;
 }
 
+/** The index of the sentence sharing the most words and figures with `text` (-1: none shares any). */
+function bestMatch(sentences, text) {
+  const mine = new Set(restateTokens(text || ""));
+  let best = -1;
+  let score = 0;
+  (sentences || []).forEach((s, i) => {
+    const n = restateTokens(s).filter((w) => mine.has(w)).length;
+    if (n > score) {
+      score = n;
+      best = i;
+    }
+  });
+  return best;
+}
+
 /**
  * The Arabic rules in a summary, beyond what summaryClause checks against the
  * reply: "I did" only what the reply says was done (the voice is its author); a
@@ -1842,6 +1857,7 @@ module.exports = {
   speakableSentences,
   restatesReply,
   unheardLines,
+  bestMatch,
   forecastRestates,
   restOfReply,
   REST_MAX_SENTENCES,

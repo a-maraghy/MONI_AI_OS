@@ -87,6 +87,9 @@
 const WebSocket = require("ws");
 const live = require("./voice-live");
 const desk = require("./voice-shared");
+// Guard rules that mean what was heard was WRONG (afterCut says that sentence again, correctly); any other cut
+// (added advice, a promise, an Arabic clause the parser cannot read) re-says nothing the administrator heard.
+const FACT_RULES = new Set(["figure", "negation-flipped", "not-in-reply", "pending-as-done", "added-claim", "action-claim", "invented-reply"]);
 const voiceGuard = require("./voice-guard");
 const personaLib = require("./voice-persona");
 const arabic = require("./voice-arabic");
@@ -913,7 +916,7 @@ class GptLiveCall extends LiveCall {
     o = o || {};
     const text = String(content || "").trim();
     if (!text || this.closed) return;
-    const win = { id: o.id || null, content: text, request: o.request || "", at: this.now(), openedAt: 0, delegationId: delegationId || null, fixed: !!o.fixed, reply: o.reply || text, source: o.source || o.reply || text, spoken: [], closed: false };
+    const win = { id: o.id || null, content: text, request: o.request || "", at: this.now(), openedAt: 0, delegationId: delegationId || null, fixed: !!o.fixed, continuation: !!o.continuation, reply: o.reply || text, source: o.source || o.reply || text, spoken: [], closed: false };
     this.diag.gptlive.results++;
     // Measured: GPT-Live can start saying a result before its append is acknowledged. With nothing being
     // said, it is the result from now; mid-utterance, the acknowledgement marks where the result starts.
@@ -1366,27 +1369,54 @@ class GptLiveCall extends LiveCall {
   async afterCut(r) {
     const said = r.rel.sentences.slice(0, r.rel.released).join(" ");
     if (r.result) {
-      // A result GPT-Live said wrongly: the reader reads, as written, what the administrator has NOT heard of
-      // it -- matched by content, not by counting sentences (GPT-Live joins and splits them in its own words:
-      // on call lv1g84s, 2026-10-30, the count put the reader back on sentences already heard, and the
-      // weather was said twice). Heard = what the guard passed of this utterance and of the window's earlier
-      // ones; a sentence with nothing of MINT AI's reply in it ("Let me know if you need anything else") is
-      // never read on its own. Nothing left: nothing is read.
+      // A result GPT-Live was cut on. Its audio plays as the words arrive (RESULT_HOLD "words"), so the
+      // administrator HEARD everything it said up to the cut, the cut sentence included. Heard = each of the
+      // result's sentences matched by content (GPT-Live joins and splits them: call lv1g84s) OR at a position
+      // GPT-Live already reached (it changes a word: «مش بقدر» for «مش هقدر» on call lv1m3r7, 2026-10-30, and
+      // the content match alone read that sentence again). Only a cut for a wrong fact (FACT_RULES: a figure,
+      // a flipped "not", a claim the result does not make) has its sentence said again, correctly; a cut on
+      // style (added advice, an Arabic clause the parser cannot read) re-says nothing. What is left goes back
+      // to GPT-Live itself, as a commentary, so it is said in the same voice ("then in another voice it is
+      // said again": the reader is GPT Realtime 2.1 mini); only a cut on that continuation falls back to the
+      // reader. Nothing left: nothing is said.
       const w = r.result;
       const sents = speakableSentences(w.reply || w.content);
-      const heard = (w.spoken || []).concat([this.heardBeforeCut(r)]).join(" ");
-      const left = desk.unheardLines(sents, heard, w.source || w.reply || w.content);
-      const pick = left.lines.slice(0, live.VERBATIM_MAX_SENTENCES);
-      const lines = pick.map((l) => ({ text: l.text, safe: false }));
-      if (left.lines.length > pick.length) lines.push({ text: this.detailsLine(w.reply || "", w.id), safe: true });
+      const saidText = (w.spoken || []).concat([r.text || this.heardBeforeCut(r)]).join(" ");
+      const saidN = desk.sentencesOf(saidText, true).length;
+      const left = desk.unheardLines(sents, saidText, w.source || w.reply || w.content);
+      const heard = new Set(left.heard);
+      for (let i = 0; i < Math.min(saidN, sents.length); i++) heard.add(i);
+      const fact = FACT_RULES.has(r.trip.rule);
+      let fix = -1;
+      if (fact && sents.length) {
+        const cutAt = desk.bestMatch(sents, r.trip.sentence || "");
+        fix = cutAt >= 0 ? cutAt : Math.min(Math.max(saidN - 1, 0), sents.length - 1);
+        heard.delete(fix);
+      }
+      const trivial = new Set(left.trivial);
+      const todo = sents.map((text, i) => ({ i, text })).filter((x) => !heard.has(x.i) && !trivial.has(x.i));
+      const pick = todo.slice(0, live.VERBATIM_MAX_SENTENCES);
+      const byReader = !!w.continuation;
       w.cut = true; // (the window stays open: GPT-Live repeating the result is still judged against it)
       this.log(
-        `live: call ${this.id} request ${w.id != null ? w.id : "-"}: after the cut the reader reads ${pick.length} of the result's ${sents.length} sentence${sents.length === 1 ? "" : "s"}` +
-          ` [${pick.map((l) => l.i).join(",")}] (heard [${left.heard.join(",")}], nothing to add [${left.trivial.join(",")}]; the live voice had said ${r.rel.sentences.length}, ${r.rel.released} passed, cut at ${r.trip.at != null ? r.trip.at : "-"})`
+        `live: call ${this.id} request ${w.id != null ? w.id : "-"}: after the cut ${byReader ? "the reader reads" : "the live voice is given"} ${pick.length} of the result's ${sents.length} sentence${sents.length === 1 ? "" : "s"}` +
+          ` [${pick.map((l) => l.i).join(",")}] (heard [${[...heard].sort((a, b) => a - b).join(",")}], nothing to add [${left.trivial.join(",")}]${fact ? `, said again: ${fix}` : ""}; the live voice had said ${r.rel.sentences.length}, ${r.rel.released} passed, cut at ${r.trip.at != null ? r.trip.at : "-"}, ${r.trip.rule})`
       );
-      if (!lines.length) return;
-      this.quietNote(null, "The rest of the result was read to the administrator word for word: " + lines.map((l) => l.text).join(" ").slice(0, 800));
-      await this.say(lines, "mint", null, this.id + "r" + (w.id || "x"));
+      if (!pick.length) return;
+      const more = todo.length > pick.length ? " " + this.detailsLine(w.reply || "", w.id) : "";
+      if (byReader) {
+        const lines = pick.map((l) => ({ text: l.text, safe: false }));
+        if (more) lines.push({ text: more.trim(), safe: true });
+        this.quietNote(null, "The rest of the result was read to the administrator word for word: " + lines.map((l) => l.text).join(" ").slice(0, 800));
+        await this.say(lines, "mint", null, this.id + "r" + (w.id || "x"));
+        return;
+      }
+      // GPT-Live goes quiet first (the cut mutes it until then), then says only what is left.
+      for (let i = 0; i < 80 && this.suppress && !this.closed; i++) await new Promise((res) => setTimeout(res, 50));
+      if (this.closed) return;
+      this.quietNote(null, "Do not repeat anything you already said of that result. Say only the next part, as given" + (fact ? ", which corrects what you said." : "."));
+      w.closed = true; // the continuation opens its own window (merged into this one it would lose `continuation`)
+      this.result(w.delegationId, pick.map((l) => l.text).join(" ") + more, { id: w.id, request: w.request, reply: w.reply, source: w.source, continuation: true });
       return;
     }
     // GPT-Live answered, so the administrator has finished the turn it answered: its words are complete.

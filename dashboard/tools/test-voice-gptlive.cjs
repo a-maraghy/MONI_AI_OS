@@ -324,7 +324,7 @@ let WS_BASE;
     c.close("hung-up");
   }
 
-  section("a result said wrongly is cut and read word for word");
+  section("a result said wrongly is cut and said again, correctly, by GPT-Live itself (the same voice)");
   {
     const { c, client, sup, spoke } = makeCall({ turnText: "How much disk space is free?" });
     await c.connect();
@@ -338,9 +338,10 @@ let WS_BASE;
     await speak(s, "You've got about 14 GB free on the main disk.", { gap: 25 });
     await until(() => c.diag.gptlive.cuts > 0, 2000, "the cut");
     check("a wrong figure in a result is cut (before it is heard)", c.diag.gptlive.cuts === 1 && /figure/.test(c.diag.trips[0].rule), JSON.stringify(c.diag.trips));
-    await until(() => spoke.some((t) => /41 GB/.test(t)), 3000, "the verbatim reading");
-    check("the result is then read word for word by the reader", spoke.some((t) => /There are 41 GB free on the main disk, out of 200 GB\./.test(t)), spoke.join(" | "));
-    check("GPT-Live is told what was read instead (quiet context)", sentOf(s, "session.thinking.append").some((e) => /read to the administrator word for word/.test(e.content)));
+    await until(() => sentOf(s, "session.commentary.append").filter((e) => /41 GB/.test(e.content)).length >= 2, 4000, "the correction");
+    check("the correct sentence goes back to GPT-Live as a new commentary", sentOf(s, "session.commentary.append").filter((e) => /There are 41 GB free on the main disk, out of 200 GB\./.test(e.content)).length === 2);
+    check("  not to the reader (another voice)", !spoke.some((t) => /41 GB/.test(t)), spoke.join(" | "));
+    check("  GPT-Live is told to say only that part, as a correction (quiet context)", sentOf(s, "session.thinking.append").some((e) => /Do not repeat anything you already said.*corrects/.test(e.content)));
     c.close("hung-up");
   }
 
@@ -387,11 +388,12 @@ let WS_BASE;
   section("2026-10-30 (call lv1g84s): a cut after GPT-Live joined the result's sentences -> the reader reads only what was not heard, matched by content");
   {
     const { c, spoke, logs } = await weatherCall("Sure, it's mainly clear in 6th of October City right now, about 25 degrees, feeling like 23, with light wind and no rain expected today or tomorrow. Tonight it'll drop to around 14 degrees, and you should take an umbrella tomorrow.");
-    await until(() => spoke.length > 0, 3000, "the reader");
+    const s2 = lastSession();
+    await until(() => sentOf(s2, "session.commentary.append").some((e) => e.content === WEATHER_SUMMARY[3]), 4000, "the continuation");
     check("real added advice is still cut", c.diag.gptlive.cuts === 1 && c.diag.trips[0].rule === "added-recommendation", JSON.stringify(c.diag.trips));
-    check("  the reader reads the one sentence not yet heard, never the weather already said", spoke.join(" | ") === WEATHER_SUMMARY[3], JSON.stringify(spoke));
+    check("  GPT-Live is given the one sentence not yet heard, never the weather already said", sentOf(s2, "session.commentary.append").filter((e) => e.content === WEATHER_SUMMARY[3]).length === 1 && spoke.length === 0, JSON.stringify(spoke));
     check("  (counting would have re-read it all: the sentence before the cut was heard but not yet released -- 0 passed)", c.diag.trips[0].released === 0, JSON.stringify(c.diag.trips));
-    check("  logged: what the reader read, by index", logs.some((l) => /after the cut the reader reads 1 of the result's 5 sentences \[3\] \(heard \[1,2\], nothing to add \[0,4\]; the live voice had said 2, 0 passed, cut at 1\)/.test(l)), JSON.stringify(logs.filter((l) => /after the cut/.test(l))));
+    check("  logged: what the reader read, by index", logs.some((l) => /after the cut the live voice is given 1 of the result's 5 sentences \[3\] \(heard \[0,1,2\], nothing to add \[0,4\]; the live voice had said 2, 0 passed, cut at 1, added-recommendation\)/.test(l)), JSON.stringify(logs.filter((l) => /after the cut/.test(l))));
     c.close("hung-up");
   }
 
@@ -401,7 +403,32 @@ let WS_BASE;
     await sleep(800);
     check("cut on the added advice", c.diag.gptlive.cuts === 1 && c.diag.trips[0].rule === "added-recommendation", JSON.stringify(c.diag.trips));
     check("  nothing is read again", spoke.length === 0, JSON.stringify(spoke));
-    check("  logged as 0 read", logs.some((l) => /after the cut the reader reads 0 of the result's 5 sentences/.test(l)), JSON.stringify(logs.filter((l) => /after the cut/.test(l))));
+    check("  logged as 0 read", logs.some((l) => /after the cut the live voice is given 0 of the result's 5 sentences/.test(l)), JSON.stringify(logs.filter((l) => /after the cut/.test(l))));
+    c.close("hung-up");
+  }
+
+  // Call lv1m3r7, 2026-10-30 ("it says the reply, then in another voice afterwards it is said again"): GPT-Live
+  // said all three sentences of the result, one word changed («مش بقدر» for «مش هقدر»), and its last clause was
+  // cut (an Arabic clause the parser cannot read). Everything was heard: nothing is said again, by anyone.
+  section("2026-10-30 (call lv1m3r7): a cut on the last sentence of a result fully said -> nothing is said again, no second voice");
+  {
+    const REPLY = "مش هقدر أتأكد من الصوت نفسه. أنا بعرف مين بيتكلم من الاسم اللي النظام بيبعته معاي في المكالمة، فلو حد غيرك اتكلم والنظام ما عرفوش، مش هعرف أفرّق بينكم بالصوت. لو حصل وأنا مش متأكد، هفترض إن ده مش انت ومش هتصرف بصلاحياتك.";
+    const { c, sup, spoke, logs } = makeCall({ turnText: "هل تقدر تعرف صوتي؟" });
+    await c.connect();
+    const s = lastSession();
+    const end = await hear(s, c, "هل تقدر تعرف صوتي لو حد تاني اتكلم");
+    s.push({ type: "session.delegation.created", offset_ms: end + 200, delegation: { id: "item_vp", type: "delegation", target: "client" } });
+    await until(() => c.requests.size > 0, 4000, "the hand-off");
+    sup.replies.set([...c.requests.keys()][0], REPLY);
+    await until(() => sentOf(s, "session.commentary.append").length > 0, 3000, "the result");
+    const before = sentOf(s, "session.commentary.append").length;
+    await speak(s, "مش بقدر أتأكد من الصوت نفسه. أنا بعرف مين بيتكلم من الاسم اللي النظام بيبعته معاي في المكالمة، فلو حد غيرك اتكلم والنظام ما عرفوش، مش هعرف أفرّق بينكم بالصوت. ساعتها هفترض إن ده مش إنت، ومش هتصرف بصلاحياتك.", { gap: 8, tail: 6 });
+    await sleep(QUIET_WAIT + 600);
+    const cut = c.diag.gptlive.cuts;
+    check("(the last clause may be cut)", cut <= 1, JSON.stringify(c.diag.trips));
+    check("  the reader says nothing (no second voice)", spoke.length === 0, JSON.stringify(spoke));
+    check("  GPT-Live is given nothing more", sentOf(s, "session.commentary.append").length === before, JSON.stringify(sentOf(s, "session.commentary.append").slice(before)));
+    if (cut) check("  logged: 0 given, all three heard", logs.some((l) => /after the cut the live voice is given 0 of the result's 3 sentences \[\] \(heard \[0,1,2\]/.test(l)), JSON.stringify(logs.filter((l) => /after the cut/.test(l))));
     c.close("hung-up");
   }
 
