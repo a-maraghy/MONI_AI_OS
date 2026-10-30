@@ -138,7 +138,7 @@ function langNote(text) {
     .replace(/\n\n\[[\s\S]*$/, "");
   const ar = (words.match(/[\u0600-\u06FF]/g) || []).length;
   const la = (words.match(/[A-Za-z]/g) || []).length;
-  return ar > la / 2 ? "[Reply in Egyptian Arabic, the language they spoke.]" : "[Reply in English, the language they spoke.]";
+  return ar > la / 2 ? "[Reply in Egyptian Arabic: the language of THIS request, whatever earlier turns used.]" : "[Reply in English: the language of THIS request, whatever earlier turns used.]";
 }
 
 /**

@@ -1016,7 +1016,7 @@ function laneMessage(lane, row, route) {
   // the administrator's Egyptian Arabic from memory): said with every message.
   const lang = voiceLane.langNote(row.text);
   if (lane.kind === "quick") return `${voiceLane.nowNote(Date.now(), cfg.tz)}\n${preface}${row.text}\n\n${lang}`;
-  let content = preface + row.text + "\n\n" + lang;
+  let content = preface + row.text;
   content +=
     `\n\n[Dashboard: the administrator said this aloud in a live call. Your reply is read to them as a detailed spoken summary, held to what you wrote, and shown in full on their screen. ` +
     `So say plainly what happened, what did not, and anything that needs their approval or answer.]`;
@@ -1028,7 +1028,7 @@ function laneMessage(lane, row, route) {
       `their request in their words, plus only what it needs to act. Do not do the work yourself and do not pass it to anyone else. Then reply in one or two sentences: that it went to ${nm} and what you asked. ` +
       `When ${nm} replies, relay its answer plainly, saying it is from ${nm}.]`;
   }
-  return content;
+  return content + "\n\n" + lang; // last, so it outweighs the language of earlier turns in this session
 }
 
 /** Hand a row to a lane of its kind (when the lane is up); a lane that cannot start leaves it to the main queue. */
