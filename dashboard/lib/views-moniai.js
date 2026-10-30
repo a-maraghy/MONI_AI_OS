@@ -242,7 +242,7 @@ ${desk ? deskParts() : ""}
           <button type="button" class="cc-c-tool cc-c-attach" id="cc-attach" aria-haspopup="menu" aria-expanded="false" title="Attach files or photos, or address a session (you can also paste or drop files)" aria-label="Add: files, photos, a session">${ic("plus")}</button>
           <button type="button" class="cc-target" id="cc-target" aria-haspopup="menu" aria-expanded="false" title="Address a session (@): MINT AI picks one now" aria-label="Address a session: MINT AI picks">${ic("at")}<span id="cc-target-label">Auto-route</span></button>
           <textarea id="cc-input" name="text" rows="1" placeholder="Ask MINT AI" aria-label="Message MINT AI" aria-describedby="cc-kbd-help" maxlength="20000" autocomplete="off" enterkeyhint="send" spellcheck="true"></textarea>
-          ${desk ? `<span class="kb dk-kb" id="dk-kb" title="Hold Ctrl+Space to talk"><span class="dk-kb-w">hold </span><b>Ctrl</b><b>Space</b><span class="dk-kb-w"> to talk</span></span>` : ""}<button type="button" class="cc-vm cc-c-pill" id="cc-vm" aria-haspopup="menu" aria-expanded="false" title="Voice and core settings: how MINT AI speaks, read-aloud, the core"><span id="cc-mic-mode" data-mode="${vOk ? "live" : "off"}">${vOk ? `Live · ${esc(voice.voice || "voice")}` : "Voice off"}</span>${ic("chevd")}</button>${
+          ${desk ? `<span class="kb dk-kb" id="dk-kb" title="Hold Ctrl+Space to talk"><span class="dk-kb-w">hold </span><b>Ctrl</b><b>Space</b><span class="dk-kb-w"> to talk</span></span>` : ""}<button type="button" class="cc-vm cc-c-pill" id="cc-vm" aria-haspopup="menu" aria-expanded="false" title="Voice and core settings: how MINT AI speaks, the core"><span id="cc-mic-mode" data-mode="${vOk ? "live" : "off"}">${vOk ? `Live · ${esc(voice.voice || "voice")}` : "Voice off"}</span>${ic("chevd")}</button>${
             vOk
               ? `<button type="button" class="cc-c-mic cc-c-round" id="cc-c-mic" title="Start a live conversation" aria-label="Start a live conversation" aria-pressed="false">${ic("wave")}</button>`
               : `<button type="button" class="cc-c-mic cc-c-round off" id="cc-mic-off" aria-disabled="true" title="${esc(micOffWhy)}" aria-label="Voice is off" aria-describedby="cc-mic-why">${ic("waveoff")}</button>`
@@ -285,8 +285,7 @@ ${desk ? deskParts() : ""}
     "conv",
     "Conversation",
     `<span id="cc-dr-sub">the MINT AI session</span>`,
-    (vOk ? `<button type="button" class="cc-ibtn" id="cc-speak-toggle" aria-pressed="false" title="Replies are silent — click to read MINT AI's replies aloud" aria-label="Read replies aloud">${ic("mute")}</button>` : "") +
-      `<button type="button" class="cc-ibtn" id="cc-rc-open" title="Open in Claude Desktop (Remote Control)" aria-label="Open in Claude Desktop">${ic("open")}</button>` +
+    `<button type="button" class="cc-ibtn" id="cc-rc-open" title="Open in Claude Desktop (Remote Control)" aria-label="Open in Claude Desktop">${ic("open")}</button>` +
       `<button type="button" class="cc-ibtn" id="cc-expand" title="Widen the sheet" aria-label="Widen the sheet">${ic("expand")}</button>`,
     `<section class="cc-activity" id="cc-activity"><h3><span class="cc-dot" id="cc-act-dot"></span>Current AI activity<span class="cc-muted" id="cc-act-sub">—</span></h3><ol class="cc-steps" id="cc-steps"></ol></section>
       <div class="cc-chat" id="cc-chat" aria-live="polite"></div>`,

@@ -15,7 +15,8 @@
  * 24 kHz PCM16 files <id>.pcm. Measured, in the page (Date.now()): end of speech -> first loud audio the page
  * received; the hand-off's reply -> its first loud audio; a barge-in: start of speech -> the page's flush,
  * and -> the last loud audio of the interrupted utterance. Checks: the call is ready, small talk is answered,
- * the request reaches MINT AI as this server's transcript, the reply is heard, a barge-in flushes the page,
+ * the request reaches MINT AI (as GPT-Live's own transcript on GPT-Live, this server's on the realtime model),
+ * the reply is heard, the long answer is spoken as a detailed summary, a barge-in flushes the page,
  * no page errors, and the key never appears in the server's output.
  */
 const scratch = require("./scratch-server.cjs"); // first: sets MONI_DATA_DIR
@@ -248,7 +249,8 @@ function speech(pcm) {
     await until(() => sup.asks.length > asked0, c.ms + 12000);
     out.turns.push({ clip: "en_why", ms: await firstLoud(c.endAt) });
     const ask = sup.asks[asked0];
-    check(`[${MODEL}] the request reaches MINT AI as this server's transcript`, ask && /check why the dashboard service restarted last night/i.test(ask.text), ask && ask.text);
+    // GPT-Live: its own input transcript is the request (2026-10-30); the realtime model: this server's (gpt-4o-transcribe).
+    check(`[${MODEL}] the request reaches MINT AI as ${MODEL === "gpt-live-1" ? "GPT-Live's own transcript (no transcription model)" : "this server's transcript"}`, ask && /check why the dashboard service restarted last night/i.test(ask.text) && !/\[Voice:/.test(ask.text), ask && ask.text);
     if (ask) {
       // the reply, then its first sound, then quiet (the whole answer said)
       await until(() => page.evaluate((f) => window.__in.some((x) => x.m && x.m.type === "replied" && x.at >= f), ask.at), REPLY_MS + 8000);
@@ -270,7 +272,11 @@ function speech(pcm) {
       // wait for the answer to be audible, then talk over it
       const repAt = await page.evaluate(() => window.__in.filter((x) => x.m && x.m.type === "replied")[1].at);
       await until(async () => (await firstLoud(repAt)) != null, 6000);
-      await sleep(600);
+      // The long answer (five sentences) is a detailed summary: let its first sentences be said before talking over it.
+      await until(async () => (await caps()).some((t) => /^mint: /.test(t) && /41/.test(t)), 9000);
+      out.results.push({ clip: "en_disk", ms: await firstLoud(repAt), summaryMs: (s.out().match(/first summary line (\d+) ms after the reply/g) || []).pop() || null });
+      const cs2 = await caps();
+      check(`[${MODEL}] the long answer is spoken as a detailed summary with its figures (41 GB free), never just "the details are on screen"`, cs2.some((t) => /^mint: /.test(t) && /41/.test(t)) && !cs2.some((t) => /^mint: The details are on screen\.?$/.test(t)), JSON.stringify(cs2.slice(-6)));
       const b = await say("en_stop");
       await sleep(4000);
       const r = await page.evaluate((f) => ({ flush: (window.__in.find((x) => x.m && x.m.type === "flush" && x.at >= f) || {}).at || null, loud: window.__in.filter((x) => x.at >= f && x.rms > 300).map((x) => x.at) }), b.startAt);

@@ -179,9 +179,13 @@ const EARLIER_LINE = { en: "About your earlier question:", ar: "بخصوص سؤ�
  * it. A message that turns into a tool call drops its unread tail (what was
  * already read -- "let me look at the logs" -- stays true); the next message
  * streams afresh. When the reply is final: if what was read is how the final
- * text begins, the rest of it is read; if the final text differs, nothing
- * more is read (no contradiction) beyond "the details are on screen". A
- * reply with nothing streamed goes the old way (summary or verbatim).
+ * text begins and the whole of it was read, that is the answer; otherwise --
+ * more than was read, or a final text that differs -- the detailed summary
+ * (speakSummary) covers the rest, told what was already heard so it does not
+ * repeat it (since 2026-10-30: "always reading a detailed summary when a
+ * delegation is finished"; before, only "the details are on screen" followed).
+ * A reply with nothing streamed gets the detailed summary (or, short and
+ * plain, is read word for word).
  */
 const STREAM_MAX_SENTENCES = 6;
 const STREAM_HOLD_EVENTS = 2000; // events kept while the hand-off's turn id is not known yet
@@ -745,7 +749,7 @@ class LiveCall {
           // Hold-to-talk: no detection; the key's release commits the turn (pttUp).
           turn_detection: this.turnMode === "ptt" ? null : { type: "server_vad", threshold: this.opts.vadThreshold || VAD_THRESHOLD, silence_duration_ms: this.opts.silenceMs, prefix_padding_ms: 300, create_response: false, interrupt_response: false },
           // Always an OpenAI model (a realtime session takes no other); a pinned language goes with it.
-          transcription: { model: this.cfg.transcribe_model || "gpt-4o-mini-transcribe", ...(this.cfg.transcribe_language === "ar" || this.cfg.transcribe_language === "en" ? { language: this.cfg.transcribe_language } : {}) },
+          transcription: { model: this.cfg.transcribe_model || "gpt-4o-transcribe", ...(this.cfg.transcribe_language === "ar" || this.cfg.transcribe_language === "en" ? { language: this.cfg.transcribe_language } : {}) },
         },
         output: { format: { type: "audio/pcm", rate: RATE }, voice: this.cfg.voice || "marin" },
       },
@@ -1355,12 +1359,12 @@ class LiveCall {
     // The voiceprint's gate: nothing of a turn (its caption, a confirm's "yes", "undo", "stop") is used
     // before its verdict; a turn that is not the administrator's voice ends here.
     if (this.vpHold(t, () => this.sessionTranscript({ ...ev, usage: null }))) {
-      if (ev.usage) this.record({ vt: t.vt, part: "transcription", model: this.cfg.transcribe_model || "gpt-4o-mini-transcribe", tokens: usageLib.transcribeTokens(ev.usage) });
+      if (ev.usage) this.record({ vt: t.vt, part: "transcription", model: this.cfg.transcribe_model || "gpt-4o-transcribe", tokens: usageLib.transcribeTokens(ev.usage) });
       if (t.dropped) t.resolveSession(null);
       return;
     }
     const text = String(ev.transcript || "").trim();
-    if (ev.usage) this.record({ vt: t.vt, part: "transcription", model: this.cfg.transcribe_model || "gpt-4o-mini-transcribe", tokens: usageLib.transcribeTokens(ev.usage) });
+    if (ev.usage) this.record({ vt: t.vt, part: "transcription", model: this.cfg.transcribe_model || "gpt-4o-transcribe", tokens: usageLib.transcribeTokens(ev.usage) });
     const audioSeconds = t.endMs != null && t.startMs != null ? (t.endMs - t.startMs) / 1000 : null;
     const g = voiceGuard.checkTranscript(text, { audioSeconds, sources: liveSources() });
     t.sessionText = g.ok ? text : "";
@@ -2157,19 +2161,39 @@ class LiveCall {
     if (st) this.closeStream(st);
     if (st && st.msgRead.length) return this.finishStream(id, mine, st, reply);
     this.firstSpokenFor = { id, at: mine.repliedAt, askedAt: mine.askedAt };
-    const lines = [];
     // A result for an older request (the administrator has said more since, or it took a while): say which.
     const vt0 = this.id + "r" + id;
     if ((this.lastHeardN || 0) > (mine.turnN || 0) || (mine.askedAt && this.now() - mine.askedAt > EARLIER_MS)) {
       const intro = arabic.isArabic(mine.text || "") ? EARLIER_LINE.ar : EARLIER_LINE.en;
       this.say([{ text: intro, safe: true }], "mint", null, vt0);
     }
+    const vt = this.id + "r" + id;
+    const { lines, fallback } = await this.speakSummary(id, mine, reply, request, vt, []);
+    // Tell the realtime conversation what MINT AI said and what was heard of it.
+    this.replies.push(reply);
+    const spoken = lines.map((l) => l.text).join(" ");
+    const clipped = reply.length > REPLY_IN_CONTEXT_CHARS ? reply.slice(0, REPLY_IN_CONTEXT_CHARS) + " [...the rest is on the administrator's screen]" : reply;
+    this.send({
+      type: "conversation.item.create",
+      item: { type: "message", role: "system", content: [{ type: "input_text", text: `Your result for request ${id} arrived (the administrator heard${fallback ? " it read aloud" : " this summary of it"}: "${spoken.slice(0, 600)}", and has the full text on screen):\n${clipped}` }] },
+    });
+  }
+
+  /**
+   * The detailed spoken summary of a finished reply (lib/voice-shared.js Summariser: every key fact and
+   * figure, a few sentences, through the summary guard), each line read as soon as it is released; a
+   * short plain reply is read word for word instead, and so is the reply when the summary cannot be made
+   * (its first VERBATIM_MAX_SENTENCES, then the details line). `alreadySaid`: sentences of it already
+   * read while it was written -- the summary goes on from them, and the word-for-word fallback skips
+   * them. Resolves {lines, fallback}.
+   */
+  async speakSummary(id, mine, reply, request, vt, alreadySaid) {
+    const lines = [];
+    const said = alreadySaid || [];
     let fallback = !this.d.summarise;
     let deskTokens = null;
-    const vt = this.id + "r" + id;
     if (this.d.summarise) {
       try {
-        // Each summary line is read the moment the guard has released it.
         const out = await this.d.summarise(id, {
           onLine: (l) => {
             lines.push(l);
@@ -2180,6 +2204,7 @@ class LiveCall {
           // summary may use their figures, and speaks in the administrator's language.
           request: String((mine && mine.text) || (typeof request === "string" ? request : "") || ""),
           lastSaid: this.heard.length ? this.heard[this.heard.length - 1] : "",
+          alreadySaid: said,
         });
         if (out && out.tokens) deskTokens = out.tokens;
         if (out && (out.fallback === "verbatim" || out.pending) && !lines.length) fallback = true;
@@ -2190,19 +2215,12 @@ class LiveCall {
     }
     if (deskTokens) this.record({ vt, part: "desk", model: desk.SUMMARY_MODEL, tokens: deskTokens }); // "desk": the summariser's usage part
     if (fallback) {
-      const sents = speakableSentences(reply);
+      const sents = speakableSentences(reply).slice(said.length);
       for (const s of sents.slice(0, VERBATIM_MAX_SENTENCES)) lines.push({ text: s, safe: false });
       if (sents.length > VERBATIM_MAX_SENTENCES) lines.push({ text: desk.linesFor(arabic.isArabic(reply) ? "ar" : "en", this.persona.gender).details, safe: true });
       if (lines.length) this.say(lines, "mint", null, vt);
     }
-    // Tell the realtime conversation what MINT AI said and what was heard of it.
-    this.replies.push(reply);
-    const spoken = lines.map((l) => l.text).join(" ");
-    const clipped = reply.length > REPLY_IN_CONTEXT_CHARS ? reply.slice(0, REPLY_IN_CONTEXT_CHARS) + " [...the rest is on the administrator's screen]" : reply;
-    this.send({
-      type: "conversation.item.create",
-      item: { type: "message", role: "system", content: [{ type: "input_text", text: `Your result for request ${id} arrived (the administrator heard${fallback ? " it read aloud" : " this summary of it"}: "${spoken.slice(0, 600)}", and has the full text on screen):\n${clipped}` }] },
-    });
+    return { lines, fallback };
   }
 
   /* ---- MINT AI's reply, spoken while it is written ---- */
@@ -2314,15 +2332,18 @@ class LiveCall {
     st.stopped = true;
     this.log(`live: call ${this.id} request ${st.id}: stopped reading the reply as it is written (${why}) after ${st.read.length} sentence(s)`);
   }
-  /** The reply is final and part of it was read as it was written: read the rest if it is how it continues. */
-  finishStream(id, mine, st, reply) {
+  /**
+   * The reply is final and part of it was read as it was written: read the rest if it is how it continues;
+   * whatever is still unsaid then (or all of it, when the final text differs) is covered by the summary.
+   */
+  async finishStream(id, mine, st, reply) {
     const norm = (s) => String(s || "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
     const { clean, cut } = this.streamText(this.d.redact ? this.d.redact(reply) : reply);
     const finalSents = desk.sentencesOf(clean, true);
     const same = st.msgRead.every((s, i) => norm(s) === norm(finalSents[i]));
     let lines = [];
     if (!same) {
-      this.log(`live: call ${this.id} request ${id}: the final reply differs from what was read as it was written; nothing more is read`);
+      this.log(`live: call ${this.id} request ${id}: the final reply differs from what was read as it was written; the summary follows`);
       st.more = true;
     } else if (!st.stopped && st.gen === this.speechGen) {
       // What the guard has not released yet, through the same guard, as final.
@@ -2330,10 +2351,15 @@ class LiveCall {
       this.streamPump(st, true);
       if (cut || st.msgRead.length < finalSents.length) st.more = true; // a list / code, the cap, or a cut: not all of it was read
     } else st.more = true;
-    if (st.more && st.gen === this.speechGen) lines.push({ text: desk.linesFor(arabic.isArabic(reply) ? "ar" : "en", this.persona.gender).details, safe: true });
     if (lines.length) this.say(lines, "mint", null, this.id + "r" + id);
+    let summary = [];
+    if (st.more && st.gen === this.speechGen && !this.closed) {
+      // Not all of it was heard: the detailed summary of the rest (told what was already read).
+      const out = await this.speakSummary(id, mine, reply, mine && mine.text, this.id + "r" + id, same ? st.msgRead.slice() : []);
+      summary = out.lines;
+    }
     this.replies.push(reply);
-    const spoken = st.read.join(" ");
+    const spoken = st.read.concat(summary.map((l) => l.text)).join(" ");
     const clipped = reply.length > REPLY_IN_CONTEXT_CHARS ? reply.slice(0, REPLY_IN_CONTEXT_CHARS) + " [...the rest is on the administrator's screen]" : reply;
     this.send({
       type: "conversation.item.create",

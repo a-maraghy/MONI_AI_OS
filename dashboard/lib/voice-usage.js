@@ -18,6 +18,8 @@
  *                realtime speech-to-speech model's audio in and out and its
  *                text tokens (part "realtime"), and the safe lines and MINT
  *                AI's summaries read into the same call (part "speech")
+ *   sample       Settings ▸ Voice: a voice card's play button (a short line in
+ *                that voice, made once per voice and model and kept on disk)
  *
  * and transcription (what the administrator said, turned into text) is its own
  * line, whichever path the turn took. There is no cap: the administrator
@@ -43,6 +45,8 @@ const PRICES = Object.freeze({
   "gpt-4o-mini-tts": { text_in: 0.6, audio_out: 12.0 },
   "gpt-4o-mini-transcribe": { text_in: 1.25, audio_in: 1.25, text_out: 5.0, per_minute: 0.003 },
   "gpt-4o-transcribe": { text_in: 2.5, audio_in: 2.5, text_out: 10.0, per_minute: 0.006 },
+  // gpt-4o-transcribe is the one transcription model since 2026-10-30 (lib/voice-transcribe.js); the
+  // retired ones stay priced so older rows still read and add up.
   // Listed per minute only (read 2026-09-30); token usage is priced by its audio
   // length (TRANSCRIBE_AUDIO_TOKENS_PER_S), marked as an estimate there.
   "gpt-transcribe": { per_minute: 0.0045 },
@@ -54,8 +58,8 @@ const PRICES = Object.freeze({
 const TRANSCRIBE_AUDIO_TOKENS_PER_S = 10;
 const TOKEN_KINDS = ["text_in", "text_cached", "audio_in", "audio_cached", "text_out", "audio_out"];
 
-const CATEGORIES = Object.freeze(["small_talk", "snapshot", "handoff", "direct", "live"]);
-const CATEGORY_LABELS = Object.freeze({ small_talk: "Small talk", snapshot: "Snapshot answers", handoff: "Hand-offs", direct: "Direct (read aloud)", live: "Live conversation", transcription: "Transcription" });
+const CATEGORIES = Object.freeze(["small_talk", "snapshot", "handoff", "direct", "live", "sample"]);
+const CATEGORY_LABELS = Object.freeze({ small_talk: "Small talk", snapshot: "Snapshot answers", handoff: "Hand-offs", direct: "Direct (read aloud)", live: "Live conversation", sample: "Voice samples", transcription: "Transcription" });
 const PARTS = Object.freeze(["transcription", "desk", "speech", "realtime"]);
 const TZ = "Africa/Cairo";
 

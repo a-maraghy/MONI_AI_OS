@@ -119,32 +119,30 @@ exports.guide = ({ csrf, user, publicHost, publicPort, sshHost }) => {
       <ol>
         <li>Open <b>Settings › Voice</b>. Switch <b>Voice</b> to <b>On</b>.</li>
         <li>Add the <b>OpenAI key</b>. It is written to a root-only file and never shown
-          again; <b>Replace</b> and <b>Remove</b> are next to it. Under <b>More</b>,
-          <b>Test</b> speaks one line and writes it back.</li>
+          again; <b>Replace</b> and <b>Remove</b> are next to it. <b>Test the voice</b>
+          speaks one line and writes it back.</li>
         <li>Check the <b>Voice model</b> and pick a <b>voice</b> — each card says whether it
-          sounds female, male or neutral.</li>
+          sounds female, male or neutral, and its play button speaks a short sample in that
+          voice without choosing it.</li>
       </ol>
       <h3>Voice model</h3>
-      <p>The voice model holds the live conversation. Three are offered, each with its test
-        results beside it: <b>GPT Realtime 2.1 mini</b> (the default: it read 18 of 18 test
-        sentences word for word and answers Arabic in Arabic), <b>GPT Realtime mini</b> (14 of
-        18, may answer Arabic in English; OpenAI retires it on 20 January 2027) and
-        <b>GPT-4o Mini Realtime</b> (a preview, offered only when your OpenAI key can use it —
-        otherwise it is listed but greyed out). Replies are read aloud by the voice model only
-        when it reads word for word; with the other two, GPT Realtime 2.1 mini reads them, so
-        read-aloud never paraphrases. What you say is also written down by a
-        <b>transcription model</b>; MINT AI always acts on that transcript, never on the voice
-        model's retelling of your words.</p>
-      <h3>Transcription</h3>
-      <p>Choose it under <b>Settings › Voice › Transcription</b>: <b>GPT-4o mini
-        Transcribe</b> (the default: fast, the most accurate here and the cheapest),
-        <b>GPT Transcribe</b> (its successor; writes some English words in Arabic script) or
-        <b>GPT-4o Transcribe</b>. The line under the list gives each one's measured speed,
-        accuracy and cost. (The models on this server, whisper.cpp, were retired on
-        25 October 2026.)</p>
-      <p>Inside a live call the call's own running transcript stays on an OpenAI model; the
-        choice governs the transcript MINT AI acts on. <b>Transcription language</b> (under
-        <b>More</b>): leave it on <b>Detect</b> if you mix Arabic and English.</p>
+      <p>The voice model holds the live conversation. <b>GPT Realtime 2.1 mini</b> is the
+        default: it read 18 of 18 test sentences word for word and answers Arabic in Arabic.
+        <b>GPT-Live + MINT AI</b> (offered when your OpenAI key can use it) is the most natural:
+        it listens while it speaks and hands every real request to MINT AI. The others are
+        listed with their test results. Replies cut by the guard are read word for word by
+        GPT Realtime 2.1 mini, so they are never paraphrased.</p>
+      <p>The voices offered follow the model: GPT-Live has 31, including English voices with
+        Australian, British, Irish and Southern accents and voices for other languages; the
+        realtime models have 10. Changing the model keeps your voice if the new model has it,
+        otherwise it picks a similar one.</p>
+      <h3>What MINT AI hears</h3>
+      <p>On <b>GPT-Live</b>, MINT AI acts on GPT-Live's own transcript of what you said. On the
+        realtime models, what you say is written down by <b>GPT-4o Transcribe</b>, and MINT AI
+        acts on that transcript, never on the voice model's retelling of your words. There is
+        nothing to set: it detects Arabic, English and the two mixed.</p>
+      <p>When MINT AI finishes a request, the voice always tells you the result in a few
+        sentences, with its figures — not just “the details are on screen”.</p>
       <h3>During a call</h3>
       <ul>
         <li>Say “stop listening”, press <kbd>Esc</kbd> or the red <b>End</b> to finish. A call
@@ -152,13 +150,12 @@ exports.guide = ({ csrf, user, publicHost, publicPort, sshHost }) => {
         <li><b>Speakers mode</b> (default) pauses the microphone while MINT AI speaks — tap,
           <kbd>Space</kbd> or <kbd>Esc</kbd> to interrupt. With headphones, <b>Headphones
           mode</b> lets you talk over it.</li>
-        <li>Arabic: it follows how you speak, or the <b>Arabic persona</b> you pick in
-          Settings.</li>
+        <li>Arabic: it answers in the language you last used, and learns from how you speak
+          to it (Egyptian or formal Arabic, and how you address it).</li>
       </ul>
-      <p><b>Read replies aloud</b> reads typed replies in the same voice.</p>
       <h3>Turning it off</h3>
       <p>Switching <b>Voice</b> to <b>Off</b> turns off all voice for everyone: live calls,
-        read-aloud and every voice control. The key stays saved, so switching it back on needs
+        a reply's Read aloud and every voice control. The key stays saved, so switching it back on needs
         nothing else.</p>
       <h3>Voiceprint</h3>
       <p>MINT AI can recognise people by voice and greet them by name. <b>Add and enrol</b>
@@ -195,8 +192,8 @@ exports.guide = ({ csrf, user, publicHost, publicPort, sshHost }) => {
       <div class="gd-body">
       <p>When you ask, MINT AI can act on your screen: end or mute a call, open a panel,
         switch the core, show the last reply, or take you to any page. These happen at once
-        with a note and a 60-second <b>Undo</b>. Changing a preference — the theme, the voice
-        persona or the voice — always asks you first. It never clicks anything on a page for
+        with a note and a 60-second <b>Undo</b>. Changing a preference — the theme or the
+        voice — always asks you first. It never clicks anything on a page for
         you, and approving stays yours. <b>Allow screen actions</b> switches all of this off
         for you.</p>
       <h3>The page map</h3>

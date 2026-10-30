@@ -1387,7 +1387,7 @@
       setTarget("auto");
     }
     sending = true;
-    if (opts.voice || Voice.speakAll) Voice.unlock();
+    if (opts.voice) Voice.unlock();
     $("cc-send").disabled = true;
     var body = { text: text, tab: TAB_ID };
     if (S.target !== "auto") body.target = S.target;
@@ -1414,7 +1414,7 @@
       if (r && r.confirm && typeof uiConfirmAnswer === "function") uiConfirmAnswer(r.confirm.id, r.confirm.ok);
       if (r && r.turn) {
         var tr = upsertTurn(r.turn);
-        if (opts.voice || Voice.speakAll) {
+        if (opts.voice) {
           Voice.tag(r.turn.id, { vt: opts.vt || "t" + r.turn.id, cat: "direct" });
           // The turn may already be over by the time this reply lands: read it now.
           if (tr && tr.ended_at && aiText(tr)) Voice.flush(tr.id, aiText(tr));
@@ -2061,8 +2061,7 @@
       (LIVE_OK
         ? '<div class="line">' + ic("voice") + "<span>Live · " + esc(VOICE || "voice") + "</span></div>" +
           '<button type="button" role="menuitemradio" data-dx="speakers" aria-checked="' + (dx === "speakers") + '"><span class="chk"></span>Speakers mode<small>mic pauses while it speaks</small></button>' +
-          '<button type="button" role="menuitemradio" data-dx="full" aria-checked="' + (dx === "full") + '"><span class="chk"></span>Headphones mode<small>talk over it</small></button>' +
-          '<button type="button" role="menuitemcheckbox" data-vread aria-checked="' + Voice.speakAll + '"><span class="chk"></span>Read replies aloud<small>streamed</small></button>'
+          '<button type="button" role="menuitemradio" data-dx="full" aria-checked="' + (dx === "full") + '"><span class="chk"></span>Headphones mode<small>talk over it</small></button>'
         : '<div class="line">' + ic("info") + "<span>" + (READY ? "Live conversation is not supported in this browser." : "Voice is off.") + "</span></div>") +
       (manage ? '<div class="line">' + ic("route") + '<span>Settings</span><a href="/mint-ai/settings/voice">Voice settings</a></div>' : "") +
       "<hr>" + '<div class="grp">MINT AI core</div>' +
@@ -2088,8 +2087,6 @@
     e.stopPropagation();
     var dxb = e.target.closest("[data-dx]");
     if (dxb) { liveDuplex(dxb.getAttribute("data-dx")); openVoiceMenu(); return; }
-    var rd = e.target.closest("[data-vread]");
-    if (rd && !rd.disabled && $("cc-speak-toggle")) { $("cc-speak-toggle").click(); openVoiceMenu(); return; }
     var cs = e.target.closest("[data-core-set]");
     if (cs) { setCoreChoice(cs.getAttribute("data-core-set")); openVoiceMenu(); return; }
     if (e.target.closest("[data-sheet]")) { var k = e.target.closest("[data-sheet]").getAttribute("data-sheet"); closePop(); openSheet(k); }
@@ -2586,9 +2583,11 @@
 
   /* ================================================================ voice: read-aloud
      Live conversation is the only way to talk to MINT AI by voice (the live
-     block below). This is the other half: MINT AI's replies read aloud --
-     "Read replies aloud" (this browser's choice, kept as mint-read-aloud,
-     the same switch as in Settings ▸ Voice) and a reply's Read aloud. Each
+     block below). This is the other half: a reply read aloud on request --
+     its Read aloud (and MINT AI's reply.read). Typed replies are no longer
+     read aloud by themselves: the "Read replies aloud" switch (Settings ▸
+     Voice and the speaker button here, its stored mint-read-aloud) was
+     removed on 2026-10-30, at the administrator's request. Each
      sentence is read by OpenAI on the server (/mint-ai/api/speak, verbatim-
      checked), its audio streamed back and played from the first chunk, the
      next ones fetched while this one plays. With voice off, or without
@@ -2596,16 +2595,13 @@
      nothing here speaks. The browser only ever talks to this panel. */
 
   var Voice = (function () {
-    var speakBtn = $("cc-speak-toggle");
     var api_ = {
-      on: false, listening: false, speaking: false, speakAll: false,
+      on: false, listening: false, speaking: false,
       say: function () {}, feed: function () {}, flush: function () {}, unlock: function () {}, tag: function () {}, stop: function () {},
     };
     // (Whether a live conversation holds the voice bar; false where the live block is absent, as in the tests' sandbox.)
     function liveOn() { return typeof liveActive === "function" && liveActive(); }
     var AC = window.AudioContext || window.webkitAudioContext;
-    var READ_KEY = "mint-read-aloud";
-    try { api_.speakAll = READY && window.localStorage.getItem(READ_KEY) === "1"; } catch (e) { /* storage blocked: silent */ }
     var AHEAD = 3; // sentences fetched ahead of the one playing
     var spoken = 0, queue = [], busy = false, gen = 0, clipAt = 0, lastSkipToast = 0;
     // What the voice did, for the console and for tests: window.__moniVoice.
@@ -2961,24 +2957,6 @@
     function usageSoon() {
       clearTimeout(usageTimer);
       usageTimer = setTimeout(function () { if (P && P.loadVoiceUsage) P.loadVoiceUsage(); }, 900);
-    }
-
-    function paintSpeak() {
-      if (!speakBtn) return;
-      speakBtn.setAttribute("aria-pressed", api_.speakAll ? "true" : "false");
-      speakBtn.innerHTML = ic(api_.speakAll ? "speaker" : "mute");
-      speakBtn.title = api_.speakAll ? "Replies are read aloud — click to keep them silent" : "Replies are silent — click to read MINT AI's replies aloud";
-    }
-    if (speakBtn) {
-      speakBtn.hidden = !READY;
-      paintSpeak();
-      speakBtn.addEventListener("click", function () {
-        api_.speakAll = !api_.speakAll;
-        try { window.localStorage.setItem(READ_KEY, api_.speakAll ? "1" : "0"); } catch (e) { /* not remembered; still switched */ }
-        if (api_.speakAll) outContext();
-        paintSpeak();
-        if (!api_.speakAll) { silence(); setUi(); }
-      });
     }
 
     // What each turn's speech is counted as: {vt, cat}, set by send().

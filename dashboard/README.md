@@ -407,11 +407,12 @@ all the thinking. Everything goes through this server -- the browser never
 talks to OpenAI and never sees the key (the CSP still forbids it to).
 
 - **Hearing**: the live call streams the microphone to this server (see *Live
-  conversation*); the server's own full-turn transcript of what it relayed
-  (`POST /v1/audio/transcriptions`, `gpt-4o-mini-transcribe` by default, with a
-  vocabulary prompt: Mint, MINT AI, Odoo, sessions, agents -- or the model chosen
-  under *Transcription*, see below) is what MINT AI gets.
-  The console's dictation still posts a recording to `/console/:id/transcribe`.
+  conversation*). On the realtime voice models the server's own full-turn
+  transcript of what it relayed (`POST /v1/audio/transcriptions`,
+  `gpt-4o-transcribe` -- the one transcription model since 2026-10-30, with a
+  vocabulary prompt: Mint, MINT AI, Odoo, sessions, agents) is what MINT AI
+  gets; on GPT-Live, GPT-Live's own input transcript is (see *Live conversation
+  on GPT-Live*). The console's dictation still posts a recording to `/console/:id/transcribe`.
   The Command Center's push to talk (`/mint-ai/api/transcribe`) is gone.
 - **Speaking**: each sentence of a reply is posted to `/mint-ai/api/speak` or
   `/console/:id/speak`. The Command Center asks for it **streamed**
@@ -460,10 +461,10 @@ talks to OpenAI and never sees the key (the CSP still forbids it to).
   *Voice API token*; permission `voice.manage`, in no stock role --
   administrators only). Write-only, shown only as set / not set; **Replace**
   opens a dialog with a password field (`POST /mint-ai/settings/voice/key`),
-  **Remove** asks first (`/clear`), **Test** speaks one line with the selected
-  voice model and transcribes it back with the selected transcription model
-  (`/test`; the result names the model that answered, a fallback if there was
-  one, and the milliseconds). Stored by the helper in `/var/lib/moni-voice/openai-voice.env`
+  **Remove** asks first (`/clear`), **Test the voice** (in the main group,
+  after the key) speaks one line with the selected voice model and transcribes
+  it back with `gpt-4o-transcribe` (`/test`; the result names the model that
+  answered and the milliseconds). Stored by the helper in `/var/lib/moni-voice/openai-voice.env`
   (root:root 0600, directory 0700) -- not the repo, not the database, not argv;
   set/clear/options are audited with the last four characters only. The panel
   reads it through `moni-helper voice-key-read` and keeps it in memory.
@@ -521,7 +522,7 @@ hands-free, Space held to talk and every "trial" label are gone.
   refuses to save it (re-checking once first), and a stored choice the key is
   known not to reach reads as the default. On 2026-10-01 the key listed
   `gpt-realtime-mini` but no `gpt-4o-mini-realtime*`.
-  The voice model cannot also be the transcriber: no
+  A realtime voice model cannot also be the transcriber: no
   realtime model can transcribe its own input (OpenAI refuses one as the
   session's transcription model and on `/audio/transcriptions`), and a
   hand-off to MINT AI must carry the server's own transcript (prompting the
@@ -540,78 +541,71 @@ hands-free, Space held to talk and every "trial" label are gone.
   summariser (`lib/voice-shared.js` `SUMMARY_MODEL`) is a text step and stays
   on `gpt-realtime-mini` for now: on `gpt-realtime-2.1-mini` its 220-token cap
   cut a sentence mid-way (2026-09-30).
-- **Transcription** (Settings ▸ Voice ▸ *Transcription* and *Transcription
-  language*, 2026-09-30 evening -- the administrator asked for a choice, which
-  reverses "listening is not a setting"): `lib/voice-transcribe.js`. The panel
-  setting `voice_transcription` = `{model, language}`; nothing stored means
-  `gpt-4o-mini-transcribe` / `auto`, the behaviour before (an unreadable or
-  unknown value is cleaned once at start, `migrateTranscriptionSetting`).
-  `POST /mint-ai/settings/voice/transcription` (fields `transcriber`,
-  `language`; `voice.manage`; audited). The choice governs the **full-turn
-  transcript** -- the live call's hand-off text (`transcribeTurn`) and the
-  console's dictation. The live session's own input transcription stays on an
-  OpenAI model, because a realtime session accepts no other: the selected one
-  when it is `gpt-4o-mini-transcribe` or `gpt-4o-transcribe`, else
-  `gpt-4o-mini-transcribe` (`sessionModelFor`; `gpt-transcribe` is not put in
-  the session until it is known to be accepted there). Options
-  (`TRANSCRIBERS`, one entry each, a new `kind` is one function in `BACKENDS`),
-  with the hint the selector shows:
-  - OpenAI `gpt-4o-mini-transcribe` (~0.4 s, CER 0.004, $0.003/min),
-    `gpt-transcribe` ($0.0045/min, some English in Arabic script; allowed by the
-    helper's `VOICE_TRANSCRIBE_RE` now), `gpt-4o-transcribe` ($0.006/min);
-  - on this server, whisper.cpp: `whisper-large-v3-turbo` (q8_0, 6-13 s a turn,
-    CER ~0.05, 1.1 GB while selected) and `whisper-small` (q8_0, 1-2 s, CER
-    0.11-0.16, English in Arabic script). Measured 2026-09-30 on this box.
-  **Local backend**: `moni-voice-whisper.service` -- `whisper-server` on
-  127.0.0.1:8093, user `monispeech`, `Nice=10`, 8 threads, Silero VAD (silence
-  and noise come back empty: 100 ms), `MemoryMax=2500M`. It runs **only while a
-  local model is selected**: the route calls `moni-helper voice-whisper-set
-  <model>` (writes `/var/lib/moni-voice-whisper/server.env`, enables and
-  (re)starts the unit) and `voice-whisper-set off` when an OpenAI model is
-  chosen again; at start the panel re-asserts a local choice
-  (`syncLocalTranscriber`). A local model that is not installed is listed
-  disabled and refused. Per turn: ffmpeg to 16 kHz mono PCM, `temperature 0`
-  with `temperature_inc 0` (no fallback loop -- what ran away on noise), an
-  audio context sized to the clip (never below the measured 768 / 512; the
-  whole window past ~28 s), the language setting, a hard timeout (25 s turbo,
-  10 s small). Markers (`[BLANK_AUDIO]`, `(static)`, `*thud*`, `♪`) are taken
-  out. **Fallback**: server down, timeout, an error, or junk (a stock silence
-  phrase such as "you" / "Thank you." / subtitle credits, a loop, more words
-  than the audio holds, garbled text) sends the same audio to
-  `gpt-4o-mini-transcribe`, logged as `voice transcribe: <id> failed (<why>)
-  ... falling back` (never the words). A live hand-off waits for a local
-  transcript up to its timeout + 3 s (`heard_wait_ms`) instead of 6 s, so with
-  turbo MINT AI starts on a request several seconds later. Language: `auto`
-  lets the model detect (on this server that can translate the Arabic half of
-  a mixed turn into English); `ar` / `en` pin it (pinned to Arabic, the small
-  model turned "Restart the dashboard" into Arabic words); a pinned language
-  also goes to OpenAI and into the live session. Install once:
-  `sudo bash deploy/install-voice-whisper.sh [turbo] [small]` (copies
-  `whisper-server` and its libraries from `/opt/moni-agents/shared/whisper.cpp`,
-  read only, into `/var/lib/moni-voice-whisper/bin`; models into `.../models`,
-  SHA-256 checked, from `MONI_WHISPER_MODELS_FROM` or Hugging Face; installs the
-  unit without starting it). `deploy-dashboard.sh` reinstalls the unit file only.
-  Guards: whisper's hallucinations are caught twice -- as junk here (fallback)
-  and by `lib/voice-guard.js` (a transcript of markers only is `noise-label`);
-  the claim and stop guards read English written in Arabic script
+- **Transcription** -- one model, `gpt-4o-transcribe`, no setting (2026-10-30,
+  the administrator: "make the gpt 4o transcribe be used with gpt realtime mini
+  2.1. remove all other models, and remove the transcription section from the
+  settings"). `lib/voice-transcribe.js` (`TRANSCRIBERS` is one entry). On the
+  realtime models it writes down the full turn (`transcribeTurn`, the hand-off
+  text) and is the live session's own input transcription (`sessionModelFor`;
+  the helper's `VOICE_TRANSCRIBE_RE` now accepts only `gpt-4o-transcribe` and a
+  dated snapshot of it, and a fresh helper file defaults to it). No language is
+  sent (the model detects Arabic, English and the two mixed); only a live call's
+  second try pins one. GPT-Live calls use no transcription model. The old
+  setting `voice_transcription` (2026-09-30 to 2026-10-30: gpt-4o-mini-transcribe,
+  gpt-transcribe, gpt-4o-transcribe and, until 2026-10-25, whisper.cpp on this
+  server) is left in the database and ignored; its route
+  `/mint-ai/settings/voice/transcription` is gone. The retired models stay
+  priced in `lib/voice-usage.js`, so older rows still read. The local
+  whisper-server (`moni-voice-whisper.service`, `deploy/install-voice-whisper.sh`,
+  the helper's `voice-whisper-*`) is left installed and disabled; nothing in
+  the panel starts it. The guards still read English written in Arabic script
   («ريستارت للداشبورد», «ستوب الليسنينج», «يس», «اندو»), tested in
   `test-voice-arabic.cjs` / `test-voice-stop.cjs`.
-- **Voice cards** carry a gender (♀ Female / ♂ Male / ◌ Neutral) from one
-  table, `lib/voice.js` `VOICE_META`: as each voice presents in OpenAI's own
-  samples -- OpenAI labels none; alloy is Neutral; ballad and verse are the
-  least certain.
-- **The rest of the section**: Arabic persona + Reset (`/persona`,
-  `/persona/reset`), *Read replies aloud* (this browser:
-  `localStorage` `mint-read-aloud`, the Command Center's speaker button is the
-  same switch), live audio (speakers / headphones default, noise reduction:
+- **Voice cards** follow the voice model (`lib/voice.js` `voicesFor`), tested
+  on the real API on 2026-10-30: the realtime models take ten voices
+  (`REALTIME_VOICES`: marin, cedar, alloy, ash, ballad, coral, echo, sage,
+  shimmer, verse); GPT-Live takes those ten **and** its own 21
+  (`LIVE_ONLY_VOICES`: quartz, ripple, vesper, willow, stone, gleam, meridian,
+  delta, cinder, beacon, bossa, tempo, nuri, juni, flitz, brise, sillage, nira,
+  harema, shida, noeul -- English with Australian, British, Irish, North
+  American, Southern US and Filipino accents, Brazilian Portuguese, German,
+  French, Hindi, Japanese, Korean); fable, onyx and nova are refused by both.
+  Each card carries a gender (♀ Female / ♂ Male / ◌ Neutral) from one table,
+  `VOICE_META`: the realtime voices as each presents in OpenAI's own samples
+  (OpenAI labels none; alloy is Neutral); GPT-Live's as OpenAI's GPT-Live page
+  labels them, with its language/accent as the note. A GPT-Live-only voice has a
+  `standIn` (marin or cedar, same presentation): the verbatim reader (2.1 mini)
+  speaks with it inside a GPT-Live call, and a change to a realtime model stores
+  it (`POST /options` says so and reloads the section for the new cards); posting
+  a voice the model cannot use is refused. `voice.set` by voice (`public/ui-actions.js`
+  `VOICE_NAMES`) still offers the ten shared voices.
+- **Voice samples**: each card has a play button (beside its radio label, so it
+  never chooses the voice; hidden without JavaScript) that posts
+  `POST /mint-ai/settings/voice/sample {voice}` (`voice.manage`, CSRF) and plays
+  the `audio/wav` it gets: "Hi, I'm MINT AI.", spoken by the voice model that
+  holds the call -- GPT-Live for GPT-Live (~5 s to make), the realtime model
+  otherwise (~1.5 s) -- so it sounds as on a call. Made once per (model, voice,
+  line) and kept in `<data>/voice-samples/` (0600); a made clip is recorded in
+  `voice_usage` (category `sample`, "Voice samples" in the spend card). Refused
+  while voice is off (409), without a key (503), or for a voice the model does
+  not have (400). States: loading (spinner), playing (click again stops), an
+  error line under the cards.
+- **Removed on 2026-10-30**: the *Arabic* persona row and its Reset
+  (`/persona/reset`; the persona is learned from how the administrator speaks,
+  and `POST /persona` stays for a confirmed `persona.set` from the Command
+  Center), and *Read replies aloud* (the Settings switch, the Command Center's
+  speaker button and its voice-menu item, `localStorage` `mint-read-aloud`):
+  typed replies are no longer read by themselves; a reply's **Read aloud**
+  stays.
+- **The rest of the section**: live audio (speakers / headphones default, noise reduction:
   `/live-audio`, each row its own field), call limits, spend, and the link to
   the voice evaluation (`/mint-ai/voice-eval`, unchanged). The markup is
   `lib/views-settings-voice.js`; the routes sit with the voice code in
   `server.js` (`settingsRoutes.sections.voice`). Every form works in place
   (os.js, JSON) and without JavaScript (a redirect back to its row).
 - **Old URLs**: `GET /credentials/openai-voice` -> 302 to the section; its
-  POSTs (`key`, `clear`, `test`, `options`, `persona`, `persona/reset`,
-  `live-audio`) -> 308 to the new routes (method and body kept);
+  POSTs (`key`, `clear`, `test`, `options`, `persona`, `live-audio`) -> 308 to
+  the new routes (method and body kept);
   `/credentials/openai-voice/desk` changes nothing and says the desk is gone.
   Credentials shows the voice key as one status line linking here.
 - **The mic**: in the Command Center it starts a live call (hint "click the
@@ -681,9 +675,17 @@ there is nothing grounded to work on. It is always MINT AI's voice and never
 claims to be human.
 
 **Summaries.** MINT AI's answer to a live call's request stays on screen
-exactly as written; aloud, the call asks the summariser for a short summary
-(an out-of-band text response: no conversation, no tools, the reply quoted,
-the administrator's request and last words alongside). A transient OpenAI
+exactly as written; aloud, the call asks the summariser for a **detailed**
+summary (since 2026-10-30, the administrator: "always reading a detailed
+summary when a delegation is finished"): every key fact, figure, status and
+what is still open, three to six spoken sentences, at most ~120 words, a list
+summed up in words; only code, commands, paths and links are left to the
+screen -- never just "the details are on screen" (an out-of-band text
+response: no conversation, no tools, the reply quoted,
+the administrator's request and last words alongside). When part of the reply
+was already read while it was written, the summary is told so (`alreadySaid`)
+and covers the rest; a final text that differs from what was read gets the
+summary of all of it. A transient OpenAI
 server error is retried once. A reply of one or two plain sentences is read word for word instead
 (`fallback: "verbatim"`). The summary is held to the reply: a figure changed
 or rounded wrongly (2.7 may become 3, never 2), a negation flipped, a
@@ -825,12 +827,20 @@ a `LiveCall` with the upstream leg swapped; server.js picks the class by
   words), `session.thinking.append` (quiet context), `session.instructions.append`
   (steers; can cut off its speech); <= 500 tokens each. $0.05 a minute.
 - **Delegation = MINT AI.** The prompt asks for `<|SpawnThinking|>` for
-  anything about the machine or the screen. On a delegation the turn is
-  found in the relayed audio (`speechSpan`), transcribed by this server's
-  transcription model and handed over through `passOn` -- the same door, the
-  voiceprint, talk-only speakers, the approval gate. GPT-Live's own
-  transcript goes along only as a marked note. MINT AI's reply (or its first
-  sentences while it is written) goes back as commentary on that delegation.
+  anything about the machine or the screen. On a delegation the request text
+  is **GPT-Live's own input transcript** of the turn (since 2026-10-30; joined
+  across a request said in pieces) -- through the transcript guard
+  (`checkTranscript`, the turn's length the longer of its audio span and
+  GPT-Live's word timings) and the door guard -- and handed over through
+  `passOn`: the same door, the voiceprint (on the turn's audio, `speechSpan`),
+  talk-only speakers, the approval gate. No transcription model is called or
+  billed, and no note about another transcript goes along (until then the
+  full-turn gpt-4o-transcribe text was the request; on the real calls of
+  2026-10-29 GPT-Live's transcript read better, and two requests it had
+  understood were lost as "ungrounded"). MINT AI's finished reply goes back as
+  commentary on that delegation: the detailed summary, a line at a time
+  (short plain replies whole; the rest of a reply already being said as it was
+  written, when that finishes it).
 - **Guard.** Output audio is held `HOLD_MS` (250 ms; an utterance's start `LEAD_MS` 150 ms more, the page's jitter buffer) for its words; the
   Releaser judges the words so far (claims, figures). A result is judged with
   the summary rules against exactly the commentary it was given, figures on the
@@ -882,7 +892,7 @@ leaves the server.
   same stream. The realtime conversation is then told (a system item) what MINT
   AI said and what was heard.
 - **Hand-offs carry this server's transcript.** At the end of each utterance the
-  server transcribes the audio it relayed (a full-turn gpt-4o-mini-transcribe)
+  server transcribes the audio it relayed (a full-turn gpt-4o-transcribe since 2026-10-30)
   and sends that -- through the transcript guard -- never the model's `text`;
   the session's own transcription is the fallback. Measured on the mixed clip:
   the session transcript heard «ريكستور» / «ريكارك» for "restart", the full-turn

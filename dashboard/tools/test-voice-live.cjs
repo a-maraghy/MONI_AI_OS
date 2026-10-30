@@ -702,10 +702,16 @@ let WS_BASE;
       check("  logged: first sentence N ms after the ask", h.logs.some((l) => /first sentence of the reply read while it is written, \d+ ms after the ask/.test(l)), h.logs.join(" / "));
       h.c.close("test");
     }
-    // 2. The final text differs from what was streamed: nothing more is read but "the details are on screen".
+    // 2. The final text differs from what was streamed: no contradiction read out -- the detailed summary of all of it.
     {
       const b = bus();
-      const h = await handOff({ turnText: "is the dashboard up", watchTurns: b.watch });
+      const sumAsked = [];
+      const summarise = async (id, o) => {
+        sumAsked.push(o);
+        o.onLine({ text: "I found that the dashboard is back up.", safe: false });
+        return { tokens: { text_in: 300, text_out: 30 }, fallback: null };
+      };
+      const h = await handOff({ turnText: "is the dashboard up", watchTurns: b.watch, summarise });
       const before = h.spoke.length;
       words(b, h.id, "The dashboard is down right now. I am ");
       await until(() => h.spoke.length > before, 1000);
@@ -713,7 +719,8 @@ let WS_BASE;
       b.emit({ type: "result", turn: { id: h.id } });
       await sleep(250);
       const said = h.spoke.slice(before);
-      check("a final reply that differs from what was read: no contradiction -- only 'the details are on screen'", said.length === 2 && said[0] === "The dashboard is down right now." && /details are on (your )?screen/i.test(said[1]) && h.logs.some((l) => /differs from what was read/.test(l)), JSON.stringify(said));
+      check("a final reply that differs from what was read: the detailed summary of all of it follows (never 'the details are on screen')", said.length === 2 && said[0] === "The dashboard is down right now." && said[1] === "I found that the dashboard is back up." && h.logs.some((l) => /differs from what was read.*summary follows/.test(l)), JSON.stringify(said));
+      check("  the summary is not told the differing sentence was its start (nothing already said)", sumAsked.length === 1 && Array.isArray(sumAsked[0].alreadySaid) && sumAsked[0].alreadySaid.length === 0);
       h.c.close("test");
     }
     // 3. A message that becomes a tool call: its unread tail is dropped, the next message streams afresh.
@@ -732,10 +739,16 @@ let WS_BASE;
       check("a tool call mid-reply: the narration read stays, its unfinished tail is dropped, the final message is read in full", JSON.stringify(said) === JSON.stringify(["Let me look at the service first.", "The dashboard is up and answering.", "It restarted at 14:02 and every check since has passed.", "Nothing else needs you."]), JSON.stringify(said));
       h.c.close("test");
     }
-    // 4. A list: prose up to it is read, then "the details are on screen"; nothing of the list or code.
+    // 4. A list: prose up to it is read, then the detailed summary of the rest (told what was heard); never the list or code read out.
     {
       const b = bus();
-      const h = await handOff({ turnText: "is the dashboard up", watchTurns: b.watch });
+      const sumAsked = [];
+      const summarise = async (id, o) => {
+        sumAsked.push(o);
+        o.onLine({ text: "Two of them are the dashboard and Odoo, and the command to check them is on screen.", safe: false });
+        return { tokens: { text_in: 300, text_out: 30 }, fallback: null };
+      };
+      const h = await handOff({ turnText: "is the dashboard up", watchTurns: b.watch, summarise });
       const before = h.spoke.length;
       const LIST = "Three services are up.\n- dashboard\n- odoo\n```\nsystemctl status odoo\n```\n";
       words(b, h.id, LIST);
@@ -743,7 +756,8 @@ let WS_BASE;
       b.emit({ type: "result", turn: { id: h.id } });
       await sleep(300);
       const said = h.spoke.slice(before);
-      check("a list or code in the reply: the prose before it is read, then 'the details are on screen'; never the list or the code", said.length === 2 && said[0] === "Three services are up." && /details/i.test(said[1]) && !said.some((x) => /odoo|systemctl/.test(x)), JSON.stringify(said));
+      check("a list or code in the reply: the prose before it is read, then the detailed summary of the rest; never the list or the code as written", said.length === 2 && said[0] === "Three services are up." && /dashboard and Odoo/.test(said[1]) && !said.some((x) => /systemctl|- odoo/.test(x)), JSON.stringify(said));
+      check("  the summary is told what was already read, so it does not repeat it", sumAsked.length === 1 && JSON.stringify(sumAsked[0].alreadySaid) === JSON.stringify(["Three services are up."]), JSON.stringify(sumAsked.map((o) => o.alreadySaid)));
       h.c.close("test");
     }
     // 5. Talked over: the rest of the stream is not read.

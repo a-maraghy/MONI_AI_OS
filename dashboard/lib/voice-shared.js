@@ -33,11 +33,12 @@
  *                          out is said anyway. Every rule holds in Egyptian and
  *                          Modern Standard Arabic and in mixed sentences
  *                          (lib/voice-arabic.js), and fails closed;
- *   Summariser             a short spoken summary of one of MINT AI's replies,
- *                          written by a text-only realtime response
- *                          (SUMMARY_MODEL) and released sentence by sentence
- *                          through the guard; a short plain reply is read word
- *                          for word instead;
+ *   Summariser             a detailed spoken summary of one of MINT AI's
+ *                          replies (every key fact and figure, a few
+ *                          sentences: 2026-10-30), written by a text-only
+ *                          realtime response (SUMMARY_MODEL) and released
+ *                          sentence by sentence through the guard; a short
+ *                          plain reply is read word for word instead;
  *   linesFor / langOf      the fixed lines (first person, in the language of
  *                          the cut sentence, feminine / masculine / neutral in
  *                          Arabic after the persona).
@@ -68,7 +69,9 @@ const RATE = 24000;
 const RESPONSE_TIMEOUT_MS = 20000;
 const IDLE_MS = 10 * 60 * 1000;
 const MAX_AGE_MS = 25 * 60 * 1000;
-const SUMMARY_MAX_TOKENS = 220;
+// A detailed spoken summary (2026-10-30): up to ~120 words; Arabic runs ~2.5 characters a token, so the
+// cap leaves room for an Arabic one and is never what ends a normal summary.
+const SUMMARY_MAX_TOKENS = 700;
 const VERBATIM_MAX_CHARS = 220; // a reply this short, in plain prose, is read as it is
 
 // The fixed lines. The voice IS MINT AI (the administrator, 2026-09-29: "you are
@@ -162,17 +165,27 @@ function costOf(tokens, model) {
 function replyLanguage(utterance) {
   return arabic.isArabic(String(utterance || "")) ? "ar" : "en";
 }
+/*
+ * The summary is DETAILED since 2026-10-30 (the administrator: "always reading a
+ * detailed summary when a delegation is finished"): every key fact and figure
+ * of the reply, in a few spoken sentences -- not a one-liner and not "the
+ * details are on screen". Lists are summed up in words (how many, which ones
+ * matter); only what cannot be spoken (code, commands, paths, links) is left
+ * to the screen. The guard rules are unchanged.
+ */
 const SUMMARY_INSTRUCTIONS = [
-  "You are MINT AI. The text below is your own finished work on the administrator's request, written by you. Turn it into a short spoken summary for the administrator, who can see the full text on screen.",
+  "You are MINT AI. The text below is your own finished work on the administrator's request, written by you. Turn it into a detailed spoken summary for the administrator: they are listening, so tell them everything that matters in it.",
   "Rules:",
-  "- One to three short sentences, at most 45 words, in the language named at the end of the input (English, or Arabic in the register named there, with technical terms kept in English in Latin script). No lists, no markdown.",
+  "- Three to six natural spoken sentences, at most 120 words, in the language named at the end of the input (English, or Arabic in the register named there, with technical terms kept in English in Latin script). No lists, no markdown, no headings.",
+  "- Cover every key fact, finding, figure, status and outcome in the reply, and what is still open. Do not stop at the first point, and do not just say the details are on screen.",
+  "- Turn a list or a table into words: say how many items there are and name the ones that matter, with their figures.",
   "- Say only what the reply says. Add no fact, figure, name, reason, recommendation or action of your own.",
   "- Keep every negation: if the reply says something did NOT happen, is NOT running, or is not known yet, say so.",
   "- Keep figures exactly as written, or leave them out. Never round them differently or convert them.",
   "- If it says you will do something, are waiting, need the administrator's approval, decision or answer, or do not know yet, say exactly that. Never say it is done.",
   "- If the reply needs the administrator's approval, decision or answer, the summary MUST say so.",
   "- Only repeat a recommendation the text itself makes.",
-  "- Do not read lists, code, commands, links or file paths aloud: say the details are on screen.",
+  "- Never say code, a command, a link, a file path (anything with a slash) or an id: name what it is in plain words instead (\"the Postgres data\", \"the backups folder\"), or say it is on screen.",
   "- Speak in the first person, as its author: \"I found...\", \"I restarted...\" only where the text says it was done (in Arabic «لقيت إن...», «عملت restart...»). Never speak of MINT AI as someone else, and never say you passed or delegated anything.",
 ].join("\n");
 /** The last line of a summary's input: the language (and register) to speak in. */
@@ -1255,7 +1268,7 @@ class Summariser {
       ws.on("open", () => {
         this.send({
           type: "session.update",
-          session: { type: "realtime", instructions: SUMMARY_INSTRUCTIONS, output_modalities: ["text"], tools: [], tool_choice: "none", max_output_tokens: 400 },
+          session: { type: "realtime", instructions: SUMMARY_INSTRUCTIONS, output_modalities: ["text"], tools: [], tool_choice: "none", max_output_tokens: 900 },
         });
       });
       ws.on("message", (data) => {
@@ -1399,10 +1412,13 @@ class Summariser {
   }
 
   /**
-   * A short spoken summary of MINT AI's reply to one of this user's voice
+   * A detailed spoken summary of MINT AI's reply to one of this user's voice
    * requests. `opts.onLine(line)` is called for each line as soon as it may
    * be spoken ({text, safe}); `opts.persona` the saved persona;
-   * `opts.request` what the administrator asked (their words, as heard).
+   * `opts.request` what the administrator asked (their words, as heard);
+   * `opts.alreadySaid` sentences of the reply the administrator has already
+   * heard (read while it was written): the summary covers the rest and does
+   * not repeat them, and a short reply is not read again word for word.
    * Resolves with { fallback: "verbatim" } when the reply should simply be read
    * as written (short and plain, or the summary was cut before a word was
    * said), or { pending: true } when MINT AI has not answered yet.
@@ -1435,7 +1451,8 @@ class Summariser {
       return { ...this.result(turn, timings), fallback: fallback || null, shape };
     };
     if (!reply) return finish("verbatim");
-    if (shape.plain && reply.length <= VERBATIM_MAX_CHARS && shape.sentences <= 2) return finish("verbatim"); // nothing to shorten
+    const already = Array.isArray(opts.alreadySaid) ? opts.alreadySaid.map((x) => String(x || "").trim()).filter(Boolean) : [];
+    if (!already.length && shape.plain && reply.length <= VERBATIM_MAX_CHARS && shape.sentences <= 2) return finish("verbatim"); // nothing to shorten
     await this.open();
     this.usedAt = Date.now();
     this.stats.summaries++;
@@ -1481,7 +1498,8 @@ class Summariser {
                 text:
                   (asked ? `The administrator asked: "${asked.slice(0, 500)}"\n\n` : "") +
                   `Your finished work (your reply), between the triple quotes:\n"""\n${quoted}\n"""\n` +
-                  (shape.list || shape.code || shape.paths ? "It has lists, code or paths: do not read them, say the details are on screen.\n" : "") +
+                  (shape.code || shape.paths ? "It has code, commands or paths: do not read those, say they are on screen.\n" : "") +
+                  (already.length ? `The administrator has already heard these sentences of it read aloud: "${already.join(" ").slice(0, 1200)}"\nDo not repeat them: go on from there and cover everything else that matters.\n` : "") +
                   summaryLanguage(lastSaid || reply, sumPersona),
               },
             ],
@@ -1496,7 +1514,9 @@ class Summariser {
       turn.trip = { ...rel.trip, said: st.text.slice(0, 400), released: rel.released };
       this.stats.trips++;
       this.log(`summary: guard cut a summary (${rel.trip.rule}): ${JSON.stringify(rel.trip.match).slice(0, 160)}`);
-      if (!rel.released && reply.length <= VERBATIM_MAX_CHARS * 2 && shape.plain) return finish("verbatim");
+      // Cut before a word of it was heard: the reply itself is read word for word (the caller's verbatim
+      // reader) rather than "the answer is on screen" -- the administrator asked for the result spoken (2026-10-30).
+      if (!rel.released) return finish("verbatim");
       const L = linesFor(langOf(rel.trip.sentence || rel.sentences[rel.trip.at], asked || reply), sumPersona.gender);
       emit({ text: rel.released ? L.summaryCut : L.summaryNone, safe: true });
     }
@@ -1507,7 +1527,8 @@ class Summariser {
       turn.approvalAdded = true;
       if (!turn.trip) turn.trip = { rule: "approval-dropped", match: "", said: st.text.slice(0, 400), released: rel.released, appended: true };
       emit({ text: SCREEN.test(norm(spoken)) ? C.approvalShort : C.approval, safe: true });
-    } else if (!turn.trip && (shape.list || shape.code || shape.paths || reply.length > 600) && !SCREEN.test(norm(spoken))) {
+    } else if (!turn.trip && (shape.code || shape.paths) && !SCREEN.test(norm(spoken))) {
+      // Only what cannot be spoken is left to the screen; a long reply or a list is summed up in words.
       emit({ text: C.details, safe: true });
     }
     return finish(null);

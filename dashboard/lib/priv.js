@@ -296,10 +296,8 @@ module.exports = {
   voiceKeyClear: () => callHelper("voice-key-clear"),
   voiceOptionsSet: (model, voice, transcribeModel) =>
     callHelper("voice-options-set", [model, voice, transcribeModel]),
-  // Transcription on this server (lib/voice-transcribe.js): what is installed,
-  // and the local server run with a model or stopped ("off").
-  voiceWhisperStatus: () => callHelper("voice-whisper-status"),
-  voiceWhisperSet: (model) => callHelper("voice-whisper-set", [model], { timeout: 90000 }),
+  // (The local transcription server's voice-whisper-* wrappers went with the
+  // Transcription setting on 2026-10-30: nothing here starts it any more.)
 
   // The voiceprint (lib/voiceprint.js): sealed and opened by the helper, whose key never leaves it.
   voiceprintSeal: (plainB64) => callHelper("voiceprint-seal", [], { stdin: JSON.stringify({ plain: plainB64 }) }),

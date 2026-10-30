@@ -172,6 +172,7 @@ function makeCall(extra) {
       transcribed.push(wav.length);
       return { text: x.turnText == null ? "" : x.turnText, model: "gpt-4o-mini-transcribe", tokens: { audio_in: 30, text_in: 5, text_out: 10 } };
     },
+    ...(x.summarise ? { summarise: x.summarise } : {}),
     record: (row) => {
       const r = { ...row, usd: usage.costOf(row.tokens, row.model) };
       rows.push(r);
@@ -277,9 +278,10 @@ let WS_BASE;
     c.close("hung-up");
   }
 
-  section("a delegation: this server's transcript goes to MINT AI, the result goes back as commentary");
+  section("a delegation: GPT-Live's own transcript goes to MINT AI (no transcription model), the result goes back as commentary");
   {
-    const { c, client, sup, transcribed } = makeCall({ turnText: "Can you check why the dashboard restarted last night?" });
+    // turnText: what a transcription model would have written -- never asked for on GPT-Live (2026-10-30).
+    const { c, client, sup, transcribed, rows } = makeCall({ turnText: "Can you check why the dashboard restarted last night?" });
     await c.connect();
     const s = lastSession();
     const end = await hear(s, c, "can you check why the dashboard restarted last nite");
@@ -287,9 +289,10 @@ let WS_BASE;
     await speak(s, "On it.");
     await until(() => sup.calls.some((x) => x[0] === "send"), 4000, "the hand-off");
     const sent = sup.calls.find((x) => x[0] === "send");
-    check("the hand-off was transcribed by this server (the full-turn transcript)", transcribed.length >= 1);
-    check("MINT AI gets this server's transcript, not GPT-Live's words", sent && /Can you check why the dashboard restarted last night\?/.test(sent[1].text), sent && sent[1].text);
-    check("...and, marked, what the live voice heard (they differ: 'nite')", sent && /live voice's own transcript/.test(sent[1].text) && /last nite/.test(sent[1].text));
+    check("no transcription model is called on a GPT-Live call", transcribed.length === 0, transcribed.length);
+    check("  and no transcription is billed", !rows.some((r) => r.part === "transcription"), JSON.stringify(rows.map((r) => r.part)));
+    check("MINT AI gets GPT-Live's own transcript as the request ('nite' and all)", sent && /^can you check why the dashboard restarted last nite$/.test(sent[1].text), sent && sent[1].text);
+    check("  with no note about another transcript", sent && !/transcript|\[Voice:/.test(sent[1].text), sent && sent[1].text);
     check("the ack 'On it.' passes (a delegation backs it)", client.json.some((m) => m.type === "caption" && /On it/.test(m.text)) && !client.json.some((m) => m.type === "cut"));
     const id = [...c.requests.keys()][0];
     sup.replies.set(id, "The dashboard restarted at 02:14 because a deploy ran. It has been up since and nothing is wrong.");
@@ -430,15 +433,55 @@ let WS_BASE;
 
   section("nothing grounded: no hand-off, GPT-Live says it did not catch it");
   {
-    const { c, sup } = makeCall({ turnText: "" });
+    // A delegation with no words heard at all.
+    const { c, sup } = makeCall({ turnText: "a transcription model would have heard this" });
     await c.connect();
     const s = lastSession();
-    const end = await hear(s, c, "mumble");
-    s.push({ type: "session.delegation.created", offset_ms: end + 200, delegation: { id: "item_deleg4", type: "delegation", target: "client" } });
+    s.push({ type: "session.delegation.created", offset_ms: 900, delegation: { id: "item_deleg4", type: "delegation", target: "client" } });
     await until(() => sentOf(s, "session.commentary.append").length > 0, 9000, "the commentary");
-    check("no hand-off without this server's own transcript", !sup.calls.some((x) => x[0] === "send"));
+    check("no words heard: no hand-off", !sup.calls.some((x) => x[0] === "send"));
     const com = sentOf(s, "session.commentary.append")[0];
     check("GPT-Live is given the not-caught line on that delegation", com && com.delegation_id === "item_deleg4" && com.content === desk.linesFor("en").notCaught, JSON.stringify(com));
+    c.close("hung-up");
+  }
+  {
+    // GPT-Live's transcript is the transcription prompt echoed back (what noise turns into): the guard refuses it.
+    const { c, sup, logs } = makeCall({ turnText: "Restart the dashboard." });
+    await c.connect();
+    const s = lastSession();
+    const end = await hear(s, c, voice.TRANSCRIBE_PROMPT);
+    s.push({ type: "session.delegation.created", offset_ms: end + 200, delegation: { id: "item_deleg6", type: "delegation", target: "client" } });
+    await until(() => sentOf(s, "session.commentary.append").length > 0, 9000, "the commentary");
+    check("a transcript that echoes a prompt is refused by the guard: no hand-off (and no transcription model to fall back on)", !sup.calls.some((x) => x[0] === "send") && logs.some((l) => /refused by the transcript guard/.test(l)), logs.filter((l) => /hand-off|guard/.test(l)).join(" | "));
+    const com = sentOf(s, "session.commentary.append")[0];
+    check("  GPT-Live is given the not-caught line", com && com.delegation_id === "item_deleg6" && com.content === desk.linesFor("en").notCaught, JSON.stringify(com));
+    c.close("hung-up");
+  }
+
+  section("a finished request: the detailed summary goes to GPT-Live, line by line, as one result");
+  {
+    const asked = [];
+    const summarise = async (id, o) => {
+      asked.push({ id, o });
+      o.onLine({ text: "The dashboard restarted at 02:14 because a deploy ran.", safe: false });
+      o.onLine({ text: "It has been up for 9 hours since, with 3 services checked and nothing wrong.", safe: false });
+      return { tokens: { text_in: 300, text_out: 40 } };
+    };
+    const { c, sup, rows } = makeCall({ summarise });
+    await c.connect();
+    const s = lastSession();
+    const end = await hear(s, c, "why did the dashboard restart");
+    s.push({ type: "session.delegation.created", offset_ms: end + 200, delegation: { id: "item_deleg7", type: "delegation", target: "client" } });
+    await until(() => c.requests.size > 0, 4000, "the hand-off");
+    const id = [...c.requests.keys()][0];
+    sup.replies.set(id, "## Restart\n\nThe dashboard restarted at 02:14 because a deploy ran.\n\n- odoo: up\n- dashboard: up for 9 hours\n- moni-ai: up\n\nNothing is wrong.");
+    await until(() => sentOf(s, "session.commentary.append").length >= 2, 3000, "the summary's commentary");
+    const coms = sentOf(s, "session.commentary.append").filter((e) => e.delegation_id === "item_deleg7");
+    check("the summariser is asked for the request's reply, with what was asked", asked.length === 1 && asked[0].id === id && /dashboard restart/.test(asked[0].o.request) && Array.isArray(asked[0].o.alreadySaid) && asked[0].o.alreadySaid.length === 0, JSON.stringify(asked.map((a) => a.o.request)));
+    check("each summary line goes to GPT-Live as commentary on the delegation, in order", coms.length === 2 && /02:14/.test(coms[0].content) && /9 hours/.test(coms[1].content), JSON.stringify(coms.map((x) => x.content)));
+    check("  never the details line, never the list itself", !coms.some((x) => /on screen|odoo: up/.test(x.content)));
+    check("  one result window: the second line joins the first", c.resultWin && /02:14/.test(c.resultWin.content) && /9 hours/.test(c.resultWin.content) && /9 hours/.test(c.resultWin.reply), c.resultWin && c.resultWin.content);
+    check("the summary's tokens are recorded (part desk)", rows.some((r) => r.part === "desk"));
     c.close("hung-up");
   }
 

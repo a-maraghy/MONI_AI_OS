@@ -8,7 +8,7 @@
  *   browser speaker ◀──held, guarded PCM── this server ◀── its audio + transcript
  *                                           │  session.delegation.created
  *                                           ▼
- *                     this server's own transcript of the turn ──▶ MINT AI (Claude)
+ *                     GPT-Live's own transcript of the turn ──▶ MINT AI (Claude)
  *                     MINT AI's reply ──▶ session.commentary.append ──▶ spoken by GPT-Live
  *
  * What GPT-Live is (read off OpenAI's docs and tested on the real API,
@@ -28,14 +28,23 @@
  *
  * So this class is LiveCall (lib/voice-live.js) with the upstream leg swapped:
  *
- *   - Hand-offs are unchanged in substance: on a delegation the turn's words
- *     are THIS SERVER'S full-turn transcript of the audio it relayed (the
- *     transcription model, lib/voice-transcribe.js; once more with the
- *     language pinned when it does not read right) -- never GPT-Live's
- *     paraphrase. GPT-Live's own transcript of the turn is only the hint
- *     groundedText already takes from the realtime voice (the language to try
- *     again in, and a marked note). The voiceprint, talk-only speakers, the
- *     stop / undo / yes-no commands and the persona run on the turn as before.
+ *   - Hand-offs: on a delegation the turn's words are GPT-Live's OWN INPUT
+ *     TRANSCRIPT of the turn (session.input_transcript.delta, joined across
+ *     the turns of one request said in pieces: mergeBack) -- since
+ *     2026-10-30, at the administrator's request ("remove the transcription
+ *     for gpt live"). Until then they were this server's full-turn transcript
+ *     (gpt-4o-transcribe) with GPT-Live's only a marked hint; on the real
+ *     calls of 2026-10-29 GPT-Live's transcript read better (English 0 vs
+ *     1.5 % word errors, Arabic 0 vs 2 meaning errors) and two requests it
+ *     had understood were answered "I didn't catch that" while the other
+ *     transcript was waited for. No transcription model is called on a
+ *     GPT-Live call (nothing is billed for one), and no note about another
+ *     transcript goes to MINT AI. The text still passes every check:
+ *     voiceGuard.checkTranscript (echo of a prompt, noise labels, stock
+ *     silence phrases, more words than the audio holds) and refuseAtDoor
+ *     before it is handed over; the voiceprint (on the turn's own audio,
+ *     found by speechSpan), talk-only speakers, the stop / undo / yes-no
+ *     commands and the persona run on the turn as before.
  *   - GPT-Live has no tools: screen actions and status questions are
  *     delegated like everything else, and MINT AI does them (its own
  *     ui_action, through the call's ui ticket).
@@ -71,7 +80,6 @@ const desk = require("./voice-shared");
 const voiceGuard = require("./voice-guard");
 const personaLib = require("./voice-persona");
 const arabic = require("./voice-arabic");
-const heardLib = require("./voice-heard");
 
 const { LiveCall, speakableSentences, RATE } = live;
 
@@ -159,7 +167,7 @@ const INSTRUCTIONS = [
   "- Never say that anything was done, restarted, deleted, fixed, approved, opened or changed, and never promise that it will be, unless a result says so.",
   "- Approvals and decisions are the administrator's to make on the Command Center screen; you cannot approve or deny anything.",
   "- While a result is on its way you may acknowledge briefly (\"On it.\"), make small talk or ask a clarifying question. Never invent progress or findings.",
-  "- When a result arrives, say it in your own words but keep every number, name, time, unit and every \"not\" or \"no\" exactly as given, in the language of the conversation. Add no advice, next steps or offers the result does not contain. If it says the rest is on the screen, say so.",
+  "- When a result arrives, say all of it -- every point, in order, not a shorter version -- in your own words, but keep every number, name, time, unit and every \"not\" or \"no\" exactly as given, in the language of the conversation. Add no advice, next steps or offers the result does not contain. If it says the rest is on the screen, say so.",
 ].join("\n");
 
 function instructionsFor(persona) {
@@ -588,13 +596,12 @@ class GptLiveCall extends LiveCall {
     t.finished = true;
     t.stoppedAt = this.now();
     const text = cur.text.replace(/\s+/g, " ").trim();
-    t.voiceText = text; // GPT-Live's understanding: a hint only (groundedText), never the request
+    t.voiceText = text; // GPT-Live's own transcript of the turn: the request text (groundedText)
     const span = this.speechSpan(t.heardAtMs != null ? t.heardAtMs : this.inputMs, t.endTl != null && t.startTl != null ? t.endTl - t.startTl : 0);
     t.startMs = span.start;
     t.endMs = span.end;
-    t.resolveSession(null); // no session transcript from a transcription model on GPT-Live: the full-turn one grounds
-    this.vpStart(t);
-    if (this.opts.handoff === "turn" && this.d.transcribe && !t.turnP) t.turnP = this.transcribeTurn(t);
+    t.resolveSession(null); // no transcription model on GPT-Live: its own transcript is the turn's text
+    this.vpStart(t); // the voiceprint checks the turn's audio
     this.checkTurn(t, text);
   }
 
@@ -743,9 +750,7 @@ class GptLiveCall extends LiveCall {
     base.endTl = t.endTl;
     base.voiceText = parts.map((x) => x.voiceText || "").join(" ").replace(/\s+/g, " ").trim();
     for (const x of parts.slice(1)) x.dropped = "merged";
-    base.turnText = null;
     base.heardDone = null;
-    if (this.d.transcribe) base.turnP = this.transcribeTurn(base);
     this.diag.merged++;
     this.log(`live: call ${this.id} turns ${base.n}-${t.n} heard as one request`);
     return base;
@@ -778,7 +783,6 @@ class GptLiveCall extends LiveCall {
       if (req) req[1].delegations = (req[1].delegations || []).concat([dg.id]);
       return this.quietNote(dg.id, "This request is already being worked on; its result will come.");
     }
-    if (!t.turnP && this.d.transcribe) t.turnP = this.transcribeTurn(t);
     t.handing = true; // a cut or a "let me check" meanwhile is this request, not another one
     const request = await this.groundedText(t);
     if (this.closed) return;
@@ -808,19 +812,33 @@ class GptLiveCall extends LiveCall {
   }
 
   /**
-   * The hand-off's words are this server's transcript (LiveCall.groundedText). GPT-Live's own transcript
-   * of the same audio is often closer (measured 2026-10-29: it kept "Can you" and «قوللي فاضل» where the
-   * full-turn transcript wrote "You" and «في فالد»), so when the two differ MINT AI is told what the live
-   * voice heard -- marked as such, after the request, never as the request.
+   * The hand-off's words: GPT-Live's own transcript of the turn (t.voiceText), or "" when there is none
+   * or it fails the transcript guard (voiceGuard.checkTranscript, with the turn's length taken as the
+   * longer of the audio span found for it and GPT-Live's own word timings, so a span found short never
+   * makes a real request "too many words") or the door guard. No transcription model, no retry, and no
+   * note about another transcript (LiveCall.groundedText's candidates are the realtime voice's).
    */
   async groundedText(t) {
-    const fresh = !t.heardDone;
-    const text = await super.groundedText(t);
-    if (fresh && text && t.voiceText && !voiceGuard.refuseAtDoor(t.voiceText) && heardLib.differs(text, t.voiceText, 0.97) && !/live voice/.test(t.heardNote || "")) {
-      const v = String(t.voiceText).replace(/\s+/g, " ").trim().slice(0, 400);
-      t.heardNote = ((t.heardNote ? t.heardNote + " " : "") + `[Voice: the live voice's own transcript of the same audio reads «${v}». Speech-to-text may have misheard a word; go by what they most likely said, and if it is unclear ask in one short line.]`).trim();
+    if (t.heardDone != null) return t.heardDone;
+    if (t.dropped) return "";
+    const text = String(t.voiceText || "").replace(/\s+/g, " ").trim();
+    const spanS = t.endMs != null && t.startMs != null ? (t.endMs - t.startMs) / 1000 : 0;
+    const wordsS = t.endTl != null && t.startTl != null ? (t.endTl - t.startTl) / 1000 : 0;
+    const g = voiceGuard.checkTranscript(text, { audioSeconds: Math.max(spanS, wordsS) || null, sources: live.liveSources() });
+    if (!g.ok || voiceGuard.refuseAtDoor(text)) {
+      if (text) this.log(`live: call ${this.id} turn ${t.n} hand-off text refused by the transcript guard (${g.ok ? "echo" : g.rule})`);
+      t.heardDone = "";
+      return "";
     }
-    return text;
+    t.heardNote = null;
+    t.heardFrom = "gpt-live";
+    t.heardDone = text.slice(0, 20000);
+    return t.heardDone;
+  }
+
+  /** No transcription model on GPT-Live: nothing is transcribed (or billed) here. */
+  async transcribeTurn() {
+    return null;
   }
 
   /**
@@ -906,6 +924,21 @@ class GptLiveCall extends LiveCall {
     return null;
   }
 
+  /**
+   * MINT AI's finished reply, to GPT-Live as commentary it says in its own words (each part judged against
+   * exactly that text: newUtterance). Since 2026-10-30 a finished request always gets a DETAILED summary
+   * ("always reading a detailed summary when a delegation is finished"): the Summariser
+   * (lib/voice-shared.js: every key fact and figure in a few sentences, through the summary guard) writes
+   * it and each released line is handed over at once, so GPT-Live starts on the first sentence while the
+   * next is written (~1 s, measured). Not GPT-Live itself: told to summarise a long reply it would decide
+   * what to drop, and its result guard can only check what it says against the text it was given. Kept:
+   *   - a short plain reply is handed over whole (nothing to summarise);
+   *   - part of the reply said while it was written, and the final text goes on the same way: the rest is
+   *     handed over as written when that finishes it, else the summary covers the rest (told what was
+   *     already heard, so it does not repeat it); a final text that differs gets the summary of all of it;
+   *   - no summary (it failed, or there is no summariser): the reply's first sentences, then the details line.
+   * A cut while GPT-Live says it: the verbatim reader reads the summary on from the cut sentence (afterCut).
+   */
   async deliverReply(id, reply, request) {
     const mine = this.requests.get(id);
     if (!mine || mine.answered) return;
@@ -916,26 +949,61 @@ class GptLiveCall extends LiveCall {
     if (st) this.closeStream(st);
     const clean = this.d.redact ? this.d.redact(reply) : reply;
     this.replies.push(reply);
-    let content;
+    const asked = mine.text || request || "";
+    this.firstSpokenFor = { id, at: mine.repliedAt, askedAt: mine.askedAt };
+    let alreadySaid = [];
     if (st && st.read.length) {
       // Part of it was said while it was written: the rest, if the final text goes on the same way.
       const norm = (s) => String(s || "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
       const sents = speakableSentences(clean);
       const same = st.read.every((s, i) => norm(s) === norm(sents[i]));
-      const rest = same ? sents.slice(st.read.length, live.STREAM_MAX_SENTENCES) : [];
-      const more = !same || sents.length > Math.max(st.read.length, live.STREAM_MAX_SENTENCES);
-      content = rest.join(" ") + (more ? " " + this.detailsLine(reply) : "");
-      if (!same) this.log(`live: call ${this.id} request ${id}: the final reply differs from what was said as it was written; only the details line follows`);
-    } else {
-      const sents = speakableSentences(clean);
-      content = sents.slice(0, live.VERBATIM_MAX_SENTENCES).join(" ");
-      if (sents.length > live.VERBATIM_MAX_SENTENCES || /```|\n\s*[-*|#]/.test(reply)) content += " " + this.detailsLine(reply);
-      if (!sents.length) content = this.detailsLine(reply);
+      const listy = /```|\n\s*[-*|#]/.test(reply);
+      if (same && !listy && sents.length <= live.STREAM_MAX_SENTENCES) {
+        const rest = sents.slice(st.read.length).join(" ").trim();
+        if (rest) this.result(this.delegationFor(mine), rest, { id, request: asked, reply: clean });
+        this.log(`live: call ${this.id} request ${id}: result handed to the live voice ${mine.askedAt ? mine.repliedAt - mine.askedAt + " ms after the ask" : ""} (the rest as written)`);
+        return;
+      }
+      if (same) alreadySaid = st.read.slice();
+      else this.log(`live: call ${this.id} request ${id}: the final reply differs from what was said as it was written; the summary of all of it follows`);
     }
-    content = content.trim();
-    this.firstSpokenFor = { id, at: mine.repliedAt, askedAt: mine.askedAt };
-    if (content) this.result(this.delegationFor(mine), content, { id, request: mine.text || request || "", reply: clean });
-    this.log(`live: call ${this.id} request ${id}: result handed to the live voice ${mine.askedAt ? mine.repliedAt - mine.askedAt + " ms after the ask" : ""}`);
+    const parts = [];
+    const give = (text) => {
+      const t = String(text || "").trim();
+      if (!t || this.closed) return;
+      parts.push(t);
+      // The window's `reply` is the summary so far: a cut is read on from it, word for word (afterCut).
+      this.result(this.delegationFor(mine), t, { id, request: asked, reply: parts.join(" ") });
+    };
+    let fallback = !this.d.summarise;
+    const t0 = this.now();
+    if (this.d.summarise) {
+      try {
+        const out = await this.d.summarise(id, {
+          onLine: (l) => {
+            if (!parts.length) this.log(`live: call ${this.id} request ${id}: first summary line ${this.now() - t0} ms after the reply`);
+            give(l.text);
+          },
+          persona: this.persona,
+          request: String(asked),
+          lastSaid: this.heard.length ? this.heard[this.heard.length - 1] : "",
+          alreadySaid,
+        });
+        if (out && out.tokens) this.record({ vt: this.id + "r" + id, part: "desk", model: desk.SUMMARY_MODEL, tokens: out.tokens });
+        if (out && (out.fallback === "verbatim" || out.pending) && !parts.length) fallback = true;
+      } catch (e) {
+        this.log("live: the summary failed: " + live.scrub(e.message));
+        if (!parts.length) fallback = true;
+      }
+    }
+    if (fallback && !this.closed) {
+      const sents = speakableSentences(clean).slice(alreadySaid.length);
+      let content = sents.slice(0, live.VERBATIM_MAX_SENTENCES).join(" ");
+      if (sents.length > live.VERBATIM_MAX_SENTENCES || /```|\n\s*[-*|#]/.test(reply)) content += " " + this.detailsLine(reply);
+      if (!sents.length && !alreadySaid.length) content = this.detailsLine(reply);
+      give(content);
+    }
+    this.log(`live: call ${this.id} request ${id}: result handed to the live voice ${mine.askedAt ? mine.repliedAt - mine.askedAt + " ms after the ask" : ""}${fallback ? " (as written)" : " (detailed summary)"}`);
   }
 
   detailsLine(reply) {
@@ -1161,7 +1229,6 @@ class GptLiveCall extends LiveCall {
       this.log(`live: call ${this.id} turn ${t.n}: the live voice said it would check without delegating; handed to MINT AI here`);
       this.diag.gptlive.madeTrue = (this.diag.gptlive.madeTrue || 0) + 1;
       try {
-        if (!t.turnP && this.d.transcribe) t.turnP = this.transcribeTurn(t);
         const request = await this.groundedText(t);
         if (!request || voiceGuard.refuseAtDoor(request) || t.asked || t.handing || this.closed) return;
         await this.handOver(t, request);

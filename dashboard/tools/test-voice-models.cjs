@@ -183,8 +183,16 @@ mockHttp.on("upgrade", (req, sock, head) => {
     c = await callModel(A);
     const ls = sessions[sessions.length - 1];
     check("  a live call opens {ws}/live/sessions with client delegation, no Origin header", c.status === 101 && c.model === "gpt-live-1" && /\/v1\/live\/sessions$/.test(c.url) && ls.start && ls.start.model === "gpt-live-1" && ls.start.delegation && ls.start.delegation.type === "client" && ls.origin === null, JSON.stringify({ c, start: ls.start && ls.start.model, origin: ls.origin }));
-    r = await s.req("POST", SET + "/options", { cookie: A.cookie, body: form({ _csrf: stok, model: "gpt-realtime-2.1-mini" }) });
-    check("  and back to 2.1 mini", db.getSetting("voice_model") === "gpt-realtime-2.1-mini");
+    check("  the cards offer GPT-Live's 31 voices (Quartz to Noeul with a note that they are GPT-Live's own), each with a play button", (set.body.match(/name="voice" value=/g) || []).length === 31 && /value="quartz"/.test(set.body) && /value="noeul"/.test(set.body) && /id="voice-live-note"/.test(set.body) && (set.body.match(/class="voice-play"/g) || []).length === 31 && /Quartz<\/b><span class="g" title="as OpenAI labels this GPT-Live voice"><i aria-hidden="true">♀<\/i>Female/.test(set.body));
+    r = await s.req("POST", SET + "/options", { cookie: A.cookie, body: form({ _csrf: stok, voice: "quartz" }) });
+    check("  a GPT-Live voice is saved while GPT-Live is the model", r.status === 303 && opts().voice === "quartz", JSON.stringify(opts()));
+    c = await callModel(A);
+    check("  and the GPT-Live session speaks with it", sessions[sessions.length - 1].start && sessions[sessions.length - 1].start.audio.output.voice === "quartz", JSON.stringify(sessions[sessions.length - 1].start && sessions[sessions.length - 1].start.audio));
+    r = await s.req("POST", SET + "/options", { cookie: A.cookie, headers: { Accept: "application/json", "X-Requested-With": "fetch" }, body: form({ _csrf: stok, model: "gpt-realtime-2.1-mini" }) });
+    const back = JSON.parse(r.body);
+    check("  back to 2.1 mini, which cannot use quartz: the voice falls back to its stand-in (marin), the message says so, the page reloads for the new cards", db.getSetting("voice_model") === "gpt-realtime-2.1-mini" && opts().voice === "marin" && back.ok && back.reload === true && /cannot use quartz, so the voice is now marin/.test(back.message), r.body);
+    set = await s.req("GET", SET, { cookie: A.cookie });
+    check("  the cards: the realtime ten again, marin chosen", (set.body.match(/name="voice" value=/g) || []).length === 10 && /<input type="radio" name="voice" value="marin" checked>/.test(set.body));
 
     await s.makeUser("mop", "operator-voice", ["moniai.use", "voice.use", "os.view"]);
     const O = await s.signIn("mop");

@@ -15,8 +15,10 @@
  *   - a cut (the reading failed the verbatim check mid-way) stops what is
  *     playing at once -- a short fade, every scheduled chunk stopped -- and the
  *     fallback's reading plays after it, from a fresh start;
- *   - switching read-aloud off stops the stream playing, aborts the ones
- *     fetched, and nothing more of them plays; the choice is remembered;
+ *   - stopping a reading (Voice.stop: call.interrupt, the Stop control)
+ *     stops the stream playing, aborts the ones fetched, and nothing more of
+ *     them plays; there is no "Read replies aloud" switch any more
+ *     (2026-10-30): a stored mint-read-aloud is ignored;
  *   - the orb's speaking level is the analyser's real output level;
  *   - every sentence carries its voice turn and kind, for the usage figures.
  *
@@ -440,10 +442,10 @@ function boot(opts) {
     check("cut and then skipped: stopped, and the skip is said once (the words are on screen)", ctx.sources[5] && ctx.sources[5].stoppedAt != null && t.toasts.some((m) => /not read aloud/.test(m)) && t.Voice.speaking === false, t.toasts.join("|"));
   }
 
-  section("switching read-aloud off during a stream");
+  section("stopping a reading during a stream");
   {
     const t = boot({ readAloud: true });
-    check("the choice is this browser's, remembered (mint-read-aloud)", t.Voice.speakAll === true && t.sandbox.$("cc-speak-toggle").attrs["aria-pressed"] === "true");
+    check("no read-aloud switch: a stored mint-read-aloud is ignored (removed 2026-10-30)", t.Voice.speakAll === undefined && !/mint-read-aloud|cc-speak-toggle/.test(VOICE_SRC));
     t.Voice.unlock();
     t.Voice.say("A long answer starts here.");
     t.Voice.say("And it goes on.");
@@ -458,11 +460,10 @@ function boot(opts) {
     const ctx = t.ctx();
     ctx.advance(0.1);
     check("speaking the first", t.Voice.speaking === true && ctx.sources.length === 1);
-    t.sandbox.$("cc-speak-toggle").listeners.click[0](); // the speaker button: read-aloud off
+    t.Voice.stop(); // a stop (call.interrupt, Esc)
     await settle();
-    check("switching it off stops what is playing at once", ctx.sources[0].stoppedAt != null && t.Voice.speaking === false && t.Voice.speakAll === false);
+    check("stopping stops what is playing at once", ctx.sources[0].stoppedAt != null && t.Voice.speaking === false);
     check("  and aborts every sentence fetched ahead", a.aborted && b.aborted && c.aborted);
-    check("  and is remembered", t.sandbox.store["mint-read-aloud"] === "0");
     a.push({ type: "audio", pcm: pcm(0.25, 100) });
     await settle();
     ctx.advance(1);
@@ -476,7 +477,7 @@ function boot(opts) {
     const t = boot();
     t.Voice.say("Anything.");
     await settle();
-    check("without the switch (a fresh browser) replies are silent unless asked", t.Voice.speakAll === false);
+    check("typed replies are never read by themselves: only what is asked for (say / a reply's Read aloud)", t.Voice.speakAll === undefined && !/speakAll/.test(SRC));
   }
 
   console.log(`\n${passed} passed, ${failed} failed`);

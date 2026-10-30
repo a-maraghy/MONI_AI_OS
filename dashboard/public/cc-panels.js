@@ -1057,11 +1057,12 @@
     var VU_ROWS = [
       ["live", "Live", "The live conversation: the realtime model's audio in and out, and MINT AI's summaries read into the call"],
       ["direct", "Read aloud", "MINT AI's replies read aloud word for word"],
+      ["sample", "Voice samples", "Settings ▸ Voice: a voice card's play button (each clip is made once and kept)", true],
       ["small_talk", "Small talk", "The old front desk's small talk", true],
       ["snapshot", "Snapshot", "The old front desk's answers from the read-only snapshot", true],
       ["handoff", "Hand-offs", "The old front desk's hand-offs and their spoken summaries", true],
     ];
-    var VU_CAT = { small_talk: "small talk", snapshot: "snapshot answer", handoff: "hand-off", direct: "read aloud", live: "live conversation" };
+    var VU_CAT = { small_talk: "small talk", snapshot: "snapshot answer", handoff: "hand-off", direct: "read aloud", live: "live conversation", sample: "voice sample" };
     function vmoney(n) {
       n = Number(n) || 0;
       if (!n) return "$0";

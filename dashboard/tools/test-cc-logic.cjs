@@ -124,7 +124,7 @@ const paneOf = (k) => {
   return i < 0 ? "" : html.slice(i, j);
 };
 const FILL = {
-  conv: [["cc-steps", "renderSteps"], ["cc-chat", "paintTurn"], ["cc-rc-text", "renderDrawerHead"], ["cc-speak-toggle", "speakBtn"]],
+  conv: [["cc-steps", "renderSteps"], ["cc-chat", "paintTurn"], ["cc-rc-text", "renderDrawerHead"]],
   sessions: [["cc-sessions", "renderSessions"], ["cc-stat-deleg", "renderStats"], ["cc-sess-aside", "renderSessions"]],
   missions: [["cc-mis-tabs", "renderMissions"], ["cc-lanes", "renderMissions"], ["cc-mis-head", "renderMissions"]],
   dec: [["cc-dec-list", "renderDecisions"], ["cc-feed", "renderFeed"], ["cc-evlog", "Event log"]],
@@ -175,7 +175,7 @@ const KEEP = [
   ["voice is live conversation only: the mic starts a call, and during one mutes it (no push to talk, hands-free, Space to talk or front desk)", /LIVE_TIP = "Start a live conversation"/.test(main) && /return LiveUI\.active \? liveMuteToggle\(\) : liveStart\(\);/.test(main) && !/voiceModeFrom|pttDown|desk\/turn|desk\/summary|MODE_KEY/.test(main)],
   ["streamed reader audio (NDJSON PCM chunks)", /Accept: "application\/x-ndjson"/.test(main) && /function playStream\(st, my\)/.test(main)],
   ["barge-in (the live call's interrupt)", /window\.VoiceLive\.interrupt\(\)/.test(main)],
-  ["replies read aloud (toggle, remembered per browser) and the Full reply's Read aloud", /\$\("cc-speak-toggle"\)/.test(main) && /\$\("cc-reply-read"\)\.addEventListener/.test(main) && /READ_KEY = "mint-read-aloud"/.test(main)],
+  ["the Full reply's Read aloud (the replies-aloud toggle was removed 2026-10-30)", !/\$\("cc-speak-toggle"\)/.test(main) && /\$\("cc-reply-read"\)\.addEventListener/.test(main) && !/READ_KEY = "mint-read-aloud"/.test(main)],
   ["Remote Control link (claude.ai only) and Interrupt", /function openRemoteControl\(\)/.test(main) && /function interrupt\(btn\)/.test(main)],
   ["the Ctrl+K palette", /String\(e\.key\)\.toLowerCase\(\) === "k"/.test(panels) && /function openPalette\(q\)/.test(panels)],
   ["the session deep view (5 s refresh, Interrupt / Open in Claude for MINT AI only)", /function openDeep\(key(, opt)?\)/.test(panels) && /data-deep="interrupt"/.test(panels)],

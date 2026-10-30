@@ -126,7 +126,7 @@ const { asset } = ui;
 const { WebSocketServer } = require("ws");
 const voiceGuard = require("./lib/voice-guard");
 const voiceIntake = require("./lib/voice-intake");
-const voiceTranscribe = require("./lib/voice-transcribe"); // which model writes down what was said (Settings ▸ Voice ▸ Transcription)
+const voiceTranscribe = require("./lib/voice-transcribe"); // gpt-4o-transcribe, the one transcription model (realtime voice models only)
 // The spoken "stop listening" command; the same file runs in the browser.
 const voiceStop = require("./public/voice-stop.js");
 const chrome = require("./lib/chrome");
@@ -2572,10 +2572,11 @@ function voiceAllowed(perm) {
  * model that reads replies aloud when it passed the verbatim check
  * (lib/voice.js READER_MODELS; any other choice is read by
  * gpt-realtime-2.1-mini: readerModelFor). What the administrator said is
- * written down by the transcription model chosen under it (the Transcription
- * setting below, since 2026-09-30). A panel setting; the helper's file holds
- * the same reader model and the live session's transcription model, rewritten
- * to match on every save and once at start (migrateVoiceHelperModels).
+ * written down by gpt-4o-transcribe on the realtime models (lib/voice-transcribe.js;
+ * the Transcription setting was removed on 2026-10-30) and by GPT-Live itself on
+ * GPT-Live. A panel setting; the helper's file holds the reader model, the
+ * voice and the live session's transcription model, rewritten to match on every
+ * save and once at start (migrateVoiceHelperModels).
  */
 const VOICE_MODEL_SETTING = "voice_model";
 /**
@@ -2664,9 +2665,10 @@ async function migrateVoiceHelperModels() {
     if (!d || !d.key) return null; // nothing stored yet: the first save writes the pair
     const model = voiceModel();
     const reader = voice.readerModelFor(model);
-    const listen = voiceTranscribe.sessionModelFor(transcription().model);
-    if (d.model === reader && d.transcribe_model === listen) return null;
+    const listen = voiceTranscribe.sessionModelFor();
+    // The voice is kept as chosen when it is one the panel knows (a GPT-Live-only voice included).
     const name = voice.VOICES.includes(d.voice) ? d.voice : voice.DEFAULTS.voice;
+    if (d.model === reader && d.transcribe_model === listen && d.voice === name) return null;
     await priv.voiceOptionsSet(reader, name, listen);
     voiceCache = { at: 0, cfg: null, pending: null };
     console.log(`voice: the helper's voice options became ${reader} / ${name} / ${listen} (were ${String(d.model || "-").slice(0, 40)} / ${String(d.transcribe_model || "-").slice(0, 40)})`);
@@ -2678,59 +2680,13 @@ async function migrateVoiceHelperModels() {
 }
 migrateVoiceModelSetting();
 
-/**
- * Transcription (Settings ▸ Voice ▸ Transcription, 2026-09-30): which model
- * writes down the full turn -- the transcript MINT AI works from -- and the
- * language hint. A panel setting, JSON {model, language}
- * (lib/voice-transcribe.js TRANSCRIBERS / LANGUAGES); nothing stored means
- * gpt-4o-mini-transcribe and "auto", the behaviour before the setting. The live
- * session's own transcription stays on an OpenAI model (sessionModelFor), held
- * in the helper's file as before. A local model runs on this server
- * (moni-voice-whisper.service), started and stopped through the helper.
+/*
+ * Transcription was a Settings choice from 2026-09-30 to 2026-10-30 (setting
+ * "voice_transcription"). It is gpt-4o-transcribe now, fixed
+ * (lib/voice-transcribe.js): a stored value is left in the database and
+ * ignored, so nothing it names can fail. The local whisper.cpp server
+ * (moni-voice-whisper.service) is no longer started from here.
  */
-const VOICE_TRANSCRIPTION_SETTING = "voice_transcription";
-function transcription() {
-  let v = null;
-  try {
-    v = JSON.parse(db.getSetting(VOICE_TRANSCRIPTION_SETTING, "") || "null");
-  } catch (_) {
-    v = null;
-  }
-  return voiceTranscribe.clean(v);
-}
-/** Idempotent: an unreadable or unknown stored value becomes the cleaned one; nothing stored stays nothing (the default). */
-function migrateTranscriptionSetting() {
-  try {
-    const raw = db.getSetting(VOICE_TRANSCRIPTION_SETTING, null);
-    if (raw === null || raw === undefined || raw === "") return null;
-    const now = JSON.stringify(transcription());
-    if (raw === now) return null;
-    db.setSetting(VOICE_TRANSCRIPTION_SETTING, now, "migration");
-    console.log(`voice: the transcription setting ${JSON.stringify(String(raw).slice(0, 60))} became ${now}`);
-    return now;
-  } catch (e) {
-    console.log("voice: could not migrate the transcription setting: " + e.message);
-    return null;
-  }
-}
-migrateTranscriptionSetting();
-/**
- * At start: a local model selected means its server should run (after a
- * reboot the unit is enabled and does already; this covers a stopped one).
- * The helper restarts it only when it is not running or runs another model.
- */
-async function syncLocalTranscriber() {
-  const t = voiceTranscribe.byId(transcription().model);
-  if (!t || t.kind === "openai") return null;
-  try {
-    const st = await priv.voiceWhisperSet(t.model);
-    console.log(`voice: local transcription server ${st && st.active === "active" ? "running" : "not running"} with ${t.model}`);
-    return st;
-  } catch (e) {
-    console.log(`voice: could not start the local transcription server for ${t.id} (turns fall back to ${voiceTranscribe.FALLBACK_MODEL}): ` + priv.redact(String(e.message || e)));
-    return null;
-  }
-}
 /**
  * How live conversation handles the speaker (a panel setting, JSON):
  *   duplex  "speakers" (half-duplex: the microphone is not heard while the
@@ -2840,13 +2796,9 @@ function ndjson(res) {
   };
 }
 
-/** The full-turn transcriber's part of the voice config (lib/voice-transcribe.js reads it). */
-function transcriberCfg(tr) {
-  return { transcriber: tr.model, transcribe_language: tr.language, heard_wait_ms: voiceTranscribe.heardWaitMs(tr.model) };
-}
 /** The fields a live call takes from the voice config (a new call, or a reconnect after a change). */
 function liveCfgOf(cfg) {
-  return { key: cfg.key, voice: cfg.voice, model: cfg.model, live_model: cfg.live_model, transcribe_model: cfg.transcribe_model, transcriber: cfg.transcriber, transcribe_language: cfg.transcribe_language, heard_wait_ms: cfg.heard_wait_ms };
+  return { key: cfg.key, voice: cfg.voice, model: cfg.model, live_model: cfg.live_model, transcribe_model: cfg.transcribe_model };
 }
 
 async function voiceConfig() {
@@ -2856,7 +2808,6 @@ async function voiceConfig() {
     .voiceKeyRead()
     .then((d) => {
       const live = voiceModel();
-      const tr = transcription();
       const cfg = {
         key: d && d.key ? String(d.key) : null,
         // The voice model talks live; it reads aloud too only when it passed the
@@ -2864,18 +2815,17 @@ async function voiceConfig() {
         model: voice.readerModelFor(live),
         live_model: voiceLiveModelId(live),
         voice_model: live,
-        voice: (d && d.voice) || voice.DEFAULTS.voice,
-        // The live session's own transcription: always an OpenAI model.
-        transcribe_model: voiceTranscribe.sessionModelFor(tr.model),
-        ...transcriberCfg(tr),
+        // A voice the voice model cannot use (a GPT-Live voice left from before a change to a realtime model) speaks as its stand-in.
+        voice: voice.standInFor((d && d.voice) || voice.DEFAULTS.voice, live),
+        // The realtime session's own transcription (GPT-Live calls use none).
+        transcribe_model: voiceTranscribe.sessionModelFor(),
       };
       if (voiceCache.pending === pending) voiceCache = { at: Date.now(), cfg, pending: null };
       return cfg;
     })
     .catch((e) => {
       if (voiceCache.pending === pending) voiceCache.pending = null;
-      const tr = transcription();
-      return { key: null, ...voice.DEFAULTS, live_model: voiceLiveModelId(voiceModel()), voice_model: voiceModel(), transcribe_model: voiceTranscribe.sessionModelFor(tr.model), ...transcriberCfg(tr), error: e.message };
+      return { key: null, ...voice.DEFAULTS, live_model: voiceLiveModelId(voiceModel()), voice_model: voiceModel(), transcribe_model: voiceTranscribe.sessionModelFor(), error: e.message };
     });
   voiceCache.pending = pending;
   return pending;
@@ -3111,23 +3061,19 @@ settingsRoutes.sections.voice = async (req, res) => {
   checkVoiceAccess().catch(() => {});
   const [status, cfg] = await Promise.all([voiceSettings(), voiceConfig()]);
   const test = req.query.test ? { ok: req.query.test === "ok", text: String(req.query.t || "").slice(0, 600) } : null;
-  const persona = personaOf(req.me.id);
+  const vmodel = cfg.voice_model || cfg.live_model;
   return {
     body: voiceSettingsViews.body({
       csrf: res.locals.csrf,
       on,
       status: status.error ? { configured: !!cfg.key } : status,
-      model: cfg.voice_model || cfg.live_model,
+      model: vmodel,
       models: voice.VOICE_MODELS,
       access: voiceModelAccess(),
       voice: cfg.voice,
-      voices: voice.VOICES,
+      // The cards offer what the voice model can use (GPT-Live 31, the realtime models 10).
+      voices: voice.voicesFor(vmodel),
       meta: voice.VOICE_META,
-      transcribe: cfg.transcribe_model,
-      transcription: transcription(),
-      transcribers: voiceTranscribe.TRANSCRIBERS,
-      languages: voiceTranscribe.LANGUAGES,
-      persona: { ...voicePersona.describe(persona), mode: persona.mode, preset: persona.preset },
       liveAudio: liveAudio(),
       test,
       voiceprint: await voiceprintView(req.me),
@@ -3146,7 +3092,7 @@ settingsRoutes.marks.push(async () => ({ voice: voiceEnabled() ? "on" : "off" })
  * The desk switch is gone: its POST lands on the section with a note.
  */
 app.get("/credentials/openai-voice", requireAuth, (req, res) => res.redirect(302, "/mint-ai/settings/voice"));
-for (const k of ["key", "clear", "test", "options", "persona", "persona/reset", "live-audio", "transcription"]) {
+for (const k of ["key", "clear", "test", "options", "persona", "live-audio"]) {
   app.post("/credentials/openai-voice/" + k, (req, res) => res.redirect(308, "/mint-ai/settings/voice/" + k));
 }
 app.post("/credentials/openai-voice/desk", requireAuth, (req, res) =>
@@ -3202,18 +3148,41 @@ app.post("/mint-ai/settings/voice/clear", ...voiceGuardSettings, async (req, res
  * confirmed voice.set from the Command Center posts the voice. The voice model
  * is the panel's setting (the live call); the helper keeps the reader's
  * model (readerModelFor: the same model when verified, else 2.1 mini), the voice and the live session's transcription
- * model (from the Transcription setting: sessionModelFor). A `transcribe_model`
- * field (an older page) is ignored: transcription has its own row and route.
+ * model (gpt-4o-transcribe: sessionModelFor). A `transcribe_model` or
+ * `transcriber` field (an older page) is ignored: there is one transcription model.
+ *
+ * The voices depend on the model (lib/voice.js voicesFor): a voice posted for a
+ * model that cannot use it is refused; a model change that leaves the stored
+ * voice unusable stores its stand-in (standInFor: same presentation), says so,
+ * and reloads the section so the cards show the new model's voices.
  */
 app.post("/mint-ai/settings/voice/options", ...voiceGuardSettings, async (req, res) => {
   const cur = await voiceConfig();
   const has = (k) => typeof (req.body && req.body[k]) === "string" && req.body[k] !== "";
   const vmodel = has("model") ? field(req.body, "model") : cur.voice_model || voiceModel();
-  const name = has("voice") ? field(req.body, "voice") : cur.voice;
   const entry = voice.VOICE_MODELS.find((m) => m.id === vmodel);
+  // The voice as stored in the helper's file (cur.voice may already be a stand-in for the current model).
+  let storedVoice = cur.voice;
+  try {
+    const d = await priv.voiceKeyRead();
+    if (d && voice.VOICES.includes(d.voice)) storedVoice = d.voice;
+  } catch (_) {
+    /* the cached one */
+  }
+  let name = has("voice") ? field(req.body, "voice") : storedVoice;
   if (!entry || !voice.VOICES.includes(name)) {
     return voiceReply(req, res, { err: "Pick a voice model and a voice from the lists.", anchor: has("model") ? "v-model" : "v-voice" });
   }
+  if (has("voice") && !voice.voicesFor(vmodel).includes(name)) {
+    return voiceReply(req, res, { err: `${entry.label} cannot speak with ${name}: that voice is GPT-Live's own. Pick one of the voices shown.`, anchor: "v-voice" });
+  }
+  // A model that cannot use the stored voice: its stand-in, said in the reply.
+  let swapped = null;
+  if (!voice.voicesFor(vmodel).includes(name)) {
+    swapped = { from: name, to: voice.standInFor(name, vmodel) };
+    name = swapped.to;
+  }
+  const cardsChange = has("model") && voice.voicesFor(vmodel).length !== voice.voicesFor(cur.voice_model || voiceModel()).length;
   // A gated model is saved only when the key's model list carries it (checked
   // again now unless the answer is under VOICE_ACCESS_RECHECK_MS old), so a live call never
   // starts on a model OpenAI will refuse.
@@ -3231,7 +3200,7 @@ app.post("/mint-ai/settings/voice/options", ...voiceGuardSettings, async (req, r
   if (lock) return voiceReply(req, res, { err: "A voice change is waiting for a confirm on the Command Center; answer that first.", anchor: "v-voice" });
   try {
     const reader = voice.readerModelFor(vmodel);
-    const listen = voiceTranscribe.sessionModelFor(transcription().model);
+    const listen = voiceTranscribe.sessionModelFor();
     await priv.voiceOptionsSet(reader, name, listen);
     // Compared with what is stored too: a stored gated model that is out of reach reads as the default.
     const stored = db.getSetting(VOICE_MODEL_SETTING, "") || "";
@@ -3241,35 +3210,33 @@ app.post("/mint-ai/settings/voice/options", ...voiceGuardSettings, async (req, r
     voiceGreet.delete(req.me.username);
     // Open live calls reconnect with the new settings and go on; the one whose confirm this is says a line in it.
     voiceReconnect(greet).catch(() => {});
-    db.logLogin(req.ip, req.me.username, "voice", `voice settings ${vmodel} (live; read-aloud ${reader}; the call's own transcription ${listen}) / ${name}${voiceLive.activeCount() ? ` (${voiceLive.activeCount()} live call(s) reconnect with it)` : ""}`);
-    const what = has("model") && !has("voice") ? `Voice model: ${vmodel}.${reader !== vmodel ? ` Replies are read aloud by ${reader}, which reads word for word.` : ""}` : has("voice") && !has("model") ? `Voice: ${name}.` : "Voice settings saved.";
-    voiceReply(req, res, { msg: what, anchor: has("model") && !has("voice") ? "v-model" : "v-voice" });
+    db.logLogin(req.ip, req.me.username, "voice", `voice settings ${vmodel} (live; read-aloud ${reader}; the call's own transcription ${listen}) / ${name}${swapped ? ` (stand-in for ${swapped.from}, which ${vmodel} cannot use)` : ""}${voiceLive.activeCount() ? ` (${voiceLive.activeCount()} live call(s) reconnect with it)` : ""}`);
+    const what =
+      (has("model") && !has("voice") ? `Voice model: ${vmodel}.${reader !== vmodel ? ` Replies are read aloud by ${reader}, which reads word for word.` : ""}` : has("voice") && !has("model") ? `Voice: ${name}.` : "Voice settings saved.") +
+      (swapped ? ` ${entry.label} cannot use ${swapped.from}, so the voice is now ${swapped.to}.` : "");
+    voiceReply(req, res, { msg: what, anchor: has("model") && !has("voice") ? "v-model" : "v-voice", reload: cardsChange || !!swapped });
   } catch (e) {
     voiceReply(req, res, { err: e.message, anchor: "v-voice" });
   }
 });
 
 /*
- * The voice persona: learned from speech, or chosen here from a fixed list of
- * presets (lib/voice-persona.js PRESETS) -- never typed. A choice is kept until
- * it is changed here or reset; speech never overrides it. Reset forgets it and
- * learns again. Per user (the scope "you").
+ * The voice persona, set by a confirmed persona.set from the Command Center (a
+ * screen action MINT AI's voice may ask for): a preset from a fixed list
+ * (lib/voice-persona.js PRESETS) or "learned" -- never typed. The Settings row
+ * ("Arabic", with its Reset) was removed on 2026-10-30 at the administrator's
+ * request; without a choice the persona is learned from how they speak. Per
+ * user.
  */
 app.post("/mint-ai/settings/voice/persona", ...voiceGuardSettings, (req, res) => {
   const preset = field(req.body, "preset");
   const p = voicePersona.choose(preset);
-  if (!p) return voiceReply(req, res, { err: "Choose one of the voice personas.", anchor: "v-persona" });
+  if (!p) return voiceReply(req, res, { err: "Choose one of the voice personas." });
   const was = voicePersona.describe(personaOf(req.me.id));
   db.setVoicePersona(req.me.id, p.mode === "explicit" ? JSON.stringify(p) : "");
   const now = voicePersona.describe(p);
   db.logLogin(req.ip, req.me.username, "voice", `voice persona set to "${now.choice}" (was "${was.choice}")`);
-  voiceReply(req, res, { msg: p.mode === "explicit" ? `Voice persona: ${now.choice}. Arabic replies use it from the next utterance; English stays English.` : "Voice persona: learned from how you speak again.", anchor: "v-persona" });
-});
-
-app.post("/mint-ai/settings/voice/persona/reset", ...voiceGuardSettings, (req, res) => {
-  db.setVoicePersona(req.me.id, "");
-  db.logLogin(req.ip, req.me.username, "voice", "reset the voice persona (back to learning from speech; register and self-gender forgotten)");
-  voiceReply(req, res, { msg: "Voice persona reset. It is learned again from how you speak.", anchor: "v-persona", reload: true });
+  voiceReply(req, res, { msg: p.mode === "explicit" ? `Voice persona: ${now.choice}. Arabic replies use it from the next utterance; English stays English.` : "Voice persona: learned from how you speak again." });
 });
 
 /** Speaker handling and noise reduction (each row posts its own field; the other is kept). */
@@ -3286,59 +3253,8 @@ app.post("/mint-ai/settings/voice/live-audio", ...voiceGuardSettings, (req, res)
 });
 
 /**
- * Transcription: which model writes down the full turn, and the language hint
- * (each row posts its own field; the other is kept). A local model is started
- * through the helper first -- refused, and nothing saved, when it is not
- * installed; going back to an OpenAI model stops the local server. The live
- * session's own transcription model (always OpenAI's) is written to the
- * helper's file, and open calls reconnect with it.
- */
-app.post("/mint-ai/settings/voice/transcription", ...voiceGuardSettings, async (req, res) => {
-  const was = transcription();
-  const has = (k) => typeof (req.body && req.body[k]) === "string" && req.body[k] !== "";
-  const want = voiceTranscribe.clean({ model: has("transcriber") ? field(req.body, "transcriber") : was.model, language: has("language") ? field(req.body, "language") : was.language });
-  if ((has("transcriber") && want.model !== field(req.body, "transcriber")) || (has("language") && want.language !== field(req.body, "language"))) {
-    return voiceReply(req, res, { err: "Pick a transcription model and a language from the lists.", anchor: "v-transcribe" });
-  }
-  // The whisper.cpp models on this server were retired from the list (2026-10-25): only OpenAI's may be picked.
-  if (has("transcriber") && want.model !== was.model && voiceTranscribe.byId(want.model).kind !== "openai") {
-    return voiceReply(req, res, { err: "Pick a transcription model from the list.", anchor: "v-transcribe" });
-  }
-  const t = voiceTranscribe.byId(want.model);
-  const before = voiceTranscribe.byId(was.model);
-  let note = "";
-  try {
-    if (t.kind !== "openai") {
-      const st = await priv.voiceWhisperSet(t.model);
-      note = st && st.active === "active" ? " Its server is running on this machine." : " Its server is starting.";
-    } else if (before && before.kind !== "openai") {
-      await priv.voiceWhisperSet("off").catch((e) => {
-        note = " The local server could not be stopped: " + priv.redact(String(e.message || e));
-      });
-    }
-  } catch (e) {
-    return voiceReply(req, res, { err: `${t.label} cannot be used: ${priv.redact(String(e.message || e))}`, anchor: "v-transcribe" });
-  }
-  db.setSetting(VOICE_TRANSCRIPTION_SETTING, JSON.stringify(want), req.me.username);
-  const listen = voiceTranscribe.sessionModelFor(want.model);
-  try {
-    // The helper's file, not the cached config (which already reads the new setting).
-    const d = await priv.voiceKeyRead();
-    if (d && d.key && d.transcribe_model !== listen) await priv.voiceOptionsSet(voice.readerModelFor(voiceModel()), voice.VOICES.includes(d.voice) ? d.voice : voice.DEFAULTS.voice, listen);
-  } catch (e) {
-    console.log("voice: could not store the live session's transcription model: " + priv.redact(String(e.message || e)));
-  }
-  voiceForget("reconnect");
-  voiceReconnect(null).catch(() => {});
-  db.logLogin(req.ip, req.me.username, "voice", `transcription ${want.model} (${t.kind === "openai" ? "OpenAI" : "on this server"}), language ${want.language}; the call's own transcription ${listen} (was ${was.model}, ${was.language})`);
-  const lang = (voiceTranscribe.LANGUAGES.find(([v]) => v === want.language) || [])[1] || want.language;
-  const msg = has("transcriber") && !has("language") ? `Transcription: ${t.label}.${note}` : has("language") && !has("transcriber") ? `Transcription language: ${lang}.` : `Transcription saved.${note}`;
-  voiceReply(req, res, { msg, anchor: "v-transcribe" });
-});
-
-/**
  * Test: one short line spoken by the voice model -- the reader MINT AI's
- * replies are read with -- and transcribed back by its paired listening model.
+ * replies are read with -- and transcribed back by gpt-4o-transcribe.
  * A real call; a passing Test shows the model reads aloud word for word.
  */
 app.post("/mint-ai/settings/voice/test", ...voiceGuardSettings, async (req, res) => {
@@ -3363,6 +3279,74 @@ app.post("/mint-ai/settings/voice/test", ...voiceGuardSettings, async (req, res)
   db.logLogin(req.ip, req.me.username, "voice", "tested the OpenAI voice key: " + (ok ? "ok" : "failed"));
   if (settingsRoutes.wantsJson(req)) return voiceReply(req, res, ok ? { msg: "Test passed. " + text } : { err: "Test failed. " + text });
   res.redirect(303, "/mint-ai/settings/voice?test=" + (ok ? "ok" : "fail") + "&t=" + encodeURIComponent(text) + "#v-main");
+});
+
+/**
+ * A voice card's play button (Settings ▸ Voice): a very short line in THAT
+ * voice, spoken by the voice model that holds the call -- GPT-Live for its own
+ * voices and the ten it shares, the realtime model otherwise -- so it sounds as
+ * the voice does on a call. It neither selects the voice nor touches the form.
+ * Each clip is made once per (model, voice, line) and kept on disk
+ * (VOICE_SAMPLE_DIR, 0600 files), so a repeat play costs nothing; a made clip's
+ * spend is recorded (voice_usage, category "sample"). Refused while voice is
+ * off, without a key, or for a voice the current model cannot use.
+ * Returns audio/wav.
+ */
+const VOICE_SAMPLE_LINE = "Hi, I'm MINT AI.";
+const VOICE_SAMPLE_DIR = path.join(DATA_DIR, "voice-samples");
+const voiceSampleMaking = new Map(); // file -> promise, so two clicks make one clip
+function voiceSampleFile(model, name) {
+  const h = crypto.createHash("sha256").update(VOICE_SAMPLE_LINE).digest("hex").slice(0, 10);
+  return path.join(VOICE_SAMPLE_DIR, `${String(model).replace(/[^a-z0-9.-]/gi, "_")}__${name}__${h}.wav`);
+}
+app.post("/mint-ai/settings/voice/sample", ...voiceGuardSettings, async (req, res) => {
+  const fail = (status, error, code) => res.status(status).json({ ok: false, error, code });
+  if (!voiceEnabled()) return fail(409, "Voice is off. Switch it on to hear a sample.", "voice-off");
+  const cfg = await voiceConfig();
+  if (!cfg.key) return fail(503, "Add an OpenAI key first.", "no-key");
+  const vmodel = cfg.voice_model || voiceModel();
+  const name = field(req.body, "voice");
+  if (!voice.voicesFor(vmodel).includes(name)) return fail(400, "That voice is not offered for the current voice model.", "invalid");
+  // GPT-Live speaks the sample itself (its listed id); a realtime model likewise.
+  const model = cfg.live_model || vmodel;
+  const file = voiceSampleFile(model, name);
+  try {
+    const wav = fs.readFileSync(file);
+    res.setHeader("Cache-Control", "no-store");
+    return res.type("audio/wav").send(wav);
+  } catch (_) {
+    /* not made yet */
+  }
+  let making = voiceSampleMaking.get(file);
+  if (!making) {
+    making = (async () => {
+      const out = await voice.speak(VOICE_SAMPLE_LINE, { key: cfg.key, model, voice: name, attempts: 2, fallback: false, noCache: true, timeoutMs: 20000 });
+      const vt = ("smp_" + name).slice(0, 48);
+      // A realtime reading reports its tokens; GPT-Live is billed by session time.
+      if (voice.protocolFor(model) === "live") recordVoice(() => voiceLedger.add({ vt, cat: "sample", part: "speech", model: "gpt-live-1", tokens: { seconds: Math.round(out.ms) / 1000 }, actor: req.me.username }).usd);
+      else recordSpeech({ vt, cat: "sample", actor: req.me.username, billing: out.billing, lateBilling: out.lateBilling });
+      fs.mkdirSync(VOICE_SAMPLE_DIR, { recursive: true, mode: 0o700 });
+      fs.writeFileSync(file + ".tmp", out.wav, { mode: 0o600 });
+      fs.renameSync(file + ".tmp", file);
+      voiceLog("sample", "ok", { model, voice: name, ms: out.ms, attempts: out.attempts, bytes: out.wav.length });
+      return out.wav;
+    })();
+    voiceSampleMaking.set(file, making);
+    making.then(
+      () => voiceSampleMaking.delete(file),
+      () => voiceSampleMaking.delete(file)
+    );
+  }
+  try {
+    const wav = await making;
+    res.setHeader("Cache-Control", "no-store");
+    res.type("audio/wav").send(wav);
+  } catch (e) {
+    for (const b of (e && e.billing) || []) recordVoice(() => voiceLedger.add({ vt: ("smp_" + name).slice(0, 48), cat: "sample", part: "speech", model: b.model, tokens: b.tokens, actor: req.me.username }).usd);
+    voiceLog("sample", "failed", { model, voice: name, code: e.code, why: e.message });
+    const msg = e.code === "unfaithful" ? "The voice did not say the sample line as written. Try again." : priv.redact(voice.scrub(e.message || "The sample could not be made."));
+    fail(e.code === "timeout" ? 504 : 502, msg, e.code || "error");
+  }
 });
 
 /* ---------------------------------------------------------- credentials --- */
@@ -6131,7 +6115,9 @@ function liveConnected(ws, { me, cfg, ip, duplex, noise, route, tab, canVoice, s
     hearPersona: (text) => personaHear({ userId: me.id, username: actor, ip }, text),
     audit: (line) => db.logLogin(ip, actor, "mint-ui", line),
     speak: voice.speakStream,
-    transcribe: voiceTranscribe.transcribeFull, // the full-turn transcript: the selected model (a local one falls back to OpenAI)
+    // The full-turn transcript (gpt-4o-transcribe), on the realtime models only: on GPT-Live, GPT-Live's own
+    // input transcript is the request (lib/voice-gptlive.js), and no transcription model is called.
+    transcribe: Call === voiceGptLive.GptLiveCall ? null : voiceTranscribe.transcribeFull,
     summarise: (id, o) => voiceShared.summariserFor(actor, cfg, moniCall, { log: (m) => console.log(m) }).summarise(id, o),
     record: (row) => recordVoice(() => voiceLedger.add(row).usd),
     isStop: (t) => voiceStop.heard(t),
@@ -6258,8 +6244,6 @@ const httpServer = app.listen(PORT, BIND, () => {
   migrateVoiceHelperModels();
   // Which voice models the key reaches (GPT-4o Mini Realtime is offered only when listed).
   checkVoiceAccess({ force: true }).catch(() => {});
-  // A local transcription model selected: make sure its server runs.
-  syncLocalTranscriber();
 });
 // A computer's link (lib/routes-machines.js) or the live conversation.
 httpServer.on("upgrade", (req, socket, head) => (machineLink.isLink(req) ? machineLink.upgrade(req, socket, head) : liveUpgrade(req, socket, head)));

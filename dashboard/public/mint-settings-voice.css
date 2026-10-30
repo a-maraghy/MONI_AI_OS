@@ -6,10 +6,28 @@
 .set-sec .row.full .rc > .voice-form { flex: 1 1 auto; width: 100%; }
 .voice-form .voice-cards { flex: 1 1 auto; width: 100%; }
 .voice-card .top { width: 100%; }
+/* A voice card and its play button (voiceCard): the button sits beside the radio label, over its right edge. */
+.voice-slot { position: relative; display: flex; min-width: 0; }
+.voice-slot .voice-card { flex: 1 1 auto; min-width: 0; padding-right: 44px; }
+.voice-play { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); width: 30px; height: 30px; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 1px solid var(--line-strong); border-radius: 50%; background: var(--panel); color: var(--ink); cursor: pointer; }
+.voice-play:hover:not(:disabled) { border-color: var(--accent-2); color: var(--accent-2); }
+.voice-play:focus-visible { outline: 2px solid var(--accent-2); outline-offset: 2px; }
+.voice-play:disabled { opacity: .45; cursor: default; }
+.voice-play svg { display: block; }
+.voice-play .vp-i-stop { display: none; }
+.voice-play[data-state="playing"] { border-color: var(--accent-2); background: var(--accent-soft); color: var(--accent-2); }
+.voice-play[data-state="playing"] .vp-i-play { display: none; }
+.voice-play[data-state="playing"] .vp-i-stop { display: inline-flex; }
+.voice-play[data-state="loading"] { border-color: var(--line); border-top-color: var(--accent-2); animation: voice-play-spin .8s linear infinite; }
+.voice-play[data-state="loading"] .vp-i-play { opacity: .35; }
+@keyframes voice-play-spin { to { transform: translateY(-50%) rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .voice-play[data-state="loading"] { animation: none; border-style: dashed; } }
+.voice-sample-msg { margin: 8px 0 0; color: var(--bad); }
+.voice-play[hidden] { display: none; }
 .hero-sw .hs-form { flex: none; }
 .set-sec #v-main .row .rc select, .set-sec .dep-hide .row .rc select { width: min(360px, 100%); }
 .keybox .set-form.inline, .row .set-form.inline { display: inline-flex; }
-/* Transcription: the selector and the chosen model's measured figures under it. */
+/* The voice model: the selector and the chosen model's facts under it. */
 .tr-pick { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; width: min(360px, 100%); }
 .tr-pick .set-form, .tr-pick select { width: 100%; }
 .tr-hint { color: var(--muted); font-size: 13px; line-height: 1.35; text-align: right; }

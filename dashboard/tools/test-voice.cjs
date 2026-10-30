@@ -696,12 +696,12 @@ st = os.stat(H.VOICE_FILE); dst = os.stat(H.VOICE_DIR)
 res["mode"] = oct(st.st_mode & 0o777); res["dirmode"] = oct(dst.st_mode & 0o777); res["uid"] = st.st_uid
 res["status1"] = call("voice-status")
 res["read"] = call("voice-key-read")
-res["opt_bad"] = call("voice-options-set", ["gpt-4o", "marin", "gpt-4o-mini-transcribe"])
+res["opt_bad"] = call("voice-options-set", ["gpt-4o", "marin", "gpt-4o-transcribe"])
 res["opt_bad2"] = call("voice-options-set", ["gpt-realtime", "Marin;rm", "gpt-4o-mini-transcribe"])
-res["opt_4o"] = call("voice-options-set", ["gpt-4o-mini-realtime-preview", "marin", "gpt-4o-mini-transcribe"])
-res["opt_4o_snap"] = call("voice-options-set", ["gpt-4o-mini-realtime-preview-2024-12-17", "marin", "gpt-4o-mini-transcribe"])
-res["opt_mini"] = call("voice-options-set", ["gpt-realtime-mini", "marin", "gpt-4o-mini-transcribe"])
-res["opt_4o_tr"] = call("voice-options-set", ["gpt-4o-mini-transcribe", "marin", "gpt-4o-mini-transcribe"])
+res["opt_4o"] = call("voice-options-set", ["gpt-4o-mini-realtime-preview", "marin", "gpt-4o-transcribe"])
+res["opt_4o_snap"] = call("voice-options-set", ["gpt-4o-mini-realtime-preview-2024-12-17", "marin", "gpt-4o-transcribe"])
+res["opt_mini"] = call("voice-options-set", ["gpt-realtime-mini", "marin", "gpt-4o-transcribe"])
+res["opt_4o_tr"] = call("voice-options-set", ["gpt-4o-mini-transcribe", "marin", "gpt-4o-transcribe"])
 res["opt_ok"] = call("voice-options-set", ["gpt-live-1", "cedar", "gpt-4o-transcribe"])
 res["status2"] = call("voice-status")
 res["file_after_opts"] = open(H.VOICE_FILE).read()
@@ -759,21 +759,21 @@ function viewTests() {
   const on = views.page({ csrf: "c", user, voice: { configured: true, manage: true, voice: "marin", model: "gpt-realtime-2.1-mini", on: true, use: true, live: true } });
   check("with a key and voice on: the mic starts a live call, OpenAI and the voice named, no setup prompt",
     /id="cc-c-mic"[^>]*title="Start a live conversation"/.test(on) && /data-voice-ready="1"/.test(on) && />OpenAI</.test(on) && />marin</.test(on) && !/cc-voice-off/.test(on) &&
-    /id="cc-speak-toggle"/.test(on) && !/id="cc-mic-off"/.test(on));
+    !/id="cc-speak-toggle"/.test(on) && /id="cc-reply-read"/.test(on) && !/id="cc-mic-off"/.test(on));
   check("no Whisper or Piper left on the page", !/Whisper|Piper/i.test(on + off));
 
   check("the classic chat's view is gone (removed 2026-10-25)", !fs.existsSync(path.join(ROOT, "lib", "views-console.js")));
 
   const SV = require(path.join(ROOT, "lib", "views-settings-voice.js"));
-  const sv = (o) => SV.body(Object.assign({ csrf: "c", on: true, status: { configured: true }, model: "gpt-realtime-2.1-mini", models: voice.VOICE_MODELS, voice: "marin", voices: voice.VOICES, meta: voice.VOICE_META, transcribe: voice.listenModelFor("gpt-realtime-2.1-mini"), persona: { mode: "learned" }, liveAudio: {}, usage: null }, o || {}));
+  const sv = (o) => SV.body(Object.assign({ csrf: "c", on: true, status: { configured: true }, model: "gpt-realtime-2.1-mini", models: voice.VOICE_MODELS, voice: "marin", voices: voice.voicesFor("gpt-realtime-2.1-mini"), meta: voice.VOICE_META, liveAudio: {}, usage: null }, o || {}));
   const page = sv();
   check("Settings ▸ Voice: the key is masked (not even its last four), with Replace, Remove and Test", /class="kv-mask"/.test(page) && /class="state ok"[\s\S]{0,200}?Set</.test(page) && !/good/.test(page) && /data-modal-open="m-voice-token"/.test(page) && /id="voice-remove"/.test(page) && /id="voice-test"/.test(page));
   check("Settings ▸ Voice: the key field is a write-only password input, empty, in a dialog", /<section class="cc-modal os narrow" id="m-voice-token"[^>]* hidden>/.test(page) && /<input name="value" type="password"[^>]*required/.test(page) && !/value="sk-/.test(page));
   const modelSelect = (page.match(/<select name="model"[\s\S]*?<\/select>/) || [""])[0];
-  check("Settings ▸ Voice: four voice models (2.1 mini selected; GPT-Live listed, not checked yet), the transcription selector beside it (no old transcribe_model field), the voice cards, current one selected",
-    /<option value="gpt-realtime-2\.1-mini" data-hint="[^"]*" selected>GPT Realtime 2\.1 mini \(current\)</.test(modelSelect) && (modelSelect.match(/<option /g) || []).length === 4 && /<option value="gpt-live-1" data-hint="Not checked[^"]*" disabled>GPT-Live \+ MINT AI \(not checked yet\)</.test(modelSelect) && !/name="transcribe_model"/.test(page) && /<select name="transcriber"/.test(page) && /<code>gpt-4o-mini-transcribe<\/code>/.test(page) && /<input type="radio" name="voice" value="marin" checked>/.test(page) && (page.match(/name="voice" value=/g) || []).length === voice.VOICES.length);
-  check("the voice models: 2.1 mini, gpt-realtime-mini, GPT-4o Mini Realtime and GPT-Live (gated); only 2.1 mini reads aloud, anything else reads with it; listening is its fixed pair",
-    voice.VOICE_MODELS.map((m) => m.id).join() === "gpt-realtime-2.1-mini,gpt-realtime-mini,gpt-4o-mini-realtime-preview,gpt-live-1" && voice.VOICE_MODEL_DEFAULT === "gpt-realtime-2.1-mini" && voice.VOICE_MODELS.filter((m) => m.gated).map((m) => m.id).join() === "gpt-4o-mini-realtime-preview,gpt-live-1" && voice.READER_MODELS.join() === "gpt-realtime-2.1-mini" && voice.readerModelFor("gpt-realtime-2.1-mini") === "gpt-realtime-2.1-mini" && voice.readerModelFor("gpt-realtime-mini") === "gpt-realtime-2.1-mini" && voice.readerModelFor("gpt-4o-mini-realtime-preview") === "gpt-realtime-2.1-mini" && voice.readerModelFor("gpt-live-1") === "gpt-realtime-2.1-mini" && voice.listenModelFor("gpt-realtime-2.1-mini") === "gpt-4o-mini-transcribe" && voice.DEFAULTS.model === "gpt-realtime-2.1-mini" && voice.DEFAULTS.transcribe_model === "gpt-4o-mini-transcribe" && voice.TRANSCRIBE_MODELS === undefined);
+  check("Settings ▸ Voice: four voice models (2.1 mini selected; GPT-Live listed, not checked yet), no transcription selector (2026-10-30), the model's ten voice cards, current one selected",
+    /<option value="gpt-realtime-2\.1-mini" data-hint="[^"]*" selected>GPT Realtime 2\.1 mini \(current\)</.test(modelSelect) && (modelSelect.match(/<option /g) || []).length === 4 && /<option value="gpt-live-1" data-hint="Not checked[^"]*" disabled>GPT-Live \+ MINT AI \(not checked yet\)</.test(modelSelect) && !/name="transcribe_model"/.test(page) && !/<select name="transcriber"/.test(page) && !/transcribe/.test(page.replace(/gpt-4o-transcribe/g, "")) && /<input type="radio" name="voice" value="marin" checked>/.test(page) && (page.match(/name="voice" value=/g) || []).length === 10);
+  check("the voice models: 2.1 mini, gpt-realtime-mini, GPT-4o Mini Realtime and GPT-Live (gated); only 2.1 mini reads aloud, anything else reads with it; listening is gpt-4o-transcribe",
+    voice.VOICE_MODELS.map((m) => m.id).join() === "gpt-realtime-2.1-mini,gpt-realtime-mini,gpt-4o-mini-realtime-preview,gpt-live-1" && voice.VOICE_MODEL_DEFAULT === "gpt-realtime-2.1-mini" && voice.VOICE_MODELS.filter((m) => m.gated).map((m) => m.id).join() === "gpt-4o-mini-realtime-preview,gpt-live-1" && voice.READER_MODELS.join() === "gpt-realtime-2.1-mini" && voice.readerModelFor("gpt-realtime-2.1-mini") === "gpt-realtime-2.1-mini" && voice.readerModelFor("gpt-realtime-mini") === "gpt-realtime-2.1-mini" && voice.readerModelFor("gpt-4o-mini-realtime-preview") === "gpt-realtime-2.1-mini" && voice.readerModelFor("gpt-live-1") === "gpt-realtime-2.1-mini" && voice.listenModelFor("gpt-realtime-2.1-mini") === "gpt-4o-transcribe" && voice.DEFAULTS.model === "gpt-realtime-2.1-mini" && voice.DEFAULTS.transcribe_model === "gpt-4o-transcribe" && voice.TRANSCRIBE_MODELS === undefined);
   check("the options carry the facts: 18/18 + Arabic OK; 14/18, Arabic in English, retires 20 Jan 2027, read by 2.1 mini; 4o: read by 2.1 mini",
     /18\/18/.test(voice.VOICE_MODELS[0].hint) && /Arabic in Arabic/.test(voice.VOICE_MODELS[0].hint) && /14\/18/.test(voice.VOICE_MODELS[1].hint) && /Arabic in English/.test(voice.VOICE_MODELS[1].hint) && /20 Jan 2027/.test(voice.VOICE_MODELS[1].hint) && /read aloud by 2\.1 mini/.test(voice.VOICE_MODELS[1].hint) && /read aloud by 2\.1 mini/.test(voice.VOICE_MODELS[2].hint) &&
     /<option value="gpt-realtime-mini" data-hint="[^"]*14\/18[^"]*20 Jan 2027[^"]*">GPT Realtime mini</.test(modelSelect) && /id="voice-retire-note">GPT Realtime mini retires on 20 January 2027\./.test(page) && /id="voice-model-hint">The default\./.test(page));

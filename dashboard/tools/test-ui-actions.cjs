@@ -70,7 +70,9 @@ console.log("\nTier 2 (Phase 3): preferences, only after a confirm");
   check("theme.set / persona.set / voice.set are tier 2, on the page", ["theme.set", "persona.set", "voice.set"].every((n) => UA.ACTIONS[n].tier === 2 && UA.ACTIONS[n].where === "page"));
   check("  every other action is tier 1", UA.names().filter((n) => !["theme.set", "persona.set", "voice.set"].includes(n)).every((n) => UA.ACTIONS[n].tier === 1));
   check("the personas are lib/voice-persona.js PRESETS plus learned", Object.keys(UA.PERSONAS).sort().join() === [...Object.keys(persona.PRESETS), "learned"].sort().join());
-  check("the voices are lib/voice.js VOICES", Object.keys(UA.VOICE_NAMES).sort().join() === [...voice.VOICES].sort().join());
+  // voice.set by voice offers the ten voices every voice model has (lib/voice.js REALTIME_VOICES); GPT-Live's
+  // own 21 are chosen on the Settings cards (the supervisor holds an identical copy of this file).
+  check("the voices are lib/voice.js REALTIME_VOICES (the ten every model can use)", Object.keys(UA.VOICE_NAMES).sort().join() === [...voice.REALTIME_VOICES].sort().join());
   check("validation: only listed values", UA.validate("theme.set", { theme: "dark" }).ok && !UA.validate("theme.set", { theme: "neon" }).ok && UA.validate("persona.set", { preset: "cairene_f" }).ok && !UA.validate("persona.set", { preset: "evil" }).ok && UA.validate("voice.set", { voice: "cedar" }).ok && !UA.validate("voice.set", { voice: "onyx" }).ok);
   check("the toast is a question, doneText the result", /\?/.test(UA.toast("voice.set", { voice: "cedar" })) && UA.doneText("voice.set", { voice: "cedar" }) === "The voice is now cedar" && UA.doneText("sheet.open", { key: "missions" }) === "Mint opened Missions");
   check("the tool takes theme / preset / voice, and says these need a confirm", ["theme", "preset", "voice"].every((k) => UA.tool().parameters.properties[k]) && /status \\?"confirm\\?"|status "confirm"/.test(UA.tool().description) && /never confirm for them/.test(UA.tool().description));

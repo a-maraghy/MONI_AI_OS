@@ -1,12 +1,11 @@
 #!/usr/bin/env node
 "use strict";
 /**
- * The transcription choice (MINT AI ▸ Settings ▸ Voice ▸ Transcription,
- * 2026-09-30): lib/voice-transcribe.js -- the list, the OpenAI path, the local
- * whisper.cpp backend and its fallback -- the guards over what whisper writes,
- * and the helper's voice-whisper-* commands. No real OpenAI and no real
- * whisper-server: both are mocks on 127.0.0.1. The real ffmpeg converts the
- * recordings (it is what the backend runs).
+ * The one transcription model (2026-10-30): lib/voice-transcribe.js --
+ * gpt-4o-transcribe, whatever a stored setting names; no language unless a live
+ * call's second try pins one -- the guards over transcripts, and the helper's
+ * transcription model check (VOICE_TRANSCRIBE_RE) and its voice-whisper-*
+ * commands (left installed, unused). No real OpenAI: a mock on 127.0.0.1.
  *
  *     NODE_PATH=/opt/moni-dashboard/node_modules node dashboard/tools/test-voice-transcribe.cjs
  */
@@ -50,7 +49,7 @@ function tone(seconds, rate) {
 
 /* ------------------------------------------------------------ mocks -- */
 
-const seen = { openai: [], whisper: [] };
+const seen = { openai: [] };
 const field = (txt, name) => (txt.match(new RegExp(`name="${name}"\\r\\n\\r\\n([^\\r]*)`)) || [])[1];
 const openai = http.createServer((req, res) => {
   const chunks = [];
@@ -62,142 +61,47 @@ const openai = http.createServer((req, res) => {
     res.end(JSON.stringify({ text: "restart the dashboard please", usage: { type: "tokens", input_tokens: 32, input_token_details: { text_tokens: 0, audio_tokens: 32 }, output_tokens: 6 } }));
   });
 });
-const whisper = { answer: "Restart the dashboard.", delay: 0, status: 200 };
-const local = http.createServer((req, res) => {
-  const chunks = [];
-  req.on("data", (d) => chunks.push(d));
-  req.on("end", () => {
-    const body = Buffer.concat(chunks);
-    const txt = body.toString("latin1");
-    const wavAt = txt.indexOf("RIFF");
-    const rate = wavAt >= 0 ? body.readUInt32LE(wavAt + 24) : null;
-    seen.whisper.push({
-      url: req.url,
-      language: field(txt, "language"),
-      temperature: field(txt, "temperature"),
-      temperature_inc: field(txt, "temperature_inc"),
-      audio_ctx: field(txt, "audio_ctx"),
-      prompt: field(txt, "prompt"),
-      rate,
-      channels: wavAt >= 0 ? body.readUInt16LE(wavAt + 22) : null,
-    });
-    setTimeout(() => {
-      res.statusCode = whisper.status;
-      res.setHeader("Content-Type", "application/json");
-      res.end(whisper.status === 200 ? JSON.stringify({ text: whisper.answer }) : JSON.stringify({ error: "failed to process audio" }));
-    }, whisper.delay);
-  });
-});
-
 (async () => {
   await new Promise((r) => openai.listen(0, "127.0.0.1", r));
-  await new Promise((r) => local.listen(0, "127.0.0.1", r));
   const httpBase = "http://127.0.0.1:" + openai.address().port + "/v1";
-  const whisperUrl = "http://127.0.0.1:" + local.address().port;
   const logs = [];
-  const cfg = (x) => ({ key: KEY, httpBase, whisperUrl, log: (m) => logs.push(m), ...(x || {}) });
+  const cfg = (x) => ({ key: KEY, httpBase, log: (m) => logs.push(m), ...(x || {}) });
   const clip = tone(1.5);
 
-  section("the list");
-  const ids = T.TRANSCRIBERS.map((t) => t.id);
-  check("five options: three OpenAI, two on this server; the default is gpt-4o-mini-transcribe", ids.join() === "gpt-4o-mini-transcribe,gpt-transcribe,gpt-4o-transcribe,whisper-large-v3-turbo,whisper-small" && T.DEFAULT_ID === "gpt-4o-mini-transcribe", ids.join());
-  check("every option carries a hint with its measured figures or price, a label, a group and a known kind", T.TRANSCRIBERS.every((t) => t.hint && t.label && t.group && T.BACKENDS[t.kind]));
-  check("  the local ones name their speed, accuracy and cost; each has a hard timeout and a measured minimum audio context", T.TRANSCRIBERS.filter((t) => t.kind === "whisper").every((t) => /s/.test(t.hint) && /CER/.test(t.hint) && /free/.test(t.hint) && t.timeoutMs > 0 && t.ctxMin > 0));
-  check("clean(): nothing stored is the default and Detect; unknown values read as those", JSON.stringify(T.clean(null)) === '{"model":"gpt-4o-mini-transcribe","language":"auto"}' && JSON.stringify(T.clean({ model: "whisper-1", language: "fr" })) === '{"model":"gpt-4o-mini-transcribe","language":"auto"}' && T.clean({ model: "whisper-small", language: "ar" }).model === "whisper-small");
-  check("the live session's own model is always OpenAI's: gpt-4o-transcribe kept, gpt-transcribe and the local ones fall back to gpt-4o-mini-transcribe",
-    T.sessionModelFor("gpt-4o-transcribe") === "gpt-4o-transcribe" && T.sessionModelFor("gpt-4o-mini-transcribe") === "gpt-4o-mini-transcribe" && T.sessionModelFor("gpt-transcribe") === "gpt-4o-mini-transcribe" && T.sessionModelFor("whisper-large-v3-turbo") === "gpt-4o-mini-transcribe");
-  check("a hand-off waits longer for a local model (its timeout + 3 s), as before for OpenAI's", T.heardWaitMs("whisper-large-v3-turbo") === 28000 && T.heardWaitMs("whisper-small") === 13000 && T.heardWaitMs("gpt-4o-mini-transcribe") === null);
-  check("audio context: sized to the clip, never below the measured minimum, the whole window for a long clip", T.audioCtx(3, 768) === 768 && T.audioCtx(3, 512) === 512 && T.audioCtx(14, 768) === 768 && T.audioCtx(20, 768) === 1088 && T.audioCtx(29, 768) === 0 && T.audioCtx(5, 0) === 0);
+  section("one model: gpt-4o-transcribe");
+  check("the list is one entry, gpt-4o-transcribe, the default", T.TRANSCRIBERS.map((t) => t.id).join() === "gpt-4o-transcribe" && T.DEFAULT_ID === "gpt-4o-transcribe" && T.MODEL === "gpt-4o-transcribe");
+  check("no local model, no backends, no language list any more", T.BACKENDS === undefined && T.LANGUAGES === undefined && T.TRANSCRIBERS.every((t) => t.kind === "openai"));
+  check("a stored setting naming any other model (or a language) reads as gpt-4o-transcribe, no language -- no error", ["gpt-4o-mini-transcribe", "gpt-transcribe", "whisper-small", "whisper-large-v3-turbo", "junk", null].every((m) => JSON.stringify(T.clean({ model: m, language: "ar" })) === '{"model":"gpt-4o-transcribe","language":"auto"}') && JSON.stringify(T.clean(null)) === '{"model":"gpt-4o-transcribe","language":"auto"}');
+  check("the live session's own transcription model is gpt-4o-transcribe whatever is asked", T.sessionModelFor() === "gpt-4o-transcribe" && T.sessionModelFor("gpt-4o-mini-transcribe") === "gpt-4o-transcribe" && T.sessionModelFor("whisper-small") === "gpt-4o-transcribe");
+  check("a hand-off waits the usual time (an OpenAI model)", T.heardWaitMs("whisper-small") === null && T.heardWaitMs() === null);
+  check("lib/voice.js pairs every voice model with it", voice.LISTEN_MODEL === "gpt-4o-transcribe" && voice.listenModelFor("gpt-realtime-2.1-mini") === "gpt-4o-transcribe" && voice.listenModelFor("gpt-live-1") === "gpt-4o-transcribe" && voice.DEFAULTS.transcribe_model === "gpt-4o-transcribe");
 
-  section("OpenAI models");
+  section("the call to OpenAI");
   seen.openai.length = 0;
-  let r = await T.transcribeFull(clip, cfg({ transcriber: "gpt-transcribe" }), "audio/wav");
-  check("gpt-transcribe: posted to /audio/transcriptions with that model; the result names it, with its usage and time", seen.openai[0] && seen.openai[0].model === "gpt-transcribe" && r.transcriber === "gpt-transcribe" && r.model === "gpt-transcribe" && r.tokens && r.tokens.audio_in === 32 && typeof r.ms === "number", JSON.stringify([seen.openai[0], r]));
-  check("  no language sent on Detect (as before the setting)", seen.openai[0].language === undefined);
-  await T.transcribeFull(clip, cfg({ transcriber: "gpt-4o-mini-transcribe", transcribe_language: "ar" }), "audio/wav");
-  check("  a pinned language goes with it", seen.openai[1] && seen.openai[1].language === "ar" && seen.openai[1].model === "gpt-4o-mini-transcribe");
-  await T.transcribeFull(clip, cfg({}), "audio/wav");
-  check("  nothing chosen: gpt-4o-mini-transcribe", seen.openai[2] && seen.openai[2].model === "gpt-4o-mini-transcribe");
-  check("gpt-transcribe is priced (per minute, from its audio tokens)", usage.costOf({ audio_in: 600 }, "gpt-transcribe") > 0 && Math.abs(usage.costOf({ audio_in: 600 }, "gpt-transcribe") - 0.0045) < 1e-9 && Math.abs(usage.costOf({ seconds: 60 }, "gpt-transcribe") - 0.0045) < 1e-9);
+  let r = await T.transcribeFull(clip, cfg({ transcriber: "gpt-4o-mini-transcribe" }), "audio/wav");
+  check("posted to /audio/transcriptions with gpt-4o-transcribe even when an old choice is named; the result names it, with its usage and time", seen.openai[0] && seen.openai[0].model === "gpt-4o-transcribe" && r.transcriber === "gpt-4o-transcribe" && r.model === "gpt-4o-transcribe" && r.tokens && r.tokens.audio_in === 32 && typeof r.ms === "number", JSON.stringify([seen.openai[0], r]));
+  check("  no language sent (the model detects Arabic, English and the two mixed)", seen.openai[0].language === undefined);
+  await T.transcribeFull(clip, cfg({ transcribe_language: "ar" }), "audio/wav");
+  check("  a live call's second try pins one: it goes with it", seen.openai[1] && seen.openai[1].language === "ar" && seen.openai[1].model === "gpt-4o-transcribe");
+  await T.transcribeFull(clip, cfg({ transcribe_language: "auto" }), "audio/wav");
+  check("  'auto' (an old stored language) sends none", seen.openai[2] && seen.openai[2].language === undefined);
+  check("gpt-4o-transcribe is priced ($0.006 a minute; tokens at its list price)", Math.abs(usage.costOf({ seconds: 60 }, "gpt-4o-transcribe") - 0.006) < 1e-9 && usage.costOf({ audio_in: 1000, text_out: 100 }, "gpt-4o-transcribe") > 0);
+  check("  the retired models stay priced, so older rows still read", usage.costOf({ audio_in: 600 }, "gpt-transcribe") > 0 && usage.costOf({ audio_in: 600 }, "gpt-4o-mini-transcribe") > 0);
 
-  section("whisper.cpp on this server (mock server, real ffmpeg)");
-  seen.openai.length = 0;
-  seen.whisper.length = 0;
-  whisper.answer = "Restart the dashboard.";
-  r = await T.transcribeFull(clip, cfg({ transcriber: "whisper-small" }), "audio/wav");
-  const w0 = seen.whisper[0] || {};
-  check("a turn goes to the local server's /inference, as 16 kHz mono WAV", w0.url === "/inference" && w0.rate === 16000 && w0.channels === 1, JSON.stringify(w0));
-  check("  temperature 0 with no temperature fallback (the loop that ran away on noise), Detect as 'auto', no vocabulary prompt", w0.temperature === "0" && w0.temperature_inc === "0" && w0.language === "auto" && w0.prompt === undefined);
-  check("  an audio context sized to the clip (small's minimum, 512, for 1.5 s)", w0.audio_ctx === "512");
-  check("  the text comes back as the local model's, nothing billed, OpenAI never called", r.text === "Restart the dashboard." && r.transcriber === "whisper-small" && r.model === "whisper-small" && r.tokens === null && r.local === true && !r.fallback && seen.openai.length === 0, JSON.stringify(r));
-  check("  its usage carries the clip's length (the guard's words-per-second check uses it)", r.usage && r.usage.type === "duration" && Math.abs(r.usage.seconds - 1.5) < 0.05 && Math.abs(guard.audioSecondsFromUsage(r.usage) - 1.5) < 0.05);
-  await T.transcribeFull(clip, cfg({ transcriber: "whisper-large-v3-turbo", transcribe_language: "ar" }), "audio/wav");
-  check("turbo: a pinned language, and its own minimum audio context (768)", seen.whisper[1] && seen.whisper[1].language === "ar" && seen.whisper[1].audio_ctx === "768");
-  const webm = spawnSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=300:duration=1", "-c:a", "libopus", "-f", "webm", "pipe:1"], { maxBuffer: 1 << 22 });
-  if (webm.status === 0 && webm.stdout.length) {
-    r = await T.transcribeFull(webm.stdout, cfg({ transcriber: "whisper-small" }), "audio/webm");
-    check("a browser recording (webm/opus) is converted too", r.text === "Restart the dashboard." && seen.whisper[2] && seen.whisper[2].rate === 16000);
-  } else check("(ffmpeg could make a webm to test with)", false, webm.stderr && webm.stderr.toString());
-
-  whisper.answer = "[BLANK_AUDIO] Restart the dashboard. *thud*";
-  r = await T.transcribeFull(clip, cfg({ transcriber: "whisper-small" }), "audio/wav");
-  check("markers are taken out of a transcript: '[BLANK_AUDIO] … *thud*'", r.text === "Restart the dashboard." && !r.fallback, JSON.stringify(r.text));
-  for (const m of ["", "[BLANK_AUDIO]", " *thud* ", "(static)", "♪ ♪"]) {
-    whisper.answer = m;
-    r = await T.transcribeFull(clip, cfg({ transcriber: "whisper-small" }), "audio/wav");
-    check(`  VAD / markers only (${JSON.stringify(m)}): an empty transcript, no fallback (silence is not an error)`, r.text === "" && !r.fallback && seen.openai.length === 0, JSON.stringify(r));
-  }
-
-  section("fallback to gpt-4o-mini-transcribe, logged");
-  const fallback = async (name, setup, why) => {
-    seen.openai.length = 0;
-    logs.length = 0;
-    setup();
-    const out = await T.transcribeFull(clip, cfg({ transcriber: "whisper-small", localTimeoutMs: 400, ...(name.cfg || {}) }), "audio/wav");
-    check(`${name.label}: the turn is heard by gpt-4o-mini-transcribe, and the result says why`, out.text === "restart the dashboard please" && out.transcriber === "gpt-4o-mini-transcribe" && out.fallback && out.fallback.from === "whisper-small" && why.test(out.fallback.why) && seen.openai.length === 1 && seen.openai[0].model === "gpt-4o-mini-transcribe", JSON.stringify(out));
-    check(`  logged, without the words`, logs.length === 1 && /voice transcribe: whisper-small failed/.test(logs[0]) && /falling back to gpt-4o-mini-transcribe/.test(logs[0]) && !/restart the dashboard|thank you/i.test(logs[0]), logs.join(" | "));
-    whisper.delay = 0;
-    whisper.status = 200;
-  };
-  for (const [label, text, why] of [
-    ["'you' (whisper's word for silence)", "you", /junk:stock-phrase/],
-    ["'Thank you.'", " Thank you.", /junk:stock-phrase/],
-    ["a subtitle credit (Arabic)", "ترجمة نانسي قنقر", /junk:stock-phrase/],
-    ["a loop", "go to the go to the go to the go to the go to the go to the", /junk:loop/],
-    ["more words than 1.5 s can hold", "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen", /junk:too-many-words/],
-    ["garbled text", "Rest�rt", /junk:garbled/],
-  ]) await fallback({ label: "junk: " + label }, () => (whisper.answer = text), why);
-  await fallback({ label: "the server answers an error" }, () => (whisper.status = 500), /upstream/);
-  await fallback({ label: "the server takes too long (hard timeout)" }, () => ((whisper.answer = "late"), (whisper.delay = 1500)), /timeout/);
-  await fallback({ label: "the server is down", cfg: { whisperUrl: "http://127.0.0.1:1" } }, () => {}, /down/);
-  await fallback({ label: "ffmpeg cannot read the recording", cfg: { ffmpeg: "/bin/false" } }, () => {}, /ffmpeg/);
-  seen.openai.length = 0;
-  let noKey = null;
-  try {
-    await T.transcribeFull(clip, { whisperUrl: "http://127.0.0.1:1", log: () => {}, transcriber: "whisper-small" }, "audio/wav");
-  } catch (e) {
-    noKey = e;
-  }
-  check("no key to fall back on: an error that says so (no OpenAI call)", noKey && /no OpenAI key to fall back on/.test(noKey.message) && seen.openai.length === 0, noKey && noKey.message);
-  whisper.answer = "Restart the dashboard.";
-  r = await T.transcribeFull(clip, { transcriber: "whisper-small", whisperUrl, log: () => {} }, "audio/wav");
-  check("  but a local model works without a key", r.text === "Restart the dashboard.");
-
-  section("the settings Test: which model answered, and how long it took");
+  section("the settings Test and the live call");
   {
     let spokenTo = null;
     const fakeCheck = await voice
-      .check({ key: KEY, httpBase: "http://127.0.0.1:1/v1", wsBase: "ws://127.0.0.1:1/v1" }, { transcribe: async (a, c) => ((spokenTo = c), { text: "x", transcriber: "whisper-small" }) })
+      .check({ key: KEY, httpBase: "http://127.0.0.1:1/v1", wsBase: "ws://127.0.0.1:1/v1" }, { transcribe: async (a, c) => ((spokenTo = c), { text: "x", transcriber: "gpt-4o-transcribe" }) })
       .catch((e) => ({ err: e.code }));
-    check("voice.check takes the selected transcriber (here the speaking half fails first: no transcription without audio)", fakeCheck.err === "network" && spokenTo === null, JSON.stringify(fakeCheck));
-    const src = fs.readFileSync(path.join(ROOT, "lib", "voice.js"), "utf8");
-    check("  and reports heard_by (the model that answered) and a fallback", /out\.heard_by = heard\.transcriber/.test(src) && /out\.heard_fallback = heard\.fallback/.test(src));
+    check("voice.check takes the transcriber it is given (here the speaking half fails first: no transcription without audio)", fakeCheck.err === "network" && spokenTo === null, JSON.stringify(fakeCheck));
     const server = fs.readFileSync(path.join(ROOT, "server.js"), "utf8");
     check("  the Test route names it: 'transcription by <model> … heard … in N ms'", /voice\.check\(\{ \.\.\.cfg, model: cfg\.live_model \}, \{ transcribe: voiceTranscribe\.transcribeFull \}\)/.test(server) && /transcription by \$\{out\.heard_by\}/.test(server) && /in \$\{out\.transcribe_ms\} ms/.test(server));
-    check("the live call uses the selected transcriber (the console's dictation went with the console, 2026-10-25); a live hand-off waits heard_wait_ms", /transcribe: voiceTranscribe\.transcribeFull, \/\/ the full-turn transcript/.test(server) && !/async function voiceTranscribeRoute/.test(server) && /heard_wait_ms/.test(fs.readFileSync(path.join(ROOT, "lib", "voice-live.js"), "utf8")));
+    check("a realtime call transcribes the full turn with it; a GPT-Live call gets no transcriber at all", /transcribe: Call === voiceGptLive\.GptLiveCall \? null : voiceTranscribe\.transcribeFull/.test(server));
+    check("the Transcription route, its setting's migration and the local server's start are gone", !/settings\/voice\/transcription"/.test(server) && !/syncLocalTranscriber|voiceWhisperSet|migrateTranscriptionSetting/.test(server));
   }
 
-  section("the transcript guard over what whisper writes");
+  section("the transcript guard (noise labels, stock phrases)");
   for (const t of ["*thud*", "[BLANK_AUDIO]", "(static)", "♪", "♪ ♪", "<|nospeech|>"]) {
     const g = guard.checkTranscript(t, { audioSeconds: 4 });
     check(`dropped: ${JSON.stringify(t)} (noise-label)`, !g.ok && g.rule === "noise-label", JSON.stringify(g));
@@ -215,7 +119,6 @@ const local = http.createServer((req, res) => {
   section("helper: voice-whisper-status / voice-whisper-set (systemctl stubbed)");
   helperTests();
 
-  local.close();
   openai.close();
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
@@ -280,8 +183,12 @@ res["calls_again"] = calls[n1:]
 n2 = len(calls)
 res["off"] = call("voice-whisper-set", ["off"])
 res["calls_off"] = calls[n2:]
+res["opt_4o"] = call("voice-options-set", ["gpt-realtime-2.1-mini", "marin", "gpt-4o-transcribe"])
+res["opt_4o_snap"] = call("voice-options-set", ["gpt-live-1", "quartz", "gpt-4o-transcribe-2026-03-20"])
 res["opt_gpt_transcribe"] = call("voice-options-set", ["gpt-realtime-2.1-mini", "marin", "gpt-transcribe"])
+res["opt_mini"] = call("voice-options-set", ["gpt-realtime-2.1-mini", "marin", "gpt-4o-mini-transcribe"])
 res["opt_whisper"] = call("voice-options-set", ["gpt-realtime-2.1-mini", "marin", "whisper-small"])
+res["defaults"] = H.VOICE_DEFAULTS
 res["audit"] = open(H.AUDIT_LOG).read()
 print(json.dumps(res))
 `;
@@ -300,7 +207,9 @@ print(json.dumps(res))
   check("set <model>: writes the environment file (root-readable 0644) and enables + starts the unit", res.set_ok.ok && res.set_ok.data.active === "active" && res.set_ok.data.selected === "small-q8_0" && /WHISPER_MODEL=.*\/models\/ggml-small-q8_0\.bin/.test(res.env) && res.env_mode === "0o644" && res.calls_set.includes("systemctl enable moni-voice-whisper.service") && res.calls_set.includes("systemctl restart moni-voice-whisper.service"), JSON.stringify(res.calls_set));
   check("  the same model again while it runs: not restarted", res.set_again.ok && !res.calls_again.some((c) => /restart|enable /.test(c)), JSON.stringify(res.calls_again));
   check("set off: disabled and stopped", res.off.ok && res.off.data.active === "inactive" && res.calls_off.includes("systemctl disable --now moni-voice-whisper.service"));
-  check("the live session's model may be gpt-transcribe now (VOICE_TRANSCRIBE_RE); a local model id is not one", res.opt_gpt_transcribe.ok && !res.opt_whisper.ok);
+  check("the live session's model is gpt-4o-transcribe only (VOICE_TRANSCRIBE_RE): it and a dated snapshot pass; gpt-transcribe, gpt-4o-mini-transcribe and a local id are refused", res.opt_4o.ok && res.opt_4o_snap.ok && !res.opt_gpt_transcribe.ok && !res.opt_mini.ok && !res.opt_whisper.ok, JSON.stringify([res.opt_4o, res.opt_gpt_transcribe]));
+  check("  a GPT-Live voice name (quartz) is stored like any other", res.opt_4o_snap.ok);
+  check("  a fresh file's default is gpt-4o-transcribe", res.defaults.OPENAI_TRANSCRIBE_MODEL === "gpt-4o-transcribe");
   check("audited", /voice-whisper-set/.test(res.audit) && /"small-q8_0"/.test(res.audit) && /"off"/.test(res.audit));
   fs.rmSync(TMP, { recursive: true, force: true });
 }

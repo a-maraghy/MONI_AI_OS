@@ -43,7 +43,7 @@ check("voice on: the mic starts a live conversation", /title="Start a live conve
 check("  the button is the waveform; no hint strip under the bar (Esc no longer ends a call; only the red X does)", /id="cc-c-mic"[^>]*>[^]*?cc-i-wave"/.test(on) && !/id="cc-kb-space"/.test(on) && !/<kbd>Esc<\/kbd> ends/.test(on));
 check("  the voice menu button says Live · the voice", /<span id="cc-mic-mode" data-mode="live">Live · marin<\/span>/.test(on));
 check("  the voice bar's tag says Live; no Direct / Front desk tag, no trial", /id="cc-vb-mode">Live</.test(on) && !/cc-voice-mode|Front desk|Direct · MINT AI|trial/i.test(on));
-check("  read-aloud is there: the toggle and the reply's Read aloud", /id="cc-speak-toggle"/.test(on) && /id="cc-reply-read"/.test(on));
+check("  a reply's Read aloud is there; the \"Read replies aloud\" toggle is gone (2026-10-30)", !/id="cc-speak-toggle"/.test(on) && /id="cc-reply-read"/.test(on));
 check("  no push to talk anywhere: no hold-to-talk hint, no send-what-you-said button", !/hold to talk|Hold to talk|Push to talk|push to talk|id="cc-vb-stop"/.test(on));
 check("  the page may go live (data-voice-live) and is ready (data-voice-ready)", /data-voice-live="1"/.test(on) && /data-voice-ready="1"/.test(on) && !/data-voice-desk/.test(on));
 for (const [name, html] of [["voice off", off], ["no voice.use", noUse], ["no key", noKey]]) {
@@ -68,11 +68,11 @@ const client = fs.readFileSync(path.join(ROOT, "public", "moni-ai.js"), "utf8");
 check("no voice mode left: no MODE_KEY, voiceModeFrom, push to talk, hands-free, desk", !/MODE_KEY|voiceModeFrom|pttDown|pttUp|handsfree|data-vmode|desk\/turn|desk\/summary|deskTurns|DESK\b/.test(client));
 check("the mic starts a live call and, during one, mutes it (only the red X ends it)", /if \(LIVE_OK && e\.target\.closest\("#cc-c-mic"\)\) \{ e\.stopPropagation\(\); e\.preventDefault\(\); return LiveUI\.active \? liveMuteToggle\(\) : liveStart\(\); \}/.test(client) && /if \(LiveUI\.active && e\.target\.closest\("#cc-live-end"\)\) \{ e\.stopPropagation\(\); return liveStop\("button"\); \}/.test(client));
 check("no key starts a call: Space and Esc act only while one is on", /if \(!LiveUI\.active \|\| e\.repeat \|\| liveTyping\(document\.activeElement\)\) return;/.test(client));
-check("the voice menu: Live · voice, Speakers / Headphones, Read replies aloud, Voice settings, the core, Voice usage", /"<span>Live · " \+ esc\(VOICE \|\| "voice"\)/.test(client) && /data-dx="speakers"/.test(client) && /data-dx="full"/.test(client) && /data-vread/.test(client) && /href="\/mint-ai\/settings\/voice">Voice settings</.test(client) && /data-core-set=/.test(client) && /Voice usage/.test(client));
+check("the voice menu: Live · voice, Speakers / Headphones, Voice settings, the core, Voice usage (no Read replies aloud)", /"<span>Live · " \+ esc\(VOICE \|\| "voice"\)/.test(client) && /data-dx="speakers"/.test(client) && /data-dx="full"/.test(client) && !/data-vread|span>Read replies aloud/.test(client) && /href="\/mint-ai\/settings\/voice">Voice settings</.test(client) && /data-core-set=/.test(client) && /Voice usage/.test(client));
 check("  with voice off it says so, and keeps the core and the spend", /"Voice is off\."/.test(client));
 check("?call=1 (the dock's mic on another page) starts the call once and leaves the address", /q\.get\("call"\) !== "1"/.test(client) && /q\.delete\("call"\)/.test(client) && /history\.replaceState/.test(client) && /setTimeout\(liveStart, 0\)/.test(client));
 check("call.* and voice.set are refused on the page while voice is off", /if \(\(\/\^call\\\.\/\.test\(v\.action\) \|\| v\.action === "voice\.set"\) && !READY\) return \{ ok: false, why: "voice is off" \};/.test(client));
-check("read aloud is remembered per browser (mint-read-aloud), in a guarded way", /READ_KEY = "mint-read-aloud"/.test(client));
+check("no read-aloud switch is remembered any more (mint-read-aloud is not read)", !/READ_KEY|"mint-read-aloud"/.test(client));
 const lsLines = client.split("\n").filter((l) => /localStorage/.test(l));
 check("every localStorage access is inside try/catch", lsLines.length >= 2 && lsLines.every((l) => /try \{[^}]*localStorage[^}]*\} catch/.test(l)), lsLines.join("\n"));
 const dock = fs.readFileSync(path.join(ROOT, "public", "mint-dock.js"), "utf8");
