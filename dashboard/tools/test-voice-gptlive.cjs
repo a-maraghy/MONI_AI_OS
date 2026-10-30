@@ -344,6 +344,67 @@ let WS_BASE;
     c.close("hung-up");
   }
 
+  // Call lv1g84s, 2026-10-30 ("I asked the weather, it was said twice"): the summary of the weather, GPT-Live
+  // saying it in its own words -- sentences joined -- and "tomorrow it should be overcast" (a forecast) cut as
+  // added advice; the reader then counted GPT-Live's sentences into the summary's and read the weather again.
+  const WEATHER_REPLY = "It's mainly clear in 6th of October City right now, about 25 degrees, feeling like 23, with light wind and no rain expected today or tomorrow. Tonight should drop to around 14 degrees, and tomorrow will be overcast with a high of 25.";
+  const WEATHER_SUMMARY = [
+    "Sure.",
+    "It's mainly clear in 6th of October City right now, about 25 degrees.",
+    "It feels like 23, with light wind and no rain expected today or tomorrow.",
+    "Tonight it will drop to around 14 degrees, and tomorrow will be overcast with a high of 25.",
+    "Let me know if you need anything else.",
+  ];
+  async function weatherCall(say) {
+    const summarise = async (id, o) => {
+      for (const t of WEATHER_SUMMARY) o.onLine({ text: t, safe: false });
+      return { tokens: { text_in: 300, text_out: 60 } };
+    };
+    const k = makeCall({ summarise });
+    const { c, sup } = k;
+    await c.connect();
+    const s = lastSession();
+    const end = await hear(s, c, "can you tell me what's the weather like");
+    s.push({ type: "session.delegation.created", offset_ms: end + 200, delegation: { id: "item_wx", type: "delegation", target: "client" } });
+    await until(() => c.requests.size > 0, 4000, "the hand-off");
+    sup.replies.set([...c.requests.keys()][0], WEATHER_REPLY);
+    await until(() => sentOf(s, "session.commentary.append").length >= 4, 3000, "the summary");
+    await speak(s, say, { gap: 8, tail: 6 });
+    await sleep(QUIET_WAIT);
+    return { ...k, s };
+  }
+  const QUIET_WAIT = 1400;
+
+  section("2026-10-30 (call lv1g84s): the weather said with \"should\" for \"will\" -- a forecast restating the result, not advice: not cut");
+  {
+    const { c, spoke, logs } = await weatherCall("Sure. It's mainly clear in 6th of October City right now, about 25 degrees, feeling like 23, with light wind and no rain expected today or tomorrow. Tonight it should drop to around 14 degrees, and tomorrow it should be overcast with a high of 25.");
+    check("not cut", c.diag.gptlive.cuts === 0, JSON.stringify(c.diag.trips));
+    check("  the reader reads nothing (the weather is said once)", spoke.length === 0, JSON.stringify(spoke));
+    check("  logged: how many sentences the live voice said of the result, none cut", logs.some((l) => /the live voice said 3 sentences of the result \(utterance 1 of it, 3 passed\): "Sure\./.test(l)), JSON.stringify(logs.slice(-4)));
+    c.close("hung-up");
+  }
+
+  section("2026-10-30 (call lv1g84s): a cut after GPT-Live joined the result's sentences -> the reader reads only what was not heard, matched by content");
+  {
+    const { c, spoke, logs } = await weatherCall("Sure, it's mainly clear in 6th of October City right now, about 25 degrees, feeling like 23, with light wind and no rain expected today or tomorrow. Tonight it'll drop to around 14 degrees, and you should take an umbrella tomorrow.");
+    await until(() => spoke.length > 0, 3000, "the reader");
+    check("real added advice is still cut", c.diag.gptlive.cuts === 1 && c.diag.trips[0].rule === "added-recommendation", JSON.stringify(c.diag.trips));
+    check("  the reader reads the one sentence not yet heard, never the weather already said", spoke.join(" | ") === WEATHER_SUMMARY[3], JSON.stringify(spoke));
+    check("  (counting would have re-read it all: the sentence before the cut was heard but not yet released -- 0 passed)", c.diag.trips[0].released === 0, JSON.stringify(c.diag.trips));
+    check("  logged: what the reader read, by index", logs.some((l) => /after the cut the reader reads 1 of the result's 5 sentences \[3\] \(heard \[1,2\], nothing to add \[0,4\]; the live voice had said 2, 0 passed, cut at 1\)/.test(l)), JSON.stringify(logs.filter((l) => /after the cut/.test(l))));
+    c.close("hung-up");
+  }
+
+  section("a cut when everything of the result was already heard -> the reader reads nothing");
+  {
+    const { c, spoke, logs } = await weatherCall("Sure. It's mainly clear in 6th of October City right now, about 25 degrees, feeling like 23, with light wind and no rain expected today or tomorrow. Tonight it'll drop to around 14 degrees, and tomorrow will be overcast with a high of 25. You should stay inside tomorrow.");
+    await sleep(800);
+    check("cut on the added advice", c.diag.gptlive.cuts === 1 && c.diag.trips[0].rule === "added-recommendation", JSON.stringify(c.diag.trips));
+    check("  nothing is read again", spoke.length === 0, JSON.stringify(spoke));
+    check("  logged as 0 read", logs.some((l) => /after the cut the reader reads 0 of the result's 5 sentences/.test(l)), JSON.stringify(logs.filter((l) => /after the cut/.test(l))));
+    c.close("hung-up");
+  }
+
   section("barge-in: the page's detector stops the voice at once, GPT-Live is muted until quiet");
   {
     const { c, client } = makeCall();

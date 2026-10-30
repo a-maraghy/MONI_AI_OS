@@ -870,8 +870,26 @@ function recommendationAdded(cl, rawClause, reply) {
   // Every action it recommends must be one the reply names ("rotate the log" is not "delete the log").
   const acts = polarClaims(cl).filter((p) => p.concept.startsWith("act:")).map((p) => p.concept.slice(4));
   const replyActs = new Set(reply.clauses.flatMap((c) => c.claims.filter((p) => p.concept.startsWith("act:")).map((p) => p.concept.slice(4))));
-  if (!backed || shared.length * 2 < words.length || acts.some((a) => !replyActs.has(a))) return { rule: "added-recommendation", match: rawClause };
+  if (!backed || shared.length * 2 < words.length || acts.some((a) => !replyActs.has(a))) {
+    if (forecastRestates(cl, reply, r[0])) return null;
+    return { rule: "added-recommendation", match: rawClause };
+  }
   return null;
+}
+
+/**
+ * "Tomorrow it should be overcast" for the reply's "tomorrow will be overcast": a prediction, not advice
+ * (cut on call lv1g84s, 2026-10-30: the weather was then read again). Passes when nobody is told to do
+ * anything -- no person in it (you / we / I / the administrator, «انت / احنا / حضرتك ...»), no action --
+ * and the clause, the modal and the forecast words aside, restates one reply sentence (modal sentences
+ * included: a forecast is said with "will" / "should"), its figures all in that sentence.
+ */
+const FORECAST_PERSON = uni(/\b(?:you|your|we|us|our|i|i'd|i'm|me|they|them|someone|somebody|administrator|team|people)\b|(?<![\p{L}])(?:انت|انتي|إنت|إنتي|حضرتك|احنا|إحنا|انا|أنا|هما|نعمل|تعمل|تعملي|اعمل)(?![\p{L}])/);
+const FORECAST_SKIP = ["should", "supposed", "expected", "expect", "likely", "probably", "will", "going", "المفروض", "متوقع", "المتوقع", "غالبا", "هيبقى", "هيبقي", "يبقى", "يبقي", "هيكون", "يكون", "هتبقى", "هتبقي", "تبقى", "تبقي", "هتكون", "تكون"];
+function forecastRestates(cl, reply, modal) {
+  if (FORECAST_PERSON.test(cl) || ADMIN_DECIDES.test(cl)) return false;
+  if (polarClaims(cl).length) return false;
+  return restatesReply(cl, reply, { skip: FORECAST_SKIP.concat([modal]), modalOk: true, min: 2 });
 }
 
 function replyModel(text) {
@@ -1149,23 +1167,27 @@ function restatesReply(cl, reply, o) {
   o = o || {};
   const mine = restateTokens(cl, o.skip);
   const words = mine.filter((w) => !/^\d/.test(w));
-  if (mine.length < RESTATE_MIN || !words.length) return false;
+  const min = o.min || RESTATE_MIN;
+  if (mine.length < min || !words.length) return false;
   const nums = numbersIn(cl);
   const clNeg = NEGATION.test(cl) || (arabic.hasArabic(cl) && arabic.claimsIn(cl).some((x) => x.negated)); // «معملناش» is "we did not"
   for (const sent of speakableSentences(reply.text)) {
     const n = norm(sent);
-    if (QUESTION_END.test(n) || OFFER_EN.test(n) || arabic.OFFER_AR.test(n) || MODAL_EN.test(n) || MODAL_AR.test(n)) continue;
-    const theirs = restateTokens(sent);
+    if (QUESTION_END.test(n) || OFFER_EN.test(n) || arabic.OFFER_AR.test(n)) continue;
+    if (!o.modalOk && (MODAL_EN.test(n) || MODAL_AR.test(n))) continue;
+    const theirs = restateTokens(sent, o.skip);
     const set = new Set(theirs);
     const shared = mine.filter((w) => set.has(w));
-    if (shared.length < RESTATE_MIN || shared.length < Math.ceil(mine.length * RESTATE_SHARE) || mine.length - shared.length > RESTATE_EXTRA || !shared.some((w) => !/^\d/.test(w))) continue;
+    // A short clause ("tomorrow it should be overcast": 2 words) must be all in the sentence.
+    const extra = mine.length < RESTATE_MIN ? 0 : RESTATE_EXTRA;
+    if (shared.length < min || shared.length < Math.ceil(mine.length * RESTATE_SHARE) || mine.length - shared.length > extra || !shared.some((w) => !/^\d/.test(w))) continue;
     const theirNums = new Set(numbersIn(sent));
     if (nums.some((x) => !theirNums.has(x))) continue;
     // A negation before (or among) the shared words, unless the clause says "not" too; a future-tense claim.
     const firstAt = Math.min(...shared.map((w) => theirs.indexOf(w)).filter((i) => i >= 0));
     const negBefore = theirs.slice(0, Math.max(firstAt, 0)).some((w) => NEGATION.test(w) || arabic.isNegWord(w)) || NEGATION.test(n.split(/\s+/).slice(0, 3).join(" "));
     if (negBefore !== clNeg) continue;
-    if (arabic.hasArabic(n) && arabic.claimsIn(n).some((x) => !x.negated && (x.role === "fut1" || x.role === "fut3"))) continue;
+    if (!o.modalOk && arabic.hasArabic(n) && arabic.claimsIn(n).some((x) => !x.negated && (x.role === "fut1" || x.role === "fut3"))) continue;
     if (o.concept) {
       const done = polarClaims(n).some((p) => p.concept === o.concept && p.sign > 0 && !p.future);
       if (!done) continue;
@@ -1173,6 +1195,35 @@ function restatesReply(cl, reply, o) {
     return true;
   }
   return false;
+}
+
+/**
+ * After a cut: which of a result's sentences the administrator has NOT yet heard, matched by content (never
+ * by counting: GPT-Live joins and splits sentences in its own words, so its third sentence need not be the
+ * result's third -- on call lv1g84s, 2026-10-30, a count mismatch had the weather read twice).
+ *   sentences  the result's sentences (what the reader would read)
+ *   heard      what the administrator heard of it and the guard passed (GPT-Live's released sentences)
+ *   source     the facts it summarises (MINT AI's reply): a sentence with no figure and no word of it
+ *              ("Sure.", "Let me know if you need anything else.") is trivial, never read on its own
+ * A sentence is heard when its figures were all heard and RESTATE_SHARE of its words were.
+ * Returns { lines: [{i, text}], heard: [i], trivial: [i] }.
+ */
+const HEARD_FILLER = new Set(["sure", "okay", "right", "well", "so", "here", "that", "covers", "main", "details", "let", "know", "need", "anything", "else", "hope", "helps"]);
+function unheardLines(sentences, heard, source) {
+  const heardSet = new Set(restateTokens(heard || ""));
+  const heardNums = new Set(numbersIn(heard || ""));
+  const src = new Set(restateTokens(source || ""));
+  const out = { lines: [], heard: [], trivial: [] };
+  (sentences || []).forEach((text, i) => {
+    const toks = restateTokens(text);
+    const nums = numbersIn(text);
+    const words = toks.filter((w) => !/^\d/.test(w));
+    if (!nums.length && !words.some((w) => src.has(w) && !HEARD_FILLER.has(w))) return out.trivial.push(i);
+    const got = toks.filter((w) => heardSet.has(w)).length;
+    if (nums.every((n) => heardNums.has(n)) && toks.length && got >= Math.ceil(toks.length * RESTATE_SHARE)) return out.heard.push(i);
+    out.lines.push({ i, text });
+  });
+  return out;
 }
 
 /**
@@ -1790,6 +1841,8 @@ module.exports = {
   sentencesOf,
   speakableSentences,
   restatesReply,
+  unheardLines,
+  forecastRestates,
   restOfReply,
   REST_MAX_SENTENCES,
   needsNext,

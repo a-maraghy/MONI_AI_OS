@@ -647,6 +647,46 @@ const lastSession = () => mock.sessions[mock.sessions.length - 1];
   }
 
 
+  section("2026-10-30 (call lv1g84s, the weather said twice): a forecast's \"should\" restating the result is not advice; after a cut, only what was not heard");
+  {
+    const wx = "It is mainly clear in 6th of October City right now, about 25 degrees, feeling like 23. Tonight it will drop to around 14 degrees, and tomorrow will be overcast with a high of 25.";
+    const wxAr = "الجو صافي دلوقتي في مدينة 6 أكتوبر، حوالي 25 درجة. بالليل هتنزل لحوالي 14 درجة، وبكرة هيبقى غايم.";
+    const wctx = (reply) => ({ summary: true, replyText: reply, replyModel: desk.replyModel(reply), numbers: desk.strictNumberSet([reply]), replied: true, grounded: true, snapshotText: "" });
+    const pass = [
+      [wx, "and tomorrow it should be overcast"],
+      [wx, "Tonight it should drop to around 14 degrees, and tomorrow it should be overcast with a high of 25."],
+      [wx, "Tomorrow is expected to be overcast."],
+      ["The backup will finish at 9 tonight.", "The backup should finish at 9 tonight."],
+      [wxAr, "والمفروض بكرة يبقى غايم."],
+      [wxAr, "المفروض بالليل تنزل لحوالي 14 درجة."],
+    ];
+    for (const [reply, line] of pass) {
+      const g = desk.judge(desk.sentencesOf(line, true), wctx(reply));
+      check("a forecast restating the reply passes: " + line, g.ok, JSON.stringify(g));
+    }
+    const cut = [
+      [wx, "You should take an umbrella tomorrow."],
+      [wx, "Tomorrow it should be sunny."],
+      [wx, "Tomorrow it should be overcast with a high of 30."],
+      [wx, "It should be overcast so we should stay inside."],
+      ["The backup will finish at 9 tonight. Odoo was restarted at 2.", "Odoo should be restarted."],
+      [wxAr, "المفروض تاخد شمسية بكرة."],
+      [wxAr, "المفروض بكرة يبقى مشمس."],
+    ];
+    for (const [reply, line] of cut) {
+      const g = desk.judge(desk.sentencesOf(line, true), wctx(reply));
+      check("real advice (or another forecast) is still cut: " + line, !g.ok && /recommendation|figure|negation|claim/.test(g.rule), JSON.stringify(g));
+    }
+    const sum = ["Sure.", "It's mainly clear in 6th of October City right now, about 25 degrees.", "It feels like 23, with light wind and no rain today or tomorrow.", "Tonight it will drop to around 14 degrees, and tomorrow will be overcast with a high of 25.", "Let me know if you need anything else."];
+    const heard = "Sure, it's mainly clear in 6th of October City right now, about 25 degrees, feeling like 23, with light wind and no rain today or tomorrow.";
+    const u = desk.unheardLines(sum, heard, wx);
+    check("unheardLines: two summary sentences said as one are both heard; pleasantries are nothing to add", JSON.stringify(u.lines.map((l) => l.i)) === "[3]" && JSON.stringify(u.heard) === "[1,2]" && JSON.stringify(u.trivial) === "[0,4]", JSON.stringify(u));
+    const u2 = desk.unheardLines(sum, "It's mainly clear right now, about 52 degrees.", wx);
+    check("unheardLines: a sentence whose figure was not heard (52 for 25) is read", u2.lines.some((l) => l.i === 1), JSON.stringify(u2));
+    const u3 = desk.unheardLines(sum, heard + " Tonight it'll drop to around 14 degrees, and tomorrow will be overcast with a high of 25.", wx);
+    check("unheardLines: all of it heard -> nothing to read", u3.lines.length === 0, JSON.stringify(u3));
+  }
+
   section("the Arabic report of a screen action that returned ok (seen on the real model, 2026-09-29)");
   {
     const J = (x, c) => desk.judge([x], c || {});
