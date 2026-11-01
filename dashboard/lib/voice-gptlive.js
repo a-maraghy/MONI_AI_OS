@@ -93,6 +93,7 @@ const FACT_RULES = new Set(["figure", "negation-flipped", "not-in-reply", "pendi
 const voiceGuard = require("./voice-guard");
 const personaLib = require("./voice-persona");
 const arabic = require("./voice-arabic");
+const { SpeechGate } = require("./voice-speechgate");
 
 const { LiveCall, speakableSentences, RATE } = live;
 
@@ -456,8 +457,54 @@ class GptLiveCall extends LiveCall {
       this.diag.gatedMs += buf.length / BYTES_PER_MS;
       heard = false;
     }
-    this.relay(heard ? buf : Buffer.alloc(buf.length));
+    this.lastInAt = this.now(); // the page is sending: the clock adds no silence while the gate holds speech
+    const out = heard ? buf : Buffer.alloc(buf.length);
+    if (this.vpGating()) this.speechGate().push(out, this.anythingAudible());
+    else {
+      if (this.sgate && !this.sgate.idle) this.sgate.release();
+      this.relay(out);
+    }
     if (heard && this.duplex === "full") this.micBarge(buf);
+  }
+
+  /**
+   * The voiceprint in front of GPT-Live (lib/voice-speechgate.js): each stretch of speech is checked
+   * before GPT-Live hears it; a voice that is not stored is heard as silence. Only with "Only respond
+   * to stored voices" on; the turn-level check (vpStart / vpHold) still guards the hand-off.
+   */
+  speechGate() {
+    if (this.sgate) return this.sgate;
+    this.sgate = new SpeechGate({
+      now: () => this.now(),
+      emit: (b) => this.relay(b),
+      check: (pcm, o) => {
+        const cur = this.vpSpeaker ? { id: this.vpSpeaker.id, at: this.vpSpeaker.at } : null;
+        return this.vp.check(pcm, { overVoice: o.overVoice, voice: this.cfg.voice, current: cur });
+      },
+      on: (e) => this.speechGated(e),
+    });
+    return this.sgate;
+  }
+  speechGated(e) {
+    const r = e.r || {};
+    const named = (r.verdict === "accept" || r.verdict === "sticky") && r.speaker ? r.speaker : null;
+    if (named) this.vpSpeaker = { ...named, at: this.now() };
+    this.diag.speechGate = this.diag.speechGate || { passed: 0, blocked: 0, heldMs: [] };
+    this.diag.speechGate[e.passed ? "passed" : "blocked"]++;
+    this.diag.speechGate.heldMs.push(e.heldMs);
+    const sc = r.score != null ? r.score.toFixed(3) : "-";
+    const who = named ? named.name : r.verdict === "reject" ? "unknown voice" : "nobody named";
+    this.log(`live: call ${this.id} speech gate, segment ${e.seg}: ${r.verdict}, ${who}, ${sc}, ${e.heldMs} ms held, checked in ${Math.round(e.ms)} ms${e.overVoice ? ", over the voice" : ""} -> ${e.passed ? "the live voice hears it" : "the live voice hears silence"}${r.error ? ": " + live.scrub(r.error) : ""}`);
+    if (!e.passed) {
+      const kind = { reject: "other", echo: "echo", uncertain: "unsure" }[r.verdict] || "other";
+      this.toClient({ type: "voiceprint", verdict: r.verdict, kind, gated: true, name: null, talkOnly: false, turn: null });
+      try {
+        if (this.vp.record)
+          this.vp.record({ call_id: this.id, turn: 0, mode: "vad", speech_ms: r.speech_ms, score: r.score, tts_score: r.tts_score, verdict: r.verdict || "error", gated: true, acted: "not heard by the live voice", over_voice: !!e.overVoice, ms: r.ms, error: r.error || null, speaker_id: null, speaker: null });
+      } catch (_) {
+        /* the ledger never stops the audio */
+      }
+    }
   }
 
   /**
@@ -468,7 +515,7 @@ class GptLiveCall extends LiveCall {
    */
   micBarge(buf) {
     const now = this.now();
-    const rms = this.input.length ? this.input[this.input.length - 1].rms : rmsOf(buf);
+    const rms = rmsOf(buf); // the microphone itself (the speech gate may still be holding what was relayed)
     const ms = buf.length / BYTES_PER_MS;
     if (!this.audibleNow()) {
       // the room's floor, learned while nothing plays (never from speech)

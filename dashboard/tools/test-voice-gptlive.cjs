@@ -20,6 +20,7 @@ const { WebSocketServer } = WebSocket;
 
 const ROOT = path.join(__dirname, "..");
 const live = require(path.join(ROOT, "lib", "voice-live.js"));
+const sg = require(path.join(ROOT, "lib", "voice-speechgate.js"));
 const gl = require(path.join(ROOT, "lib", "voice-gptlive.js"));
 const voice = require(path.join(ROOT, "lib", "voice.js"));
 const desk = require(path.join(ROOT, "lib", "voice-shared.js"));
@@ -668,6 +669,88 @@ let WS_BASE;
     check("the GPT-Live call ends with voice-changed", !r.ok && c.closed && c.endWhy.why === "voice-changed" && client.json.some((m) => m.type === "ended"));
     const src = fs.readFileSync(path.join(ROOT, "lib", "voice-live.js"), "utf8");
     check("a realtime call asked to become GPT-Live ends too", /\/\^gpt-live\/\.test\(String\(patch\.live_model\)\) && this\.kind !== "gpt-live"/.test(src));
+  }
+
+  section("the voiceprint in front of GPT-Live: an unknown voice is heard as silence, a stored one as it is");
+  {
+    // A tone of 3000 is the administrator, 7000 someone else (the fake voiceprint tells them apart by loudness).
+    const checked = [];
+    const records = [];
+    const vp = {
+      enabled: () => true,
+      hasPrints: () => true,
+      gate: () => vpGate,
+      check: async (pcm, o) => {
+        checked.push({ ms: pcm.length / 48, o });
+        const known = gl.rmsOf(pcm) < 5000;
+        return known ? { verdict: "accept", score: 0.5, speaker: { id: "p1", name: "Abdul", spoken: "", may_command: true }, speech_ms: 1000, ms: 20 } : { verdict: "reject", score: 0.08, speech_ms: 1000, ms: 20 };
+      },
+      record: (r) => records.push(r),
+    };
+    let vpGate = true;
+    const { c, client, logs } = makeCall({ voiceprint: vp });
+    await c.connect();
+    const s = lastSession();
+    for (let i = 0; i < 10; i++) c.audioIn(tone(20, 30)); // a quiet room
+    await sleep(20);
+    let loud0 = s.appended - s.silentBytes;
+    const sil0 = s.silentBytes;
+    for (let i = 0; i < 6; i++) c.audioIn(tone(100, 7000)); // 600 ms of another voice: held, not relayed
+    await sleep(20);
+    check("speech is held while it is checked (nothing of it reaches GPT-Live yet)", s.appended - s.silentBytes === loud0 && !checked.length);
+    for (let i = 0; i < 6; i++) c.audioIn(tone(100, 7000));
+    await until(() => checked.length >= 1, 1000, "the check");
+    await sleep(30);
+    check("checked after ~1 s of speech", checked.length === 1 && checked[0].ms >= 1000 && checked[0].ms <= 1300, checked[0] && checked[0].ms);
+    check("an unknown voice: GPT-Live hears silence of the same length (held audio and what follows)", s.appended - s.silentBytes === loud0 && s.silentBytes - sil0 >= 1200 * 48, s.silentBytes - sil0);
+    for (let i = 0; i < 5; i++) c.audioIn(tone(100, 7000));
+    await sleep(20);
+    check("the rest of that segment is silence too", s.appended - s.silentBytes === loud0);
+    check("logged, the page's pill told, the ledger written", logs.some((l) => /speech gate, segment 1: reject, unknown voice.*hears silence/.test(l)) && client.json.some((m) => m.type === "voiceprint" && m.kind === "other" && m.gated) && records.some((r) => r.acted === "not heard by the live voice"));
+    for (let i = 0; i < 10; i++) c.audioIn(tone(100, 30)); // a pause ends the segment
+    loud0 = s.appended - s.silentBytes;
+    for (let i = 0; i < 12; i++) c.audioIn(tone(100, 3000)); // the administrator
+    await until(() => checked.length >= 2, 1000, "the second check");
+    await sleep(30);
+    check("a stored voice: the held audio is relayed whole, at once", s.appended - s.silentBytes - loud0 >= 1200 * 48, s.appended - s.silentBytes - loud0);
+    c.audioIn(tone(100, 3000));
+    await sleep(10);
+    check("and the segment goes on live, the speaker known to the call", s.appended - s.silentBytes - loud0 >= 1300 * 48 && c.vpSpeaker && c.vpSpeaker.name === "Abdul" && checked.length === 2);
+    // Switched off mid-segment: what is held goes through.
+    for (let i = 0; i < 10; i++) c.audioIn(tone(100, 30));
+    loud0 = s.appended - s.silentBytes;
+    for (let i = 0; i < 4; i++) c.audioIn(tone(100, 7000));
+    vpGate = false;
+    c.audioIn(tone(100, 7000));
+    await sleep(20);
+    check("gate switched off mid-segment: the held audio and the rest are relayed", s.appended - s.silentBytes - loud0 >= 500 * 48 && checked.length === 2);
+    c.close("hung-up");
+  }
+  {
+    // The service hangs: fail open after CHECK_WAIT_MS.
+    const vp = { enabled: () => true, hasPrints: () => true, gate: () => true, check: () => new Promise(() => {}), record: () => {} };
+    const { c, logs } = makeCall({ voiceprint: vp });
+    await c.connect();
+    const s = lastSession();
+    for (let i = 0; i < 10; i++) c.audioIn(tone(20, 30));
+    const loud0 = s.appended - s.silentBytes;
+    for (let i = 0; i < 12; i++) c.audioIn(tone(100, 3000));
+    await sleep(sg.CHECK_WAIT_MS + 150);
+    check("the voiceprint not answering: fail open, the speech is relayed", s.appended - s.silentBytes - loud0 >= 1200 * 48 && logs.some((l) => /speech gate.*error.*hears it/.test(l)));
+    c.close("hung-up");
+  }
+  {
+    // Shadow (gate off): nothing is held, nothing is checked here.
+    let n = 0;
+    const vp = { enabled: () => true, hasPrints: () => true, gate: () => false, check: async () => (n++, { verdict: "reject" }), record: () => {} };
+    const { c } = makeCall({ voiceprint: vp });
+    await c.connect();
+    const s = lastSession();
+    const loud0 = s.appended - s.silentBytes;
+    c.audioIn(tone(100, 7000));
+    await sleep(20);
+    check("gate off (shadow): the microphone is relayed at once, no check before GPT-Live", s.appended - s.silentBytes - loud0 >= 100 * 48 && n === 0);
+    c.close("hung-up");
   }
 
   section("helpers");
