@@ -461,7 +461,7 @@ class GptLiveCall extends LiveCall {
       this.diag.gatedMs += buf.length / BYTES_PER_MS;
       heard = false;
     }
-    this.lastInAt = this.now(); // the page is sending: the clock adds no silence while the gate holds speech
+    this.lastInAt = this.now(); // the page is sending (while the gate holds speech, it relays silence in its place)
     if (heard) {
       // the raw microphone's last seconds: what a barge-in is checked on (the gate may hold or silence the relayed audio)
       this.rawMic = this.rawMic || [];

@@ -6,16 +6,18 @@
  * another voice and GPT-Live still talked with it. Here the speech is checked BEFORE GPT-Live hears it:
  *
  *   idle       audio passes as it is; the room's floor is learned from quiet frames.
- *   holding    a frame of speech starts a segment: the audio is held (nothing is relayed) until
- *              HOLD_SPEECH_MS of speech, a pause of END_GAP_MS, or MAX_HOLD_MS of audio.
+ *   holding    a frame of speech starts a segment: the audio is held until HOLD_SPEECH_MS of speech, a
+ *              pause of END_GAP_MS, or MAX_HOLD_MS of audio. GPT-Live hears silence meanwhile, frame by
+ *              frame: it only talks while it hears, so a gap in its input stalls its voice and the page
+ *              runs dry (2026-11-01: "the voice keeps cutting" -- every segment while it talked was a gap).
  *   checking   the held audio goes to the voiceprint (lib/voiceprint.js check); still holding.
  *   open       a stored voice (accept, sticky), too short to tell (unverified), nothing stored or the
  *              service failing (fail open): the held audio is relayed at once, then the segment live.
+ *              GPT-Live hears that speech up to MAX_HOLD_MS late, its input that much ahead of the clock.
  *   closed     an unknown voice (reject), two voices too close (uncertain), MINT AI's own (echo): GPT-Live
- *              hears silence of the same length, held and live, until the segment ends.
+ *              goes on hearing silence, live, until the segment ends.
  *
- * A segment ends after END_GAP_MS without speech; the next speech is checked again. The timeline GPT-Live
- * hears keeps its length (silence replaces audio byte for byte), so turns are still found in it.
+ * A segment ends after END_GAP_MS without speech; the next speech is checked again.
  */
 const RATE = 24000;
 const BYTES_PER_MS = (RATE * 2) / 1000;
@@ -91,6 +93,7 @@ class SpeechGate {
         this.quietMs = 0;
       } else this.quietMs += ms;
       if (overVoice) this.overVoice = true;
+      this.o.emit(Buffer.alloc(buf.length), false); // GPT-Live's input never stops (see holding above)
       if (this.state === "holding" && (this.speechMs >= HOLD_SPEECH_MS || this.quietMs >= END_GAP_MS || this.heldBytes / BYTES_PER_MS >= MAX_HOLD_MS)) this.startCheck();
       return;
     }
@@ -129,7 +132,7 @@ class SpeechGate {
     this.heldBytes = 0;
     // A pause already ended the segment while it was held: the next speech is a new one.
     this.state = this.quietMs >= END_GAP_MS ? "idle" : passed ? "open" : "closed";
-    for (const b of held) this.o.emit(passed ? b : Buffer.alloc(b.length), passed);
+    if (passed) for (const b of held) this.o.emit(b, true); // a failed segment's silence was sent while held
     if (this.o.on) this.o.on({ seg: this.seg, verdict: r.verdict, passed, heldMs, ms, r, overVoice: this.overVoice });
   }
 

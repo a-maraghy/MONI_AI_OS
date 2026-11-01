@@ -698,6 +698,7 @@ let WS_BASE;
     for (let i = 0; i < 6; i++) c.audioIn(tone(100, 7000)); // 600 ms of another voice: held, not relayed
     await sleep(20);
     check("speech is held while it is checked (nothing of it reaches GPT-Live yet)", s.appended - s.silentBytes === loud0 && !checked.length);
+    check("but GPT-Live's input never stops: silence in its place, frame by frame (it only talks while it hears)", s.silentBytes - sil0 >= 600 * 48, s.silentBytes - sil0);
     for (let i = 0; i < 6; i++) c.audioIn(tone(100, 7000));
     await until(() => checked.length >= 1, 1000, "the check");
     await sleep(30);
