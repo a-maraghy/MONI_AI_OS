@@ -753,6 +753,37 @@ let WS_BASE;
     c.close("hung-up");
   }
 
+  section("while it talks, only a recognised voice stops it (gate on)");
+  for (const mode of ["mic", "page"]) {
+    const vp = {
+      enabled: () => true,
+      hasPrints: () => true,
+      gate: () => true,
+      check: async (pcm) => (((x) => x > 1000 && x < 5000)(gl.rmsOf(pcm.subarray(pcm.length - 4800))) ? { verdict: "accept", score: 0.5, speaker: { id: "p1", name: "Abdul", spoken: "", may_command: true } } : { verdict: "reject", score: 0.05 }),
+      record: () => {},
+    };
+    const { c, client, logs } = makeCall({ voiceprint: vp });
+    await c.connect();
+    const s = lastSession();
+    for (let i = 0; i < 10; i++) c.audioIn(tone(20, 30));
+    const p = speak(s, "Once upon a time there was a server that never slept and always answered every single question it was asked.", { gap: 80 });
+    await until(() => client.audio.length >= 2, 2000, "audio");
+    for (let i = 0; i < 4; i++) c.audioIn(tone(100, 7000)); // someone else talks over it
+    if (mode === "page") c.message({ type: "voice", on: true });
+    await sleep(40);
+    check(`${mode}: an unknown voice over it does not stop it`, !client.json.some((m) => m.type === "flush") && logs.some((l) => /not a barge-in.*reject.*keeps talking/.test(l)));
+    for (let i = 0; i < 8; i++) c.audioIn(tone(100, 30)); // quiet: the ring moves on
+    c.bargeNextAt = 0; // past the re-check pause (it would still be talking in a real call)
+    const raw = c.rawMic.length;
+    c.rawMic = []; // the next check hears only the administrator
+    for (let i = 0; i < 4; i++) c.audioIn(tone(100, 3000));
+    if (mode === "page") c.message({ type: "voice", on: true });
+    await until(() => client.json.some((m) => m.type === "flush"), 1000, "the stop").catch(() => {});
+    check(`${mode}: the administrator's voice over it stops it`, raw > 0 && client.json.some((m) => m.type === "flush") && logs.some((l) => /barge-in \(.*voiceprint accept, Abdul/.test(l)));
+    await p;
+    c.close("hung-up");
+  }
+
   section("helpers");
   {
     const long = Array.from({ length: 90 }, (_, i) => "Sentence number " + (i + 1) + " is here.").join(" ");

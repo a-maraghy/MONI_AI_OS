@@ -123,6 +123,10 @@ const TURN_GAP_MS = 1200; // input words this far apart on the session timeline 
 const INPUT_QUIET_MS = 1500;
 const MERGE_GAP_MS = 3000;
 const TURN_PAD_MS = 300;
+const RAW_MIC_MS = 3000; // the raw microphone kept for checking a barge-in
+const BARGE_CHECK_MS = 1500; // the microphone's last this-much is checked when a voice talks over the voice
+const BARGE_CHECK_WAIT_MS = 600; // the check answers in ~20-60 ms; past this the voice stops (fail open)
+const BARGE_RECHECK_MS = 700; // an unknown voice over the voice: checked again at most this often
 const SPEECH_RMS = 300; // relayed audio this loud (or 3x the room's floor) is speech, for finding a turn in it
 const SPAN_GAP_MS = 900; // a pause this long before the speech is where the turn began
 const SPAN_LOOKBACK_MS = 4000;
@@ -458,6 +462,12 @@ class GptLiveCall extends LiveCall {
       heard = false;
     }
     this.lastInAt = this.now(); // the page is sending: the clock adds no silence while the gate holds speech
+    if (heard) {
+      // the raw microphone's last seconds: what a barge-in is checked on (the gate may hold or silence the relayed audio)
+      this.rawMic = this.rawMic || [];
+      this.rawMic.push({ at: this.now(), buf });
+      while (this.rawMic.length && this.rawMic[0].at < this.now() - RAW_MIC_MS) this.rawMic.shift();
+    }
     const out = heard ? buf : Buffer.alloc(buf.length);
     if (this.vpGating()) this.speechGate().push(out, this.anythingAudible());
     else {
@@ -472,6 +482,55 @@ class GptLiveCall extends LiveCall {
    * before GPT-Live hears it; a voice that is not stored is heard as silence. Only with "Only respond
    * to stored voices" on; the turn-level check (vpStart / vpHold) still guards the hand-off.
    */
+  /**
+   * A voice over the voice (the page's detector, or heard here in headphones mode). With "Only respond to
+   * stored voices" on, the voice stops only for a RECOGNISED voice (the administrator, 2026-11-01: "do not
+   * stop talking unless you recognize a recognized voice"): the microphone's last BARGE_CHECK_MS go to the
+   * voiceprint; accept / sticky stop it, an unknown, unsure or echo voice does not, too short waits for more
+   * speech (the next candidate). The service failing or slow: it stops (fail open, as the gate). A tap and
+   * the hold-to-talk key always stop it.
+   */
+  bargeCandidate(how, why) {
+    if (!this.vpGating()) return this.bargeAllowed(how, why);
+    if (this.bargeCheck || this.now() < (this.bargeNextAt || 0)) return;
+    const pcm = Buffer.concat((this.rawMic || []).filter((x) => x.at >= this.now() - BARGE_CHECK_MS).map((x) => x.buf));
+    if (!pcm.length) return;
+    const cur = this.vpSpeaker ? { id: this.vpSpeaker.id, at: this.vpSpeaker.at } : null;
+    const t0 = this.now();
+    let done = false;
+    const finish = (r) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      this.bargeCheck = null;
+      const v = (r && r.verdict) || "error";
+      const named = (v === "accept" || v === "sticky") && r.speaker ? r.speaker : null;
+      const sc = r && r.score != null ? r.score.toFixed(3) : "-";
+      const took = this.now() - t0;
+      this.diag.bargeChecks = this.diag.bargeChecks || [];
+      this.diag.bargeChecks.push({ how, verdict: v, ms: took });
+      if (named || v === "error" || v === "none") {
+        if (named) this.vpSpeaker = { ...named, at: this.now() };
+        if (this.anythingAudible()) this.bargeAllowed(how, `${why}; voiceprint ${v}${named ? ", " + named.name : ""}, ${sc}, ${took} ms`);
+        return;
+      }
+      // unverified: too little speech yet -- the next candidate (more of it) is checked again
+      this.bargeNextAt = this.now() + (v === "unverified" ? 0 : BARGE_RECHECK_MS);
+      this.log(`live: call ${this.id} not a barge-in: ${why}; voiceprint ${v}, ${sc}, ${took} ms -> the voice keeps talking`);
+    };
+    const timer = setTimeout(() => finish({ verdict: "error", error: "slow" }), BARGE_CHECK_WAIT_MS);
+    if (timer.unref) timer.unref();
+    this.bargeCheck = Promise.resolve()
+      .then(() => this.vp.check(pcm, { overVoice: true, voice: this.cfg.voice, current: cur }))
+      .catch((e) => ({ verdict: "error", error: String((e && e.message) || e).slice(0, 120) }))
+      .then(finish);
+  }
+  bargeAllowed(how, why) {
+    this.log(`live: barge-in (${why})`);
+    this.bargeIn(how);
+    this.setState("talking");
+  }
+
   speechGate() {
     if (this.sgate) return this.sgate;
     this.sgate = new SpeechGate({
@@ -489,6 +548,7 @@ class GptLiveCall extends LiveCall {
     const r = e.r || {};
     const named = (r.verdict === "accept" || r.verdict === "sticky") && r.speaker ? r.speaker : null;
     if (named) this.vpSpeaker = { ...named, at: this.now() };
+    if (named && this.anythingAudible()) this.bargeAllowed("gate", `${named.name}'s voice over the voice (speech gate)`);
     this.diag.speechGate = this.diag.speechGate || { passed: 0, blocked: 0, heldMs: [] };
     this.diag.speechGate[e.passed ? "passed" : "blocked"]++;
     this.diag.speechGate.heldMs.push(e.heldMs);
@@ -530,9 +590,7 @@ class GptLiveCall extends LiveCall {
     const voiced = this.micVoiced.reduce((n, x) => n + x.ms, 0);
     if (voiced >= BARGE_VOICED_MS) {
       this.micVoiced = [];
-      this.log(`live: barge-in (the administrator's voice over the voice, heard here, ${this.duplex} mode, +${this.sincePlay()} ms into playback)`);
-      this.bargeIn("mic");
-      this.setState("talking");
+      this.bargeCandidate("mic", `a voice over the voice, heard here, ${this.duplex} mode, +${this.sincePlay()} ms into playback`);
     }
   }
 
@@ -567,11 +625,7 @@ class GptLiveCall extends LiveCall {
       this.voiceOn = !!m.on;
       if (this.voiceOn) {
         this.voiceOnAt = this.now();
-        if (this.audibleNow()) {
-          this.log(`live: barge-in (the page heard the administrator over the voice, ${this.duplex} mode, +${this.sincePlay()} ms into playback)`);
-          this.bargeIn("voice");
-          this.setState("talking");
-        }
+        if (this.audibleNow()) this.bargeCandidate("voice", `the page heard a voice over the voice, ${this.duplex} mode, +${this.sincePlay()} ms into playback`);
       }
       return;
     }
