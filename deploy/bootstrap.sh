@@ -92,8 +92,17 @@ if [[ -d "$RUNTIME/.git" ]]; then
 else
   say "Cloning the agent runtime from $RUNTIME_REPO"
   rm -rf "$RUNTIME"
-  git clone --quiet --branch "$RUNTIME_REF" "$RUNTIME_REPO" "$RUNTIME"
+  # MONI_RUNTIME_OPTIONAL=1 (Joya's installer): a box that cannot reach the private
+  # runtime still gets the panel and memory; agents wait until the runtime is added.
+  if ! git clone --quiet --branch "$RUNTIME_REF" "$RUNTIME_REPO" "$RUNTIME"; then
+    [[ "${MONI_RUNTIME_OPTIONAL:-0}" == "1" ]] || exit 1
+    warn "could not clone $RUNTIME_REPO -- installing without the agent runtime."
+    warn "The panel works; agents (Telegram, WhatsApp) need the runtime: re-run this script once it is reachable."
+    mkdir -p "$RUNTIME"
+  fi
 fi
+HAVE_RUNTIME=0
+[[ -f "$RUNTIME/pyproject.toml" || -f "$RUNTIME/setup.py" ]] && HAVE_RUNTIME=1
 
 if [[ ! -x "$RUNTIME/venv/bin/python" ]]; then
   say "Creating the runtime virtualenv"
@@ -102,7 +111,7 @@ fi
 
 say "Installing the runtime and the memory package"
 "$RUNTIME/venv/bin/pip" install --quiet --upgrade pip wheel
-"$RUNTIME/venv/bin/pip" install --quiet "$RUNTIME"
+if [[ $HAVE_RUNTIME == 1 ]]; then "$RUNTIME/venv/bin/pip" install --quiet "$RUNTIME"; fi
 "$RUNTIME/venv/bin/pip" install --quiet "$REPO_DIR/memory"
 
 # ------------------------------------------------------------ vault template --
@@ -165,7 +174,7 @@ visudo -cf /etc/sudoers.d/moni-dashboard >/dev/null
 say "Done."
 echo
 echo "  Agent root:      $ROOT"
-echo "  Runtime:         $RUNTIME  ($(git -C "$RUNTIME" rev-parse --short HEAD))"
+echo "  Runtime:         $RUNTIME  ($(git -C "$RUNTIME" rev-parse --short HEAD 2>/dev/null || echo 'not installed'))"
 echo "  Service account: $AGENT_USER"
 echo
 if ! grep -qE '^(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY)=.+' "$AUTH"; then

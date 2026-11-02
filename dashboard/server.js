@@ -139,6 +139,11 @@ const DATA_DIR = process.env.MONI_DATA_DIR || "/var/lib/moni-dashboard";
 const LOG_DIR = process.env.MONI_LOG_DIR || "/var/log/moni-dashboard";
 const PUBLIC_HOST = process.env.MONI_PUBLIC_HOST || "vmi3567127.contaboserver.net";
 const PUBLIC_PORT = process.env.MONI_PUBLIC_PORT || "8443";
+// A panel on the owner's own computer (Joya's "this computer" install): plain HTTP on
+// localhost, no nginx, no certificate. Only honoured while bound to loopback, so a
+// panel reachable from the network always keeps its secure-only cookie and HSTS.
+const LOCAL_HTTP =
+  process.env.MONI_LOCAL_HTTP === "1" && /^(127\.0\.0\.1|localhost|::1)$/.test(process.env.MONI_BIND || "127.0.0.1");
 
 fs.mkdirSync(LOG_DIR, { recursive: true });
 const AUTH_LOG = path.join(LOG_DIR, "auth.log");
@@ -203,9 +208,11 @@ app.use(
         frameAncestors: ["'self'"],
         baseUri: ["'self'"],
         formAction: ["'self'"],
+        // Over plain HTTP on localhost the default upgrade would send every asset to https://localhost.
+        ...(LOCAL_HTTP ? { upgradeInsecureRequests: null } : {}),
       },
     },
-    hsts: { maxAge: 31536000, includeSubDomains: true },
+    hsts: LOCAL_HTTP ? false : { maxAge: 31536000, includeSubDomains: true },
   })
 );
 
@@ -320,7 +327,7 @@ const sessionMw = session({
     rolling: true,
     cookie: {
       httpOnly: true,
-      secure: true, // we are always behind TLS
+      secure: LOCAL_HTTP ? "auto" : true, // behind TLS, except a panel on the owner's own computer (LOCAL_HTTP)
       sameSite: "strict",
       maxAge: SESSION_MAX_AGE,
     },

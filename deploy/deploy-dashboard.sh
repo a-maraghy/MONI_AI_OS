@@ -45,6 +45,13 @@ if [[ -d "$TARGET" ]]; then
   tar -czf "$BACKUP" -C "$(dirname "$TARGET")" --exclude "$(basename "$TARGET")/node_modules" "$(basename "$TARGET")"
 fi
 
+# A fresh box (Joya's installer): the panel's account, data and log directories.
+if ! id -u moniadmin >/dev/null 2>&1; then
+  say "Creating the moniadmin service account"
+  useradd --system --no-create-home --home-dir /var/lib/moni-dashboard --shell /usr/sbin/nologin moniadmin
+fi
+install -d -m 0750 -o moniadmin -g moniadmin /var/lib/moni-dashboard /var/log/moni-dashboard
+
 say "Syncing application code"
 mkdir -p "$TARGET"
 rsync -a --delete \
