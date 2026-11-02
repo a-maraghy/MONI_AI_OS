@@ -55,7 +55,14 @@ Point `RUNTIME_REPO` elsewhere if you want a different fork.
 
 ## Quick start
 
-On a fresh Ubuntu 24.04 box, as root:
+The fast way: **[Joya](https://github.com/a-maraghy/Joya)** installs Mint OS on this
+computer or on a cloud server and asks only a few plain questions:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/a-maraghy/Joya/main/install.sh | sudo bash
+```
+
+By hand, on a fresh Ubuntu 24.04 box, as root:
 
 ```bash
 git clone https://github.com/a-maraghy/MONI_AI_OS.git /opt/moni-ai-os
