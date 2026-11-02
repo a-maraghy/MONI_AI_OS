@@ -158,7 +158,7 @@ server.** Everything below follows from that.
 | Layer | What it does |
 |---|---|
 | TLS | Let's Encrypt, TLS 1.2/1.3 only, HSTS. nginx terminates. |
-| Authentication | Username + Argon2id password + TOTP 2FA. All three required. |
+| Authentication | Username + Argon2id password + TOTP 2FA. All three required. (`MONI_PASSWORD_ONLY=1`, which Joya sets: username + password only; approvals ask for the password.) |
 | Session | httpOnly, secure, sameSite=strict, regenerated on login. |
 | CSRF | Per-session token on every state-changing POST. |
 | Rate limiting | nginx `limit_req` plus an in-app limiter. |
