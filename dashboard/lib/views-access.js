@@ -12,6 +12,9 @@
 
 const { esc, shell, card, flashes, icon, stamp, ago, empty, enrolSteps } = require("./ui");
 const rbac = require("./rbac");
+// Password-only sign-in (lib/signin.js): no authenticator, no passkeys, so nothing about them is shown.
+const PASSWORD_ONLY = require("./signin").passwordOnly;
+const EMAIL_HINT = PASSWORD_ONLY ? "" : `<span class="hint">what their authenticator app shows beside the code</span>`;
 
 /**
  * A role as a pill: the administrator solid, every other role neutral. (The
@@ -57,7 +60,7 @@ function permCount(role) {
 exports.users = ({ csrf, user, users, roles, missingEmail = 0, flash, err, meId, canManage, sessionsOf }) => {
   const admins = users.filter((u) => u.role && u.role.permissions.includes("*") && !u.disabled);
   const status = (u) =>
-    u.disabled ? `<span class="pill bad">disabled</span>` : u.totp_confirmed ? `<span class="pill ok">active</span>` : `<span class="pill warn">enrolment pending</span>`;
+    u.disabled ? `<span class="pill bad">disabled</span>` : PASSWORD_ONLY || u.totp_confirmed ? `<span class="pill ok">active</span>` : `<span class="pill warn">enrolment pending</span>`;
   const rows = users
     .map(
       (u) => `<tr>
@@ -91,7 +94,7 @@ exports.users = ({ csrf, user, users, roles, missingEmail = 0, flash, err, meId,
               <input type="hidden" name="_csrf" value="${esc(csrf)}"><input type="hidden" name="back" value="/users">
               ${lastAdmin ? `<div class="alert warn">${icon("alert")}<div>The last active administrator: the role stays and the account cannot be disabled or deleted until another administrator exists.</div></div>` : ""}
               <label>Display name<input name="display_name" value="${esc(u.display_name || "")}"></label>
-              <label>Email <span class="hint">what their authenticator app shows beside the code</span><input name="email" type="email" value="${esc(u.email || "")}" required spellcheck="false"></label>
+              <label>Email ${EMAIL_HINT}<input name="email" type="email" value="${esc(u.email || "")}" required spellcheck="false"></label>
               <label>Role<select name="role_id"${lastAdmin ? " disabled" : ""}>${roleOpts(u.role_id)}</select>${lastAdmin ? `<input type="hidden" name="role_id" value="${u.role_id}">` : ""}</label>
               <label class="check"><input type="checkbox" name="disabled" value="1"${u.disabled ? " checked" : ""}${isSelf || lastAdmin ? " disabled" : ""}>
                 <span>Disabled — cannot sign in${isSelf ? " (not yourself)" : ""}</span></label>
@@ -103,10 +106,10 @@ exports.users = ({ csrf, user, users, roles, missingEmail = 0, flash, err, meId,
                     }</p>`
               }
             </form>
-            <form method="post" action="/users/${u.id}/totp" id="f-user-totp-${u.id}" data-confirm-dlg="Reset ${esc(u.username)}'s authenticator?" data-confirm-body="Their current authenticator stops working at once and any passkeys (Windows Hello) are removed; they enrol again at their next sign-in." data-confirm-yes="Reset"><input type="hidden" name="_csrf" value="${esc(csrf)}"></form>
+            ${PASSWORD_ONLY ? "" : `<form method="post" action="/users/${u.id}/totp" id="f-user-totp-${u.id}" data-confirm-dlg="Reset ${esc(u.username)}'s authenticator?" data-confirm-body="Their current authenticator stops working at once and any passkeys (Windows Hello) are removed; they enrol again at their next sign-in." data-confirm-yes="Reset"><input type="hidden" name="_csrf" value="${esc(csrf)}"></form>`}
             ${isSelf || lastAdmin ? "" : `<form method="post" action="/users/${u.id}/delete" id="f-user-del-${u.id}" data-confirm-dlg="Delete ${esc(u.username)}?" data-confirm-body="They lose access at once. The audit log keeps what they did." data-confirm-yes="Delete"><input type="hidden" name="_csrf" value="${esc(csrf)}"></form>`}
             ${n ? `<form method="post" action="/users/${u.id}/signout-all" id="f-user-out-${u.id}" data-confirm-dlg="Sign ${esc(u.username)} out everywhere?" data-confirm-body="Every browser signed in as them ends its session now, and any live voice call on it ends too." data-confirm-yes="Sign out"><input type="hidden" name="_csrf" value="${esc(csrf)}"></form>` : ""}`,
-            `<button type="submit" class="btn small" form="f-user-totp-${u.id}">Reset authenticator</button>${
+            `${PASSWORD_ONLY ? "" : `<button type="submit" class="btn small" form="f-user-totp-${u.id}">Reset authenticator</button>`}${
               isSelf || lastAdmin ? "" : `<button type="submit" class="btn small danger" form="f-user-del-${u.id}">${icon("trash", 14)} Delete</button>`
             }<a class="btn small" href="/users/${u.id}">Password…</a><span class="sp"></span><button type="button" class="btn" data-modal-close>Cancel</button><button type="submit" class="btn primary" form="${fid}">Save</button>`
           );
@@ -115,13 +118,13 @@ exports.users = ({ csrf, user, users, roles, missingEmail = 0, flash, err, meId,
       modal(
         "m-user-add",
         "Add a user",
-        "They enrol their authenticator at first sign-in.",
+        PASSWORD_ONLY ? "They sign in with the username and password you give them." : "They enrol their authenticator at first sign-in.",
         "plus",
         `<form class="mb" method="post" action="/users/new" id="f-user-add" autocomplete="off">
           <input type="hidden" name="_csrf" value="${esc(csrf)}">
           <label>Username <span class="hint">what they type to sign in</span><input name="username" required pattern="[a-zA-Z0-9._\\-]{3,32}" autocomplete="off" spellcheck="false"></label>
           <label>Display name <span class="hint">optional</span><input name="display_name"></label>
-          <label>Email <span class="hint">what their authenticator app shows beside the code</span><input name="email" type="email" required spellcheck="false" placeholder="name@company.com"></label>
+          <label>Email ${EMAIL_HINT}<input name="email" type="email" required spellcheck="false" placeholder="name@company.com"></label>
           <label>Role<select name="role_id">${roleOpts((roles.find((r) => r.name === "viewer") || roles[roles.length - 1] || {}).id)}</select></label>
           <label>Temporary password <span class="hint">shown once, on the next screen</span><input name="password" type="password" minlength="12" required autocomplete="new-password"></label>
         </form>`,
@@ -136,8 +139,8 @@ exports.users = ({ csrf, user, users, roles, missingEmail = 0, flash, err, meId,
       missingEmail
         ? `<div class="alert warn">${icon("alert")}<div>${missingEmail} account${
             missingEmail === 1 ? " has" : "s have"
-          } no email address yet. It is what the authenticator app shows beside the
-           code, so add it from ${missingEmail === 1 ? "that account" : "each account"} below.
+          } no email address yet.${PASSWORD_ONLY ? "" : ` It is what the authenticator app shows beside the
+           code,`} Add it from ${missingEmail === 1 ? "that account" : "each account"} below.
            Sign-in is unaffected either way.</div></div>`
         : ""
     }
@@ -199,7 +202,7 @@ exports.userNew = ({ csrf, user, roles, form = {}, errors = [] }) =>
             <input name="display_name" value="${esc(form.display_name || "")}"></label>
         </div>
         <label>Email
-          <span class="hint">what their authenticator app shows beside the code</span>
+          ${EMAIL_HINT}
           <input name="email" type="email" value="${esc(form.email || "")}" required
             autocomplete="off" spellcheck="false" placeholder="name@company.com"></label>
         <label>Role
@@ -222,7 +225,12 @@ exports.userNew = ({ csrf, user, roles, form = {}, errors = [] }) =>
 
     ${card(
       "What happens next",
-      `<ol class="steps">
+      PASSWORD_ONLY
+        ? `<ol class="steps">
+        <li>You hand them the username and temporary password, over a channel they already trust.</li>
+        <li>They sign in and change the password from their account page.</li>
+      </ol>`
+        : `<ol class="steps">
         <li>You get a one-time enrolment link and QR code for their authenticator app.</li>
         <li>They scan it and confirm a code — until then the account cannot sign in.</li>
         <li>They sign in with the temporary password and change it from their account page.</li>
@@ -236,12 +244,33 @@ exports.userNew = ({ csrf, user, roles, form = {}, errors = [] }) =>
       csrf,
       active: "users",
       heading: "Add user",
-      subtitle: "Creates the account and starts authenticator enrolment.",
+      subtitle: PASSWORD_ONLY ? "Creates the account with a temporary password." : "Creates the account and starts authenticator enrolment.",
       actions: `<a class="btn" href="/users">${icon("chevron")} All users</a>`,
     }
   );
 
 exports.userEnrol = ({ csrf, user, target, qr, secret, password, reset }) =>
+  PASSWORD_ONLY
+    ? shell(
+        "Created " + target.username,
+        `<div class="alert good">${icon("check")}<div>
+      <strong>${esc(target.username)}</strong> has been created. The password is shown once.</div></div>
+    ${card(
+      "Hand these over",
+      `<p class="muted small">Username</p>
+      <pre class="secret">${esc(target.username)}</pre>
+      <p class="muted small">Temporary password</p>
+      <pre class="secret">${esc(password)}</pre>
+      <p>They sign in at this panel's address with these, then change the password from their account page.</p>
+      <div class="btn-row">
+        <a class="btn primary" href="/users">${icon("check")} Done</a>
+        <a class="btn" href="/users/${target.id}">Manage this user</a>
+      </div>`,
+      { icon: "lock" }
+    )}`,
+        { user, csrf, active: "users", heading: "New user " + target.username, subtitle: "Shown once. There is no way to display the password again." }
+      )
+    :
   shell(
     "Enrol " + target.username,
     `${
@@ -322,7 +351,7 @@ exports.userDetail = ({ csrf, user, target, roles, isSelf, lastAdmin, flash, err
             ? `<span class="pill bad">disabled</span>`
             : `<span class="pill ok">enabled</span>`
         }</td></tr>
-        <tr><td>Two-factor</td><td>${
+        ${PASSWORD_ONLY ? "" : `<tr><td>Two-factor</td><td>${
           target.totp_confirmed
             ? `<span class="pill ok">enrolled</span>`
             : `<span class="pill warn">enrolment pending</span>
@@ -334,7 +363,7 @@ exports.userDetail = ({ csrf, user, target, roles, isSelf, lastAdmin, flash, err
           passkeyCount
             ? `<span class="pill ok">${passkeyCount} registered</span>`
             : `<span class="muted small">none — signs in with the authenticator code</span>`
-        }</td></tr>
+        }</td></tr>`}
         <tr><td>Created</td><td class="mono small">${esc(stamp(target.created_at))}${
           target.created_by ? ` by ${esc(target.created_by)}` : ""
         }</td></tr>
@@ -352,11 +381,11 @@ exports.userDetail = ({ csrf, user, target, roles, isSelf, lastAdmin, flash, err
         <label>Display name
           <input name="display_name" value="${esc(target.display_name || "")}"></label>
         <label>Email
-          <span class="hint">what their authenticator app shows beside the code${
+          ${PASSWORD_ONLY ? "" : `<span class="hint">what their authenticator app shows beside the code${
             target.totp_confirmed
               ? " — changing it does not disturb an enrolled phone"
               : ""
-          }</span>
+          }</span>`}
           <input name="email" type="email" value="${esc(target.email || "")}" required
             autocomplete="off" spellcheck="false" placeholder="name@company.com"></label>
         <label>Role
@@ -385,22 +414,22 @@ exports.userDetail = ({ csrf, user, target, roles, isSelf, lastAdmin, flash, err
 
     ${card(
       "Recovery",
-      `<p class="muted small">Both of these invalidate what the user currently has. Use them when
-        someone has lost a device or a password, not as routine maintenance.</p>
-      <div class="grid cols-2">
+      `<p class="muted small">${PASSWORD_ONLY ? "This invalidates the password they have now. Use it when someone has lost their password, not as routine maintenance." : `Both of these invalidate what the user currently has. Use them when
+        someone has lost a device or a password, not as routine maintenance.`}</p>
+      <div class="grid${PASSWORD_ONLY ? "" : " cols-2"}">
         <form method="post" action="/users/${target.id}/password">
           <input type="hidden" name="_csrf" value="${esc(csrf)}">
           <label>New temporary password
             <input name="password" type="password" minlength="12" required autocomplete="new-password"></label>
           <button class="btn" type="submit">${icon("lock")} Reset password</button>
         </form>
-        <form method="post" action="/users/${target.id}/totp"
+        ${PASSWORD_ONLY ? "" : `<form method="post" action="/users/${target.id}/totp"
               data-confirm="Reset two-factor for ${esc(target.username)}? Their current authenticator stops working immediately${passkeyCount ? `, and their ${passkeyCount} passkey${passkeyCount === 1 ? " is" : "s are"} removed` : ""}.">
           <input type="hidden" name="_csrf" value="${esc(csrf)}">
           <p class="muted small">Resetting two-factor issues a new secret, removes their passkeys
             (Windows Hello), and blocks sign-in until they enrol again.</p>
           <button class="btn" type="submit">${icon("reindex")} Reset two-factor</button>
-        </form>
+        </form>`}
       </div>`,
       { icon: "lock" }
     )}
@@ -855,7 +884,12 @@ exports.account = ({ csrf, user, me, flash, err, appearance, passkeys }) =>
       { icon: "lock" }
     )}
 
-    ${card(
+    ${PASSWORD_ONLY ? card(
+      "Signed-in devices",
+      `<p class="muted">You sign in with your username and password.</p>
+      <div class="btn-row"><a class="btn" href="/devices">${icon("devices")} Signed-in devices</a></div>`,
+      { icon: "devices" }
+    ) : card(
       "Authenticator",
       `${
         me.totp_confirmed
@@ -884,7 +918,7 @@ exports.account = ({ csrf, user, me, flash, err, appearance, passkeys }) =>
       { icon: "devices" }
     )}
 
-    ${passkeyCard(csrf, passkeys)}
+    ${PASSWORD_ONLY ? "" : passkeyCard(csrf, passkeys)}
 
     ${card(
       "What you can do",
@@ -904,7 +938,7 @@ exports.account = ({ csrf, user, me, flash, err, appearance, passkeys }) =>
       active: null,
       crumbs: [["Account", null]],
       heading: me.display_name || me.username,
-      subtitle: "Your own sign-in, authenticator, passkeys and role.",
+      subtitle: PASSWORD_ONLY ? "Your own sign-in and role." : "Your own sign-in, authenticator, passkeys and role.",
       assets: passkeys && passkeys.rpID ? ["simplewebauthn-browser.js", "passkey.js"] : [],
     }
   );

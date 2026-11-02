@@ -42,6 +42,8 @@ const claudeViews = require("./lib/views-claude");
 const moniai = require("./lib/moniai");
 const rbac = require("./lib/rbac");
 const totp = require("./lib/totp");
+const signin = require("./lib/signin");
+const PASSWORD_ONLY = signin.passwordOnly;
 // Passkeys (Windows Hello) as the sign-in's second step; the authenticator stays as the fallback.
 const passkeys = require("./lib/passkeys");
 // Windows Hello (or the code) for every approval that lets something run (2026-10-08).
@@ -542,6 +544,14 @@ const pairLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+/* ------------------------------------------------------- password only --- */
+
+// Password-only sign-in (lib/signin.js): no authenticator and no passkeys, so their
+// routes do not exist. Registered before them, so nothing below needs to check.
+const SECOND_FACTOR_ROUTES = /^\/(account\/authenticator|account\/passkeys|login\/passkey|users\/\d+\/totp)(\/|$)/;
+if (PASSWORD_ONLY)
+  app.use((req, res, next) => (SECOND_FACTOR_ROUTES.test(req.path) ? res.status(404).send(views.error("Not found", "No such page.")) : next()));
+
 /* ------------------------------------------------------------ first run --- */
 
 /**
@@ -597,7 +607,7 @@ app.get("/setup", async (req, res) => {
   if (!noUsersYet()) return res.redirect("/login");
   if (!setupTokenValid(req.query.token))
     return res.status(404).send(views.error("Not found", "No such page."));
-  res.send(views.setup({ csrf: res.locals.csrf, token: req.query.token }));
+  res.send(views.setup({ csrf: res.locals.csrf, token: req.query.token, passwordOnly: PASSWORD_ONLY }));
 });
 
 app.post("/setup", requireCsrf, async (req, res) => {
@@ -620,6 +630,7 @@ app.post("/setup", requireCsrf, async (req, res) => {
         token: req.body.token,
         form: { username, email },
         errors,
+        passwordOnly: PASSWORD_ONLY,
       })
     );
 
@@ -636,6 +647,11 @@ app.post("/setup", requireCsrf, async (req, res) => {
     createdBy: "setup",
   });
 
+  // Password-only (lib/signin.js): nothing to enrol, the account is ready now.
+  if (PASSWORD_ONLY) {
+    db.confirmUserTotp(db.getUserByName(username).id);
+    return res.send(views.setupDone({ passwordOnly: true }));
+  }
   const qr = await enrolQr({ username, email }, secret);
   res.send(views.totpEnroll({ csrf: res.locals.csrf, qr, secret, account: email }));
 });
@@ -678,6 +694,7 @@ app.get("/login", (req, res) => {
       passkeys: !!passkeys.rpFor(req),
       desktop: app_,
       days: desktop.days(),
+      passwordOnly: PASSWORD_ONLY,
     })
   );
 });
@@ -692,14 +709,14 @@ app.post("/login", loginLimiter, requireCsrf, async (req, res) => {
     logAuthFailure(ip, reason);
     return res
       .status(401)
-      .send(views.login({ csrf: res.locals.csrf, error: "Invalid credentials." }));
+      .send(views.login({ csrf: res.locals.csrf, error: "Invalid credentials.", passwordOnly: PASSWORD_ONLY }));
   };
 
   // `second=passkey` (set by public/passkey.js when the page offers it): no code
   // now, the second step comes next. Without it a missing code is a missing
   // field, exactly as before passkeys existed.
   const viaPasskey = !String(token || "").trim() && req.body.second === "passkey" && !!passkeys.rpFor(req);
-  if (!username || !password || (!token && !viaPasskey)) return reject("missing field");
+  if (!username || !password || (!token && !viaPasskey && !PASSWORD_ONLY)) return reject("missing field");
   const account = db.getUserByName(String(username));
 
   /**
@@ -740,6 +757,12 @@ app.post("/login", loginLimiter, requireCsrf, async (req, res) => {
   }
   if (!passwordOk) return viaPasskey ? toSecondStep(null, false, "bad password") : reject("bad password");
   if (viaPasskey) return toSecondStep(account.id, true, null);
+
+  // Password-only (lib/signin.js): the password is the whole sign-in.
+  if (PASSWORD_ONLY)
+    return completeLogin(req, res, account, "password only", (err, to) =>
+      err ? res.status(500).send(views.error("Session error", String(err))) : res.redirect(to)
+    );
 
   // Checked and spent in one step. A code stayed usable for its whole
    // ninety-second life before, so one seen over a shoulder -- or in a screen
@@ -826,6 +849,7 @@ function secondStepFailed(req, p, reason) {
 
 app.get("/login/verify", (req, res) => {
   if (req.me) return res.redirect(landingFor(req));
+  if (PASSWORD_ONLY) return res.redirect("/login");
   const p = pendingLogin(req);
   if (!p) return res.redirect("/login");
   const rp = passkeys.rpFor(req);
@@ -878,6 +902,7 @@ app.post("/login/passkey", passkeyLimiter, requireCsrf, async (req, res) => {
 
 /** The fallback: the authenticator code, on the same pending sign-in. */
 app.post("/login/code", loginLimiter, requireCsrf, (req, res) => {
+  if (PASSWORD_ONLY) return res.redirect("/login");
   const p = pendingLogin(req);
   if (!p) return res.redirect("/login");
   const account = pendingAccount(p);
@@ -4635,8 +4660,9 @@ app.post("/users/new", requireAuth, requirePerm("users.manage"), requireCsrf, as
     roleId,
     createdBy: req.me.username,
   });
+  if (PASSWORD_ONLY) db.confirmUserTotp(info.lastInsertRowid); // nothing to enrol (lib/signin.js)
   const target = db.getUser(info.lastInsertRowid);
-  const qr = await enrolQr(target, secret);
+  const qr = PASSWORD_ONLY ? null : await enrolQr(target, secret);
   // Rendered directly rather than redirected to: the password and the secret
   // exist only in this response, and a redirect would have to carry them in a
   // URL, which is the one place they must never be.
@@ -4646,8 +4672,9 @@ app.post("/users/new", requireAuth, requirePerm("users.manage"), requireCsrf, as
       user: ctx(req, "os"),
       target,
       qr,
-      secret,
+      secret: PASSWORD_ONLY ? null : secret,
       password,
+      passwordOnly: PASSWORD_ONLY,
     })
   );
 });
@@ -4930,6 +4957,7 @@ app.get("/account", requireAuth, (req, res) => {
       // A pointer to Settings > Appearance, for those who can open the Command Center.
       appearance: req.perm.can("moniai.use"),
       passkeys: accountPasskeys(req),
+      passwordOnly: PASSWORD_ONLY,
     })
   );
 });

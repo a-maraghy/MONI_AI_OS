@@ -1658,7 +1658,7 @@
     var head = res === "ok" ? (byRule ? "Auto-approved" : "Approved") : a.status === "denied" ? "Denied" : a.status === "expired" ? "Expired" : a.status === "cancelled" ? "Withdrawn" : "Approval needed";
     var who = esc(ML.approvalFrom(a)) + (/^session:/.test(String(a.origin || "")) ? " (a session MINT AI hired)" : "");
     var what = a.tool === "SessionRetire" ? "retire the session <b>" + esc(String((a.input || {}).session || (a.input || {}).name || "?")) + "</b>" : a.tool === "SendMessage" ? "send this to <b>" + esc(String((a.input || {}).to || "a session").replace(/\s*\[[0-9a-f]+\]$/, "")) + "</b>" : a.tool === "Bash" || a.tool === "Monitor" ? "run this command" : "use <b>" + esc(a.tool) + "</b>";
-    var how = a.verified === "hello" ? " with Windows Hello" : a.verified === "totp" ? " with the authenticator code" : "";
+    var how = a.verified === "hello" ? " with Windows Hello" : a.verified === "totp" ? " with the authenticator code" : a.verified === "password" ? " with the password" : "";
     var resText = a.status === "approved" ? (byRule ? "Approved automatically by " + esc(decidedBy(a)) : "Approved by " + esc(decidedBy(a)) + how) + " · " + esc(hm(a.decided_at))
       : a.status === "denied" ? "Denied by " + esc(decidedBy(a)) + " · " + esc(hm(a.decided_at)) + " — nothing ran"
       : a.status === "expired" ? "Nobody answered in time — denied by default at " + esc(hm(a.decided_at))

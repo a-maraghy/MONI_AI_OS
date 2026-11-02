@@ -597,7 +597,14 @@
     c.hello = c.actions.some(function (x) { return x.hello; });
     return c;
   }
-  var HELLO_HINT = "Approving asks for Windows Hello. No passkey on this device, or Hello fails? Your authenticator code works too.";
+  // Password-only sign-in (dashboard lib/signin.js, <body data-signin="password">): approving asks for the password.
+  // Read when shown, not at load: this file may load before <body> exists.
+  function helloHint() {
+    var pw = typeof document !== "undefined" && !!document.body && document.body.getAttribute("data-signin") === "password";
+    return pw
+      ? "Approving asks for your password."
+      : "Approving asks for Windows Hello. No passkey on this device, or Hello fails? Your authenticator code works too.";
+  }
   function cardOf(q) {
     if (!q) return null;
     var id = encodeURIComponent(String(q.id));
@@ -832,7 +839,7 @@
     checkBotTeamEdit: checkBotTeamEdit, applyBotTeamEdit: applyBotTeamEdit, botHeadFor: botHeadFor, BOT_TEAM_MAX: BOT_TEAM_MAX, botTurnDone: botTurnDone, BOT_LONG_TURN_MS: BOT_LONG_TURN_MS,
     SESS_VIEWS: SESS_VIEWS, SESS_VIEW_DEFAULT: SESS_VIEW_DEFAULT, normSessView: normSessView, isSessView: isSessView,
     STATES: STATES, LABEL: LABEL, coreState: coreState, caption: caption, vpBadge: vpBadge, VP_SHOW_MS: VP_SHOW_MS, VP_MIN_MS: VP_MIN_MS, CAPTION_REST_MS: CAPTION_REST_MS, captionRests: captionRests, captionRestIn: captionRestIn, composerCalm: composerCalm, lastSentence: lastSentence, gist: gist,
-    needQueue: needQueue, card: card, doneText: doneText, approvalFrom: approvalFrom, approvalNoRule: approvalNoRule, HELLO_HINT: HELLO_HINT,
+    needQueue: needQueue, card: card, doneText: doneText, approvalFrom: approvalFrom, approvalNoRule: approvalNoRule, get HELLO_HINT() { return helloHint(); },
     TOK_KEYS: TOK_KEYS, tokens: tokens, tokLine: tokLine, tokTip: tokTip,
     SHEETS: SHEETS, sheetKeys: sheetKeys,
     normName: normName, makeAliases: makeAliases, resolveTarget: resolveTarget, resolveFrom: resolveFrom, ghostWhere: ghostWhere,

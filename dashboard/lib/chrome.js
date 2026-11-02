@@ -140,7 +140,7 @@ function forActor(perm, data, me) {
     try {
       if (can("users.view")) {
         const users = deps.db.listUsers();
-        const pending = users.filter((u) => !u.totp_confirmed && !u.disabled).length;
+        const pending = require("./signin").passwordOnly ? 0 : users.filter((u) => !u.totp_confirmed && !u.disabled).length;
         badges.users = pending ? [String(pending), "warn", pending + " awaiting enrolment"] : [String(users.length), "plain"];
       }
       if (can("roles.view")) badges.roles = [String(deps.db.listRoles().length), "plain"];

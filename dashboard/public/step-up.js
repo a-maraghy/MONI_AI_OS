@@ -123,7 +123,18 @@
       inp.pattern = "[0-9]{6}";
       inp.setAttribute("aria-label", "Authenticator code");
       inp.placeholder = "123456";
-      var codeGo = el("button", "cc-btn pri", "Approve with the code");
+      // Password-only sign-in (lib/signin.js): the same form asks for the password.
+      if (su.password) {
+        lab.firstChild.textContent = "Your password";
+        inp.type = "password";
+        inp.inputMode = "text";
+        inp.autocomplete = "current-password";
+        inp.removeAttribute("maxLength");
+        inp.removeAttribute("pattern");
+        inp.setAttribute("aria-label", "Your password");
+        inp.placeholder = "";
+      }
+      var codeGo = el("button", "cc-btn pri", su.password ? "Approve" : "Approve with the code");
       codeGo.type = "submit";
       lab.appendChild(inp);
       form.appendChild(lab);
@@ -151,7 +162,10 @@
         what.textContent = su.what || "Approve";
         again.hidden = !canHello();
         useCode.hidden = !su.totp || !form.hidden;
-        if (!canHello()) {
+        if (su.password) {
+          st.textContent = "Enter your password to approve.";
+          showCode();
+        } else if (!canHello()) {
           st.textContent = (su.no_passkey || (supported ? "" : "This browser cannot use Windows Hello.")) + (su.totp ? " Enter your authenticator code to approve." : "");
           showCode();
         }
@@ -159,7 +173,7 @@
         tick();
       }
       function showCode() {
-        if (!su.totp) return;
+        if (!su.totp && !su.password) return;
         form.hidden = false;
         useCode.hidden = true;
         setTimeout(function () { try { inp.focus(); } catch (e) { /* gone */ } }, 0);
@@ -190,7 +204,7 @@
       function submit(proof, how) {
         setBusy(true);
         say("");
-        st.textContent = how === "hello" ? "Windows Hello confirmed. Sending…" : "Checking the code…";
+        st.textContent = how === "hello" ? "Windows Hello confirmed. Sending…" : how === "password" ? "Checking…" : "Checking the code…";
         Promise.resolve()
           .then(function () { return send(proof); })
           .then(function (r) { finish(true, r); }, function (e) {
@@ -201,7 +215,7 @@
               st.textContent = canHello() ? "Try Windows Hello again, or use your authenticator code." : "";
               inp.value = "";
               paint();
-              if (how === "totp") showCode();
+              if (how === "totp" || how === "password") showCode();
               return;
             }
             finish(false, e);
@@ -230,6 +244,11 @@
       });
       form.addEventListener("submit", function (ev) {
         ev.preventDefault();
+        if (su.password) {
+          if (!inp.value) return say("Enter your password.");
+          if (!busy) submit({ password: String(inp.value) }, "password");
+          return;
+        }
         var c = String(inp.value || "").replace(/\D/g, "");
         if (c.length !== 6) return say("The code is six digits.");
         if (!busy) submit({ totp: c }, "totp");
@@ -241,7 +260,7 @@
       timerId = setInterval(tick, 1000);
       paint();
       if (canHello()) runHello();
-      else if (!su.totp) st.textContent = (su.no_passkey || "") + " This account has no authenticator either: it cannot approve here.";
+      else if (!su.totp && !su.password) st.textContent = (su.no_passkey || "") + " This account has no authenticator either: it cannot approve here.";
       try { (form.hidden ? again : inp).focus(); } catch (e) { /* fine */ }
     });
   }

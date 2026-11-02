@@ -625,16 +625,21 @@ exports.guide = ({ csrf, user, publicHost, publicPort, sshHost }) => {
       ${where("Access & security › Users · Roles · Credentials")}
       <div class="gd-body">
       <p>A user has exactly one <b>role</b>; the role carries the permissions and the agent /
-        channel scope. <b>Add user</b> sends them through authenticator enrolment (Microsoft
+        channel scope. ${
+          require("./signin").passwordOnly
+            ? `<b>Add user</b> gives them a username and a temporary password. <b>Manage</b> changes a
+        role, resets the password, disables or deletes, and lets an administrator sign out that user's devices.`
+            : `<b>Add user</b> sends them through authenticator enrolment (Microsoft
         Authenticator: “Other account”). <b>Manage</b> changes a role, resets the
         authenticator (which also removes their passkeys), disables or deletes, and lets an
-        administrator sign out that user's devices. Built-in roles cannot be deleted. Talking to MINT AI by voice is its own
+        administrator sign out that user's devices.`
+        } Built-in roles cannot be deleted. Talking to MINT AI by voice is its own
         permission (<code>voice.use</code>), given to administrators only.</p>
-      <p><b>Passkeys.</b> On <b>Account › Passkeys</b> you can add this device (Windows Hello:
+      ${require("./signin").passwordOnly ? "<p>Everyone signs in with a username and password; approving a sensitive action asks for the password again.</p>" : `<p><b>Passkeys.</b> On <b>Account › Passkeys</b> you can add this device (Windows Hello:
         face, fingerprint or PIN) after a fresh code; signing in then asks for the password and
         Windows Hello instead of the code. A passkey works only at the address where it was
         added (os.mint-stack.com is the one to use), the authenticator code stays one click
-        away on every sign-in, and root unlock and approvals still ask for the code.</p>
+        away on every sign-in, and root unlock and approvals still ask for the code.</p>`}
       <p><b>Credentials</b> holds the secrets the agents share; the OpenAI key for voice lives
         in <b>MINT AI › Settings › Voice</b>.</p>
       </div>

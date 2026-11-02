@@ -1,4 +1,6 @@
 "use strict";
+
+const signin = require("./signin");
 /**
  * Passkeys (WebAuthn) as the second sign-in step: Windows Hello's face,
  * fingerprint or PIN on a trusted device, instead of typing the authenticator
@@ -105,6 +107,7 @@ function hostOf(req) {
 
 /** {rpID, origin} for this request, or null when its host is not allowed. */
 function rpFor(req) {
+  if (signin.passwordOnly) return null; // password-only sign-in (lib/signin.js): no passkeys anywhere
   const host = hostOf(req);
   return RPS.find((r) => r.rpID === host) || null;
 }

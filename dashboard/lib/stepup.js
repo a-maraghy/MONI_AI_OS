@@ -29,6 +29,7 @@
 
 const passkeys = require("./passkeys");
 const totp = require("./totp");
+const signin = require("./signin");
 
 const FAIL_MAX = 5;
 const FAIL_WINDOW_MS = 10 * 60 * 1000;
@@ -62,12 +63,16 @@ function proofOf(body) {
   }
   if (!p || typeof p !== "object" || Array.isArray(p)) return null;
   if (typeof p.totp === "string" || typeof p.totp === "number") return { totp: String(p.totp) };
+  if (signin.passwordOnly && typeof p.password === "string" && p.password.length <= 1024) return { password: p.password };
   if (typeof p.token === "string" && p.response && typeof p.response === "object") return { token: p.token, response: p.response };
   return null;
 }
 
 /** A challenge for `bind`: what the page needs to ask for Windows Hello, or why it cannot. */
 async function challenge(req, bind, what) {
+  // Password-only sign-in (lib/signin.js): the password is the only thing to confirm with.
+  if (signin.passwordOnly)
+    return { what: what || "Approve", token: null, passkey: null, no_passkey: null, totp: false, password: true, code_locked: codeLocked(req.me.id) };
   const rp = passkeys.rpFor(req);
   let opts = null;
   let noPasskey = null;
@@ -91,6 +96,22 @@ async function challenge(req, bind, what) {
  * {ok: false, status, error}.
  */
 async function verify(req, bind, proof) {
+  if (signin.passwordOnly) {
+    if (proof.password === undefined) return { ok: false, status: 403, error: "Enter your password to approve." };
+    if (codeLocked(req.me.id)) return { ok: false, status: 429, error: "Too many wrong passwords. Wait ten minutes." };
+    let good = false;
+    try {
+      good = await require("argon2").verify(req.me.password_hash, proof.password);
+    } catch (_) {
+      good = false;
+    }
+    if (!good) {
+      codeFailed(req.me.id);
+      return { ok: false, status: 403, error: "That password is not right." };
+    }
+    fails.delete(req.me.id);
+    return { ok: true, method: "password", with: "password" };
+  }
   if (proof.totp !== undefined) {
     if (codeLocked(req.me.id)) return { ok: false, status: 429, error: "Too many wrong codes. Use Windows Hello, or wait ten minutes." };
     if (!totp.verifyAndConsume(req.me, proof.totp)) {
@@ -110,7 +131,7 @@ async function verify(req, bind, proof) {
 /** "Windows Hello (Laptop Windows Hello)" / "authenticator code", for audit lines. */
 function label(s) {
   if (!s) return "no step-up";
-  return s.method === "hello" ? `Windows Hello (${s.with})` : "authenticator code";
+  return s.method === "hello" ? `Windows Hello (${s.with})` : s.method === "password" ? "password" : "authenticator code";
 }
 
 const wantsJson = (req) => /json/.test(String(req.get("accept") || "")) || req.get("x-requested-with") === "fetch" || req.is("application/json");
@@ -157,7 +178,7 @@ function requireStepUp(spec) {
       return res.status(status).json(body);
     };
     try {
-      if (!proof) return await refuse(428, "Confirm it is you: Windows Hello, or your authenticator code.", "step-up");
+      if (!proof) return await refuse(428, signin.passwordOnly ? "Confirm it is you: enter your password." : "Confirm it is you: Windows Hello, or your authenticator code.", "step-up");
       const r = await verify(req, bind, proof);
       if (!r.ok) return await refuse(r.status, r.error, r.status === 429 ? "step-up-locked" : "step-up-failed");
       req.stepUp = { method: r.method, with: r.with, bind };

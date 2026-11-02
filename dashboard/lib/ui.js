@@ -600,7 +600,7 @@ ${css}
 <script src="${asset("os.js")}" defer></script>
 <script src="${asset("step-up.js")}" defer></script>
 ${js}
-</head><body>
+</head><body${require("./signin").passwordOnly ? ' data-signin="password"' : ""}>
 ${inner}
 </body></html>`;
 }

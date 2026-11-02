@@ -57,7 +57,7 @@ function deskHandOff(desktop) {
     : "";
 }
 
-exports.login = ({ csrf, error, passkeys, desktop, days }) =>
+exports.login = ({ csrf, error, passkeys, desktop, days, passwordOnly }) =>
   shell(
     "Sign in",
     `<div class="card">
@@ -68,9 +68,13 @@ exports.login = ({ csrf, error, passkeys, desktop, days }) =>
         ${passkeys ? `<input type="hidden" name="second" value="">` : ""}
         <label>Username<input name="username" autocomplete="username" required autofocus></label>
         <label>Password<input name="password" type="password" autocomplete="current-password" required></label>
-        <label class="lg-code">Authenticator code
+        ${
+          passwordOnly
+            ? ""
+            : `<label class="lg-code">Authenticator code
           <input name="token" inputmode="numeric" pattern="[0-9 ]*" placeholder="000000"
-                 autocomplete="one-time-code" required></label>
+                 autocomplete="one-time-code" required></label>`
+        }
         ${
           passkeys
             ? `<p class="lg-pk-note muted small" hidden>${icon("fingerprint", 14)} Windows Hello confirms it is you on the next step.</p>`
@@ -87,7 +91,15 @@ exports.login = ({ csrf, error, passkeys, desktop, days }) =>
         }
       </form>
       ${deskHandOff(desktop)}
-      <p class="auth-foot">${icon("lock", 14)}<span>${desktop ? `Two-factor required · the app stays signed in for ${esc(String(days || 14))} days` : "Two-factor required · sessions end after 8 h idle"}</span></p>
+      <p class="auth-foot">${icon("lock", 14)}<span>${
+        passwordOnly
+          ? desktop
+            ? `The app stays signed in for ${esc(String(days || 14))} days`
+            : "Sessions end after 8 h idle"
+          : desktop
+            ? `Two-factor required · the app stays signed in for ${esc(String(days || 14))} days`
+            : "Two-factor required · sessions end after 8 h idle"
+      }</span></p>
     </div>`,
     deskOpts(desktop, passkeys ? ["simplewebauthn-browser.js", "passkey.js"] : [])
   );
@@ -129,7 +141,7 @@ exports.loginVerify = ({ csrf, username, passkeys, primary, error, desktop }) =>
     deskOpts(desktop, passkeys ? ["simplewebauthn-browser.js", "passkey.js"] : [])
   );
 
-exports.setup = ({ csrf, token, form = {}, errors = [] }) =>
+exports.setup = ({ csrf, token, form = {}, errors = [], passwordOnly }) =>
   shell(
     "First-run setup",
     `<div class="card">
@@ -140,8 +152,8 @@ exports.setup = ({ csrf, token, form = {}, errors = [] }) =>
         <input type="hidden" name="_csrf" value="${esc(csrf)}">
         <input type="hidden" name="token" value="${esc(token)}">
         <label>Username<input name="username" value="${esc(form.username || "")}" required autofocus></label>
-        <label>Email
-          <span class="hint">what your authenticator app shows beside the code</span>
+        <label>Email${passwordOnly ? "" : `
+          <span class="hint">what your authenticator app shows beside the code</span>`}
           <input name="email" type="email" value="${esc(form.email || "")}" required></label>
         <label>Password <span class="hint">minimum 12 characters</span>
           <input name="password" type="password" required></label>
@@ -173,12 +185,12 @@ exports.totpEnroll = ({ csrf, qr, secret, account, error }) =>
     </div>`
   );
 
-exports.setupDone = () =>
+exports.setupDone = ({ passwordOnly } = {}) =>
   shell(
     "Setup complete",
     `<div class="card">
       <h2>Setup complete</h2>
-      <p>Two-factor authentication is active. You can now sign in.</p>
+      <p>${passwordOnly ? "Your admin account is ready. Sign in with your username and password." : "Two-factor authentication is active. You can now sign in."}</p>
       <p><a class="btn primary" href="/login">Go to sign in</a></p>
     </div>`
   );
